@@ -431,6 +431,8 @@ MW1.on_error() ────── Has return? ─── Yes ──▶ Use as res
 Throw ModuleError
 ```
 
+> **Note:** `on_error()` only iterates middlewares whose `before()` was successfully called before the failure occurred (the "executed middlewares" list). If a middleware's `before()` throws, only middlewares executed *before* it participate in `on_error()` unwinding. The diagram above shows the case where all three middlewares' `before()` completed and the error originated from `Module.execute()`.
+
 ---
 
 ## 4. Directory Structure
@@ -688,7 +690,7 @@ Shared resources:
 
 - During `unregister()`, module may be executing in other threads
 - Implementation must maintain reference count, wait for execution completion before unload
-- After timeout (default 30 seconds), force unload and log error
+- After timeout (default 5 seconds), force unload and log error
 - See [PROTOCOL_SPEC §12.7.4 Hot Reload Race Conditions](../PROTOCOL_SPEC.md#1274-hot-reload-race-conditions)
 
 **Middleware Chain Atomicity:**

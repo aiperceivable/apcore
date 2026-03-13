@@ -4934,7 +4934,7 @@ Steps:
   2. Remove from registry (new call() will throw MODULE_NOT_FOUND)
   3. Wait for all executing calls to complete:
      - Maintain reference count (number of executing calls)
-     - Block until count reaches zero or timeout (default 30 seconds)
+     - Block until count reaches zero or timeout (default 5 seconds)
   4. Call on_suspend() hook (if implemented) → save returned state
   5. Call on_unload() hook
   6. Release module instance
