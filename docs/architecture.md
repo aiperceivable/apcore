@@ -168,7 +168,7 @@ Registry is responsible for module discovery, registration, and management.
 
 | Component | Responsibility |
 |------|------|
-| Discoverer | Scan extensions directory, find Module subclasses |
+| Discoverer | Scan extensions directory, find classes conforming to the Module interface |
 | ID Map | Handle cross-language ID conversion |
 | Validator | Verify modules correctly implement interface |
 | Module Store | Store module classes and instances |

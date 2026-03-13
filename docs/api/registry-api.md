@@ -298,7 +298,7 @@ print(f"Discovered {count} modules")
 |------|------|
 | Directory structure | Recursively scan all subdirectories |
 | File types | `.py` files (Python), `.ts`/`.js` files (TypeScript/JavaScript) |
-| Module identification | Find classes inheriting `Module` |
+| Module identification | Find classes conforming to the `Module` interface |
 | ID generation | File path converted to module ID |
 | Ignore rules | Skip `__pycache__`, `node_modules`, files starting with `_` |
 
@@ -678,7 +678,7 @@ registry.discover()
     ↓
 Scan extensions_dir
     ↓
-Find Module subclasses
+Find classes conforming to the Module interface
     ↓
 Generate/lookup module_id (directory as ID / ID Map)
     ↓

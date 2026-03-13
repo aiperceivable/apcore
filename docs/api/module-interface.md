@@ -366,7 +366,7 @@ class SendEmailModule(Module):
 | `metadata` | **MAY** | Optional; empty dict by default |
 
 **Timeout Semantics:**
-- Module execution **should** complete within configured timeout (`resources.timeout` default 30000ms; global `executor.timeout` default 60000ms)
+- Module execution **should** complete within configured timeout (`resources.timeout` default 30000ms; global `executor.global_timeout` default 60000ms)
 - After timeout, framework **must** throw `MODULE_TIMEOUT` error
 - Module **should** support graceful cancellation (by checking cancellation signal in context)
 

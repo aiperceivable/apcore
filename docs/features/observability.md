@@ -35,7 +35,7 @@ Comprehensive observability with distributed tracing, metrics collection, and st
 
 ### Tracing Architecture
 
-The tracing system uses a stack-based approach stored in `context.data["_tracing_spans"]`. This correctly handles nested module calls within the same trace:
+The tracing system uses a stack-based approach stored in `context.data["_apcore.mw.tracing.spans"]`. This correctly handles nested module calls within the same trace:
 
 ```
 TracingMiddleware.before("mod.a"):
@@ -58,7 +58,7 @@ TracingMiddleware.after("mod.a"):
 
 ```
 _should_sample(context):
-  1. Check context.data["_tracing_sampled"] -- if exists, inherit decision
+  1. Check context.data["_apcore.mw.tracing.sampled"] -- if exists, inherit decision
   2. If "full" strategy -> always True
   3. If "off" strategy -> always False
   4. If "proportional" or "error_first" -> random.random() < sampling_rate
@@ -80,7 +80,7 @@ For `error_first`, the sampling decision only affects success spans. Error spans
 - `_histogram_sums`/`_histogram_counts`: Maps `(name, labels_tuple)` to sum/count values.
 - `_histogram_buckets`: Maps `(name, labels_tuple, bucket_boundary)` to bucket counts, including a `+Inf` bucket that is always incremented.
 
-`MetricsMiddleware` uses a stack (`context.data["_metrics_starts"]`) to track start times for nested calls. In `after()`, it pops the start time, computes duration, and records success metrics. In `on_error()`, it additionally extracts the error code (from `ModuleError.code` or `type(error).__name__`).
+`MetricsMiddleware` uses a stack (`context.data["_apcore.mw.metrics.starts"]`) to track start times for nested calls. In `after()`, it pops the start time, computes duration, and records success metrics. In `on_error()`, it additionally extracts the error code (from `ModuleError.code` or `type(error).__name__`).
 
 ### Logging Architecture
 
@@ -90,7 +90,7 @@ For `error_first`, the sampling decision only affects success spans. Error spans
 
 Redaction applies to any key in `extra` that starts with `_secret_`, replacing the value with `***REDACTED***`.
 
-`ObsLoggingMiddleware` wraps `ContextLogger` and uses the same stack-based timing pattern as `MetricsMiddleware` via `context.data["_obs_logging_starts"]`.
+`ObsLoggingMiddleware` wraps `ContextLogger` and uses the same stack-based timing pattern as `MetricsMiddleware` via `context.data["_apcore.mw.logging.starts"]`.
 
 ### Recommended Registration Order
 

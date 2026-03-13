@@ -33,7 +33,7 @@ But: A universal module standard that is naturally AI-Perceivable
 
 ## 2. Core Responsibilities
 
-> This section uses RFC 2119 keywords; see [PROTOCOL_SPEC.md §1.5](./PROTOCOL_SPEC.md#15-normative-keywords) for their meanings.
+> This section uses RFC 2119 keywords; see [PROTOCOL_SPEC.md §1.5](./PROTOCOL_SPEC.md#15-specification-keywords) for their meanings.
 
 ### 2.1 Module Standardization
 - [ ] **Definition (MUST)**: All modules **must** define ID, input_schema, output_schema, and description

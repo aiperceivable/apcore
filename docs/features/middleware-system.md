@@ -36,7 +36,7 @@ The `MiddlewareManager` uses a lock-protected snapshot pattern for thread safety
 - **`Middleware`** (base class) -- Plain class (not ABC) with three methods returning None by default. Subclasses override only what they need.
 - **`MiddlewareManager`** -- Manages the ordered list and orchestrates the three execution phases. Uses `threading.Lock` with the snapshot pattern.
 - **`BeforeMiddleware` / `AfterMiddleware`** -- Lightweight adapters wrapping a single callback function as a full `Middleware` subclass. Non-overridden phases remain no-ops.
-- **`LoggingMiddleware`** -- Structured logging middleware that records start time in `context.data["_logging_mw_start"]` during `before()`, computes duration in `after()`, and uses `context.redacted_inputs` to avoid leaking sensitive data. Configurable via `log_inputs`, `log_outputs`, and `log_errors` flags.
+- **`LoggingMiddleware`** -- Structured logging middleware that records start time in `context.data["_apcore.mw.logging.start_time"]` during `before()`, computes duration in `after()`, and uses `context.redacted_inputs` to avoid leaking sensitive data. Configurable via `log_inputs`, `log_outputs`, and `log_errors` flags.
 - **`RetryMiddleware`** -- Built-in middleware that retries failed module calls with configurable backoff strategies (exponential or fixed). Only retries errors marked `retryable=True`. Supports `max_retries`, `base_delay_ms`, `max_delay_ms`, and jitter. See [Middleware Guide](../guides/middleware.md#54-retrymiddleware-built-in) for configuration details.
 - **`MiddlewareChainError`** -- Exception subclass carrying `original` (the root cause) and `executed_middlewares` (the list of middlewares whose `before()` was called, for targeted error recovery).
 
