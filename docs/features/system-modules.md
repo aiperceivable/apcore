@@ -398,21 +398,41 @@ context = register_sys_modules(
 
 ### Via APCore Client (Recommended)
 
-```python
-from apcore import APCore
-from apcore.config import Config
+=== "Python"
 
-config = Config.load("apcore.yaml")
-client = APCore(config=config)
+    ```python
+    from apcore import APCore
+    from apcore.config import Config
 
-# System modules auto-registered! Query them directly:
-health = client.call("system.health.summary", {})
-usage = client.call("system.usage.summary", {"period": "24h"})
+    config = Config.load("apcore.yaml")
+    client = APCore(config=config)
 
-# Control via convenience methods:
-client.disable("some.module", reason="maintenance")
-client.enable("some.module", reason="done")
-```
+    # System modules auto-registered! Query them directly:
+    health = client.call("system.health.summary", {})
+    usage = client.call("system.usage.summary", {"period": "24h"})
+
+    # Control via convenience methods:
+    client.disable("some.module", reason="maintenance")
+    client.enable("some.module", reason="done")
+    ```
+
+=== "Rust"
+
+    ```rust
+    use apcore::{APCore, Config};
+    use serde_json::json;
+
+    let config = Config::load("apcore.yaml")?;
+    let client = APCore::with_config(config);
+
+    // System modules auto-registered! Query them directly:
+    let health = client.call("system.health.summary", json!({})).await;
+    let usage = client.call("system.usage.summary", json!({"period": "24h"})).await;
+
+    // Control via convenience methods:
+    client.disable("some.module", "maintenance").await;
+    client.enable("some.module", "done").await;
+    ```
 
 ## Configuration
 

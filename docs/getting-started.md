@@ -22,6 +22,14 @@ Whether you are building from scratch or upgrading a legacy system, apcore provi
 
     Requires Node.js 18+ and TypeScript 5.5+.
 
+=== "Rust"
+
+    ```bash
+    cargo add apcore
+    ```
+
+    Requires Rust 1.75+.
+
 ## 2. Your First Module
 
 The `APCore` client is the recommended entry point. It manages Registry and Executor for you.
@@ -75,6 +83,26 @@ The `APCore` client is the recommended entry point. It manages Registry and Exec
     console.log(result); // { sum: 15 }
     ```
 
+=== "Rust"
+
+    ```rust
+    use apcore::APCore;
+    use serde_json::json;
+
+    #[tokio::main]
+    async fn main() {
+        let client = APCore::new();
+
+        #[apcore::module(id = "math.add", description = "Add two numbers")]
+        fn add(a: i64, b: i64) -> i64 {
+            a + b
+        }
+
+        let result = client.call("math.add", json!({"a": 10, "b": 5})).await;
+        println!("{:?}", result); // {"result": 15}
+    }
+    ```
+
 ## 3. Preflight Validation
 
 Before executing, you can validate inputs without running the module:
@@ -100,6 +128,17 @@ Before executing, you can validate inputs without running the module:
     }
     ```
 
+=== "Rust"
+
+    ```rust
+    let preflight = client.validate("math.add", json!({"a": 10, "b": 5}));
+    if preflight.is_valid() {
+        println!("All checks passed");
+    } else {
+        println!("Errors: {:?}", preflight.errors());
+    }
+    ```
+
 ## 4. Streaming
 
 Modules that implement `stream()` can yield output chunks incrementally:
@@ -116,6 +155,17 @@ Modules that implement `stream()` can yield output chunks incrementally:
     ```typescript
     for await (const chunk of client.stream('my.streaming_module', { query: 'hello' })) {
       console.log(chunk);
+    }
+    ```
+
+=== "Rust"
+
+    ```rust
+    use futures::StreamExt;
+
+    let mut stream = client.stream("my.streaming_module", json!({"query": "hello"})).await;
+    while let Some(chunk) = stream.next().await {
+        println!("{:?}", chunk);
     }
     ```
 
@@ -161,6 +211,23 @@ Instead of manual registration, apcore can automatically discover modules in a d
     const result = await client.call('math.add', { a: 10, b: 5 });
     ```
 
+=== "Rust"
+
+    Project structure:
+    ```text
+    my-project/
+    └── extensions/
+        └── math/
+            └── add.rs  # Rust module file
+    ```
+
+    ```rust
+    let mut client = APCore::new();
+    client.discover().await?;
+    // Module ID is automatically "math.add"
+    let result = client.call("math.add", json!({"a": 10, "b": 5})).await;
+    ```
+
 ## 6. Adding Middleware
 
 Middleware can intercept calls for logging, tracing, or security.
@@ -180,6 +247,15 @@ Middleware can intercept calls for logging, tracing, or security.
     import { ObsLoggingMiddleware } from 'apcore-js';
 
     client.use(new ObsLoggingMiddleware());
+    ```
+
+=== "Rust"
+
+    ```rust
+    use apcore::middleware::{LoggingMiddleware, TracingMiddleware};
+
+    client.use_middleware(LoggingMiddleware::new());
+    client.use_middleware(TracingMiddleware::new());
     ```
 
 ## 7. Advanced: Manual Registry + Executor
@@ -208,6 +284,18 @@ For full control, you can manage Registry and Executor separately:
 
     const executor = new Executor({ registry });
     const result = await executor.call('math.add', { a: 10, b: 5 });
+    ```
+
+=== "Rust"
+
+    ```rust
+    use apcore::{Registry, Executor};
+
+    let mut registry = Registry::new("./extensions");
+    registry.discover().await?;
+
+    let executor = Executor::new(registry);
+    let result = executor.call("math.add", json!({"a": 10, "b": 5})).await;
     ```
 
 ## 8. Global Entry Points
@@ -249,6 +337,29 @@ All `APCore` client methods are also available as module-level functions via a d
     apcore.enable("some.module", reason="done")
     ```
 
+=== "Rust"
+
+    ```rust
+    use apcore;
+
+    // Registration
+    #[apcore::module(id = "math.add")]
+    fn add(a: i64, b: i64) -> i64 { a + b }
+
+    apcore::discover().await?;
+
+    // Execution
+    let result = apcore::call("math.add", json!({"a": 1, "b": 2})).await;
+    let preflight = apcore::validate("math.add", json!({"a": 1}));
+
+    // Discovery & Inspection
+    let modules = apcore::list_modules("math.");
+    let desc = apcore::describe("math.add").await;
+
+    // Middleware
+    apcore::use_middleware(LoggingMiddleware::new());
+    ```
+
 See [APCore Client API](api/client-api.md) for the full reference.
 
 ## 9. System Modules
@@ -277,6 +388,24 @@ When configured with `sys_modules.enabled: true`, APCore auto-registers built-in
     # Runtime control (requires approval handler + events enabled)
     client.disable("risky.module", reason="investigating issue")
     client.enable("risky.module", reason="issue resolved")
+    ```
+
+=== "Rust"
+
+    ```rust
+    use apcore::{APCore, Config};
+
+    let config = Config::load("apcore.yaml")?;
+    let client = APCore::with_config(config);
+
+    // Health overview
+    let health = client.call("system.health.summary", json!({})).await;
+
+    // Usage statistics
+    let usage = client.call("system.usage.summary", json!({"period": "24h"})).await;
+
+    // Module manifest
+    let manifest = client.call("system.manifest.full", json!({"prefix": "math."})).await;
     ```
 
 See [System Modules](features/system-modules.md) for the full module reference.

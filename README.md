@@ -4,6 +4,12 @@
 
 # apcore — AI-Perceivable Core
 
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+[![Python Version](https://img.shields.io/badge/python-3.11%2B-blue)](https://github.com/aipartnerup/apcore-python)
+[![TypeScript Version](https://img.shields.io/badge/TypeScript-Node_18%2B-blue)](https://github.com/aipartnerup/apcore-typescript)
+[![Rust Version](https://img.shields.io/badge/Rust-1.75%2B-blue)](https://github.com/aipartnerup/apcore-rust)
+
+
 > **Build once, invoke by Code or AI.**
 
 A schema-enforced module standard for the AI-Perceivable era.
@@ -16,6 +22,7 @@ apcore is an **AI-Perceivable module standard** that makes every interface natur
 |-----|----------|---------|------------|
 | **apcore** | Python | `pip install apcore` | [github.com/aipartnerup/apcore-python](https://github.com/aipartnerup/apcore-python) |
 | **apcore-js** | TypeScript | `npm install apcore-js` | [github.com/aipartnerup/apcore-typescript](https://github.com/aipartnerup/apcore-typescript) |
+| **apcore** | Rust | `cargo add apcore` | [github.com/aipartnerup/apcore-rust](https://github.com/aipartnerup/apcore-rust) |
 
 ---
 
@@ -987,6 +994,7 @@ Language SDK implementations of the apcore protocol specification:
 |------|------|------|------|
 | **Python** | [apcore-python](https://github.com/aipartnerup/apcore-python) | Schema validation, Registry, Executor, @module decorator, YAML bindings, ACL, Middleware, Observability, Async support | `pip install apcore` |
 | **Typescript** | [apcore-typescript](https://github.com/aipartnerup/apcore-typescript) | Schema validation, Registry, Executor, @module decorator, YAML bindings, ACL, Middleware, Observability, Async support | `npm install apcore-js` |
+| **Rust** | [apcore-rust](https://github.com/aipartnerup/apcore-rust) | Schema validation, Registry, Executor, #[module] macro, YAML bindings, ACL, Middleware, Observability, Async support | `cargo add apcore` |
 
 > Interested in implementing apcore for another language? See the [Protocol Specification](./PROTOCOL_SPEC.md) and [Conformance Definition](./docs/spec/conformance.md).
 
@@ -999,15 +1007,15 @@ The apcore ecosystem uses a **core + independent adapters** architecture. The co
 ```
                         apcore (Protocol Spec)
                                │
-              ┌────────────────┼────────────────┐
-              ▼                ▼                 ▼
-       apcore-python    apcore-typescript    (future SDKs)
-              │                │
-              └───────┬────────┘
-                      │
-        ┌─────────────┼─────────────┐
-        ▼             ▼             ▼
-   apcore-mcp    apcore-a2a   apcore-testing
+          ┌────────────────────┼────────────────────┐
+          ▼                    ▼                    ▼
+   apcore-python        apcore-typescript      apcore-rust
+          │                    │                    │
+          └───────────┬────────┴───────────┬────────┘
+                      │                    │
+        ┌─────────────┼─────────────┬──────┴──────┐
+        ▼             ▼             ▼             ▼
+   apcore-mcp    apcore-a2a   apcore-testing    (others)
   (MCP Server)  (A2A Agent)  (Test Framework)
 ```
 

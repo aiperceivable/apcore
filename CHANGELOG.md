@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.10.0] - 2026-03-12
+## [0.13.0] - 2026-03-12
 
 ### Added
 
@@ -35,7 +35,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.9.0] - 2026-03-10
+## [0.12.0] - 2026-03-10
 
 ### Added
 
@@ -62,18 +62,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.8.0] - 2026-03-09
-
-### Added
-
-#### Documentation — Updated Files
-- **Observability features** — `ErrorHistory`, `UsageCollector`, `PlatformNotifyMiddleware` documented
-- **Middleware guide** — Built-in `RetryMiddleware` + `RetryConfig` reference added
-- **Schema system** — `SchemaStrategy` and `ExportProfile` enums documented
-
----
-
-## [0.7.0] - 2026-03-09
+## [0.11.0] - 2026-03-09
 
 ### Added
 
@@ -81,6 +70,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **APCore Client API** (`docs/api/client-api.md`) — Full API reference for the unified `APCore` client covering 17 public methods: `call`, `call_async`, `stream`, `validate`, `module`, `register`, `discover`, `list_modules`, `describe`, `use`, `use_before`, `use_after`, `remove`, `on`, `off`, `disable`, `enable`, plus `events`/`registry`/`executor` properties and global `apcore.*` entry points
 - **Event System** (`docs/features/event-system.md`) — `EventEmitter`, `ApCoreEvent`, `EventSubscriber` protocol, `WebhookSubscriber` (retry strategy), `A2ASubscriber` (auth modes), subscriber type factory registry, event types table, and YAML configuration reference
 - **System Modules** (`docs/features/system-modules.md`) — Complete reference for 9 built-in `system.*` modules with input/output schemas: `system.health.summary`, `system.health.module`, `system.manifest.module`, `system.manifest.full`, `system.usage.summary`, `system.usage.module`, `system.control.update_config`, `system.control.reload_module`, `system.control.toggle_feature`; plus `register_sys_modules()` setup guide and YAML configuration
+
+#### Documentation — Updated Files
+- **Observability features** — `ErrorHistory`, `UsageCollector`, `PlatformNotifyMiddleware` documented
+- **Middleware guide** — Built-in `RetryMiddleware` + `RetryConfig` reference added
+- **Schema system** — `SchemaStrategy` and `ExportProfile` enums documented
 
 ### Changed
 
@@ -96,7 +90,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.6.0] - 2026-03-07
+## [0.10.0] - 2026-03-07
 
 ### Added
 
@@ -113,11 +107,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Executor pipeline docs** — All references updated from "10-step" to "11-step" pipeline across README.md, docs/features/core-executor.md, docs/api/executor-api.md
 - **Context `logger` property** — Upgraded from SHOULD to MUST in docs/api/context-object.md (both SDKs already provide it)
 - **docs/api/module-interface.md** — Added optional `stream()` method documentation
-- **docs/getting-started.md** — Rewritten to recommend `APCore` unified client as primary approach
+- **docs/getting-started.md`** — Rewritten to recommend `APCore` unified client as primary approach
 
 ---
 
-## [0.5.0] - 2026-03-06
+## [0.9.0] - 2026-03-06
 
 ### Added
 
@@ -146,7 +140,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.4.0] - 2026-03-03
+## [0.8.0] - 2026-03-03
 
 ### Added
 - **AI Collaboration Lifecycle** documentation: Integrated `description`, `metadata`, `requires_approval`, and `ai_guidance` into a unified narrative (Discovery, Strategy, Governance, Recovery).
@@ -162,7 +156,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.3.0] - 2026-03-01
+## [0.7.0] - 2026-03-01
 
 ### Added
 
@@ -181,7 +175,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.2.0] - 2026-02-23
+## [0.6.0] - 2026-02-23
 
 ### Added
 
@@ -219,6 +213,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `ROADMAP.md` — removed; roadmap references updated across documentation
 - `docs/guides/creating-modules-translated.md` — removed translated guide from navigation
+
+---
+
+## [0.5.0] - 2026-02-22
+
+### Added
+
+#### Protocol Specification
+- **Level 2 Conformance (Phase 1)** — Extension system, Async Task Management, and W3C Trace Context support added to protocol requirements
+- **Extension System (§12.2)** — Unified extension point framework for pluggable components (discoverers, middleware, ACL, exporters)
+- **Async Task Management (§12.7.3)** — Standardized lifecycle for background tasks (Pending, Running, Completed, Failed, Cancelled)
+- **Trace Context (§12.7.4)** — W3C Trace Context (traceparent) support for distributed tracing propagation
+- **Async Middleware Protocol** — Requirements for non-blocking middleware dispatch
+
+---
+
+## [0.4.0] - 2026-02-20
+
+### Added
+
+#### Protocol Specification
+- **Streaming Support** — Formalized `ModuleAnnotations.streaming` and `Executor.stream()` behavior in protocol specification
+- **Shallow Merge for Streaming** — Algorithm for accumulating streaming chunks for output validation and post-processing
+
+---
+
+## [0.3.0] - 2026-02-20
+
+### Added
+
+#### Protocol Specification
+- **ErrorCodes Catalog** — Standardized error code constants (replaces hardcoded strings)
+- **ContextFactory Protocol** — Interface for creating Context from platform-specific requests
+- **Registry Constants** — Standardized module ID patterns and event types
+- **Comprehensive Schema System** — Formalized schema loading, validation, and multi-profile export (MCP, OpenAI, Anthropic) requirements
+
+---
+
+## [0.2.0] - 2026-02-16
+
+### Changed
+
+#### Protocol Specification
+- **Module ID Validation** — Strengthened pattern to `^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$` (lowercase, digits, underscores, dots; no hyphens)
+- **Registry Event Constants** — Standardized event names for module registration lifecycle
 
 ---
 
