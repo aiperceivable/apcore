@@ -51,6 +51,9 @@ Use **Annotations** to define your module's **Personality**.
 - For sensitive operations (spending money, deleting data), set `requires_approval: true`. This ensures a human always has the final word.
 
 ### 4. Recovery: Empower Self-Healing
+
+Self-Healing enables **Self-Repair** and **Self-Evolution** (see [Design Philosophy](../concepts.md#11-the-concept-cognitive-interface) for definitions).
+
 When an error occurs, use the `ai_guidance` field in your `ModuleError` to tell the Agent **exactly what to do next** — not what went wrong (that's `message`'s job).
 
 | Field | Purpose | Example |

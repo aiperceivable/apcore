@@ -1,6 +1,6 @@
 # Getting Started
 
-apcore defines the **Cognitive Interface** for your application. It ensures your logic is naturally perceivable by AI Agents through enforced schemas, behavioral guardrails, and self-healing error guidance.
+apcore defines the **Cognitive Interface** for your application. It ensures your logic is naturally perceivable by AI Agents through enforced schemas, behavioral guardrails, and self-healing error guidance — enabling AI Self-Repair and Self-Evolution.
 
 Whether you are building from scratch or upgrading a legacy system, apcore provides a path for you. See [Choose Your Integration Path](./guides/creating-modules.md#choose-your-integration-path) for details.
 

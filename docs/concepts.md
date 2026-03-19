@@ -10,7 +10,9 @@ Traditional software provides **UI** for humans and **API** for programs. apcore
 - **Intent-Oriented**: AI thinks in terms of "What to do" (Intents), not "Which endpoint to call".
 - **Strict Contracts**: Mandatory schemas ensure AI uses your tools correctly every time.
 - **Behavioral Personality**: Annotations like `readonly`, `destructive`, and `requires_approval` give Agents the guardrails they need to make safe decisions.
-- **Self-Healing**: Error guidance (`ai_guidance`) tells the Agent exactly how to fix issues and retry.
+- **Self-Healing**: Error guidance (`ai_guidance`) tells the Agent exactly how to fix issues and retry. Self-Healing serves two higher-level goals:
+  - **Self-Repair**: The Agent autonomously corrects errors and retries within a single interaction.
+  - **Self-Evolution**: The system continuously adapts through health monitoring, event-driven feedback loops, and runtime reconfiguration.
 
 ### 1.2 The AI Collaboration Lifecycle
 
@@ -20,6 +22,8 @@ apcore organizes module metadata into a coherent lifecycle that guides an Agent 
 2.  **Strategy (Wisdom) — `metadata`**: Teaches the Agent *when* and *how* to use the tool correctly (e.g., `x-when-to-use`, `x-common-mistakes`).
 3.  **Governance (Safety) — `requires_approval`**: Sets the safety boundary for sensitive operations.
 4.  **Recovery (Resilience) — error guidance fields**: Every `ModuleError` carries optional fields that enable AI agents to recover autonomously: `retryable` (can the call be retried?), `ai_guidance` (machine-readable recovery hint), `user_fixable` (can the end-user fix it?), and `suggestion` (actionable fix). See PROTOCOL_SPEC §8.1.1.
+
+Together with health sensing (`system.health.*`) and the control plane (`system.control.*`), the Recovery stage completes the Self-Healing loop — powering both **Self-Repair** and **Self-Evolution** (see §1.1).
 
 ---
 

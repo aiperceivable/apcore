@@ -886,6 +886,8 @@ apcore has built-in three pillars of observability, compatible with OpenTelemetr
 
 apcore defines a unified error format including **`ai_guidance`**. While standard errors tell a program *what* went wrong, `ai_guidance` tells the Agent **how to fix it and retry**, enabling **Self-Healing** Agents.
 
+Self-Healing serves two higher-level goals: **Self-Repair** (autonomous error correction within a single interaction) and **Self-Evolution** (continuous system adaptation through health monitoring, feedback loops, and runtime reconfiguration).
+
 ### Error Format
 
 ```json

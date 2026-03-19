@@ -3309,6 +3309,11 @@ error_format:
 
 The four optional fields (`retryable`, `ai_guidance`, `user_fixable`, `suggestion`) enable AI agents to programmatically understand and respond to errors without parsing human-readable messages.
 
+These fields are the foundation of apcore's **Self-Healing** mechanism, which serves two higher-level goals:
+
+- **Self-Repair**: The Agent autonomously corrects errors and retries within a single interaction.
+- **Self-Evolution**: The system continuously adapts through health monitoring, event-driven feedback loops, and runtime reconfiguration (see §6.6, §10).
+
 **Field semantics:**
 
 | Field | Type | Purpose |
