@@ -418,4 +418,4 @@ See [System Modules](features/system-modules.md) for the full module reference.
 - [ACL Configuration](guides/acl-configuration.md) - Secure your modules.
 - [Event System](features/event-system.md) - Framework event bus and subscribers.
 - [System Modules](features/system-modules.md) - Built-in health, usage, and control modules.
-- [apcore-mcp](https://github.com/aipartnerup/apcore-mcp) - Expose these modules as an MCP Server.
+- [apcore-mcp](https://github.com/aiperceivable/apcore-mcp) - Expose these modules as an MCP Server.

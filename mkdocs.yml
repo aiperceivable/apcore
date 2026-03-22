@@ -1,8 +1,8 @@
 site_name: apcore — AI-Perceivable Core
 site_description: A schema-enforced module standard for the AI-Perceivable era — Build once, invoke by Code or AI.
-site_url: https://aipartnerup.github.io/apcore/
-repo_url: https://github.com/aipartnerup/apcore
-repo_name: aipartnerup/apcore
+site_url: https://aiperceivable.github.io/apcore/
+repo_url: https://github.com/aiperceivable/apcore
+repo_name: aiperceivable/apcore
 
 theme:
   name: material
@@ -94,4 +94,4 @@ nav:
 extra:
   social:
     - icon: fontawesome/brands/github
-      link: https://github.com/aipartnerup/apcore
+      link: https://github.com/aiperceivable/apcore

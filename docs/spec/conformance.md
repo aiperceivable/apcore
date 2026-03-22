@@ -493,8 +493,8 @@ implementation:
   version: "0.1.0"                   # Implementation version
   language: "python"                 # Implementation language
   spec_version: "1.2.0-draft"       # Corresponding PROTOCOL_SPEC version
-  maintainer: "AI Partner Up"        # Maintainer
-  repository: "https://github.com/aipartnerup/apcore-python"  # Repository address
+  maintainer: "AI Perceivable"        # Maintainer
+  repository: "https://github.com/aiperceivable/apcore-python"  # Repository address
 
 # Conformance declaration
 conformance:
