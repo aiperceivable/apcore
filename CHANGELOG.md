@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.13.1] - 2026-03-22
+
+### Changed
+- Rebrand: aipartnerup → aiperceivable
+
 ## [0.13.0] - 2026-03-12
 
 ### Added

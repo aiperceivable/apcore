@@ -5,9 +5,9 @@
 # apcore — AI-Perceivable Core
 
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
-[![Python Version](https://img.shields.io/badge/python-3.11%2B-blue)](https://github.com/aipartnerup/apcore-python)
-[![TypeScript Version](https://img.shields.io/badge/TypeScript-Node_18%2B-blue)](https://github.com/aipartnerup/apcore-typescript)
-[![Rust Version](https://img.shields.io/badge/Rust-1.75%2B-blue)](https://github.com/aipartnerup/apcore-rust)
+[![Python Version](https://img.shields.io/badge/python-3.11%2B-blue)](https://github.com/aiperceivable/apcore-python)
+[![TypeScript Version](https://img.shields.io/badge/TypeScript-Node_18%2B-blue)](https://github.com/aiperceivable/apcore-typescript)
+[![Rust Version](https://img.shields.io/badge/Rust-1.75%2B-blue)](https://github.com/aiperceivable/apcore-rust)
 
 
 > **Build once, invoke by Code or AI.**
@@ -20,9 +20,9 @@ apcore is an **AI-Perceivable module standard** that makes every interface natur
 
 | SDK | Language | Install | Repository |
 |-----|----------|---------|------------|
-| **apcore** | Python | `pip install apcore` | [github.com/aipartnerup/apcore-python](https://github.com/aipartnerup/apcore-python) |
-| **apcore-js** | TypeScript | `npm install apcore-js` | [github.com/aipartnerup/apcore-typescript](https://github.com/aipartnerup/apcore-typescript) |
-| **apcore** | Rust | `cargo add apcore` | [github.com/aipartnerup/apcore-rust](https://github.com/aipartnerup/apcore-rust) |
+| **apcore** | Python | `pip install apcore` | [github.com/aiperceivable/apcore-python](https://github.com/aiperceivable/apcore-python) |
+| **apcore-js** | TypeScript | `npm install apcore-js` | [github.com/aiperceivable/apcore-typescript](https://github.com/aiperceivable/apcore-typescript) |
+| **apcore** | Rust | `cargo add apcore` | [github.com/aiperceivable/apcore-rust](https://github.com/aiperceivable/apcore-rust) |
 
 ---
 
@@ -291,7 +291,7 @@ Rules:
 
 ## Quick Start
 
-For a detailed multi-language guide, visit the **[Getting Started Guide](https://aipartnerup.github.io/apcore/getting-started.html)**.
+For a detailed multi-language guide, visit the **[Getting Started Guide](https://aiperceivable.github.io/apcore/getting-started.html)**.
 
 === "Python"
 
@@ -953,7 +953,7 @@ Any language SDK implementation can choose different conformance levels:
 | **Level 1 (Standard)** | Production ready | + ACL, middleware, error handling, observability |
 | **Level 2 (Full)** | Complete implementation | + Extension point system, async task management, W3C Trace Context, Prometheus metrics, version negotiation, schema migration, module isolation, multi-version coexistence |
 
-**Reference Implementation**: [apcore-python](https://github.com/aipartnerup/apcore-python)
+**Reference Implementation**: [apcore-python](https://github.com/aiperceivable/apcore-python)
 
 ---
 
@@ -994,9 +994,9 @@ Language SDK implementations of the apcore protocol specification:
 
 | Language | Repository | Features | Install |
 |------|------|------|------|
-| **Python** | [apcore-python](https://github.com/aipartnerup/apcore-python) | Schema validation, Registry, Executor, @module decorator, YAML bindings, ACL, Middleware, Observability, Async support | `pip install apcore` |
-| **Typescript** | [apcore-typescript](https://github.com/aipartnerup/apcore-typescript) | Schema validation, Registry, Executor, @module decorator, YAML bindings, ACL, Middleware, Observability, Async support | `npm install apcore-js` |
-| **Rust** | [apcore-rust](https://github.com/aipartnerup/apcore-rust) | Schema validation, Registry, Executor, #[module] macro, YAML bindings, ACL, Middleware, Observability, Async support | `cargo add apcore` |
+| **Python** | [apcore-python](https://github.com/aiperceivable/apcore-python) | Schema validation, Registry, Executor, @module decorator, YAML bindings, ACL, Middleware, Observability, Async support | `pip install apcore` |
+| **Typescript** | [apcore-typescript](https://github.com/aiperceivable/apcore-typescript) | Schema validation, Registry, Executor, @module decorator, YAML bindings, ACL, Middleware, Observability, Async support | `npm install apcore-js` |
+| **Rust** | [apcore-rust](https://github.com/aiperceivable/apcore-rust) | Schema validation, Registry, Executor, #[module] macro, YAML bindings, ACL, Middleware, Observability, Async support | `cargo add apcore` |
 
 > Interested in implementing apcore for another language? See the [Protocol Specification](./PROTOCOL_SPEC.md) and [Conformance Definition](./docs/spec/conformance.md).
 
@@ -1025,8 +1025,8 @@ The apcore ecosystem uses a **core + independent adapters** architecture. The co
 
 | Adapter | Description | Python | TypeScript | Install |
 |---------|-------------|--------|------------|---------|
-| **[apcore-mcp](https://github.com/aipartnerup/apcore-mcp)** | Expose apcore modules as MCP Server — auto-discovery, annotation mapping, Tool Explorer UI | [apcore-mcp-python](https://github.com/aipartnerup/apcore-mcp-python) | [apcore-mcp-typescript](https://github.com/aipartnerup/apcore-mcp-typescript) | `pip install apcore-mcp` / `npm install apcore-mcp` |
-| **[apcore-a2a](https://github.com/aipartnerup/apcore-a2a)** | Expose apcore modules as A2A Agent — auto Agent Card, skill mapping, streaming, push notifications | [apcore-a2a-python](https://github.com/aipartnerup/apcore-a2a-python) | [apcore-a2a-typescript](https://github.com/aipartnerup/apcore-a2a-typescript) | `pip install apcore-a2a` / `npm install apcore-a2a` |
+| **[apcore-mcp](https://github.com/aiperceivable/apcore-mcp)** | Expose apcore modules as MCP Server — auto-discovery, annotation mapping, Tool Explorer UI | [apcore-mcp-python](https://github.com/aiperceivable/apcore-mcp-python) | [apcore-mcp-typescript](https://github.com/aiperceivable/apcore-mcp-typescript) | `pip install apcore-mcp` / `npm install apcore-mcp` |
+| **[apcore-a2a](https://github.com/aiperceivable/apcore-a2a)** | Expose apcore modules as A2A Agent — auto Agent Card, skill mapping, streaming, push notifications | [apcore-a2a-python](https://github.com/aiperceivable/apcore-a2a-python) | [apcore-a2a-typescript](https://github.com/aiperceivable/apcore-a2a-typescript) | `pip install apcore-a2a` / `npm install apcore-a2a` |
 
 **One module definition, two protocol endpoints:**
 
@@ -1049,7 +1049,7 @@ a2a_serve(registry)
 
 | Project | Description | Install |
 |---------|-------------|---------|
-| **[apcore-testing](https://github.com/aipartnerup/apcore-testing)** | Testing framework — MockModule, ContractTest, record/replay, conformance fixtures | `pip install apcore-testing` / `npm install apcore-testing` |
+| **[apcore-testing](https://github.com/aiperceivable/apcore-testing)** | Testing framework — MockModule, ContractTest, record/replay, conformance fixtures | `pip install apcore-testing` / `npm install apcore-testing` |
 
 ### Community Adapter Types
 
