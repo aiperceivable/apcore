@@ -1025,8 +1025,8 @@ The apcore ecosystem uses a **core + independent adapters** architecture. The co
 
 | Adapter | Description | Python | TypeScript | Install |
 |---------|-------------|--------|------------|---------|
-| **[apcore-mcp](https://github.com/aiperceivable/apcore-mcp)** | Expose apcore modules as MCP Server — auto-discovery, annotation mapping, Tool Explorer UI | [apcore-mcp-python](https://github.com/aiperceivable/apcore-mcp-python) | [apcore-mcp-typescript](https://github.com/aiperceivable/apcore-mcp-typescript) | `pip install apcore-mcp` / `npm install apcore-mcp` |
-| **[apcore-a2a](https://github.com/aiperceivable/apcore-a2a)** | Expose apcore modules as A2A Agent — auto Agent Card, skill mapping, streaming, push notifications | [apcore-a2a-python](https://github.com/aiperceivable/apcore-a2a-python) | [apcore-a2a-typescript](https://github.com/aiperceivable/apcore-a2a-typescript) | `pip install apcore-a2a` / `npm install apcore-a2a` |
+| **[apcore-mcp](https://github.com/aiperceivable/apcore-mcp)** | Expose apcore modules as MCP Server — auto-discovery, annotation mapping, display overlay (§5.13), Tool Explorer UI | [apcore-mcp-python](https://github.com/aiperceivable/apcore-mcp-python) | [apcore-mcp-typescript](https://github.com/aiperceivable/apcore-mcp-typescript) | `pip install apcore-mcp` / `npm install apcore-mcp` |
+| **[apcore-a2a](https://github.com/aiperceivable/apcore-a2a)** | Expose apcore modules as A2A Agent — auto Agent Card, skill mapping, display overlay (§5.13), streaming, push notifications | [apcore-a2a-python](https://github.com/aiperceivable/apcore-a2a-python) | [apcore-a2a-typescript](https://github.com/aiperceivable/apcore-a2a-typescript) | `pip install apcore-a2a` / `npm install apcore-a2a` |
 
 **One module definition, two protocol endpoints:**
 
@@ -1097,6 +1097,7 @@ Development guide: see [Adapter Development Guide](./docs/guides/adapter-develop
 | [ACL System](./docs/features/acl-system.md) | Pattern-based Access Control List with first-match-wins evaluation |
 | [Core Executor](./docs/features/core-executor.md) | Central execution engine with a secured execution lifecycle |
 | [Decorator & YAML Bindings](./docs/features/decorator-bindings.md) | `@module` decorator and YAML-based module creation |
+| [Display Overlay](./PROTOCOL_SPEC.md#513-display-overlay-surface-facing-presentation) | §5.13 — sparse `display` section in binding entries for per-surface alias, description, guidance, and tags |
 | [Middleware System](./docs/features/middleware-system.md) | Composable middleware pipeline with onion execution model |
 | [Observability](./docs/features/observability.md) | Distributed tracing, metrics, and structured logging |
 | [Registry System](./docs/features/registry-system.md) | Module discovery, registration, and querying |

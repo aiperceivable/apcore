@@ -74,6 +74,13 @@
           "type": "object",
           "description": "Free-form extension metadata",
           "additionalProperties": true
+        },
+        "documentation": {
+          "type": "string",
+          "description": "Extended documentation (long-form). Used as fallback when display.documentation is not set."
+        },
+        "display": {
+          "$ref": "#/$defs/DisplayOverlay"
         }
       },
       "oneOf": [
@@ -93,6 +100,99 @@
           "required": ["schema_ref"]
         }
       ],
+      "additionalProperties": false
+    },
+    "SurfaceOverride": {
+      "type": "object",
+      "description": "Surface-specific display overrides",
+      "properties": {
+        "alias": {
+          "type": "string",
+          "description": "Surface-specific display name"
+        },
+        "description": {
+          "type": "string",
+          "description": "Surface-specific description"
+        },
+        "guidance": {
+          "type": "string",
+          "description": "Surface-specific usage guidance. Overrides display.guidance for this surface only."
+        }
+      },
+      "additionalProperties": false
+    },
+    "DisplayOverlay": {
+      "type": "object",
+      "description": "Display overlay for surface-facing presentation. Sparse: only specified fields override scanner-provided values.",
+      "properties": {
+        "alias": {
+          "type": "string",
+          "description": "Default display name for all surfaces (overrides module_id in presentation). Must be compatible with CLI and MCP constraints when used as cross-surface default.",
+          "maxLength": 64,
+          "pattern": "^[a-z][a-z0-9_-]*$"
+        },
+        "description": {
+          "type": "string",
+          "description": "Override description for all surfaces. Shown in tool listings and help text. Should be concise but accurate."
+        },
+        "documentation": {
+          "type": "string",
+          "description": "Override extended documentation. Full long-form reference docs for this module."
+        },
+        "guidance": {
+          "type": "string",
+          "description": "Usage guidance for both humans and AI: when to use, when NOT to use, common mistakes, parameter tips. Shown in describe output and injected into AI tool context. No length limit — be as detailed as needed for accuracy."
+        },
+        "tags": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Override tags"
+        },
+        "cli": {
+          "allOf": [
+            { "$ref": "#/$defs/SurfaceOverride" },
+            {
+              "properties": {
+                "alias": {
+                  "type": "string",
+                  "pattern": "^[a-z][a-z0-9_-]*$",
+                  "description": "CLI command name (shell-safe, no dots, no spaces). Recommended ≤40 chars for readability but not enforced."
+                }
+              }
+            }
+          ]
+        },
+        "mcp": {
+          "allOf": [
+            { "$ref": "#/$defs/SurfaceOverride" },
+            {
+              "properties": {
+                "alias": {
+                  "type": "string",
+                  "maxLength": 64,
+                  "pattern": "^[a-zA-Z_][a-zA-Z0-9_-]*$",
+                  "description": "MCP tool name. Hard limit: 64 chars (OpenAI function name spec constraint)."
+                }
+              }
+            }
+          ]
+        },
+        "a2a": {
+          "allOf": [
+            { "$ref": "#/$defs/SurfaceOverride" },
+            {
+              "properties": {
+                "alias": {
+                  "type": "string",
+                  "description": "A2A skill name. Natural language allowed, no hard length limit."
+                }
+              }
+            }
+          ]
+        }
+      },
       "additionalProperties": false
     },
     "Annotations": {

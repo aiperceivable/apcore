@@ -5,7 +5,7 @@
 > Version: 1.5.0-draft
 > Status: Draft Specification (RFC 2119 Conformant)
 > Stability: Specification content is stable, pending reference implementation verification
-> Last Updated: 2026-03-10
+> Last Updated: 2026-03-20
 
 ---
 
@@ -2715,11 +2715,365 @@ Implementations **must** perform the following validations when loading binding 
 | `BINDING_NOT_CALLABLE` | Target not callable | Resolved object is not callable |
 | `BINDING_SCHEMA_MISSING` | Schema missing | No explicit Schema and auto_schema can't generate |
 
-### 5.13 Edge Case Handling
+### 5.13 Display Overlay (Surface-Facing Presentation)
+
+#### 5.13.1 Normative Statement
+
+Implementations **MUST** support an optional `display` section in binding entries, allowing users to override how modules are presented across different surfaces (CLI, MCP, A2A) without changing the canonical `module_id` or registry behavior.
+
+The `display` overlay is a **sparse override** mechanism: binding files need only declare overrides for a subset of scanned modules. Modules without a `display` entry **MUST** use the scanner-provided values unchanged.
+
+#### 5.13.2 Motivation
+
+Scanner-generated module IDs and descriptions are derived from source code artifacts (operationId, function names, docstrings) that are often too verbose, too technical, or inconsistent for AI/LLM consumption across CLI commands, MCP tool names, and A2A skill names. Different surfaces have different naming constraints:
+
+| Surface | Name Constraints | Example |
+|---------|-----------------|---------|
+| CLI | Shell-friendly, ≤40 chars recommended, no spaces | `pay-status` |
+| MCP | Tool name, ≤64 chars, no spaces, alphanumeric + `_-` | `check_payment_status` |
+| A2A | Skill name, natural language allowed, no hard limit | `Payment Status Checker` |
+
+Without `display`, users must choose one `module_id` format that compromises across all surfaces. With `display`, each surface gets its optimal presentation while the canonical `module_id` remains stable for programmatic use.
+
+#### 5.13.3 Display Section Schema
+
+```yaml
+bindings:
+  - module_id: "credit_purchase.get_purchase_status_by_payment_intent.get"
+    target: "myapp.purchase:get_purchase_status"
+    description: "Auto-generated from docstring"
+
+    # Display overlay — does NOT change module_id or registry behavior
+    display:
+      # Default overrides (apply to all surfaces unless surface-specific override exists)
+      alias: "purchase-status"
+      description: "Check purchase payment status by Stripe PaymentIntent ID"
+      documentation: |
+        Query Stripe PaymentIntent to get purchase status.
+        Returns payment state, amount, and creation timestamp.
+      guidance: |
+        Use when the user asks about payment status or purchase confirmation.
+        Do NOT use for refunds — use payment.refund instead.
+        Always pass the Stripe PaymentIntent ID (pi_xxx), not the charge ID (ch_xxx).
+        Returns null if the PaymentIntent has no associated purchase record.
+      tags: ["billing", "payment"]
+
+      # Surface-specific overrides (optional, take precedence over defaults above)
+      cli:
+        alias: "pay-status"
+        description: "Check Stripe payment"
+      mcp:
+        alias: "check_payment_status"
+        description: "Look up purchase payment status by Stripe PaymentIntent ID"
+      a2a:
+        alias: "Payment Status Checker"
+        description: "I can check the status of any purchase payment"
+```
+
+**Display Section Field Definitions:**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `display` | object | **MAY** | Display overlay container |
+| `display.alias` | string | **MAY** | Default display name for all surfaces |
+| `display.description` | string | **MAY** | Override description for all surfaces |
+| `display.documentation` | string | **MAY** | Override extended documentation |
+| `display.guidance` | string | **MAY** | Usage guidance for humans and AI — when to use, when NOT to use, common mistakes, parameter tips. Read by both `describe` command and AI tool context injection. No length limit. |
+| `display.tags` | array | **MAY** | Override tags |
+| `display.cli` | object | **MAY** | CLI-specific overrides |
+| `display.cli.alias` | string | **MAY** | CLI command name. Shell-safe (`^[a-z][a-z0-9_-]*$`). Recommended ≤40 chars, not enforced. |
+| `display.cli.description` | string | **MAY** | CLI help text |
+| `display.cli.guidance` | string | **MAY** | CLI-specific guidance, overrides `display.guidance` for CLI surface |
+| `display.mcp` | object | **MAY** | MCP-specific overrides |
+| `display.mcp.alias` | string | **MAY** | MCP tool name. **Hard limit: 64 chars** (OpenAI function name spec). Pattern: `^[a-zA-Z_][a-zA-Z0-9_-]*$` |
+| `display.mcp.description` | string | **MAY** | MCP tool description |
+| `display.mcp.guidance` | string | **MAY** | MCP-specific guidance injected into tool context for AI tool selection |
+| `display.a2a` | object | **MAY** | A2A-specific overrides |
+| `display.a2a.alias` | string | **MAY** | A2A skill name. Natural language allowed, no hard length limit. |
+| `display.a2a.description` | string | **MAY** | A2A skill description |
+| `display.a2a.guidance` | string | **MAY** | A2A-specific guidance for agent routing decisions |
+
+#### 5.13.4 Sparse Overlay Semantics
+
+The `display` section is a **sparse overlay**, not a full declaration:
+
+1. **Module-level sparsity**: If a binding file covers 2 out of 10 scanned modules, only those 2 get display overrides; the remaining 8 use scanner-provided values.
+
+2. **Field-level sparsity**: Within a `display` section, only specified fields override. Unspecified fields inherit from the next level in the resolve chain.
+
+3. **Surface-level sparsity**: Surface-specific sections (`cli`, `mcp`, `a2a`) only need to declare fields that differ from `display.*` defaults. Missing surface sections inherit the `display.*` defaults.
+
+```yaml
+bindings:
+  # Only override alias, everything else uses scanner values
+  - module_id: "order.create_order.post"
+    display:
+      alias: "create-order"
+
+  # Only override CLI description, MCP and A2A use display.description
+  - module_id: "user.get_profile.get"
+    display:
+      description: "Retrieve user profile by ID"
+      cli:
+        description: "Get user profile"  # shorter for CLI help text
+```
+
+#### 5.13.5 Resolve Priority Chain
+
+Implementations **MUST** resolve display fields using the following priority chain (highest to lowest):
+
+```
+Algorithm: resolve_display(module_id, surface, binding_map, scanned_module)
+
+For alias:
+  1. binding_map[module_id].display.{surface}.alias    (surface-specific)
+  2. binding_map[module_id].display.alias               (cross-surface default)
+  3. scanned_module.metadata.suggested_alias             (scanner auto-alias)
+  4. scanned_module.module_id                            (canonical ID)
+
+For description:
+  1. binding_map[module_id].display.{surface}.description
+  2. binding_map[module_id].display.description
+  3. binding_map[module_id].description                  (binding-level description)
+  4. scanned_module.description                          (scanner-provided)
+
+For documentation:
+  1. binding_map[module_id].display.documentation
+  2. binding_map[module_id].documentation                    (binding-level)
+  3. scanned_module.documentation                            (scanner-provided)
+
+For guidance:
+  1. binding_map[module_id].display.{surface}.guidance
+  2. binding_map[module_id].display.guidance
+  3. null                                                (no scanner fallback — guidance is user-authored)
+
+For tags:
+  1. binding_map[module_id].display.tags
+  2. binding_map[module_id].tags                         (binding-level)
+  3. scanned_module.tags                                 (scanner-provided)
+```
+
+If `binding_map[module_id]` does not exist (no binding entry for this module), all fields resolve to the `scanned_module` values directly. `guidance` resolves to null.
+
+#### 5.13.6 Surface Alias Naming Constraints
+
+Implementations **MUST** enforce the MCP alias constraint and **SHOULD** warn on CLI pattern violations:
+
+| Surface | Pattern | Max Length | Level |
+|---------|---------|-----------|-------|
+| CLI | `^[a-z][a-z0-9_-]*$` | Recommended ≤40, not enforced | **SHOULD** warn |
+| MCP | `^[a-zA-Z_][a-zA-Z0-9_-]*$` | **64 (hard limit, OpenAI spec)** | **MUST** enforce |
+| A2A | Free-form UTF-8 | No hard limit | No constraint |
+| Default (`display.alias`) | `^[a-z][a-z0-9_-]*$` | 64 | **SHOULD** warn |
+
+If a surface-specific alias violates a **MUST** constraint, implementations **MUST** reject it with a validation error. For **SHOULD** constraints, implementations **SHOULD** log a warning and continue.
+
+#### 5.13.7 Scanner `suggested_alias` Field
+
+Framework scanners (e.g., `OpenAPIScanner`, NestJS decorator scanner) **MAY** produce a `suggested_alias` in `ScannedModule.metadata` as a hint for the display resolver. This replaces the previous `simplify_ids` approach of directly modifying `module_id`.
+
+```
+Scanner behavior when simplify_ids=True:
+  BEFORE (deprecated): module_id = simplified_name
+  AFTER  (preferred): module_id = canonical_name
+                      metadata.suggested_alias = simplified_name
+```
+
+This ensures the canonical `module_id` is always stable and predictable, while the simplified name is available as a fallback alias when no explicit `display.alias` is configured.
+
+#### 5.13.8 Architectural Layering
+
+The display overlay system is structured as three layers. Each layer has a clear responsibility and **MUST NOT** leak concerns to adjacent layers.
+
+**Integration with the existing registry flow:**
+
+```
+Scanner
+  │ ScannedModule[]
+  ▼
+DisplayResolver (apcore-toolkit)          ← NEW: runs BEFORE RegistryWriter
+  │ ResolvedModule[]
+  ├──→ RegistryWriter
+  │       │ registers FunctionModule into Registry
+  │       │ stores display fields in FunctionModule.metadata["display"]
+  │       ▼
+  │    Registry (module_id → FunctionModule)
+  │
+  └──→ Surface (CLI / MCP / A2A)
+          │ registry.get_definition(module_id)
+          │   → reads display fields from metadata["display"]
+          ▼
+        Surface-specific formatting
+```
+
+`DisplayResolver` runs once, before `RegistryWriter`. The resolved display fields travel alongside the module through the registry as `metadata["display"]`, and surfaces read them from there. This avoids surfaces needing direct access to the binding files at runtime.
+
+**Layer responsibilities:**
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  Layer 1: Scanner (framework-specific)                  │
+│  fastapi-apcore / nestjs-apcore / axum-apcore / ...    │
+│                                                         │
+│  Produces: ScannedModule with canonical module_id       │
+│  Optionally: metadata.suggested_alias                   │
+│  MUST NOT: modify module_id for display purposes        │
+└─────────────────────┬───────────────────────────────────┘
+                      │ ScannedModule[]
+                      ▼
+┌─────────────────────────────────────────────────────────┐
+│  Layer 2: Display Resolver (apcore-toolkit)             │
+│  Implemented once per language SDK                      │
+│                                                         │
+│  Inputs: ScannedModule[] + binding.yaml (optional)      │
+│  Process: Parse display section, apply resolve chain    │
+│  Produces: ResolvedModule[] (ScannedModule + display.*) │
+│                                                         │
+│  Pure data transformation — no framework dependency     │
+│  Called by: RegistryWriter, YAMLWriter, surface init   │
+└─────────────────────┬───────────────────────────────────┘
+                      │ ResolvedModule[]
+                      ▼
+┌─────────────────────────────────────────────────────────┐
+│  Layer 3a: RegistryWriter (apcore-toolkit)              │
+│                                                         │
+│  Stores display fields in FunctionModule.metadata       │
+│  Key: "display" → serialized ResolvedDisplay struct     │
+│  Registry key remains: canonical module_id              │
+└─────────────────────┬───────────────────────────────────┘
+                      │ Registry lookup: get_definition(module_id)
+                      ▼
+┌─────────────────────────────────────────────────────────┐
+│  Layer 3b: Surface Formatter (per surface)              │
+│  apcore-cli / apcore-mcp / apcore-a2a                  │
+│                                                         │
+│  Reads: descriptor.metadata["display"]                  │
+│  CLI:  display.cli.alias → command name                 │
+│  MCP:  display.mcp.alias → tool name                   │
+│  A2A:  display.a2a.alias → skill name                  │
+│                                                         │
+│  Applies surface-specific formatting only               │
+│  MUST NOT: re-resolve display fields                    │
+└─────────────────────────────────────────────────────────┘
+```
+
+#### 5.13.9 `ResolvedModule` Type Definition
+
+Implementations **MUST** define a `ResolvedModule` type (or equivalent) that carries both the canonical module data and resolved display fields:
+
+```
+ResolvedModule:
+  # Canonical fields (from ScannedModule, unchanged)
+  module_id: string                           # Canonical ID, used for registry key
+  target: string                              # Callable reference
+  input_schema: object                        # JSON Schema
+  output_schema: object                       # JSON Schema
+  version: string
+  annotations: ModuleAnnotations | null
+
+  # Resolved display fields (per-surface)
+  display:
+    alias: string                             # Resolved default alias
+    description: string                       # Resolved default description
+    documentation: string | null              # Resolved default documentation
+    guidance: string | null                   # Resolved guidance (null if not authored)
+    tags: string[]                            # Resolved tags
+
+    cli:
+      alias: string                           # Resolved CLI alias
+      description: string                     # Resolved CLI description
+      guidance: string | null                 # Resolved CLI guidance
+    mcp:
+      alias: string                           # Resolved MCP alias
+      description: string                     # Resolved MCP description
+      guidance: string | null                 # Resolved MCP guidance (injected into tool context)
+    a2a:
+      alias: string                           # Resolved A2A alias
+      description: string                     # Resolved A2A description
+      guidance: string | null                 # Resolved A2A guidance
+```
+
+Fields with a resolve chain fallback to scanner data are **always non-null** after resolution: `alias`, `description`, `tags`. Fields that are user-authored with no scanner fallback may be null: `documentation`, `guidance`.
+
+#### 5.13.10 Implementation Responsibility Matrix
+
+**Who implements what:**
+
+| Component | Repo | Responsibility |
+|-----------|------|---------------|
+| `DisplayResolver` | `apcore-toolkit-{lang}` | Parse binding.yaml display section; apply resolve priority chain (§5.13.5); produce `ResolvedModule[]`; validate aliases (§5.13.6) |
+| `RegistryWriter` update | `apcore-toolkit-{lang}` | Accept `ResolvedModule[]`; store `display.*` in `FunctionModule.metadata["display"]` |
+| `YAMLWriter` update | `apcore-toolkit-{lang}` | Run `DisplayResolver` before writing `.binding.yaml`; embed resolved display fields |
+| `Scanner` update | `fastapi-apcore`, `nestjs-apcore`, `axum-apcore`, etc. | Deprecate `simplify_ids`; emit `metadata.suggested_alias` instead of modifying `module_id` |
+| CLI surface | `apcore-cli-{lang}` | Read `descriptor.metadata["display"].cli.alias` for command name; `display.cli.description` for help text; `display.cli.guidance` for describe output |
+| MCP surface | `apcore-mcp-{lang}` | Read `display.mcp.alias` for tool name; `display.mcp.description`; inject `display.mcp.guidance` into tool description context |
+| A2A surface | `apcore-a2a-{lang}` | Read `display.a2a.alias` for skill name; `display.a2a.description`; `display.a2a.guidance` for agent card |
+| apcore core | `apcore-{lang}` | **No changes required.** Registry, Executor, FunctionModule unchanged. `metadata` field already supports arbitrary keys. |
+
+**`apcore-toolkit` implementation checklist (per language):**
+
+1. Define `ResolvedModule` type (§5.13.9)
+2. Implement `DisplayResolver`:
+   a. Parse `display` section from binding YAML entries
+   b. Build `binding_map: dict[module_id → DisplayConfig]`
+   c. For each `ScannedModule`, apply resolve priority chain (§5.13.5)
+   d. `alias`, `description`, `tags` always non-null; `documentation`, `guidance` may be null
+   e. Validate surface aliases per §5.13.6; MUST error on MCP >64 chars, SHOULD warn on CLI pattern violation
+3. Update `RegistryWriter` to accept `ResolvedModule[]` and store `display` in `metadata["display"]`
+4. Update `YAMLWriter` to embed resolved display fields in output binding files
+
+**Surface checklist (CLI / MCP / A2A, per language):**
+
+- Read display fields from `descriptor.metadata["display"]` (populated by RegistryWriter)
+- Fall back to `descriptor.module_id` / `descriptor.description` if `metadata["display"]` is absent (backward compatibility with modules registered without DisplayResolver)
+- **Never call DisplayResolver at surface time** — display resolution is a one-time operation at registration
+
+**Conformance tests** (`conformance/fixtures/display_resolve.json`, already created):
+
+| Test ID | Scenario |
+|---------|----------|
+| 001 | No binding entry → all fields use scanner values |
+| 002 | `display.alias` only → all surfaces use it |
+| 003 | Surface-specific override takes precedence |
+| 004 | Field-level sparsity |
+| 005 | `suggested_alias` fallback |
+| 006 | Full chain, surface-specific wins |
+| 007 | Binding-level description fallback |
+| 008 | `display.alias` overrides `suggested_alias` |
+| 009 | `display.tags` override |
+| 010 | 10 modules, only 2 have binding entries |
+| 011 | `guidance` resolve chain |
+| 012 | `guidance` is null when not authored |
+| 013 | MCP alias >64 chars → MUST error |
+| 014 | CLI alias with spaces → SHOULD warn, fallback |
+
+**Per-language implementation locations:**
+
+| Language | DisplayResolver | ResolvedModule type |
+|----------|----------------|---------------------|
+| Python | `apcore_toolkit/display/resolver.py` | `apcore_toolkit/display/types.py` |
+| TypeScript | `src/display/resolver.ts` | `src/display/types.ts` |
+| Rust | `src/display/resolver.rs` | `src/display/types.rs` |
+| Go (future) | `display/resolver.go` | `display/types.go` |
+| Java (future) | `display/DisplayResolver.java` | `display/ResolvedModule.java` |
+
+#### 5.13.11 Migration from `simplify_ids`
+
+The `simplify_ids` parameter on framework scanners is **DEPRECATED** in favor of the display overlay system. Migration path:
+
+| Before (deprecated) | After (preferred) |
+|---------------------|-------------------|
+| `OpenAPIScanner(simplify_ids=True)` modifies `module_id` | `OpenAPIScanner()` produces canonical ID + `metadata.suggested_alias` |
+| `create_cli(simplify_ids=True)` | `create_cli()` + binding.yaml `display.cli.alias` |
+| `create_mcp_server(simplify_ids=True)` | `create_mcp_server()` + binding.yaml `display.mcp.alias` |
+
+Implementations **SHOULD** support `simplify_ids` as a convenience parameter during a transition period, mapping it to `metadata.suggested_alias` internally. Implementations **MUST** log a deprecation warning when `simplify_ids=True` is used.
+
+### 5.14 Edge Case Handling
 
 Implementations **must** handle module edge cases according to the following table:
 
-#### 5.13.1 execute() Return Value Edges
+#### 5.14.1 execute() Return Value Edges
 
 | Scenario | Behavior | Level |
 |------|------|------|
@@ -2729,7 +3083,7 @@ Implementations **must** handle module edge cases according to the following tab
 | `execute()` throws non-`ModuleError` exception | Wrap as `MODULE_EXECUTE_ERROR` (cause points to original exception) | **MUST** |
 | `execute()` returns object with non-serializable objects | **Should** log warning but don't enforce check | **SHOULD** |
 
-#### 5.13.2 Module Dependency Loading Failures
+#### 5.14.2 Module Dependency Loading Failures
 
 | Scenario | Behavior | Level |
 |------|------|------|
@@ -2740,7 +3094,7 @@ Implementations **must** handle module edge cases according to the following tab
 | Reverse dependency (A depends on B, B also depends on A) | Throw `CIRCULAR_DEPENDENCY` | **MUST** |
 | Indirect circular dependency (A → B → C → A) | Throw `CIRCULAR_DEPENDENCY` | **MUST** |
 
-#### 5.13.3 Module Lifecycle Edges
+#### 5.14.3 Module Lifecycle Edges
 
 | Scenario | Behavior | Level |
 |------|------|------|
@@ -5466,3 +5820,4 @@ Each language SDK **should** provide idiomatic module definition syntax. The fol
 | 1.2.0-draft | 2026-02-09 | Revised §4.3 supplemented x-llm-description usage guide; Added §4.16 Strict Mode Export, §4.17 Export Profile |
 | 1.3.0-draft | 2026-03-01 | Added §7 Approval System (ApprovalHandler protocol, Executor Step 4.5, error types, built-in and protocol bridge handlers, phased implementation, conformance levels); Updated §4.4 requires_approval annotation to reference runtime enforcement; Added APPROVAL_DENIED/TIMEOUT/PENDING error codes to §8; Renumbered §7–§13 → §8–§14 |
 | 1.4.0-draft | 2026-03-06 | Refined Executor pipeline — Approval Gate is now Step 5, subsequent steps shifted; Added Executor.validate() [SHOULD] to §12.2 with PreflightResult/PreflightCheckResult types for non-destructive preflight checks through Steps 1–6; Updated §7.4, §7.9, streaming protocol references to match new numbering; Added §12.8 Executor.validate() Cross-Language Implementation Guide (error handling mapping, type mapping for Python/TypeScript/Go/Rust/Java/C/C++, schema library requirements, naming conventions); Added C/C++ and TypeScript to §12.6; Added validate() preflight to §12.3 requirements table; Added Preflight Tests to §12.4 consistency test suite |
+| 1.5.0-draft | 2026-03-20 | Added §5.13 Display Overlay — sparse binding.yaml `display` section for surface-facing presentation (CLI/MCP/A2A alias, description, documentation overrides); Defined resolve priority chain algorithm; Added `ResolvedModule` type; Added `SurfaceOverride` and `DisplayOverlay` to `binding.schema.json`; Added `suggested_alias` scanner metadata convention; Deprecated `simplify_ids` in favor of display overlay; Cross-language implementation guide for Python/TypeScript/Rust/Go/Java/Ruby/PHP; Renumbered §5.13 Edge Case Handling → §5.14 |

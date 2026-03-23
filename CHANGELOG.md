@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.13.1] - 2026-03-23
+
+### Ecosystem
+
+§5.13 Display Overlay (specified in v0.13.0) is now implemented across the official adapter stack:
+
+| Package | Version | What was implemented |
+|---------|---------|----------------------|
+| `apcore-toolkit` | 0.4.0 | `DisplayResolver` — §5.13 resolve priority chain, MCP alias sanitization/64-char limit, CLI alias validation, `suggested_alias` fallback, `binding_path` file/directory loading |
+| `apcore-cli` | 0.3.0 | CLI command routing from `metadata["display"]["cli"]["alias"]`; descriptor cache; JSON output reads display overlay |
+| `apcore-mcp` | 0.11.0 | MCP tool name and description from `metadata["display"]["mcp"]`; `guidance` appended to tool description |
+| `apcore-a2a` | 0.3.0 | A2A skill id/description/tags from `metadata["display"]["a2a"]`; removed dead `_build_extensions()` |
+| `fastapi-apcore` | 0.4.0 | `binding_path` parameter on `create_cli()` / `create_mcp_server()`; `DeprecationWarning` for `simplify_ids=True` |
+
 ## [0.13.1] - 2026-03-22
 
 ### Changed
