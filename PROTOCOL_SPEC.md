@@ -4562,7 +4562,7 @@ middleware:
       can_modify: [output]
 
     - name: "on_error"
-      params: [module_id, error, context]
+      params: [module_id, inputs, error, context]
       can_retry: true
 ```
 
