@@ -793,7 +793,9 @@ class LoggingMiddleware(Middleware):
 
     def on_error(self, module_id: str, inputs: dict, error: Exception, context: Context):
         log.error(f"Error in {module_id}: {error}")
-        # Optional: Convert exception, trigger alerts, etc.
+        # Return None to continue error propagation
+        # Return a dict to stop propagation and use it as recovery output
+        return None
 ```
 
 Typical middleware scenarios: logging, performance monitoring, caching, rate limiting, retry, auditing.

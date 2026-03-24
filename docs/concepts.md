@@ -721,7 +721,9 @@ class LoggingMiddleware(Middleware):
     def on_error(self, module_id: str, inputs: dict, error: Exception, context: Context):
         """On error"""
         print(f"[{context.trace_id}] {module_id} failed: {error}")
-        raise error  # Or handle error
+        # Return None to continue error propagation
+        # Return a dict to stop propagation and use it as recovery output
+        return None
 ```
 
 **Middleware registration:**

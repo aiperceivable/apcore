@@ -18,6 +18,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`docs/features/middleware-system.md`** — Added `retry.py` to Key Files table (was described in Components but missing from file list)
 - **`docs/features/observability.md`** — Added concrete metric names (`apcore_module_calls_total`, `apcore_module_errors_total`, `apcore_module_duration_seconds`) to convenience method documentation
 
+#### Protocol Specification
+- Fixed duplicate `### 10.5` section numbering — renumbered Sensitive Data Redaction to §10.6, Sampling Strategy to §10.7, Span Naming Convention to §10.8
+- Fixed `### 8.1.1` misnumbered under §9.1 — corrected to §9.1.1
+- Fixed `### 10.8.x` misnumbered under §11.8 — corrected to §11.8.1–§11.8.4
+- Fixed middleware priority model contradiction between §11.2 (explicit 0-1000) and §12 (registration order) — §12 now aligns with §11.2
+- Fixed `on_error` examples in README.md and concepts.md — changed `raise error` to correct return-based contract (`return None` / `return dict`)
+- Updated "Last Updated" date to 2026-03-24
+
+#### Scope Document
+- Added Approval System (§7) and Event System to "Core Protocol Includes" list in SCOPE.md
+
 #### README
 - Added AI-Perceivable brand definition block to README header
 - Added "Perceived → Understood → Executed" progression table to "Why AI-Perceivable?" section

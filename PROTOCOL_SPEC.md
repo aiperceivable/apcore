@@ -5,7 +5,7 @@
 > Version: 1.5.0-draft
 > Status: Draft Specification (RFC 2119 Conformant)
 > Stability: Specification content is stable, pending reference implementation verification
-> Last Updated: 2026-03-20
+> Last Updated: 2026-03-24
 
 ---
 
@@ -4273,7 +4273,7 @@ id_map:
   overrides: {}                      # MAY, manual ID mapping overrides
 ```
 
-#### 8.1.1 Default Values Summary
+#### 9.1.1 Default Values Summary
 
 Implementations **must** follow these default value conventions:
 
@@ -4474,7 +4474,7 @@ trace_id_spec:
     - "MUST NOT allow externally provided unvalidated trace_id"
 ```
 
-### 10.5 Sensitive Data Redaction
+### 10.6 Sensitive Data Redaction
 
 Implementations **must** redact fields marked as `x-sensitive` in logs and trace outputs.
 
@@ -4503,7 +4503,7 @@ Steps:
 Complexity: O(n), where n is number of data fields
 ```
 
-### 10.6 Sampling Strategy
+### 10.7 Sampling Strategy
 
 Implementations **should** support the following sampling strategies:
 
@@ -4516,7 +4516,7 @@ Implementations **should** support the following sampling strategies:
 
 Sampling decision **must** be made at call chain root node, child calls **must** inherit parent call's sampling decision.
 
-### 10.7 Span Naming Convention
+### 10.8 Span Naming Convention
 
 Implementations **should** follow these Span naming conventions:
 
@@ -4816,7 +4816,7 @@ Steps:
 
 Implementations **must** handle middleware edge cases according to the following table:
 
-#### 10.8.1 on_error Cascade
+#### 11.8.1 on_error Cascade
 
 | Scenario | Behavior | Level |
 |------|------|------|
@@ -4825,7 +4825,7 @@ Implementations **must** handle middleware edge cases according to the following
 | `on_error()` returns `None` | Continue propagating error downward | **MUST** |
 | All `on_error()` return `None` | Throw original error to caller | **MUST** |
 
-#### 10.8.2 before() Edges
+#### 11.8.2 before() Edges
 
 | Scenario | Behavior | Level |
 |------|------|------|
@@ -4835,7 +4835,7 @@ Implementations **must** handle middleware edge cases according to the following
 | `before()` throws `ModuleError` | Trigger `on_error()` chain, skip module execution | **MUST** |
 | `before()` modifies `context.data` | Allowed, modifications visible to subsequent middleware and module | **MUST** |
 
-#### 10.8.3 after() Edges
+#### 11.8.3 after() Edges
 
 | Scenario | Behavior | Level |
 |------|------|------|
@@ -4844,7 +4844,7 @@ Implementations **must** handle middleware edge cases according to the following
 | `after()` throws `ModuleError` | Trigger `on_error()` chain, replace original result | **MUST** |
 | `after()` returns value not matching `output_schema` | Trigger `SCHEMA_VALIDATION_ERROR` | **MUST** |
 
-#### 10.8.4 Timeout Related
+#### 11.8.4 Timeout Related
 
 | Scenario | Behavior | Level |
 |------|------|------|
@@ -5021,9 +5021,9 @@ Interface: MiddlewareManager
    * Register middleware
    * @param middleware  — Middleware instance
    *
-   * Note: Priority is determined by registration order, not by an explicit
-   * priority parameter. Middleware registered first executes first (before)
-   * and last (after), following the onion model.
+   * Note: Priority is explicit (0-1000, higher executes first), as defined
+   * in §11.2. Registration order is used only as a tiebreaker when two
+   * middleware have equal priority. Execution follows the onion model.
    */
   add(middleware: Middleware) → void
 
@@ -5041,7 +5041,7 @@ Interface: MiddlewareManager
 Interface: TracingProvider
   /**
    * Create new Span
-   * @param name       — Span name (follows §10.7 naming convention)
+   * @param name       — Span name (follows §10.8 naming convention)
    * @param context    — Execution context (contains trace_id, parent_span_id)
    * @return span      — Span object
    */

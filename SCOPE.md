@@ -197,11 +197,13 @@ Use these scenarios to validate whether our boundaries are correct:
 3. Schema specification (Schema)
 4. Module specification (Module)
 5. Access control configuration (ACL)
-6. Error handling (Error)
-7. Observability (Observability)
-8. Extension mechanism (Extension)
-9. Configuration specification (Configuration)
-10. Existing application integration (module() + External Binding)
+6. Approval system (Approval)
+7. Error handling (Error)
+8. Observability (Observability)
+9. Extension mechanism (Extension)
+10. Configuration specification (Configuration)
+11. Event system (Registry events, lifecycle hooks)
+12. Existing application integration (module() + External Binding)
 
 ### Appendix Reference (Non-core):
 - AI protocol mapping references (MCP, A2A, OpenAI Functions)
