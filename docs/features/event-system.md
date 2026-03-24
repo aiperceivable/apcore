@@ -35,7 +35,7 @@ class ApCoreEvent:
     event_type: str               # Event identifier
     module_id: str | None         # Associated module (None for global events)
     timestamp: str                # ISO 8601 UTC timestamp
-    severity: str                 # "info" | "warning" | "error" | "critical"
+    severity: str                 # "info" | "warn" | "error" | "fatal"
     data: dict[str, Any]          # Event-specific payload
 ```
 

@@ -62,6 +62,7 @@ On Error (if MW3.before fails):
 | `src/apcore/middleware/manager.py` | 129 | `MiddlewareManager` and `MiddlewareChainError` |
 | `src/apcore/middleware/logging.py` | 94 | `LoggingMiddleware` with structured logging and redaction |
 | `src/apcore/middleware/adapters.py` | 43 | `BeforeMiddleware` and `AfterMiddleware` function adapters |
+| `src/apcore/middleware/retry.py` | ~190 | `RetryMiddleware` with configurable backoff strategies (exponential/fixed) |
 
 ## Dependencies
 

@@ -4,6 +4,8 @@
 
 # apcore — AI-Perceivable Core
 
+> **AI-Perceivable**: When modules, interfaces, and tools are clearly perceived by AI, the model can understand their structure and purpose, and therefore know exactly how to invoke, orchestrate, and act on them. From perception → cognition → execution.
+
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![Python Version](https://img.shields.io/badge/python-3.11%2B-blue)](https://github.com/aiperceivable/apcore-python)
 [![TypeScript Version](https://img.shields.io/badge/TypeScript-Node_18%2B-blue)](https://github.com/aiperceivable/apcore-typescript)
@@ -125,6 +127,16 @@ AI has become an important caller in software systems, but most modules lack AI-
 ---
 
 ## Why AI-Perceivable?
+
+> Once perceived by the AI, it becomes understood, and the AI knows exactly how to act.
+
+**Perceivable by AI → Understandable by AI → Usable by AI**
+
+| Stage | Meaning | apcore Mechanism |
+|-------|---------|-----------------|
+| **Perceived** | AI can discover and read the module | Schema-enforced `description`, `input_schema`, `output_schema` |
+| **Understood** | AI knows *when* and *how* to use it | Behavioral annotations (`x-when-to-use`, `x-common-mistakes`) |
+| **Executed** | AI invokes it correctly and recovers from errors | `ai_guidance`, `requires_approval`, self-healing |
 
 ### The AI Collaboration Lifecycle
 

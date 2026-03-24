@@ -3069,11 +3069,133 @@ The `simplify_ids` parameter on framework scanners is **DEPRECATED** in favor of
 
 Implementations **SHOULD** support `simplify_ids` as a convenience parameter during a transition period, mapping it to `metadata.suggested_alias` internally. Implementations **MUST** log a deprecation warning when `simplify_ids=True` is used.
 
-### 5.14 Edge Case Handling
+### 5.14 Convention Module Discovery (Zero-Decorator Modules)
+
+#### 5.14.1 Normative Statement
+
+Implementations **MAY** support a convention-based module discovery mechanism that allows plain functions (without decorators or imports) to be automatically registered as apcore modules. This provides the lowest possible barrier for users who want to add custom CLI commands, MCP tools, or A2A skills.
+
+Convention Module Discovery is an **optional** capability. Implementations that do not support it **MUST** still accept modules registered via `@module` decorators, YAML bindings, or class-based definitions.
+
+#### 5.14.2 Motivation
+
+Adding a custom command to an apcore-based CLI today requires learning the `@module` decorator API or writing YAML binding files. For users who just want to add a simple deploy script or utility command, this is unnecessary friction. Convention Module Discovery lets users drop a plain function file into a designated directory and have it auto-discovered as a module — with schema inference from type annotations and description extraction from docstrings.
+
+#### 5.14.3 Commands Directory Convention
+
+Implementations that support Convention Module Discovery **MUST** scan a designated directory (default: `commands/`) for source files containing plain functions.
+
+```
+commands/                    ← convention directory
+  deploy.py                  ← one file = one or more modules
+  backup.py
+  monitoring/                ← subdirectories become group prefixes
+    health.py
+    metrics.py
+```
+
+#### 5.14.4 Function Discovery Rules
+
+Implementations **MUST** apply the following rules when scanning a convention source file:
+
+| Rule | Description |
+|------|-------------|
+| **Public functions only** | Functions starting with `_` are ignored. |
+| **Top-level only** | Nested functions and class methods are not discovered. |
+| **Type annotations required** | Functions without parameter type annotations **SHOULD** be skipped with a warning. |
+| **Docstring → description** | The first line of the function's docstring becomes the module `description`. Functions without docstrings **SHOULD** use `"(no description)"`. |
+| **Return type** | If the function has a return type annotation, it is used to generate `output_schema`. |
+
+#### 5.14.5 Module ID Generation
+
+The module ID for a convention-discovered function is generated as:
+
+```
+module_id = "{prefix}.{function_name}"
+```
+
+Where:
+- `prefix` is derived from the file path relative to the commands directory: `commands/deploy.py` → `deploy`, `commands/monitoring/health.py` → `monitoring.health`
+- `function_name` is the Python/TypeScript/Rust function name
+
+If the source file contains a module-level `MODULE_PREFIX` constant, it **MUST** override the file-path-derived prefix:
+```python
+MODULE_PREFIX = "ops"  # overrides file-path prefix
+```
+
+If the source file contains a module-level `CLI_GROUP` constant, it is stored in `metadata["display"]["cli"]["group"]` for grouped CLI commands:
+```python
+CLI_GROUP = "ops"  # sets display.cli.group for all functions in this file
+```
+
+#### 5.14.6 Schema Inference
+
+Implementations **MUST** generate `input_schema` from the function's parameter type annotations using the same type-to-JSON-Schema mapping defined in §5.11.5.
+
+```python
+# commands/deploy.py
+def deploy(env: str, tag: str = "latest", replicas: int = 3) -> dict:
+    """Deploy application to target environment."""
+    ...
+```
+
+Inferred `input_schema`:
+```json
+{
+  "type": "object",
+  "properties": {
+    "env": {"type": "string"},
+    "tag": {"type": "string", "default": "latest"},
+    "replicas": {"type": "integer", "default": 3}
+  },
+  "required": ["env"]
+}
+```
+
+Parameters with default values are **not** included in `required`. The `self` and `ctx` parameters (if present) are always excluded.
+
+#### 5.14.7 Metadata Conventions
+
+Convention source files **MAY** define module-level constants to provide additional metadata:
+
+| Constant | Type | Maps to | Example |
+|----------|------|---------|---------|
+| `MODULE_PREFIX` | `str` | Module ID prefix (overrides file path) | `MODULE_PREFIX = "ops"` |
+| `CLI_GROUP` | `str` | `metadata["display"]["cli"]["group"]` | `CLI_GROUP = "ops"` |
+| `TAGS` | `list[str]` | Module `tags` field | `TAGS = ["devops", "deploy"]` |
+
+Function-level constants are not supported; use `@module` decorator for per-function metadata control.
+
+#### 5.14.8 Cross-language Syntax Reference
+
+| Language | File Extension | Function Pattern | Type System |
+|----------|---------------|-----------------|-------------|
+| Python | `.py` | `def func(param: type) -> type:` | PEP 484 type hints |
+| TypeScript | `.ts` | `export function func(param: type): type` | TypeScript types |
+| Rust | `.rs` | `pub fn func(param: Type) -> Type` | Rust types + `#[derive(JsonSchema)]` |
+
+#### 5.14.9 Integration with Display Overlay (§5.13)
+
+Convention-discovered modules are subject to the same display overlay system as any other module. A `binding.yaml` file **MAY** reference convention-discovered modules by their generated `module_id` to apply display overrides:
+
+```yaml
+bindings:
+  - module_id: deploy.deploy
+    display:
+      alias: deploy
+      cli:
+        group: ops
+        alias: deploy
+        description: Deploy app to production
+```
+
+This allows users to start with zero-config convention discovery, then progressively add display customizations without changing the function code.
+
+### 5.15 Edge Case Handling
 
 Implementations **must** handle module edge cases according to the following table:
 
-#### 5.14.1 execute() Return Value Edges
+#### 5.15.1 execute() Return Value Edges
 
 | Scenario | Behavior | Level |
 |------|------|------|
@@ -3083,7 +3205,7 @@ Implementations **must** handle module edge cases according to the following tab
 | `execute()` throws non-`ModuleError` exception | Wrap as `MODULE_EXECUTE_ERROR` (cause points to original exception) | **MUST** |
 | `execute()` returns object with non-serializable objects | **Should** log warning but don't enforce check | **SHOULD** |
 
-#### 5.14.2 Module Dependency Loading Failures
+#### 5.15.2 Module Dependency Loading Failures
 
 | Scenario | Behavior | Level |
 |------|------|------|
@@ -3094,7 +3216,7 @@ Implementations **must** handle module edge cases according to the following tab
 | Reverse dependency (A depends on B, B also depends on A) | Throw `CIRCULAR_DEPENDENCY` | **MUST** |
 | Indirect circular dependency (A → B → C → A) | Throw `CIRCULAR_DEPENDENCY` | **MUST** |
 
-#### 5.14.3 Module Lifecycle Edges
+#### 5.15.3 Module Lifecycle Edges
 
 | Scenario | Behavior | Level |
 |------|------|------|
@@ -5820,4 +5942,4 @@ Each language SDK **should** provide idiomatic module definition syntax. The fol
 | 1.2.0-draft | 2026-02-09 | Revised §4.3 supplemented x-llm-description usage guide; Added §4.16 Strict Mode Export, §4.17 Export Profile |
 | 1.3.0-draft | 2026-03-01 | Added §7 Approval System (ApprovalHandler protocol, Executor Step 4.5, error types, built-in and protocol bridge handlers, phased implementation, conformance levels); Updated §4.4 requires_approval annotation to reference runtime enforcement; Added APPROVAL_DENIED/TIMEOUT/PENDING error codes to §8; Renumbered §7–§13 → §8–§14 |
 | 1.4.0-draft | 2026-03-06 | Refined Executor pipeline — Approval Gate is now Step 5, subsequent steps shifted; Added Executor.validate() [SHOULD] to §12.2 with PreflightResult/PreflightCheckResult types for non-destructive preflight checks through Steps 1–6; Updated §7.4, §7.9, streaming protocol references to match new numbering; Added §12.8 Executor.validate() Cross-Language Implementation Guide (error handling mapping, type mapping for Python/TypeScript/Go/Rust/Java/C/C++, schema library requirements, naming conventions); Added C/C++ and TypeScript to §12.6; Added validate() preflight to §12.3 requirements table; Added Preflight Tests to §12.4 consistency test suite |
-| 1.5.0-draft | 2026-03-20 | Added §5.13 Display Overlay — sparse binding.yaml `display` section for surface-facing presentation (CLI/MCP/A2A alias, description, documentation overrides); Defined resolve priority chain algorithm; Added `ResolvedModule` type; Added `SurfaceOverride` and `DisplayOverlay` to `binding.schema.json`; Added `suggested_alias` scanner metadata convention; Deprecated `simplify_ids` in favor of display overlay; Cross-language implementation guide for Python/TypeScript/Rust/Go/Java/Ruby/PHP; Renumbered §5.13 Edge Case Handling → §5.14 |
+| 1.5.0-draft | 2026-03-20 | Added §5.13 Display Overlay — sparse binding.yaml `display` section for surface-facing presentation (CLI/MCP/A2A alias, description, documentation overrides); Defined resolve priority chain algorithm; Added `ResolvedModule` type; Added `SurfaceOverride` and `DisplayOverlay` to `binding.schema.json`; Added `suggested_alias` scanner metadata convention; Deprecated `simplify_ids` in favor of display overlay; Cross-language implementation guide for Python/TypeScript/Rust/Go/Java/Ruby/PHP; Renumbered §5.13 Edge Case Handling → §5.14 → §5.15 |

@@ -31,7 +31,7 @@ The executor processes every module call through the following pipeline:
 
 4. **ACL Enforcement** -- The caller's `Identity` (extracted from the context) is checked against the module's access control list. Unauthorized calls are rejected before any execution occurs.
 
-5. **Approval Gate** -- If an `ApprovalHandler` is configured and the module declares `requires_approval=true`, the handler is invoked to obtain approval before proceeding. The handler may block for human input or return immediately. Rejected or timed-out approvals raise `ApprovalDeniedError` or `ApprovalTimeoutError`. Skipped entirely when no handler is configured or the module does not require approval. See [Approval System](./approval-system.md).
+5. **Approval Gate** -- If an `ApprovalHandler` is configured and the module declares `requires_approval=true`, the handler is invoked to obtain approval before proceeding. The handler may block for human input or return immediately. Rejected, timed-out, or still-pending approvals raise `ApprovalDeniedError`, `ApprovalTimeoutError`, or `ApprovalPendingError` respectively. Skipped entirely when no handler is configured or the module does not require approval. See [Approval System](./approval-system.md).
 
 6. **Input Validation with Pydantic + Sensitive Field Redaction** -- The call's input payload is validated against the module's input schema (a dynamically generated Pydantic model). Fields annotated with `x-sensitive` are redacted from logs and error messages using the `redact_sensitive` utility.
 
@@ -51,7 +51,7 @@ The executor processes every module call through the following pipeline:
 
 - **Executor** -- The main engine class that implements the execution pipeline. Manages middleware registration, timeout configuration, and the execution loop.
 - **Context** -- Immutable data class carrying call metadata: caller identity, call chain history, depth counter, and propagated key-value state.
-- **Identity** -- Represents the caller's identity for ACL enforcement. Carries roles, permissions, and an identifier.
+- **Identity** -- Represents the caller's identity for ACL enforcement. Carries `id`, `type`, `roles`, and extensible `attrs` dict.
 - **Config** -- Configuration data class holding executor-level settings such as max call depth, timeout defaults, and throttle limits.
 
 ### Sync/Async Bridge

@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.13.2] - 2026-03-24
+
+### Fixed
+
+#### Specification Documents
+- **`docs/features/event-system.md`** — Fixed severity levels from `warning`/`critical` to `warn`/`fatal`, aligning with PROTOCOL_SPEC §10.2
+- **`docs/features/core-executor.md`** — Fixed Identity description: removed incorrect `permissions` field, corrected to `id`, `type`, `roles`, `attrs` per PROTOCOL_SPEC §5.7
+- **`docs/features/core-executor.md`** — Added missing `ApprovalPendingError` to Approval Gate description per PROTOCOL_SPEC §7.4
+- **`docs/features/middleware-system.md`** — Added `retry.py` to Key Files table (was described in Components but missing from file list)
+- **`docs/features/observability.md`** — Added concrete metric names (`apcore_module_calls_total`, `apcore_module_errors_total`, `apcore_module_duration_seconds`) to convenience method documentation
+
+#### README
+- Added AI-Perceivable brand definition block to README header
+- Added "Perceived → Understood → Executed" progression table to "Why AI-Perceivable?" section
+
 ## [0.13.1] - 2026-03-23
 
 ### Ecosystem
@@ -20,6 +35,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 | `apcore-mcp` | 0.11.0 | MCP tool name and description from `metadata["display"]["mcp"]`; `guidance` appended to tool description |
 | `apcore-a2a` | 0.3.0 | A2A skill id/description/tags from `metadata["display"]["a2a"]`; removed dead `_build_extensions()` |
 | `fastapi-apcore` | 0.4.0 | `binding_path` parameter on `create_cli()` / `create_mcp_server()`; `DeprecationWarning` for `simplify_ids=True` |
+
+- **§5.14 Convention Module Discovery** — new optional protocol capability for zero-decorator module registration via `commands/` directory convention. Supports cross-language function discovery with schema inference from type annotations.
 
 ## [0.13.1] - 2026-03-22
 

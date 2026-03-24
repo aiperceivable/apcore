@@ -16,7 +16,7 @@ Comprehensive observability with distributed tracing, metrics collection, and st
 
 ### Metrics
 - Implement a `MetricsCollector` with thread-safe counters and histograms (with configurable bucket boundaries).
-- Provide convenience methods for standard apcore metrics: `increment_calls()`, `increment_errors()`, `observe_duration()`.
+- Provide convenience methods for standard apcore metrics: `increment_calls()` → `apcore_module_calls_total`, `increment_errors()` → `apcore_module_errors_total`, `observe_duration()` → `apcore_module_duration_seconds`.
 - Support Prometheus text exposition format export via `export_prometheus()`.
 - Implement `MetricsMiddleware` that automatically records call counts (success/error), error codes, and execution duration for each module call.
 - Use stack-based timing in `context.data` for correct nested call support.
