@@ -22,8 +22,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added AI-Perceivable brand definition block to README header
 - Added "Perceived → Understood → Executed" progression table to "Why AI-Perceivable?" section
 
-## [0.13.1] - 2026-03-23
-
 ### Ecosystem
 
 §5.13 Display Overlay (specified in v0.13.0) is now implemented across the official adapter stack:
