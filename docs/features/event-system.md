@@ -166,9 +166,9 @@ Events emitted by the framework:
 | `module_registered` | info | Registry bridge | `module_id` |
 | `module_unregistered` | info | Registry bridge | `module_id` |
 | `config_changed` | info | `system.control.update_config`, `system.control.reload_module` | `key`, `old_value`, `new_value` or `module_id`, `previous_version`, `new_version` |
-| `module_health_changed` | info/warning | `system.control.toggle_feature`, `PlatformNotifyMiddleware` (recovery) | `module_id`, `enabled` or recovery details |
+| `module_health_changed` | info/warn | `system.control.toggle_feature`, `PlatformNotifyMiddleware` (recovery) | `module_id`, `enabled` or recovery details |
 | `error_threshold_exceeded` | error | `PlatformNotifyMiddleware` | `module_id`, `error_rate`, `threshold` |
-| `latency_threshold_exceeded` | warning | `PlatformNotifyMiddleware` | `module_id`, `p99_latency_ms`, `threshold` |
+| `latency_threshold_exceeded` | warn | `PlatformNotifyMiddleware` | `module_id`, `p99_latency_ms`, `threshold` |
 
 ## Configuration
 
