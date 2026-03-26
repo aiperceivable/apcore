@@ -3699,12 +3699,13 @@ Implementations **should** provide these built-in handlers:
 
 ### 7.7 Protocol Bridge Handlers
 
-Protocol bridges (such as apcore-mcp, apcore-a2a) **should** provide handlers that leverage their protocol's interaction capabilities:
+Protocol bridges (such as apcore-mcp, apcore-a2a, apcore-cli) **should** provide handlers that leverage their protocol's interaction capabilities:
 
 | Bridge | Handler | Mechanism |
 |--------|---------|-----------|
 | apcore-mcp | `ElicitationApprovalHandler` | Uses MCP Elicitation protocol to show confirmation dialog in MCP clients |
 | apcore-a2a | `A2AApprovalHandler` | Uses A2A protocol interaction to request confirmation from calling agent |
+| apcore-cli | `CliApprovalHandler` | Uses interactive terminal prompt to request confirmation from user |
 
 These handlers are **not** part of the apcore core specification — they are provided by the respective bridge packages.
 

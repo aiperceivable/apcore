@@ -99,10 +99,11 @@ Note: The status value `"rejected"` maps to error code `APPROVAL_DENIED` — the
 
 ### Protocol Bridge Handlers
 
-Protocol bridges (apcore-mcp, apcore-a2a) provide their own `ApprovalHandler` implementations that use protocol-native mechanisms:
+Protocol bridges (apcore-mcp, apcore-a2a, apcore-cli) provide their own `ApprovalHandler` implementations that use protocol-native mechanisms:
 
 - **`ElicitationApprovalHandler`** (apcore-mcp) — Uses the MCP elicitation protocol to present an approval prompt to the AI client, which relays it to the human user.
 - **`A2AApprovalHandler`** (apcore-a2a, future) — Uses the A2A protocol interaction to request confirmation from the calling agent.
+- **`CliApprovalHandler`** (apcore-cli) — Uses an interactive terminal prompt to request confirmation from the user.
 
 These handlers are provided by the respective bridge packages, not by apcore core.
 

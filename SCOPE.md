@@ -90,7 +90,7 @@ Things explicitly **not within the project scope**:
 | Won't Do | Reason | Owned By |
 |------|------|--------|
 | **Workflow Engine** | Application-layer orchestration logic, not framework core | apflow and other upstream projects |
-| **MCP/A2A Adapters** | Protocol adaptation, not core standard | [apcore-mcp](https://github.com/aiperceivable/apcore-mcp), [apcore-a2a](https://github.com/aiperceivable/apcore-a2a) |
+| **MCP/A2A/CLI Adapters** | Protocol and surface adaptation, not core standard | [apcore-mcp](https://github.com/aiperceivable/apcore-mcp), [apcore-a2a](https://github.com/aiperceivable/apcore-a2a), [apcore-cli](https://github.com/aiperceivable/apcore-cli) |
 | **Rate Limiting / Circuit Breaker** | Runtime resilience middleware, not module definition | apcore-toolkit (middleware implementations) |
 | **Secret Injection / Vault Integration** | Runtime infrastructure, not module standard | apcore-toolkit |
 | **Testing Framework** | Developer tooling, not protocol | [apcore-testing](https://github.com/aiperceivable/apcore-testing) |
@@ -174,6 +174,7 @@ Use these scenarios to validate whether our boundaries are correct:
 | Type inference Schema generation | ✅ Core | Foundational capability for module() and Binding |
 | **MCP Adapter** | ⚡ Ecosystem ([apcore-mcp](https://github.com/aiperceivable/apcore-mcp)) | Protocol adaptation |
 | **A2A Adapter** | ⚡ Ecosystem ([apcore-a2a](https://github.com/aiperceivable/apcore-a2a)) | Protocol adaptation |
+| **CLI Adapter** | ⚡ Ecosystem ([apcore-cli](https://github.com/aiperceivable/apcore-cli)) | Surface adaptation |
 | **Rate Limiting / Circuit Breaker** | ⚡ Ecosystem (apcore-toolkit) | Runtime resilience; implemented as middleware |
 | **Secret Injection** | ⚡ Ecosystem (apcore-toolkit) | Runtime infrastructure; `x-sensitive` marking is Core |
 | **Testing Framework** | ⚡ Ecosystem ([apcore-testing](https://github.com/aiperceivable/apcore-testing)) | Developer tooling: MockModule, ContractTest, fixtures |
@@ -213,7 +214,7 @@ Use these scenarios to validate whether our boundaries are correct:
 ## 8. Confirmed Decisions
 
 - [x] Workflow: **Won't Do** (application-layer logic, implemented by upstream projects like apflow)
-- [x] MCP/A2A adaptation: **Ecosystem** (apcore-mcp, apcore-a2a as independent adapter projects)
+- [x] MCP/A2A/CLI adaptation: **Ecosystem** (apcore-mcp, apcore-a2a, apcore-cli as independent adapter projects)
 - [x] Distributed execution: **Won't Do** (runtime feature, not protocol core)
 - [ ] Schema and Meta files: Keep separated
 - [x] Existing application integration: **Core** (`module()` registration and external Schema binding are core standards)

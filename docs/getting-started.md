@@ -418,4 +418,7 @@ See [System Modules](features/system-modules.md) for the full module reference.
 - [ACL Configuration](guides/acl-configuration.md) - Secure your modules.
 - [Event System](features/event-system.md) - Framework event bus and subscribers.
 - [System Modules](features/system-modules.md) - Built-in health, usage, and control modules.
+- [apcore-toolkit](https://github.com/aiperceivable/apcore-toolkit) - Shared scanner, schema extraction, and output toolkit.
 - [apcore-mcp](https://github.com/aiperceivable/apcore-mcp) - Expose these modules as an MCP Server.
+- [apcore-a2a](https://github.com/aiperceivable/apcore-a2a) - Expose these modules as an A2A Agent.
+- [apcore-cli](https://github.com/aiperceivable/apcore-cli) - Expose these modules as CLI commands.

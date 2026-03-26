@@ -1031,18 +1031,19 @@ The apcore ecosystem uses a **core + independent adapters** architecture. The co
                       │                    │
         ┌─────────────┼─────────────┬──────┴──────┐
         ▼             ▼             ▼             ▼
-   apcore-mcp    apcore-a2a   apcore-testing    (others)
-  (MCP Server)  (A2A Agent)  (Test Framework)
+   apcore-mcp    apcore-a2a    apcore-cli      (others)
+  (MCP Server)  (A2A Agent)     (CLI)
 ```
 
-### Official AI Protocol Adapters
+### Official Surface Adapters
 
 | Adapter | Description | Python | TypeScript | Install |
 |---------|-------------|--------|------------|---------|
 | **[apcore-mcp](https://github.com/aiperceivable/apcore-mcp)** | Expose apcore modules as MCP Server — auto-discovery, annotation mapping, display overlay (§5.13), Tool Explorer UI | [apcore-mcp-python](https://github.com/aiperceivable/apcore-mcp-python) | [apcore-mcp-typescript](https://github.com/aiperceivable/apcore-mcp-typescript) | `pip install apcore-mcp` / `npm install apcore-mcp` |
 | **[apcore-a2a](https://github.com/aiperceivable/apcore-a2a)** | Expose apcore modules as A2A Agent — auto Agent Card, skill mapping, display overlay (§5.13), streaming, push notifications | [apcore-a2a-python](https://github.com/aiperceivable/apcore-a2a-python) | [apcore-a2a-typescript](https://github.com/aiperceivable/apcore-a2a-typescript) | `pip install apcore-a2a` / `npm install apcore-a2a` |
+| **[apcore-cli](https://github.com/aiperceivable/apcore-cli)** | Expose apcore modules as CLI commands — auto command routing from display overlay (§5.13), descriptor cache, JSON output | [apcore-cli-python](https://github.com/aiperceivable/apcore-cli-python) | [apcore-cli-typescript](https://github.com/aiperceivable/apcore-cli-typescript) | `pip install apcore-cli` / `npm install apcore-cli` |
 
-**One module definition, two protocol endpoints:**
+**One module definition, multiple protocol endpoints:**
 
 ```python
 # Define once with apcore
@@ -1057,13 +1058,17 @@ mcp_serve(registry)
 # Expose as A2A Agent (for agent-to-agent communication)
 from apcore_a2a import serve as a2a_serve
 a2a_serve(registry)
+
+# Expose as CLI commands (for terminal usage)
+from apcore_cli import serve as cli_serve
+cli_serve(registry)
 ```
 
 ### Developer Tooling
 
 | Project | Description | Install |
 |---------|-------------|---------|
-| **[apcore-testing](https://github.com/aiperceivable/apcore-testing)** | Testing framework — MockModule, ContractTest, record/replay, conformance fixtures | `pip install apcore-testing` / `npm install apcore-testing` |
+| **[apcore-toolkit](https://github.com/aiperceivable/apcore-toolkit)** | Shared scanner, schema extraction, display resolver, and output writers — used by framework integrations and surface adapters | `pip install apcore-toolkit` / `npm install apcore-toolkit` |
 
 ### Community Adapter Types
 

@@ -63,7 +63,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`sunset_date`** (§5.2) — ISO 8601 date field for module deprecation lifecycle
 - **`on_suspend()` / `on_resume()`** (§5.6, §12.7.3) — Optional lifecycle hooks for state preservation during hot-reload
 - **Hot Reload with State Migration** (§12.7.3) — New section with algorithm, constraints, and Python example
-- **Ecosystem documentation** — Added apcore-mcp, apcore-a2a, and apcore-testing to README and SCOPE
+- **Ecosystem documentation** — Added apcore-mcp, apcore-a2a, apcore-cli, and apcore-testing to README and SCOPE
 
 #### Schema
 - **`module-meta.schema.json`** — Added `streaming`, `cacheable`, `cache_ttl`, `cache_key_fields`, `paginated`, `pagination_style`, `sunset_date` definitions
