@@ -2,10 +2,10 @@
 
 > **Canonical Specification** - This document is the authoritative specification for the apcore protocol
 
-> Version: 1.5.0-draft
+> Version: 1.6.0-draft
 > Status: Draft Specification (RFC 2119 Conformant)
 > Stability: Specification content is stable, pending reference implementation verification
-> Last Updated: 2026-03-24
+> Last Updated: 2026-03-29
 
 ---
 
@@ -21,6 +21,17 @@
 - [7. Approval System](#7-approval-system-approval-system)
 - [8. Error Handling Specification](#8-error-handling-specification-error-handling-specification)
 - [9. Configuration Specification](#9-configuration-specification-configuration-specification)
+  - [9.4 Config Bus Architecture](#94-config-bus-architecture)
+  - [9.5 Namespace Registration](#95-namespace-registration)
+  - [9.6 Unified Configuration File](#96-unified-configuration-file)
+  - [9.7 Mount Mechanism](#97-mount-mechanism)
+  - [9.8 Environment Variable Override (Namespace Mode)](#98-environment-variable-override-namespace-mode)
+  - [9.9 Namespace-Aware Access API](#99-namespace-aware-access-api)
+  - [9.10 Validation Algorithm (Namespace-Aware A12-NS)](#910-validation-algorithm-namespace-aware-a12-ns)
+  - [9.11 Hot-Reload (Namespace Mode)](#911-hot-reload-namespace-mode)
+  - [9.12 Cross-Language Implementation Requirements](#912-cross-language-implementation-requirements)
+  - [9.13 Ecosystem Integration Patterns](#913-ecosystem-integration-patterns)
+  - [9.14 Config Discovery (Optional)](#914-config-discovery-optional)
 - [10. Observability Specification](#10-observability-specification-observability-specification)
 - [11. Extension Mechanism](#11-extension-mechanism-extension-mechanism)
 - [12. SDK Implementation Guide](#12-sdk-implementation-guide-sdk-implementation-guide)
@@ -4363,6 +4374,964 @@ Steps:
   5. Return validated_config
 ```
 
+### 9.4 Config Bus Architecture
+
+> **Added in v1.6.0-draft**
+
+The apcore configuration system serves as a **Config Bus** — shared infrastructure that any package in the apcore ecosystem (or external packages) can register with, without being forced to adopt it.
+
+#### 9.4.1 Design Principles
+
+| Principle | Description |
+|-----------|-------------|
+| **Bus, not center** | apcore.Config does not own or mandate configuration; it provides registration, loading, validation, and access infrastructure. Packages that never call `register_namespace` are unaffected. |
+| **Zero-cost adoption** | Existing `apcore.yaml` files continue to work without modification. Namespace mode activates only when the file contains an `apcore:` top-level key. |
+| **Gradual integration** | Projects choose their integration depth: (1) apcore-only, (2) apcore + ecosystem packages, (3) apcore + third-party mount, (4) full unified file. Each level is independently valid. |
+| **Cross-language consistency** | All SDK implementations (Python, TypeScript, Rust, Go, Java) **must** implement the same namespace registration, loading, and validation semantics defined in this section. |
+| **Strict and flexible coexistence** | Strict mode enforces that every namespace is registered; flexible mode (default) passes through unknown namespaces with a warning. Both modes coexist within a single deployment. |
+
+#### 9.4.2 Terminology
+
+| Term | Definition |
+|------|------------|
+| **Namespace** | A top-level key in the unified configuration file (e.g., `apcore`, `apflow`, `apcore-mcp`). Each namespace is owned by exactly one package. |
+| **Schema** | A JSON Schema (Draft 2020-12) document that describes the structure, types, defaults, and constraints for a namespace's configuration. |
+| **Config Bus** | The `Config` class acting as shared infrastructure: it stores registered namespaces, loads configuration files, applies environment overrides per namespace, validates registered namespaces, and provides unified access. |
+| **Mount** | The act of attaching an external configuration source (file or dict) to a namespace in the Config Bus, without requiring a unified configuration file. |
+| **Legacy mode** | Backward-compatible behavior where the entire YAML file is treated as the `apcore` namespace. Activated when no `apcore:` top-level key is detected. |
+| **Namespace mode** | The file is partitioned by top-level keys, each representing a registered (or unregistered) namespace. Activated when an `apcore:` top-level key is present. |
+
+### 9.5 Namespace Registration
+
+#### 9.5.1 Registration API
+
+All SDK implementations **must** expose a namespace registration method on the `Config` class (or its language-idiomatic equivalent).
+
+**Canonical signature (pseudocode):**
+
+```
+Config.register_namespace(
+    name:        string,                  # MUST — namespace identifier
+    schema:      JSONSchema | path | nil, # MAY  — validation schema
+    env_prefix:  string | nil,            # MAY  — environment variable prefix
+    defaults:    map | nil,               # MAY  — default values for this namespace
+)
+```
+
+**Parameters:**
+
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `name` | MUST | Namespace identifier. Pattern: `^[a-z][a-z0-9]*(-[a-z0-9]+)*$` (lowercase, hyphens allowed). Examples: `apcore`, `apflow`, `apcore-mcp`, `my-billing`. |
+| `schema` | MAY | JSON Schema document (inline object or file path). When provided, the namespace section is validated against this schema during `Config.validate()`. When `nil`, the namespace is registered for isolation and env override only — no structural validation is performed. |
+| `env_prefix` | MAY | Uppercase prefix for environment variable overrides (e.g., `APFLOW`). When `nil`, no environment variable overrides are applied for this namespace. Must match pattern: `^[A-Z][A-Z0-9]*(_[A-Z0-9]+)*$`. |
+| `defaults` | MAY | Default configuration values for this namespace. Merged before file data (lowest priority). |
+
+**Registration rules:**
+
+1. `register_namespace` **must** be callable before `Config.load()`. Implementations **may** also allow registration after load (see §9.5.3).
+2. Registering the same namespace name twice **must** raise `CONFIG_NAMESPACE_DUPLICATE`.
+3. The namespace `apcore` is implicitly registered by the framework itself. Attempting to register `apcore` externally **must** raise `CONFIG_NAMESPACE_RESERVED`.
+4. The reserved namespace `_config` **must not** be registerable. It is used for Config Bus meta-configuration (see §9.6.3). Attempting to register it **must** raise `CONFIG_NAMESPACE_RESERVED`.
+5. Namespace registration is permanent for the process lifetime. There is no `unregister_namespace` API in this version of the specification. This simplifies thread safety and avoids invalidation cascades across Config instances.
+
+#### 9.5.2 Cross-Language Registration Examples
+
+**Python:**
+
+```python
+from apcore import Config
+
+Config.register_namespace(
+    "apflow",
+    schema="schemas/apflow.schema.json",
+    env_prefix="APFLOW",
+    defaults={"api": {"timeout": 30.0}},
+)
+```
+
+**TypeScript:**
+
+```typescript
+import { Config } from 'apcore';
+
+Config.registerNamespace({
+  name: 'apflow',
+  schema: 'schemas/apflow.schema.json',
+  envPrefix: 'APFLOW',
+  defaults: { api: { timeout: 30.0 } },
+});
+```
+
+**Rust:**
+
+```rust
+use apcore::Config;
+
+Config::register_namespace(NamespaceRegistration {
+    name: "apflow",
+    schema: Some("schemas/apflow.schema.json".into()),
+    env_prefix: Some("APFLOW"),
+    defaults: Some(serde_json::json!({"api": {"timeout": 30.0}})),
+})?;
+```
+
+**Go:**
+
+```go
+import "github.com/aipartnerup/apcore-go/config"
+
+config.RegisterNamespace(config.NamespaceRegistration{
+    Name:      "apflow",
+    Schema:    "schemas/apflow.schema.json",
+    EnvPrefix: "APFLOW",
+    Defaults:  map[string]any{"api": map[string]any{"timeout": 30.0}},
+})
+```
+
+**Java:**
+
+```java
+import dev.apcore.Config;
+
+Config.registerNamespace(NamespaceRegistration.builder()
+    .name("apflow")
+    .schema("schemas/apflow.schema.json")
+    .envPrefix("APFLOW")
+    .defaults(Map.of("api", Map.of("timeout", 30.0)))
+    .build());
+```
+
+#### 9.5.3 Registration Lifecycle
+
+**Namespace registration is global (class-level), not per-instance.** The registry of namespaces is shared across all `Config` instances within a process. This matches the real-world pattern: a package registers its namespace once at import time, and any `Config` instance can then load, validate, and serve that namespace's data.
+
+```
+┌──────────────────────────────────────────────────────────────────────────┐
+│                      Config Bus Lifecycle                                │
+│                                                                          │
+│  Phase 1: Registration (global)   Phase 2: Loading       Phase 3: Usage │
+│  ──────────────────────────────   ───────────────────    ─────────────── │
+│                                                                          │
+│  Config.register_namespace(...)   Config.load(path)      config.get(...) │
+│  Config.register_namespace(...)   ├─ read global registry config.set(...)│
+│  Config.register_namespace(...)   ├─ detect mode         config.mount()  │
+│  ...                              ├─ parse YAML          config.reload() │
+│                                   ├─ merge defaults      config.bind()   │
+│                                   ├─ apply env overrides                 │
+│                                   ├─ validate (A12-NS)                   │
+│                                   └─ return Config instance              │
+└──────────────────────────────────────────────────────────────────────────┘
+```
+
+**Config instances are independent.** Each `Config.load()` call returns a new instance with its own data tree and lock (consistent with the existing implementation in §9.1). Multiple Config instances may coexist (e.g., in tests), but they all share the same global namespace registry.
+
+**Late registration** (calling `register_namespace` after one or more `Config.load()` calls) is permitted with these constraints:
+
+1. The namespace is added to the global registry immediately.
+2. **Already-loaded Config instances are not retroactively modified.** The new namespace takes effect on the next `Config.load()` or `config.reload()` call. This avoids surprising mutations to instances that callers may already be using.
+3. If the caller needs the new namespace to apply immediately to an existing instance, they **must** call `config.reload()` explicitly. The reload will pick up the newly registered namespace, apply its defaults and env overrides, and validate.
+4. Late registration **must not** invalidate previously loaded data in other namespaces.
+
+### 9.6 Unified Configuration File
+
+#### 9.6.1 Mode Detection Algorithm
+
+When `Config.load(path)` is called, implementations **must** detect the file mode:
+
+```
+Algorithm: detect_config_mode(parsed_yaml)
+
+Input:
+  parsed_yaml — Top-level mapping from the YAML file
+
+Output:
+  mode — "legacy" or "namespace"
+
+Steps:
+  1. If parsed_yaml contains a top-level key "apcore":
+       → Return "namespace"
+  2. Else:
+       → Return "legacy"
+```
+
+> **Note — Detection rationale:** This algorithm relies on the fact that `apcore` is not a valid top-level key in the legacy §9.1 schema (the legacy schema uses `version`, `extensions`, `schema`, `acl`, `project`, etc. — never `apcore` as a wrapper). A file that contains `apcore:` as a top-level key is unambiguously a namespace-mode file.
+>
+> **Consequence:** A namespace-mode file that omits the `apcore:` section (e.g., contains only `apflow:` and `apcore-mcp:`) will be misdetected as legacy mode and fail validation. This is by design — the `apcore:` namespace section is **required** in namespace mode because it contains framework-critical fields (`version`, `extensions.root`, etc.). Users who want namespace mode without apcore core configuration should use `apcore:` with minimal required fields, or use the mount mechanism (§9.7) instead.
+
+**Legacy mode** — the entire file is the `apcore` namespace (backward compatible with §9.1):
+
+```yaml
+# apcore.yaml — legacy mode (no "apcore:" key)
+version: "0.14.0"
+extensions:
+  root: ./extensions
+executor:
+  default_timeout: 5000
+```
+
+**Namespace mode** — each top-level key is a namespace:
+
+```yaml
+# project.yaml — namespace mode ("apcore:" key present)
+apcore:
+  version: "0.14.0"
+  extensions:
+    root: ./extensions
+
+apflow:
+  api:
+    server_url: http://localhost:8000
+
+apcore-mcp:
+  transport: streamable-http
+  port: 8000
+```
+
+#### 9.6.2 Merge Priority (Namespace Mode)
+
+For each registered namespace, the merge priority (highest wins) is:
+
+| Priority | Source | Description |
+|----------|--------|-------------|
+| 1 (Highest) | Environment variables | `{ENV_PREFIX}_{SECTION}_{KEY}` |
+| 2 | Configuration file | Namespace section from YAML |
+| 3 | Mount data | Data supplied via `config.mount()` |
+| 4 (Lowest) | Registered defaults | Defaults from `register_namespace()` |
+
+For the `apcore` namespace, legacy merge rules (§9.2) apply unchanged, using the `APCORE_` prefix.
+
+#### 9.6.3 Config Bus Meta-Configuration
+
+The reserved `_config` namespace controls Config Bus behavior itself. It **must not** be registerable by external packages.
+
+```yaml
+_config:
+  strict: false          # SHOULD, default: false
+  allow_unknown: true    # SHOULD, default: true (only relevant when strict: false)
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `strict` | boolean | `false` | When `true`, every top-level key (except `_config`) **must** correspond to a registered namespace. Unknown namespaces cause a `ConfigError`. |
+| `allow_unknown` | boolean | `true` | When `strict` is `false` and `allow_unknown` is `true`, unknown namespace data is stored and accessible via `get()` but not validated. When `allow_unknown` is `false`, unknown namespaces are silently ignored (not stored). |
+
+**Behavior matrix:**
+
+| `strict` | `allow_unknown` | Unknown namespace in YAML | Result |
+|-----------|-----------------|---------------------------|--------|
+| `true`    | *(ignored)*     | `billing: {db: ...}`      | `ConfigError`: namespace `billing` not registered |
+| `false`   | `true`          | `billing: {db: ...}`      | Stored, accessible, WARN logged, not validated |
+| `false`   | `false`         | `billing: {db: ...}`      | Silently ignored, not stored |
+
+#### 9.6.4 File Format Examples
+
+**Scenario 1 — Pure apcore (legacy, zero migration):**
+
+```yaml
+# apcore.yaml — unchanged from pre-9.4 era
+version: "0.14.0"
+extensions:
+  root: ./extensions
+schema:
+  root: ./schemas
+acl:
+  root: ./acl
+  default_effect: deny
+project:
+  name: my-project
+```
+
+**Scenario 2 — apcore + ecosystem packages:**
+
+```yaml
+# project.yaml
+apcore:
+  version: "0.14.0"
+  extensions:
+    root: ./extensions
+  schema:
+    root: ./schemas
+  acl:
+    root: ./acl
+    default_effect: deny
+  project:
+    name: my-project
+
+apflow:
+  api:
+    server_url: http://localhost:8000
+    timeout: 30.0
+  governance:
+    default_policy: auto-downgrade
+  durability:
+    max_attempts: 3
+    backoff_strategy: exponential
+
+apcore-mcp:
+  transport: streamable-http
+  port: 8000
+  auth:
+    enabled: true
+
+apcore-a2a:
+  name: "My Agent"
+  url: http://localhost:9000
+  skills:
+    - name: data-analysis
+      module: executor.analyze
+
+apcore-cli:
+  theme: minimal
+  output_format: json
+```
+
+**Scenario 3 — Third-party project with mount (separate files):**
+
+```yaml
+# apcore.yaml — only apcore's own config
+apcore:
+  version: "0.14.0"
+  extensions:
+    root: ./extensions
+  project:
+    name: saas-platform
+```
+
+```python
+# Third-party project mounts its own config files
+config = Config.load("apcore.yaml")
+config.mount("billing", from_file="config/billing.yaml")
+config.mount("notifications", from_file="config/notifications.yaml")
+```
+
+**Scenario 4 — Strict mode for new projects:**
+
+```yaml
+# project.yaml
+_config:
+  strict: true
+
+apcore:
+  version: "0.14.0"
+  extensions:
+    root: ./extensions
+  project:
+    name: greenfield-app
+
+apflow:
+  api:
+    server_url: http://localhost:8000
+
+apcore-mcp:
+  transport: streamable-http
+```
+
+**Scenario 5 — Framework integration (Django, FastAPI):**
+
+```yaml
+# project.yaml — framework integration registers its own namespace automatically
+apcore:
+  version: "0.14.0"
+  extensions:
+    root: ./extensions
+  project:
+    name: django-app
+
+django-apcore:
+  auto_register_modules: true
+  url_prefix: /api/apcore
+  middleware:
+    enabled: true
+
+fastapi-apcore:
+  auto_register_modules: true
+  route_prefix: /apcore
+  openapi:
+    include: true
+```
+
+### 9.7 Mount Mechanism
+
+The mount mechanism allows attaching external configuration sources to the Config Bus without requiring a unified configuration file. This is the primary integration path for third-party projects with existing configuration systems.
+
+#### 9.7.1 Mount API
+
+**Canonical signature (pseudocode):**
+
+```
+config.mount(
+    namespace:  string,           # MUST — target namespace
+    from_file:  path | nil,       # MAY  — load from file
+    from_dict:  map  | nil,       # MAY  — load from in-memory dict
+)
+```
+
+Exactly one of `from_file` or `from_dict` **must** be provided.
+
+**Mount rules:**
+
+1. The target namespace **may** or **may not** be previously registered via `register_namespace`.
+   - If registered: mount data is merged (file/dict < env overrides), then validated against the registered schema.
+   - If not registered: mount data is stored as-is, accessible via `get()`, but not validated. A WARN **should** be logged.
+2. Mounting to a namespace that already has data (from the unified file or a prior mount) **must** deep-merge the mount data into the existing data. Mount data has lower priority than file data (see §9.6.2). This means the unified file is the authoritative source when both exist. If the caller intends the mounted file to be the authoritative source for a namespace, the namespace section **should not** appear in the unified file.
+3. Mounting to the `apcore` namespace is permitted but **should** log a WARN (it overrides framework configuration).
+4. Mounting to `_config` **must** raise a `CONFIG_MOUNT_ERROR`.
+
+#### 9.7.2 Cross-Language Mount Examples
+
+**Python:**
+
+```python
+config = Config.load("apcore.yaml")
+
+# Mount from file
+config.mount("billing", from_file="config/billing.yaml")
+
+# Mount from dict (e.g., loaded by a third-party library)
+config.mount("notifications", from_dict={"provider": "ses", "region": "us-east-1"})
+```
+
+**TypeScript:**
+
+```typescript
+const config = await Config.load('apcore.yaml');
+
+config.mount('billing', { fromFile: 'config/billing.yaml' });
+config.mount('notifications', { fromDict: { provider: 'ses', region: 'us-east-1' } });
+```
+
+**Rust:**
+
+```rust
+let mut config = Config::load("apcore.yaml")?;
+
+config.mount("billing", MountSource::File("config/billing.yaml".into()))?;
+config.mount("notifications", MountSource::Dict(serde_json::json!({
+    "provider": "ses", "region": "us-east-1"
+})))?;
+```
+
+**Go:**
+
+```go
+cfg, _ := config.Load("apcore.yaml")
+
+cfg.Mount("billing", config.FromFile("config/billing.yaml"))
+cfg.Mount("notifications", config.FromDict(map[string]any{
+    "provider": "ses", "region": "us-east-1",
+}))
+```
+
+**Java:**
+
+```java
+Config config = Config.load("apcore.yaml");
+
+config.mount("billing", MountSource.fromFile("config/billing.yaml"));
+config.mount("notifications", MountSource.fromDict(Map.of(
+    "provider", "ses", "region", "us-east-1"
+)));
+```
+
+#### 9.7.3 Mount vs Unified File Decision Guide
+
+| Criterion | Unified File | Mount |
+|-----------|--------------|-------|
+| New project, full apcore adoption | Recommended | — |
+| Existing project adding apcore | — | Recommended |
+| Config managed by external tool (Ansible, Terraform) | — | Recommended |
+| Single-file deployment simplicity | Recommended | — |
+| Team owns all config schemas | Recommended | — |
+| Third-party config with unknown schema | — | Recommended |
+
+Both approaches produce the same namespace tree at runtime. The choice is purely organizational.
+
+### 9.8 Environment Variable Override (Namespace Mode)
+
+#### 9.8.1 Per-Namespace Env Prefix
+
+In namespace mode, each registered namespace with an `env_prefix` has its own environment variable scope.
+
+**Naming convention:**
+
+The env variable convention follows the same rules defined in §9.2 — single `_` is the section separator, double `__` encodes a literal underscore:
+
+```
+{ENV_PREFIX}_{SECTION}_{KEY}
+
+Rules:
+  1. Prefix is the registered env_prefix (uppercase), followed by _
+  2. Single _ → . (section separator)
+  3. Double __ → literal _ (within key names)
+  4. All letters uppercase
+
+Examples (namespace "apflow", env_prefix "APFLOW"):
+  APFLOW_API_SERVER__URL=http://...    → apflow.api.server_url
+  APFLOW_API_TIMEOUT=60                → apflow.api.timeout
+  APFLOW_GOVERNANCE_DEFAULT__POLICY=x  → apflow.governance.default_policy
+
+Examples (namespace "apcore-mcp", env_prefix "APCORE__MCP"):
+  APCORE__MCP_TRANSPORT=stdio          → apcore-mcp.transport
+  APCORE__MCP_PORT=9000                → apcore-mcp.port
+
+Examples (namespace "apcore", env_prefix "APCORE" — unchanged from §9.2):
+  APCORE_EXECUTOR_DEFAULT__TIMEOUT=5000 → apcore.executor.default_timeout
+```
+
+**Type coercion** follows the same rules as §9.2: `"true"`/`"false"` → boolean, numeric strings → int/float, otherwise string.
+
+> **Note — apflow env var compatibility:** The apflow project currently uses a simpler convention where dots become single underscores without the double-underscore escape (e.g., `api.server_url` → `APFLOW_API_SERVER_URL`). This works because apflow's config keys do not contain literal underscores. When migrating to the Config Bus, apflow **should** adopt the §9.2 convention (`APFLOW_API_SERVER__URL`) for consistency, but implementations **may** accept both forms during a transition period by attempting double-underscore parsing first and falling back to the simpler form.
+
+#### 9.8.2 Env Prefix Conflict Prevention
+
+Env prefix conflicts arise when one registered prefix is a string prefix of another (e.g., `APP` and `APPCORE`), making it impossible to determine which namespace owns `APPCORE_X`. The following rules prevent this:
+
+1. Each `env_prefix` **must** be unique across all registered namespaces. Attempting to register a duplicate `env_prefix` **must** raise `CONFIG_ENV_PREFIX_CONFLICT`.
+2. Implementations **must** check that no registered `env_prefix` + `"_"` is a string prefix of another registered `env_prefix` + `"_"`. For example, `FOO_` and `FOO_BAR_` conflict because env var `FOO_BAR_X` is ambiguous. This **must** raise `CONFIG_ENV_PREFIX_CONFLICT` at registration time.
+3. The prefix `APCORE` is reserved for the `apcore` namespace. Attempting to register it for another namespace **must** raise `CONFIG_NAMESPACE_RESERVED`.
+
+**Resolving the `APCORE` / `APCORE__MCP` ambiguity:**
+
+A naive prefix scheme would make `APCORE_MCP` (for apcore-mcp) collide with `APCORE_` (for apcore, key path `mcp.*`). The ecosystem convention resolves this by requiring apcore ecosystem packages to use a double-underscore separator between `APCORE` and the sub-package name in their env prefix:
+
+| Package | Namespace | Env Prefix | Why safe |
+|---------|-----------|------------|----------|
+| apcore | `apcore` | `APCORE` | Base prefix |
+| apcore-mcp | `apcore-mcp` | `APCORE__MCP` | `APCORE__MCP_` is not a valid `APCORE_` key (double `__` creates invalid path) |
+| apcore-a2a | `apcore-a2a` | `APCORE__A2A` | Same reasoning |
+| apcore-cli | `apcore-cli` | `APCORE__CLI` | Same reasoning |
+| apflow | `apflow` | `APFLOW` | Completely disjoint prefix |
+| django-apcore | `django-apcore` | `DJANGO_APCORE` | No `DJANGO` namespace registered — no prefix collision |
+
+This works because the `APCORE_` prefix matcher stops at the first `_` boundary. An env var like `APCORE__MCP_TRANSPORT` starts with `APCORE__` (double underscore), which the `APCORE_` prefix handler would interpret as key path `apcore._mcp.transport` — not a valid apcore config path. The `APCORE__MCP_` prefix handler correctly claims it.
+
+However, this convention introduces complexity. Implementations **must** use **longest-prefix-match** when dispatching env vars to namespaces:
+
+```
+Algorithm: dispatch_env_var(env_key, registered_prefixes)
+
+Input:
+  env_key             — Environment variable name (e.g., "APCORE__MCP_TRANSPORT")
+  registered_prefixes — List of (env_prefix + "_", namespace_name) tuples,
+                        sorted by prefix length descending
+
+Output:
+  (namespace_name, suffix) or nil
+
+Steps:
+  1. For each (prefix, ns_name) in registered_prefixes (longest first):
+       If env_key starts with prefix:
+         → Return (ns_name, env_key[len(prefix):])
+  2. Return nil (env var does not match any namespace)
+```
+
+#### 9.8.3 Env Override Application Algorithm
+
+```
+Algorithm: apply_namespace_env_overrides(config_data, registered_namespaces)
+
+Input:
+  config_data           — Merged configuration tree (all namespaces)
+  registered_namespaces — Map of namespace name → registration info
+
+Output:
+  config_data with env overrides applied per namespace
+
+Steps:
+  0. Build prefix table:
+       registered_prefixes ← []
+       For each (name, registration) in registered_namespaces:
+         If registration.env_prefix is not nil:
+           registered_prefixes.append((registration.env_prefix + "_", name))
+       Sort registered_prefixes by prefix length descending (longest first)
+
+  1. For each (env_key, env_value) in environment variables:
+       match ← dispatch_env_var(env_key, registered_prefixes)
+       If match is nil → skip
+       (ns_name, suffix) ← match
+       dot_path ← convert suffix (single _ → ., double __ → _), lowercase
+       coerced ← coerce_env_value(env_value)
+       set config_data[ns_name][dot_path] ← coerced
+
+  2. Return config_data
+```
+
+### 9.9 Namespace-Aware Access API
+
+#### 9.9.1 Unified Access
+
+In namespace mode, `get()` and `set()` use dot-paths where the first segment is the namespace:
+
+```
+config.get("apcore.executor.default_timeout")   → 30000
+config.get("apflow.api.timeout")                 → 30.0
+config.get("apcore-mcp.transport")               → "streamable-http"
+config.get("billing.db.host")                    → "localhost"
+```
+
+In legacy mode, `get()` behaves as before (no namespace prefix):
+
+```
+config.get("executor.default_timeout")           → 30000
+```
+
+**Implementations MUST NOT break legacy mode access patterns.** When the config is in legacy mode, `get("executor.default_timeout")` **must** continue to work without requiring an `apcore.` prefix.
+
+**Dot-path namespace resolution algorithm:**
+
+Because namespace names may contain hyphens (e.g., `apcore-mcp`), implementations **must not** naively split on the first `.` to extract the namespace. Instead:
+
+```
+Algorithm: resolve_namespace_path(dot_path, mode, known_namespaces)
+
+Input:
+  dot_path         — Full dot-path string (e.g., "apcore-mcp.transport")
+  mode             — "legacy" or "namespace"
+  known_namespaces — Set of registered + loaded namespace names
+
+Output:
+  (namespace, remainder) or (nil, dot_path) for legacy mode
+
+Steps:
+  1. If mode == "legacy":
+       → Return (nil, dot_path)   // entire path is within apcore namespace
+
+  2. Extract candidate ← substring before the first "."
+     remainder ← substring after the first "."
+     // candidate = "apcore-mcp", remainder = "transport"
+     // Hyphens are legal in namespace names but NOT in config key segments,
+     // so this split is unambiguous.
+
+  3. If candidate is in known_namespaces:
+       → Return (candidate, remainder)
+
+  4. Else:
+       → Return (candidate, remainder)
+       // Unknown namespace — behavior depends on strict/allow_unknown settings.
+       // The get() method should look up candidate as a top-level key in the
+       // config data tree; if absent, return the provided default.
+```
+
+> **Why this is unambiguous:** Namespace names allow hyphens (`^[a-z][a-z0-9]*(-[a-z0-9]+)*$`) but the §9.1 config keys within a namespace use underscores, not hyphens (e.g., `default_timeout`, `max_depth`). The first `.` is always the boundary between namespace and config path. A dot-path like `apcore-mcp.transport` can only mean namespace `apcore-mcp`, key `transport` — never namespace `apcore`, key `mcp.transport` (because `apcore` in namespace mode would require `apcore.mcp.transport`).
+
+#### 9.9.2 Namespace Accessor
+
+Implementations **should** provide a convenience method to retrieve the entire configuration subtree for a namespace:
+
+```
+config.namespace("apflow")
+→ {"api": {"server_url": "...", "timeout": 30.0}, "governance": {...}}
+```
+
+This returns a deep copy. Mutations to the returned object **must not** affect the Config Bus.
+
+#### 9.9.3 Typed Access
+
+Implementations **should** provide typed access methods appropriate to the language:
+
+**Statically typed languages (Rust, Go, Java, TypeScript):**
+
+```
+config.bind<T>("apflow")  → T    // Deserialize namespace into typed struct
+```
+
+**Python:**
+
+```python
+# Option A: runtime type check
+timeout: float = config.get_typed("apflow.api.timeout", float)
+
+# Option B: Pydantic / dataclass binding (Pydantic as optional dependency)
+settings: ApflowSettings = config.bind("apflow", ApflowSettings)
+```
+
+**Binding rules:**
+
+1. `bind()` deserializes the namespace subtree into the target type.
+2. If the namespace has a registered JSON Schema, validation **should** have already occurred at load time. `bind()` performs structural deserialization only — it **should not** re-validate.
+3. If deserialization fails (missing fields, type mismatch), `bind()` **must** raise a `ConfigError` with a clear message indicating the namespace and the failing field.
+4. The model type used in `bind()` is owned by the downstream package, not by apcore. apcore provides the mechanism, not the types.
+
+#### 9.9.4 Registered Namespace Introspection
+
+Implementations **should** expose a method to list registered namespaces:
+
+```
+Config.registered_namespaces()
+→ [
+    {name: "apcore",     env_prefix: "APCORE",      has_schema: true},
+    {name: "apflow",     env_prefix: "APFLOW",      has_schema: true},
+    {name: "apcore-mcp", env_prefix: "APCORE__MCP", has_schema: true},
+    {name: "billing",    env_prefix: "BILLING",      has_schema: false},
+  ]
+```
+
+This is useful for diagnostic tools, CLI introspection, and IDE plugins.
+
+### 9.10 Validation Algorithm (Namespace-Aware A12-NS)
+
+The original Algorithm A12 (§9.3) is extended for namespace mode:
+
+```
+Algorithm: validate_config_ns(config_data, mode, registered_namespaces, meta_config)
+
+Input:
+  config_data           — Full configuration tree
+  mode                  — "legacy" or "namespace"
+  registered_namespaces — Map of namespace name → registration info
+  meta_config           — Parsed _config section (strict, allow_unknown)
+
+Output:
+  validated config, or throw CONFIG_INVALID error
+
+Steps:
+  1. If mode == "legacy":
+       → Run original A12 algorithm on config_data (unchanged behavior)
+       → Return
+
+  2. Validate the "apcore" namespace:
+       apcore_data ← config_data["apcore"]
+       Run original A12 algorithm on apcore_data
+
+  3. For each top-level key (ns_name) in config_data:
+       If ns_name == "_config" → skip (meta-configuration)
+       If ns_name == "apcore" → skip (already validated in step 2)
+
+       a. If ns_name is in registered_namespaces:
+            registration ← registered_namespaces[ns_name]
+            If registration.schema is not nil:
+              Validate config_data[ns_name] against registration.schema
+              Collect errors with namespace prefix: "{ns_name}: {error}"
+
+       b. Else (unknown namespace):
+            If meta_config.strict == true:
+              Error: "Unknown namespace '{ns_name}' (strict mode enabled)"
+            Else if meta_config.allow_unknown == true:
+              Log WARN: "Namespace '{ns_name}' is not registered; data stored but not validated"
+            Else:
+              Remove config_data[ns_name] from the tree (silently ignore)
+
+  4. If any errors collected → throw CONFIG_INVALID with all errors
+  5. Return validated config_data
+```
+
+### 9.11 Hot-Reload (Namespace Mode)
+
+`config.reload()` **must** support namespace mode:
+
+1. Re-read the YAML file.
+2. Re-detect mode (legacy vs namespace).
+3. Re-apply all registered namespace defaults.
+4. Re-apply all environment variable overrides per registered namespace.
+5. Re-validate per A12-NS.
+6. Atomically replace the config data tree.
+7. Re-apply mount data for namespaces that were mounted (mount sources **should** be remembered).
+
+If a mount source was `from_file`, the file **should** also be re-read during reload. If the mount source was `from_dict`, the original dict is re-applied (not re-read).
+
+### 9.12 Cross-Language Implementation Requirements
+
+#### 9.12.1 Required API Surface
+
+All SDK implementations claiming Config Bus conformance **must** implement:
+
+| Method | Requirement Level | Description |
+|--------|-------------------|-------------|
+| `Config.register_namespace()` | MUST | Static/class method for namespace registration |
+| `Config.load()` | MUST | Load with mode detection (legacy/namespace) |
+| `Config.from_defaults()` | MUST | Create from defaults (apcore namespace only, legacy compatible) |
+| `config.get(dot_path)` | MUST | Namespace-aware dot-path access |
+| `config.set(dot_path, value)` | MUST | Namespace-aware dot-path mutation |
+| `config.mount(ns, source)` | MUST | Attach external config source |
+| `config.validate()` | MUST | A12-NS validation |
+| `config.reload()` | MUST | Hot-reload with namespace support |
+| `config.namespace(name)` | SHOULD | Retrieve full namespace subtree |
+| `config.bind(ns, type)` | SHOULD | Typed deserialization |
+| `config.get_typed(path, type)` | SHOULD | Single-value typed access |
+| `Config.registered_namespaces()` | SHOULD | Introspection |
+
+#### 9.12.2 Language-Idiomatic Naming
+
+| Concept | Python | TypeScript | Rust | Go | Java |
+|---------|--------|------------|------|----|------|
+| Register | `register_namespace()` | `registerNamespace()` | `register_namespace()` | `RegisterNamespace()` | `registerNamespace()` |
+| Load | `Config.load()` | `Config.load()` | `Config::load()` | `config.Load()` | `Config.load()` |
+| Get | `config.get()` | `config.get()` | `config.get()` | `cfg.Get()` | `config.get()` |
+| Mount | `config.mount()` | `config.mount()` | `config.mount()` | `cfg.Mount()` | `config.mount()` |
+| Bind | `config.bind()` | `config.bind<T>()` | `config.bind::<T>()` | `config.Bind()` | `config.bind()` |
+| Namespace | `config.namespace()` | `config.namespace()` | `config.namespace()` | `cfg.Namespace()` | `config.namespace()` |
+
+> **Parameter passing style:** Each language should use its idiomatic parameter passing convention. Python uses keyword arguments (`mount("ns", from_file="path")`), TypeScript uses an options object (`mount('ns', { fromFile: 'path' })`), Rust uses enum variants (`mount("ns", MountSource::File(...))`), Go uses functional options or helper constructors, and Java uses builder or overloaded methods. The semantic contract is identical; only the surface syntax varies.
+
+#### 9.12.3 Thread Safety
+
+All Config Bus methods **must** be thread-safe / concurrency-safe:
+
+- `register_namespace()` **must** use a global lock or atomic registry (registrations can happen from multiple threads during framework startup).
+- `get()`, `set()`, `mount()`, `reload()` **must** be synchronized per Config instance (same requirement as §12.7).
+- `bind()` reads a snapshot — the returned object is independent and needs no synchronization.
+
+#### 9.12.4 Error Types
+
+Implementations **must** use the following error codes (extensions to §8). All config errors inherit from the base error type (`ModuleError` in Python, equivalent in other languages) and are non-retryable (`retryable = false`), consistent with the existing `CONFIG_NOT_FOUND` and `CONFIG_INVALID` codes defined in §8.2:
+
+| Error Code | Trigger | Existing? |
+|------------|---------|-----------|
+| `CONFIG_NOT_FOUND` | Configuration file not found | §8.2 (unchanged) |
+| `CONFIG_INVALID` | Validation failure, extended to include namespace-level schema validation errors and strict-mode unknown namespace errors | §8.2 (extended) |
+| `CONFIG_NAMESPACE_DUPLICATE` | `register_namespace` called twice for the same namespace name | New |
+| `CONFIG_NAMESPACE_RESERVED` | Attempt to register `apcore` or `_config` | New |
+| `CONFIG_ENV_PREFIX_CONFLICT` | Duplicate `env_prefix`, or one `env_prefix + "_"` is a string prefix of another `env_prefix + "_"` | New |
+| `CONFIG_MOUNT_ERROR` | Mount source file not found, invalid YAML in mount file, or mount to `_config` | New |
+| `CONFIG_BIND_ERROR` | Typed deserialization failure in `bind()` — missing fields or type mismatch between namespace data and target type | New |
+
+### 9.13 Ecosystem Integration Patterns
+
+#### 9.13.1 apcore Ecosystem Packages
+
+Packages in the apcore ecosystem (apcore-mcp, apcore-a2a, apcore-cli, apflow, framework integrations) **should** follow this pattern:
+
+```python
+# In package __init__.py or equivalent entry point
+
+from apcore import Config
+
+# Register at import time — before Config.load() is called by the application
+Config.register_namespace(
+    "apcore-mcp",
+    schema=_resolve_schema_path("apcore-mcp.schema.json"),
+    env_prefix="APCORE__MCP",   # double underscore to avoid APCORE_ prefix collision
+    defaults={"transport": "streamable-http", "port": 8000},
+)
+```
+
+**Convention for apcore ecosystem packages:**
+
+| Package | Namespace | Env Prefix | Conflict? | Schema |
+|---------|-----------|------------|-----------|--------|
+| apcore (core) | `apcore` | `APCORE` | — | `apcore-config.schema.json` |
+| apcore-mcp | `apcore-mcp` | `APCORE__MCP` | Yes — `APCORE_` is a prefix of `APCORE_MCP_`; use `APCORE__MCP` to disambiguate | `apcore-mcp.schema.json` |
+| apcore-a2a | `apcore-a2a` | `APCORE__A2A` | Same as above | `apcore-a2a.schema.json` |
+| apcore-cli | `apcore-cli` | `APCORE__CLI` | Same as above | `apcore-cli.schema.json` |
+| apflow | `apflow` | `APFLOW` | No — disjoint from `APCORE_` | `apflow.schema.json` |
+| django-apcore | `django-apcore` | `DJANGO_APCORE` | No — no `DJANGO` namespace registered | `django-apcore.schema.json` |
+| fastapi-apcore | `fastapi-apcore` | `FASTAPI_APCORE` | No — no `FASTAPI` namespace registered | `fastapi-apcore.schema.json` |
+| flask-apcore | `flask-apcore` | `FLASK_APCORE` | No — no `FLASK` namespace registered | `flask-apcore.schema.json` |
+| nestjs-apcore | `nestjs-apcore` | `NESTJS_APCORE` | No — no `NESTJS` namespace registered | `nestjs-apcore.schema.json` |
+| axum-apcore | `axum-apcore` | `AXUM_APCORE` | No — no `AXUM` namespace registered | `axum-apcore.schema.json` |
+
+> **Why `APCORE__MCP` and not `APCORE_MCP`?** The prefix `APCORE_` (for the `apcore` namespace) is a string prefix of `APCORE_MCP_`. An env var like `APCORE_MCP_TRANSPORT` is ambiguous: does it set `apcore → mcp.transport` or `apcore-mcp → transport`? The double-underscore convention (`APCORE__MCP_`) breaks the ambiguity because `APCORE_` never matches `APCORE__MCP_TRANSPORT` as an apcore key (the double underscore creates an invalid key path `_mcp.transport`). Framework integrations like `DJANGO_APCORE` do not have this problem because no `DJANGO` namespace is registered, so `DJANGO_APCORE_*` is unambiguous.
+
+#### 9.13.2 Third-Party Package Integration
+
+Third-party packages that want to participate in the Config Bus **should** follow this pattern:
+
+```python
+# In third-party package setup
+from apcore import Config
+
+# Schema is optional — register for namespace isolation and env override only
+Config.register_namespace(
+    "my-billing",
+    env_prefix="BILLING",
+    # No schema — existing config structure is not constrained by apcore
+)
+```
+
+Third-party packages **must not** assume that apcore.Config is the only configuration source. The registration is additive — if the application does not use the Config Bus, the package must fall back to its own configuration mechanism:
+
+```python
+# Defensive integration pattern for third-party packages
+def get_billing_config(apcore_config=None):
+    """Return billing config from Config Bus if available, else standalone."""
+    if apcore_config is not None:
+        try:
+            return apcore_config.namespace("my-billing")
+        except KeyError:
+            pass
+
+    # Fallback: use own config mechanism
+    return load_billing_config_standalone()
+```
+
+#### 9.13.3 Framework Integration Auto-Registration
+
+Framework integrations (django-apcore, fastapi-apcore, etc.) **should** auto-register their namespace when the framework loads them:
+
+**Django:**
+
+```python
+# django_apcore/apps.py
+from django.apps import AppConfig as DjangoAppConfig
+
+class DjangoApcoreConfig(DjangoAppConfig):
+    name = "django_apcore"
+
+    def ready(self):
+        from apcore import Config
+        Config.register_namespace(
+            "django-apcore",
+            schema=self._resolve_schema(),
+            env_prefix="DJANGO_APCORE",
+            defaults={"auto_register_modules": True, "url_prefix": "/api/apcore"},
+        )
+```
+
+**FastAPI:**
+
+```python
+# fastapi_apcore/__init__.py
+from apcore import Config
+
+Config.register_namespace(
+    "fastapi-apcore",
+    schema=_resolve_schema(),
+    env_prefix="FASTAPI_APCORE",
+    defaults={"auto_register_modules": True, "route_prefix": "/apcore"},
+)
+```
+
+**NestJS:**
+
+**NestJS** (no `NESTJS` namespace exists — single underscore is safe):
+
+```typescript
+// nestjs-apcore/src/index.ts
+import { Config } from 'apcore';
+
+Config.registerNamespace({
+  name: 'nestjs-apcore',
+  schema: resolveSchema(),
+  envPrefix: 'NESTJS_APCORE',
+  defaults: { autoRegisterModules: true, routePrefix: '/apcore' },
+});
+```
+
+### 9.14 Config Discovery (Optional)
+
+Implementations **may** support automatic configuration file discovery. When `Config.load()` is called without a path argument, the following search order **should** be used:
+
+```
+Algorithm: discover_config_file()
+
+Search order (first match wins):
+  1. $APCORE_CONFIG_FILE          — explicit override via env var
+  2. ./project.yaml               — project root
+  3. ./project.yml
+  4. ./apcore.yaml                — apcore-specific
+  5. ./apcore.yml
+  6. ~/.config/apcore/config.yaml — user-level (XDG on Linux, ~/Library/Application Support on macOS)
+  7. ~/.apcore/config.yaml        — legacy user-level
+
+If no file is found:
+  → Use Config.from_defaults() (apcore namespace only, no error)
+```
+
+This is a **MAY**-level feature. Implementations that do not support discovery **must** require an explicit path in `Config.load()`.
+
+> **Note:** The file name does not influence mode detection. A file named `project.yaml` may contain legacy-mode content, and a file named `apcore.yaml` may contain namespace-mode content. Mode is always determined by the presence of the `apcore:` top-level key (see §9.6.1).
+
 ---
 
 ## 10. Observability Specification (Observability Specification)
@@ -5944,3 +6913,4 @@ Each language SDK **should** provide idiomatic module definition syntax. The fol
 | 1.3.0-draft | 2026-03-01 | Added §7 Approval System (ApprovalHandler protocol, Executor Step 4.5, error types, built-in and protocol bridge handlers, phased implementation, conformance levels); Updated §4.4 requires_approval annotation to reference runtime enforcement; Added APPROVAL_DENIED/TIMEOUT/PENDING error codes to §8; Renumbered §7–§13 → §8–§14 |
 | 1.4.0-draft | 2026-03-06 | Refined Executor pipeline — Approval Gate is now Step 5, subsequent steps shifted; Added Executor.validate() [SHOULD] to §12.2 with PreflightResult/PreflightCheckResult types for non-destructive preflight checks through Steps 1–6; Updated §7.4, §7.9, streaming protocol references to match new numbering; Added §12.8 Executor.validate() Cross-Language Implementation Guide (error handling mapping, type mapping for Python/TypeScript/Go/Rust/Java/C/C++, schema library requirements, naming conventions); Added C/C++ and TypeScript to §12.6; Added validate() preflight to §12.3 requirements table; Added Preflight Tests to §12.4 consistency test suite |
 | 1.5.0-draft | 2026-03-20 | Added §5.13 Display Overlay — sparse binding.yaml `display` section for surface-facing presentation (CLI/MCP/A2A alias, description, documentation overrides); Defined resolve priority chain algorithm; Added `ResolvedModule` type; Added `SurfaceOverride` and `DisplayOverlay` to `binding.schema.json`; Added `suggested_alias` scanner metadata convention; Deprecated `simplify_ids` in favor of display overlay; Cross-language implementation guide for Python/TypeScript/Rust/Go/Java/Ruby/PHP; Renumbered §5.13 Edge Case Handling → §5.14 → §5.15 |
+| 1.6.0-draft | 2026-03-29 | Added §9.4–9.14 Config Bus Architecture — namespace registration, unified configuration file with legacy/namespace mode detection, mount mechanism for third-party integration, per-namespace environment variable overrides, namespace-aware access API (get/set/bind/namespace), extended validation algorithm A12-NS, hot-reload with namespace support, cross-language implementation requirements (Python/TypeScript/Rust/Go/Java), ecosystem integration patterns (apcore packages, third-party packages, framework auto-registration), optional config discovery; Added error codes CONFIG_NAMESPACE_DUPLICATE, CONFIG_NAMESPACE_RESERVED, CONFIG_ENV_PREFIX_CONFLICT, CONFIG_MOUNT_ERROR, CONFIG_BIND_ERROR; Added `_config` reserved namespace for strict/allow_unknown meta-configuration |

@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.15.0] - 2026-03-29
+
+### Added
+
+#### Protocol Specification (v1.6.0-draft)
+- **Config Bus Architecture (§9.4)** — apcore.Config upgraded from internal configuration tool to ecosystem-level Config Bus. Any package (apcore ecosystem or third-party) can register a namespace with optional JSON Schema validation, environment variable prefix, and defaults. Design principles: bus not center, zero-cost adoption, gradual integration, cross-language consistency, strict/flexible coexistence
+- **Namespace Registration (§9.5)** — `Config.register_namespace(name, schema, env_prefix, defaults)` API with cross-language examples (Python, TypeScript, Rust, Go, Java). Global (class-level) registry shared across Config instances. Late registration permitted with explicit `reload()` to apply. No `unregister_namespace` in this version
+- **Unified Configuration File (§9.6)** — Single YAML file with namespace-partitioned sections. Automatic mode detection: legacy mode (no `apcore:` key, fully backward compatible) vs namespace mode (`apcore:` key present). `_config` reserved namespace for meta-configuration (`strict`, `allow_unknown`)
+- **Mount Mechanism (§9.7)** — `config.mount(namespace, from_file|from_dict)` for attaching external configuration sources without requiring a unified file. Primary integration path for third-party projects with existing config systems
+- **Per-Namespace Env Override (§9.8)** — Each namespace declares its own `env_prefix`. Longest-prefix-match dispatch algorithm resolves ambiguity. `APCORE__MCP` double-underscore convention for apcore sub-packages to avoid collision with `APCORE_` prefix. Compatibility note for apflow's simpler env convention
+- **Namespace-Aware Access API (§9.9)** — `config.get("namespace.key.path")` with dot-path namespace resolution algorithm. `config.namespace(name)` for full subtree retrieval. `config.bind(ns, type)` / `config.get_typed(path, type)` for typed access. `Config.registered_namespaces()` for introspection
+- **Validation Algorithm A12-NS (§9.10)** — Extended A12 for namespace mode: validates `apcore` namespace with original algorithm, validates registered namespaces against their JSON Schema, handles unknown namespaces per strict/allow_unknown settings
+- **Hot-Reload Namespace Support (§9.11)** — `config.reload()` re-reads YAML, re-detects mode, re-applies namespace defaults and env overrides, re-validates, and re-reads mounted files
+- **Cross-Language Implementation Requirements (§9.12)** — MUST/SHOULD API surface table, language-idiomatic naming matrix, thread safety requirements, parameter passing style note
+- **Ecosystem Integration Patterns (§9.13)** — Convention table for all apcore packages (namespace, env prefix, schema file). Third-party defensive integration pattern. Framework auto-registration examples (Django AppConfig.ready(), FastAPI module-level, NestJS)
+- **Config Discovery (§9.14)** — Optional (`MAY`) automatic config file discovery with search order: `$APCORE_CONFIG_FILE` → `./project.yaml` → `./apcore.yaml` → user-level config
+- **New error codes** — `CONFIG_NAMESPACE_DUPLICATE`, `CONFIG_NAMESPACE_RESERVED`, `CONFIG_ENV_PREFIX_CONFLICT`, `CONFIG_MOUNT_ERROR`, `CONFIG_BIND_ERROR`
+
+---
+
 ## [0.14.0] - 2026-03-24
 
 ### Fixed

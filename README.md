@@ -804,7 +804,9 @@ Typical middleware scenarios: logging, performance monitoring, caching, rate lim
 
 ## Configuration
 
-The runtime is centrally configured through `apcore.yaml`:
+### Single-Package Configuration
+
+The runtime is configured through `apcore.yaml` (legacy mode — fully backward compatible):
 
 ```yaml
 # apcore.yaml
@@ -814,21 +816,12 @@ project:
   name: "my-ai-project"
   version: "0.1.0"
 
-# Module discovery (single root mode, backward compatible)
 extensions:
   root: "./extensions"       # Module root directory
   auto_discover: true        # Auto-scan and discover
   lazy_load: true            # Lazy load (load module only on first call)
   max_depth: 8               # Maximum directory depth
 
-# Or: Multi-root mode (namespace isolation)
-# extensions:
-#   roots:
-#     - root: "./extensions"
-#       namespace: "core"    # Explicit namespace → core.executor.email.send_email
-#     - "./plugins"          # Auto namespace → plugins.my_tool
-
-# Schema loading
 schema:
   root: "./schemas"
   strategy: "yaml_first"     # yaml_first | native_first | yaml_only
@@ -836,19 +829,16 @@ schema:
     strict: true             # Strict validation mode
     coerce_types: true       # Automatic type coercion
 
-# Access control
 acl:
   root: "./acl"
   default_effect: "deny"     # Default deny
   audit:
     enabled: true
 
-# Logging
 logging:
   level: "info"              # trace | debug | info | warn | error | fatal
   format: "json"             # json | text
 
-# Observability
 observability:
   tracing:
     enabled: true
@@ -857,16 +847,38 @@ observability:
   metrics:
     enabled: true
     exporter: "prometheus"
-
-# Middleware
-middleware:
-  - class: "myapp.middleware.LoggingMiddleware"
-    priority: 100
-  - class: "myapp.middleware.CachingMiddleware"
-    priority: 50
-    config:
-      ttl: 300
 ```
+
+### Config Bus — Unified Ecosystem Configuration
+
+When using multiple apcore ecosystem packages, a single `project.yaml` can configure everything through the **Config Bus** (see [PROTOCOL_SPEC §9.4–9.14](./PROTOCOL_SPEC.md#94-config-bus-architecture)):
+
+```yaml
+# project.yaml — one file, all packages
+apcore:
+  version: "1.0.0"
+  extensions:
+    root: ./extensions
+  project:
+    name: my-project
+
+apflow:
+  api:
+    server_url: http://localhost:8000
+    timeout: 30.0
+
+apcore-mcp:
+  transport: streamable-http
+  port: 8000
+
+apcore-a2a:
+  name: "My Agent"
+  url: http://localhost:9000
+```
+
+Each package registers its own namespace with `Config.register_namespace()`. Third-party projects can also participate via `config.mount()` without modifying their existing configuration files. See the protocol spec for the full integration spectrum — from zero-coupling to full unification.
+
+**Environment variable overrides** work per namespace: `APCORE_EXECUTOR_DEFAULT__TIMEOUT=5000` for apcore, `APFLOW_API_TIMEOUT=60` for apflow, `APCORE__MCP_PORT=9000` for apcore-mcp.
 
 ---
 
@@ -1018,10 +1030,11 @@ Language SDK implementations of the apcore protocol specification:
 
 ## Ecosystem
 
-The apcore ecosystem uses a **core + independent adapters** architecture. The core does not include any framework-specific implementations; adapters are developed in independent repositories by official or community contributors.
+The apcore ecosystem uses a **core + independent adapters** architecture. The core does not include any framework-specific implementations; adapters are developed in independent repositories by official or community contributors. All packages share a unified configuration system via the **Config Bus** (§9.4).
 
 ```
                         apcore (Protocol Spec)
+                       Config Bus (§9.4–9.14)
                                │
           ┌────────────────────┼────────────────────┐
           ▼                    ▼                    ▼
