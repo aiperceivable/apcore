@@ -55,6 +55,15 @@ This roadmap outlines the planned development for the apcore protocol specificat
 - [x] [axum-apcore](https://github.com/aiperceivable/axum-apcore)
 - [x] [tiptap-apcore](https://github.com/aiperceivable/tiptap-apcore)
 
+**Core Product: apexe (CLI-to-Agent Bridge)**
+- [x] [apexe](https://github.com/aiperceivable/apexe) — v0.2.0, Rust, 9.1K LOC
+  - Scan any CLI tool into governed apcore modules (`apexe scan <tool>`)
+  - Serve as MCP tools with ACL, audit logging, and shell injection prevention (`apexe serve`)
+  - 3-tier scanning engine (--help → man pages → shell completions)
+  - Auto-inferred behavioral annotations (readonly/destructive/requires_approval)
+  - Explorer UI for interactive debugging
+  - Single-binary distribution, zero dependencies
+
 **Governance & Compliance**
 - [x] Apache 2.0 License
 - [x] GOVERNANCE.md, CONTRIBUTING.md, CODE_OF_CONDUCT.md, SECURITY.md, MAINTAINERS.md
@@ -63,48 +72,57 @@ This roadmap outlines the planned development for the apcore protocol specificat
 
 ---
 
-## 2026 Q2: Ecosystem Maturity
+## 2026 Q2: Specification Finalization & Foundation Submission
 
 ### Specification
 - [ ] Finalize v1.6.0 specification
-- [ ] Cross-language conformance test suite
+- [ ] Cross-language conformance test suite (Python, TypeScript, Rust)
 - [ ] Formal specification review process
 
-### Tooling
-- [ ] **apexe** — CLI-to-Agent bridge for infrastructure tools (kubectl, docker, gh)
-- [ ] **apdev** — Architecture guardian with multi-language dependency analysis
-  - Tree-sitter based code analysis
-  - MCP server integration for IDE support
-
-### Community & Standards
-- [ ] Foundation submission preparation (AAIF / CNCF)
+### Foundation Submission
+- [ ] Contact AAIF — understand project acceptance process
+- [ ] CNCF TAG App Delivery engagement (backup track)
 - [ ] Positioning document ([docs/POSITIONING.md](docs/POSITIONING.md))
+- [ ] Formal submission (AAIF primary, CNCF secondary)
+
+### Community Building
 - [ ] "Good first issue" labeling for contributor onboarding
 - [ ] Community discussion channels
+- [ ] Document internal dogfooding results as GitHub issues
+- [ ] External early adopter outreach
 
 ---
 
-## 2026 Q3: Foundation & Adoption
+## 2026 Q3: Hardening & Ecosystem Validation
 
-### Standards Body Engagement
-- [ ] Formal foundation submission (AAIF primary, CNCF secondary)
-- [ ] CNCF TAG App Delivery engagement
-- [ ] Industry partnership outreach
+> *Scope adjusts based on team recruitment and foundation progress.*
 
-### Technical Expansion
-- [ ] Additional framework adapters (Spring Boot, Express, Actix)
-- [ ] Enhanced security scanning for modules
-- [ ] Plugin system for custom extensions
-- [ ] Event engine for audit trails
+### SDK Quality & Testing
+- [ ] Expand test coverage across Python, TypeScript, and Rust SDKs
+- [ ] Cross-language behavioral conformance test suite
+- [ ] CI/CD pipeline hardening (automated release, regression tests)
+- [ ] Performance benchmarks across languages
+
+### Ecosystem Validation
+- [ ] End-to-end integration tests: apcore → MCP → A2A → CLI full chain
+- [ ] Framework adapter conformance verification (all 6 adapters)
+- [ ] apexe integration validation with real-world CLI tools
+- [ ] Continued pilot feedback integration
 
 ### Developer Experience
-- [ ] Interactive module playground
 - [ ] Getting-started tutorials per language
+- [ ] Interactive module playground
 - [ ] Video walkthroughs and demos
+
+### apexe Evolution
+- [ ] A2A protocol support (expose scanned tools as agent skills)
+- [ ] Package registry publishing (crates.io, Homebrew)
 
 ---
 
-## 2026 Q4+: Industry Standard
+## 2026 Q4+: Expansion
+
+> *Scope and pace depend on community growth and contributor recruitment.*
 
 ### Ecosystem Growth
 - [ ] 3+ independent adopters (Incubation requirement)
@@ -112,15 +130,24 @@ This roadmap outlines the planned development for the apcore protocol specificat
 - [ ] OpenSSF Badge Silver/Gold progression
 - [ ] Conference talks and workshops
 
+### Additional Language SDKs
+- [ ] **Go SDK** — apcore-go + toolkit + MCP/A2A/CLI bridges + Gin/Echo adapters
+- [ ] **Java/Kotlin SDK** — apcore-java + toolkit + MCP/A2A/CLI bridges + Spring Boot adapter
+- [ ] **Swift SDK** — apcore-swift + toolkit + MCP/A2A/CLI bridges + Vapor adapter
+- [ ] **C# SDK** — apcore-dotnet + toolkit + MCP/A2A/CLI bridges + ASP.NET Core adapter
+
 ### Advanced Features
 - [ ] Module versioning and compatibility system
-- [ ] Distributed module discovery
 - [ ] Advanced observability (OpenTelemetry deep integration)
-- [ ] Performance benchmarks across languages
+- [ ] Distributed module discovery
+- [ ] Enhanced security scanning for modules
+- [ ] Plugin system for custom extensions
+- [ ] Event engine for audit trails
+- [ ] **apdev** — Architecture guardian with multi-language dependency analysis
 
-### Broader Ecosystem
+### Broader Ecosystem (Built on apcore)
 - [ ] **aphub** — AI Agent registry and governance platform
-- [ ] **apflow** — Distributed orchestration engine
+- [ ] **apflow** — AI Agent production middleware (durable execution, cost governance)
 - [ ] **apevo** — Autonomous error detection, diagnosis, and repair
 
 ---
