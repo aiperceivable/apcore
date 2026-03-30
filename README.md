@@ -7,9 +7,11 @@
 > **AI-Perceivable**: When modules, interfaces, and tools are clearly perceived by AI, the model can understand their structure and purpose, and therefore know exactly how to invoke, orchestrate, and act on them. From perception → cognition → execution.
 
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/12294/badge)](https://www.bestpractices.dev/projects/12294)
 [![Python Version](https://img.shields.io/badge/python-3.11%2B-blue)](https://github.com/aiperceivable/apcore-python)
 [![TypeScript Version](https://img.shields.io/badge/TypeScript-Node_18%2B-blue)](https://github.com/aiperceivable/apcore-typescript)
 [![Rust Version](https://img.shields.io/badge/Rust-1.75%2B-blue)](https://github.com/aiperceivable/apcore-rust)
+
 
 
 > **Build once, invoke by Code or AI.**
