@@ -161,14 +161,18 @@ register_subscriber_type("my_type", my_factory)
 
 Events emitted by the framework:
 
-| Event Type | Severity | Source | Payload (`data`) |
-|------------|----------|--------|-------------------|
-| `module_registered` | info | Registry bridge | `module_id` |
-| `module_unregistered` | info | Registry bridge | `module_id` |
-| `config_changed` | info | `system.control.update_config`, `system.control.reload_module` | `key`, `old_value`, `new_value` or `module_id`, `previous_version`, `new_version` |
-| `module_health_changed` | info/warn | `system.control.toggle_feature`, `PlatformNotifyMiddleware` (recovery) | `module_id`, `enabled` or recovery details |
-| `error_threshold_exceeded` | error | `PlatformNotifyMiddleware` | `module_id`, `error_rate`, `threshold` |
-| `latency_threshold_exceeded` | warn | `PlatformNotifyMiddleware` | `module_id`, `p99_latency_ms`, `threshold` |
+| Event Type | Legacy Alias | Severity | Source | Payload (`data`) |
+|------------|-------------|----------|--------|-------------------|
+| `module_registered` | — | info | Registry bridge | `module_id` |
+| `module_unregistered` | — | info | Registry bridge | `module_id` |
+| `apcore.config.updated` | `config_changed` | info | `system.control.update_config` | `key`, `old_value`, `new_value` |
+| `apcore.module.reloaded` | `config_changed` | info | `system.control.reload_module` | `module_id`, `previous_version`, `new_version` |
+| `apcore.module.toggled` | `module_health_changed` | info | `system.control.toggle_feature` | `module_id`, `enabled` |
+| `apcore.health.recovered` | `module_health_changed` | info | `PlatformNotifyMiddleware` | `module_id`, recovery details |
+| `error_threshold_exceeded` | — | error | `PlatformNotifyMiddleware` | `module_id`, `error_rate`, `threshold` |
+| `latency_threshold_exceeded` | — | warn | `PlatformNotifyMiddleware` | `module_id`, `p99_latency_ms`, `threshold` |
+
+> **Note (§9.16):** Canonical `apcore.*` names are the primary event types. Legacy aliases (`config_changed`, `module_health_changed`) are emitted alongside canonical names as backward-compatible aliases during the 0.15.x transition period. New code should subscribe to canonical names.
 
 ## Configuration
 

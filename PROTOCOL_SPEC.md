@@ -4204,6 +4204,73 @@ ModuleError (base error for all framework errors)
 
 Each error class carries a `code` attribute set to the corresponding error code string (e.g., `MODULE_NOT_FOUND`). Implementations **must** ensure all framework-thrown errors are instances of `ModuleError`. Module custom errors **should** also extend `ModuleError` directly.
 
+### 8.8 Error Formatter Registry
+
+apcore-mcp and apcore-a2a each independently implement an `ErrorMapper` that translates `ModuleError` into their protocol-specific format (MCP camelCase JSON, A2A JSON-RPC codes). The **Error Formatter Registry** provides a shared registration point so this translation contract is visible to the framework, without requiring apcore to know protocol details.
+
+> **Scope:** apcore provides the interface and fallback only. Protocol-specific formatters are owned by each adapter package. Adoption is **SHOULD**-level for ecosystem adapters.
+
+#### 8.8.1 `ErrorFormatter` Protocol
+
+```
+protocol ErrorFormatter:
+    format(error: ModuleError, context: Context) → dict
+    # Returns a protocol-specific error representation.
+    # MUST NOT raise — return best-effort dict on internal failure.
+```
+
+#### 8.8.2 Registration API
+
+`ErrorFormatterRegistry` is a class exported from the `apcore` package:
+
+```python
+from apcore import ErrorFormatterRegistry
+```
+
+```
+ErrorFormatterRegistry.register(
+    adapter_name: string,        # MUST — unique adapter id (e.g., "mcp", "a2a", "cli")
+    formatter:    ErrorFormatter  # MUST — implements ErrorFormatter protocol
+)
+```
+
+**Registration rules:**
+1. `adapter_name` **must** be unique. Registering the same name twice **must** raise `ERROR_FORMATTER_DUPLICATE`.
+2. Registration **should** happen at adapter initialization, before any module calls are processed.
+3. The registry is global and shared across all Executor instances.
+
+#### 8.8.3 Lookup Algorithm
+
+```
+Algorithm: format_error(error, adapter_name, context)
+
+Steps:
+  1. formatter ← ErrorFormatterRegistry.get(adapter_name)
+  2. If formatter is nil:
+       → Serialize via error.to_dict() (§8.5 standard format)
+  3. Return formatter.format(error, context)
+```
+
+The framework guarantees a result — callers **must not** handle exceptions from `format_error`.
+
+#### 8.8.4 Ecosystem Adoption
+
+Ecosystem adapters **should** register their formatter at initialization:
+
+| Adapter | `adapter_name` | Responsibility |
+|---------|---------------|----------------|
+| apcore-mcp | `mcp` | snake_case → camelCase, ACL masking, AI guidance mapping |
+| apcore-a2a | `a2a` | JSON-RPC code mapping (`-32601`/`-32602`/`-32603`), truncation |
+| apcore-cli | `cli` | Terminal-friendly formatting, exit code derivation |
+
+apcore itself does not ship these formatters. Each adapter package owns its implementation.
+
+#### 8.8.5 New Error Code
+
+| Error Code | Trigger | New? |
+|------------|---------|------|
+| `ERROR_FORMATTER_DUPLICATE` | `register()` called twice for the same `adapter_name` | New |
+
 ---
 
 ## 9. Configuration Specification (Configuration Specification)
@@ -4424,7 +4491,7 @@ Config.register_namespace(
 |-----------|----------|-------------|
 | `name` | MUST | Namespace identifier. Pattern: `^[a-z][a-z0-9]*(-[a-z0-9]+)*$` (lowercase, hyphens allowed). Examples: `apcore`, `apflow`, `apcore-mcp`, `my-billing`. |
 | `schema` | MAY | JSON Schema document (inline object or file path). When provided, the namespace section is validated against this schema during `Config.validate()`. When `nil`, the namespace is registered for isolation and env override only — no structural validation is performed. |
-| `env_prefix` | MAY | Uppercase prefix for environment variable overrides (e.g., `APFLOW`). When `nil`, no environment variable overrides are applied for this namespace. Must match pattern: `^[A-Z][A-Z0-9]*(_[A-Z0-9]+)*$`. |
+| `env_prefix` | MAY | Uppercase prefix for environment variable overrides (e.g., `APFLOW`). When `nil`, no environment variable overrides are applied for this namespace. Must match pattern: `^[A-Z][A-Z0-9]*(_[A-Z0-9]+|__[A-Z][A-Z0-9]*)*$`. The `__` (double-underscore) form is used to avoid collision with the `APCORE_` prefix (e.g., `APCORE__MCP`). |
 | `defaults` | MAY | Default configuration values for this namespace. Merged before file data (lowest priority). |
 
 **Registration rules:**
@@ -4474,19 +4541,6 @@ Config::register_namespace(NamespaceRegistration {
     env_prefix: Some("APFLOW"),
     defaults: Some(serde_json::json!({"api": {"timeout": 30.0}})),
 })?;
-```
-
-**Go:**
-
-```go
-import "github.com/aipartnerup/apcore-go/config"
-
-config.RegisterNamespace(config.NamespaceRegistration{
-    Name:      "apflow",
-    Schema:    "schemas/apflow.schema.json",
-    EnvPrefix: "APFLOW",
-    Defaults:  map[string]any{"api": map[string]any{"timeout": 30.0}},
-})
 ```
 
 **Java:**
@@ -4885,10 +4939,10 @@ Examples (namespace "apcore", env_prefix "APCORE" — unchanged from §9.2):
 
 #### 9.8.2 Env Prefix Conflict Prevention
 
-Env prefix conflicts arise when one registered prefix is a string prefix of another (e.g., `APP` and `APPCORE`), making it impossible to determine which namespace owns `APPCORE_X`. The following rules prevent this:
+Env prefix conflicts arise when one registered prefix is a string prefix of another, making it ambiguous which namespace owns a given env var. The following rules prevent this:
 
 1. Each `env_prefix` **must** be unique across all registered namespaces. Attempting to register a duplicate `env_prefix` **must** raise `CONFIG_ENV_PREFIX_CONFLICT`.
-2. Implementations **must** check that no registered `env_prefix` + `"_"` is a string prefix of another registered `env_prefix` + `"_"`. For example, `FOO_` and `FOO_BAR_` conflict because env var `FOO_BAR_X` is ambiguous. This **must** raise `CONFIG_ENV_PREFIX_CONFLICT` at registration time.
+2. Any `env_prefix` that starts with `APCORE_` (i.e., matches `^APCORE_[A-Z0-9]`) **must** raise `CONFIG_ENV_PREFIX_CONFLICT`. This prevents collision with the `apcore` namespace's `APCORE_` prefix. The double-underscore form (`^APCORE__[A-Z]`, e.g., `APCORE__MCP`) is explicitly permitted and dispatched via longest-prefix-match (see dispatch algorithm below).
 3. The prefix `APCORE` is reserved for the `apcore` namespace. Attempting to register it for another namespace **must** raise `CONFIG_NAMESPACE_RESERVED`.
 
 **Resolving the `APCORE` / `APCORE__MCP` ambiguity:**
@@ -5182,7 +5236,7 @@ Implementations **must** use the following error codes (extensions to §8). All 
 | `CONFIG_INVALID` | Validation failure, extended to include namespace-level schema validation errors and strict-mode unknown namespace errors | §8.2 (extended) |
 | `CONFIG_NAMESPACE_DUPLICATE` | `register_namespace` called twice for the same namespace name | New |
 | `CONFIG_NAMESPACE_RESERVED` | Attempt to register `apcore` or `_config` | New |
-| `CONFIG_ENV_PREFIX_CONFLICT` | Duplicate `env_prefix`, or one `env_prefix + "_"` is a string prefix of another `env_prefix + "_"` | New |
+| `CONFIG_ENV_PREFIX_CONFLICT` | Duplicate `env_prefix`, or `env_prefix` matches `^APCORE_[A-Z0-9]` (collides with the `apcore` namespace's `APCORE_` prefix) | New |
 | `CONFIG_MOUNT_ERROR` | Mount source file not found, invalid YAML in mount file, or mount to `_config` | New |
 | `CONFIG_BIND_ERROR` | Typed deserialization failure in `bind()` — missing fields or type mismatch between namespace data and target type | New |
 
@@ -5331,6 +5385,171 @@ If no file is found:
 This is a **MAY**-level feature. Implementations that do not support discovery **must** require an explicit path in `Config.load()`.
 
 > **Note:** The file name does not influence mode detection. A file named `project.yaml` may contain legacy-mode content, and a file named `apcore.yaml` may contain namespace-mode content. Mode is always determined by the presence of the `apcore:` top-level key (see §9.6.1).
+
+### 9.15 apcore Built-in Namespace Registrations
+
+The framework pre-registers two namespaces for its own subsystems at startup, before any application `Config.load()` call. This applies the Config Bus pattern (§9.4) to apcore's own internal configuration — the same mechanism apcore exposes to third parties is now used by apcore itself.
+
+Both namespaces promote existing flat keys that already live inside the `apcore` namespace into dedicated, independently-configurable namespaces. The migration is strictly additive: legacy mode files continue to work unchanged.
+
+#### 9.15.1 Bootstrap Order
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                Framework Bootstrap Order                    │
+│                                                             │
+│  1. Config.register_namespace("observability", ...)         │
+│  2. Config.register_namespace("sys_modules", ...)           │
+│  3. [Application / ecosystem packages register their own]   │
+│  4. Config.load(path)                                       │
+│  5. register_sys_modules(config)                            │
+└─────────────────────────────────────────────────────────────┘
+```
+
+Third-party packages **should** register their namespaces after step 2 and before step 4 (at import time).
+
+#### 9.15.2 `observability` Namespace
+
+Extracts the existing `observability.*` flat keys from the `apcore` namespace into a dedicated Config Bus namespace. This makes observability configuration independently addressable and allows ecosystem adapters to read a single authoritative source.
+
+```python
+Config.register_namespace(
+    "observability",
+    schema="schemas/observability.schema.json",
+    env_prefix="APCORE__OBSERVABILITY",
+    defaults={
+        "tracing": {
+            "enabled": False,
+            "strategy": "full",        # "full" | "proportional" | "error_first" | "off"
+            "sampling_rate": 1.0,
+            "exporter": "stdout",      # "stdout" | "otlp" | "in_memory"
+            "otlp_endpoint": None,
+        },
+        "metrics": {
+            "enabled": False,
+            "exporter": "stdout",      # "stdout" | "prometheus" | "in_memory"
+        },
+        "logging": {
+            "enabled": True,
+            "level": "info",           # "trace"|"debug"|"info"|"warn"|"error"|"fatal"
+            "format": "json",          # "json" | "text"
+            "redact_sensitive": True,
+        },
+        "error_history": {
+            "max_entries_per_module": 50,
+            "max_total_entries": 1000,
+        },
+        "platform_notify": {
+            "enabled": False,
+            "error_rate_threshold": 0.1,
+            "latency_p99_threshold_ms": 5000.0,
+        },
+    },
+)
+```
+
+**Migration:** Existing `apcore.observability.*` flat keys map 1:1 to `observability.*` namespace keys. No changes required to existing configuration files.
+
+**Environment variable examples (`env_prefix = APCORE__OBSERVABILITY`):**
+
+```
+APCORE__OBSERVABILITY_TRACING_STRATEGY=error_first
+APCORE__OBSERVABILITY_LOGGING_LEVEL=debug
+APCORE__OBSERVABILITY_METRICS_EXPORTER=prometheus
+```
+
+**Ecosystem adoption** — adapter packages **should** read from this namespace rather than maintaining their own observability defaults:
+
+| Package | Keys to read |
+|---------|-------------|
+| apcore (core) | Full namespace — owns all keys |
+| apcore-mcp | `tracing.strategy`, `logging.level` |
+| apcore-a2a | `tracing.strategy`, `logging.level` |
+| apcore-cli | `logging.level`, `logging.format` |
+| Third-party | `logging.level` (MAY) — read-only |
+
+#### 9.15.3 `sys_modules` Namespace
+
+Promotes the existing `sys_modules.*` flat keys — currently read directly by `register_sys_modules()` — into a dedicated namespace, making system module configuration independently overridable without touching the `apcore` namespace.
+
+```python
+Config.register_namespace(
+    "sys_modules",
+    schema="schemas/sys-modules.schema.json",
+    env_prefix="APCORE__SYS",
+    defaults={
+        "enabled": True,
+        "health":   {"enabled": True},
+        "manifest": {"enabled": True},
+        "usage": {
+            "enabled": True,
+            "retention_hours": 168,
+            "bucketing_strategy": "hourly",
+        },
+        "control":  {"enabled": True},
+        "events": {
+            "enabled": True,
+            "thresholds": {
+                "error_rate": 0.1,
+                "latency_p99_ms": 5000.0,
+            },
+        },
+    },
+)
+```
+
+**Migration:** `register_sys_modules()` **must** prefer `config.namespace("sys_modules")` in namespace mode, falling back to `config.get("sys_modules.*")` in legacy mode. No breaking change.
+
+**Environment variable examples (`env_prefix = APCORE__SYS`):**
+
+```
+APCORE__SYS_ENABLED=true
+APCORE__SYS_USAGE_RETENTION__HOURS=336
+APCORE__SYS_EVENTS_ENABLED=false
+```
+
+---
+
+### 9.16 Event Type Naming Convention and Canonical Definitions
+
+apcore-python currently emits event types as hardcoded strings scattered across multiple files, with two confirmed collisions:
+
+- `"module_health_changed"` used in `control.py` (toggle on/off) and `platform_notify.py` (error rate recovery) with different payloads
+- `"config_changed"` used for both key-value updates and module reload notifications
+
+This section defines the canonical event type names and payload contracts, resolving collisions and establishing the naming convention for the ecosystem.
+
+#### 9.16.1 Naming Convention
+
+Event type names **must** use dot-namespaced format. The prefix identifies ownership:
+
+| Prefix | Owner | Examples |
+|--------|-------|---------|
+| `apcore.*` | Core framework | `apcore.module.registered`, `apcore.config.updated` |
+| `apcore-mcp.*` | apcore-mcp | `apcore-mcp.tool_called` |
+| `apcore-a2a.*` | apcore-a2a | `apcore-a2a.task_submitted` |
+| `apcore-cli.*` | apcore-cli | `apcore-cli.command_invoked` |
+| `apflow.*` | apflow | `apflow.step_completed` |
+| Custom | Third-party | `billing.invoice_generated` |
+
+The `apcore.*` prefix is reserved. Ecosystem packages **must not** emit events with this prefix.
+
+#### 9.16.2 Canonical Core Event Types
+
+The following are the canonical event type names, payload keys, and severity for all events emitted by apcore-python. Implementations **must** use these names. The previous short-form names (`module_registered`, `config_changed`, etc.) remain valid as **aliases** for backward compatibility.
+
+| Canonical Name | Alias (legacy) | Severity | Emitted by | Payload Keys |
+|----------------|---------------|----------|------------|--------------|
+| `apcore.module.registered` | `module_registered` | `info` | Registry bridge | `module_id` |
+| `apcore.module.unregistered` | `module_unregistered` | `info` | Registry bridge | `module_id` |
+| `apcore.module.toggled` | *(new — was collision)* | `info`/`warn` | `system.control.toggle_feature` | `module_id`, `enabled` |
+| `apcore.module.reloaded` | `config_changed` (partial) | `info` | `system.control.reload_module` | `module_id`, `previous_version`, `new_version` |
+| `apcore.config.updated` | `config_changed` (partial) | `info` | `system.control.update_config` | `key`, `old_value`, `new_value` |
+| `apcore.error.threshold_exceeded` | `error_threshold_exceeded` | `error` | `PlatformNotifyMiddleware` | `module_id`, `error_rate`, `threshold` |
+| `apcore.latency.threshold_exceeded` | `latency_threshold_exceeded` | `warn` | `PlatformNotifyMiddleware` | `module_id`, `p99_latency_ms`, `threshold` |
+| `apcore.health.recovered` | *(new — was collision)* | `info` | `PlatformNotifyMiddleware` | `module_id`, `error_rate` |
+
+> **Collision resolution:** `"module_health_changed"` is retired. Its two usages are replaced by `apcore.module.toggled` (enable/disable) and `apcore.health.recovered` (error rate recovery). `"config_changed"` is retired and split into `apcore.module.reloaded` and `apcore.config.updated`. All four legacy names remain emitted as aliases during a transition period.
 
 ---
 

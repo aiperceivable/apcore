@@ -297,7 +297,7 @@ Update a runtime configuration value by dot-path key.
 - Cannot change `sys_modules.enabled` (restricted key).
 - Sensitive keys (containing `token`, `secret`, `key`, `password`, `auth`, `credential`) are logged with masked values.
 - Changes are in-memory only; not persisted to YAML.
-- Emits `config_changed` event.
+- Emits `apcore.config.updated` event (legacy alias: `config_changed`).
 
 ---
 
@@ -326,7 +326,7 @@ Hot-reload a module from disk without restart.
 }
 ```
 
-**Process:** `safe_unregister()` with drain → `discover()` re-load → re-register → emit `config_changed` event.
+**Process:** `safe_unregister()` with drain → `discover()` re-load → re-register → emit `apcore.module.reloaded` event (legacy alias: `config_changed`).
 
 ---
 
@@ -354,7 +354,7 @@ Disable or enable a module without unloading it.
 }
 ```
 
-Disabled modules remain registered but calls raise `ModuleDisabledError`. Toggle state is thread-safe (via `ToggleState` class) and survives module reload. Emits `module_health_changed` event.
+Disabled modules remain registered but calls raise `ModuleDisabledError`. Toggle state is thread-safe (via `ToggleState` class) and survives module reload. Emits `apcore.module.toggled` event (legacy alias: `module_health_changed`).
 
 ## Registration & Setup
 
