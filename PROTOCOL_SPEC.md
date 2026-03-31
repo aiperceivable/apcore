@@ -4491,7 +4491,7 @@ Config.register_namespace(
 |-----------|----------|-------------|
 | `name` | MUST | Namespace identifier. Pattern: `^[a-z][a-z0-9]*(-[a-z0-9]+)*$` (lowercase, hyphens allowed). Examples: `apcore`, `apflow`, `apcore-mcp`, `my-billing`. |
 | `schema` | MAY | JSON Schema document (inline object or file path). When provided, the namespace section is validated against this schema during `Config.validate()`. When `nil`, the namespace is registered for isolation and env override only — no structural validation is performed. |
-| `env_prefix` | MAY | Uppercase prefix for environment variable overrides (e.g., `APFLOW`). When `nil`, no environment variable overrides are applied for this namespace. Must match pattern: `^[A-Z][A-Z0-9]*(_[A-Z0-9]+|__[A-Z][A-Z0-9]*)*$`. The `__` (double-underscore) form is used to avoid collision with the `APCORE_` prefix (e.g., `APCORE__MCP`). |
+| `env_prefix` | MAY | Uppercase prefix for environment variable overrides (e.g., `APFLOW`). When `nil`, no environment variable overrides are applied for this namespace. Must match pattern: `^[A-Z][A-Z0-9]*(_[A-Z0-9]+|__[A-Z][A-Z0-9]*)*$`. The `__` (double-underscore) form is used to avoid collision with the `APCORE_` prefix (e.g., `APCORE_MCP`). |
 | `defaults` | MAY | Default configuration values for this namespace. Merged before file data (lowest priority). |
 
 **Registration rules:**
@@ -4925,9 +4925,9 @@ Examples (namespace "apflow", env_prefix "APFLOW"):
   APFLOW_API_TIMEOUT=60                → apflow.api.timeout
   APFLOW_GOVERNANCE_DEFAULT__POLICY=x  → apflow.governance.default_policy
 
-Examples (namespace "apcore-mcp", env_prefix "APCORE__MCP"):
-  APCORE__MCP_TRANSPORT=stdio          → apcore-mcp.transport
-  APCORE__MCP_PORT=9000                → apcore-mcp.port
+Examples (namespace "apcore-mcp", env_prefix "APCORE_MCP"):
+  APCORE_MCP_TRANSPORT=stdio          → apcore-mcp.transport
+  APCORE_MCP_PORT=9000                → apcore-mcp.port
 
 Examples (namespace "apcore", env_prefix "APCORE" — unchanged from §9.2):
   APCORE_EXECUTOR_DEFAULT__TIMEOUT=5000 → apcore.executor.default_timeout
@@ -4942,23 +4942,23 @@ Examples (namespace "apcore", env_prefix "APCORE" — unchanged from §9.2):
 Env prefix conflicts arise when one registered prefix is a string prefix of another, making it ambiguous which namespace owns a given env var. The following rules prevent this:
 
 1. Each `env_prefix` **must** be unique across all registered namespaces. Attempting to register a duplicate `env_prefix` **must** raise `CONFIG_ENV_PREFIX_CONFLICT`.
-2. Any `env_prefix` that starts with `APCORE_` (i.e., matches `^APCORE_[A-Z0-9]`) **must** raise `CONFIG_ENV_PREFIX_CONFLICT`. This prevents collision with the `apcore` namespace's `APCORE_` prefix. The double-underscore form (`^APCORE__[A-Z]`, e.g., `APCORE__MCP`) is explicitly permitted and dispatched via longest-prefix-match (see dispatch algorithm below).
+2. Any `env_prefix` that starts with `APCORE_` (i.e., matches `^APCORE_[A-Z0-9]`) **must** raise `CONFIG_ENV_PREFIX_CONFLICT`. This prevents collision with the `apcore` namespace's `APCORE_` prefix. The double-underscore form (`^APCORE_[A-Z]`, e.g., `APCORE_MCP`) is explicitly permitted and dispatched via longest-prefix-match (see dispatch algorithm below).
 3. The prefix `APCORE` is reserved for the `apcore` namespace. Attempting to register it for another namespace **must** raise `CONFIG_NAMESPACE_RESERVED`.
 
-**Resolving the `APCORE` / `APCORE__MCP` ambiguity:**
+**Resolving the `APCORE` / `APCORE_MCP` ambiguity:**
 
 A naive prefix scheme would make `APCORE_MCP` (for apcore-mcp) collide with `APCORE_` (for apcore, key path `mcp.*`). The ecosystem convention resolves this by requiring apcore ecosystem packages to use a double-underscore separator between `APCORE` and the sub-package name in their env prefix:
 
 | Package | Namespace | Env Prefix | Why safe |
 |---------|-----------|------------|----------|
 | apcore | `apcore` | `APCORE` | Base prefix |
-| apcore-mcp | `apcore-mcp` | `APCORE__MCP` | `APCORE__MCP_` is not a valid `APCORE_` key (double `__` creates invalid path) |
-| apcore-a2a | `apcore-a2a` | `APCORE__A2A` | Same reasoning |
-| apcore-cli | `apcore-cli` | `APCORE__CLI` | Same reasoning |
+| apcore-mcp | `apcore-mcp` | `APCORE_MCP` | `APCORE_MCP_` is not a valid `APCORE_` key (double `__` creates invalid path) |
+| apcore-a2a | `apcore-a2a` | `APCORE_A2A` | Same reasoning |
+| apcore-cli | `apcore-cli` | `APCORE_CLI` | Same reasoning |
 | apflow | `apflow` | `APFLOW` | Completely disjoint prefix |
 | django-apcore | `django-apcore` | `DJANGO_APCORE` | No `DJANGO` namespace registered — no prefix collision |
 
-This works because the `APCORE_` prefix matcher stops at the first `_` boundary. An env var like `APCORE__MCP_TRANSPORT` starts with `APCORE__` (double underscore), which the `APCORE_` prefix handler would interpret as key path `apcore._mcp.transport` — not a valid apcore config path. The `APCORE__MCP_` prefix handler correctly claims it.
+This works because the `APCORE_` prefix matcher stops at the first `_` boundary. An env var like `APCORE_MCP_TRANSPORT` starts with `APCORE_` (double underscore), which the `APCORE_` prefix handler would interpret as key path `apcore._mcp.transport` — not a valid apcore config path. The `APCORE_MCP_` prefix handler correctly claims it.
 
 However, this convention introduces complexity. Implementations **must** use **longest-prefix-match** when dispatching env vars to namespaces:
 
@@ -4966,7 +4966,7 @@ However, this convention introduces complexity. Implementations **must** use **l
 Algorithm: dispatch_env_var(env_key, registered_prefixes)
 
 Input:
-  env_key             — Environment variable name (e.g., "APCORE__MCP_TRANSPORT")
+  env_key             — Environment variable name (e.g., "APCORE_MCP_TRANSPORT")
   registered_prefixes — List of (env_prefix + "_", namespace_name) tuples,
                         sorted by prefix length descending
 
@@ -5116,7 +5116,7 @@ Config.registered_namespaces()
 → [
     {name: "apcore",     env_prefix: "APCORE",      has_schema: true},
     {name: "apflow",     env_prefix: "APFLOW",      has_schema: true},
-    {name: "apcore-mcp", env_prefix: "APCORE__MCP", has_schema: true},
+    {name: "apcore-mcp", env_prefix: "APCORE_MCP", has_schema: true},
     {name: "billing",    env_prefix: "BILLING",      has_schema: false},
   ]
 ```
@@ -5255,7 +5255,7 @@ from apcore import Config
 Config.register_namespace(
     "apcore-mcp",
     schema=_resolve_schema_path("apcore-mcp.schema.json"),
-    env_prefix="APCORE__MCP",   # double underscore to avoid APCORE_ prefix collision
+    env_prefix="APCORE_MCP",   # double underscore to avoid APCORE_ prefix collision
     defaults={"transport": "streamable-http", "port": 8000},
 )
 ```
@@ -5265,9 +5265,9 @@ Config.register_namespace(
 | Package | Namespace | Env Prefix | Conflict? | Schema |
 |---------|-----------|------------|-----------|--------|
 | apcore (core) | `apcore` | `APCORE` | — | `apcore-config.schema.json` |
-| apcore-mcp | `apcore-mcp` | `APCORE__MCP` | Yes — `APCORE_` is a prefix of `APCORE_MCP_`; use `APCORE__MCP` to disambiguate | `apcore-mcp.schema.json` |
-| apcore-a2a | `apcore-a2a` | `APCORE__A2A` | Same as above | `apcore-a2a.schema.json` |
-| apcore-cli | `apcore-cli` | `APCORE__CLI` | Same as above | `apcore-cli.schema.json` |
+| apcore-mcp | `apcore-mcp` | `APCORE_MCP` | Yes — `APCORE_` is a prefix of `APCORE_MCP_`; use `APCORE_MCP` to disambiguate | `apcore-mcp.schema.json` |
+| apcore-a2a | `apcore-a2a` | `APCORE_A2A` | Same as above | `apcore-a2a.schema.json` |
+| apcore-cli | `apcore-cli` | `APCORE_CLI` | Same as above | `apcore-cli.schema.json` |
 | apflow | `apflow` | `APFLOW` | No — disjoint from `APCORE_` | `apflow.schema.json` |
 | django-apcore | `django-apcore` | `DJANGO_APCORE` | No — no `DJANGO` namespace registered | `django-apcore.schema.json` |
 | fastapi-apcore | `fastapi-apcore` | `FASTAPI_APCORE` | No — no `FASTAPI` namespace registered | `fastapi-apcore.schema.json` |
@@ -5275,7 +5275,7 @@ Config.register_namespace(
 | nestjs-apcore | `nestjs-apcore` | `NESTJS_APCORE` | No — no `NESTJS` namespace registered | `nestjs-apcore.schema.json` |
 | axum-apcore | `axum-apcore` | `AXUM_APCORE` | No — no `AXUM` namespace registered | `axum-apcore.schema.json` |
 
-> **Why `APCORE__MCP` and not `APCORE_MCP`?** The prefix `APCORE_` (for the `apcore` namespace) is a string prefix of `APCORE_MCP_`. An env var like `APCORE_MCP_TRANSPORT` is ambiguous: does it set `apcore → mcp.transport` or `apcore-mcp → transport`? The double-underscore convention (`APCORE__MCP_`) breaks the ambiguity because `APCORE_` never matches `APCORE__MCP_TRANSPORT` as an apcore key (the double underscore creates an invalid key path `_mcp.transport`). Framework integrations like `DJANGO_APCORE` do not have this problem because no `DJANGO` namespace is registered, so `DJANGO_APCORE_*` is unambiguous.
+> **Why `APCORE_MCP` and not `APCORE_MCP`?** The prefix `APCORE_` (for the `apcore` namespace) is a string prefix of `APCORE_MCP_`. An env var like `APCORE_MCP_TRANSPORT` is ambiguous: does it set `apcore → mcp.transport` or `apcore-mcp → transport`? The double-underscore convention (`APCORE_MCP_`) breaks the ambiguity because `APCORE_` never matches `APCORE_MCP_TRANSPORT` as an apcore key (the double underscore creates an invalid key path `_mcp.transport`). Framework integrations like `DJANGO_APCORE` do not have this problem because no `DJANGO` namespace is registered, so `DJANGO_APCORE_*` is unambiguous.
 
 #### 9.13.2 Third-Party Package Integration
 
@@ -5416,7 +5416,7 @@ Extracts the existing `observability.*` flat keys from the `apcore` namespace in
 Config.register_namespace(
     "observability",
     schema="schemas/observability.schema.json",
-    env_prefix="APCORE__OBSERVABILITY",
+    env_prefix="APCORE_OBSERVABILITY",
     defaults={
         "tracing": {
             "enabled": False,
@@ -5450,12 +5450,12 @@ Config.register_namespace(
 
 **Migration:** Existing `apcore.observability.*` flat keys map 1:1 to `observability.*` namespace keys. No changes required to existing configuration files.
 
-**Environment variable examples (`env_prefix = APCORE__OBSERVABILITY`):**
+**Environment variable examples (`env_prefix = APCORE_OBSERVABILITY`):**
 
 ```
-APCORE__OBSERVABILITY_TRACING_STRATEGY=error_first
-APCORE__OBSERVABILITY_LOGGING_LEVEL=debug
-APCORE__OBSERVABILITY_METRICS_EXPORTER=prometheus
+APCORE_OBSERVABILITY_TRACING_STRATEGY=error_first
+APCORE_OBSERVABILITY_LOGGING_LEVEL=debug
+APCORE_OBSERVABILITY_METRICS_EXPORTER=prometheus
 ```
 
 **Ecosystem adoption** — adapter packages **should** read from this namespace rather than maintaining their own observability defaults:
@@ -5476,7 +5476,7 @@ Promotes the existing `sys_modules.*` flat keys — currently read directly by `
 Config.register_namespace(
     "sys_modules",
     schema="schemas/sys-modules.schema.json",
-    env_prefix="APCORE__SYS",
+    env_prefix="APCORE_SYS",
     defaults={
         "enabled": True,
         "health":   {"enabled": True},
@@ -5500,12 +5500,12 @@ Config.register_namespace(
 
 **Migration:** `register_sys_modules()` **must** prefer `config.namespace("sys_modules")` in namespace mode, falling back to `config.get("sys_modules.*")` in legacy mode. No breaking change.
 
-**Environment variable examples (`env_prefix = APCORE__SYS`):**
+**Environment variable examples (`env_prefix = APCORE_SYS`):**
 
 ```
-APCORE__SYS_ENABLED=true
-APCORE__SYS_USAGE_RETENTION__HOURS=336
-APCORE__SYS_EVENTS_ENABLED=false
+APCORE_SYS_ENABLED=true
+APCORE_SYS_USAGE_RETENTION__HOURS=336
+APCORE_SYS_EVENTS_ENABLED=false
 ```
 
 ---

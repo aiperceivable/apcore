@@ -880,7 +880,7 @@ apcore-a2a:
 
 Each package registers its own namespace with `Config.register_namespace()`. Third-party projects can also participate via `config.mount()` without modifying their existing configuration files. See the protocol spec for the full integration spectrum — from zero-coupling to full unification.
 
-**Environment variable overrides** work per namespace: `APCORE_EXECUTOR_DEFAULT__TIMEOUT=5000` for apcore, `APFLOW_API_TIMEOUT=60` for apflow, `APCORE__MCP_PORT=9000` for apcore-mcp.
+**Environment variable overrides** work per namespace: `APCORE_EXECUTOR_DEFAULT__TIMEOUT=5000` for apcore, `APFLOW_API_TIMEOUT=60` for apflow, `APCORE_MCP_PORT=9000` for apcore-mcp.
 
 ---
 

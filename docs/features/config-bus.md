@@ -67,7 +67,7 @@ Config::register_namespace(apcore::NamespaceRegistration {
 Env vars are dispatched to namespaces using **longest-prefix-match**. Sort all registered `envPrefix` values by length descending; the first match wins.
 
 ```
-APCORE__OBSERVABILITY_TRACING_ENABLED=true
+APCORE_OBSERVABILITY_TRACING_ENABLED=true
    → namespace "observability", key "tracing.enabled"
 
 MY_PLUGIN_TIMEOUT=10000
@@ -78,7 +78,7 @@ Separator rules:
 - Double `__` in the suffix → literal `_` in the key
 - Single `_` in the suffix → `.` separator in the key
 
-**Reserved prefix:** Any env var matching `APCORE_[A-Z0-9]` is reserved for apcore's legacy flat-key override scheme and cannot be used as a namespace `envPrefix`. Double-underscore `APCORE__` prefixes are allowed for apcore sub-package namespaces.
+**Reserved prefix:** Any env var matching `APCORE_[A-Z0-9]` is reserved for apcore's legacy flat-key override scheme and cannot be used as a namespace `envPrefix`. Double-underscore `APCORE_` prefixes are allowed for apcore sub-package namespaces.
 
 ## Namespace Access
 
@@ -198,8 +198,8 @@ apcore pre-registers two namespaces at startup:
 
 | Namespace | Env prefix | Description |
 |-----------|-----------|-------------|
-| `observability` | `APCORE__OBSERVABILITY` | Tracing, metrics, logging, error history, platform notify config |
-| `sys_modules` | `APCORE__SYS` | System modules enable/disable and threshold config |
+| `observability` | `APCORE_OBSERVABILITY` | Tracing, metrics, logging, error history, platform notify config |
+| `sys_modules` | `APCORE_SYS` | System modules enable/disable and threshold config |
 
 ## Config Discovery (§9.14)
 
@@ -257,13 +257,13 @@ The `_config` reserved namespace controls validation behavior. `strict: true` ca
 ```python
 # Python
 namespaces = Config.registered_namespaces()
-# [{"name": "observability", "env_prefix": "APCORE__OBSERVABILITY", "has_schema": False}, ...]
+# [{"name": "observability", "env_prefix": "APCORE_OBSERVABILITY", "has_schema": False}, ...]
 ```
 
 ```typescript
 // TypeScript
 const namespaces = Config.registeredNamespaces();
-// [{ name: 'observability', envPrefix: 'APCORE__OBSERVABILITY', hasSchema: false }, ...]
+// [{ name: 'observability', envPrefix: 'APCORE_OBSERVABILITY', hasSchema: false }, ...]
 ```
 
 ## Key Files
