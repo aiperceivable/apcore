@@ -1106,6 +1106,8 @@ Development guide: see [Adapter Development Guide](./docs/guides/adapter-develop
 |------|------|
 | [Protocol Specification](./PROTOCOL_SPEC.md) | Complete standard specification (RFC 2119 Conformant) |
 | [Scope Definition](./SCOPE.md) | Responsibility boundaries (what's in/out of scope) |
+| [Positioning](./docs/POSITIONING.md) | Where apcore sits in the stack — relationship to MCP, A2A, CLI, REST |
+| [Roadmap](./ROADMAP.md) | Project roadmap and milestones |
 
 ### Concepts & Architecture
 
