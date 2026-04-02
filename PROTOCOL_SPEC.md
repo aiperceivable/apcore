@@ -4478,10 +4478,13 @@ All SDK implementations **must** expose a namespace registration method on the `
 
 ```
 Config.register_namespace(
-    name:        string,                  # MUST — namespace identifier
-    schema:      JSONSchema | path | nil, # MAY  — validation schema
-    env_prefix:  string | nil,            # MAY  — environment variable prefix
-    defaults:    map | nil,               # MAY  — default values for this namespace
+    name:        string,                            # MUST — namespace identifier
+    schema:      JSONSchema | path | nil,           # MAY  — validation schema
+    env_prefix:  string | nil,                      # MAY  — env var prefix (nil = auto-derive from name)
+    defaults:    map | nil,                          # MAY  — default values for this namespace
+    env_style:   "nested" | "flat" | "auto" | nil,  # MAY  — env var key conversion strategy
+    max_depth:   int | nil,                          # MAY  — max nesting depth for env conversion
+    env_map:     map<string, string> | nil,          # MAY  — bare env var → config key mapping
 )
 ```
 
@@ -4491,8 +4494,11 @@ Config.register_namespace(
 |-----------|----------|-------------|
 | `name` | MUST | Namespace identifier. Pattern: `^[a-z][a-z0-9]*(-[a-z0-9]+)*$` (lowercase, hyphens allowed). Examples: `apcore`, `apflow`, `apcore-mcp`, `my-billing`. |
 | `schema` | MAY | JSON Schema document (inline object or file path). When provided, the namespace section is validated against this schema during `Config.validate()`. When `nil`, the namespace is registered for isolation and env override only — no structural validation is performed. |
-| `env_prefix` | MAY | Uppercase prefix for environment variable overrides (e.g., `APFLOW`). When `nil`, no environment variable overrides are applied for this namespace. Must match pattern: `^[A-Z][A-Z0-9]*(_[A-Z0-9]+|__[A-Z][A-Z0-9]*)*$`. The `__` (double-underscore) form is used to avoid collision with the `APCORE_` prefix (e.g., `APCORE_MCP`). |
+| `env_prefix` | MAY | Uppercase prefix for environment variable overrides (e.g., `APFLOW`). When `nil`, auto-derived from `name` via `name.upper().replace("-", "_")` (e.g., `name="apcore-mcp"` → `env_prefix="APCORE_MCP"`). When an explicit string, used as-is. Must match pattern: `^[A-Z][A-Z0-9]*(_[A-Z0-9]+)*$`. |
 | `defaults` | MAY | Default configuration values for this namespace. Merged before file data (lowest priority). |
+| `env_style` | MAY | Controls how environment variable suffixes are converted to config keys. `"auto"` (default): matches the suffix against the `defaults` tree structure to determine the correct interpretation — flat keys match flat, nested paths match nested. When `defaults` is `nil`, falls back to `"nested"` behavior. `"nested"`: single `_` → `.` (section separator), double `__` → literal `_` — suitable for purely hierarchical config structures. `"flat"`: no conversion, suffix is lowercased as-is — suitable for purely flat snake_case config keys where `_` is part of the key name, not a hierarchy separator. When `nil`, defaults to `"auto"`. |
+| `max_depth` | MAY | Maximum nesting depth for environment variable key conversion. Applies to `"nested"` and `"auto"` styles; ignored for `"flat"`. After reaching `max_depth` levels, remaining `_` characters are preserved as literal underscores instead of being converted to `.` separators. Default: `5`. Example: `A_B_C_D_E_F_G` with `max_depth=5` → `a.b.c.d.e_f_g` (5 segments). |
+| `env_map` | MAY | Explicit mapping of bare (unprefixed) environment variable names to config keys within this namespace. Each key is an exact env var name (e.g., `"REDIS_URL"`), each value is the target config key (e.g., `"cache_url"`). Only explicitly listed env vars are captured. Same priority as `env_prefix` overrides. An env var name **must not** appear in more than one `env_map` (global or namespace) — duplicates raise `CONFIG_ENV_MAP_CONFLICT`. When `nil`, no bare env var mapping is applied. |
 
 **Registration rules:**
 
@@ -4509,11 +4515,28 @@ Config.register_namespace(
 ```python
 from apcore import Config
 
+# Nested style (default) — hierarchical config with _ → . conversion
 Config.register_namespace(
     "apflow",
     schema="schemas/apflow.schema.json",
     env_prefix="APFLOW",
     defaults={"api": {"timeout": 30.0}},
+)
+
+# Flat style — flat snake_case config, no _ → . conversion
+Config.register_namespace(
+    "reach",
+    env_prefix="REACHFORGE",
+    env_style="flat",
+    defaults={"devto_api_key": "", "llm_model": "gemini-pro"},
+)
+
+# Auto style — mixed flat keys + nested sections, resolved via defaults
+Config.register_namespace(
+    "myapp",
+    env_prefix="MYAPP",
+    env_style="auto",
+    defaults={"devto_api_key": "", "publish": {"delay": 5, "retry": 3}},
 )
 ```
 
@@ -4522,11 +4545,28 @@ Config.register_namespace(
 ```typescript
 import { Config } from 'apcore';
 
+// Nested style (default)
 Config.registerNamespace({
   name: 'apflow',
   schema: 'schemas/apflow.schema.json',
   envPrefix: 'APFLOW',
   defaults: { api: { timeout: 30.0 } },
+});
+
+// Flat style
+Config.registerNamespace({
+  name: 'reach',
+  envPrefix: 'REACHFORGE',
+  envStyle: 'flat',
+  defaults: { devto_api_key: '', llm_model: 'gemini-pro' },
+});
+
+// Auto style
+Config.registerNamespace({
+  name: 'myapp',
+  envPrefix: 'MYAPP',
+  envStyle: 'auto',
+  defaults: { devto_api_key: '', publish: { delay: 5, retry: 3 } },
 });
 ```
 
@@ -4535,11 +4575,34 @@ Config.registerNamespace({
 ```rust
 use apcore::Config;
 
+// Nested style (default)
 Config::register_namespace(NamespaceRegistration {
     name: "apflow",
     schema: Some("schemas/apflow.schema.json".into()),
     env_prefix: Some("APFLOW"),
     defaults: Some(serde_json::json!({"api": {"timeout": 30.0}})),
+    env_style: EnvStyle::Nested,
+    max_depth: 5,
+})?;
+
+// Flat style
+Config::register_namespace(NamespaceRegistration {
+    name: "reach",
+    env_prefix: Some("REACHFORGE"),
+    env_style: EnvStyle::Flat,
+    defaults: Some(serde_json::json!({"devto_api_key": "", "llm_model": "gemini-pro"})),
+    schema: None,
+    max_depth: 5,
+})?;
+
+// Auto style
+Config::register_namespace(NamespaceRegistration {
+    name: "myapp",
+    env_prefix: Some("MYAPP"),
+    env_style: EnvStyle::Auto,
+    defaults: Some(serde_json::json!({"devto_api_key": "", "publish": {"delay": 5, "retry": 3}})),
+    schema: None,
+    max_depth: 5,
 })?;
 ```
 
@@ -4909,28 +4972,92 @@ In namespace mode, each registered namespace with an `env_prefix` has its own en
 
 **Naming convention:**
 
-The env variable convention follows the same rules defined in §9.2 — single `_` is the section separator, double `__` encodes a literal underscore:
+The env variable convention depends on the `env_style` setting of the namespace registration (see §9.5.1). The default style is `"nested"`.
+
+**Nested style** (`env_style = "nested"`, default) — follows the same rules defined in §9.2:
 
 ```
 {ENV_PREFIX}_{SECTION}_{KEY}
 
 Rules:
   1. Prefix is the registered env_prefix (uppercase), followed by _
-  2. Single _ → . (section separator)
+  2. Single _ → . (section separator), up to max_depth levels
   3. Double __ → literal _ (within key names)
   4. All letters uppercase
+  5. After max_depth segments, remaining _ are preserved as literal _
 
-Examples (namespace "apflow", env_prefix "APFLOW"):
+Examples (namespace "apflow", env_prefix "APFLOW", env_style "nested"):
   APFLOW_API_SERVER__URL=http://...    → apflow.api.server_url
   APFLOW_API_TIMEOUT=60                → apflow.api.timeout
   APFLOW_GOVERNANCE_DEFAULT__POLICY=x  → apflow.governance.default_policy
 
-Examples (namespace "apcore-mcp", env_prefix "APCORE_MCP"):
+Examples (namespace "apcore-mcp", env_prefix "APCORE_MCP", env_style "nested"):
   APCORE_MCP_TRANSPORT=stdio          → apcore-mcp.transport
   APCORE_MCP_PORT=9000                → apcore-mcp.port
 
 Examples (namespace "apcore", env_prefix "APCORE" — unchanged from §9.2):
   APCORE_EXECUTOR_DEFAULT__TIMEOUT=5000 → apcore.executor.default_timeout
+```
+
+**Flat style** (`env_style = "flat"`) — the suffix after the prefix is lowercased without any separator conversion. Underscores in the suffix are preserved as literal underscores in the config key. This is designed for namespaces whose config keys are flat snake_case identifiers (e.g., `devto_api_key`, `llm_model`) rather than hierarchical paths.
+
+```
+{ENV_PREFIX}_{KEY}
+
+Rules:
+  1. Prefix is the registered env_prefix (uppercase), followed by _
+  2. Suffix is lowercased as-is (no _ → . conversion, no __ escaping needed)
+  3. All letters uppercase in the env var
+
+Examples (namespace "reach", env_prefix "REACHFORGE", env_style "flat"):
+  REACHFORGE_DEVTO_API_KEY=abc123     → reach.devto_api_key
+  REACHFORGE_LLM_MODEL=gemini-pro     → reach.llm_model
+  REACHFORGE_PUBLISH_DELAY=5          → reach.publish_delay
+
+Examples (namespace "myapp", env_prefix "MYAPP", env_style "flat"):
+  MYAPP_DATABASE_URL=postgres://...    → myapp.database_url
+  MYAPP_MAX_RETRIES=3                  → myapp.max_retries
+```
+
+**Auto style** (`env_style = "auto"`) — resolves each env var suffix by matching against the registered `defaults` tree structure. This handles namespaces that mix flat snake_case keys with nested sub-sections, without requiring the user to escape underscores.
+
+```
+Algorithm: auto_resolve(suffix, defaults_tree, depth, max_depth)
+
+  1. Try full suffix (lowercased) as a flat key in the current tree level.
+     If found → return suffix (flat match).
+
+  2. If depth >= max_depth → return suffix as flat key (depth limit).
+
+  3. For each underscore position in suffix (left to right):
+     Split into (prefix, remainder).
+     If prefix exists in tree AND is a dict/map:
+       Recurse: sub_key ← auto_resolve(remainder, tree[prefix], depth+1, max_depth)
+       If sub_key is not nil → return prefix + "." + sub_key
+
+  4. No match found → fall back to nested conversion (with max_depth).
+
+Examples (namespace "reach", env_prefix "REACHFORGE", env_style "auto",
+          defaults {"devto_api_key": "", "publish": {"delay": 5, "retry": 3}}):
+
+  REACHFORGE_DEVTO_API_KEY=abc  → "devto_api_key" in defaults? Yes → reach.devto_api_key
+  REACHFORGE_PUBLISH_DELAY=5    → "publish_delay" in defaults? No
+                                → split "publish" + "delay"
+                                → "publish" is dict? Yes → "delay" in it? Yes
+                                → reach.publish.delay
+  REACHFORGE_PUBLISH_RETRY=3    → same logic → reach.publish.retry
+  REACHFORGE_NEW_UNKNOWN=x      → no match in defaults → nested fallback → reach.new.unknown
+```
+
+> **When to use each style:** Use `"nested"` (default) when your config is purely hierarchical (e.g., `api.server.url`, `executor.default_timeout`). Use `"flat"` when your config is a flat set of snake_case keys without any nesting (e.g., `devto_api_key`, `llm_model`). Use `"auto"` when your config mixes flat snake_case keys with nested sub-sections — this is the recommended style for most real-world applications. `"auto"` requires `defaults` to be provided for accurate resolution; keys not found in `defaults` fall back to `"nested"` behavior.
+
+**max_depth** (default: 5) — limits the nesting depth for `"nested"` and `"auto"` styles. After `max_depth` segments are produced, remaining `_` characters are preserved as literal underscores. This prevents excessively deep nesting from long env var names. Ignored for `"flat"` style.
+
+```
+Examples (max_depth=5):
+  A_B_C_D_E=1       → a.b.c.d.e          (5 segments — within limit)
+  A_B_C_D_E_F_G=1   → a.b.c.d.e_f_g      (5 segments — F_G kept as literal)
+  A_B_C_D_E_F_G_H=1 → a.b.c.d.e_f_g_h    (5 segments — F_G_H kept as literal)
 ```
 
 **Type coercion** follows the same rules as §9.2: `"true"`/`"false"` → boolean, numeric strings → int/float, otherwise string.
@@ -4993,22 +5120,54 @@ Output:
   config_data with env overrides applied per namespace
 
 Steps:
-  0. Build prefix table:
+  0. Build prefix table (with auto-derive):
        registered_prefixes ← []
        For each (name, registration) in registered_namespaces:
-         If registration.env_prefix is not nil:
-           registered_prefixes.append((registration.env_prefix + "_", name))
+         prefix ← registration.env_prefix
+         If prefix is nil:
+           prefix ← name.upper().replace("-", "_")     # auto-derive
+         registered_prefixes.append((prefix + "_", name, registration))
        Sort registered_prefixes by prefix length descending (longest first)
 
-  1. For each (env_key, env_value) in environment variables:
+  1. Build env_map lookup (global + per-namespace):
+       global_env_map ← Config._global_env_map           # from Config.env_map()
+       ns_env_maps ← {}                                   # env_var → (ns_name, config_key)
+       For each (name, registration) in registered_namespaces:
+         If registration.env_map is not nil:
+           For each (env_var, config_key) in registration.env_map:
+             ns_env_maps[env_var] ← (name, config_key)
+
+  2. For each (env_key, env_value) in environment variables:
+       coerced ← coerce_env_value(env_value)
+
+       # 2a. Check global env_map (bare env var → top-level key)
+       If env_key in global_env_map:
+         config_data[global_env_map[env_key]] ← coerced
+         continue
+
+       # 2b. Check namespace env_map (bare env var → namespace key)
+       If env_key in ns_env_maps:
+         (ns_name, config_key) ← ns_env_maps[env_key]
+         set config_data[ns_name][config_key] ← coerced
+         continue
+
+       # 2c. Prefix-based dispatch (existing logic)
        match ← dispatch_env_var(env_key, registered_prefixes)
        If match is nil → skip
-       (ns_name, suffix) ← match
-       dot_path ← convert suffix (single _ → ., double __ → _), lowercase
-       coerced ← coerce_env_value(env_value)
-       set config_data[ns_name][dot_path] ← coerced
+       (ns_name, suffix, registration) ← match
+       max_depth ← registration.max_depth or 5
+       If registration.env_style == "flat":
+         key ← lowercase(suffix)
+         set config_data[ns_name][key] ← coerced
+       Else if registration.env_style == "auto":
+         key ← auto_resolve(suffix, registration.defaults, 0, max_depth)
+         set config_data[ns_name] via key (flat or nested depending on resolution)
+       Else:  # "nested"
+         dot_path ← convert suffix (single _ → ., double __ → _), lowercase,
+                     stopping at max_depth segments
+         set config_data[ns_name][dot_path] ← coerced (nested via set_nested)
 
-  2. Return config_data
+  3. Return config_data
 ```
 
 ### 9.9 Namespace-Aware Access API
@@ -5193,6 +5352,7 @@ All SDK implementations claiming Config Bus conformance **must** implement:
 | Method | Requirement Level | Description |
 |--------|-------------------|-------------|
 | `Config.register_namespace()` | MUST | Static/class method for namespace registration |
+| `Config.env_map()` | MUST | Static/class method to register global bare env var → top-level config key mappings |
 | `Config.load()` | MUST | Load with mode detection (legacy/namespace) |
 | `Config.from_defaults()` | MUST | Create from defaults (apcore namespace only, legacy compatible) |
 | `config.get(dot_path)` | MUST | Namespace-aware dot-path access |
@@ -5239,6 +5399,7 @@ Implementations **must** use the following error codes (extensions to §8). All 
 | `CONFIG_ENV_PREFIX_CONFLICT` | Duplicate `env_prefix`, or `env_prefix` matches `^APCORE_[A-Z0-9]` (collides with the `apcore` namespace's `APCORE_` prefix) | New |
 | `CONFIG_MOUNT_ERROR` | Mount source file not found, invalid YAML in mount file, or mount to `_config` | New |
 | `CONFIG_BIND_ERROR` | Typed deserialization failure in `bind()` — missing fields or type mismatch between namespace data and target type | New |
+| `CONFIG_ENV_MAP_CONFLICT` | An env var name in `env_map` is already claimed by another `env_map` (global or namespace) | New |
 
 ### 9.13 Ecosystem Integration Patterns
 
