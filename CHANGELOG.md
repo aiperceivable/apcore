@@ -7,6 +7,65 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.16.0] - 2026-04-03
+
+### Added
+
+#### Config Bus Enhancements
+- **`env_style` parameter** — Three modes for environment variable key conversion: `auto` (default, matches against `defaults` tree), `nested` (single `_` → `.`), `flat` (no conversion). Resolves flat snake_case config key conflicts.
+- **`max_depth` parameter** — Limits nesting depth for env var key conversion (default: 5). Prevents excessively deep nesting from long env var names.
+- **`env_prefix` auto-derivation** — When `env_prefix` is not provided, auto-derived from namespace name via `name.upper().replace("-", "_")`.
+- **`env_map` parameter** — Explicit mapping of bare (unprefixed) env var names to config keys within a namespace (e.g., `{"REDIS_URL": "cache_url"}`).
+- **`Config.env_map()` class method** — Global bare env var → top-level config key mapping (e.g., `{"PORT": "port"}`).
+- **`CONFIG_ENV_MAP_CONFLICT` error** — Raised when the same env var is claimed by multiple env_map registrations.
+
+#### Context Redesign
+- **`ContextKey<T>` typed accessor** — Generic type-safe wrapper for `context.data` access with `get()`, `set()`, `delete()`, `exists()`, `scoped()` methods. Available in Python, TypeScript, and Rust.
+- **Built-in context key constants** — `TRACING_SPANS`, `TRACING_SAMPLED`, `METRICS_STARTS`, `LOGGING_START`, `REDACTED_OUTPUT`, `RETRY_COUNT_BASE` exported for middleware authors.
+- **`_context_version` serialization** — Context serialization now includes `_context_version: 1` for forward compatibility. Deserialization warns on unknown versions but proceeds.
+- **Context `serialize()` / `deserialize()` methods** — Explicit serialization API with data key filtering (underscore-prefixed keys excluded).
+
+#### Annotations Extension
+- **`extra` field on `ModuleAnnotations`** — Free-form extension dictionary for ecosystem packages and user metadata (e.g., `extra={"mcp.category": "tools"}`).
+- **`pagination_style` type relaxed** — Changed from `Literal["cursor", "offset", "page"]` to open `string`, allowing custom pagination strategies.
+- **`DEFAULT_ANNOTATIONS` constant** — Exported frozen default annotations instance.
+- **`from_dict()` classmethod** (Python) — Deserializes annotations with unknown keys captured in `extra`.
+- **`createAnnotations()` factory** (TypeScript) — Convenience factory accepting partial overrides.
+- **Canonical snake_case wire format** (TypeScript) — `annotationsToJSON()` / `annotationsFromJSON()` for cross-language serialization.
+
+#### ACL Condition Handlers
+- **`ACLConditionHandler` protocol** — Extensible condition evaluation interface. Python: sync + async protocols. TypeScript: `boolean | Promise<boolean>`. Rust: `#[async_trait]`.
+- **`ACL.register_condition()` class method** — Register custom condition handlers (e.g., `ip_range`, `time_window`).
+- **`$or` and `$not` compound operators** — Built-in compound condition handlers for OR and NOT logic in ACL rules.
+- **`async_check()` method** — Async ACL check alongside existing sync `check()`, supporting async condition handlers.
+- **Fail-closed for unknown conditions** — Unknown condition keys now log a warning and return False (deny), instead of being silently ignored.
+
+#### Execution Pipeline Strategy
+- **`Step` protocol / interface / trait** — Pluggable pipeline step with `name`, `description`, `removable`, `replaceable`, and async `execute()`.
+- **`ExecutionStrategy` class** — Ordered list of steps with `insert_after()`, `insert_before()`, `remove()`, `replace()` modification API.
+- **`PipelineEngine`** — Executes strategy steps with index-based loop, skip_to support, trace accumulation, and abort handling.
+- **`PipelineTrace` / `StepTrace`** — Complete execution trace for AI introspection and learning.
+- **11 built-in steps** — `BuiltinContextCreation`, `BuiltinSafetyCheck`, `BuiltinModuleLookup`, `BuiltinACLCheck`, `BuiltinApprovalGate`, `BuiltinInputValidation`, `BuiltinMiddlewareBefore`, `BuiltinExecute`, `BuiltinOutputValidation`, `BuiltinMiddlewareAfter`, `BuiltinReturnResult`.
+- **Preset strategies** — `build_standard_strategy()` (11 steps), `build_internal_strategy()` (skip ACL/approval), `build_testing_strategy()` (minimal), `build_performance_strategy()` (skip middleware).
+- **`Executor.strategy` parameter** — Optional, backward-compatible. When omitted, uses standard 11-step pipeline.
+- **`call_with_trace()` / `call_async_with_trace()`** — Returns `(result, PipelineTrace)` tuple for observability.
+- **`register_strategy()` / `list_strategies()` / `describe_pipeline()`** — Strategy introspection API.
+
+### Changed
+
+- **Data key naming convention** — Internal middleware keys migrated from legacy names (`_metrics_starts`, `_usage_starts`, `_obs_logging_starts`) to `_apcore.mw.*` convention. All middleware now uses typed `ContextKey` constants.
+
+### Fixed
+
+- **Rust Context field alignment** — Removed non-spec fields (`created_at`, `parent_trace_id`, `trace_context`). Changed `global_deadline` from `Option<Instant>` to `Option<f64>` (epoch seconds).
+- **Rust Identity immutability** — Fields made private with pub getters. Serde compatibility via `IdentityRaw` pattern.
+- **TypeScript `globalDeadline` field** — Added `globalDeadline: number | null` to Context (was missing).
+- **Rust system.control module** — Extracted into dedicated `control.rs` file (was inline in `mod.rs`).
+- **TypeScript `removeRule` comparison** — Fixed to use element-wise array comparison instead of `JSON.stringify`.
+- **Rust empty callers matching** — Empty callers list now matches none (aligned with Python/TypeScript).
+
+---
+
 ## [0.15.1] - 2026-03-31
 
 ### Changed
