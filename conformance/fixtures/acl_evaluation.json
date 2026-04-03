@@ -7,8 +7,8 @@
         {"callers": ["admin"], "targets": ["*"], "effect": "allow"}
       ],
       "default_effect": "deny",
-      "caller": "admin",
-      "target": "auth.login",
+      "caller_id": "admin",
+      "target_id": "auth.login",
       "expected": true
     },
     {
@@ -17,8 +17,8 @@
         {"callers": ["*"], "targets": ["admin.*"], "effect": "deny"}
       ],
       "default_effect": "allow",
-      "caller": "user",
-      "target": "admin.delete",
+      "caller_id": "user",
+      "target_id": "admin.delete",
       "expected": false
     },
     {
@@ -28,8 +28,8 @@
         {"callers": ["admin"], "targets": ["*"], "effect": "deny"}
       ],
       "default_effect": "deny",
-      "caller": "admin",
-      "target": "anything",
+      "caller_id": "admin",
+      "target_id": "anything",
       "expected": true
     },
     {
@@ -38,16 +38,16 @@
         {"callers": ["admin"], "targets": ["*"], "effect": "allow"}
       ],
       "default_effect": "deny",
-      "caller": "user",
-      "target": "auth.login",
+      "caller_id": "user",
+      "target_id": "auth.login",
       "expected": false
     },
     {
       "id": "default_allow",
       "rules": [],
       "default_effect": "allow",
-      "caller": "anyone",
-      "target": "anything",
+      "caller_id": "anyone",
+      "target_id": "anything",
       "expected": true
     },
     {
@@ -56,8 +56,8 @@
         {"callers": ["@external"], "targets": ["public.*"], "effect": "allow"}
       ],
       "default_effect": "deny",
-      "caller": null,
-      "target": "public.api",
+      "caller_id": null,
+      "target_id": "public.api",
       "expected": true
     },
     {
@@ -66,8 +66,8 @@
         {"callers": ["admin", "moderator"], "targets": ["*"], "effect": "allow"}
       ],
       "default_effect": "deny",
-      "caller": "moderator",
-      "target": "posts.delete",
+      "caller_id": "moderator",
+      "target_id": "posts.delete",
       "expected": true
     },
     {
@@ -76,8 +76,8 @@
         {"callers": ["*"], "targets": ["public.*"], "effect": "allow"}
       ],
       "default_effect": "deny",
-      "caller": "anonymous",
-      "target": "public.health",
+      "caller_id": "anonymous",
+      "target_id": "public.health",
       "expected": true
     },
     {
@@ -90,8 +90,8 @@
         }
       ],
       "default_effect": "deny",
-      "caller": "moderator",
-      "target": "any",
+      "caller_id": "moderator",
+      "target_id": "any",
       "expected": true
     },
     {
@@ -104,8 +104,8 @@
         }
       ],
       "default_effect": "deny",
-      "caller": "good_user",
-      "target": "any",
+      "caller_id": "good_user",
+      "target_id": "any",
       "expected": true
     },
     {
@@ -121,9 +121,9 @@
         }
       ],
       "default_effect": "deny",
-      "caller": "user_123",
+      "caller_id": "user_123",
       "caller_identity": {"type": "user", "roles": ["editor"]},
-      "target": "posts.edit",
+      "target_id": "posts.edit",
       "expected": true
     },
     {
@@ -139,9 +139,9 @@
         }
       ],
       "default_effect": "deny",
-      "caller": "user_123",
+      "caller_id": "user_123",
       "caller_identity": {"type": "user", "roles": ["viewer"]},
-      "target": "posts.delete",
+      "target_id": "posts.delete",
       "expected": false
     },
     {
@@ -157,9 +157,9 @@
         }
       ],
       "default_effect": "deny",
-      "caller": "service_abc",
+      "caller_id": "service_abc",
       "caller_identity": {"type": "service"},
-      "target": "internal.sync",
+      "target_id": "internal.sync",
       "expected": true
     },
     {
@@ -175,9 +175,9 @@
         }
       ],
       "default_effect": "deny",
-      "caller": "mod_a",
+      "caller_id": "mod_a",
       "call_depth": 1,
-      "target": "mod_b",
+      "target_id": "mod_b",
       "expected": true
     },
     {
@@ -193,9 +193,9 @@
         }
       ],
       "default_effect": "deny",
-      "caller": "mod_b",
+      "caller_id": "mod_b",
       "call_depth": 2,
-      "target": "mod_c",
+      "target_id": "mod_c",
       "expected": false
     }
   ]

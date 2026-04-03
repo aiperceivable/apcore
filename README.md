@@ -520,7 +520,7 @@ Suitable for scenarios where **source code cannot be modified** (third-party lib
 # bindings/email.binding.yaml
 bindings:
   - module_id: "email.send"
-    target: "myapp.services.email:send_email"   # Callable object path
+    target_id: "myapp.services.email:send_email"   # Callable object path
     description: "Send email"
     auto_schema: true     # Auto-generate Schema from type annotations
     annotations:

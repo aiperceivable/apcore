@@ -120,7 +120,7 @@ Core terms used in this specification are defined as follows:
 | Registry | Registry | Core component responsible for module discovery, registration, loading, and management |
 | Executor | Executor | Core component responsible for module invocation execution, handles Schema validation, ACL checking, middleware dispatching |
 | Context | Context | Runtime context object during module execution, carries trace_id, call chain, identity information, and shared state |
-| Access Control List | ACL | Set of rules defining inter-module invocation permissions, based on caller/target pattern matching |
+| Access Control List | ACL | Set of rules defining inter-module invocation permissions, based on caller_id/target_id pattern matching |
 | Middleware | Middleware | Interceptor running before and after module execution, executes in onion model, can modify input/output |
 | Extension Point | Extension Point | Replaceable component interface provided by framework (e.g., SchemaLoader, ModuleLoader), allows custom implementation |
 | Annotations | Annotations | Module-level behavior metadata (readonly, destructive, etc.), helps AI/LLM make invocation decisions |
@@ -128,7 +128,7 @@ Core terms used in this specification are defined as follows:
 | Entry Point | Entry Point | Code entry location of module, format is `filename:ClassName`, can be auto-inferred or manually configured |
 | Call Chain | Call Chain | Complete list of module ID paths from root invocation to current invocation, used for loop detection and depth limiting |
 | Trace ID | Trace ID | Identifier uniquely identifying a complete invocation chain, **must** be UUID v4 format |
-| Identity | Identity | Structured expression of caller identity (user/service/Agent/API Key/system), ACL engine depends on it |
+| Identity | Identity | Structured expression of caller_id identity (user/service/Agent/API Key/system), ACL engine depends on it |
 
 ### 1.7 API Naming Conventions
 
@@ -1358,7 +1358,7 @@ Steps:
      c. If starts with "apcore://" → Convert to file path under schemas_dir
      d. Otherwise → file_part is path relative to current_file directory
   4. schema_doc ← Load and parse YAML/JSON file for file_part
-  5. resolved ← Locate target node in schema_doc using json_pointer
+  5. resolved ← Locate target_id node in schema_doc using json_pointer
   6. If resolved still contains $ref → Recursively call resolve_ref(...)
   7. Return resolved
 
@@ -1499,7 +1499,7 @@ Implementations **must** handle Schema edge cases according to the following tab
 | Scenario | Behavior | Level |
 |------|------|------|
 | `$ref` depth exceeds `schema.max_ref_depth` | Throw `SCHEMA_CIRCULAR_REF` | **MUST** |
-| `$ref` target path doesn't exist (404) | Throw `SCHEMA_NOT_FOUND` | **MUST** |
+| `$ref` target_id path doesn't exist (404) | Throw `SCHEMA_NOT_FOUND` | **MUST** |
 | Empty Schema `{}` | Treat as `type: object`, allow any properties | **MUST** |
 | YAML/JSON syntax error | Throw `SCHEMA_PARSE_ERROR` | **MUST** |
 | Unknown JSON Schema keyword (e.g., `x-custom`) | Ignore (forward compatible) | **MUST** |
@@ -2590,7 +2590,7 @@ Binding files **must** be in YAML format, containing a `bindings` array:
 # bindings/email.binding.yaml
 bindings:
   - module_id: "email.send"
-    target: "myapp.services.email:send_email"
+    target_id: "myapp.services.email:send_email"
     description: "Send email"
     input_schema:
       type: object
@@ -2614,7 +2614,7 @@ bindings:
           type: string
 
   - module_id: "email.send_template"
-    target: "myapp.services.email:EmailService.send_template"
+    target_id: "myapp.services.email:EmailService.send_template"
     description: "Send email using template"
     auto_schema: true  # Auto-generate Schema from type annotations
 ```
@@ -2624,7 +2624,7 @@ bindings:
 | Field | Type | Required | Description |
 |------|------|------|------|
 | `module_id` | string | **MUST** | Module Canonical ID |
-| `target` | string | **MUST** | Target callable (format: `module.path:callable_name`) |
+| `target_id` | string | **MUST** | Target callable (format: `module.path:callable_name`) |
 | `description` | string | **SHOULD** | Module description |
 | `input_schema` | object | Conditional | Input Schema (choose one with `auto_schema`) |
 | `output_schema` | object | Conditional | Output Schema (choose one with `auto_schema`) |
@@ -2637,7 +2637,7 @@ bindings:
 
 #### 5.12.3 Target Resolution Algorithm
 
-Implementations **must** resolve `target` field according to the following algorithm:
+Implementations **must** resolve `target_id` field according to the following algorithm:
 
 ```
 Algorithm: resolve_target(target_string)
@@ -2678,15 +2678,15 @@ Binding items **may** reference external Schema files via `schema_ref`, avoiding
 ```yaml
 bindings:
   - module_id: "email.send"
-    target: "myapp.services.email:send_email"
+    target_id: "myapp.services.email:send_email"
     schema_ref: "../schemas/email.send.schema.yaml"
 ```
 
 #### 5.12.5 `auto_schema` Mode
 
-When `auto_schema: true`, implementations **must** reuse the `generate_schema_from_function` algorithm from §5.11.4 to auto-generate Schema from target callable's type annotations.
+When `auto_schema: true`, implementations **must** reuse the `generate_schema_from_function` algorithm from §5.11.4 to auto-generate Schema from target_id callable's type annotations.
 
-If target callable lacks sufficient type information, **must** throw `BINDING_SCHEMA_MISSING` error.
+If target_id callable lacks sufficient type information, **must** throw `BINDING_SCHEMA_MISSING` error.
 
 #### 5.12.6 Discovery Mechanism
 
@@ -2711,7 +2711,7 @@ bindings:
 Implementations **must** perform the following validations when loading binding files:
 
 1. `module_id` conforms to Canonical ID format (§2.7)
-2. `target` can be resolved to valid callable
+2. `target_id` can be resolved to valid callable
 3. Schema is valid (explicitly defined or auto_schema can generate)
 4. `module_id` doesn't conflict with registered modules (§2.6)
 5. Binding file itself conforms to `binding.schema.json` (see `schemas/binding.schema.json`)
@@ -2720,9 +2720,9 @@ Implementations **must** perform the following validations when loading binding 
 
 | Error Code | Description | Trigger Condition |
 |--------|------|---------|
-| `BINDING_INVALID_TARGET` | target format invalid | target doesn't conform to `module.path:callable_name` format |
+| `BINDING_INVALID_TARGET` | target_id format invalid | target_id doesn't conform to `module.path:callable_name` format |
 | `BINDING_MODULE_NOT_FOUND` | Module path can't be imported | import module_path fails |
-| `BINDING_CALLABLE_NOT_FOUND` | Can't find target callable | Can't find specified function/method in module |
+| `BINDING_CALLABLE_NOT_FOUND` | Can't find target_id callable | Can't find specified function/method in module |
 | `BINDING_NOT_CALLABLE` | Target not callable | Resolved object is not callable |
 | `BINDING_SCHEMA_MISSING` | Schema missing | No explicit Schema and auto_schema can't generate |
 
@@ -2751,7 +2751,7 @@ Without `display`, users must choose one `module_id` format that compromises acr
 ```yaml
 bindings:
   - module_id: "credit_purchase.get_purchase_status_by_payment_intent.get"
-    target: "myapp.purchase:get_purchase_status"
+    target_id: "myapp.purchase:get_purchase_status"
     description: "Auto-generated from docstring"
 
     # Display overlay — does NOT change module_id or registry behavior
@@ -2976,7 +2976,7 @@ Implementations **MUST** define a `ResolvedModule` type (or equivalent) that car
 ResolvedModule:
   # Canonical fields (from ScannedModule, unchanged)
   module_id: string                           # Canonical ID, used for registry key
-  target: string                              # Callable reference
+  target_id: string                              # Callable reference
   input_schema: object                        # JSON Schema
   output_schema: object                       # JSON Schema
   version: string
@@ -3146,7 +3146,7 @@ Implementations **MUST** generate `input_schema` from the function's parameter t
 ```python
 # commands/deploy.py
 def deploy(env: str, tag: str = "latest", replicas: int = 3) -> dict:
-    """Deploy application to target environment."""
+    """Deploy application to target_id environment."""
     ...
 ```
 
@@ -3328,7 +3328,7 @@ audit:
 
 | Pattern | Description |
 |---------|-------------|
-| `@external` | Matches calls with no caller (external entry points) |
+| `@external` | Matches calls with no caller_id (external entry points) |
 | `@system` | Matches calls where identity type is `system` |
 | `*` | Wildcard, matches all module IDs |
 
@@ -3379,14 +3379,18 @@ rule_matching:
 
 ### 6.3 Rule Evaluation Algorithm
 
-Implementations **must** evaluate ACL rules using a **first-match-wins** strategy. Rules are evaluated in definition order (not sorted by priority). The first rule whose patterns match the caller and target determines the access decision.
+Implementations **must** evaluate ACL rules using a **first-match-wins** strategy. Rules are evaluated in definition order (not sorted by priority). The first rule whose patterns match the caller_id and target_id determines the access decision.
+
+**Naming Convention:**
+- **Wire Format (JSON)**: All data transfer structures (e.g., Audit Logs, Context sync) **must** use `snake_case` (e.g., `caller_id`, `target_id`).
+- **SDK Surface**: Implementations **should** use idiomatic naming (e.g., `callerId` in TypeScript, `caller_id` in Python).
 
 ```
-Algorithm: evaluate_acl(caller_id, target_id, rules, default_effect, context)
+Algorithm: evaluate_acl(caller, target, rules, default_effect, context)
 
 Input:
-  caller_id      — Caller module ID (null means external call, treated as "@external")
-  target_id      — Called module ID
+  caller_id         — Caller module ID (null means external call, treated as "@external")
+  target_id         — Called module ID
   rules          — Rule list (evaluated in definition order)
   default_effect — Default policy ("allow" | "deny")
   context        — Execution context (optional, used for condition evaluation)
@@ -3395,7 +3399,7 @@ Output:
   decision — { effect: "allow" | "deny", matched_rule: Rule | null }
 
 Steps:
-  1. effective_caller ← caller_id ?? "@external"
+  1. effective_caller_id ← caller_id ?? "@external"
   2. For each rule ∈ rules (in definition order):
      a. caller_matched ← false
         For each pattern ∈ rule.callers:
@@ -3404,7 +3408,7 @@ Steps:
           If match_pattern(pattern, effective_caller) → caller_matched ← true; break
      b. target_matched ← false
         For each pattern ∈ rule.targets:
-          If match_pattern(pattern, target_id) → target_matched ← true; break
+          If match_pattern(pattern, target) → target_matched ← true; break
      c. If caller_matched and target_matched:
         If rule.conditions is not empty:
           If not evaluate_conditions(rule.conditions, context) → continue
@@ -3522,12 +3526,12 @@ This mechanism is the bridge between annotation-level metadata and runtime gover
 
 | Concern | ACL (§6) | Approval System (§7) |
 |---------|----------|----------------------|
-| Question answered | "Is this caller **allowed** to invoke this module?" | "Does this **invocation** need human sign-off?" |
+| Question answered | "Is this caller_id **allowed** to invoke this module?" | "Does this **invocation** need human sign-off?" |
 | Mechanism | Pattern-based rule matching | Pluggable handler with external interaction |
 | Timing | Step 4 in Executor pipeline | Step 5 in Executor pipeline (after ACL) |
 | Interaction | None (deterministic rule evaluation) | May involve user dialog, webhook, or agent confirmation |
 
-A caller may pass ACL (they have the role to call `deploy.prod`) but still require approval for each invocation (because the module is destructive).
+A caller_id may pass ACL (they have the role to call `deploy.prod`) but still require approval for each invocation (because the module is destructive).
 
 ### 7.2 ApprovalHandler Protocol
 
@@ -3902,16 +3906,16 @@ error_codes:
 
   # Binding-related (BINDING_*)
   BINDING_INVALID_TARGET:
-    description: "Binding target format invalid"
+    description: "Binding target_id format invalid"
     http_status: 500
   BINDING_MODULE_NOT_FOUND:
-    description: "Binding target module path can't be imported"
+    description: "Binding target_id module path can't be imported"
     http_status: 500
   BINDING_CALLABLE_NOT_FOUND:
-    description: "Binding target callable not found"
+    description: "Binding target_id callable not found"
     http_status: 500
   BINDING_NOT_CALLABLE:
-    description: "Binding target not callable"
+    description: "Binding target_id not callable"
     http_status: 500
   BINDING_SCHEMA_MISSING:
     description: "Binding Schema missing"
@@ -4104,7 +4108,7 @@ error_response:
 
 ### 8.6 Retry Semantics
 
-Implementations **must not** default retry failed module invocations. Retry behavior **must** be explicitly controlled by caller or middleware.
+Implementations **must not** default retry failed module invocations. Retry behavior **must** be explicitly controlled by caller_id or middleware.
 
 **Retryability Classification:**
 
@@ -4132,13 +4136,13 @@ Implementations **must not** default retry failed module invocations. Retry beha
 | `CALL_DEPTH_EXCEEDED` | **No** | Call chain structure issue, retry won't change |
 | `CIRCULAR_CALL` | **No** | Call chain structure issue, retry won't change |
 | `CALL_FREQUENCY_EXCEEDED` | **No** | Call chain structure issue, retry won't change |
-| `GENERAL_INVALID_INPUT` | **No** | Invalid input, caller must fix before retry |
+| `GENERAL_INVALID_INPUT` | **No** | Invalid input, caller_id must fix before retry |
 | `FUNC_MISSING_TYPE_HINT` | **No** | Code-level issue, needs developer fix |
 | `FUNC_MISSING_RETURN_TYPE` | **No** | Code-level issue, needs developer fix |
 | `BINDING_INVALID_TARGET` | **No** | Binding format error, needs config fix |
-| `BINDING_MODULE_NOT_FOUND` | **No** | Binding target module missing, needs config fix |
-| `BINDING_CALLABLE_NOT_FOUND` | **No** | Binding target callable missing, needs code fix |
-| `BINDING_NOT_CALLABLE` | **No** | Binding target not callable, needs code fix |
+| `BINDING_MODULE_NOT_FOUND` | **No** | Binding target_id module missing, needs config fix |
+| `BINDING_CALLABLE_NOT_FOUND` | **No** | Binding target_id callable missing, needs code fix |
+| `BINDING_NOT_CALLABLE` | **No** | Binding target_id not callable, needs code fix |
 | `BINDING_SCHEMA_MISSING` | **No** | Schema missing for binding, needs code fix |
 | `BINDING_FILE_INVALID` | **No** | Binding file parse error, needs config fix |
 | `CIRCULAR_DEPENDENCY` | **No** | Module dependency cycle, needs architecture fix |
@@ -4179,9 +4183,9 @@ ModuleError (base error for all framework errors)
 ├── ACLRuleError                   # ACL_RULE_ERROR — ACL rule error
 ├── FuncMissingTypeHintError       # FUNC_MISSING_TYPE_HINT — Function parameter missing type annotation
 ├── FuncMissingReturnTypeError     # FUNC_MISSING_RETURN_TYPE — Function missing return type annotation
-├── BindingInvalidTargetError      # BINDING_INVALID_TARGET — target format invalid
+├── BindingInvalidTargetError      # BINDING_INVALID_TARGET — target_id format invalid
 ├── BindingModuleNotFoundError     # BINDING_MODULE_NOT_FOUND — Module path can't be imported
-├── BindingCallableNotFoundError   # BINDING_CALLABLE_NOT_FOUND — Can't find target callable
+├── BindingCallableNotFoundError   # BINDING_CALLABLE_NOT_FOUND — Can't find target_id callable
 ├── BindingNotCallableError        # BINDING_NOT_CALLABLE — Target not callable
 ├── BindingSchemaMissingError      # BINDING_SCHEMA_MISSING — Schema missing
 ├── BindingFileInvalidError        # BINDING_FILE_INVALID — Binding file parse error
@@ -4498,7 +4502,7 @@ Config.register_namespace(
 | `defaults` | MAY | Default configuration values for this namespace. Merged before file data (lowest priority). |
 | `env_style` | MAY | Controls how environment variable suffixes are converted to config keys. `"auto"` (default): matches the suffix against the `defaults` tree structure to determine the correct interpretation — flat keys match flat, nested paths match nested. When `defaults` is `nil`, falls back to `"nested"` behavior. `"nested"`: single `_` → `.` (section separator), double `__` → literal `_` — suitable for purely hierarchical config structures. `"flat"`: no conversion, suffix is lowercased as-is — suitable for purely flat snake_case config keys where `_` is part of the key name, not a hierarchy separator. When `nil`, defaults to `"auto"`. |
 | `max_depth` | MAY | Maximum nesting depth for environment variable key conversion. Applies to `"nested"` and `"auto"` styles; ignored for `"flat"`. After reaching `max_depth` levels, remaining `_` characters are preserved as literal underscores instead of being converted to `.` separators. Default: `5`. Example: `A_B_C_D_E_F_G` with `max_depth=5` → `a.b.c.d.e_f_g` (5 segments). |
-| `env_map` | MAY | Explicit mapping of bare (unprefixed) environment variable names to config keys within this namespace. Each key is an exact env var name (e.g., `"REDIS_URL"`), each value is the target config key (e.g., `"cache_url"`). Only explicitly listed env vars are captured. Same priority as `env_prefix` overrides. An env var name **must not** appear in more than one `env_map` (global or namespace) — duplicates raise `CONFIG_ENV_MAP_CONFLICT`. When `nil`, no bare env var mapping is applied. |
+| `env_map` | MAY | Explicit mapping of bare (unprefixed) environment variable names to config keys within this namespace. Each key is an exact env var name (e.g., `"REDIS_URL"`), each value is the target_id config key (e.g., `"cache_url"`). Only explicitly listed env vars are captured. Same priority as `env_prefix` overrides. An env var name **must not** appear in more than one `env_map` (global or namespace) — duplicates raise `CONFIG_ENV_MAP_CONFLICT`. When `nil`, no bare env var mapping is applied. |
 
 **Registration rules:**
 
@@ -4647,7 +4651,7 @@ Config.registerNamespace(NamespaceRegistration.builder()
 
 1. The namespace is added to the global registry immediately.
 2. **Already-loaded Config instances are not retroactively modified.** The new namespace takes effect on the next `Config.load()` or `config.reload()` call. This avoids surprising mutations to instances that callers may already be using.
-3. If the caller needs the new namespace to apply immediately to an existing instance, they **must** call `config.reload()` explicitly. The reload will pick up the newly registered namespace, apply its defaults and env overrides, and validate.
+3. If the caller_id needs the new namespace to apply immediately to an existing instance, they **must** call `config.reload()` explicitly. The reload will pick up the newly registered namespace, apply its defaults and env overrides, and validate.
 4. Late registration **must not** invalidate previously loaded data in other namespaces.
 
 ### 9.6 Unified Configuration File
@@ -4878,7 +4882,7 @@ The mount mechanism allows attaching external configuration sources to the Confi
 
 ```
 config.mount(
-    namespace:  string,           # MUST — target namespace
+    namespace:  string,           # MUST — target_id namespace
     from_file:  path | nil,       # MAY  — load from file
     from_dict:  map  | nil,       # MAY  — load from in-memory dict
 )
@@ -4888,10 +4892,10 @@ Exactly one of `from_file` or `from_dict` **must** be provided.
 
 **Mount rules:**
 
-1. The target namespace **may** or **may not** be previously registered via `register_namespace`.
+1. The target_id namespace **may** or **may not** be previously registered via `register_namespace`.
    - If registered: mount data is merged (file/dict < env overrides), then validated against the registered schema.
    - If not registered: mount data is stored as-is, accessible via `get()`, but not validated. A WARN **should** be logged.
-2. Mounting to a namespace that already has data (from the unified file or a prior mount) **must** deep-merge the mount data into the existing data. Mount data has lower priority than file data (see §9.6.2). This means the unified file is the authoritative source when both exist. If the caller intends the mounted file to be the authoritative source for a namespace, the namespace section **should not** appear in the unified file.
+2. Mounting to a namespace that already has data (from the unified file or a prior mount) **must** deep-merge the mount data into the existing data. Mount data has lower priority than file data (see §9.6.2). This means the unified file is the authoritative source when both exist. If the caller_id intends the mounted file to be the authoritative source for a namespace, the namespace section **should not** appear in the unified file.
 3. Mounting to the `apcore` namespace is permitted but **should** log a WARN (it overrides framework configuration).
 4. Mounting to `_config` **must** raise a `CONFIG_MOUNT_ERROR`.
 
@@ -5261,7 +5265,7 @@ settings: ApflowSettings = config.bind("apflow", ApflowSettings)
 
 **Binding rules:**
 
-1. `bind()` deserializes the namespace subtree into the target type.
+1. `bind()` deserializes the namespace subtree into the target_id type.
 2. If the namespace has a registered JSON Schema, validation **should** have already occurred at load time. `bind()` performs structural deserialization only — it **should not** re-validate.
 3. If deserialization fails (missing fields, type mismatch), `bind()` **must** raise a `ConfigError` with a clear message indicating the namespace and the failing field.
 4. The model type used in `bind()` is owned by the downstream package, not by apcore. apcore provides the mechanism, not the types.
@@ -5398,7 +5402,7 @@ Implementations **must** use the following error codes (extensions to §8). All 
 | `CONFIG_NAMESPACE_RESERVED` | Attempt to register `apcore` or `_config` | New |
 | `CONFIG_ENV_PREFIX_CONFLICT` | Duplicate `env_prefix`, or `env_prefix` matches `^APCORE_[A-Z0-9]` (collides with the `apcore` namespace's `APCORE_` prefix) | New |
 | `CONFIG_MOUNT_ERROR` | Mount source file not found, invalid YAML in mount file, or mount to `_config` | New |
-| `CONFIG_BIND_ERROR` | Typed deserialization failure in `bind()` — missing fields or type mismatch between namespace data and target type | New |
+| `CONFIG_BIND_ERROR` | Typed deserialization failure in `bind()` — missing fields or type mismatch between namespace data and target_id type | New |
 | `CONFIG_ENV_MAP_CONFLICT` | An env var name in `env_map` is already claimed by another `env_map` (global or namespace) | New |
 
 ### 9.13 Ecosystem Integration Patterns
@@ -5888,7 +5892,7 @@ span_naming:
     - "duration_ms"      # MUST
     - "success"          # MUST (boolean)
     - "error_code"       # SHOULD (when failed)
-    - "caller_id"        # SHOULD
+    - "caller"        # SHOULD
 ```
 
 ---
@@ -5991,7 +5995,7 @@ extension_points:
     module_loader:
       description: "Custom module loading method"
       interface: "load(module_id: str) -> Module"
-      use_case: "Remote loading, dynamic compilation; Function-based module loading; Binding file target resolution and module loading"
+      use_case: "Remote loading, dynamic compilation; Function-based module loading; Binding file target_id resolution and module loading"
       default: "DirectoryModuleLoader"
 
     executor:
@@ -6173,7 +6177,7 @@ Implementations **must** handle middleware edge cases according to the following
 | `on_error()` itself throws exception | Log ERROR, continue to next `on_error()` in chain | **MUST** |
 | `on_error()` returns non-`None` value | Stop propagation, use return value as module final output | **MUST** |
 | `on_error()` returns `None` | Continue propagating error downward | **MUST** |
-| All `on_error()` return `None` | Throw original error to caller | **MUST** |
+| All `on_error()` return `None` | Throw original error to caller_id | **MUST** |
 
 #### 11.8.2 before() Edges
 
@@ -6330,7 +6334,7 @@ Interface: Executor
    * MUST NOT: execute module code, run middleware, or modify external state.
    *
    * All check failures are collected into the result rather than thrown,
-   * so the caller can see every problem in a single round-trip.
+   * so the caller_id can see every problem in a single round-trip.
    *
    * @param module_id — Canonical ID
    * @param inputs    — Input parameters to validate
@@ -6612,7 +6616,7 @@ Phase 4: Advanced
 
 ### 12.6 Language-specific Guidelines
 
-Each SDK implementation **should** use the idiomatic schema validation, async model, and package management conventions of its target language. Specific library choices are documented in each SDK's own repository.
+Each SDK implementation **should** use the idiomatic schema validation, async model, and package management conventions of its target_id language. Specific library choices are documented in each SDK's own repository.
 
 ### 12.7 Concurrency Model Specification
 
@@ -6869,7 +6873,7 @@ Implementations **must** support mixed calls of sync and async modules, bridging
 | Caller | Called Module | Bridging Strategy | Description |
 |--------|-----------|---------|------|
 | Sync | Sync | Direct call | No overhead |
-| Sync | Async | Block and wait (await) | Sync caller blocks until async completes |
+| Sync | Async | Block and wait (await) | Sync caller_id blocks until async completes |
 | Async | Sync | Thread pool offload | Avoid blocking event loop |
 | Async | Async | Direct await | No overhead |
 
@@ -6885,7 +6889,7 @@ Implementations **must** support mixed calls of sync and async modules, bridging
 
 **Performance Considerations:**
 
-- Sync→Async bridging blocks caller thread, **should** avoid frequent use in async contexts
+- Sync→Async bridging blocks caller_id thread, **should** avoid frequent use in async contexts
 - Async→Sync bridging needs thread pool, **should** configure reasonable thread pool size (default CPU cores × 2)
 
 #### 12.7.8 Resource Cleanup Guarantees
@@ -6928,7 +6932,7 @@ SDK implementers.
 
 #### 12.8.1 Design Principles
 
-1. **Collect, don't throw.** All check failures are appended to a `checks` list. The caller sees every problem in one call.
+1. **Collect, don't throw.** All check failures are appended to a `checks` list. The caller_id sees every problem in one call.
 2. **Early return only when subsequent checks are meaningless.** module_id format failure or module-not-found justifies early return because later checks require a valid module reference.
 3. **Reuse existing internals.** validate() calls the same helper functions used by the `call()` pipeline (regex check, registry lookup, ACL check, schema validation). No new capabilities are required.
 4. **Duck-type backward compatibility.** PreflightResult SHOULD expose `.valid` (Boolean) and `.errors` (List) so existing consumers of the old ValidationResult continue to work.

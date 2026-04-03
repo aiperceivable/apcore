@@ -3,15 +3,18 @@
   "namespaces": [
     {
       "name": "observability",
-      "env_prefix": "APCORE_OBSERVABILITY"
+      "env_prefix": "APCORE_OBSERVABILITY",
+      "max_depth": 5
     },
     {
       "name": "mcp",
-      "env_prefix": "APCORE_MCP"
+      "env_prefix": "APCORE_MCP",
+      "max_depth": 2
     },
     {
       "name": "sys",
-      "env_prefix": "APCORE_SYS"
+      "env_prefix": "APCORE_SYS",
+      "max_depth": 5
     },
     {
       "name": "global",

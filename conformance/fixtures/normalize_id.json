@@ -75,13 +75,13 @@
     },
     {
       "id": "complex_acronym_1",
-      "local_id": "HTTPAPIHandler",
+      "local_id": "HttpApiHandler",
       "language": "python",
       "expected": "http_api_handler"
     },
     {
       "id": "complex_acronym_2",
-      "local_id": "DBURLParser",
+      "local_id": "DbUrlParser",
       "language": "typescript",
       "expected": "db_url_parser"
     },
