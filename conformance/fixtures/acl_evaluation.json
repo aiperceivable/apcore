@@ -79,6 +79,124 @@
       "caller": "anonymous",
       "target": "public.health",
       "expected": true
+    },
+    {
+      "id": "compound_or_match",
+      "rules": [
+        {
+          "callers": ["$or", "admin", "moderator"],
+          "targets": ["*"],
+          "effect": "allow"
+        }
+      ],
+      "default_effect": "deny",
+      "caller": "moderator",
+      "target": "any",
+      "expected": true
+    },
+    {
+      "id": "compound_not_match",
+      "rules": [
+        {
+          "callers": ["$not", "banned_user"],
+          "targets": ["*"],
+          "effect": "allow"
+        }
+      ],
+      "default_effect": "deny",
+      "caller": "good_user",
+      "target": "any",
+      "expected": true
+    },
+    {
+      "id": "condition_role_match",
+      "rules": [
+        {
+          "callers": ["*"],
+          "targets": ["*"],
+          "effect": "allow",
+          "conditions": {
+            "role": "editor"
+          }
+        }
+      ],
+      "default_effect": "deny",
+      "caller": "user_123",
+      "caller_identity": {"type": "user", "roles": ["editor"]},
+      "target": "posts.edit",
+      "expected": true
+    },
+    {
+      "id": "condition_role_mismatch",
+      "rules": [
+        {
+          "callers": ["*"],
+          "targets": ["*"],
+          "effect": "allow",
+          "conditions": {
+            "role": "admin"
+          }
+        }
+      ],
+      "default_effect": "deny",
+      "caller": "user_123",
+      "caller_identity": {"type": "user", "roles": ["viewer"]},
+      "target": "posts.delete",
+      "expected": false
+    },
+    {
+      "id": "condition_identity_type_match",
+      "rules": [
+        {
+          "callers": ["*"],
+          "targets": ["*"],
+          "effect": "allow",
+          "conditions": {
+            "identity_type": "service"
+          }
+        }
+      ],
+      "default_effect": "deny",
+      "caller": "service_abc",
+      "caller_identity": {"type": "service"},
+      "target": "internal.sync",
+      "expected": true
+    },
+    {
+      "id": "condition_call_depth_match",
+      "rules": [
+        {
+          "callers": ["*"],
+          "targets": ["*"],
+          "effect": "allow",
+          "conditions": {
+            "call_depth": {"lte": 2}
+          }
+        }
+      ],
+      "default_effect": "deny",
+      "caller": "mod_a",
+      "call_depth": 1,
+      "target": "mod_b",
+      "expected": true
+    },
+    {
+      "id": "condition_call_depth_mismatch",
+      "rules": [
+        {
+          "callers": ["*"],
+          "targets": ["*"],
+          "effect": "allow",
+          "conditions": {
+            "call_depth": {"lte": 1}
+          }
+        }
+      ],
+      "default_effect": "deny",
+      "caller": "mod_b",
+      "call_depth": 2,
+      "target": "mod_c",
+      "expected": false
     }
   ]
 }

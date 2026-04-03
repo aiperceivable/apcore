@@ -72,6 +72,30 @@
       "local_id": "api.v2.UserProfile",
       "language": "typescript",
       "expected": "api.v2.user_profile"
+    },
+    {
+      "id": "complex_acronym_1",
+      "local_id": "HTTPAPIHandler",
+      "language": "python",
+      "expected": "http_api_handler"
+    },
+    {
+      "id": "complex_acronym_2",
+      "local_id": "DBURLParser",
+      "language": "typescript",
+      "expected": "db_url_parser"
+    },
+    {
+      "id": "consecutive_uppercase",
+      "local_id": "MY_MODULE.DataXML",
+      "language": "python",
+      "expected": "my_module.data_xml"
+    },
+    {
+      "id": "id_with_numbers",
+      "local_id": "V2.User123Profile",
+      "language": "typescript",
+      "expected": "v2.user123_profile"
     }
   ]
 }
