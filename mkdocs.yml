@@ -58,6 +58,8 @@ nav:
   - Core Documents:
       - Protocol Specification: PROTOCOL_SPEC.md
       - Scope Definition: SCOPE.md
+      - Positioning: POSITIONING.md
+      - Roadmap: ROADMAP.md
   - Concepts & Architecture:
       - Core Concepts: concepts.md
       - Architecture Design: architecture.md

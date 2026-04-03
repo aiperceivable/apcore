@@ -32,6 +32,7 @@ jobs:
           cp README.md docs/index.md
           cp PROTOCOL_SPEC.md docs/
           cp SCOPE.md docs/
+          cp ROADMAP.md docs/
           mkdir -p docs/assets
           cp apcore-logo.svg docs/assets/
 
@@ -47,6 +48,9 @@ jobs:
 
           # Fix docs/README.md link to root README
           sed -i 's|\.\./README\.md|index.md|g' docs/README.md
+
+          # Fix copied ROADMAP.md: docs/X → X
+          sed -i 's|docs/||g' docs/ROADMAP.md
 
           # Fix copied PROTOCOL_SPEC.md and SCOPE.md: docs/X → X
           sed -i 's|docs/||g' docs/PROTOCOL_SPEC.md
