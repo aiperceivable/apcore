@@ -1,0 +1,15 @@
+{
+  "feature": "acl-conditions-redesign",
+  "status": "completed",
+  "created": "2026-04-01",
+  "completed": "2026-04-01",
+  "tasks": {
+    "handler-protocol": { "status": "completed" },
+    "handler-registry": { "status": "completed" },
+    "builtin-handlers": { "status": "completed" },
+    "compound-handlers": { "status": "completed" },
+    "handler-dispatch": { "status": "completed" },
+    "async-check": { "status": "completed" },
+    "cross-language-fixes": { "status": "completed" }
+  }
+}

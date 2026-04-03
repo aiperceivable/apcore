@@ -1,0 +1,13 @@
+{
+  "feature": "annotations-redesign",
+  "status": "completed",
+  "tasks": {
+    "extra-field": { "status": "completed", "sdks": ["python", "typescript", "rust"] },
+    "pagination-style": { "status": "completed", "sdks": ["python", "typescript"] },
+    "wire-format": { "status": "completed", "sdks": ["typescript"] },
+    "python-post-init": { "status": "completed", "sdks": ["python"] },
+    "ecosystem-migration": { "status": "completed", "sdks": ["python", "typescript"] }
+  },
+  "created": "2026-04-01",
+  "updated": "2026-04-01"
+}

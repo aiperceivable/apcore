@@ -1,0 +1,98 @@
+{
+  "feature": "context-redesign",
+  "created": "2026-04-02T18:00:00Z",
+  "updated": "2026-04-02T18:50:00Z",
+  "status": "completed",
+  "execution_order": [
+    "context-key",
+    "rust-field-alignment",
+    "rust-identity-immutable",
+    "ts-global-deadline",
+    "builtin-keys",
+    "data-key-migration",
+    "serialization"
+  ],
+  "progress": {
+    "total_tasks": 7,
+    "completed": 7,
+    "in_progress": 0,
+    "pending": 0
+  },
+  "tasks": [
+    {
+      "id": "context-key",
+      "file": "tasks/context-key.md",
+      "title": "ContextKey<T> typed accessor",
+      "status": "completed",
+      "started_at": "2026-04-02T18:10:00Z",
+      "completed_at": "2026-04-02T18:15:00Z",
+      "assignee": null,
+      "commits": []
+    },
+    {
+      "id": "rust-field-alignment",
+      "file": "tasks/rust-field-alignment.md",
+      "title": "Rust Context field removal",
+      "status": "completed",
+      "started_at": "2026-04-02T18:16:00Z",
+      "completed_at": "2026-04-02T18:25:00Z",
+      "assignee": null,
+      "commits": []
+    },
+    {
+      "id": "rust-identity-immutable",
+      "file": "tasks/rust-identity-immutable.md",
+      "title": "Rust Identity immutability",
+      "status": "completed",
+      "started_at": "2026-04-02T18:16:00Z",
+      "completed_at": "2026-04-02T18:25:00Z",
+      "assignee": null,
+      "commits": []
+    },
+    {
+      "id": "ts-global-deadline",
+      "file": "tasks/ts-global-deadline.md",
+      "title": "TypeScript globalDeadline field",
+      "status": "completed",
+      "started_at": "2026-04-02T18:16:00Z",
+      "completed_at": "2026-04-02T18:25:00Z",
+      "assignee": null,
+      "commits": []
+    },
+    {
+      "id": "builtin-keys",
+      "file": "tasks/builtin-keys.md",
+      "title": "Built-in context key constants",
+      "status": "completed",
+      "started_at": "2026-04-02T18:26:00Z",
+      "completed_at": "2026-04-02T18:30:00Z",
+      "assignee": null,
+      "commits": []
+    },
+    {
+      "id": "data-key-migration",
+      "file": "tasks/data-key-migration.md",
+      "title": "Data key naming migration",
+      "status": "completed",
+      "started_at": "2026-04-02T18:31:00Z",
+      "completed_at": "2026-04-02T18:40:00Z",
+      "assignee": null,
+      "commits": []
+    },
+    {
+      "id": "serialization",
+      "file": "tasks/serialization.md",
+      "title": "Context serialization protocol",
+      "status": "completed",
+      "started_at": "2026-04-02T18:41:00Z",
+      "completed_at": "2026-04-02T18:50:00Z",
+      "assignee": null,
+      "commits": []
+    }
+  ],
+  "metadata": {
+    "source_doc": "docs/features/context-redesign.md",
+    "created_by": "code-forge",
+    "version": "1.0"
+  }
+}
