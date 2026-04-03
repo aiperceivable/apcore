@@ -1,0 +1,15 @@
+{
+  "feature": "execution-pipeline",
+  "status": "pending",
+  "created": "2026-04-01",
+  "completed": null,
+  "tasks": {
+    "core-types": { "status": "pending" },
+    "builtin-steps": { "status": "pending" },
+    "pipeline-engine": { "status": "pending" },
+    "executor-refactor": { "status": "pending" },
+    "preset-strategies": { "status": "pending" },
+    "call-with-trace": { "status": "pending" },
+    "introspection": { "status": "pending" }
+  }
+}
