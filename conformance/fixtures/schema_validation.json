@@ -54,13 +54,21 @@
         "required": ["count"]
       },
       "input": {"count": "abc"},
-      "expected_valid": false
+      "expected_valid": false,
+      "expected_error_path": "count"
     },
     {
-      "id": "empty_schema_treated_as_object",
-      "description": "Empty schema {} MUST be treated as type: object (spec S4.15)",
+      "id": "empty_schema_accepts_any_value",
+      "description": "Empty schema {} validates any value per JSON Schema Draft 2020-12. In apcore context, module input/output schemas MUST be type:object, but an empty schema itself imposes no constraints.",
       "schema": {},
       "input": {"any_key": "any_value"},
+      "expected_valid": true
+    },
+    {
+      "id": "empty_schema_accepts_string",
+      "description": "Empty schema {} accepts non-object values per Draft 2020-12 (always-true schema)",
+      "schema": {},
+      "input": "just a string",
       "expected_valid": true
     },
     {
@@ -179,7 +187,8 @@
         }
       },
       "input": {"address": {"zip": "ABCDE"}},
-      "expected_valid": false
+      "expected_valid": false,
+      "expected_error_path": "address.zip"
     },
     {
       "id": "array_items_validation",
@@ -207,7 +216,8 @@
         }
       },
       "input": {"tags": ["a", 123, "c"]},
-      "expected_valid": false
+      "expected_valid": false,
+      "expected_error_path": "tags[1]"
     }
   ]
 }

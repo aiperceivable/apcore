@@ -1,5 +1,5 @@
 {
-  "description": "Cross-language Context serialization/deserialization round-trip verification",
+  "description": "Cross-language Context serialization/deserialization round-trip (spec §5.7)",
   "test_cases": [
     {
       "id": "basic_context_round_trip",
@@ -55,7 +55,7 @@
     },
     {
       "id": "underscore_prefixed_data_keys_excluded",
-      "description": "Keys in data starting with _ should be excluded from serialization output",
+      "description": "Keys in data starting with _ are excluded from serialization output",
       "input": {
         "trace_id": "770e8400-e29b-41d4-a716-446655440002",
         "caller_id": null,
@@ -80,8 +80,8 @@
       }
     },
     {
-      "id": "identity_type_field_name",
-      "description": "Identity serialization MUST use 'type' as the field name (not 'identity_type')",
+      "id": "identity_type_serialized_as_type",
+      "description": "Identity MUST serialize with field name 'type' (not 'identity_type')",
       "input": {
         "trace_id": "880e8400-e29b-41d4-a716-446655440003",
         "caller_id": null,
@@ -94,8 +94,6 @@
         },
         "data": {}
       },
-      "expected_identity_field": "type",
-      "expected_identity_type_value": "service",
       "expected": {
         "_context_version": 1,
         "trace_id": "880e8400-e29b-41d4-a716-446655440003",
@@ -111,21 +109,20 @@
       }
     },
     {
-      "id": "identity_all_types",
-      "description": "All identity types serialize correctly",
-      "input_identities": [
-        {"id": "u1", "type": "user", "roles": ["viewer"], "attrs": {}},
-        {"id": "s1", "type": "service", "roles": [], "attrs": {}},
-        {"id": "a1", "type": "agent", "roles": ["tool_caller"], "attrs": {}},
-        {"id": "k1", "type": "api_key", "roles": [], "attrs": {}},
-        {"id": "sys", "type": "system", "roles": [], "attrs": {}}
-      ],
-      "expected_types": ["user", "service", "agent", "api_key", "system"]
+      "id": "all_identity_types_serialize",
+      "description": "Each identity type enum value serializes correctly via serialize→deserialize round-trip",
+      "sub_cases": [
+        {"input_identity": {"id": "u1", "type": "user", "roles": ["viewer"], "attrs": {}}, "expected_type": "user"},
+        {"input_identity": {"id": "s1", "type": "service", "roles": [], "attrs": {}}, "expected_type": "service"},
+        {"input_identity": {"id": "a1", "type": "agent", "roles": ["tool_caller"], "attrs": {}}, "expected_type": "agent"},
+        {"input_identity": {"id": "k1", "type": "api_key", "roles": [], "attrs": {}}, "expected_type": "api_key"},
+        {"input_identity": {"id": "sys", "type": "system", "roles": [], "attrs": {}}, "expected_type": "system"}
+      ]
     },
     {
-      "id": "deserialization_preserves_fields",
+      "id": "deserialization_round_trip",
       "description": "Deserializing a serialized context preserves all non-transient fields",
-      "serialized": {
+      "input": {
         "_context_version": 1,
         "trace_id": "990e8400-e29b-41d4-a716-446655440004",
         "caller_id": "auth.verify",
@@ -140,16 +137,19 @@
           "session_token": "tok-123"
         }
       },
-      "expected_trace_id": "990e8400-e29b-41d4-a716-446655440004",
-      "expected_caller_id": "auth.verify",
-      "expected_call_chain": ["auth.verify"],
-      "expected_identity_id": "user-abc",
-      "expected_data_key": "session_token"
+      "expected": {
+        "trace_id": "990e8400-e29b-41d4-a716-446655440004",
+        "caller_id": "auth.verify",
+        "call_chain": ["auth.verify"],
+        "identity_id": "user-abc",
+        "identity_type": "user",
+        "data_contains": "session_token"
+      }
     },
     {
       "id": "unknown_context_version_warns_but_proceeds",
       "description": "Deserializing with _context_version > 1 should warn but not fail",
-      "serialized": {
+      "input": {
         "_context_version": 99,
         "trace_id": "aa0e8400-e29b-41d4-a716-446655440005",
         "caller_id": null,
@@ -157,8 +157,33 @@
         "identity": null,
         "data": {}
       },
-      "expected_behavior": "warn_and_proceed",
-      "expected_trace_id": "aa0e8400-e29b-41d4-a716-446655440005"
+      "expected": {
+        "should_succeed": true,
+        "trace_id": "aa0e8400-e29b-41d4-a716-446655440005"
+      }
+    },
+    {
+      "id": "redacted_inputs_serialized",
+      "description": "redacted_inputs field is included in serialization when present",
+      "input": {
+        "trace_id": "bb0e8400-e29b-41d4-a716-446655440006",
+        "caller_id": null,
+        "call_chain": [],
+        "identity": null,
+        "data": {},
+        "redacted_inputs": {
+          "password": "***REDACTED***",
+          "username": "alice"
+        }
+      },
+      "expected": {
+        "_context_version": 1,
+        "trace_id": "bb0e8400-e29b-41d4-a716-446655440006",
+        "redacted_inputs": {
+          "password": "***REDACTED***",
+          "username": "alice"
+        }
+      }
     }
   ]
 }

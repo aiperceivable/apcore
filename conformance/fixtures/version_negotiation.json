@@ -47,7 +47,8 @@
       "id": "invalid_version_error",
       "declared": "not.valid",
       "sdk": "1.0.0",
-      "expected_error": "ValueError"
+      "expected_error": "PARSE_ERROR",
+      "description": "Invalid semver string should raise a parse error (language-specific: ValueError in Python, Error in TS, ParseError in Rust)"
     },
     {
       "id": "zero_major",

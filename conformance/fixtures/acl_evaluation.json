@@ -1,5 +1,5 @@
 {
-  "description": "ACL rule evaluation (first-match-wins)",
+  "description": "ACL rule evaluation (first-match-wins, spec §6)",
   "test_cases": [
     {
       "id": "allow_rule_match",
@@ -81,7 +81,8 @@
       "expected": true
     },
     {
-      "id": "compound_or_match",
+      "id": "compound_or_in_callers",
+      "description": "$or as first element in callers array — matches if any subsequent pattern matches",
       "rules": [
         {
           "callers": ["$or", "admin", "moderator"],
@@ -95,7 +96,8 @@
       "expected": true
     },
     {
-      "id": "compound_not_match",
+      "id": "compound_not_in_callers",
+      "description": "$not as first element in callers array — matches if subsequent pattern does NOT match",
       "rules": [
         {
           "callers": ["$not", "banned_user"],
@@ -109,32 +111,34 @@
       "expected": true
     },
     {
-      "id": "condition_role_match",
+      "id": "condition_roles_match",
+      "description": "conditions.roles (list) — at least one role must overlap with identity roles",
       "rules": [
         {
           "callers": ["*"],
           "targets": ["*"],
           "effect": "allow",
           "conditions": {
-            "role": "editor"
+            "roles": ["editor"]
           }
         }
       ],
       "default_effect": "deny",
       "caller_id": "user_123",
-      "caller_identity": {"type": "user", "roles": ["editor"]},
+      "caller_identity": {"type": "user", "roles": ["editor", "viewer"]},
       "target_id": "posts.edit",
       "expected": true
     },
     {
-      "id": "condition_role_mismatch",
+      "id": "condition_roles_mismatch",
+      "description": "conditions.roles — no overlap with identity roles",
       "rules": [
         {
           "callers": ["*"],
           "targets": ["*"],
           "effect": "allow",
           "conditions": {
-            "role": "admin"
+            "roles": ["admin"]
           }
         }
       ],
@@ -145,14 +149,15 @@
       "expected": false
     },
     {
-      "id": "condition_identity_type_match",
+      "id": "condition_identity_types_match",
+      "description": "conditions.identity_types (list) — identity type must be in allowed list",
       "rules": [
         {
           "callers": ["*"],
           "targets": ["*"],
           "effect": "allow",
           "conditions": {
-            "identity_type": "service"
+            "identity_types": ["service"]
           }
         }
       ],
@@ -163,14 +168,15 @@
       "expected": true
     },
     {
-      "id": "condition_call_depth_match",
+      "id": "condition_max_call_depth_match",
+      "description": "conditions.max_call_depth (integer) — call depth must not exceed threshold",
       "rules": [
         {
           "callers": ["*"],
           "targets": ["*"],
           "effect": "allow",
           "conditions": {
-            "call_depth": {"lte": 2}
+            "max_call_depth": 2
           }
         }
       ],
@@ -181,14 +187,15 @@
       "expected": true
     },
     {
-      "id": "condition_call_depth_mismatch",
+      "id": "condition_max_call_depth_exceeded",
+      "description": "conditions.max_call_depth — call depth exceeds threshold",
       "rules": [
         {
           "callers": ["*"],
           "targets": ["*"],
           "effect": "allow",
           "conditions": {
-            "call_depth": {"lte": 1}
+            "max_call_depth": 1
           }
         }
       ],
@@ -197,6 +204,102 @@
       "call_depth": 2,
       "target_id": "mod_c",
       "expected": false
+    },
+    {
+      "id": "empty_callers_matches_none",
+      "description": "Empty callers array never matches any caller",
+      "rules": [
+        {"callers": [], "targets": ["*"], "effect": "allow"}
+      ],
+      "default_effect": "deny",
+      "caller_id": "anyone",
+      "target_id": "anything",
+      "expected": false
+    },
+    {
+      "id": "empty_targets_matches_none",
+      "description": "Empty targets array never matches any target",
+      "rules": [
+        {"callers": ["*"], "targets": [], "effect": "allow"}
+      ],
+      "default_effect": "deny",
+      "caller_id": "anyone",
+      "target_id": "anything",
+      "expected": false
+    },
+    {
+      "id": "at_system_pattern",
+      "description": "@system matches calls where identity type is system",
+      "rules": [
+        {"callers": ["@system"], "targets": ["*"], "effect": "allow"}
+      ],
+      "default_effect": "deny",
+      "caller_id": "system.health",
+      "caller_identity": {"type": "system"},
+      "target_id": "internal.check",
+      "expected": true
+    },
+    {
+      "id": "conditions_without_context_denies",
+      "description": "Conditions present but no context provided — rule does not match",
+      "rules": [
+        {
+          "callers": ["*"],
+          "targets": ["*"],
+          "effect": "allow",
+          "conditions": {
+            "roles": ["admin"]
+          }
+        }
+      ],
+      "default_effect": "deny",
+      "caller_id": "user_123",
+      "caller_identity": null,
+      "target_id": "admin.panel",
+      "expected": false
+    },
+    {
+      "id": "condition_or_compound",
+      "description": "$or in conditions — matches if any sub-condition set passes",
+      "rules": [
+        {
+          "callers": ["*"],
+          "targets": ["*"],
+          "effect": "allow",
+          "conditions": {
+            "$or": [
+              {"roles": ["admin"]},
+              {"identity_types": ["system"]}
+            ]
+          }
+        }
+      ],
+      "default_effect": "deny",
+      "caller_id": "sys_agent",
+      "caller_identity": {"type": "system", "roles": []},
+      "target_id": "admin.panel",
+      "expected": true
+    },
+    {
+      "id": "condition_not_compound",
+      "description": "$not in conditions — matches if sub-condition set fails",
+      "rules": [
+        {
+          "callers": ["*"],
+          "targets": ["*"],
+          "effect": "allow",
+          "conditions": {
+            "$not": {
+              "identity_types": ["anonymous"]
+            }
+          }
+        }
+      ],
+      "default_effect": "deny",
+      "caller_id": "user_123",
+      "caller_identity": {"type": "user", "roles": []},
+      "target_id": "protected.resource",
+      "expected": true
     }
   ]
 }

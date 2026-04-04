@@ -1,5 +1,5 @@
 {
-  "description": "Environment variable to Config path mapping (Algorithm A12-NS)",
+  "description": "Environment variable to Config path mapping (Algorithm A12-NS, spec §9.8). Tests path resolution and prefix matching only — type coercion is tested separately in schema_validation.json.",
   "namespaces": [
     {
       "name": "observability",
@@ -30,97 +30,97 @@
     {
       "id": "global_mapped_variable_port",
       "env_var": "PORT",
+      "env_value": "8080",
       "expected_path": "server.port",
-      "expected_value": 8080,
-      "env_value": "8080"
+      "expected_value": "8080"
     },
     {
       "id": "global_mapped_variable_db",
       "env_var": "DATABASE_URL",
+      "env_value": "sqlite:///data.db",
       "expected_path": "storage.database_url",
-      "expected_value": "sqlite:///data.db",
-      "env_value": "sqlite:///data.db"
+      "expected_value": "sqlite:///data.db"
     },
     {
       "id": "global_mapped_variable_debug",
       "env_var": "DEBUG",
+      "env_value": "DEBUG",
       "expected_path": "logging.level",
-      "expected_value": "DEBUG",
-      "env_value": "DEBUG"
+      "expected_value": "DEBUG"
     },
     {
       "id": "exact_prefix_match",
       "env_var": "APCORE_OBSERVABILITY_TRACING_ENABLED",
+      "env_value": "true",
       "expected_path": "observability.tracing.enabled",
-      "expected_value": "true",
-      "env_value": "true"
+      "expected_value": "true"
     },
     {
       "id": "nested_path_match",
       "env_var": "APCORE_MCP_ROUTER_MAX_TIMEOUT",
+      "env_value": "30000",
       "expected_path": "mcp.router.max_timeout",
-      "expected_value": 30000,
-      "env_value": "30000"
+      "expected_value": "30000"
     },
     {
       "id": "longest_prefix_rule",
       "env_var": "APCORE_SYS_MODULES_RELOAD_ENABLED",
+      "env_value": "false",
       "expected_path": "sys.modules.reload.enabled",
-      "expected_value": "false",
-      "env_value": "false"
+      "expected_value": "false"
     },
     {
       "id": "global_prefix_fallback",
       "env_var": "APCORE_EXECUTOR_TIMEOUT",
+      "env_value": "5000",
       "expected_path": "executor.timeout",
-      "expected_value": "5000",
-      "env_value": "5000"
+      "expected_value": "5000"
     },
     {
       "id": "unknown_prefix_ignore",
       "env_var": "MY_APP_DEBUG",
+      "env_value": "true",
       "expected_path": null,
-      "expected_value": null,
-      "env_value": "true"
+      "expected_value": null
     },
     {
       "id": "ambiguous_prefix_resolution",
       "env_var": "APCORE_OBSERVABILITY_LEVEL",
+      "env_value": "debug",
       "expected_path": "observability.level",
-      "expected_value": "debug",
-      "env_value": "debug"
+      "expected_value": "debug"
     },
     {
       "id": "env_style_nested",
       "env_style": "nested",
       "env_var": "APCORE_MCP__SERVER__PORT",
+      "env_value": "9000",
       "expected_path": "mcp.server.port",
-      "expected_value": 9000,
-      "env_value": "9000"
+      "expected_value": "9000"
     },
     {
       "id": "env_style_flat",
       "env_style": "flat",
       "env_var": "APCORE_MCP_SERVER_PORT",
+      "env_value": "9000",
       "expected_path": "mcp.server.port",
-      "expected_value": 9000,
-      "env_value": "9000"
+      "expected_value": "9000"
     },
     {
       "id": "env_style_auto_detect_nested",
       "env_style": "auto",
       "env_var": "APCORE_MCP__SERVER__PORT",
+      "env_value": "9000",
       "expected_path": "mcp.server.port",
-      "expected_value": 9000,
-      "env_value": "9000"
+      "expected_value": "9000"
     },
     {
       "id": "env_style_auto_detect_flat",
       "env_style": "auto",
       "env_var": "APCORE_MCP_SERVER_PORT",
+      "env_value": "9000",
       "expected_path": "mcp.server.port",
-      "expected_value": 9000,
-      "env_value": "9000"
+      "expected_value": "9000"
     }
   ]
 }

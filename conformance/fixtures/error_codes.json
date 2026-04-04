@@ -1,5 +1,5 @@
 {
-  "description": "Error code collision detection (Algorithm A17)",
+  "description": "Error code collision detection (Algorithm A17, spec §8.4)",
   "test_cases": [
     {
       "id": "register_custom_code",
@@ -13,6 +13,13 @@
       "action": "register",
       "module_id": "my_module",
       "error_code": "MODULE_TIMEOUT",
+      "expected_error": "ERROR_CODE_COLLISION"
+    },
+    {
+      "id": "framework_prefix_general",
+      "action": "register",
+      "module_id": "my_module",
+      "error_code": "GENERAL_MY_ERROR",
       "expected_error": "ERROR_CODE_COLLISION"
     },
     {
@@ -45,19 +52,21 @@
     }
   ],
   "framework_prefixes": [
+    "CONFIG_",
+    "ACL_",
     "MODULE_",
     "SCHEMA_",
-    "ACL_",
-    "CONFIG_",
-    "BINDING_",
-    "INTERNAL_",
-    "INVALID_",
-    "CIRCULAR_",
     "CALL_",
-    "VERSION_",
-    "APPROVAL_",
+    "CIRCULAR_",
+    "GENERAL_",
+    "FUNC_",
+    "BINDING_",
     "MIDDLEWARE_",
-    "FUNC_MISSING_",
-    "ERROR_CODE_"
+    "APPROVAL_",
+    "VERSION_",
+    "ERROR_CODE_",
+    "DEPENDENCY_",
+    "EXECUTION_",
+    "RELOAD_"
   ]
 }
