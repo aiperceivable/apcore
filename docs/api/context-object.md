@@ -166,19 +166,59 @@ Module callers are not only human users, but also services, AI Agents, API Keys,
 
 Business-specific fields go in `attrs`, not polluting the core structure:
 
-```python
-identity = Identity(
-    id="u_123",
-    type="user",
-    roles=["user", "admin"],
-    attrs={
-        "name": "John Doe",
-        "email": "john@example.com",
-        "tenant_id": "tenant_456",
-        "department": "engineering"
-    }
-)
-```
+=== "Python"
+
+    ```python
+    from apcore import Identity
+
+    identity = Identity(
+        id="u_123",
+        type="user",
+        roles=["user", "admin"],
+        attrs={
+            "name": "John Doe",
+            "email": "john@example.com",
+            "tenant_id": "tenant_456",
+            "department": "engineering"
+        }
+    )
+    ```
+
+=== "TypeScript"
+
+    ```typescript
+    import { createIdentity } from 'apcore-js';
+
+    const identity = createIdentity({
+        id: "u_123",
+        type: "user",
+        roles: ["user", "admin"],
+        attrs: {
+            name: "John Doe",
+            email: "john@example.com",
+            tenantId: "tenant_456",
+            department: "engineering"
+        }
+    });
+    ```
+
+=== "Rust"
+
+    ```rust
+    use apcore::Identity;
+    use std::collections::HashMap;
+
+    let mut attrs = HashMap::new();
+    attrs.insert("name".into(), "John Doe".into());
+    attrs.insert("email".into(), "john@example.com".into());
+    attrs.insert("tenant_id".into(), "tenant_456".into());
+    attrs.insert("department".into(), "engineering".into());
+
+    let identity = Identity::new("u_123")
+        .with_type("user")
+        .with_roles(vec!["user", "admin"])
+        .with_attrs(attrs);
+    ```
 
 ### 3.3 Using in Modules
 
@@ -434,36 +474,100 @@ class AnalyzeModule(Module):
 
 ### 7.1 Creating at Top-Level Calls
 
-```python
-from apcore import Executor, Context, Identity
-import uuid
+=== "Python"
 
-executor = Executor(registry)
+    ```python
+    from apcore import Executor, Context, Identity
+    import uuid
 
-# Method 1: Auto-create Context (recommended)
-result = executor.call(
-    module_id="executor.email.send_email",
-    inputs={"to": "user@example.com", "subject": "Hi", "body": "Hello"}
-)
-# Framework automatically generates trace_id, others are default values
+    executor = Executor(registry)
 
-# Method 2: Manually create Context
-context = Context(
-    trace_id=str(uuid.uuid4()),
-    identity=Identity(
-        id="u_123",
-        type="user",
-        roles=["admin"],
-        attrs={"tenant_id": "t_456"}
-    ),
-    data={"locale": "zh-CN", "feature_flags": {"new_ui": True}}
-)
-result = executor.call(
-    module_id="executor.email.send_email",
-    inputs={"to": "user@example.com", "subject": "Hi", "body": "Hello"},
-    context=context
-)
-```
+    # Method 1: Auto-create Context (recommended)
+    result = executor.call(
+        module_id="executor.email.send_email",
+        inputs={"to": "user@example.com", "subject": "Hi", "body": "Hello"}
+    )
+    # Framework automatically generates trace_id, others are default values
+
+    # Method 2: Manually create Context
+    context = Context(
+        trace_id=str(uuid.uuid4()),
+        identity=Identity(
+            id="u_123",
+            type="user",
+            roles=["admin"],
+            attrs={"tenant_id": "t_456"}
+        ),
+        data={"locale": "zh-CN", "feature_flags": {"new_ui": True}}
+    )
+    result = executor.call(
+        module_id="executor.email.send_email",
+        inputs={"to": "user@example.com", "subject": "Hi", "body": "Hello"},
+        context=context
+    )
+    ```
+
+=== "TypeScript"
+
+    ```typescript
+    import { Executor, Context, createIdentity } from 'apcore-js';
+
+    const executor = new Executor({ registry });
+
+    // Method 1: Auto-create Context (recommended)
+    const result1 = await executor.call(
+        "executor.email.send_email",
+        { to: "user@example.com", subject: "Hi", body: "Hello" }
+    );
+    // Framework automatically generates trace_id, others are default values
+
+    // Method 2: Manually create Context
+    const identity = createIdentity({
+        id: "u_123",
+        type: "user",
+        roles: ["admin"],
+        attrs: { tenantId: "t_456" }
+    });
+    const context = Context.create(undefined, identity);
+    context.data.locale = "zh-CN";
+    context.data.featureFlags = { newUi: true };
+
+    const result2 = await executor.call(
+        "executor.email.send_email",
+        { to: "user@example.com", subject: "Hi", body: "Hello" },
+        context
+    );
+    ```
+
+=== "Rust"
+
+    ```rust
+    use apcore::{Executor, Context, Identity};
+
+    let executor = Executor::new(registry);
+
+    // Method 1: Auto-create Context (recommended)
+    let result = executor.call(
+        "executor.email.send_email",
+        serde_json::json!({"to": "user@example.com", "subject": "Hi", "body": "Hello"}),
+        None,
+    ).await?;
+    // Framework automatically generates trace_id, others are default values
+
+    // Method 2: Manually create Context
+    let identity = Identity::new("u_123")
+        .with_type("user")
+        .with_roles(vec!["admin"]);
+
+    let mut ctx = Context::new(identity);
+    ctx.data_mut().insert("locale".into(), "zh-CN".into());
+
+    let result = executor.call(
+        "executor.email.send_email",
+        serde_json::json!({"to": "user@example.com", "subject": "Hi", "body": "Hello"}),
+        Some(ctx),
+    ).await?;
+    ```
 
 ### 7.2 Passing Between Modules
 
@@ -491,7 +595,7 @@ When passing Context, the framework automatically:
 4. **Keeps identity unchanged**
 5. **Shares data by reference** (same dict instance)
 
-```
+```text
 Top-level call:
   trace_id: "abc-123"
   caller_id: None
@@ -611,7 +715,7 @@ class FrequencySafeModule(Module):
 
 **Unified Executor-level detection (recommended):** No need to manually write frequency detection in each module, Executor automatically performs three-layer protection before calling any module:
 
-```
+```text
 executor.call(module_id, inputs, context)
     ├─ Depth check: len(call_chain) >= 32             → CALL_DEPTH_EXCEEDED
     ├─ Cycle detection: module_id in call_chain            → CIRCULAR_CALL

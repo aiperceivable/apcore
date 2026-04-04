@@ -629,7 +629,7 @@ class CounterModule(Module):
 
 **Hot-Reload Lifecycle:**
 
-```
+```text
 old_instance.on_suspend() → state     ← Export state
 old_instance.on_unload()              ← Cleanup resources
   (reload module code from disk)
@@ -645,7 +645,7 @@ new_instance.on_resume(state)         ← Restore state (only if state is not No
 
 **Normal Shutdown Lifecycle:**
 
-```
+```text
 Registry.discover()
     ↓
 Module class loading

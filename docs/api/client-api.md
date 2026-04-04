@@ -223,23 +223,65 @@ class APCore:
 
 ### 2.1 Basic (Zero-Config)
 
-```python
-from apcore import APCore
+=== "Python"
 
-client = APCore()
-```
+    ```python
+    from apcore import APCore
+
+    client = APCore()
+    ```
+
+=== "TypeScript"
+
+    ```typescript
+    import { APCore } from 'apcore-js';
+
+    const client = new APCore();
+    ```
+
+=== "Rust"
+
+    ```rust
+    use apcore::APCore;
+
+    let client = APCore::new();
+    ```
 
 ### 2.2 With Config (Enables System Modules)
 
-```python
-from apcore import APCore
-from apcore.config import Config
+=== "Python"
 
-config = Config.load("apcore.yaml")
-client = APCore(config=config)
+    ```python
+    from apcore import APCore
+    from apcore.config import Config
 
-# System modules are auto-registered when config has sys_modules.enabled=true
-```
+    config = Config.load("apcore.yaml")
+    client = APCore(config=config)
+
+    # System modules are auto-registered when config has sys_modules.enabled=true
+    ```
+
+=== "TypeScript"
+
+    ```typescript
+    import { APCore, Config } from 'apcore-js';
+
+    const config = Config.load("apcore.yaml");
+    const client = new APCore({ config });
+
+    // System modules are auto-registered when config has sys_modules.enabled=true
+    ```
+
+=== "Rust"
+
+    ```rust
+    use apcore::{APCore, Config};
+
+    let config = Config::load("apcore.yaml")?;
+    let client = APCore::with_config(config);
+
+    // System modules are auto-registered when config has sys_modules.enabled=true
+    ```
 
 ### 2.3 With Defaults (No YAML File)
 
@@ -252,13 +294,35 @@ client = APCore(config=config)
 
 ### 2.4 With Existing Registry/Executor
 
-```python
-from apcore import APCore, Registry, Executor
+=== "Python"
 
-registry = Registry(extensions_dir="./extensions")
-executor = Executor(registry=registry)
-client = APCore(registry=registry, executor=executor)
-```
+    ```python
+    from apcore import APCore, Registry, Executor
+
+    registry = Registry(extensions_dir="./extensions")
+    executor = Executor(registry=registry)
+    client = APCore(registry=registry, executor=executor)
+    ```
+
+=== "TypeScript"
+
+    ```typescript
+    import { APCore, Registry, Executor } from 'apcore-js';
+
+    const registry = new Registry({ extensionsDir: "./extensions" });
+    const executor = new Executor({ registry });
+    const client = new APCore({ registry, executor });
+    ```
+
+=== "Rust"
+
+    ```rust
+    use apcore::{APCore, Registry, Executor};
+
+    let registry = Registry::new("./extensions");
+    let executor = Executor::new(registry.clone());
+    let client = APCore::with_components(registry, executor);
+    ```
 
 ---
 
@@ -295,23 +359,100 @@ print(f"Discovered {count} modules")
 
 ### 4.1 Synchronous Call
 
-```python
-result = client.call("math.add", {"a": 10, "b": 5})
-# {'sum': 15}
-```
+=== "Python"
+
+    ```python
+    from apcore import APCore
+
+    client = APCore()
+    result = client.call("math.add", {"a": 10, "b": 5})
+    # {'sum': 15}
+    ```
+
+=== "TypeScript"
+
+    ```typescript
+    import { APCore } from 'apcore-js';
+
+    const client = new APCore();
+    const result = await client.call("math.add", { a: 10, b: 5 });
+    // { sum: 15 }
+    ```
+
+=== "Rust"
+
+    ```rust
+    use apcore::APCore;
+
+    let client = APCore::new();
+    let result = client.call("math.add", serde_json::json!({"a": 10, "b": 5})).await?;
+    // {"sum": 15}
+    ```
 
 ### 4.2 Async Call
 
-```python
-result = await client.call_async("math.add", {"a": 10, "b": 5})
-```
+=== "Python"
+
+    ```python
+    from apcore import APCore
+
+    client = APCore()
+    result = await client.call_async("math.add", {"a": 10, "b": 5})
+    ```
+
+=== "TypeScript"
+
+    ```typescript
+    import { APCore } from 'apcore-js';
+
+    const client = new APCore();
+    const result = await client.callAsync("math.add", { a: 10, b: 5 });
+    ```
+
+=== "Rust"
+
+    ```rust
+    use apcore::APCore;
+
+    let client = APCore::new();
+    let result = client.call_async("math.add", serde_json::json!({"a": 10, "b": 5})).await?;
+    ```
 
 ### 4.3 Streaming
 
-```python
-async for chunk in client.stream("my.streaming_module", {"query": "hello"}):
-    print(chunk)
-```
+=== "Python"
+
+    ```python
+    from apcore import APCore
+
+    client = APCore()
+    async for chunk in client.stream("my.streaming_module", {"query": "hello"}):
+        print(chunk)
+    ```
+
+=== "TypeScript"
+
+    ```typescript
+    import { APCore } from 'apcore-js';
+
+    const client = new APCore();
+    for await (const chunk of client.stream("my.streaming_module", { query: "hello" })) {
+        console.log(chunk);
+    }
+    ```
+
+=== "Rust"
+
+    ```rust
+    use apcore::APCore;
+    use futures::StreamExt;
+
+    let client = APCore::new();
+    let mut stream = client.stream("my.streaming_module", serde_json::json!({"query": "hello"})).await?;
+    while let Some(chunk) = stream.next().await {
+        println!("{:?}", chunk?);
+    }
+    ```
 
 ### 4.4 Preflight Validation
 
@@ -338,24 +479,91 @@ result = client.call("math.add", {"a": 1, "b": 2}, version_hint=">=1.0.0")
 
 ### 5.1 List Modules
 
-```python
-# All modules
-all_ids = client.list_modules()
+=== "Python"
 
-# Filter by tags
-math_ids = client.list_modules(tags=["math"])
+    ```python
+    from apcore import APCore
 
-# Filter by prefix
-system_ids = client.list_modules(prefix="system.")
-```
+    client = APCore()
+
+    # All modules
+    all_ids = client.list_modules()
+
+    # Filter by tags
+    math_ids = client.list_modules(tags=["math"])
+
+    # Filter by prefix
+    system_ids = client.list_modules(prefix="system.")
+    ```
+
+=== "TypeScript"
+
+    ```typescript
+    import { APCore } from 'apcore-js';
+
+    const client = new APCore();
+
+    // All modules
+    const allIds = client.listModules();
+
+    // Filter by tags
+    const mathIds = client.listModules({ tags: ["math"] });
+
+    // Filter by prefix
+    const systemIds = client.listModules({ prefix: "system." });
+    ```
+
+=== "Rust"
+
+    ```rust
+    use apcore::APCore;
+
+    let client = APCore::new();
+
+    // All modules
+    let all_ids = client.list_modules(None, None);
+
+    // Filter by tags
+    let math_ids = client.list_modules(Some(&["math"]), None);
+
+    // Filter by prefix
+    let system_ids = client.list_modules(None, Some("system."));
+    ```
 
 ### 5.2 Describe a Module
 
-```python
-description = client.describe("math.add")
-print(description)
-# Returns markdown-formatted description suitable for AI/LLM tool discovery
-```
+=== "Python"
+
+    ```python
+    from apcore import APCore
+
+    client = APCore()
+    description = client.describe("math.add")
+    print(description)
+    # Returns markdown-formatted description suitable for AI/LLM tool discovery
+    ```
+
+=== "TypeScript"
+
+    ```typescript
+    import { APCore } from 'apcore-js';
+
+    const client = new APCore();
+    const description = client.describe("math.add");
+    console.log(description);
+    // Returns markdown-formatted description suitable for AI/LLM tool discovery
+    ```
+
+=== "Rust"
+
+    ```rust
+    use apcore::APCore;
+
+    let client = APCore::new();
+    let description = client.describe("math.add");
+    println!("{}", description);
+    // Returns markdown-formatted description suitable for AI/LLM tool discovery
+    ```
 
 ---
 

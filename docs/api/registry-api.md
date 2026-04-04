@@ -231,34 +231,86 @@ class Registry:
 
 ### 2.1 Basic Initialization
 
-```python
-from apcore import Registry
+=== "Python"
 
-# Use default configuration (single root directory ./extensions, backward compatible)
-registry = Registry()
+    ```python
+    from apcore import Registry
 
-# Specify module directory
-registry = Registry(extensions_dir="./src/extensions")
+    # Use default configuration (single root directory ./extensions, backward compatible)
+    registry = Registry()
 
-# No directory binding (manual registration only)
-registry = Registry(extensions_dir=None)
+    # Specify module directory
+    registry = Registry(extensions_dir="./src/extensions")
 
-# Multiple root directory mode (namespace auto-derived from directory name)
-registry = Registry(extensions_dirs=["./extensions", "./plugins"])
-# → extensions.executor.email.send_email, plugins.my_tool
+    # No directory binding (manual registration only)
+    registry = Registry(extensions_dir=None)
 
-# Multiple root directories + explicit namespace override
-registry = Registry(extensions_dirs=[
-    {"root": "./extensions", "namespace": "core"},  # core.executor.email.send_email
-    "./plugins"                                      # plugins.my_tool
-])
+    # Multiple root directory mode (namespace auto-derived from directory name)
+    registry = Registry(extensions_dirs=["./extensions", "./plugins"])
+    # → extensions.executor.email.send_email, plugins.my_tool
 
-# Specify ID Map
-registry = Registry(
-    extensions_dir="./extensions",
-    id_map_path="./config/id_map.yaml"
-)
-```
+    # Multiple root directories + explicit namespace override
+    registry = Registry(extensions_dirs=[
+        {"root": "./extensions", "namespace": "core"},  # core.executor.email.send_email
+        "./plugins"                                      # plugins.my_tool
+    ])
+
+    # Specify ID Map
+    registry = Registry(
+        extensions_dir="./extensions",
+        id_map_path="./config/id_map.yaml"
+    )
+    ```
+
+=== "TypeScript"
+
+    ```typescript
+    import { Registry } from 'apcore-js';
+
+    // Use default configuration (single root directory ./extensions, backward compatible)
+    const registry1 = new Registry();
+
+    // Specify module directory
+    const registry2 = new Registry({ extensionsDir: "./src/extensions" });
+
+    // No directory binding (manual registration only)
+    const registry3 = new Registry({ extensionsDir: null });
+
+    // Multiple root directory mode (namespace auto-derived from directory name)
+    const registry4 = new Registry({
+        extensionsDirs: ["./extensions", "./plugins"]
+    });
+
+    // Specify ID Map
+    const registry5 = new Registry({
+        extensionsDir: "./extensions",
+        idMapPath: "./config/id_map.yaml"
+    });
+    ```
+
+=== "Rust"
+
+    ```rust
+    use apcore::Registry;
+
+    // Use default configuration (single root directory ./extensions, backward compatible)
+    let registry = Registry::default();
+
+    // Specify module directory
+    let registry = Registry::new("./src/extensions");
+
+    // No directory binding (manual registration only)
+    let registry = Registry::manual();
+
+    // Multiple root directory mode (namespace auto-derived from directory name)
+    let registry = Registry::with_dirs(vec!["./extensions", "./plugins"]);
+
+    // Specify ID Map
+    let registry = Registry::builder()
+        .extensions_dir("./extensions")
+        .id_map_path("./config/id_map.yaml")
+        .build();
+    ```
 
 ### 2.2 Configuration File
 
@@ -284,13 +336,41 @@ registry = Registry(**config.registry)
 
 ### 3.1 Auto Discovery
 
-```python
-registry = Registry(extensions_dir="./extensions")
+=== "Python"
 
-# Scan extensions directory, auto-register all modules
-count = registry.discover()
-print(f"Discovered {count} modules")
-```
+    ```python
+    from apcore import Registry
+
+    registry = Registry(extensions_dir="./extensions")
+
+    # Scan extensions directory, auto-register all modules
+    count = registry.discover()
+    print(f"Discovered {count} modules")
+    ```
+
+=== "TypeScript"
+
+    ```typescript
+    import { Registry } from 'apcore-js';
+
+    const registry = new Registry({ extensionsDir: "./extensions" });
+
+    // Scan extensions directory, auto-register all modules
+    const count = await registry.discover();
+    console.log(`Discovered ${count} modules`);
+    ```
+
+=== "Rust"
+
+    ```rust
+    use apcore::Registry;
+
+    let registry = Registry::new("./extensions");
+
+    // Scan extensions directory, auto-register all modules
+    let count = registry.discover()?;
+    println!("Discovered {} modules", count);
+    ```
 
 **Discovery Rules:**
 
@@ -304,7 +384,7 @@ print(f"Discovered {count} modules")
 
 **Path to ID Conversion:**
 
-```
+```text
 extensions/executor/email/send_email.py
   ↓
 executor.email.send_email
@@ -673,7 +753,7 @@ registry.unregister("custom.module")          # Triggers "unregister" callback
 
 ### 8.1 Loading Flow
 
-```
+```text
 registry.discover()
     ↓
 Scan extensions_dir
@@ -693,7 +773,7 @@ Register to Registry
 
 ### 8.2 Unloading Flow
 
-```
+```text
 registry.unregister(module_id)
     ↓
 Call on_unload()
@@ -720,7 +800,7 @@ except ModuleLoadError as e:
 
 Registry **must** discover modules according to the following algorithm:
 
-```
+```text
 Algorithm: discover_modules(extensions_dir, config)
 
 Steps:

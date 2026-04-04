@@ -200,16 +200,44 @@ class Executor:
 
 ### 2.1 Basic Initialization
 
-```python
-from apcore import Registry, Executor
+=== "Python"
 
-# Create Registry
-registry = Registry(extensions_dir="./extensions")
-registry.discover()
+    ```python
+    from apcore import Registry, Executor
 
-# Create Executor
-executor = Executor(registry)
-```
+    # Create Registry
+    registry = Registry(extensions_dir="./extensions")
+    registry.discover()
+
+    # Create Executor
+    executor = Executor(registry)
+    ```
+
+=== "TypeScript"
+
+    ```typescript
+    import { Registry, Executor } from 'apcore-js';
+
+    // Create Registry
+    const registry = new Registry({ extensionsDir: "./extensions" });
+    await registry.discover();
+
+    // Create Executor
+    const executor = new Executor({ registry });
+    ```
+
+=== "Rust"
+
+    ```rust
+    use apcore::{Registry, Executor};
+
+    // Create Registry
+    let registry = Registry::new("./extensions");
+    registry.discover()?;
+
+    // Create Executor
+    let executor = Executor::new(registry);
+    ```
 
 ### 2.2 With Middleware
 
@@ -264,19 +292,72 @@ When an `approval_handler` is set, modules declaring `requires_approval=true` in
 
 ### 3.1 Basic Call
 
-```python
-result = executor.call(
-    module_id="executor.email.send_email",
-    inputs={
-        "to": "user@example.com",
-        "subject": "Hello",
-        "body": "World"
-    }
-)
+=== "Python"
 
-print(result)
-# {"success": True, "message_id": "msg_123", "error": None}
-```
+    ```python
+    from apcore import Registry, Executor
+
+    registry = Registry(extensions_dir="./extensions")
+    registry.discover()
+    executor = Executor(registry)
+
+    result = executor.call(
+        module_id="executor.email.send_email",
+        inputs={
+            "to": "user@example.com",
+            "subject": "Hello",
+            "body": "World"
+        }
+    )
+
+    print(result)
+    # {"success": True, "message_id": "msg_123", "error": None}
+    ```
+
+=== "TypeScript"
+
+    ```typescript
+    import { Registry, Executor } from 'apcore-js';
+
+    const registry = new Registry({ extensionsDir: "./extensions" });
+    await registry.discover();
+    const executor = new Executor({ registry });
+
+    const result = await executor.call(
+        "executor.email.send_email",
+        {
+            to: "user@example.com",
+            subject: "Hello",
+            body: "World"
+        }
+    );
+
+    console.log(result);
+    // { success: true, messageId: "msg_123", error: null }
+    ```
+
+=== "Rust"
+
+    ```rust
+    use apcore::{Registry, Executor};
+
+    let registry = Registry::new("./extensions");
+    registry.discover()?;
+    let executor = Executor::new(registry);
+
+    let result = executor.call(
+        "executor.email.send_email",
+        serde_json::json!({
+            "to": "user@example.com",
+            "subject": "Hello",
+            "body": "World"
+        }),
+        None,
+    ).await?;
+
+    println!("{:?}", result);
+    // {"success": true, "message_id": "msg_123", "error": null}
+    ```
 
 ### 3.2 With Context
 
@@ -521,7 +602,7 @@ except SchemaValidationError as e:
 
 ### 6.1 Complete Flow
 
-```
+```text
 executor.call(module_id, inputs, context)
     │
     ├─ 1. Create/validate Context
@@ -588,7 +669,7 @@ result = context.executor.call(
 
 ### 6.3 Execution State Machine
 
-```
+```text
   ┌─────────┐
   │  idle   │
   └────┬────┘
@@ -734,7 +815,7 @@ executor.use_after(lambda module_id, inputs, output, ctx: print(f"Done {module_i
 
 Middleware executes in onion model:
 
-```
+```text
 Request → MW1.before → MW2.before → Module → MW2.after → MW1.after → Response
 
 On error:
@@ -850,7 +931,7 @@ executor.use(LoggingMiddleware(
 
 Log output example:
 
-```
+```text
 [INFO] [trace:abc-123] Before: executor.email.send_email
 [INFO] [trace:abc-123] Inputs: {"to": "user@example.com", ...}
 [INFO] [trace:abc-123] After: executor.email.send_email (45ms)
