@@ -91,6 +91,23 @@ class Module(Protocol):
 
     # ============ Optional Methods ============
 
+    def preflight(self, inputs: dict[str, Any], context: "Context") -> list[str]:
+        """Return domain-specific warnings before execution (advisory only).
+        
+        Called during validate() as the final check. Warnings are included
+        in PreflightCheckResult but do not block execution.
+        Default: returns empty list.
+        """
+        return []
+
+    def describe(self) -> dict[str, Any]:
+        """Return module metadata for introspection.
+        
+        Used by Registry.describe() and system.manifest modules.
+        Default: returns dict with description, input_schema, output_schema, annotations.
+        """
+        ...
+
     def validate(self, inputs: dict[str, Any]) -> "ValidationResult":
         """
         Validate input only, without execution (optional implementation)
@@ -356,6 +373,8 @@ class SendEmailModule(Module):
 | `documentation` | **MAY** | Optional; ≤5000 characters, supports Markdown |
 | `execute()` | **MUST** | Must be implemented (`def` or `async def`), framework auto-detects sync/async |
 | `validate()` | **MAY** | Optional implementation; should have no side effects when called |
+| `preflight()` | **MAY** | Optional; returns advisory warnings, does not block execution |
+| `describe()` | **MAY** | Optional; returns module metadata dict for introspection |
 | `on_load()` / `on_unload()` | **MAY** | Optional implementation; exceptions should not block other module loading |
 | `on_suspend()` / `on_resume()` | **MAY** | Optional; preserve and restore state across hot-reload cycles |
 | `name` | **MAY** | Optional; generated from class name by default |
@@ -435,10 +454,17 @@ class ModuleAnnotations:
     streaming: bool = False         # Supports streaming output
     cacheable: bool = False         # Output can be cached
     cache_ttl: int = 0              # Cache duration in seconds (0 = no cache)
-    cache_key_fields: list[str] | None = None  # Input fields for cache key (None = all)
+    cache_key_fields: tuple[str, ...] | None = None  # Input fields for cache key (None = all; lists are auto-converted to tuples)
     paginated: bool = False         # Returns paginated results
     pagination_style: str = "cursor"  # "cursor", "offset", or "page"
+    extra: dict[str, Any] = field(default_factory=dict)  # Extension metadata for ecosystem packages
 ```
+
+!!! note "cache_key_fields type"
+    `cache_key_fields` is a `tuple[str, ...]` to ensure immutability. Lists passed in are automatically converted to tuples.
+
+!!! note "extra field"
+    `extra` captures any additional key-value pairs not covered by the standard annotation fields, enabling ecosystem packages to attach custom metadata without modifying the core `ModuleAnnotations` definition.
 
 | Field | Default | Meaning | AI Behavior |
 |------|--------|------|---------|
@@ -453,6 +479,7 @@ class ModuleAnnotations:
 | `cache_key_fields` | `None` | Input fields for cache key (None = all fields) | Determines cache hit criteria |
 | `paginated` | `False` | Returns paginated results | `True` → Pass cursor/offset, expect partial results |
 | `pagination_style` | `"cursor"` | `"cursor"`, `"offset"`, or `"page"` pagination | Determines pagination parameter format |
+| `extra` | `{}` | Extension metadata for ecosystem packages | Custom key-value pairs for non-standard annotations |
 
 ```python
 # Query module - read-only, safe
@@ -501,8 +528,8 @@ from typing import Any
 class ModuleExample:
     """Module usage example"""
     title: str                                # Example title
-    inputs: dict[str, Any]                    # Example input
-    output: dict[str, Any] | None = None      # Example output (optional)
+    inputs: dict[str, Any] = field(default_factory=dict)   # Example input
+    output: dict[str, Any] = field(default_factory=dict)   # Example output
     description: str | None = None            # Description (optional)
 ```
 

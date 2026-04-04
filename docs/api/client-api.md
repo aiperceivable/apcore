@@ -46,7 +46,7 @@ class APCore:
         tags: list[str] | None = None,
         version: str | None = None,
         metadata: dict | None = None,
-        examples: list[dict] | None = None,
+        examples: list[Any] | None = None,
     ) -> Callable:
         """Decorator to register a function as a module"""
         ...

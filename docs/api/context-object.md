@@ -89,6 +89,12 @@ class Context:
     # Dependency injection container for sharing services across the call chain
     services: T | None = None
 
+    # ====== Internal fields (set by Executor, not for module use) ======
+
+    # Epoch timestamp for execution timeout (set by Executor based on global_timeout_ms config)
+    # Modules should not set this directly.
+    _global_deadline: float | None = None
+
     # ====== Everything else ======
 
     # Shared pipeline state (passed by reference, readable/writable along the call chain)
@@ -828,6 +834,37 @@ class Context:
             data=self.data                                              # Reference shared
         )
 ```
+
+---
+
+## 10.1 Serialization
+
+Context supports serialization for cross-process transfer (e.g., distributed execution, task queues).
+
+```python
+    def serialize(self) -> dict[str, Any]:
+        """Serialize Context to a JSON-compatible dict for cross-process transfer.
+        
+        Includes `_context_version: 1` for forward compatibility.
+        Excludes non-serializable fields: executor, cancel_token, services.
+        """
+        ...
+
+    @classmethod
+    def deserialize(cls, data: dict[str, Any]) -> "Context":
+        """Reconstruct Context from a serialized dict.
+        
+        Validates `_context_version` field. Executor must be re-injected after deserialization.
+        """
+        ...
+```
+
+**Serialized fields:** `trace_id`, `caller_id`, `call_chain`, `identity`, `data`, `redacted_inputs`
+
+**Skipped fields (runtime-only):** `executor`, `cancel_token`, `services`
+
+!!! note
+    After deserializing a Context, the `executor` reference must be re-injected before the Context can be used for inter-module calls. The `_context_version` field enables future schema evolution without breaking existing serialized data.
 
 ---
 

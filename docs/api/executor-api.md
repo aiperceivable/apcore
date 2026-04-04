@@ -17,22 +17,26 @@ class Executor:
     def __init__(
         self,
         registry: Registry,
+        *,
+        strategy: "ExecutionStrategy | str | None" = None,
         middlewares: list[Middleware] | None = None,
         acl: "ACL | None" = None,
+        config: "Config | None" = None,
         approval_handler: "ApprovalHandler | None" = None,
-        config: "Config | None" = None
     ) -> None:
         """
         Initialize Executor
 
         Args:
             registry: Module registry
+            strategy: Execution strategy instance, strategy name string,
+                or None (defaults to "standard" strategy)
             middlewares: Middleware list (executed in order)
             acl: Access Control List
-            approval_handler: Approval handler for modules with requires_approval=true
             config: Framework configuration (optional). When provided,
                 executor settings (timeouts, max call depth, etc.) are
                 read from config.
+            approval_handler: Approval handler for modules with requires_approval=true
         """
         ...
 
@@ -149,6 +153,7 @@ class Executor:
 
         Returns:
             PreflightResult with per-check results, requires_approval flag,
+            warnings (list[str], non-fatal advisory messages, default []),
             and duck-type compatible .valid and .errors properties
         """
         ...
@@ -467,7 +472,7 @@ if preflight.requires_approval:
     print("This module requires approval before execution")
 ```
 
-`PreflightResult` runs 6 checks: module ID format, module lookup, call chain safety, ACL, approval detection, and schema validation. It is duck-type compatible with the legacy `ValidationResult` — `.valid` and `.errors` work identically.
+`PreflightResult` runs 6 checks: module ID format, module lookup, call chain safety, ACL, approval detection, and schema validation. It exposes `.warnings` (`list[str]`, default `[]`) for non-fatal advisory messages (e.g., from module preflight). It is duck-type compatible with the legacy `ValidationResult` — `.valid` and `.errors` work identically.
 
 ---
 

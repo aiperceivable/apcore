@@ -17,7 +17,7 @@ class Registry:
     def __init__(
         self,
         config: "Config | None" = None,
-        extensions_dir: str | None = "./extensions",
+        extensions_dir: str | None = None,
         extensions_dirs: list[str | dict] | None = None,
         id_map_path: str | None = None
     ) -> None:
@@ -27,13 +27,23 @@ class Registry:
         Args:
             config: Framework configuration (optional). When provided,
                 registry settings are read from config.registry.
-            extensions_dir: Single root directory path (backward compatible). Set to None for no directory binding (manual registration only).
+            extensions_dir: Single root directory path (backward compatible).
+                Defaults to `None`. When `None`, the registry internally defaults
+                to `"./extensions"` relative to the working directory.
+                Set to `None` explicitly with `extensions_dirs` for no directory binding (manual registration only).
             extensions_dirs: Multiple root directory list (mutually exclusive with extensions_dir).
                 Each element can be a path string (namespace auto-derived from directory name) or
                 dict (e.g., {"root": "./extensions", "namespace": "core"}).
             id_map_path: ID Map configuration file path (optional)
         """
         ...
+
+    # ============ Reserved Words ============
+
+    # The following prefixes are reserved and cannot be used as module ID
+    # prefixes: system, internal, core, apcore, plugin, schema, acl.
+    # Attempting to register with a reserved prefix raises ModuleLoadError.
+    # Use register_internal() to bypass this check for framework modules.
 
     # ============ Discovery and Registration ============
 
@@ -420,6 +430,24 @@ registry.discover()
 # Use configured ID
 module = registry.get("email.send")
 ```
+
+---
+
+## 3.3 Reserved Words
+
+The following prefixes are reserved and cannot be used as module ID prefixes:
+
+| Reserved Word | Reason |
+|--------------|--------|
+| `system` | Built-in system modules (`system.health.*`, `system.manifest.*`) |
+| `internal` | Framework internal modules |
+| `core` | Core framework modules |
+| `apcore` | Framework namespace |
+| `plugin` | Reserved for plugin system |
+| `schema` | Schema subsystem namespace |
+| `acl` | ACL subsystem namespace |
+
+Attempting to register a module with any of these prefixes will raise a `ModuleLoadError`. Use `register_internal()` to bypass this check for framework-level module registration.
 
 ---
 

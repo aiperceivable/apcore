@@ -83,7 +83,19 @@ rules:
       identity_types: ["service"]
       roles: ["admin"]
       max_call_depth: 5
+    # Compound conditions with $or and $not
+  - callers: ["agent.*"]
+    targets: ["data.export"]
+    effect: allow
+    conditions:
+      $or:
+        - roles: ["data_admin"]
+        - identity_types: ["service"]
+      $not:
+        max_call_depth: 1  # Deny if call depth is exactly 1
 ```
+
+Compound operators `$or` and `$not` can combine conditions. `$or` passes if any sub-condition passes. `$not` inverts its sub-condition.
 
 ## Key Files
 
