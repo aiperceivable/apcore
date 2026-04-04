@@ -133,15 +133,19 @@ class Executor:
         context: Context | None = None,
     ) -> "PreflightResult":
         """
-        Non-destructive preflight check (Steps 1-6 only)
+        Non-destructive preflight check (Steps 1-7)
 
-        Runs 6 checks without executing module code or middleware:
+        Runs up to 7 checks without executing module code or middleware:
         1. Module ID format validation
         2. Module lookup
         3. Call chain safety (if context provided)
         4. ACL check
         5. Approval detection (reports requires_approval flag)
         6. Input schema validation
+        7. Module preflight (MAY) — invokes module.preflight() for advisory warnings
+
+        Check 7 is optional (MAY-level per spec §12.8.5.1). If the module
+        implements preflight(), warnings are collected but never block validation.
 
         Returns:
             PreflightResult with per-check results, requires_approval flag,
@@ -753,8 +757,15 @@ executor.remove(logging_mw)
 
 ### 8.1 Configure ACL
 
+!!! warning "Default-deny is strongly recommended"
+    The example below uses `default_effect: deny` as recommended by the protocol specification.
+    Using `default_effect: allow` is permitted but should be accompanied by explicit deny rules
+    for sensitive modules. See [ACL System](../features/acl-system.md) for security guidance.
+
 ```yaml
 # acl/global_acl.yaml
+default_effect: deny
+
 rules:
   # Allow all modules to call common.* modules
   - callers: ["*"]
@@ -770,11 +781,6 @@ rules:
   - callers: ["*"]
     targets: ["internal.*"]
     effect: deny
-
-  # Default allow
-  - callers: ["*"]
-    targets: ["*"]
-    effect: allow
 ```
 
 ### 8.2 Using ACL

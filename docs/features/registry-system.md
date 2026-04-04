@@ -65,7 +65,7 @@ All public methods on the `Registry` class acquire a reentrant lock (`threading.
 The registry supports registering callback functions for two event types:
 
 - **register** -- Fired after a module is successfully added to the registry. Callbacks receive the module's ID and metadata.
-- **unregister** -- Fired before a module is removed from the registry. Callbacks receive the module's ID and metadata, allowing cleanup or cascading unregistration.
+- **unregister** -- Fired after a module is successfully removed from the registry. Callbacks receive the module's ID and metadata.
 
 Callbacks are invoked synchronously within the registry lock, ensuring consistent state visibility.
 

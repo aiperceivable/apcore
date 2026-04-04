@@ -6351,9 +6351,10 @@ Interface: Executor
  * consumers of validate() continue to work after the enhancement.
  */
 Type: PreflightCheckResult
-  check: String              // "module_id" | "module_lookup" | "call_chain" | "acl" | "approval" | "schema"
+  check: String              // "module_id" | "module_lookup" | "call_chain" | "acl" | "approval" | "schema" | "module_preflight"
   passed: Boolean
   error: Map?                // Error details when passed=false; null when passed=true
+  warnings: List<String>     // Non-fatal advisory messages (default: empty list)
 
 Type: PreflightResult
   valid: Boolean             // True only if ALL checks passed
