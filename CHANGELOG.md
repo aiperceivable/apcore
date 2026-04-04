@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.16.0] - 2026-04-03
+## [0.16.0] - 2026-04-05
 
 ### Added
 
@@ -57,12 +57,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Rust `ApprovalRequest` spec alignment** — Added required `context` field (`Option<Context<Value>>`) and changed `annotations` type from `HashMap` to `ModuleAnnotations` per spec §7.3.1.
+- **Rust `DependencyInfo` field rename** — Renamed `name` to `module_id` for cross-SDK consistency with Python/TypeScript.
+- **Rust config env fallback** — Fixed namespace-mode `APCORE_*` env var fallback to resolve to top-level paths instead of incorrectly prepending `apcore.` prefix.
+- **Rust `config_env` conformance test** — Added missing conformance test (was 9/10, now 10/10 fixtures).
 - **Rust Context field alignment** — Removed non-spec fields (`created_at`, `parent_trace_id`, `trace_context`). Changed `global_deadline` from `Option<Instant>` to `Option<f64>` (epoch seconds).
 - **Rust Identity immutability** — Fields made private with pub getters. Serde compatibility via `IdentityRaw` pattern.
 - **TypeScript `globalDeadline` field** — Added `globalDeadline: number | null` to Context (was missing).
 - **Rust system.control module** — Extracted into dedicated `control.rs` file (was inline in `mod.rs`).
 - **TypeScript `removeRule` comparison** — Fixed to use element-wise array comparison instead of `JSON.stringify`.
 - **Rust empty callers matching** — Empty callers list now matches none (aligned with Python/TypeScript).
+- **API documentation audit (13 fixes)** — Corrected Executor constructor (missing `strategy` param), `cache_key_fields` type (tuple not list), `ModuleAnnotations.extra` field, Reserved Words, `extensions_dir` default, `ModuleExample` defaults, Context `serialize()`/`deserialize()`, `_global_deadline`, `preflight()`/`describe()` methods, `PreflightCheckResult.warnings`, `$or`/`$not` ACL examples.
+- **Cross-language tabbed examples** — Added TypeScript tab to system-modules.md, converted client-api.md to 3-language tabs, fixed bare code blocks in 4 API docs.
 
 ---
 
