@@ -92,30 +92,34 @@
     },
     {
       "id": "env_style_nested",
+      "description": "Nested: single _ = nesting (up to max_depth), double __ = literal underscore per §9.8",
       "env_style": "nested",
-      "env_var": "APCORE_MCP__SERVER__PORT",
-      "env_value": "9000",
-      "expected_path": "mcp.server.port",
-      "expected_value": "9000"
-    },
-    {
-      "id": "env_style_flat",
-      "env_style": "flat",
       "env_var": "APCORE_MCP_SERVER_PORT",
       "env_value": "9000",
       "expected_path": "mcp.server.port",
       "expected_value": "9000"
     },
     {
-      "id": "env_style_auto_detect_nested",
-      "env_style": "auto",
-      "env_var": "APCORE_MCP__SERVER__PORT",
+      "id": "env_style_nested_literal_underscore",
+      "description": "Nested: double __ escapes to literal _ in key name per §9.8",
+      "env_style": "nested",
+      "env_var": "APCORE_MCP_SERVER__URL",
+      "env_value": "http://localhost",
+      "expected_path": "mcp.server_url",
+      "expected_value": "http://localhost"
+    },
+    {
+      "id": "env_style_flat",
+      "description": "Flat: suffix lowered as-is, no _ to . conversion per §9.8",
+      "env_style": "flat",
+      "env_var": "APCORE_MCP_SERVER_PORT",
       "env_value": "9000",
-      "expected_path": "mcp.server.port",
+      "expected_path": "mcp.server_port",
       "expected_value": "9000"
     },
     {
       "id": "env_style_auto_detect_flat",
+      "description": "Auto: without defaults tree, falls back to depth-based resolution",
       "env_style": "auto",
       "env_var": "APCORE_MCP_SERVER_PORT",
       "env_value": "9000",
