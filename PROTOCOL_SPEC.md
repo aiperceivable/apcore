@@ -5,22 +5,22 @@
 > Version: 1.6.0-draft
 > Status: Draft Specification (RFC 2119 Conformant)
 > Stability: Specification content is stable, pending reference implementation verification
-> Last Updated: 2026-03-29
+> Last Updated: 2026-04-03
 
 ---
 
 ### Table of Contents
 
 - [1. Overview](#1-overview)
-- [2. Naming Specification](#2-naming-specification-naming-specification)
-- [3. Directory Specification](#3-directory-specification-directory-specification)
-- [4. Schema Specification](#4-schema-specification-schema-specification)
-- [5. Module Specification](#5-module-specification-module-specification)
-- [6. ACL Specification](#6-acl-specification-acl-specification)
+- [2. Naming Specification](#2-naming-specification)
+- [3. Directory Specification](#3-directory-specification)
+- [4. Schema Specification](#4-schema-specification)
+- [5. Module Specification](#5-module-specification)
+- [6. ACL Specification](#6-acl-specification)
   - [6.6 System Module Permissions](#66-system-module-permissions)
-- [7. Approval System](#7-approval-system-approval-system)
-- [8. Error Handling Specification](#8-error-handling-specification-error-handling-specification)
-- [9. Configuration Specification](#9-configuration-specification-configuration-specification)
+- [7. Approval System](#7-approval-system)
+- [8. Error Handling Specification](#8-error-handling-specification)
+- [9. Configuration Specification](#9-configuration-specification)
   - [9.4 Config Bus Architecture](#94-config-bus-architecture)
   - [9.5 Namespace Registration](#95-namespace-registration)
   - [9.6 Unified Configuration File](#96-unified-configuration-file)
@@ -32,10 +32,10 @@
   - [9.12 Cross-Language Implementation Requirements](#912-cross-language-implementation-requirements)
   - [9.13 Ecosystem Integration Patterns](#913-ecosystem-integration-patterns)
   - [9.14 Config Discovery (Optional)](#914-config-discovery-optional)
-- [10. Observability Specification](#10-observability-specification-observability-specification)
-- [11. Extension Mechanism](#11-extension-mechanism-extension-mechanism)
-- [12. SDK Implementation Guide](#12-sdk-implementation-guide-sdk-implementation-guide)
-- [13. Versioning](#13-versioning-versioning)
+- [10. Observability Specification](#10-observability-specification)
+- [11. Extension Mechanism](#11-extension-mechanism)
+- [12. SDK Implementation Guide](#12-sdk-implementation-guide)
+- [13. Versioning](#13-versioning)
 - [14. Appendix](#14-appendix)
 - [Revision History](#revision-history)
 
@@ -150,7 +150,7 @@ Implementations **MUST** follow these naming rules:
 
 ---
 
-## 2. Naming Specification (Naming Specification)
+## 2. Naming Specification
 
 ### 2.1 Directory as ID (Core Rule)
 
@@ -460,7 +460,7 @@ Equivalent regular expression: `^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$`
 
 ---
 
-## 3. Directory Specification (Directory Specification)
+## 3. Directory Specification
 
 ### 3.1 Standard Directory Structure
 
@@ -585,7 +585,7 @@ Complexity: O(n), where n is the number of filesystem entries
 
 ---
 
-## 4. Schema Specification (Schema Specification)
+## 4. Schema Specification
 
 ### 4.1 Overview
 
@@ -1635,7 +1635,7 @@ apcore defines standard export Profiles for adapter developers to follow. Profil
 
 ---
 
-## 5. Module Specification (Module Specification)
+## 5. Module Specification
 
 ### 5.1 Module File Structure
 
@@ -3244,7 +3244,7 @@ Implementations **must** handle module edge cases according to the following tab
 
 ---
 
-## 6. ACL Specification (ACL Specification)
+## 6. ACL Specification
 
 ### 6.1 ACL Files
 
@@ -3514,7 +3514,7 @@ This "backend-driven visibility" approach ensures the UI always matches the actu
 
 ---
 
-## 7. Approval System (Approval System)
+## 7. Approval System
 
 ### 7.1 Overview
 
@@ -3750,7 +3750,7 @@ These handlers are **not** part of the apcore core specification — they are pr
 
 ---
 
-## 8. Error Handling Specification (Error Handling Specification)
+## 8. Error Handling Specification
 
 ### 8.1 Unified Error Format
 
@@ -4277,7 +4277,7 @@ apcore itself does not ship these formatters. Each adapter package owns its impl
 
 ---
 
-## 9. Configuration Specification (Configuration Specification)
+## 9. Configuration Specification
 
 ### 9.1 Framework Configuration
 
@@ -5718,7 +5718,7 @@ The following are the canonical event type names, payload keys, and severity for
 
 ---
 
-## 10. Observability Specification (Observability Specification)
+## 10. Observability Specification
 
 ### 10.1 Tracing
 
@@ -5897,7 +5897,7 @@ span_naming:
 
 ---
 
-## 11. Extension Mechanism (Extension Mechanism)
+## 11. Extension Mechanism
 
 ### 11.1 Middleware/Interceptors
 
@@ -6213,7 +6213,7 @@ Implementations **must** handle middleware edge cases according to the following
 
 ---
 
-## 12. SDK Implementation Guide (SDK Implementation Guide)
+## 12. SDK Implementation Guide
 
 ### 12.1 Required Core Components
 
@@ -7001,7 +7001,7 @@ Follow each language's idiomatic casing for PreflightCheckResult and PreflightRe
 
 ---
 
-## 13. Versioning (Versioning)
+## 13. Versioning
 
 ### 13.1 Version Number Specification
 
@@ -7288,6 +7288,8 @@ Each language SDK **should** provide idiomatic module definition syntax. The fol
 ---
 
 ## Revision History
+
+> **Note**: The specification document uses its own version track (`1.x.0-draft`), independent of the SDK/ecosystem release version (`0.x.0`). The mapping between specification versions and release versions is recorded in `CHANGELOG.md`.
 
 | Version | Date | Change Description |
 |------|------|----------|

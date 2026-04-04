@@ -1,0 +1,164 @@
+{
+  "description": "Cross-language Context serialization/deserialization round-trip verification",
+  "test_cases": [
+    {
+      "id": "basic_context_round_trip",
+      "input": {
+        "trace_id": "550e8400-e29b-41d4-a716-446655440000",
+        "caller_id": "api.handler",
+        "call_chain": ["api.handler", "executor.validate"],
+        "identity": {
+          "id": "user-123",
+          "type": "user",
+          "roles": ["admin", "editor"],
+          "attrs": {"tenant_id": "t-456"}
+        },
+        "data": {
+          "request_id": "req-789",
+          "custom_key": "custom_value"
+        }
+      },
+      "expected": {
+        "_context_version": 1,
+        "trace_id": "550e8400-e29b-41d4-a716-446655440000",
+        "caller_id": "api.handler",
+        "call_chain": ["api.handler", "executor.validate"],
+        "identity": {
+          "id": "user-123",
+          "type": "user",
+          "roles": ["admin", "editor"],
+          "attrs": {"tenant_id": "t-456"}
+        },
+        "data": {
+          "request_id": "req-789",
+          "custom_key": "custom_value"
+        }
+      }
+    },
+    {
+      "id": "anonymous_context",
+      "input": {
+        "trace_id": "660e8400-e29b-41d4-a716-446655440001",
+        "caller_id": null,
+        "call_chain": [],
+        "identity": null,
+        "data": {}
+      },
+      "expected": {
+        "_context_version": 1,
+        "trace_id": "660e8400-e29b-41d4-a716-446655440001",
+        "caller_id": null,
+        "call_chain": [],
+        "identity": null,
+        "data": {}
+      }
+    },
+    {
+      "id": "underscore_prefixed_data_keys_excluded",
+      "description": "Keys in data starting with _ should be excluded from serialization output",
+      "input": {
+        "trace_id": "770e8400-e29b-41d4-a716-446655440002",
+        "caller_id": null,
+        "call_chain": [],
+        "identity": null,
+        "data": {
+          "visible_key": "visible_value",
+          "_apcore.mw.tracing.spans": [{"span_id": "abc"}],
+          "_apcore.executor.redacted_output": {"field": "***REDACTED***"},
+          "_internal_state": "hidden"
+        }
+      },
+      "expected": {
+        "_context_version": 1,
+        "trace_id": "770e8400-e29b-41d4-a716-446655440002",
+        "caller_id": null,
+        "call_chain": [],
+        "identity": null,
+        "data": {
+          "visible_key": "visible_value"
+        }
+      }
+    },
+    {
+      "id": "identity_type_field_name",
+      "description": "Identity serialization MUST use 'type' as the field name (not 'identity_type')",
+      "input": {
+        "trace_id": "880e8400-e29b-41d4-a716-446655440003",
+        "caller_id": null,
+        "call_chain": [],
+        "identity": {
+          "id": "svc-001",
+          "type": "service",
+          "roles": [],
+          "attrs": {}
+        },
+        "data": {}
+      },
+      "expected_identity_field": "type",
+      "expected_identity_type_value": "service",
+      "expected": {
+        "_context_version": 1,
+        "trace_id": "880e8400-e29b-41d4-a716-446655440003",
+        "caller_id": null,
+        "call_chain": [],
+        "identity": {
+          "id": "svc-001",
+          "type": "service",
+          "roles": [],
+          "attrs": {}
+        },
+        "data": {}
+      }
+    },
+    {
+      "id": "identity_all_types",
+      "description": "All identity types serialize correctly",
+      "input_identities": [
+        {"id": "u1", "type": "user", "roles": ["viewer"], "attrs": {}},
+        {"id": "s1", "type": "service", "roles": [], "attrs": {}},
+        {"id": "a1", "type": "agent", "roles": ["tool_caller"], "attrs": {}},
+        {"id": "k1", "type": "api_key", "roles": [], "attrs": {}},
+        {"id": "sys", "type": "system", "roles": [], "attrs": {}}
+      ],
+      "expected_types": ["user", "service", "agent", "api_key", "system"]
+    },
+    {
+      "id": "deserialization_preserves_fields",
+      "description": "Deserializing a serialized context preserves all non-transient fields",
+      "serialized": {
+        "_context_version": 1,
+        "trace_id": "990e8400-e29b-41d4-a716-446655440004",
+        "caller_id": "auth.verify",
+        "call_chain": ["auth.verify"],
+        "identity": {
+          "id": "user-abc",
+          "type": "user",
+          "roles": ["admin"],
+          "attrs": {"org": "acme"}
+        },
+        "data": {
+          "session_token": "tok-123"
+        }
+      },
+      "expected_trace_id": "990e8400-e29b-41d4-a716-446655440004",
+      "expected_caller_id": "auth.verify",
+      "expected_call_chain": ["auth.verify"],
+      "expected_identity_id": "user-abc",
+      "expected_data_key": "session_token"
+    },
+    {
+      "id": "unknown_context_version_warns_but_proceeds",
+      "description": "Deserializing with _context_version > 1 should warn but not fail",
+      "serialized": {
+        "_context_version": 99,
+        "trace_id": "aa0e8400-e29b-41d4-a716-446655440005",
+        "caller_id": null,
+        "call_chain": [],
+        "identity": null,
+        "data": {}
+      },
+      "expected_behavior": "warn_and_proceed",
+      "expected_trace_id": "aa0e8400-e29b-41d4-a716-446655440005"
+    }
+  ]
+}

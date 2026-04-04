@@ -13,6 +13,10 @@ Shared JSON fixtures for cross-language conformance testing. All SDK implementat
 | `error_codes.json` | — | Error code registry collision detection |
 | `version_negotiation.json` | A14 | SDK/module version compatibility |
 | `acl_evaluation.json` | — | ACL rule evaluation with first-match-wins |
+| `config_env.json` | — | Configuration environment variable override |
+| `display_resolve.json` | — | Display overlay resolution priority chain |
+| `context_serialization.json` | — | Cross-language Context serialize/deserialize round-trip |
+| `schema_validation.json` | §4.15 | Schema validation edge cases and type coercion |
 
 ## Usage
 

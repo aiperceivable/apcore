@@ -1,0 +1,213 @@
+{
+  "description": "Cross-language schema validation edge cases (spec S4.15)",
+  "test_cases": [
+    {
+      "id": "valid_simple_object",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "name": {"type": "string"},
+          "age": {"type": "integer"}
+        },
+        "required": ["name"]
+      },
+      "input": {"name": "Alice", "age": 30},
+      "expected_valid": true
+    },
+    {
+      "id": "missing_required_field",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "name": {"type": "string"},
+          "age": {"type": "integer"}
+        },
+        "required": ["name"]
+      },
+      "input": {"age": 30},
+      "expected_valid": false,
+      "expected_error_path": "name"
+    },
+    {
+      "id": "wrong_type_string_for_integer",
+      "description": "String '123' where integer expected — behavior depends on coerce_types setting",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "count": {"type": "integer"}
+        },
+        "required": ["count"]
+      },
+      "input": {"count": "123"},
+      "expected_valid_strict": false,
+      "expected_valid_coerce": true,
+      "expected_coerced_value": 123
+    },
+    {
+      "id": "wrong_type_non_numeric_string",
+      "description": "Non-numeric string where integer expected — always invalid",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "count": {"type": "integer"}
+        },
+        "required": ["count"]
+      },
+      "input": {"count": "abc"},
+      "expected_valid": false
+    },
+    {
+      "id": "empty_schema_treated_as_object",
+      "description": "Empty schema {} MUST be treated as type: object (spec S4.15)",
+      "schema": {},
+      "input": {"any_key": "any_value"},
+      "expected_valid": true
+    },
+    {
+      "id": "null_in_enum_allowed",
+      "description": "enum with null MUST allow null as valid value (spec S4.15)",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": ["string", "null"],
+            "enum": ["active", "inactive", null]
+          }
+        }
+      },
+      "input": {"status": null},
+      "expected_valid": true
+    },
+    {
+      "id": "empty_required_array",
+      "description": "required: [] MUST be treated as no required fields (spec S4.15)",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "optional_field": {"type": "string"}
+        },
+        "required": []
+      },
+      "input": {},
+      "expected_valid": true
+    },
+    {
+      "id": "additional_properties_rejected_when_false",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "name": {"type": "string"}
+        },
+        "additionalProperties": false
+      },
+      "input": {"name": "Alice", "extra": "not_allowed"},
+      "expected_valid": false,
+      "expected_error_path": "extra"
+    },
+    {
+      "id": "additional_properties_allowed_by_default",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "name": {"type": "string"}
+        }
+      },
+      "input": {"name": "Alice", "extra": "allowed"},
+      "expected_valid": true
+    },
+    {
+      "id": "x_sensitive_field_present",
+      "description": "x-sensitive fields should be accepted during validation (redaction is separate)",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "password": {
+            "type": "string",
+            "x-sensitive": true
+          }
+        },
+        "required": ["password"]
+      },
+      "input": {"password": "secret123"},
+      "expected_valid": true
+    },
+    {
+      "id": "unknown_x_extension_ignored",
+      "description": "Unknown x- extension keywords MUST be ignored during validation (spec S4.15)",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "x-custom-unknown": "should be ignored"
+          }
+        },
+        "required": ["name"]
+      },
+      "input": {"name": "Alice"},
+      "expected_valid": true
+    },
+    {
+      "id": "nested_object_validation",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "address": {
+            "type": "object",
+            "properties": {
+              "city": {"type": "string"},
+              "zip": {"type": "string", "pattern": "^[0-9]{5}$"}
+            },
+            "required": ["city"]
+          }
+        }
+      },
+      "input": {"address": {"city": "NYC", "zip": "12345"}},
+      "expected_valid": true
+    },
+    {
+      "id": "nested_object_invalid_pattern",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "address": {
+            "type": "object",
+            "properties": {
+              "zip": {"type": "string", "pattern": "^[0-9]{5}$"}
+            }
+          }
+        }
+      },
+      "input": {"address": {"zip": "ABCDE"}},
+      "expected_valid": false
+    },
+    {
+      "id": "array_items_validation",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "tags": {
+            "type": "array",
+            "items": {"type": "string"}
+          }
+        }
+      },
+      "input": {"tags": ["a", "b", "c"]},
+      "expected_valid": true
+    },
+    {
+      "id": "array_items_wrong_type",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "tags": {
+            "type": "array",
+            "items": {"type": "string"}
+          }
+        }
+      },
+      "input": {"tags": ["a", 123, "c"]},
+      "expected_valid": false
+    }
+  ]
+}
