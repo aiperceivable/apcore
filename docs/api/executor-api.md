@@ -613,7 +613,7 @@ executor.call(module_id, inputs, context)
     ├─ 1. Create/validate Context
     │      └─ If context is None, auto-create
     │
-    ├─ 2. Call chain safety checks
+    ├─ 2. Call chain guard
     │      ├─ 2a. Depth check: len(call_chain) >= 32 → throw CallDepthExceededError
     │      ├─ 2b. Cycle detection: module_id in call_chain → throw CircularCallError
     │      └─ 2c. Frequency detection: call_chain.count(module_id) >= max_repeat → throw CallFrequencyExceededError
@@ -633,12 +633,12 @@ executor.call(module_id, inputs, context)
     │      └─ If timeout, throw ApprovalTimeoutError
     │      └─ If pending, throw ApprovalPendingError (Phase B)
     │
-    ├─ 6. Input validation
-    │      └─ Validate against input_schema
-    │      └─ If failed, throw ValidationError
-    │
-    ├─ 7. Middleware before
+    ├─ 6. Middleware before
     │      └─ middleware.before(module_id, inputs, context)
+    │
+    ├─ 7. Input validation
+    │      └─ Validate against input_schema (includes middleware transforms)
+    │      └─ If failed, throw ValidationError
     │
     ├─ 8. Execute module
     │      └─ module.execute(inputs, context)
@@ -652,6 +652,9 @@ executor.call(module_id, inputs, context)
     │
     └─ 11. Return result
 ```
+
+!!! info "BaseStep Declarative Fields"
+    Each step in the pipeline now supports four declarative metadata fields: `match_modules` (glob patterns for selective execution), `ignore_errors` (fault-tolerant continuation), `pure` (dry-run safety marker), and `timeout_ms` (per-step timeout). See [Core Executor](../features/core-executor.md) for details.
 
 ### 6.2 Automatic Context Handling
 
@@ -682,7 +685,7 @@ result = context.executor.call(
        ▼
   ┌──────────┐  depth/cycle/freq  ┌──────────────────────────┐
   │call_chain│───────────────────▶│ error: DEPTH_EXCEEDED    │
-  │  guard   │                    │      / CIRCULAR_CALL     │
+  │  guard   │ (was safety_check) │      / CIRCULAR_CALL     │
   └────┬─────┘                    │      / FREQUENCY_EXCEEDED│
        │ check passed             └──────────────────────────┘
        ▼
@@ -703,17 +706,17 @@ result = context.executor.call(
        │                         └──────────────────────────┘
        │ approved (or skipped)
        ▼
+  ┌──────────┐
+  │ before   │──── middleware error ──▶ on_error chain
+  │middleware│
+  └────┬─────┘
+       │ transforms applied
+       ▼
   ┌──────────┐   validation failed ┌──────────────────────┐
   │ validate │────────────────────▶│ error: VALIDATION    │
   │  input   │                     └──────────────────────┘
   └────┬─────┘
        │ validation passed
-       ▼
-  ┌──────────┐
-  │ before   │──── middleware error ──▶ on_error chain
-  │middleware│
-  └────┬─────┘
-       │
        ▼
   ┌──────────┐   execution error  ┌──────────────────────┐
   │ execute  │────────────────────▶│ on_error middleware  │

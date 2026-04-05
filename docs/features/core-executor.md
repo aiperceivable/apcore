@@ -22,7 +22,7 @@ The executor processes every module call through the following pipeline:
 
 1. **Context Creation** -- A `Context` object is constructed carrying the caller identity, call metadata, and any propagated state from parent calls. This context flows through every subsequent step.
 
-2. **Safety Checks** -- Three safety mechanisms are evaluated before proceeding:
+2. **Call Chain Guard** -- Three safety mechanisms are evaluated before proceeding:
    - *Call depth check*: Rejects calls that exceed the configured maximum nesting depth, preventing unbounded recursion.
    - *Circular call detection*: Inspects the call chain recorded in the context to detect and reject circular module invocations.
    - *Frequency throttling*: Tracks call frequency per module and rejects calls that exceed the configured rate, protecting against tight-loop abuse.
@@ -33,9 +33,9 @@ The executor processes every module call through the following pipeline:
 
 5. **Approval Gate** -- If an `ApprovalHandler` is configured and the module declares `requires_approval=true`, the handler is invoked to obtain approval before proceeding. The handler may block for human input or return immediately. Rejected, timed-out, or still-pending approvals raise `ApprovalDeniedError`, `ApprovalTimeoutError`, or `ApprovalPendingError` respectively. Skipped entirely when no handler is configured or the module does not require approval. See [Approval System](./approval-system.md).
 
-6. **Input Validation with Pydantic + Sensitive Field Redaction** -- The call's input payload is validated against the module's input schema (a dynamically generated Pydantic model). Fields annotated with `x-sensitive` are redacted from logs and error messages using the `redact_sensitive` utility.
+6. **Middleware Before Chain** -- All registered "before" middleware functions are executed in order. Each middleware receives the context and input, and may modify or enrich them before validation runs.
 
-7. **Middleware Before Chain** -- All registered "before" middleware functions are executed in order. Each middleware receives the context and validated input, and may modify or enrich them before the module runs.
+7. **Input Validation with Pydantic + Sensitive Field Redaction** -- The call's input payload (including any modifications from middleware) is validated against the module's input schema (a dynamically generated Pydantic model). Fields annotated with `x-sensitive` are redacted from logs and error messages using the `redact_sensitive` utility.
 
 8. **Module Execution with Timeout (Dual-Timeout Model)** -- The module's handler is invoked with dual-timeout enforcement: both a per-module timeout (`resources.timeout`, default 30s) and a global deadline (`executor.global_timeout`, default 60s). The shorter of the two is applied, preventing nested call chains from exceeding the global budget. The global deadline is set on the root call and propagated to child contexts via `Context._global_deadline`.
 
@@ -46,6 +46,18 @@ The executor processes every module call through the following pipeline:
 10. **Middleware After Chain** -- All registered "after" middleware functions are executed in order with access to the context, input, and output. These may perform logging, transformation, or cleanup.
 
 11. **Result Return** -- The final validated output (or error) is packaged into a structured result and returned to the caller.
+
+!!! info "Step Metadata"
+    Each pipeline step declares four metadata fields:
+
+    | Field | Type | Default | Purpose |
+    |-------|------|---------|---------|
+    | `match_modules` | glob patterns or null | `null` (all) | Only run this step for matching module IDs |
+    | `ignore_errors` | bool | `false` | If true, step failure logs warning and continues |
+    | `pure` | bool | `false` | If true, safe to run during `validate()` dry-run mode |
+    | `timeout_ms` | int | `0` | Per-step timeout in milliseconds (0 = no limit) |
+
+    These fields enable targeted step application, fault-tolerant pipelines, and dry-run validation without code changes.
 
 ### Key Classes
 

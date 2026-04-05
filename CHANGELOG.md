@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.17.0] - 2026-04-04
+
+### Added
+
+#### Pipeline v2 — Declarative Step Metadata
+- **4 new BaseStep fields** — `match_modules` (glob patterns for selective step execution), `ignore_errors` (fault-tolerant continuation on step failure), `pure` (no side effects, safe for dry-run/validate mode), `timeout_ms` (per-step timeout in milliseconds). Implemented across all three SDKs (Python, TypeScript, Rust).
+- **`PipelineContext.dry_run`** — When `true`, PipelineEngine skips steps with `pure=false`, enabling `validate()` to run user-defined pure steps automatically.
+- **`PipelineContext.version_hint`** — Passed through to module_lookup for version negotiation.
+- **`PipelineContext.executed_middlewares`** — Tracks which middleware ran for on_error recovery chain.
+- **`StepTrace.skip_reason`** — Records why a step was skipped: `"no_match"`, `"dry_run"`, or `"error_ignored"`.
+- **YAML pipeline configuration** (Python) — `pipeline` section in `apcore.yaml` with `remove`, `configure`, and `steps` directives. Step resolution via `type` (registry) and `handler` (import path).
+
+### Changed
+
+#### Pipeline Step Rename
+- **`safety_check` → `call_chain_guard`** — Renamed across all SDKs to accurately describe the step's purpose (call chain depth/cycle/repeat checks, not transport-level rate limiting).
+- **TypeScript `builtin.` prefix removed** — All built-in step names in the TypeScript SDK dropped the `builtin.` prefix for cross-SDK consistency (e.g., `builtin.context_creation` → `context_creation`).
+
+#### Pipeline Step Order
+- **Steps 6 and 7 swapped** — `middleware_before` now executes before `input_validation` (was the reverse). Middleware transforms are now validated by the subsequent input_validation step, aligning with the Kubernetes Mutating → Validating admission order.
+
+### Fixed
+- **Middleware transforms now validated** — Previously, middleware modifications to inputs were either never re-validated (production code) or silently discarded (pipeline abstraction). The step order swap ensures transformed inputs pass schema validation.
+
+---
+
 ## [0.16.0] - 2026-04-05
 
 ### Added
