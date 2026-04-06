@@ -47,6 +47,13 @@ The executor processes every module call through the following pipeline:
 
 11. **Result Return** -- The final validated output (or error) is packaged into a structured result and returned to the caller.
 
+!!! tip "Core vs Optional Steps"
+    Of the 11 steps, only **4 are mandatory** (non-removable):
+
+    - **Steps 1, 3, 8, 11** (`context_creation` → `module_lookup` → `execute` → `return_result`)
+
+    The remaining 7 steps (guard, ACL, approval, middleware, validation) are **optional** and can be removed via strategy presets or custom strategies. The `minimal` strategy retains only the 4 core steps for maximum throughput on pre-validated internal hot paths. See [Execution Pipeline Design](../spec/design-execution-pipeline.md) for the full strategy reference.
+
 !!! info "Step Metadata"
     Each pipeline step declares four metadata fields:
 

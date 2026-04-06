@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.17.1] - 2026-04-06
+
+### Added
+
+- **`minimal` strategy preset** — 4-step pipeline (`context_creation` → `module_lookup` → `execute` → `return_result`) for pre-validated internal hot paths. Documented in all three SDKs and spec.
+- **Core vs Optional steps overview** — New §4.0 in `design-execution-pipeline.md` with ASCII diagram showing which 4 steps are mandatory and which 7 are removable.
+- **Middleware vs Custom Step selection guide** — Decision matrix in `design-execution-pipeline.md` §4.2 and practical guide with cross-language examples in `docs/guides/middleware.md` §11.
+- **`requires` / `provides` step dependency metadata** — Optional advisory fields on `BaseStep` (Python), `Step` interface (TypeScript), and `Step` trait (Rust). `ExecutionStrategy` warns at construction and insertion time if a step's `requires` are not satisfied by preceding steps' `provides`.
+- **Execute step replacement warning** — `!!! warning` admonition in `design-execution-pipeline.md` explaining risks of replacing the `execute` step.
+- **Strategy summary table** — All preset strategies documented with step counts, removed steps, and use cases.
+
+### Fixed
+
+- **PROTOCOL_SPEC.md pipeline order** — Steps 6/7 swapped to match all SDK implementations (`middleware_before` → `input_validation`). Step 2 renamed from "Safety Checks" to "Call Chain Guard".
+- **design-execution-pipeline.md alignment** — Step inventory table, code examples, JSON pipeline example, and strategy references updated for correct stage order, naming, and `validate_only` removal.
+- **`validate_only` strategy removed from spec** — Never implemented in any SDK; `validate()` method with `dry_run=True` provides the same behavior more cleanly.
+
+---
+
 ## [0.17.0] - 2026-04-04
 
 ### Added

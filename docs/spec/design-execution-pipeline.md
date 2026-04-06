@@ -281,17 +281,52 @@ pub trait Step: Send + Sync {
 
 ## 4. Built-in Steps
 
+### 4.0 Core vs Optional Steps
+
+The standard pipeline has 11 steps, but only **4 are mandatory** (non-removable). The other 7 are optional and can be removed to build lighter pipelines:
+
+```
+ ┌─────────────────────────────────────────────────────────────────────┐
+ │                    STANDARD PIPELINE (11 steps)                     │
+ │                                                                     │
+ │  ██ context_creation ──→ ░ call_chain_guard ──→ ██ module_lookup    │
+ │                                                       │             │
+ │  ░ acl_check ←────────────────────────────────────────┘             │
+ │       │                                                             │
+ │  ░ approval_gate ──→ ░ middleware_before ──→ ░ input_validation     │
+ │                                                       │             │
+ │  ██ execute ←─────────────────────────────────────────┘             │
+ │       │                                                             │
+ │  ░ output_validation ──→ ░ middleware_after ──→ ██ return_result    │
+ │                                                                     │
+ │  ██ = CORE (non-removable)    ░ = OPTIONAL (removable)              │
+ └─────────────────────────────────────────────────────────────────────┘
+```
+
+**Core steps** (always present in every strategy):
+
+| Step | Why it cannot be removed |
+|------|-------------------------|
+| `context_creation` | Every call needs an execution context with identity and trace ID |
+| `module_lookup` | The module must be resolved from the registry before anything can use it |
+| `execute` | Without execution, there is no output (replaceable for dry-run, but not removable) |
+| `return_result` | Pipeline must have a terminal step that finalizes the output |
+
+**Optional steps** form the safety, validation, and extensibility layers. Remove them when their guarantees are provided externally or are unnecessary for a specific call path.
+
+The `minimal` preset strategy strips all optional steps, leaving only the 4 core steps — suitable for pre-validated internal hot paths where the caller has already verified ACL, inputs, and call safety.
+
 ### 4.1 Step Inventory
 
 | # | Name | Removable | Replaceable | Description |
 |---|------|-----------|-------------|-------------|
 | 1 | `context_creation` | false | false | Create or inherit execution context, set global deadline |
-| 2 | `safety_check` | true | true | Validate call depth, module repeat limits, cancel token |
+| 2 | `call_chain_guard` | true | true | Validate call depth, module repeat limits, cancel token |
 | 3 | `module_lookup` | false | false | Resolve module from registry by ID |
 | 4 | `acl_check` | true | true | Enforce access control rules |
 | 5 | `approval_gate` | true | true | Handle human or AI approval flow |
-| 6 | `input_validation` | true | true | Validate inputs against schema, redact sensitive fields |
-| 7 | `middleware_before` | true | false | Execute registered before-middleware chain |
+| 6 | `middleware_before` | true | false | Execute registered before-middleware chain |
+| 7 | `input_validation` | true | true | Validate inputs against schema, redact sensitive fields |
 | 8 | `execute` | false | true | Invoke the module with timeout enforcement |
 | 9 | `output_validation` | true | true | Validate outputs against schema, redact sensitive fields |
 | 10 | `middleware_after` | true | false | Execute registered after-middleware chain |
@@ -299,9 +334,27 @@ pub trait Step: Send + Sync {
 
 **Safety invariant:** Steps 1, 3, 8, 11 are never removable — context must exist, module must be found, execution must happen, result must return. Step 8 (`execute`) is replaceable (e.g., `ValidateOnlyStep` for dry-run) but not removable.
 
-**Middleware steps (7, 10) are removable but not replaceable:** They can be removed entirely (e.g., PERFORMANCE strategy), but their implementation wraps the existing middleware chain contract. Replacing them would break the `Middleware` protocol that ecosystem packages depend on. If you need custom pre/post logic, add a custom step before/after them instead.
+!!! warning "Replacing the Execute Step"
+    `strategy.replace("execute", custom_step)` bypasses the built-in timeout enforcement, cancel token checks, global deadline clamping, and streaming detection. Your replacement MUST re-implement these if you rely on them. The built-in `BuiltinExecute` is the only step that enforces the dual-timeout model (per-module + global deadline). A replacement that calls `module.execute()` directly without timeout wrapping will allow unbounded execution time. This is intentional — it enables dry-run, mock, and custom execution strategies — but treat it as an advanced escape hatch, not a casual customization point.
 
-### 4.2 Built-in Step Implementations
+**Middleware steps (6, 10) are removable but not replaceable:** They can be removed entirely (e.g., PERFORMANCE strategy), but their implementation wraps the existing middleware chain contract. Replacing them would break the `Middleware` protocol that ecosystem packages depend on. If you need custom pre/post logic, add a custom step before/after them instead.
+
+### 4.2 When to Use Middleware vs Custom Steps
+
+The pipeline offers two extension mechanisms. Use the right one for the job:
+
+| Criterion | Middleware | Custom Step |
+|-----------|-----------|-------------|
+| **Purpose** | Cross-cutting concerns (logging, retry, metrics, tracing) | Pipeline logic extensions (rate limiting, cost budgeting, custom auth) |
+| **Execution position** | Fixed at steps 6 and 10 (before/after execution) | Any position via `insert_before` / `insert_after` |
+| **Lifecycle** | Paired: `before()` + `after()` + `on_error()` form an onion | Independent: single `execute()` method |
+| **Error recovery** | `on_error()` can return recovery output | Return `StepResult(action="abort")` |
+| **Registration** | `executor.use(middleware)` — dynamic, per-executor | `strategy.insert_after(anchor, step)` — per-strategy |
+| **Observability** | Not individually traced | Each step appears in `PipelineTrace` |
+
+**Rule of thumb:** If your logic needs to wrap execution (see both inputs and outputs as a pair), use Middleware. If your logic is a gate or transform at a specific pipeline position, use a Custom Step.
+
+### 4.3 Built-in Step Implementations
 
 Each built-in step wraps the existing executor logic. Example for `acl_check`:
 
@@ -405,17 +458,8 @@ def build_testing_strategy(**kwargs) -> ExecutionStrategy:
     strategy = build_standard_strategy(**kwargs)
     strategy.remove("acl_check")
     strategy.remove("approval_gate")
-    strategy.remove("safety_check")
+    strategy.remove("call_chain_guard")
     strategy._name = "testing"
-    return strategy
-
-def build_validate_only_strategy(**kwargs) -> ExecutionStrategy:
-    """Dry-run: validate inputs without executing."""
-    strategy = build_standard_strategy(**kwargs)
-    strategy.replace("execute", BuiltinValidateOnly())
-    strategy.remove("middleware_before")
-    strategy.remove("middleware_after")
-    strategy._name = "validate_only"
     return strategy
 
 def build_performance_strategy(**kwargs) -> ExecutionStrategy:
@@ -425,7 +469,33 @@ def build_performance_strategy(**kwargs) -> ExecutionStrategy:
     strategy.remove("middleware_after")
     strategy._name = "performance"
     return strategy
+
+def build_minimal_strategy(**kwargs) -> ExecutionStrategy:
+    """Core steps only — no safety, ACL, approval, validation, or middleware."""
+    strategy = build_standard_strategy(**kwargs)
+    strategy.remove("call_chain_guard")
+    strategy.remove("acl_check")
+    strategy.remove("approval_gate")
+    strategy.remove("middleware_before")
+    strategy.remove("input_validation")
+    strategy.remove("output_validation")
+    strategy.remove("middleware_after")
+    strategy._name = "minimal"
+    return strategy
 ```
+
+Summary of all preset strategies:
+
+| Strategy | Steps | Removed from standard | Use case |
+|----------|-------|----------------------|----------|
+| `standard` | 11 | — | Default, full safety |
+| `internal` | 9 | acl, approval | Trusted service-to-service calls |
+| `testing` | 8 | acl, approval, guard | Unit/integration tests |
+| `performance` | 9 | middleware_before/after | Latency-sensitive paths |
+| `minimal` | **4** | All optional steps | Pre-validated internal hot paths |
+
+!!! note "Dry-Run Validation"
+    The `validate()` method (with `dry_run=True`) replaces the previously proposed `validate_only` strategy. The `dry_run` flag automatically skips non-pure steps in any strategy, making a dedicated preset unnecessary.
 
 When the user passes `strategy="internal"` as a string, the Executor calls the
 corresponding factory function with its own registry/config/acl/middlewares.
@@ -438,9 +508,9 @@ my_strategy = ExecutionStrategy.from_standard(name="my_pipeline")
 my_strategy.insert_after("acl_check", RateLimiterStep(max_rps=100))
 my_strategy.insert_after("approval_gate", CostBudgetStep(max_cost=1.0))
 # Resulting pipeline (13 steps):
-#   context_creation → safety_check → module_lookup → acl_check →
+#   context_creation → call_chain_guard → module_lookup → acl_check →
 #   rate_limiter (new) → approval_gate → cost_budget (new) →
-#   input_validation → middleware_before → execute →
+#   middleware_before → input_validation → execute →
 #   output_validation → middleware_after → return_result
 ```
 
@@ -607,7 +677,7 @@ class Executor:
 **Backward compatibility:** When `strategy` is None, constructs STANDARD strategy from `middlewares`, `acl`, and `approval_handler` parameters (current behavior). When `strategy` is provided, `middlewares`/`acl`/`approval_handler` are ignored (steps in strategy contain their own dependencies).
 
 **Strategy name resolution:** When `strategy` is a `str`, the Executor resolves it in this order:
-1. Built-in presets: `"standard"`, `"internal"`, `"testing"`, `"validate_only"`, `"performance"`
+1. Built-in presets: `"standard"`, `"internal"`, `"testing"`, `"performance"`, `"minimal"`
 2. Code-registered strategies: via `Executor.register_strategy(name, strategy)` class method
 3. YAML-defined strategies (Python only): loaded from `executor.strategies` in Config
 4. If not found: raises `StrategyNotFoundError`
@@ -659,7 +729,7 @@ strategy = executor.current_strategy
 
 # Describe pipeline (AI-readable)
 description = executor.describe_pipeline()
-# → "11-step pipeline: context_creation → safety_check → module_lookup → ..."
+# → "11-step pipeline: context_creation → call_chain_guard → module_lookup → ..."
 
 # Register a custom strategy (class-level, global)
 Executor.register_strategy("my_pipeline", my_strategy)
@@ -863,14 +933,14 @@ Each module invocation has a fully visible pipeline:
   "strategy": "ai_governed",
   "pipeline": [
     {"step": "context_creation", "removable": false, "description": "Create execution context"},
-    {"step": "safety_check", "removable": true, "description": "Check call depth and repeat limits"},
+    {"step": "call_chain_guard", "removable": true, "description": "Check call depth and repeat limits"},
     {"step": "module_lookup", "removable": false, "description": "Resolve module from registry"},
     {"step": "acl_check", "removable": true, "description": "Enforce access control rules"},
     {"step": "ai_risk_assessment", "removable": true, "description": "AI evaluates execution risk"},
     {"step": "ai_approval", "removable": true, "description": "AI decides approval based on risk"},
+    {"step": "middleware_before", "removable": true, "description": "Execute before-middleware chain"},
     {"step": "input_validation", "removable": true, "description": "Validate inputs against schema"},
     {"step": "ai_semantic_validation", "removable": true, "description": "AI validates input semantics"},
-    {"step": "middleware_before", "removable": true, "description": "Execute before-middleware chain"},
     {"step": "execute", "removable": false, "description": "Invoke the module"},
     {"step": "output_validation", "removable": true, "description": "Validate outputs against schema"},
     {"step": "middleware_after", "removable": true, "description": "Execute after-middleware chain"},

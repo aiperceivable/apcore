@@ -3622,17 +3622,17 @@ ApprovalResult:
 
 ### 7.4 Executor Integration (Step 5)
 
-The Approval Gate is Step 5 in the Executor's pipeline, between ACL Enforcement and Input Validation:
+The Approval Gate is Step 5 in the Executor's pipeline, between ACL Enforcement and Middleware Before Chain:
 
 ```
 Executor Pipeline:
   Step  1: Context Creation
-  Step  2: Safety Checks
+  Step  2: Call Chain Guard
   Step  3: Module Lookup
   Step  4: ACL Enforcement
   Step  5: Approval Gate
-  Step  6: Input Validation
-  Step  7: Middleware Before Chain
+  Step  6: Middleware Before Chain
+  Step  7: Input Validation
   Step  8: Module Execution
   Step  9: Output Validation
   Step 10: Middleware After Chain

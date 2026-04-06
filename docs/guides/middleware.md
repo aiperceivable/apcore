@@ -783,7 +783,118 @@ class SafeMiddleware(Middleware):
 
 ---
 
-## 11. Complete Example
+## 11. Middleware vs Custom Pipeline Steps
+
+The executor has two extension mechanisms. Choosing the wrong one leads to awkward workarounds.
+
+### When to Use Middleware
+
+- **Logging / metrics / tracing** — You need to see both inputs and outputs as a pair
+- **Retry logic** — `on_error()` lets you return a recovery value
+- **Input enrichment** — Add headers, inject defaults, normalize formats
+- **Output transformation** — Redact fields, add metadata, reshape responses
+
+Middleware runs at fixed positions (before validation, after execution) and participates in the onion model automatically.
+
+### When to Use a Custom Step
+
+- **Rate limiting** — Needs to run early (e.g., right after ACL), not at the fixed middleware position
+- **Cost budgeting** — Must gate execution before it happens, at a specific point
+- **Custom validation** — Schema validation isn't enough; you need semantic checks
+- **Feature flags** — Conditionally skip execution based on external config
+
+Custom steps can be inserted at any position and appear individually in `PipelineTrace`.
+
+### Quick Decision
+
+```
+Does your logic need to wrap execution (see inputs AND outputs)?
+  → Yes: Use Middleware (before/after pair)
+  → No: Does it need to run at a specific pipeline position?
+    → Yes: Use Custom Step (insert_before/insert_after)
+    → No: Use Middleware (simpler registration)
+```
+
+### Example: Rate Limiter as a Custom Step
+
+=== "Python"
+    ```python
+    from apcore.pipeline import BaseStep, StepResult, PipelineContext
+
+    class RateLimiterStep(BaseStep):
+        def __init__(self, max_rps: int = 100):
+            super().__init__(
+                name="rate_limiter",
+                description="Per-module rate limiting",
+                removable=True,
+                replaceable=True,
+                pure=True,
+            )
+            self.max_rps = max_rps
+
+        async def execute(self, ctx: PipelineContext) -> StepResult:
+            if self._over_limit(ctx.module_id):
+                return StepResult(action="abort", explanation="Rate limit exceeded")
+            return StepResult(action="continue")
+
+    # Insert after ACL check — before middleware and validation
+    strategy.insert_after("acl_check", RateLimiterStep(max_rps=50))
+    ```
+
+=== "TypeScript"
+    ```typescript
+    import { BaseStep, StepResult, PipelineContext } from 'apcore';
+
+    class RateLimiterStep extends BaseStep {
+      constructor(private maxRps: number = 100) {
+        super({
+          name: 'rate_limiter',
+          description: 'Per-module rate limiting',
+          removable: true,
+          replaceable: true,
+          pure: true,
+        });
+      }
+
+      async execute(ctx: PipelineContext): Promise<StepResult> {
+        if (this.overLimit(ctx.moduleId)) {
+          return { action: 'abort', explanation: 'Rate limit exceeded' };
+        }
+        return { action: 'continue' };
+      }
+    }
+
+    strategy.insertAfter('acl_check', new RateLimiterStep(50));
+    ```
+
+=== "Rust"
+    ```rust
+    use apcore::pipeline::{BaseStep, StepResult, PipelineContext};
+
+    struct RateLimiterStep { max_rps: u32 }
+
+    #[async_trait]
+    impl Step for RateLimiterStep {
+        fn name(&self) -> &str { "rate_limiter" }
+        fn description(&self) -> &str { "Per-module rate limiting" }
+        fn removable(&self) -> bool { true }
+        fn replaceable(&self) -> bool { true }
+        fn pure(&self) -> bool { true }
+
+        async fn execute(&self, ctx: &mut PipelineContext) -> Result<StepResult, ModuleError> {
+            if self.over_limit(&ctx.module_id) {
+                return Ok(StepResult::abort("Rate limit exceeded"));
+            }
+            Ok(StepResult::continue_step())
+        }
+    }
+
+    strategy.insert_after("acl_check", Box::new(RateLimiterStep { max_rps: 50 }))?;
+    ```
+
+---
+
+## 12. Complete Example
 
 ```python
 from apcore import Registry, Executor, Middleware, Context
