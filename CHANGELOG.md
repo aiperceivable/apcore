@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.18.0] - 2026-04-07
+
+> **Breaking changes in this release.** See [`MIGRATION-v0.18.md`](./MIGRATION-v0.18.md) for the consolidated migration guide covering all four repositories.
+
+### Added
+
+- **PROTOCOL_SPEC §4.4.1 — Annotations Extension Field (`extra`) Wire Format** — New normative section defining the canonical on-the-wire shape of `ModuleAnnotations.extra`. Producers MUST serialize as a nested `{"extra": {...}}` object and MUST NOT flatten extension keys to the annotations root. Consumers MUST accept the nested form; legacy top-level overflow keys MAY be tolerated for one MINOR cycle. When both forms appear in the same input, the nested value wins.
+- **`extra` field in `Annotations` schema** — `schemas/module-meta.schema.json` now declares `extra` as an object with `additionalProperties: true`. The outer `Annotations` object retains `additionalProperties: false`, so unknown root-level keys are no longer silently accepted at the schema layer.
+- **`conformance/fixtures/annotations_extra_round_trip.json`** — 8 cross-language test cases locking the wire format: canonical nested round-trip, empty extra, namespaced keys, Unicode and nested object values, legacy flattened deserialization tolerance, nested-wins precedence, forbidden-root-keys negative case, and dotted-keys-are-not-paths.
+- **`MIGRATION-v0.18.md`** — Consolidated migration guide covering all four breaking changes shipped in this release (annotations wire format, apcore-rust Config restructure, apcore-python event alias removal, misc cleanup).
+
+### Fixed
+
+- **Cross-language `extra` serialization divergence** — Audit revealed that `apcore-rust` ≤ 0.17.1 used `#[serde(flatten)]` and emitted extension keys at the annotations root, while `apcore-python` and `apcore-typescript` emitted nested `extra` objects. A binding round-tripped through Rust would silently lose the `extra` payload (the nested object collapsed into `extra["extra"]`). All three SDKs are now aligned on the nested form per §4.4.1.
+- **Python/TypeScript precedence inversion** — Both SDKs previously merged top-level overflow over explicit nested `extra` (`{**explicit, **overflow}`), making nested values losable. Per §4.4.1 rule 7, nested now wins. Behavior change is observable only when the same key appears in both forms in the same input — a pathological case that no conformant producer emits.
+- **`apcore-rust Config` no longer silently ignored spec-conformant YAML.** The struct previously declared executor and observability fields at the root of `Config` instead of nested under `executor` and `observability` namespaces, contradicting PROTOCOL_SPEC §9.1 and the Python/TypeScript SDKs. Loading a YAML file that used the canonical nested form would cause typed fields to remain at default values while the user data ended up in an unused `settings` HashMap entry. **v0.18.0 restructures `apcore-rust Config` to a nested form**, drops the legacy short field names, and rejects v0.17.x-style YAML with a hard error pointing at `MIGRATION-v0.18.md`. See `apcore-rust/CHANGELOG.md` for the full type-by-type rename table.
+- **`docs/spec/design-context-annotations-acl.md` no longer contradicts shipped spec.** The historical design document still claimed "ModuleAnnotations is frozen with 11 fields" and recommended `#[serde(flatten)]` for the Rust extra field. A superseded banner now points readers at PROTOCOL_SPEC §4.4.1 for current normative behavior; the original text is preserved for historical context.
+- **`mkdocs.yml` Home nav** now points at `README.md` (which exists) instead of `index.md` (which never did), eliminating a noisy mkdocs build warning.
+
+### Removed (BREAKING — apcore-python)
+
+- **Legacy event aliases.** `apcore-python` no longer emits `module_health_changed` or `config_changed` alongside the canonical `apcore.module.toggled`, `apcore.health.recovered`, `apcore.config.updated`, and `apcore.module.reloaded` events. The dual-emission deadline was originally v0.16.0 but was missed; this release completes the cleanup. See migration guide §3.
+
+### Removed (BREAKING — apcore-rust)
+
+- **Legacy flat `Config` field names.** `Config.max_call_depth`, `Config.default_timeout_ms`, `Config.global_timeout_ms`, `Config.max_module_repeat`, `Config.enable_tracing`, `Config.enable_metrics` are gone. Use the nested namespaces (`Config.executor.*`, `Config.observability.*`). The string-key API also drops the legacy bare-name aliases — `config.get("max_call_depth")` now returns `None`; use `config.get("executor.max_call_depth")`. See migration guide §2.
+
+---
+
 ## [0.17.1] - 2026-04-06
 
 ### Added

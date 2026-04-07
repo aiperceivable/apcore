@@ -53,7 +53,7 @@ markdown_extensions:
   - md_in_html
 
 nav:
-  - Home: index.md
+  - Home: README.md
   - Getting Started: getting-started.md
   - Core Documents:
       - Protocol Specification: PROTOCOL_SPEC.md

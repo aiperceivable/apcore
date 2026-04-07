@@ -1,15 +1,16 @@
 {
   "feature": "execution-pipeline",
-  "status": "pending",
+  "status": "completed",
   "created": "2026-04-01",
-  "completed": null,
+  "completed": "2026-04-04",
+  "note": "Shipped in apcore v0.17.0; pipeline enhancements continued in v0.17.1. See PROTOCOL_SPEC §5 (Core Executor) and CHANGELOG entries [0.17.0] and [0.17.1].",
   "tasks": {
-    "core-types": { "status": "pending" },
-    "builtin-steps": { "status": "pending" },
-    "pipeline-engine": { "status": "pending" },
-    "executor-refactor": { "status": "pending" },
-    "preset-strategies": { "status": "pending" },
-    "call-with-trace": { "status": "pending" },
-    "introspection": { "status": "pending" }
+    "core-types": { "status": "completed" },
+    "builtin-steps": { "status": "completed" },
+    "pipeline-engine": { "status": "completed" },
+    "executor-refactor": { "status": "completed" },
+    "preset-strategies": { "status": "completed" },
+    "call-with-trace": { "status": "completed" },
+    "introspection": { "status": "completed" }
   }
 }

@@ -1,6 +1,26 @@
 # Design: Context, Annotations & ACL Interface Redesign
 
-> Status: **Draft** | Author: apcore team | Date: 2026-04-02
+> **⚠️ Status: Historical Design Document — Superseded by PROTOCOL_SPEC §4.4.1 (v0.18.0)**
+>
+> This document captures the original problem statement and design proposals
+> for the Annotations / Context / ACL redesign that shipped in apcore v0.17.
+> The normative wire format for `ModuleAnnotations.extra` is now defined in
+> [PROTOCOL_SPEC §4.4.1](../../PROTOCOL_SPEC.md#441-annotations-extension-field-extra--wire-format).
+>
+> Specifically, the following parts of this document are no longer accurate
+> as of v0.18.0:
+>
+> - **§2.1** says "ModuleAnnotations is frozen with 11 fields" — there are now
+>   12 canonical fields, with `extra` formally defined per §4.4.1.
+> - **§2 implementation hints** show `#[serde(flatten)]` as the recommended
+>   Rust pattern. This approach is now FORBIDDEN by §4.4.1 producer rule 2;
+>   the canonical wire format is a nested `"extra"` object. apcore-rust
+>   v0.18.0 fixed this and removed the `flatten` attribute.
+>
+> Read this document for design rationale and historical context only. For
+> current normative behavior, always consult PROTOCOL_SPEC.
+
+> Original status: **Draft** | Author: apcore team | Date: 2026-04-02
 
 This document specifies interface-level changes to three core apcore modules to improve cross-language consistency, type safety, and extensibility. All changes apply equally to Python, TypeScript, and Rust SDKs.
 

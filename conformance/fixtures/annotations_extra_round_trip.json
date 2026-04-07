@@ -1,0 +1,321 @@
+{
+  "description": "Cross-language ModuleAnnotations.extra wire-format round-trip (spec §4.4). Locks the canonical nested form and verifies Python/TypeScript/Rust SDKs produce and consume identical JSON. See planning notes for the rationale (Rust previously used #[serde(flatten)], Python/TS used nested). Spec MUST: extension keys are serialized as a nested 'extra' object; flattened root-level extension keys are forbidden for producers.",
+  "test_cases": [
+    {
+      "id": "canonical_nested_round_trip",
+      "description": "Producers MUST emit nested 'extra'. The exact JSON below is the wire-format contract; all three SDKs must serialize an annotations value with these inputs to byte-equivalent JSON (key order is not significant).",
+      "input": {
+        "readonly": true,
+        "destructive": false,
+        "idempotent": true,
+        "requires_approval": false,
+        "open_world": true,
+        "streaming": false,
+        "cacheable": true,
+        "cache_ttl": 60,
+        "cache_key_fields": ["query", "locale"],
+        "paginated": false,
+        "pagination_style": "cursor",
+        "extra": {
+          "mcp.category": "tools",
+          "cli.approval_message": "Are you sure?"
+        }
+      },
+      "expected_serialized": {
+        "readonly": true,
+        "destructive": false,
+        "idempotent": true,
+        "requires_approval": false,
+        "open_world": true,
+        "streaming": false,
+        "cacheable": true,
+        "cache_ttl": 60,
+        "cache_key_fields": ["query", "locale"],
+        "paginated": false,
+        "pagination_style": "cursor",
+        "extra": {
+          "mcp.category": "tools",
+          "cli.approval_message": "Are you sure?"
+        }
+      },
+      "expected_deserialized_extra": {
+        "mcp.category": "tools",
+        "cli.approval_message": "Are you sure?"
+      }
+    },
+    {
+      "id": "empty_extra_round_trip",
+      "description": "When no extension data is set, 'extra' MUST round-trip as an empty object (or be omitted only if the SDK also accepts an omitted field on deserialize). Canonical form below uses an explicit empty object so all SDKs converge.",
+      "input": {
+        "readonly": false,
+        "destructive": false,
+        "idempotent": false,
+        "requires_approval": false,
+        "open_world": true,
+        "streaming": false,
+        "cacheable": false,
+        "cache_ttl": 0,
+        "cache_key_fields": null,
+        "paginated": false,
+        "pagination_style": "cursor",
+        "extra": {}
+      },
+      "expected_serialized": {
+        "readonly": false,
+        "destructive": false,
+        "idempotent": false,
+        "requires_approval": false,
+        "open_world": true,
+        "streaming": false,
+        "cacheable": false,
+        "cache_ttl": 0,
+        "cache_key_fields": null,
+        "paginated": false,
+        "pagination_style": "cursor",
+        "extra": {}
+      },
+      "expected_deserialized_extra": {}
+    },
+    {
+      "id": "namespaced_extra_keys",
+      "description": "Extra keys SHOULD use <namespace>.<name> form. Multiple namespaces in the same map MUST round-trip independently with no key collision or escaping.",
+      "input": {
+        "readonly": true,
+        "destructive": false,
+        "idempotent": true,
+        "requires_approval": false,
+        "open_world": false,
+        "streaming": false,
+        "cacheable": false,
+        "cache_ttl": 0,
+        "cache_key_fields": null,
+        "paginated": false,
+        "pagination_style": "cursor",
+        "extra": {
+          "mcp.category": "tools",
+          "mcp.subcategory": "filesystem",
+          "cli.approval_message": "proceed?",
+          "a2a.skill_id": "fs.read",
+          "vendor.acme.priority": 7
+        }
+      },
+      "expected_serialized": {
+        "readonly": true,
+        "destructive": false,
+        "idempotent": true,
+        "requires_approval": false,
+        "open_world": false,
+        "streaming": false,
+        "cacheable": false,
+        "cache_ttl": 0,
+        "cache_key_fields": null,
+        "paginated": false,
+        "pagination_style": "cursor",
+        "extra": {
+          "mcp.category": "tools",
+          "mcp.subcategory": "filesystem",
+          "cli.approval_message": "proceed?",
+          "a2a.skill_id": "fs.read",
+          "vendor.acme.priority": 7
+        }
+      },
+      "expected_deserialized_extra": {
+        "mcp.category": "tools",
+        "mcp.subcategory": "filesystem",
+        "cli.approval_message": "proceed?",
+        "a2a.skill_id": "fs.read",
+        "vendor.acme.priority": 7
+      }
+    },
+    {
+      "id": "unicode_and_nested_value_round_trip",
+      "description": "Extra values MAY be any JSON type, including nested objects, arrays, and Unicode. SDKs MUST preserve them losslessly without flattening or coercion.",
+      "input": {
+        "readonly": false,
+        "destructive": false,
+        "idempotent": false,
+        "requires_approval": true,
+        "open_world": true,
+        "streaming": true,
+        "cacheable": false,
+        "cache_ttl": 0,
+        "cache_key_fields": null,
+        "paginated": false,
+        "pagination_style": "cursor",
+        "extra": {
+          "ui.label.zh": "确认操作",
+          "ui.label.ja": "操作を確認",
+          "ui.icons": ["⚠️", "🔒"],
+          "policy.matrix": {
+            "weekday": "auto",
+            "weekend": "manual"
+          }
+        }
+      },
+      "expected_serialized": {
+        "readonly": false,
+        "destructive": false,
+        "idempotent": false,
+        "requires_approval": true,
+        "open_world": true,
+        "streaming": true,
+        "cacheable": false,
+        "cache_ttl": 0,
+        "cache_key_fields": null,
+        "paginated": false,
+        "pagination_style": "cursor",
+        "extra": {
+          "ui.label.zh": "确认操作",
+          "ui.label.ja": "操作を確認",
+          "ui.icons": ["⚠️", "🔒"],
+          "policy.matrix": {
+            "weekday": "auto",
+            "weekend": "manual"
+          }
+        }
+      },
+      "expected_deserialized_extra": {
+        "ui.label.zh": "确认操作",
+        "ui.label.ja": "操作を確認",
+        "ui.icons": ["⚠️", "🔒"],
+        "policy.matrix": {
+          "weekday": "auto",
+          "weekend": "manual"
+        }
+      }
+    },
+    {
+      "id": "deserialize_legacy_flattened_form",
+      "description": "Backward compatibility: consumers MUST accept legacy producers (notably apcore-rust ≤ 0.17.1) that flattened extension keys to the annotations root. Such input MUST normalize into the nested 'extra' object on deserialize. Re-serializing the result MUST emit the canonical nested form.",
+      "input_serialized": {
+        "readonly": true,
+        "destructive": false,
+        "idempotent": true,
+        "requires_approval": false,
+        "open_world": true,
+        "streaming": false,
+        "cacheable": false,
+        "cache_ttl": 0,
+        "cache_key_fields": null,
+        "paginated": false,
+        "pagination_style": "cursor",
+        "mcp.category": "tools",
+        "cli.approval_message": "ok?"
+      },
+      "expected_deserialized_extra": {
+        "mcp.category": "tools",
+        "cli.approval_message": "ok?"
+      },
+      "expected_reserialized": {
+        "readonly": true,
+        "destructive": false,
+        "idempotent": true,
+        "requires_approval": false,
+        "open_world": true,
+        "streaming": false,
+        "cacheable": false,
+        "cache_ttl": 0,
+        "cache_key_fields": null,
+        "paginated": false,
+        "pagination_style": "cursor",
+        "extra": {
+          "mcp.category": "tools",
+          "cli.approval_message": "ok?"
+        }
+      }
+    },
+    {
+      "id": "nested_takes_precedence_over_flattened",
+      "description": "If a deserialization input contains BOTH a nested 'extra.k' and a top-level 'k' with the same key, the nested value MUST win. (This intentionally inverts the legacy Python/TS behavior of 'overflow wins' to align all SDKs with the new normative rule from spec §4.4.)",
+      "input_serialized": {
+        "readonly": false,
+        "destructive": false,
+        "idempotent": false,
+        "requires_approval": false,
+        "open_world": true,
+        "streaming": false,
+        "cacheable": false,
+        "cache_ttl": 0,
+        "cache_key_fields": null,
+        "paginated": false,
+        "pagination_style": "cursor",
+        "mcp.category": "LEGACY_VALUE",
+        "extra": {
+          "mcp.category": "CANONICAL_VALUE",
+          "cli.approval_message": "from nested only"
+        }
+      },
+      "expected_deserialized_extra": {
+        "mcp.category": "CANONICAL_VALUE",
+        "cli.approval_message": "from nested only"
+      }
+    },
+    {
+      "id": "producer_must_not_emit_both_forms",
+      "description": "Negative case for producers. After constructing annotations whose extra contains 'mcp.category', a conformant producer MUST NOT also emit a top-level 'mcp.category' key. Test runners assert the serialized output does NOT contain the listed forbidden_root_keys.",
+      "input": {
+        "readonly": true,
+        "destructive": false,
+        "idempotent": false,
+        "requires_approval": false,
+        "open_world": true,
+        "streaming": false,
+        "cacheable": false,
+        "cache_ttl": 0,
+        "cache_key_fields": null,
+        "paginated": false,
+        "pagination_style": "cursor",
+        "extra": {
+          "mcp.category": "tools",
+          "cli.approval_message": "ok?"
+        }
+      },
+      "forbidden_root_keys": ["mcp.category", "cli.approval_message"]
+    },
+    {
+      "id": "extra_key_with_dotted_namespace_not_split",
+      "description": "Dots in extra keys are part of the key, not a path separator. SDKs MUST NOT interpret 'a.b.c' as a nested path 'a -> b -> c' on either serialize or deserialize.",
+      "input": {
+        "readonly": true,
+        "destructive": false,
+        "idempotent": false,
+        "requires_approval": false,
+        "open_world": true,
+        "streaming": false,
+        "cacheable": false,
+        "cache_ttl": 0,
+        "cache_key_fields": null,
+        "paginated": false,
+        "pagination_style": "cursor",
+        "extra": {
+          "a.b.c": 1,
+          "a.b": 2,
+          "a": 3
+        }
+      },
+      "expected_serialized": {
+        "readonly": true,
+        "destructive": false,
+        "idempotent": false,
+        "requires_approval": false,
+        "open_world": true,
+        "streaming": false,
+        "cacheable": false,
+        "cache_ttl": 0,
+        "cache_key_fields": null,
+        "paginated": false,
+        "pagination_style": "cursor",
+        "extra": {
+          "a.b.c": 1,
+          "a.b": 2,
+          "a": 3
+        }
+      },
+      "expected_deserialized_extra": {
+        "a.b.c": 1,
+        "a.b": 2,
+        "a": 3
+      }
+    }
+  ]
+}

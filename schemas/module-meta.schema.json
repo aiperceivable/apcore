@@ -200,6 +200,12 @@
           "description": "Pagination strategy. Only meaningful when paginated=true.",
           "enum": ["cursor", "offset", "page"],
           "default": "cursor"
+        },
+        "extra": {
+          "type": "object",
+          "description": "Open extension map for ecosystem-specific or vendor annotation metadata. Keys SHOULD use a <namespace>.<name> form (e.g. 'mcp.category', 'cli.approval_message'). The 'core.*' namespace is reserved. Wire format MUST be a nested object — see PROTOCOL_SPEC §4.4.1.",
+          "additionalProperties": true,
+          "default": {}
         }
       }
     },

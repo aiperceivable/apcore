@@ -805,6 +805,12 @@ annotations:
       enum: [cursor, offset, page]
       default: cursor
       description: "Pagination strategy. 'cursor' = opaque continuation token; 'offset' = numeric offset+limit; 'page' = page-number-based pagination. Only meaningful when paginated=true."
+
+    extra:
+      type: object
+      additionalProperties: true
+      default: {}
+      description: "Open extension map for ecosystem-specific or vendor annotation metadata. Keys SHOULD use a `<namespace>.<name>` form (e.g. `mcp.category`, `cli.approval_message`, `a2a.skill_id`). The `core.*` namespace is RESERVED for future spec promotion. Wire-format rules in §4.4.1 are normative."
 ```
 
 **Annotations Design Principles:**
@@ -827,6 +833,61 @@ open_world=true       → AI knows this call involves external systems, may be s
 streaming=true        → AI knows this module emits partial results progressively
 cacheable=true        → AI knows it can reuse previous results within cache_ttl
 paginated=true        → AI knows to pass pagination params and expect partial results
+```
+
+#### 4.4.1 Annotations Extension Field (`extra`) — Wire Format
+
+`ModuleAnnotations` carries an open extension map under the field `extra`, used by ecosystem packages and vendor integrations to attach metadata that is not part of the core annotation set. The on-the-wire JSON shape is normative across all SDK implementations.
+
+**Producer rules:**
+
+1. Implementations **MUST** serialize annotation extension data as a nested JSON object under the key `extra`.
+2. Implementations **MUST NOT** flatten extension keys onto the annotations root object.
+3. Producers **MUST NOT** emit both a nested `extra.k` and a top-level `k` for the same key in the same payload.
+4. When `extra` is empty, producers **SHOULD** emit `"extra": {}` rather than omitting the field, to keep the wire shape stable across SDKs.
+
+**Consumer rules:**
+
+5. Consumers **MUST** accept the canonical nested form `{"extra": {...}}`.
+6. Consumers **MAY** accept top-level overflow keys (i.e. unknown keys at the annotations root) as a backward-compatibility shim for one MINOR cycle following v0.18.0. Such keys **MUST** be normalized into the nested `extra` object on deserialize and re-serialized in nested form.
+7. When a deserialization input contains BOTH a nested `extra.k` and a top-level `k` with the same key, **the nested value MUST win**. (This intentionally inverts the legacy Python/TypeScript "overflow wins" precedence — a one-time correction during the v0.18.0 normalization.)
+8. When `extra` is absent or `null`, consumers **MUST** treat it as an empty object.
+
+**Key naming:**
+
+9. `extra` keys **SHOULD** use the form `<namespace>.<name>`, where `<namespace>` identifies the consuming subsystem or vendor (e.g. `mcp.category`, `cli.approval_message`, `a2a.skill_id`, `vendor.acme.priority`).
+10. The `core.*` namespace is **RESERVED** for future promotion of `extra` keys into standard `Annotations` fields.
+11. Dots in `extra` keys are part of the literal key string. Implementations **MUST NOT** interpret `a.b.c` as a nested path on either serialize or deserialize.
+12. Extension keys **MUST NOT** collide with any canonical field name listed in §4.4. If a collision is observed during deserialization, the canonical field **MUST** win and the extension key **MUST** be discarded with a warning.
+
+**Promotion to standard fields:**
+
+13. When a community-adopted `extra` key is promoted to a standard `Annotations` field in a future spec version, that change **MUST** go through one MINOR deprecation cycle in which both forms (the new standard field AND the `extra.<old_key>` entry) are accepted by consumers, before the `extra` form is removed.
+
+**Conformance:** Cross-language behavior is locked by `conformance/fixtures/annotations_extra_round_trip.json`.
+
+> **Version note:** Introduced in protocol v0.18.0. SDKs at or below v0.17.1 emitting the flattened form (notably `apcore-rust ≤ 0.17.1`) are non-conformant and **MUST** migrate.
+
+**Example (canonical wire form):**
+
+```json
+{
+  "readonly": true,
+  "destructive": false,
+  "idempotent": true,
+  "requires_approval": false,
+  "open_world": true,
+  "streaming": false,
+  "cacheable": false,
+  "cache_ttl": 0,
+  "cache_key_fields": null,
+  "paginated": false,
+  "pagination_style": "cursor",
+  "extra": {
+    "mcp.category": "tools",
+    "cli.approval_message": "Are you sure?"
+  }
+}
 ```
 
 ### 4.5 Module Usage Examples (Examples)
