@@ -287,7 +287,7 @@ Rules:
 2. Remove file extension
 3. Replace `/` with `.`
 4. Must match: ^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$
-5. Maximum length: 128 characters
+5. Maximum length: 192 characters
 
 **Multiple Roots and Namespaces**
 

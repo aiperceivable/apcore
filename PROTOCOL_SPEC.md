@@ -5,7 +5,7 @@
 > Version: 1.6.0-draft
 > Status: Draft Specification (RFC 2119 Conformant)
 > Stability: Specification content is stable, pending reference implementation verification
-> Last Updated: 2026-04-03
+> Last Updated: 2026-04-08
 
 ---
 
@@ -180,7 +180,7 @@ Steps:
      a. If segment is empty string → Throw INVALID_PATH error
      b. If segment doesn't match /^[a-z][a-z0-9_]*$/ → Throw INVALID_SEGMENT error
   5. canonical_id ← Join all segments with "."
-  6. If len(canonical_id) > 128 → Throw ID_TOO_LONG error
+  6. If len(canonical_id) > 192 → Throw ID_TOO_LONG error
   7. Return canonical_id
 
 Complexity: O(n), where n is the number of characters in the path
@@ -207,7 +207,7 @@ directory_to_id:
     pattern: "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)*$"
     separator: "."
     case: "snake_case"
-    max_length: 128
+    max_length: 192
 ```
 
 #### Module ID Format Constraint
@@ -450,7 +450,7 @@ lower_alpha     = "a" | "b" | "c" | "d" | "e" | "f" | "g" | "h" | "i"
 digit           = "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" ;
 
 (* Constraints *)
-(* 1. canonical_id total length MUST NOT exceed 128 characters *)
+(* 1. canonical_id total length MUST NOT exceed 192 characters *)
 (* 2. segment MUST NOT be a reserved word (see §2.5) *)
 (* 3. segment MUST NOT start with a digit (guaranteed by production) *)
 (* 4. segment MUST NOT contain consecutive double underscores "__" *)
@@ -2033,6 +2033,21 @@ module_interface:
       input: "Defined by input_schema"
       output: "Defined by output_schema"
       async_variant: "execute_async"  # Deprecated: framework auto-detects sync/async
+
+  # Required attributes (mirrors the "Required definitions" block in the
+  # pseudocode interface above; every module MUST expose these)
+  required_attributes:
+    - name: "input_schema"
+      type: "SchemaDefinition"
+      description: "JSON Schema (or language-native equivalent) for the inputs accepted by execute()"
+
+    - name: "output_schema"
+      type: "SchemaDefinition"
+      description: "JSON Schema (or language-native equivalent) for the value returned by execute()"
+
+    - name: "description"
+      type: "string"
+      description: "Human/AI-readable summary of what the module does (≤200 chars recommended)"
 
   # Optional attributes
   optional_attributes:
@@ -3865,7 +3880,7 @@ The four optional fields (`retryable`, `ai_guidance`, `user_fixable`, `suggestio
 These fields are the foundation of apcore's **Self-Healing** mechanism, which serves two higher-level goals:
 
 - **Self-Repair**: The Agent autonomously corrects errors and retries within a single interaction.
-- **Self-Evolution**: The system continuously adapts through health monitoring, event-driven feedback loops, and runtime reconfiguration (see §6.6, §10).
+- **Self-Evolution**: The system continuously adapts through health monitoring, event-driven feedback loops, and runtime reconfiguration (see §9.11 Hot-Reload, §10 Observability).
 
 **Field semantics:**
 
@@ -7362,3 +7377,4 @@ Each language SDK **should** provide idiomatic module definition syntax. The fol
 | 1.4.0-draft | 2026-03-06 | Refined Executor pipeline — Approval Gate is now Step 5, subsequent steps shifted; Added Executor.validate() [SHOULD] to §12.2 with PreflightResult/PreflightCheckResult types for non-destructive preflight checks through Steps 1–6; Updated §7.4, §7.9, streaming protocol references to match new numbering; Added §12.8 Executor.validate() Cross-Language Implementation Guide (error handling mapping, type mapping for Python/TypeScript/Go/Rust/Java/C/C++, schema library requirements, naming conventions); Added C/C++ and TypeScript to §12.6; Added validate() preflight to §12.3 requirements table; Added Preflight Tests to §12.4 consistency test suite |
 | 1.5.0-draft | 2026-03-20 | Added §5.13 Display Overlay — sparse binding.yaml `display` section for surface-facing presentation (CLI/MCP/A2A alias, description, documentation overrides); Defined resolve priority chain algorithm; Added `ResolvedModule` type; Added `SurfaceOverride` and `DisplayOverlay` to `binding.schema.json`; Added `suggested_alias` scanner metadata convention; Deprecated `simplify_ids` in favor of display overlay; Cross-language implementation guide for Python/TypeScript/Rust/Go/Java/Ruby/PHP; Renumbered §5.13 Edge Case Handling → §5.14 → §5.15 |
 | 1.6.0-draft | 2026-03-29 | Added §9.4–9.14 Config Bus Architecture — namespace registration, unified configuration file with legacy/namespace mode detection, mount mechanism for third-party integration, per-namespace environment variable overrides, namespace-aware access API (get/set/bind/namespace), extended validation algorithm A12-NS, hot-reload with namespace support, cross-language implementation requirements (Python/TypeScript/Rust/Go/Java), ecosystem integration patterns (apcore packages, third-party packages, framework auto-registration), optional config discovery; Added error codes CONFIG_NAMESPACE_DUPLICATE, CONFIG_NAMESPACE_RESERVED, CONFIG_ENV_PREFIX_CONFLICT, CONFIG_MOUNT_ERROR, CONFIG_BIND_ERROR; Added `_config` reserved namespace for strict/allow_unknown meta-configuration |
+| 1.6.0-draft | 2026-04-08 | §2.7 EBNF constraint #1 — `canonical_id` maximum length raised from 128 to 192 characters to accommodate deep-namespace languages (Java/.NET/Spring FQN-derived IDs). 192 is filesystem-safe (`192 + ".binding.yaml" = 205 bytes < 255-byte filename limit on ext4/xfs/NTFS/APFS/btrfs`) and remains within `VARCHAR(255)` for typical persistence. Schemas updated: `binding.schema.json`, `module-schema.schema.json`, `module-meta.schema.json`, `acl-config.schema.json` (callers/targets pattern strings, kept symmetric with module_id). Algorithm A01 (`directory_to_canonical_id`) Step 7 threshold updated. Conformance test T01-006 boundary updated. Forward-compatible relaxation: implementations conforming to this revision MUST accept IDs up to 192; older 128-only implementations cannot load IDs in the 129–192 range from newer SDKs. |

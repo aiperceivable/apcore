@@ -75,7 +75,7 @@ The apcore specification defines multiple algorithms that must or should be impl
 **Postconditions:**
 
 - The returned `canonical_id` conforms to the EBNF grammar (§2.7)
-- `canonical_id` length does not exceed 128 characters
+- `canonical_id` length does not exceed 192 characters
 
 **Pseudocode:**
 
@@ -93,7 +93,7 @@ Steps:
   6. If namespace is not null and not empty:
      a. Validate namespace matches /^[a-z][a-z0-9_]*$/
      b. canonical_id ← namespace + "." + canonical_id
-  7. If len(canonical_id) > 128 → throw ID_TOO_LONG error
+  7. If len(canonical_id) > 192 → throw ID_TOO_LONG error
   8. Return canonical_id
 ```
 

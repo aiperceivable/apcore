@@ -55,7 +55,7 @@
           "items": {
             "type": "string",
             "minLength": 1,
-            "maxLength": 128
+            "maxLength": 192
           },
           "minItems": 1,
           "examples": [["orchestrator.*"], ["api.handler.task_submit"], ["@external"], ["*"]]
@@ -66,7 +66,7 @@
           "items": {
             "type": "string",
             "minLength": 1,
-            "maxLength": 128
+            "maxLength": 192
           },
           "minItems": 1,
           "examples": [["executor.*"], ["common.*"], ["*"]]

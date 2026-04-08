@@ -121,7 +121,7 @@
           "type": "string",
           "description": "Canonical ID of the dependent module.",
           "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)*$",
-          "maxLength": 128,
+          "maxLength": 192,
           "examples": ["common.util.sql_parser"]
         },
         "version": {

@@ -461,7 +461,7 @@ extensions/common/util/validator.py        →   common.util.validator
 format: "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)*$"
 separator: "."
 case: "snake_case"
-max_length: 128
+max_length: 192
 ```
 
 **Valid examples:**
@@ -835,7 +835,7 @@ apcore_module_errors_total{module_id="executor.email.send_email", error_code="VA
 |------|-----------|--------|
 | Module | `M = (id, input_schema, output_schema, description, execute)` | `∀ inputs: validate(inputs, input_schema) ⟹ validate(execute(inputs, ctx), output_schema)` |
 | Schema | `S = JSON Schema Draft 2020-12 + x-* extensions` | `∀ data: validate(data, S) → {true, false}` |
-| Canonical ID | `ID = segment ("." segment)*` where `segment = [a-z][a-z0-9_]*` | `len(ID) ≤ 128 ∧ ∀ segment ∉ reserved_words` |
+| Canonical ID | `ID = segment ("." segment)*` where `segment = [a-z][a-z0-9_]*` | `len(ID) ≤ 192 ∧ ∀ segment ∉ reserved_words` |
 | Registry | `R = Map<CanonicalID, Module>` | `∀ id ∈ R: is_valid_canonical_id(id) ∧ validate_module(R[id])` |
 | Executor | `E = (R, ACL, [Middleware])` | `E.call(id, inputs, ctx) ⟹ ACL.check(ctx.caller, id) ∧ Schema.validate(inputs)` |
 | Context | `C = (trace_id, caller_id, call_chain, executor, identity, data)` | `trace_id ≠ null ∧ len(call_chain) ≤ 32` |

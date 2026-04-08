@@ -22,7 +22,7 @@
       "type": "string",
       "description": "The Canonical ID of the module this schema belongs to. MUST match the EBNF: segment ('.' segment)*, where segment = [a-z][a-z0-9_]*.",
       "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)*$",
-      "maxLength": 128,
+      "maxLength": 192,
       "examples": ["executor.validator.db_params", "executor.email.send_email"]
     },
     "description": {

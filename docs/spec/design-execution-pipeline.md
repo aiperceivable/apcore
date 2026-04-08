@@ -1189,7 +1189,7 @@ def __init__(self, registry, *, strategy=None, middlewares=None, acl=None,
 | Middleware before sync/async | Async-capable | Synchronous | Async | All async (Step protocol is async) |
 | call() sync vs async | Sync `call()` + async `call_async()` | Async-only `call()` | Async-only `call()` | Keep both in Python for compat; TS/Rust async-only |
 | Redaction key | `ctx.redacted_inputs` | `ctx.redactedInputs` | `ctx.redacted_inputs` | Steps write to PipelineContext fields. Built-in steps also sync back to Context (e.g., `context.redacted_inputs`) for backward compat with middleware that reads from Context. |
-| validate() return type | `PreflightResult` | `PreflightResult` | `ValidationResult` | Keep existing `validate()` method unchanged — it returns `PreflightResult` (Python/TS) / `ValidationResult` (Rust). VALIDATE_ONLY strategy is separate (returns `(result, trace)` via `call_with_trace`). Long-term: unify return type to `PreflightResult` in all SDKs. |
+| validate() return type | `PreflightResult` | `PreflightResult` | `PreflightResult` | All three SDKs unified on `PreflightResult` as of v0.18.0 (Rust previously used `ValidationResult`; the unification was the long-term plan recorded in earlier revisions of this table). The `MINIMAL` strategy is a separate concern — returns `(result, trace)` via `call_with_trace`. |
 | stream() | Full implementation | Full implementation | Stub (returns Vec) | Full implementation in Rust (deferred) |
 
 ### 10.2 Step Execute is Always Async
@@ -1245,7 +1245,7 @@ Sync steps simply return immediately without awaiting anything.
 
 | Step | All SDKs |
 |------|----------|
-| 4.1 | Implement STANDARD, INTERNAL, TESTING, VALIDATE_ONLY, PERFORMANCE presets |
+| 4.1 | Implement STANDARD, INTERNAL, TESTING, PERFORMANCE, MINIMAL presets |
 | 4.2 | Load strategies from YAML (executor.strategies section) |
 | 4.3 | Support strategy name in call(): `executor.call(..., strategy="internal")` |
 

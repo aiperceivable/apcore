@@ -117,7 +117,7 @@ Canonical ID is the globally unique identifier for a module, using a language-ag
 ```
 Format: dot-separated snake_case
 Regex: ^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$
-Max length: 128 characters
+Max length: 192 characters
 
 Examples:
   executor.validator.db_params

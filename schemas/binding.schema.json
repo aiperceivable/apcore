@@ -26,7 +26,7 @@
           "type": "string",
           "description": "Module Canonical ID (dot-separated snake_case)",
           "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)*$",
-          "maxLength": 128
+          "maxLength": 192
         },
         "target": {
           "type": "string",

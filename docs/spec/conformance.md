@@ -283,7 +283,7 @@ test_case:
 | T01-003 | Invalid path - empty segment | `extensions/executor//db_params.py` | INVALID_PATH error | Yes |
 | T01-004 | Invalid path - uppercase letter | `extensions/Executor/Validator.py` | INVALID_SEGMENT error | Yes |
 | T01-005 | Invalid path - digit prefix | `extensions/123module/test.py` | INVALID_SEGMENT error | Yes |
-| T01-006 | ID too long (>128 chars) | Overlong path | ID_TOO_LONG error | Yes |
+| T01-006 | ID too long (>192 chars) | Overlong path | ID_TOO_LONG error | Yes |
 | T01-007 | Reserved word detection | `extensions/system/core.py` | reserved_word conflict | Yes |
 | T01-008 | Case collision detection | Register `A.B` after `a.b` | case_collision warning | Yes |
 | T01-009 | Duplicate ID detection | Register same ID twice | duplicate_id error | Yes |
