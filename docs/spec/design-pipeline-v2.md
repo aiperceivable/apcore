@@ -5,6 +5,9 @@
 **Date:** 2026-04-05
 **Spec Version:** Targets 0.17.0
 
+!!! info "Scope"
+    This RFC analyzes the **Python SDK** (`apcore-python`) as the reference implementation. File paths such as `executor.py`, `pipeline.py`, and `bindings.py` refer to that SDK and are used as concrete evidence for the proposed protocol-level changes. Other-language SDKs are tracked in the cross-language migration table near the end of this document.
+
 ## 1. Motivation
 
 ### 1.1 Current State
@@ -390,7 +393,7 @@ TypeScript builtin steps currently use `builtin.` prefix (e.g., `builtin.context
 | Access control | acl_check | Default-deny ACL |
 | Human approval | approval_gate | External handler protocol |
 | Input transformation | middleware_before | User middleware chain |
-| Input validation | input_validation | Schema validation (Pydantic) |
+| Input validation | input_validation | Schema validation |
 | Execution | execute | With timeout |
 | Output validation | output_validation | Schema validation |
 | Output transformation | middleware_after | User middleware chain |

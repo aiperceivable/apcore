@@ -9,7 +9,7 @@ The Core Execution Engine is the central orchestration component of apcore. It p
 - Orchestrate module calls through a well-defined, sequential pipeline with clear separation of concerns at each step.
 - Enforce safety constraints including maximum call depth limits, circular call detection, and frequency throttling to prevent runaway or abusive execution.
 - Look up modules from the Registry and enforce access control lists (ACL) before execution.
-- Validate inputs and outputs using Pydantic models, with automatic redaction of fields marked as `x-sensitive`.
+- Validate inputs and outputs using runtime model classes, with automatic redaction of fields marked as `x-sensitive`.
 - Support middleware chains that execute before and after the core module invocation, enabling cross-cutting concerns such as logging, metrics, and transformation.
 - Execute modules with configurable timeout enforcement, using daemon threads for synchronous modules and an async bridge for asynchronous modules.
 - Return structured results that include execution metadata and any errors encountered during the pipeline.
@@ -35,7 +35,7 @@ The executor processes every module call through the following pipeline:
 
 6. **Middleware Before Chain** -- All registered "before" middleware functions are executed in order. Each middleware receives the context and input, and may modify or enrich them before validation runs.
 
-7. **Input Validation with Pydantic + Sensitive Field Redaction** -- The call's input payload (including any modifications from middleware) is validated against the module's input schema (a dynamically generated Pydantic model). Fields annotated with `x-sensitive` are redacted from logs and error messages using the `redact_sensitive` utility.
+7. **Input Validation + Sensitive Field Redaction** -- The call's input payload (including any modifications from middleware) is validated against the module's input schema (a dynamically generated runtime model). Fields annotated with `x-sensitive` are redacted from logs and error messages using the `redact_sensitive` utility.
 
 8. **Module Execution with Timeout (Dual-Timeout Model)** -- The module's handler is invoked with dual-timeout enforcement: both a per-module timeout (`resources.timeout`, default 30s) and a global deadline (`executor.global_timeout`, default 60s). The shorter of the two is applied, preventing nested call chains from exceeding the global budget. The global deadline is set on the root call and propagated to child contexts via `Context._global_deadline`.
 
@@ -76,9 +76,11 @@ The executor processes every module call through the following pipeline:
 ### Sync/Async Bridge
 
 The executor exposes both `call()` (sync) and `call_async()` (async) entry points. Internally:
-- Synchronous modules called from an async context are dispatched to a daemon thread via `asyncio.to_thread`.
-- Asynchronous modules called from a synchronous context are executed through a temporary event loop on a daemon thread.
-- An async module cache lock protects concurrent access to shared module state.
+- Synchronous modules called from an async context are dispatched to a worker thread to avoid blocking the event loop.
+- Asynchronous modules called from a synchronous context are executed through a temporary event loop on a worker thread.
+- A cache lock protects concurrent access to shared module state.
+
+These mechanics are SDK-specific; languages without an async/await split (e.g., Rust with a single runtime) MAY implement the bridge differently.
 
 ### Sensitive Field Redaction
 
@@ -96,23 +98,26 @@ Streaming chunk accumulation uses recursive deep merge (depth-capped at 32) inst
 
 The `validate()` method provides a non-destructive preflight check that runs Steps 1–6 of the pipeline (module ID format, module lookup, call chain safety, ACL, approval detection, schema validation) without executing module code or middleware. It returns a `PreflightResult` with per-check results and a `requires_approval` flag. The result is duck-type compatible with the legacy `ValidationResult` — `.valid` and `.errors` properties work identically.
 
-## Key Files
-
-| File | Lines | Purpose |
-|------|-------|---------|
-| `executor.py` | 634 | Core execution engine implementing the execution pipeline |
-| `context.py` | 66 | Context and Identity data classes |
-| `config.py` | 29 | Executor configuration data class |
-| `errors.py` | 395 | Structured error types for every failure mode in the pipeline |
-
 ## Dependencies
 
-### External
-- `pydantic>=2.0` -- Used for input/output schema validation, dynamic model generation, and field metadata.
-
-### Internal
 - **Registry** -- Module lookup (step 3) depends on the Registry system to resolve module names to loaded module instances.
-- **Schema System** -- Input and output validation (steps 6 and 9) depend on the Schema System for Pydantic model generation from YAML schemas.
+- **Schema System** -- Input and output validation (steps 6 and 9) depend on the Schema System for runtime model generation from YAML schemas.
+
+??? info "Python SDK reference"
+    The following tables are **not protocol requirements** — they document the Python SDK's source layout and runtime dependencies for implementers/users of `apcore-python`.
+
+    **Source files:**
+
+    | File | Lines | Purpose |
+    |------|-------|---------|
+    | `executor.py` | 634 | Core execution engine implementing the execution pipeline |
+    | `context.py` | 66 | Context and Identity data classes |
+    | `config.py` | 29 | Executor configuration data class |
+    | `errors.py` | 395 | Structured error types for every failure mode in the pipeline |
+
+    **Runtime dependencies:**
+
+    - `pydantic>=2.0` -- Used for input/output schema validation, dynamic model generation, and field metadata.
 
 ## Testing Strategy
 

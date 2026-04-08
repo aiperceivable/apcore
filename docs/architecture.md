@@ -653,13 +653,15 @@ All modules must define explicit schemas, ensuring:
 
 ### 7.1 Thread Safety Guarantees
 
+> Method names below (`get()`, `register()`, `add_rule()`, etc.) follow the Python SDK's API surface; equivalent methods exist in other SDKs with the same thread-safety guarantees.
+
 | Component | Thread Safety Level | Description |
 |------|-------------|------|
 | Registry (read) | Fully safe | `get()`, `has()`, `list()` can be called concurrently |
 | Registry (write) | Needs sync | `register()`, `unregister()` need locks |
 | Executor | Fully safe | `call()` and `call_async()` can be called concurrently |
 | Context | Partially safe | Immutable fields safe, `data` needs caller sync |
-| ACL | Fully safe | Read-only checks are thread-safe. Runtime mutation (`add_rule`, `remove_rule`, `reload`) is protected by `threading.Lock` |
+| ACL | Fully safe | Read-only checks are thread-safe. Runtime mutation (`add_rule`, `remove_rule`, `reload`) is protected by an internal lock |
 | Middleware | Must ensure | Instance methods must be thread-safe |
 
 ### 7.2 Concurrent Execution Model

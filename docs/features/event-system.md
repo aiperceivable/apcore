@@ -15,7 +15,7 @@ The event system provides a global event bus for framework-level lifecycle event
 ### Built-in Subscribers
 - `WebhookSubscriber` — HTTP POST delivery with configurable retry (5xx and connection errors only).
 - `A2ASubscriber` — Agent-to-Agent protocol bridge with bearer/dict auth support.
-- Both require optional dependency `aiohttp`. Install with `pip install apcore[events]`.
+- Both require an HTTP client dependency provided by the SDK (e.g., `aiohttp` in the Python SDK, available via the `events` optional install group).
 
 ### Extensibility
 - Subscriber type registry with factory pattern for config-driven instantiation.
@@ -64,7 +64,7 @@ class EventEmitter:
 ```
 
 **Dispatch model:**
-- `emit()` returns immediately. Delivery happens in a bounded `ThreadPoolExecutor` with a persistent `asyncio` event loop.
+- `emit()` returns immediately. Delivery is handled asynchronously by a bounded background worker pool (e.g., a thread pool in Python with a persistent async event loop).
 - Each `emit()` takes a snapshot of current subscribers, so subscribe/unsubscribe during delivery is safe.
 - Failed deliveries are logged but never re-raised.
 - `flush()` blocks until all pending deliveries complete (useful in tests and graceful shutdown).
@@ -83,7 +83,7 @@ class WebhookSubscriber:
 ```
 
 **Delivery:**
-- Sends `POST` with `Content-Type: application/json` body containing `dataclasses.asdict(event)`.
+- Sends `POST` with `Content-Type: application/json` body containing the serialized event as a JSON object.
 - Custom headers are merged with the content-type header.
 
 **Retry strategy:**
@@ -246,26 +246,29 @@ emitter.emit(ApCoreEvent(
 emitter.flush(timeout=5.0)
 ```
 
-## Key Files
-
-| File | Purpose |
-|------|---------|
-| `src/apcore/events/emitter.py` | `EventEmitter`, `ApCoreEvent`, `EventSubscriber` |
-| `src/apcore/events/subscribers.py` | `WebhookSubscriber`, `A2ASubscriber` |
-| `src/apcore/sys_modules/registration.py` | Subscriber factory registry, `register_sys_modules()` integration |
-| `src/apcore/middleware/platform_notify.py` | `PlatformNotifyMiddleware` (threshold-based event emission) |
-| `src/apcore/client.py` | `APCore.on()`, `APCore.off()`, `_CallbackSubscriber` |
-
 ## Dependencies
 
-### Internal
 - `apcore.middleware.Middleware` — Base class for `PlatformNotifyMiddleware`.
 - `apcore.observability.metrics.MetricsCollector` — Used by `PlatformNotifyMiddleware` for threshold checks.
 
-### External
-- `aiohttp` (optional) — Required for `WebhookSubscriber` and `A2ASubscriber`. Install with `pip install apcore[events]`.
-- `threading` (stdlib) — Lock for subscriber list and pending futures.
-- `concurrent.futures` (stdlib) — `ThreadPoolExecutor` for async dispatch.
+??? info "Python SDK reference"
+    The following tables are **not protocol requirements** — they document the Python SDK's source layout and runtime dependencies for implementers/users of `apcore-python`.
+
+    **Source files:**
+
+    | File | Purpose |
+    |------|---------|
+    | `src/apcore/events/emitter.py` | `EventEmitter`, `ApCoreEvent`, `EventSubscriber` |
+    | `src/apcore/events/subscribers.py` | `WebhookSubscriber`, `A2ASubscriber` |
+    | `src/apcore/sys_modules/registration.py` | Subscriber factory registry, `register_sys_modules()` integration |
+    | `src/apcore/middleware/platform_notify.py` | `PlatformNotifyMiddleware` (threshold-based event emission) |
+    | `src/apcore/client.py` | `APCore.on()`, `APCore.off()`, `_CallbackSubscriber` |
+
+    **External dependencies:**
+
+    - `aiohttp` (optional) — Required for `WebhookSubscriber` and `A2ASubscriber`. Install with `pip install apcore[events]`.
+    - `threading` (stdlib) — Lock for subscriber list and pending futures.
+    - `concurrent.futures` (stdlib) — `ThreadPoolExecutor` for async dispatch.
 
 ## Testing Strategy
 

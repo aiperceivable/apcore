@@ -69,8 +69,8 @@ For `error_first`, the sampling decision only affects success spans. Error spans
 
 #### Span Exporters
 
-- **`StdoutExporter`**: Converts span to dict via `dataclasses.asdict()` and writes as a single JSON line to stdout.
-- **`InMemoryExporter`**: Thread-safe collection using `collections.deque(maxlen=max_spans)` with lock protection. Provides `get_spans()`, `clear()` methods.
+- **`StdoutExporter`**: Serializes the span to a dictionary and writes it as a single JSON line to stdout.
+- **`InMemoryExporter`**: Thread-safe ring buffer with configurable maximum capacity (`max_spans`) and lock protection. Provides `get_spans()`, `clear()` methods.
 - **`OTLPExporter`**: Bridges apcore spans to OpenTelemetry. Creates an OTel `TracerProvider` with an OTLP HTTP exporter, converts apcore span attributes (including `apcore.trace_id`, `apcore.span_id`, `apcore.parent_span_id` for correlation), replays events, and maps status codes. Non-primitive attributes are stringified for OTel compatibility.
 
 ### Metrics Architecture
@@ -133,9 +133,9 @@ The `traceparent` header follows the W3C format: `{version}-{trace_id}-{parent_i
 `ErrorHistory` is a ring-buffer tracker for recent module errors, providing deduplication and per-module querying. It is automatically created and wired by `register_sys_modules()` when system modules are enabled.
 
 **Architecture:**
-- Uses `collections.deque` with configurable per-module capacity (`max_entries_per_module`, default 50) and total capacity (`max_total_entries`, default 1000).
+- Uses a ring-buffer data structure with configurable per-module capacity (`max_entries_per_module`, default 50) and total capacity (`max_total_entries`, default 1000).
 - Deduplication by `(code, message)` tuple — repeated errors increment `count` and update `last_occurred` instead of creating new entries.
-- Thread-safe via `threading.Lock`.
+- Thread-safe via locking.
 
 **API:**
 
@@ -166,7 +166,7 @@ The `traceparent` header follows the W3C format: `{version}-{trace_id}-{parent_i
 **Architecture:**
 - Hourly bucketed storage with configurable retention (`retention_hours`, default 168 = 7 days).
 - Trend computation compares current period vs previous period: `stable`, `rising`, `declining`, `new`, `inactive`.
-- Thread-safe via `threading.Lock`.
+- Thread-safe via locking.
 
 **API:**
 
@@ -200,34 +200,38 @@ The `traceparent` header follows the W3C format: `{version}-{trace_id}-{parent_i
 
 **Hysteresis:** Once an alert fires for a module, it will not re-fire until the module recovers below `threshold × 0.5`, then crosses the threshold again. This prevents alert storms.
 
-## Key Files
-
-| File | Lines | Purpose |
-|------|-------|---------|
-| `src/apcore/observability/__init__.py` | 37 | Package re-exports and recommended middleware ordering |
-| `src/apcore/observability/tracing.py` | 293 | `Span`, `SpanExporter`, `StdoutExporter`, `InMemoryExporter`, `OTLPExporter`, `TracingMiddleware` |
-| `src/apcore/observability/metrics.py` | 195 | `MetricsCollector`, `MetricsMiddleware`, Prometheus export |
-| `src/apcore/observability/context_logger.py` | 170 | `ContextLogger`, `ObsLoggingMiddleware` |
-| `src/apcore/observability/error_history.py` | — | `ErrorHistory`, `ErrorEntry` |
-| `src/apcore/observability/usage.py` | — | `UsageCollector`, `UsageMiddleware`, `ModuleUsageSummary`, `ModuleUsageDetail` |
-| `src/apcore/middleware/error_history.py` | — | `ErrorHistoryMiddleware` |
-| `src/apcore/middleware/platform_notify.py` | — | `PlatformNotifyMiddleware` |
-
 ## Dependencies
 
-### Internal
 - `apcore.middleware.Middleware` -- Base class for all three observability middlewares.
 - `apcore.context.Context` -- Provides `trace_id`, `caller_id`, `call_chain`, and `data` dict for per-call state.
 - `apcore.errors.ModuleError` -- Used by `MetricsMiddleware` to extract structured error codes.
+- An OpenTelemetry SDK is required only when the `OTLPExporter` is used; SDKs SHOULD lazy-load it and fail with a clear error if missing.
 
-### External
-- `collections` (stdlib) -- `deque` for bounded `InMemoryExporter`.
-- `dataclasses` (stdlib) -- `asdict()` for span serialization in `StdoutExporter`.
-- `threading` (stdlib) -- Locks for thread-safe `InMemoryExporter` and `MetricsCollector`.
-- `time` (stdlib) -- Wall-clock timing for span and middleware duration measurements.
-- `json` (stdlib) -- JSON serialization for `StdoutExporter` and `ContextLogger`.
-- `random` (stdlib) -- Proportional sampling decision in `TracingMiddleware`.
-- `opentelemetry-sdk` / `opentelemetry-exporter-otlp-proto-http` (optional) -- Required only for `OTLPExporter`. Lazy-imported at instantiation time with a clear `ImportError` message.
+??? info "Python SDK reference"
+    The following tables are **not protocol requirements** — they document the Python SDK's source layout and runtime dependencies for implementers/users of `apcore-python`.
+
+    **Source files:**
+
+    | File | Lines | Purpose |
+    |------|-------|---------|
+    | `src/apcore/observability/__init__.py` | 37 | Package re-exports and recommended middleware ordering |
+    | `src/apcore/observability/tracing.py` | 293 | `Span`, `SpanExporter`, `StdoutExporter`, `InMemoryExporter`, `OTLPExporter`, `TracingMiddleware` |
+    | `src/apcore/observability/metrics.py` | 195 | `MetricsCollector`, `MetricsMiddleware`, Prometheus export |
+    | `src/apcore/observability/context_logger.py` | 170 | `ContextLogger`, `ObsLoggingMiddleware` |
+    | `src/apcore/observability/error_history.py` | — | `ErrorHistory`, `ErrorEntry` |
+    | `src/apcore/observability/usage.py` | — | `UsageCollector`, `UsageMiddleware`, `ModuleUsageSummary`, `ModuleUsageDetail` |
+    | `src/apcore/middleware/error_history.py` | — | `ErrorHistoryMiddleware` |
+    | `src/apcore/middleware/platform_notify.py` | — | `PlatformNotifyMiddleware` |
+
+    **External dependencies:**
+
+    - `collections` (stdlib) -- `deque` for bounded `InMemoryExporter`.
+    - `dataclasses` (stdlib) -- `asdict()` for span serialization in `StdoutExporter`.
+    - `threading` (stdlib) -- Locks for thread-safe `InMemoryExporter` and `MetricsCollector`.
+    - `time` (stdlib) -- Wall-clock timing for span and middleware duration measurements.
+    - `json` (stdlib) -- JSON serialization for `StdoutExporter` and `ContextLogger`.
+    - `random` (stdlib) -- Proportional sampling decision in `TracingMiddleware`.
+    - `opentelemetry-sdk` / `opentelemetry-exporter-otlp-proto-http` (optional) -- Required only for `OTLPExporter`. Lazy-imported at instantiation time with a clear `ImportError` message.
 
 ## Testing Strategy
 

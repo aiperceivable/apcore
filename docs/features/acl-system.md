@@ -56,12 +56,12 @@ If no context is provided but conditions are present, the rule does not match.
 ### Components
 
 - **`ACLRule`** -- Dataclass with fields: `callers` (list of patterns), `targets` (list of patterns), `effect` ("allow" or "deny"), optional `description`, and optional `conditions` dict.
-- **`ACL`** -- Main class managing an ordered rule list. Provides `check()`, `add_rule()`, `remove_rule()`, `reload()`, and the `ACL.load()` classmethod for YAML loading. All public methods are protected by `threading.Lock`.
+- **`ACL`** -- Main class managing an ordered rule list. Provides `check()`, `add_rule()`, `remove_rule()`, `reload()`, and the `ACL.load()` classmethod for YAML loading. All public methods are protected by a lock for thread safety.
 - **`match_pattern()`** -- Wildcard pattern matcher in `utils/pattern.py`. Supports `*` as a wildcard matching any character sequence. Handles prefix, suffix, and infix wildcards via segment splitting.
 
 ### Thread Safety
 
-The `ACL` class uses an internal `threading.Lock` on all public methods. The `check()` method copies the rule list and default effect under the lock, then performs evaluation outside the lock. `add_rule()`, `remove_rule()`, and `reload()` all hold the lock for the duration of their mutations.
+The `ACL` class uses an internal lock on all public methods. The `check()` method copies the rule list and default effect under the lock, then performs evaluation outside the lock. `add_rule()`, `remove_rule()`, and `reload()` all hold the lock for the duration of their mutations. Single-threaded language runtimes (e.g., JavaScript) MAY treat the lock as a no-op.
 
 ### YAML Configuration Format
 
@@ -97,25 +97,28 @@ rules:
 
 Compound operators `$or` and `$not` can combine conditions. `$or` passes if any sub-condition passes. `$not` inverts its sub-condition.
 
-## Key Files
-
-| File | Lines | Purpose |
-|------|-------|---------|
-| `src/apcore/acl.py` | 279 | `ACLRule` dataclass and `ACL` class with pattern matching, YAML loading, and runtime management |
-| `src/apcore/utils/pattern.py` | 46 | `match_pattern()` wildcard utility (Algorithm A08) |
-
 ## Dependencies
 
-### Internal
 - `apcore.context.Context` -- Provides `identity`, `call_chain`, and other context fields for conditional rule evaluation.
 - `apcore.context.Identity` -- Dataclass with `id`, `type`, and `roles` fields used by `@system` pattern and condition checks.
 - `apcore.errors.ACLRuleError` -- Raised for invalid ACL configuration (bad YAML structure, missing keys, invalid effect values).
 - `apcore.errors.ConfigNotFoundError` -- Raised when the YAML file path does not exist.
 - `apcore.utils.pattern.match_pattern` -- Foundation wildcard matching for non-special patterns.
 
-### External
-- `yaml` (PyYAML) -- YAML parsing for configuration loading.
-- `threading` (stdlib) -- Lock for thread-safe access to the rule list.
+??? info "Python SDK reference"
+    The following tables are **not protocol requirements** — they document the Python SDK's source layout and runtime dependencies for implementers/users of `apcore-python`.
+
+    **Source files:**
+
+    | File | Lines | Purpose |
+    |------|-------|---------|
+    | `src/apcore/acl.py` | 279 | `ACLRule` dataclass and `ACL` class with pattern matching, YAML loading, and runtime management |
+    | `src/apcore/utils/pattern.py` | 46 | `match_pattern()` wildcard utility (Algorithm A08) |
+
+    **Runtime dependencies:**
+
+    - `yaml` (PyYAML) -- YAML parsing for configuration loading.
+    - `threading` (stdlib) -- Lock for thread-safe access to the rule list.
 - `os` (stdlib) -- File existence checks in `ACL.load()`.
 - `logging` (stdlib) -- Debug-level logging of access decisions.
 

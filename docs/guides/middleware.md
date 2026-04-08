@@ -219,7 +219,7 @@ If any `on_error` returns non-None, the exception is "swallowed" and that value 
 
 - Middleware instances **can** be shared by multiple Executors
 - Middleware's `before()`/`after()`/`on_error()` **must** be thread-safe
-- When using instance variables to store state, **must** use thread-safe data structures (e.g., `threading.Lock`)
+- When using instance variables to store state, **must** use thread-safe data structures (each SDK provides its own primitives — e.g., `threading.Lock` in Python, `Mutex` in Rust)
 - Using `context.data` to pass middleware state is the **recommended** thread-safe approach
 
 ---
@@ -402,7 +402,7 @@ executor.use(RetryMiddleware(RetryConfig(
 **Retry logic:**
 - Only retries errors where `error.retryable is True` (each error code has a default, see PROTOCOL_SPEC §8.6).
 - Tracks retry count per module in `context.data` using key `_retry_count_{module_id}`.
-- In async pipelines, `on_error` runs via `asyncio.to_thread` so the event loop is not blocked.
+- In async pipelines, `on_error` is dispatched to a worker thread so the event loop is not blocked.
 
 ### 5.5 ErrorHistoryMiddleware (Built-in)
 

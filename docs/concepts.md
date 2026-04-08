@@ -871,7 +871,7 @@ These invariants **must** always hold during system runtime:
 
 ```
 1. Define Schema
-   └── Use Pydantic or YAML to define input/output Schema
+   └── Define input/output Schema (SDK model class or YAML)
 
 2. Create Module
    └── Inherit Module class, define execute() method

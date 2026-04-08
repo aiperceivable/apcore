@@ -311,7 +311,7 @@ async def _evaluate_conditions_async(
     return True
 ```
 
-**Design decision:** `_evaluate_conditions` and `_evaluate_conditions_async` have similar structure. This is intentional -- the sync variant MUST NOT import or reference asyncio at the top level (for sync-only deployments). Do NOT merge them into a single function.
+**Design decision:** `_evaluate_conditions` and `_evaluate_conditions_async` have similar structure. This is intentional -- the sync variant MUST NOT import or reference the async runtime at the module level (for sync-only deployments). Do NOT merge them into a single function. (In Python this means avoiding top-level `asyncio` imports; equivalent rules apply to other languages with optional async runtimes.)
 
 ### Public API -- check() and async_check()
 

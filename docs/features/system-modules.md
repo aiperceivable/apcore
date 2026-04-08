@@ -485,15 +485,16 @@ sys_modules:
 ### Permissions
 System modules use the reserved `system.*` namespace. Registration bypasses reserved word checks via `registry.register_internal()`. See [PROTOCOL_SPEC §6.6](../../PROTOCOL_SPEC.md) for the defense-in-depth permission model.
 
-## Key Files
+??? info "Python SDK reference"
+    The following table is **not a protocol requirement** — it documents the Python SDK's source layout for implementers/users of `apcore-python`.
 
-| File | Purpose |
-|------|---------|
-| `src/apcore/sys_modules/registration.py` | `register_sys_modules()`, subscriber factory registry |
-| `src/apcore/sys_modules/health.py` | `HealthSummaryModule`, `HealthModuleModule` |
-| `src/apcore/sys_modules/manifest.py` | `ManifestModuleModule`, `ManifestFullModule` |
-| `src/apcore/sys_modules/usage.py` | `UsageSummaryModule`, `UsageModuleModule` |
-| `src/apcore/sys_modules/control.py` | `UpdateConfigModule`, `ReloadModuleModule`, `ToggleFeatureModule`, `ToggleState` |
+    | File | Purpose |
+    |------|---------|
+    | `src/apcore/sys_modules/registration.py` | `register_sys_modules()`, subscriber factory registry |
+    | `src/apcore/sys_modules/health.py` | `HealthSummaryModule`, `HealthModuleModule` |
+    | `src/apcore/sys_modules/manifest.py` | `ManifestModuleModule`, `ManifestFullModule` |
+    | `src/apcore/sys_modules/usage.py` | `UsageSummaryModule`, `UsageModuleModule` |
+    | `src/apcore/sys_modules/control.py` | `UpdateConfigModule`, `ReloadModuleModule`, `ToggleFeatureModule`, `ToggleState` |
 
 ## Testing Strategy
 

@@ -1,8 +1,11 @@
 # Decorator and YAML Bindings
 
+!!! info "Scope: Python SDK"
+    This page documents idiomatic Python SDK APIs (`@module` decorator, `BindingLoader`). The protocol itself defines no decorator semantics — each language SDK provides equivalent ergonomics in its own idiom (e.g., TypeScript decorators or `defineModule()`, Rust attribute macros). YAML binding files, however, are language-neutral and portable across SDKs.
+
 ## Overview
 
-Two complementary approaches for module creation: the `@module` decorator for zero-boilerplate function wrapping, and YAML bindings via `BindingLoader` for declarative, code-free module registration. Both approaches produce `FunctionModule` instances that participate fully in the executor pipeline (ACL, middleware, validation, async support). The decorator system includes automatic Pydantic model generation from function signatures, while the binding system supports four distinct schema resolution modes.
+Two complementary approaches for module creation: the `@module` decorator for zero-boilerplate function wrapping, and YAML bindings via `BindingLoader` for declarative, code-free module registration. Both approaches produce `FunctionModule` instances that participate fully in the executor pipeline (ACL, middleware, validation, async support). The decorator system includes automatic runtime model generation from function signatures, while the binding system supports four distinct schema resolution modes.
 
 ## Requirements
 
@@ -122,28 +125,31 @@ All binding-related errors inherit from `ModuleError`:
 - `BindingSchemaMissingError` -- Auto-schema failed on untyped callable (code: `BINDING_SCHEMA_MISSING`).
 - `BindingFileInvalidError` -- YAML file issues (missing, empty, parse error, structural) (code: `BINDING_FILE_INVALID`).
 
-## Key Files
-
-| File | Lines | Purpose |
-|------|-------|---------|
-| `src/apcore/decorator.py` | 264 | `@module` decorator, `FunctionModule`, type inference helpers, auto-ID generation |
-| `src/apcore/bindings.py` | 220 | `BindingLoader` with YAML parsing, target resolution, schema mode handling |
-
 ## Dependencies
 
-### Internal
 - `apcore.context.Context` -- Injected into wrapped functions when a Context-typed parameter is detected.
 - `apcore.registry.Registry` -- Module registration for both decorator and binding paths.
 - `apcore.errors` -- 8 error classes for decorator and binding failure modes.
 
-### External
-- `pydantic` -- `BaseModel`, `ConfigDict`, `create_model` for dynamic model generation.
-- `inspect` (stdlib) -- Function signature introspection, parameter kind detection, coroutine function detection.
-- `typing` (stdlib) -- `get_type_hints()` for annotation resolution with forward reference support.
-- `re` (stdlib) -- Regex for auto-ID sanitization.
-- `importlib` (stdlib) -- Dynamic module import for target resolution in bindings.
-- `pathlib` (stdlib) -- Path operations for binding file and schema_ref resolution.
-- `yaml` (PyYAML) -- YAML parsing for binding files and schema references.
+??? info "Python SDK reference"
+    The following tables are **not protocol requirements** — they document the Python SDK's source layout and runtime dependencies for implementers/users of `apcore-python`.
+
+    **Source files:**
+
+    | File | Lines | Purpose |
+    |------|-------|---------|
+    | `src/apcore/decorator.py` | 264 | `@module` decorator, `FunctionModule`, type inference helpers, auto-ID generation |
+    | `src/apcore/bindings.py` | 220 | `BindingLoader` with YAML parsing, target resolution, schema mode handling |
+
+    **Runtime dependencies:**
+
+    - `pydantic` -- `BaseModel`, `ConfigDict`, `create_model` for dynamic model generation.
+    - `inspect` (stdlib) -- Function signature introspection, parameter kind detection, coroutine function detection.
+    - `typing` (stdlib) -- `get_type_hints()` for annotation resolution with forward reference support.
+    - `re` (stdlib) -- Regex for auto-ID sanitization.
+    - `importlib` (stdlib) -- Dynamic module import for target resolution in bindings.
+    - `pathlib` (stdlib) -- Path operations for binding file and schema_ref resolution.
+    - `yaml` (PyYAML) -- YAML parsing for binding files and schema references.
 
 ## Testing Strategy
 

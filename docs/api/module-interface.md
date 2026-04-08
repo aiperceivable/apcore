@@ -4,6 +4,9 @@
 
 > Module is the core interface of apcore, and all modules must implement this interface.
 
+!!! info "Scope: Python SDK"
+    Code examples on this page use the **Python SDK** (`apcore-python`) — types like `pydantic.BaseModel`, `ClassVar[Type[...]]`, and `Protocol` are Python idioms. Each language SDK provides equivalent constructs (TypeScript: Zod schemas + interfaces; Rust: serde structs + traits). For cross-language type mapping, see [Type Mapping](../spec/type-mapping.md).
+
 ## 1. Interface Overview
 
 ```python

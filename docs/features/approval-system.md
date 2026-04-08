@@ -114,19 +114,19 @@ These handlers are provided by the respective bridge packages, not by apcore cor
 | **Phase A** | Synchronous approval: handler blocks until decision | **MUST** implement for conformance |
 | **Phase B** | Asynchronous approval: `pending` + `approval_id` + retry with `_approval_token` | **MAY** implement |
 
-## Key Files
-
-| File | Purpose |
-|------|---------|
-| `approval.py` | `ApprovalHandler` protocol, `ApprovalRequest`, `ApprovalResult`, built-in handlers, approval error classes |
-| `executor.py` | Step 5 integration in `call()`, `call_async()`, `stream()` |
-
 ## Dependencies
 
-### Internal
 - **Executor** — The approval gate is embedded in the Executor pipeline at Step 5.
 - **Module Annotations** — The `requires_approval` field on `ModuleAnnotations` (or dict equivalent) triggers the gate.
 - **Context** — The full execution context (including identity, trace_id, call_chain) is passed to the handler via `ApprovalRequest`.
+
+??? info "Python SDK reference"
+    The following table is **not a protocol requirement** — it documents the Python SDK's source layout for implementers/users of `apcore-python`.
+
+    | File | Purpose |
+    |------|---------|
+    | `approval.py` | `ApprovalHandler` protocol, `ApprovalRequest`, `ApprovalResult`, built-in handlers, approval error classes |
+    | `executor.py` | Step 5 integration in `call()`, `call_async()`, `stream()` |
 
 ## Testing Strategy
 

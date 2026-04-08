@@ -1257,7 +1257,7 @@ Steps:
 - `context: Context` type parameter must be excluded and auto-injected
 - Constraints in `Annotated[T, Field(...)]` (min, max, pattern, etc.) should be extracted to Schema
 - `Optional[T]` should map to nullable type
-- Nested `BaseModel` / `struct` should recursively generate
+- Nested object types (Python `BaseModel`, TypeScript object schema, Rust `struct`) should recursively generate
 
 ---
 

@@ -34,7 +34,7 @@ The `MiddlewareManager` uses a lock-protected snapshot pattern for thread safety
 ### Components
 
 - **`Middleware`** (base class) -- Plain class (not ABC) with three methods returning None by default. Subclasses override only what they need.
-- **`MiddlewareManager`** -- Manages the ordered list and orchestrates the three execution phases. Uses `threading.Lock` with the snapshot pattern.
+- **`MiddlewareManager`** -- Manages the ordered list and orchestrates the three execution phases. Uses a lock with the snapshot pattern for thread safety.
 - **`BeforeMiddleware` / `AfterMiddleware`** -- Lightweight adapters wrapping a single callback function as a full `Middleware` subclass. Non-overridden phases remain no-ops.
 - **`LoggingMiddleware`** -- Structured logging middleware that records start time in `context.data["_apcore.mw.logging.start_time"]` during `before()`, computes duration in `after()`, and uses `context.redacted_inputs` to avoid leaking sensitive data. Configurable via `log_inputs`, `log_outputs`, and `log_errors` flags.
 - **`RetryMiddleware`** -- Built-in middleware that retries failed module calls with configurable backoff strategies (exponential or fixed). Only retries errors marked `retryable=True`. Supports `max_retries`, `base_delay_ms`, `max_delay_ms`, and jitter. See [Middleware Guide](../guides/middleware.md#54-retrymiddleware-built-in) for configuration details.
@@ -53,26 +53,29 @@ On Error (if MW3.before fails):
           and recovery walks backwards through executed middlewares)
 ```
 
-## Key Files
-
-| File | Lines | Purpose |
-|------|-------|---------|
-| `src/apcore/middleware/__init__.py` | 16 | Package re-exports for convenient imports |
-| `src/apcore/middleware/base.py` | 36 | `Middleware` base class with no-op defaults |
-| `src/apcore/middleware/manager.py` | 129 | `MiddlewareManager` and `MiddlewareChainError` |
-| `src/apcore/middleware/logging.py` | 94 | `LoggingMiddleware` with structured logging and redaction |
-| `src/apcore/middleware/adapters.py` | 43 | `BeforeMiddleware` and `AfterMiddleware` function adapters |
-| `src/apcore/middleware/retry.py` | ~190 | `RetryMiddleware` with configurable backoff strategies (exponential/fixed) |
-
 ## Dependencies
 
-### Internal
 - `apcore.context.Context` -- Execution context passed to all middleware methods, provides `trace_id`, `caller_id`, `redacted_inputs`, and `data` dict for per-call state storage.
 
-### External
-- `threading` (stdlib) -- Lock for thread-safe middleware list management.
-- `logging` (stdlib) -- Standard library logging used by `LoggingMiddleware` and manager error reporting.
-- `time` (stdlib) -- Wall-clock timing for duration measurements in `LoggingMiddleware`.
+??? info "Python SDK reference"
+    The following tables are **not protocol requirements** — they document the Python SDK's source layout and runtime dependencies for implementers/users of `apcore-python`.
+
+    **Source files:**
+
+    | File | Lines | Purpose |
+    |------|-------|---------|
+    | `src/apcore/middleware/__init__.py` | 16 | Package re-exports for convenient imports |
+    | `src/apcore/middleware/base.py` | 36 | `Middleware` base class with no-op defaults |
+    | `src/apcore/middleware/manager.py` | 129 | `MiddlewareManager` and `MiddlewareChainError` |
+    | `src/apcore/middleware/logging.py` | 94 | `LoggingMiddleware` with structured logging and redaction |
+    | `src/apcore/middleware/adapters.py` | 43 | `BeforeMiddleware` and `AfterMiddleware` function adapters |
+    | `src/apcore/middleware/retry.py` | ~190 | `RetryMiddleware` with configurable backoff strategies (exponential/fixed) |
+
+    **Runtime dependencies:**
+
+    - `threading` (stdlib) -- Lock for thread-safe middleware list management.
+    - `logging` (stdlib) -- Standard library logging used by `LoggingMiddleware` and manager error reporting.
+    - `time` (stdlib) -- Wall-clock timing for duration measurements in `LoggingMiddleware`.
 
 ## Testing Strategy
 
