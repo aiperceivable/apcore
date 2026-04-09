@@ -421,7 +421,7 @@ context = register_sys_modules(
     ```typescript
     import { APCore, Config } from 'apcore-js';
 
-    const config = await Config.load('apcore.yaml');
+    const config = Config.load('apcore.yaml');
     const client = new APCore({ config });
 
     // System modules auto-registered! Query them directly:
@@ -429,8 +429,8 @@ context = register_sys_modules(
     const usage = await client.call('system.usage.summary', { period: '24h' });
 
     // Control via convenience methods:
-    client.disable('some.module', 'maintenance');
-    client.enable('some.module', 'done');
+    await client.disable('some.module', 'maintenance');
+    await client.enable('some.module', 'done');
     ```
 
 === "Rust"
@@ -440,7 +440,7 @@ context = register_sys_modules(
     use serde_json::json;
 
     let config = Config::load("apcore.yaml")?;
-    let client = APCore::with_config(config);
+    let mut client = APCore::with_config(config);
 
     // System modules auto-registered! Query them directly:
     let health = client.call("system.health.summary", json!({}), None, None).await?;

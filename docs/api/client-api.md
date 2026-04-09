@@ -285,12 +285,33 @@ class APCore:
 
 ### 2.3 With Defaults (No YAML File)
 
-```python
-from apcore.config import Config
+=== "Python"
 
-config = Config.from_defaults()
-client = APCore(config=config)
-```
+    ```python
+    from apcore import APCore
+    from apcore.config import Config
+
+    config = Config.from_defaults()
+    client = APCore(config=config)
+    ```
+
+=== "TypeScript"
+
+    ```typescript
+    import { APCore, Config } from 'apcore-js';
+
+    const config = Config.fromDefaults();
+    const client = new APCore({ config });
+    ```
+
+=== "Rust"
+
+    ```rust
+    use apcore::{APCore, Config};
+
+    let config = Config::default();
+    let client = APCore::with_config(config);
+    ```
 
 ### 2.4 With Existing Registry/Executor
 
@@ -317,41 +338,147 @@ client = APCore(config=config)
 === "Rust"
 
     ```rust
-    use apcore::{APCore, Registry, Executor};
+    use apcore::{APCore, Config, Registry};
 
-    let registry = Registry::new("./extensions");
-    let executor = Executor::new(registry.clone());
-    let client = APCore::with_components(registry, executor);
+    let registry = Registry::new();
+    let config = Config::default();
+    let client = APCore::with_components(registry, config);
     ```
 
 ---
 
 ## 3. Module Registration
 
-### 3.1 Decorator-Based
+### 3.1 Decorator / Trait-Based
 
-```python
-@client.module(
-    id="math.add",
-    description="Add two numbers",
-    tags=["math", "utility"],
-)
-def add(a: int, b: int) -> dict:
-    return {"sum": a + b}
-```
+=== "Python"
+
+    ```python
+    from apcore import APCore
+
+    client = APCore()
+
+    @client.module(
+        id="math.add",
+        description="Add two numbers",
+        tags=["math", "utility"],
+    )
+    def add(a: int, b: int) -> dict:
+        return {"sum": a + b}
+    ```
+
+=== "TypeScript"
+
+    ```typescript
+    import { APCore } from 'apcore-js';
+
+    const client = new APCore();
+
+    const add = client.module({
+        id: "math.add",
+        description: "Add two numbers",
+        tags: ["math", "utility"],
+    });
+
+    add.implement(({ a, b }: { a: number; b: number }) => ({ sum: a + b }));
+    ```
+
+=== "Rust"
+
+    Rust does not have decorators. Implement the `Module` trait and register explicitly:
+
+    ```rust
+    use apcore::APCore;
+    use apcore::module::Module;
+    use apcore::context::Context;
+    use apcore::errors::ModuleError;
+    use async_trait::async_trait;
+    use serde_json::{json, Value};
+
+    struct AddModule;
+
+    #[async_trait]
+    impl Module for AddModule {
+        fn input_schema(&self) -> Value {
+            json!({"type": "object", "properties": {"a": {"type": "integer"}, "b": {"type": "integer"}}})
+        }
+        fn output_schema(&self) -> Value {
+            json!({"type": "object", "properties": {"sum": {"type": "integer"}}})
+        }
+        fn description(&self) -> &str {
+            "Add two numbers"
+        }
+        async fn execute(&self, inputs: Value, _ctx: &Context<Value>) -> Result<Value, ModuleError> {
+            let a = inputs["a"].as_i64().unwrap_or(0);
+            let b = inputs["b"].as_i64().unwrap_or(0);
+            Ok(json!({"sum": a + b}))
+        }
+    }
+
+    let mut client = APCore::new();
+    client.register("math.add", Box::new(AddModule)).unwrap();
+    ```
 
 ### 3.2 Direct Registration
 
-```python
-client.register("math.add", add_module)
-```
+=== "Python"
+
+    ```python
+    from apcore import APCore
+
+    client = APCore()
+    client.register("math.add", add_module)
+    ```
+
+=== "TypeScript"
+
+    ```typescript
+    import { APCore } from 'apcore-js';
+
+    const client = new APCore();
+    client.register("math.add", addModule);
+    ```
+
+=== "Rust"
+
+    ```rust
+    use apcore::APCore;
+
+    let mut client = APCore::new();
+    client.register("math.add", Box::new(AddModule)).unwrap();
+    ```
 
 ### 3.3 Auto-Discovery
 
-```python
-count = client.discover()
-print(f"Discovered {count} modules")
-```
+=== "Python"
+
+    ```python
+    from apcore import APCore
+
+    client = APCore()
+    count = client.discover()
+    print(f"Discovered {count} modules")
+    ```
+
+=== "TypeScript"
+
+    ```typescript
+    import { APCore } from 'apcore-js';
+
+    const client = new APCore();
+    const count = await client.discover();
+    console.log(`Discovered ${count} modules`);
+    ```
+
+=== "Rust"
+
+    ```rust
+    use apcore::APCore;
+
+    let mut client = APCore::new();
+    let count = client.discover().await?;
+    println!("Discovered {} modules", count);
+    ```
 
 ---
 
@@ -385,7 +512,7 @@ print(f"Discovered {count} modules")
     use apcore::APCore;
 
     let client = APCore::new();
-    let result = client.call("math.add", serde_json::json!({"a": 10, "b": 5})).await?;
+    let result = client.call("math.add", serde_json::json!({"a": 10, "b": 5}), None, None).await?;
     // {"sum": 15}
     ```
 
@@ -443,35 +570,112 @@ print(f"Discovered {count} modules")
 
 === "Rust"
 
+    In Rust, `stream()` collects all chunks and returns them as a `Vec<Value>`:
+
     ```rust
     use apcore::APCore;
-    use futures::StreamExt;
 
     let client = APCore::new();
-    let mut stream = client.stream("my.streaming_module", serde_json::json!({"query": "hello"})).await?;
-    while let Some(chunk) = stream.next().await {
-        println!("{:?}", chunk?);
+    let chunks = client.stream(
+        "my.streaming_module",
+        serde_json::json!({"query": "hello"}),
+        None,
+        None,
+    ).await?;
+    for chunk in &chunks {
+        println!("{:?}", chunk);
     }
     ```
 
 ### 4.4 Preflight Validation
 
-```python
-preflight = client.validate("math.add", {"a": 10, "b": 5})
+=== "Python"
 
-if preflight.valid:
-    result = client.call("math.add", {"a": 10, "b": 5})
-else:
-    for check in preflight.checks:
-        if not check.passed:
-            print(f"Failed: {check.check} — {check.error}")
-```
+    ```python
+    from apcore import APCore
+
+    client = APCore()
+    preflight = client.validate("math.add", {"a": 10, "b": 5})
+
+    if preflight.valid:
+        result = client.call("math.add", {"a": 10, "b": 5})
+    else:
+        for check in preflight.checks:
+            if not check.passed:
+                print(f"Failed: {check.check} — {check.error}")
+    ```
+
+=== "TypeScript"
+
+    ```typescript
+    import { APCore } from 'apcore-js';
+
+    const client = new APCore();
+    const preflight = await client.validate("math.add", { a: 10, b: 5 });
+
+    if (preflight.valid) {
+        const result = await client.call("math.add", { a: 10, b: 5 });
+    } else {
+        for (const check of preflight.checks) {
+            if (!check.passed) {
+                console.log(`Failed: ${check.check} — ${check.error}`);
+            }
+        }
+    }
+    ```
+
+=== "Rust"
+
+    ```rust
+    use apcore::APCore;
+
+    let client = APCore::new();
+    let preflight = client.validate(
+        "math.add",
+        &serde_json::json!({"a": 10, "b": 5}),
+        None,
+    ).await?;
+
+    if preflight.valid {
+        let result = client.call(
+            "math.add",
+            serde_json::json!({"a": 10, "b": 5}),
+            None,
+            None,
+        ).await?;
+    } else {
+        for check in &preflight.checks {
+            if !check.passed {
+                println!("Failed: {} — {:?}", check.check, check.error);
+            }
+        }
+    }
+    ```
 
 ### 4.5 Version Hint
 
-```python
-result = client.call("math.add", {"a": 1, "b": 2}, version_hint=">=1.0.0")
-```
+=== "Python"
+
+    ```python
+    result = client.call("math.add", {"a": 1, "b": 2}, version_hint=">=1.0.0")
+    ```
+
+=== "TypeScript"
+
+    ```typescript
+    const result = await client.call("math.add", { a: 1, b: 2 }, undefined, ">=1.0.0");
+    ```
+
+=== "Rust"
+
+    ```rust
+    let result = client.call(
+        "math.add",
+        serde_json::json!({"a": 1, "b": 2}),
+        None,
+        Some(">=1.0.0"),
+    ).await?;
+    ```
 
 ---
 
@@ -569,21 +773,69 @@ result = client.call("math.add", {"a": 1, "b": 2}, version_hint=">=1.0.0")
 
 ## 6. Middleware
 
-```python
-from apcore import LoggingMiddleware, TracingMiddleware
+=== "Python"
 
-# Class-based
-client.use(LoggingMiddleware()).use(TracingMiddleware())
+    ```python
+    from apcore import APCore, LoggingMiddleware, TracingMiddleware
 
-# Function-first
-client.use_before(lambda module_id, inputs, ctx: print(f"→ {module_id}"))
-client.use_after(lambda module_id, inputs, output, ctx: print(f"← {module_id}"))
+    client = APCore()
 
-# Remove
-mw = LoggingMiddleware()
-client.use(mw)
-client.remove(mw)
-```
+    # Class-based (chainable)
+    client.use(LoggingMiddleware()).use(TracingMiddleware())
+
+    # Function-first (chainable)
+    client.use_before(lambda module_id, inputs, ctx: print(f"→ {module_id}"))
+    client.use_after(lambda module_id, inputs, output, ctx: print(f"← {module_id}"))
+
+    # Remove
+    mw = LoggingMiddleware()
+    client.use(mw)
+    client.remove(mw)
+    ```
+
+=== "TypeScript"
+
+    ```typescript
+    import { APCore, LoggingMiddleware, TracingMiddleware } from 'apcore-js';
+
+    const client = new APCore();
+
+    // Class-based (chainable)
+    client.use(new LoggingMiddleware()).use(new TracingMiddleware());
+
+    // Function-first (chainable)
+    client.useBefore((moduleId, inputs, ctx) => console.log(`→ ${moduleId}`));
+    client.useAfter((moduleId, inputs, output, ctx) => console.log(`← ${moduleId}`));
+
+    // Remove
+    const mw = new LoggingMiddleware();
+    client.use(mw);
+    client.remove(mw);
+    ```
+
+=== "Rust"
+
+    In Rust, `use` is a reserved keyword so the method is named `use_middleware`.
+    Middleware methods return `Result<&mut Self, ModuleError>` for chaining:
+
+    ```rust
+    use apcore::APCore;
+
+    let mut client = APCore::new();
+
+    // Class-based (chainable via Result)
+    client
+        .use_middleware(Box::new(LoggingMiddleware::new()))?
+        .use_middleware(Box::new(TracingMiddleware::new()))?;
+
+    // Before/after callbacks (chainable)
+    client
+        .use_before(Box::new(MyBeforeMiddleware))?
+        .use_after(Box::new(MyAfterMiddleware))?;
+
+    // Remove by name
+    let removed = client.remove("logging");
+    ```
 
 ---
 
@@ -593,22 +845,71 @@ Requires `sys_modules.events.enabled: true` in config.
 
 ### 7.1 Subscribe to Events
 
-```python
-# Simple callback
-sub = client.on("module_health_changed", lambda event: print(event.data))
+=== "Python"
 
-# Async callback
-async def on_error(event):
-    await notify_admin(event.data)
+    ```python
+    from apcore import APCore
+    from apcore.config import Config
 
-sub = client.on("error_threshold_exceeded", on_error)
-```
+    config = Config.load("apcore.yaml")  # sys_modules.events.enabled: true
+    client = APCore(config=config)
+
+    # Simple callback
+    sub = client.on("module_health_changed", lambda event: print(event.data))
+
+    # Async callback
+    async def on_error(event):
+        await notify_admin(event.data)
+
+    sub = client.on("error_threshold_exceeded", on_error)
+    ```
+
+=== "TypeScript"
+
+    ```typescript
+    import { APCore, Config } from 'apcore-js';
+
+    const config = Config.load("apcore.yaml"); // sys_modules.events.enabled: true
+    const client = new APCore({ config });
+
+    const sub = client.on("module_health_changed", (event) => console.log(event.data));
+    ```
+
+=== "Rust"
+
+    In Rust, `on()` returns a `String` subscriber ID (not an object).
+    Implement the `EventSubscriber` trait and pass a boxed instance:
+
+    ```rust
+    use apcore::APCore;
+    use apcore::events::subscribers::EventSubscriber;
+
+    let mut client = APCore::new();
+
+    let sub_id = client.on("module_health_changed", Box::new(MySubscriber));
+    ```
 
 ### 7.2 Unsubscribe
 
-```python
-client.off(sub)
-```
+=== "Python"
+
+    ```python
+    client.off(sub)
+    ```
+
+=== "TypeScript"
+
+    ```typescript
+    client.off(sub);
+    ```
+
+=== "Rust"
+
+    In Rust, pass the subscriber ID string returned by `on()`:
+
+    ```rust
+    client.off(&sub_id);
+    ```
 
 ### 7.3 Available Event Types
 
@@ -623,11 +924,31 @@ client.off(sub)
 
 ### 7.4 Direct EventEmitter Access
 
-```python
-emitter = client.events  # EventEmitter | None
-if emitter:
-    emitter.subscribe(my_custom_subscriber)
-```
+=== "Python"
+
+    ```python
+    emitter = client.events  # EventEmitter | None
+    if emitter:
+        emitter.subscribe(my_custom_subscriber)
+    ```
+
+=== "TypeScript"
+
+    ```typescript
+    const emitter = client.events; // EventEmitter | null
+    if (emitter) {
+        emitter.subscribe(myCustomSubscriber);
+    }
+    ```
+
+=== "Rust"
+
+    ```rust
+    if let Some(emitter) = client.events() {
+        // Access the EventEmitter directly
+        println!("Event emitter is configured");
+    }
+    ```
 
 ---
 
@@ -637,73 +958,274 @@ Requires `sys_modules.enabled: true` in config.
 
 ### 8.1 Disable/Enable Modules
 
-```python
-# Disable — calls to this module will raise ModuleDisabledError
-client.disable("risky.module", reason="Investigating issue")
+=== "Python"
 
-# Re-enable
-client.enable("risky.module", reason="Issue resolved")
-```
+    ```python
+    from apcore import APCore
+    from apcore.config import Config
+
+    config = Config.load("apcore.yaml")  # sys_modules.enabled: true
+    client = APCore(config=config)
+
+    # Disable — calls to this module will raise ModuleDisabledError
+    client.disable("risky.module", reason="Investigating issue")
+
+    # Re-enable
+    client.enable("risky.module", reason="Issue resolved")
+    ```
+
+=== "TypeScript"
+
+    ```typescript
+    import { APCore, Config } from 'apcore-js';
+
+    const config = Config.load("apcore.yaml"); // sys_modules.enabled: true
+    const client = new APCore({ config });
+
+    // Disable — calls to this module will throw ModuleDisabledError
+    await client.disable("risky.module", "Investigating issue");
+
+    // Re-enable
+    await client.enable("risky.module", "Issue resolved");
+    ```
+
+=== "Rust"
+
+    ```rust
+    use apcore::APCore;
+
+    let mut client = APCore::new();
+    // Register modules first...
+
+    // Disable — calls to this module will return ModuleDisabledError
+    client.disable("risky.module", Some("Investigating issue"))?;
+
+    // Re-enable
+    client.enable("risky.module", Some("Issue resolved"))?;
+    ```
 
 ### 8.2 System Module Queries
 
 When system modules are enabled, you can query health, usage, and manifests directly:
 
-```python
-# Health overview
-health = client.call("system.health.summary", {})
+=== "Python"
 
-# Single module health
-detail = client.call("system.health.module", {"module_id": "math.add"})
+    ```python
+    from apcore import APCore
+    from apcore.config import Config
 
-# Usage statistics
-usage = client.call("system.usage.summary", {"period": "24h"})
+    config = Config.load("apcore.yaml")  # sys_modules.enabled: true
+    client = APCore(config=config)
 
-# Full module manifest
-manifest = client.call("system.manifest.full", {"prefix": "math."})
-```
+    # Health overview
+    health = client.call("system.health.summary", {})
+
+    # Single module health
+    detail = client.call("system.health.module", {"module_id": "math.add"})
+
+    # Usage statistics
+    usage = client.call("system.usage.summary", {"period": "24h"})
+
+    # Full module manifest
+    manifest = client.call("system.manifest.full", {"prefix": "math."})
+    ```
+
+=== "TypeScript"
+
+    ```typescript
+    import { APCore, Config } from 'apcore-js';
+
+    const config = Config.load("apcore.yaml"); // sys_modules.enabled: true
+    const client = new APCore({ config });
+
+    // Health overview
+    const health = await client.call("system.health.summary", {});
+
+    // Single module health
+    const detail = await client.call("system.health.module", { module_id: "math.add" });
+
+    // Usage statistics
+    const usage = await client.call("system.usage.summary", { period: "24h" });
+
+    // Full module manifest
+    const manifest = await client.call("system.manifest.full", { prefix: "math." });
+    ```
+
+=== "Rust"
+
+    ```rust
+    use apcore::APCore;
+
+    let client = APCore::new();
+
+    // Health overview
+    let health = client.call("system.health.summary", serde_json::json!({}), None, None).await?;
+
+    // Single module health
+    let detail = client.call(
+        "system.health.module",
+        serde_json::json!({"module_id": "math.add"}),
+        None,
+        None,
+    ).await?;
+
+    // Usage statistics
+    let usage = client.call(
+        "system.usage.summary",
+        serde_json::json!({"period": "24h"}),
+        None,
+        None,
+    ).await?;
+
+    // Full module manifest
+    let manifest = client.call(
+        "system.manifest.full",
+        serde_json::json!({"prefix": "math."}),
+        None,
+        None,
+    ).await?;
+    ```
 
 ---
 
 ## 9. Global Entry Points
 
-All `APCore` methods are also available as module-level functions via a default client:
+All `APCore` methods are also available as module-level functions via a default singleton client.
+This pattern is supported in Python and TypeScript. Rust does not provide a global singleton —
+use an explicit `APCore` instance instead.
 
-```python
-import apcore
+=== "Python"
 
-# Registration
-@apcore.module(id="math.add", description="Add two numbers")
-def add(a: int, b: int) -> dict:
-    return {"sum": a + b}
+    ```python
+    import apcore
 
-# Execution
-result = apcore.call("math.add", {"a": 1, "b": 2})
-result = await apcore.call_async("math.add", {"a": 1, "b": 2})
-async for chunk in apcore.stream("my.module", {}):
-    print(chunk)
+    # Registration
+    @apcore.module(id="math.add", description="Add two numbers")
+    def add(a: int, b: int) -> dict:
+        return {"sum": a + b}
 
-# Validation
-preflight = apcore.validate("math.add", {"a": 1})
+    # Execution
+    result = apcore.call("math.add", {"a": 1, "b": 2})
+    result = await apcore.call_async("math.add", {"a": 1, "b": 2})
+    async for chunk in apcore.stream("my.module", {}):
+        print(chunk)
 
-# Discovery
-apcore.register("math.add", my_module)
-apcore.discover()
-modules = apcore.list_modules(prefix="math.")
-desc = apcore.describe("math.add")
+    # Validation
+    preflight = apcore.validate("math.add", {"a": 1})
 
-# Middleware
-apcore.use(LoggingMiddleware())
-apcore.use_before(my_before_hook)
-apcore.use_after(my_after_hook)
-apcore.remove(mw)
+    # Discovery
+    apcore.register("math.add", my_module)
+    apcore.discover()
+    modules = apcore.list_modules(prefix="math.")
+    desc = apcore.describe("math.add")
 
-# Events & Control (requires config with sys_modules enabled)
-sub = apcore.on("module_health_changed", handler)
-apcore.off(sub)
-apcore.disable("some.module", reason="maintenance")
-apcore.enable("some.module", reason="done")
-```
+    # Middleware
+    apcore.use(LoggingMiddleware())
+    apcore.use_before(my_before_hook)
+    apcore.use_after(my_after_hook)
+    apcore.remove(mw)
+
+    # Events & Control (requires config with sys_modules enabled)
+    sub = apcore.on("module_health_changed", handler)
+    apcore.off(sub)
+    apcore.disable("some.module", reason="maintenance")
+    apcore.enable("some.module", reason="done")
+    ```
+
+=== "TypeScript"
+
+    ```typescript
+    import apcore from 'apcore-js';
+
+    // Registration
+    const add = apcore.module({
+        id: "math.add",
+        description: "Add two numbers",
+    });
+    add.implement(({ a, b }: { a: number; b: number }) => ({ sum: a + b }));
+
+    // Execution
+    const result = await apcore.call("math.add", { a: 1, b: 2 });
+    const result2 = await apcore.callAsync("math.add", { a: 1, b: 2 });
+    for await (const chunk of apcore.stream("my.module", {})) {
+        console.log(chunk);
+    }
+
+    // Validation
+    const preflight = await apcore.validate("math.add", { a: 1 });
+
+    // Discovery
+    apcore.register("math.add", myModule);
+    await apcore.discover();
+    const modules = apcore.listModules({ prefix: "math." });
+    const desc = apcore.describe("math.add");
+
+    // Middleware
+    apcore.use(new LoggingMiddleware());
+    apcore.useBefore(myBeforeHook);
+    apcore.useAfter(myAfterHook);
+    apcore.remove(mw);
+
+    // Events & Control (requires config with sys_modules enabled)
+    const sub = apcore.on("module_health_changed", handler);
+    apcore.off(sub);
+    await apcore.disable("some.module", "maintenance");
+    await apcore.enable("some.module", "done");
+    ```
+
+=== "Rust"
+
+    Rust does not provide a global singleton. Use an explicit `APCore` instance:
+
+    ```rust
+    use apcore::APCore;
+
+    let mut client = APCore::new();
+    // All methods are called on the client instance
+    // See sections 2–8 for usage examples
+    ```
+
+---
+
+## 10. Language-Specific Adaptations
+
+The APCore interface follows each language's idioms while maintaining functional equivalence.
+
+### TypeScript
+
+| Spec Method | TypeScript Name | Notes |
+|---|---|---|
+| `call_async()` | `callAsync()` | camelCase convention |
+| `use_before()` | `useBefore()` | camelCase convention |
+| `use_after()` | `useAfter()` | camelCase convention |
+| `list_modules()` | `listModules()` | camelCase convention |
+| Constructor | `new APCore({ config })` | Options object pattern |
+
+### Rust
+
+| Spec Method | Rust Name | Notes |
+|---|---|---|
+| `use()` | `use_middleware()` | `use` is a reserved keyword in Rust |
+| `use_before()` | `use_before()` | Accepts `Box<dyn BeforeMiddleware>`, returns `Result<&mut Self, ModuleError>` |
+| `use_after()` | `use_after()` | Accepts `Box<dyn AfterMiddleware>`, returns `Result<&mut Self, ModuleError>` |
+| `on()` | `on()` | Returns `String` (subscriber ID) instead of `EventSubscriber` object |
+| `off()` | `off()` | Accepts `&str` (subscriber ID) instead of `EventSubscriber` object |
+| `stream()` | `stream()` | Returns `Vec<Value>` (batch-collected chunks) instead of async iterator |
+| `disable()` | `disable()` | Returns `Result<(), ModuleError>` instead of `dict`; `reason` is `Option<&str>` |
+| `enable()` | `enable()` | Returns `Result<(), ModuleError>` instead of `dict`; `reason` is `Option<&str>` |
+| `module()` | N/A | Rust has no decorators; use `impl Module` trait + `register()` instead |
+| `events` property | `events()` method | Rust uses accessor methods instead of properties |
+| `registry` property | `registry()` method | Rust uses accessor methods instead of properties |
+| `executor` property | `executor()` method | Rust uses accessor methods instead of properties |
+
+**Rust-only methods** (not in the cross-language spec):
+
+| Method | Purpose |
+|---|---|
+| `with_components(registry, config)` | Build client from a pre-configured Registry |
+| `with_options(registry, executor, config, metrics_collector)` | Full constructor with all optional parameters |
+| `reload()` | Reload config and re-discover modules |
+| `shutdown()` | Release resources |
 
 ---
 

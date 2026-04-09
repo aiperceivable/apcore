@@ -202,29 +202,74 @@ sys_modules:
 
 ### Via APCore Client (Recommended)
 
-```python
-from apcore import APCore
-from apcore.config import Config
+=== "Python"
+    ```python
+    from apcore import APCore
+    from apcore.config import Config
 
-config = Config.load("apcore.yaml")
-client = APCore(config=config)
+    config = Config.load("apcore.yaml")
+    client = APCore(config=config)
 
-# Subscribe with simple callback
-sub = client.on("error_threshold_exceeded", lambda e: print(f"Alert: {e.data}"))
+    # Subscribe with simple callback
+    sub = client.on("error_threshold_exceeded", lambda e: print(f"Alert: {e.data}"))
 
-# Async handler
-async def notify_admin(event):
-    await send_notification(event.data)
+    # Async handler
+    async def notify_admin(event):
+        await send_notification(event.data)
 
-sub2 = client.on("module_health_changed", notify_admin)
+    sub2 = client.on("apcore.module.toggled", notify_admin)
 
-# Unsubscribe
-client.off(sub)
+    # Unsubscribe
+    client.off(sub)
 
-# Direct emitter access
-if client.events:
-    client.events.subscribe(my_custom_subscriber)
-```
+    # Direct emitter access
+    if client.events:
+        client.events.subscribe(my_custom_subscriber)
+    ```
+=== "TypeScript"
+    ```typescript
+    import { APCore } from "apcore";
+    import { Config } from "apcore/config";
+
+    const config = Config.load("apcore.yaml");
+    const client = new APCore({ config });
+
+    // Subscribe with simple callback
+    const sub = client.on("error_threshold_exceeded", (event) => console.log(event.data));
+
+    // Another subscription
+    const sub2 = client.on("apcore.module.toggled", (event) => console.log(event.data));
+
+    // Unsubscribe
+    client.off(sub);
+
+    // Direct emitter access
+    if (client.events) {
+        client.events.subscribe(myCustomSubscriber);
+    }
+    ```
+=== "Rust"
+    ```rust
+    use apcore::APCore;
+    use apcore::config::Config;
+
+    let config = Config::load("apcore.yaml")?;
+    let client = APCore::new(config);
+
+    // Subscribe with simple callback
+    let sub = client.on("error_threshold_exceeded", Box::new(AlertSubscriber));
+
+    // Another subscription
+    let sub2 = client.on("apcore.module.toggled", Box::new(MySubscriber));
+
+    // Unsubscribe
+    client.off(&sub);
+
+    // Direct emitter access
+    if let Some(events) = client.events() {
+        events.subscribe(my_custom_subscriber);
+    }
+    ```
 
 ### Via Direct EventEmitter
 
