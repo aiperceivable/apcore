@@ -65,6 +65,7 @@ nav:
       - Architecture Design: architecture.md
   - API Reference:
       - Overview: api/README.md
+      - Client API: api/client-api.md
       - Module Interface: api/module-interface.md
       - Context Object: api/context-object.md
       - Registry API: api/registry-api.md
@@ -72,12 +73,15 @@ nav:
   - Feature Specifications:
       - ACL System: features/acl-system.md
       - Approval System: features/approval-system.md
+      - Config Bus: features/config-bus.md
       - Core Executor: features/core-executor.md
       - Decorator & YAML Bindings: features/decorator-bindings.md
+      - Event System: features/event-system.md
       - Middleware System: features/middleware-system.md
       - Observability: features/observability.md
       - Registry System: features/registry-system.md
       - Schema System: features/schema-system.md
+      - System Modules: features/system-modules.md
   - User Guides:
       - Overview: guides/README.md
       - Creating Modules: guides/creating-modules.md

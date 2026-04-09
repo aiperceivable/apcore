@@ -4510,11 +4510,11 @@ Steps:
   2. Type validation:
      For each field, validate value type conforms to Schema definition
   3. Constraint validation:
-     - extensions.root must be valid directory path
-     - schema.root must be valid directory path
-     - acl.default_effect must be "allow" or "deny"
-     - observability.tracing.sampling_rate must be in [0.0, 1.0] range
-     - extensions.max_depth must be in [1, 16] range
+     - extensions.root MUST be valid directory path
+     - schema.root MUST be valid directory path
+     - acl.default_effect MUST be "allow" or "deny"
+     - observability.tracing.sampling_rate MUST be in [0.0, 1.0] range
+     - extensions.max_depth MUST be in [1, 16] range
   4. Semantic validation:
      - If extensions.auto_discover == true and extensions.root doesn't exist → Warning
      - If schema.strategy == "yaml_only" and schema.root doesn't exist → Error
@@ -5968,7 +5968,7 @@ span_naming:
     - "duration_ms"      # MUST
     - "success"          # MUST (boolean)
     - "error_code"       # SHOULD (when failed)
-    - "caller"        # SHOULD
+    - "caller_id"     # SHOULD
 ```
 
 ---

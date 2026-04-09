@@ -147,6 +147,45 @@ my-project/
     });
     ```
 
+=== "Rust"
+
+    ```rust
+    // extensions/executor/email/send_email.rs
+    use apcore::{Module, Context, ModuleResult};
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Deserialize)]
+    struct SendEmailInput {
+        to: String,
+        subject: String,
+        body: String,
+    }
+
+    #[derive(Serialize)]
+    struct SendEmailOutput {
+        success: bool,
+        message_id: Option<String>,
+    }
+
+    pub struct SendEmailModule;
+
+    impl Module for SendEmailModule {
+        fn description(&self) -> &str {
+            "Send email module"
+        }
+
+        fn execute(&self, inputs: serde_json::Value, _ctx: &Context) -> ModuleResult {
+            let input: SendEmailInput = serde_json::from_value(inputs)?;
+            // Implement logic here
+            let output = SendEmailOutput {
+                success: true,
+                message_id: Some("msg_123".to_string()),
+            };
+            Ok(serde_json::to_value(output)?)
+        }
+    }
+    ```
+
 ### 3. Module ID Auto-Generation
 
 ```
@@ -397,6 +436,33 @@ extensions/
       }
     );
     console.log(result);
+    ```
+
+=== "Rust"
+
+    ```rust
+    use apcore::{Registry, Executor};
+    use serde_json::json;
+
+    // 1. Create Registry and discover modules
+    let registry = Registry::builder()
+        .extensions_dir("./extensions")
+        .build()?;
+    registry.discover()?;
+
+    // 2. Create Executor
+    let executor = Executor::new(&registry);
+
+    // 3. Call module
+    let result = executor.call(
+        "executor.email.send_email",
+        json!({
+            "to": "user@example.com",
+            "subject": "Hello",
+            "body": "World"
+        }),
+    )?;
+    println!("{:?}", result);
     ```
 
 

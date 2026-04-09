@@ -1131,6 +1131,7 @@ Development guide: see [Adapter Development Guide](./docs/guides/adapter-develop
 | Document | Description |
 |------|------|
 | [ACL System](./docs/features/acl-system.md) | Pattern-based Access Control List with first-match-wins evaluation |
+| [Config Bus](./docs/features/config-bus.md) | Unified multi-package configuration with per-namespace env overrides |
 | [Core Executor](./docs/features/core-executor.md) | Central execution engine with a secured execution lifecycle |
 | [Decorator & YAML Bindings](./docs/features/decorator-bindings.md) | `@module` decorator and YAML-based module creation |
 | [Display Overlay](./PROTOCOL_SPEC.md#513-display-overlay-surface-facing-presentation) | §5.13 — sparse `display` section in binding entries for per-surface alias, description, guidance, and tags |

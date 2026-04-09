@@ -151,6 +151,7 @@
           "description": "Override tags"
         },
         "cli": {
+          "description": "CLI surface override. Customizes module exposure for command-line invocation.",
           "allOf": [
             { "$ref": "#/$defs/SurfaceOverride" },
             {
@@ -165,6 +166,7 @@
           ]
         },
         "mcp": {
+          "description": "MCP surface override. Customizes module exposure as an MCP tool.",
           "allOf": [
             { "$ref": "#/$defs/SurfaceOverride" },
             {
@@ -180,6 +182,7 @@
           ]
         },
         "a2a": {
+          "description": "A2A surface override. Customizes module exposure as an A2A skill.",
           "allOf": [
             { "$ref": "#/$defs/SurfaceOverride" },
             {

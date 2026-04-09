@@ -90,7 +90,8 @@
           ]
         },
         "description": {
-          "type": "string"
+          "type": "string",
+          "description": "Human-readable description of the schema or property. Plain text, max 200 characters."
         },
         "x-llm-description": {
           "type": "string",
@@ -340,10 +341,12 @@
       "description": "Error schema definition for module-specific errors.",
       "properties": {
         "type": {
-          "const": "object"
+          "const": "object",
+          "description": "Must be 'object'. Error schemas are always object types."
         },
         "properties": {
           "type": "object",
+          "description": "Property definitions for the error schema (code, message, details).",
           "properties": {
             "code": {
               "type": "object",
@@ -381,6 +384,7 @@
         },
         "required": {
           "type": "array",
+          "description": "List of required error property names (typically ['code', 'message']).",
           "items": {
             "type": "string"
           }
