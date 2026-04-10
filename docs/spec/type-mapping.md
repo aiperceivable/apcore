@@ -15,7 +15,7 @@ apcore adopts JSON Schema Draft 2020-12 as the standard description format for m
 
 ### 1.2 Scope
 
-This specification covers type mappings for the following languages: **Python**, **Rust**, **Go**, **Java**, and **TypeScript**. Specific library choices for schema validation are left to each SDK implementation.
+This specification covers type mappings for the following languages: **Python**, **Rust**, and **TypeScript** (which have official SDK implementations). Type mappings for **Go** and **Java** are provided as reference for future implementers but do not have official SDKs at this time. Specific library choices for schema validation are left to each SDK implementation.
 
 ### 1.3 Terminology
 

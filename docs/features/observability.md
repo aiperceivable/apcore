@@ -194,9 +194,9 @@ The `traceparent` header follows the W3C format: `{version}-{trace_id}-{parent_i
 
 | Event | Trigger |
 |-------|---------|
-| `error_threshold_exceeded` | Error rate >= threshold |
-| `latency_threshold_exceeded` | p99 latency >= threshold |
-| `module_health_changed` | Recovery: error rate < threshold × 0.5 |
+| `apcore.error.threshold_exceeded` | Error rate >= threshold |
+| `apcore.latency.threshold_exceeded` | p99 latency >= threshold |
+| `apcore.health.recovered` | Recovery: error rate < threshold × 0.5 |
 
 **Hysteresis:** Once an alert fires for a module, it will not re-fire until the module recovers below `threshold × 0.5`, then crosses the threshold again. This prevents alert storms.
 

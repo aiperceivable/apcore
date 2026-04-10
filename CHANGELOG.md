@@ -7,18 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.18.0] - 2026-04-08
+## [0.18.0] - 2026-04-10
 
 > **Breaking changes in this release.** See [`MIGRATION-v0.18.md`](./MIGRATION-v0.18.md) for the consolidated migration guide covering all four repositories.
 
 ### Added
 
+- **`APCore` constructor gains `config_path` parameter** — Ergonomic shorthand for loading config from a file path without a separate `Config.load()` call. `APCore(config_path="apcore.yaml")` (Python), `new APCore({ configPath: 'apcore.yaml' })` (TypeScript), `APCore::from_path("apcore.yaml")` (Rust). Mutually exclusive with the existing `config` parameter; providing both raises `ValueError` (Python), `TypeError` (TypeScript), or `Err(ConfigError)` (Rust). Existing `config=` usage is unchanged. Design follows the Docker SDK factory-method pattern (`docker.from_env()` vs explicit constructor).
 - **PROTOCOL_SPEC §2.7 — `canonical_id` maximum length raised from 128 to 192 characters.** Motivated by deep-namespace languages (Java/.NET/Spring FQN-derived IDs) where snake_case-converted fully-qualified names can exceed 128 in edge cases. 192 is filesystem-safe (`192 + ".binding.yaml" = 205 bytes < 255-byte filename limit on ext4/xfs/NTFS/APFS/btrfs`) and remains within `VARCHAR(255)` for typical persistence layers. MCP alias 64-char hard limit (OpenAI function name spec) is unchanged and still requires alias mapping for any module_id > 64. Schemas updated: `binding.schema.json`, `module-schema.schema.json`, `module-meta.schema.json` declare `module_id.maxLength: 192`; `acl-config.schema.json` `callers`/`targets` pattern strings raised to 192 to remain symmetric. Algorithm A01 (`directory_to_canonical_id`) Step 6 / 7 length threshold updated to 192. Conformance test T01-006 boundary updated to `>192 chars`. **Forward-compatible relaxation:** producers targeting mixed-version ecosystems should keep IDs ≤ 128 until all consumers are upgraded.
 - **PROTOCOL_SPEC §5.6 yaml block now declares `required_attributes:`** (`input_schema`, `output_schema`, `description`) explicitly. The pseudocode block already marked these as "Required definitions" but the yaml block beneath only listed `required_methods` and `optional_attributes`, so a reader of the yaml alone could not see the attribute requirement. Closes a sync audit contradiction.
 - **PROTOCOL_SPEC §4.4.1 — Annotations Extension Field (`extra`) Wire Format** — New normative section defining the canonical on-the-wire shape of `ModuleAnnotations.extra`. Producers MUST serialize as a nested `{"extra": {...}}` object and MUST NOT flatten extension keys to the annotations root. Consumers MUST accept the nested form; legacy top-level overflow keys MAY be tolerated for one MINOR cycle. When both forms appear in the same input, the nested value wins.
 - **`extra` field in `Annotations` schema** — `schemas/module-meta.schema.json` now declares `extra` as an object with `additionalProperties: true`. The outer `Annotations` object retains `additionalProperties: false`, so unknown root-level keys are no longer silently accepted at the schema layer.
 - **`conformance/fixtures/annotations_extra_round_trip.json`** — 8 cross-language test cases locking the wire format: canonical nested round-trip, empty extra, namespaced keys, Unicode and nested object values, legacy flattened deserialization tolerance, nested-wins precedence, forbidden-root-keys negative case, and dotted-keys-are-not-paths.
 - **`MIGRATION-v0.18.md`** — Consolidated migration guide covering all four breaking changes shipped in this release (annotations wire format, apcore-rust Config restructure, apcore-python event alias removal, misc cleanup).
+- **8 new feature specification docs.** The following features were implemented in both `apcore-python` and `apcore-typescript` SDKs but had no corresponding feature spec in the protocol repo:
+  - `docs/features/error-system.md` — Structured error hierarchy (30+ error types), error codes, AI guidance fields (`retryable`, `ai_guidance`, `user_fixable`, `suggestion`), `ErrorCodeRegistry` for custom module error codes.
+  - `docs/features/extension-system.md` — `ExtensionManager` with 6 built-in extension points (`discoverer`, `middleware`, `acl`, `span_exporter`, `module_validator`, `approval_handler`), plugin wiring via `apply()`.
+  - `docs/features/call-chain-guard.md` — Algorithm A20: call depth limiting, circular call detection, frequency throttling with configurable thresholds.
+  - `docs/features/cancellation.md` — `CancelToken` cooperative cancellation, executor timeout integration with 5-second grace period.
+  - `docs/features/async-tasks.md` — `AsyncTaskManager` for background module execution with concurrency semaphore, task lifecycle tracking, and cleanup.
+  - `docs/features/streaming.md` — Three-phase streaming pipeline (setup → chunk emission → post-validation), deep merge with depth cap.
+  - `docs/features/identity-system.md` — `Identity` data structure with well-known types (`user`, `service`, `ai`, `system`, `anonymous`), `ContextFactory` protocol for web framework integration.
+  - `docs/features/apcore-client.md` — `APCore` unified client feature spec covering initialization modes, auto-registration behavior, and method summary.
+- **`mkdocs.yml` navigation updated.** Feature Specifications section expanded from 11 to 19 entries (alphabetically sorted).
+- **`README.md` Documentation Index updated.** Added all 8 new feature docs to the Feature Specifications table.
 
 ### Fixed
 
@@ -36,6 +48,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **PROTOCOL_SPEC §3868 cross-reference cleanup** — `Self-Evolution: ... runtime reconfiguration (see §6.6, §10)` repointed to `(see §9.11 Hot-Reload, §10 Observability)`. §6.6 is "System Module Permissions" — unrelated to runtime reconfiguration. Stale reference from a §6.x renumbering.
 - **`docs/spec/design-execution-pipeline.md:1248`** — Phase 4 implementation table replaced obsolete `VALIDATE_ONLY` preset with the canonical `MINIMAL` preset, matching the canonical 5-preset enumeration at line 680 (`standard, internal, testing, performance, minimal`). VALIDATE_ONLY was replaced by `dry_run` per §4.
 - **`docs/spec/design-execution-pipeline.md:1192`** — `validate()` return type table updated to show all three SDKs unified on `PreflightResult` (Rust column previously showed `ValidationResult` with a "long-term plan to unify" note; the unification was completed in this release).
+- **`docs/features/approval-system.md` — Wrong pipeline step numbers.** Input Validation was cited as "Step 6" in three places; it is actually Step 7. Middleware Before Chain is Step 6. Corrected all references.
+- **`docs/features/event-system.md` — Missing canonical event name prefix.** `error_threshold_exceeded` and `latency_threshold_exceeded` were listed without the `apcore.` prefix. Per PROTOCOL_SPEC §9.16, canonical names are `apcore.error.threshold_exceeded` and `apcore.latency.threshold_exceeded`; the unprefixed forms are legacy aliases. Event Types table corrected.
+- **`docs/features/config-bus.md` — Wrong PROTOCOL_SPEC section references.** "Typed Bind (§9.8)" corrected to §9.9.3 (§9.8 is Environment Variable Override). "Hot Reload (§9.9)" corrected to §9.11 (§9.9 is Namespace-Aware Access API).
+- **`docs/features/streaming.md` — TypeScript example fixed.** Replaced incorrect `client.module()` with `async function*` (FunctionModule doesn't support streaming) with correct `Module` interface implementation using a `stream()` method. Fixed deep merge table: arrays are replaced, not concatenated.
+- **`docs/features/error-system.md` — Reserved prefix list corrected.** Added missing prefixes (`DEPENDENCY_`, `CALL_`, `MIDDLEWARE_`, `VERSION_`, `ERROR_CODE_`), removed incorrect ones (`RELOAD_`, `EXECUTION_`, `ERROR_FORMATTER_`). Added missing error classes (`MiddlewareChainError`, `ErrorCodeCollisionError`, `DependencyNotFoundError`).
+- **`docs/features/call-chain-guard.md` — Algorithm description corrected.** Circular detection now accurately describes the prior-chain extraction + last-occurrence check, matching both SDK implementations.
+- **`docs/features/cancellation.md` — TypeScript Context example fixed.** `CancelToken` is passed via `new Context()` constructor, not `Context.create()` which doesn't accept it.
+- **`docs/features/async-tasks.md` — Type corrections.** `TaskInfo.result` type corrected from `dict[str, Any]` to `Any`. `get_result()` return type corrected from `dict` to `Any`.
+- **`docs/concepts.md` — Removed `Module` inheritance.** All `class XModule(Module):` examples changed to `class XModule:` to match the spec requirement "Modules MUST NOT inherit from an ABC."
+- **`docs/architecture.md` — Fixed 3 broken links.** `../api/*.md` paths corrected to `./api/*.md` (architecture.md is in docs/, not a subdirectory).
+- **`docs/guides/middleware.md` — Removed non-existent `AsyncMiddleware` class.** Replaced with standard `Middleware` subclass with async method overrides, which both SDKs support.
+- **`docs/api/executor-api.md` — Sync/async clarity.** `call()` docstring updated from "Synchronously call module" to "Call module (synchronous in Python, async in TypeScript/Rust)."
+- **`docs/api/client-api.md` — Sync/async clarity.** Section "4.1 Synchronous Call" renamed to "4.1 Basic Call" with note explaining Python sync vs TypeScript/Rust async.
+- **`docs/spec/type-mapping.md` — Go/Java SDK scope clarified.** Added note that Go and Java type mappings are for future implementers; only Python, TypeScript, and Rust have official SDKs.
+- **`docs/guides/` — Cross-language notes added.** `acl-configuration.md`, `adapter-development.md`, and `testing-modules.md` now have a note at the top explaining how Python examples apply to TypeScript and Rust.
 
 ### Removed (BREAKING — apcore-python)
 

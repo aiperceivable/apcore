@@ -48,7 +48,7 @@ def send_email(to, subject, body, cc=None):
 
 ```python
 # apcore way: code can be called, and AI can understand
-class SendEmailModule(Module):
+class SendEmailModule:
     """Send email - AI understands functionality through docstring"""
 
     input_schema = SendEmailInput    # AI understands inputs through Schema
@@ -98,7 +98,7 @@ Schema is auto-generated from type annotations, existing code logic remains unch
 **Module is the basic unit of apcore.** Each Module represents a callable functional unit.
 
 ```python
-class MyModule(Module):
+class MyModule:
     """Module description - must provide, AI uses it to understand functionality"""
 
     input_schema = MyInput      # Input Schema - required
@@ -230,7 +230,7 @@ See [API documentation](./api/module-interface.md#34-annotations) for detailed f
 **Real usage examples:**
 
 ```python
-class SendEmailModule(Module):
+class SendEmailModule:
     """Send email"""
     input_schema = SendEmailInputSchema
     output_schema = SendEmailOutputSchema
@@ -245,7 +245,7 @@ class SendEmailModule(Module):
     )
 
 
-class DeleteUserModule(Module):
+class DeleteUserModule:
     """Delete user account"""
     input_schema = DeleteUserInput
     output_schema = DeleteUserOutput
@@ -260,7 +260,7 @@ class DeleteUserModule(Module):
     )
 
 
-class GetUserInfoModule(Module):
+class GetUserInfoModule:
     """Query user info"""
     input_schema = GetUserInput
     output_schema = GetUserOutput
@@ -294,7 +294,7 @@ class GetUserInfoModule(Module):
 **Usage example:**
 
 ```python
-class SendEmailModule(Module):
+class SendEmailModule:
     """Send email"""
     input_schema = SendEmailInputSchema
     output_schema = SendEmailOutputSchema
@@ -346,7 +346,7 @@ class SendEmailModule(Module):
 **Metadata is completely open dict**, used to store extension information not belonging to core or annotation layers.
 
 ```python
-class SendEmailModule(Module):
+class SendEmailModule:
     """Send email"""
     input_schema = SendEmailInputSchema
     output_schema = SendEmailOutputSchema
@@ -634,7 +634,7 @@ Input → Lookup module → ACL check → Input validation → Middleware(before
 **Context propagation:**
 
 ```python
-class ModuleA(Module):
+class ModuleA:
     def execute(self, inputs, context):
         # context auto-propagates, data reference-shared
         result = context.executor.call(

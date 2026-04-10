@@ -289,7 +289,7 @@ config.mount("my-plugin", MountSource::File("./my-plugin.yaml".into()))?;
 
 **Error:** `CONFIG_MOUNT_ERROR` if namespace is `_config`, source file is missing, or file is not a valid YAML mapping.
 
-## Typed Bind (§9.8)
+## Typed Bind (§9.9.3)
 
 Deserialize a namespace subtree into a typed value:
 
@@ -301,7 +301,7 @@ Deserialize a namespace subtree into a typed value:
 
 **Error:** `CONFIG_BIND_ERROR` if instantiation fails.
 
-## Hot Reload (§9.9)
+## Hot Reload (§9.11)
 
 Re-read the source YAML, re-detect mode, re-apply namespace defaults, env overrides, validation, and mounts:
 

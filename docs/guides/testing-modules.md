@@ -2,6 +2,9 @@
 
 > Comprehensive coverage of apcore module testing strategies: unit testing, Schema testing, integration testing, ACL testing and Mock techniques.
 
+!!! note "Cross-language applicability"
+    Code examples in this guide use Python syntax with `pytest`. The testing strategies and patterns apply equally to TypeScript (with Jest/Vitest) and Rust (with `#[tokio::test]`). Each SDK provides the same core test utilities: `Context.create()`, schema validation, and `Executor` with configurable strategies.
+
 ## 1. Overview
 
 apcore's Schema-driven design is naturally suited for testing. Module inputs and outputs all have clear Schema definitions, behaviors are annotated through Annotations, and permissions are configured through ACL—all of which can be independently verified.

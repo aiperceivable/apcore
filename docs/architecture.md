@@ -819,6 +819,6 @@ See [PROTOCOL_SPEC §12.7.2 Context.data Sharing Semantics](../PROTOCOL_SPEC.md#
 
 ## Next Steps
 
-- [Module Interface Definition](../api/module-interface.md) - Module API
-- [Registry API](../api/registry-api.md) - Registry center API
-- [Executor API](../api/executor-api.md) - Executor API
+- [Module Interface Definition](./api/module-interface.md) - Module API
+- [Registry API](./api/registry-api.md) - Registry center API
+- [Executor API](./api/executor-api.md) - Executor API

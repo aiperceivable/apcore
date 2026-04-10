@@ -2,6 +2,9 @@
 
 > Develop apcore adapters for third-party web frameworks.
 
+!!! note "Cross-language applicability"
+    This guide uses Python examples (Flask, FastAPI, Django). The adapter pattern is the same for TypeScript (Express, Fastify) and Rust (Axum, Actix) — implement `ContextFactory` to extract `Identity` from framework-specific requests, then map routes to module calls.
+
 ## 1. Adapter Positioning
 
 The apcore core remains pure and **does not include** any web framework-specific implementations. Adapters are independent repository projects responsible for automatically mapping routes/endpoints of specific frameworks (Flask, FastAPI, Django, etc.) to apcore modules.

@@ -150,6 +150,9 @@ class Module(Protocol):
 
 ## 2. Required Attributes
 
+!!! note "Protocol conformance, not ABC inheritance"
+    Examples below use `class MyModule(Module):` syntax. Since `Module` is a `Protocol` (not an ABC), this is a **static typing hint** — it enables IDE autocompletion and type checking but does NOT require inheritance. Any class with the required attributes and methods is a valid module via duck typing. You can equally write `class MyModule:` without inheriting from `Module`.
+
 ### 2.1 input_schema
 
 **Defines the structure of module input parameters.**

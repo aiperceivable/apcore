@@ -297,7 +297,7 @@ Update a runtime configuration value by dot-path key.
 - Cannot change `sys_modules.enabled` (restricted key).
 - Sensitive keys (containing `token`, `secret`, `key`, `password`, `auth`, `credential`) are logged with masked values.
 - Changes are in-memory only; not persisted to YAML.
-- Emits `apcore.config.updated` event (legacy alias: `config_changed`).
+- Emits `apcore.config.updated` event.
 
 ---
 
@@ -326,7 +326,7 @@ Hot-reload a module from disk without restart.
 }
 ```
 
-**Process:** `safe_unregister()` with drain → `discover()` re-load → re-register → emit `apcore.module.reloaded` event (legacy alias: `config_changed`).
+**Process:** `safe_unregister()` with drain → `discover()` re-load → re-register → emit `apcore.module.reloaded` event.
 
 ---
 
@@ -354,7 +354,7 @@ Disable or enable a module without unloading it.
 }
 ```
 
-Disabled modules remain registered but calls raise `ModuleDisabledError`. Toggle state is thread-safe (via `ToggleState` class) and survives module reload. Emits `apcore.module.toggled` event (legacy alias: `module_health_changed`).
+Disabled modules remain registered but calls raise `ModuleDisabledError`. Toggle state is thread-safe (via `ToggleState` class) and survives module reload. Emits `apcore.module.toggled` event.
 
 ## Registration & Setup
 
@@ -402,10 +402,8 @@ context = register_sys_modules(
 
     ```python
     from apcore import APCore
-    from apcore.config import Config
 
-    config = Config.load("apcore.yaml")
-    client = APCore(config=config)
+    client = APCore(config_path="apcore.yaml")
 
     # System modules auto-registered! Query them directly:
     health = client.call("system.health.summary", {})
@@ -419,10 +417,9 @@ context = register_sys_modules(
 === "TypeScript"
 
     ```typescript
-    import { APCore, Config } from 'apcore-js';
+    import { APCore } from 'apcore-js';
 
-    const config = Config.load('apcore.yaml');
-    const client = new APCore({ config });
+    const client = new APCore({ configPath: 'apcore.yaml' });
 
     // System modules auto-registered! Query them directly:
     const health = await client.call('system.health.summary', {});
@@ -436,11 +433,10 @@ context = register_sys_modules(
 === "Rust"
 
     ```rust
-    use apcore::{APCore, Config};
+    use apcore::APCore;
     use serde_json::json;
 
-    let config = Config::load("apcore.yaml")?;
-    let mut client = APCore::with_config(config);
+    let client = APCore::from_path("apcore.yaml")?;
 
     // System modules auto-registered! Query them directly:
     let health = client.call("system.health.summary", json!({}), None, None).await?;

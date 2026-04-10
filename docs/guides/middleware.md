@@ -646,12 +646,15 @@ executor.use(production_middlewares)
 
 ## 8. Async Middleware
 
+The standard `Middleware` base class supports async `before()`, `after()`, and `on_error()` methods. There is no separate `AsyncMiddleware` class — simply define async methods on a regular `Middleware` subclass:
+
 ```python
-from apcore import AsyncMiddleware, Context
+from apcore.middleware import Middleware
+from apcore.context import Context
 
 
-class AsyncLoggingMiddleware(AsyncMiddleware):
-    """Async logging middleware"""
+class AsyncLoggingMiddleware(Middleware):
+    """Middleware with async hooks"""
 
     async def before(self, module_id: str, inputs: dict, context: Context) -> None:
         # Async log writing
@@ -843,7 +846,7 @@ Does your logic need to wrap execution (see inputs AND outputs)?
 
 === "TypeScript"
     ```typescript
-    import { BaseStep, StepResult, PipelineContext } from 'apcore';
+    import { BaseStep, StepResult, PipelineContext } from 'apcore-js';
 
     class RateLimiterStep extends BaseStep {
       constructor(private maxRps: number = 100) {

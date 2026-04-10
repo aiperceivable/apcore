@@ -70,7 +70,7 @@ class Executor:
         version_hint: str | None = None,
     ) -> dict[str, Any]:
         """
-        Synchronously call module
+        Call module (synchronous in Python, async in TypeScript/Rust)
 
         Args:
             module_id: Module ID
@@ -451,14 +451,14 @@ except ValidationError as e:
 ### 4.2 Pre-validation (Preflight)
 
 ```python
-# Non-destructive preflight check (Steps 1-6, no execution)
+# Non-destructive preflight check (Steps 1-7, no execution)
 preflight = executor.validate(
     module_id="executor.email.send_email",
     inputs={"to": "user@example.com", "subject": "Hi"}
 )
 
 if preflight.valid:
-    print("All 6 checks passed")
+    print("All 7 checks passed")
 else:
     print(f"Errors: {preflight.errors}")
 
@@ -472,7 +472,7 @@ if preflight.requires_approval:
     print("This module requires approval before execution")
 ```
 
-`PreflightResult` runs 6 checks: module ID format, module lookup, call chain safety, ACL, approval detection, and schema validation. It exposes `.warnings` (`list[str]`, default `[]`) for non-fatal advisory messages (e.g., from module preflight). It is duck-type compatible with the legacy `ValidationResult` — `.valid` and `.errors` work identically.
+`PreflightResult` runs up to 7 checks: module ID format, module lookup, call chain safety, ACL, approval detection, input schema validation, and module preflight (MAY-level — advisory warnings only, never blocks validation). It exposes `.warnings` (`list[str]`, default `[]`) for non-fatal advisory messages. It is duck-type compatible with the legacy `ValidationResult` — `.valid` and `.errors` work identically.
 
 ---
 

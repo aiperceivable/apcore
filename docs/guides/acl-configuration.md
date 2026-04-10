@@ -2,6 +2,9 @@
 
 > Configure access control rules between modules.
 
+!!! note "Cross-language applicability"
+    Code examples in this guide use Python syntax. The ACL configuration format (YAML) is identical across all SDKs. For TypeScript and Rust API equivalents, see the [ACL System feature spec](../features/acl-system.md).
+
 ## 1. Overview
 
 ACL (Access Control List) is used to control invocation permissions between modules, preventing unauthorized module calls.

@@ -1130,17 +1130,25 @@ Development guide: see [Adapter Development Guide](./docs/guides/adapter-develop
 
 | Document | Description |
 |------|------|
+| [APCore Client](./docs/features/apcore-client.md) | Unified high-level client managing Registry, Executor, and subsystems |
 | [ACL System](./docs/features/acl-system.md) | Pattern-based Access Control List with first-match-wins evaluation |
+| [Approval System](./docs/features/approval-system.md) | Runtime enforcement of `requires_approval` via pluggable ApprovalHandler |
+| [Async Task Management](./docs/features/async-tasks.md) | Background module execution with concurrency limiting and task lifecycle |
+| [Call Chain Guard](./docs/features/call-chain-guard.md) | Depth limiting, circular detection, and frequency throttling |
+| [Cancellation](./docs/features/cancellation.md) | Cooperative cancellation via CancelToken with executor timeout integration |
 | [Config Bus](./docs/features/config-bus.md) | Unified multi-package configuration with per-namespace env overrides |
 | [Core Executor](./docs/features/core-executor.md) | Central execution engine with a secured execution lifecycle |
 | [Decorator & YAML Bindings](./docs/features/decorator-bindings.md) | `@module` decorator and YAML-based module creation |
 | [Display Overlay](./PROTOCOL_SPEC.md#513-display-overlay-surface-facing-presentation) | §5.13 — sparse `display` section in binding entries for per-surface alias, description, guidance, and tags |
+| [Error System](./docs/features/error-system.md) | Structured error hierarchy with AI guidance fields and error code registry |
+| [Event System](./docs/features/event-system.md) | Event emission, subscription, delivery lifecycle |
+| [Extension System](./docs/features/extension-system.md) | Pluggable extension points for discoverers, middleware, ACL, exporters |
+| [Identity System](./docs/features/identity-system.md) | Caller identity with types, roles, and ContextFactory protocol |
 | [Middleware System](./docs/features/middleware-system.md) | Composable middleware pipeline with onion execution model |
 | [Observability](./docs/features/observability.md) | Distributed tracing, metrics, and structured logging |
 | [Registry System](./docs/features/registry-system.md) | Module discovery, registration, and querying |
 | [Schema System](./docs/features/schema-system.md) | Schema loading, validation, `$ref` resolution, and export |
-| [Approval System](./docs/features/approval-system.md) | Runtime enforcement of `requires_approval` via pluggable ApprovalHandler |
-| [Event System](./docs/features/event-system.md) | Event emission, subscription, delivery lifecycle |
+| [Streaming](./docs/features/streaming.md) | Three-phase streaming pipeline with deep merge accumulation |
 | [System Modules](./docs/features/system-modules.md) | Built-in system.* modules for health, manifest, usage, control |
 
 ### Usage Guides

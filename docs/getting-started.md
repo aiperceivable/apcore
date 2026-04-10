@@ -338,7 +338,7 @@ All `APCore` client methods are also available as module-level functions via a d
     apcore.remove(mw)
 
     # Events & Control (requires config with sys_modules enabled)
-    sub = apcore.on("module_health_changed", handler)
+    sub = apcore.on("apcore.module.toggled", handler)
     apcore.off(sub)
     apcore.disable("some.module", reason="maintenance")
     apcore.enable("some.module", reason="done")
@@ -370,10 +370,8 @@ When configured with `sys_modules.enabled: true`, APCore auto-registers built-in
 
     ```python
     from apcore import APCore
-    from apcore.config import Config
 
-    config = Config.load("apcore.yaml")
-    client = APCore(config=config)
+    client = APCore(config_path="apcore.yaml")
 
     # Health overview
     health = client.call("system.health.summary", {})
@@ -390,13 +388,35 @@ When configured with `sys_modules.enabled: true`, APCore auto-registers built-in
     client.enable("risky.module", reason="issue resolved")
     ```
 
+=== "TypeScript"
+
+    ```typescript
+    import { APCore } from 'apcore-js';
+
+    const client = new APCore({ configPath: 'apcore.yaml' });
+
+    // Health overview
+    const health = await client.call('system.health.summary', {});
+    console.log(health.summary); // { total_modules: 12, healthy: 10, ... }
+
+    // Usage statistics
+    const usage = await client.call('system.usage.summary', { period: '24h' });
+
+    // Module manifest
+    const manifest = await client.call('system.manifest.full', { prefix: 'math.' });
+
+    // Runtime control (requires approval handler + events enabled)
+    await client.disable('risky.module', 'investigating issue');
+    await client.enable('risky.module', 'issue resolved');
+    ```
+
 === "Rust"
 
     ```rust
-    use apcore::{APCore, Config};
+    use apcore::APCore;
+    use serde_json::json;
 
-    let config = Config::load("apcore.yaml")?;
-    let client = APCore::with_config(config);
+    let client = APCore::from_path("apcore.yaml")?;
 
     // Health overview
     let health = client.call("system.health.summary", json!({}), None, None).await?;

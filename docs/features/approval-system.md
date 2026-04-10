@@ -2,7 +2,7 @@
 
 ## Overview
 
-The Approval System provides runtime enforcement of the `requires_approval` annotation. When a module declares `requires_approval=true` and an `ApprovalHandler` is configured on the Executor, the handler is invoked at **Step 5** of the execution pipeline — after ACL checks pass and before input validation begins. This allows human or automated review of sensitive operations before they execute.
+The Approval System provides runtime enforcement of the `requires_approval` annotation. When a module declares `requires_approval=true` and an `ApprovalHandler` is configured on the Executor, the handler is invoked at **Step 5** of the execution pipeline — after ACL checks pass and before the Middleware Before Chain begins. This allows human or automated review of sensitive operations before they execute.
 
 The Approval System is architecturally separate from the ACL System. ACL answers "who is allowed to call this module?" while Approval answers "does this particular invocation need sign-off before proceeding?"
 
@@ -11,7 +11,7 @@ See [PROTOCOL_SPEC §7](../../PROTOCOL_SPEC.md#7-approval-system-approval-system
 ## Requirements
 
 - Provide a pluggable `ApprovalHandler` protocol that SDK implementations can satisfy with custom logic.
-- Enforce the approval gate at Executor Step 5, after ACL (Step 4) and before Input Validation (Step 6).
+- Enforce the approval gate at Executor Step 5, after ACL (Step 4) and before Middleware Before Chain (Step 6).
 - Skip the approval gate entirely when no `ApprovalHandler` is configured, or when the module does not declare `requires_approval=true`.
 - Support synchronous approval flows (Phase A) where `request_approval()` blocks until a decision is returned.
 - Optionally support asynchronous approval flows (Phase B) where a `pending` status is returned with an `approval_id`, and execution resumes when the client retries with an `_approval_token`.
@@ -22,7 +22,7 @@ See [PROTOCOL_SPEC §7](../../PROTOCOL_SPEC.md#7-approval-system-approval-system
 
 ### Approval Gate (Executor Step 5)
 
-The approval gate is inserted between ACL Enforcement (Step 4) and Input Validation (Step 6) in the Executor's pipeline. The algorithm:
+The approval gate is inserted between ACL Enforcement (Step 4) and Middleware Before Chain (Step 6) in the Executor's pipeline. The algorithm:
 
 1. Check if `approval_handler` is configured on the Executor.
 2. If not configured, skip to Step 6.

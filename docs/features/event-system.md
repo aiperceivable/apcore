@@ -169,10 +169,10 @@ Events emitted by the framework:
 | `apcore.module.reloaded` | `config_changed` | info | `system.control.reload_module` | `module_id`, `previous_version`, `new_version` |
 | `apcore.module.toggled` | `module_health_changed` | info | `system.control.toggle_feature` | `module_id`, `enabled` |
 | `apcore.health.recovered` | `module_health_changed` | info | `PlatformNotifyMiddleware` | `module_id`, recovery details |
-| `error_threshold_exceeded` | — | error | `PlatformNotifyMiddleware` | `module_id`, `error_rate`, `threshold` |
-| `latency_threshold_exceeded` | — | warn | `PlatformNotifyMiddleware` | `module_id`, `p99_latency_ms`, `threshold` |
+| `apcore.error.threshold_exceeded` | `error_threshold_exceeded` | error | `PlatformNotifyMiddleware` | `module_id`, `error_rate`, `threshold` |
+| `apcore.latency.threshold_exceeded` | `latency_threshold_exceeded` | warn | `PlatformNotifyMiddleware` | `module_id`, `p99_latency_ms`, `threshold` |
 
-> **Note (§9.16):** Canonical `apcore.*` names are the primary event types. Legacy aliases (`config_changed`, `module_health_changed`) are emitted alongside canonical names as backward-compatible aliases during the 0.15.x transition period. New code should subscribe to canonical names.
+> **Note (§9.16):** Canonical `apcore.*` names are the only supported event types as of v0.18.0. Legacy aliases (`config_changed`, `module_health_changed`) were removed in v0.18.0 — subscribe to canonical names only.
 
 ## Configuration
 
@@ -205,10 +205,8 @@ sys_modules:
 === "Python"
     ```python
     from apcore import APCore
-    from apcore.config import Config
 
-    config = Config.load("apcore.yaml")
-    client = APCore(config=config)
+    client = APCore(config_path="apcore.yaml")
 
     # Subscribe with simple callback
     sub = client.on("error_threshold_exceeded", lambda e: print(f"Alert: {e.data}"))
@@ -228,11 +226,9 @@ sys_modules:
     ```
 === "TypeScript"
     ```typescript
-    import { APCore } from "apcore";
-    import { Config } from "apcore/config";
+    import { APCore } from "apcore-js";
 
-    const config = Config.load("apcore.yaml");
-    const client = new APCore({ config });
+    const client = new APCore({ configPath: 'apcore.yaml' });
 
     // Subscribe with simple callback
     const sub = client.on("error_threshold_exceeded", (event) => console.log(event.data));
@@ -251,10 +247,8 @@ sys_modules:
 === "Rust"
     ```rust
     use apcore::APCore;
-    use apcore::config::Config;
 
-    let config = Config::load("apcore.yaml")?;
-    let client = APCore::new(config);
+    let client = APCore::from_path("apcore.yaml")?;
 
     // Subscribe with simple callback
     let sub = client.on("error_threshold_exceeded", Box::new(AlertSubscriber));
