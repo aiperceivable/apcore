@@ -321,7 +321,7 @@ Or pass a pre-loaded `Config` object for full control:
     ```
 
 !!! note "Mutually exclusive"
-    `config` and `config_path` cannot be used together. Providing both raises a `ValueError` (Python), throws a `TypeError` (TypeScript), or returns `Err(ConfigError)` (Rust).
+    `config` and `config_path` cannot be used together. Providing both raises a `ValueError` (Python) or throws a `TypeError` (TypeScript). In Rust, this conflict is prevented by design — `from_path()` and `with_config()` are separate constructors.
 
 ### 2.3 With Defaults (No YAML File)
 

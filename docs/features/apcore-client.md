@@ -112,7 +112,9 @@ This allows users to subscribe with both sync and async callbacks without implem
 
 | Condition | Error |
 |-----------|-------|
-| Both `config` and `config_path` provided | `ValueError` (Python), `TypeError` (TypeScript), `Err(ConfigError)` (Rust) |
+| Both `config` and `config_path` provided | `ValueError` (Python), `TypeError` (TypeScript). Rust prevents this by design — `from_path()` and `with_config()` are separate constructors. |
+| `configPath` used in browser environment | `TypeError` (TypeScript only) |
+| Config file not found or invalid | `ValueError` (Python), `ConfigNotFoundError` (TypeScript), `Err(ModuleError)` with `ConfigNotFound` or `ConfigInvalid` (Rust) |
 | `on()`, `off()` without events enabled | `RuntimeError` |
 | `disable()`, `enable()` without sys_modules | `RuntimeError` |
 
