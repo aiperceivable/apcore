@@ -17,6 +17,8 @@ Shared JSON fixtures for cross-language conformance testing. All SDK implementat
 | `context_serialization.json` | — | Cross-language Context serialize/deserialize round-trip |
 | `schema_validation.json` | §4.15 | Schema validation edge cases and type coercion |
 | `annotations_extra_round_trip.json` | §4.4 | ModuleAnnotations.extra wire-format (nested form, legacy flattened tolerance, precedence) |
+| `config_defaults.json` | — | Canonical default values conformance across all SDKs |
+| `stream_aggregation.json` | — | Stream chunk deep-merge aggregation algorithm |
 
 ## Usage
 

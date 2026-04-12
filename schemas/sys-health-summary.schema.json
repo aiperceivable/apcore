@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://apcore.dev/schemas/sys-health-summary.schema.json",
+  "title": "system.health.summary Output",
+  "description": "Output schema for the system.health.summary module.",
+  "type": "object",
+  "required": ["project", "summary", "modules"],
+  "additionalProperties": false,
+  "properties": {
+    "project": {
+      "type": "object",
+      "description": "Project metadata.",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Project name."
+        },
+        "version": {
+          "type": ["string", "null"],
+          "description": "Project version."
+        }
+      }
+    },
+    "summary": {
+      "type": "object",
+      "description": "Aggregate health statistics.",
+      "properties": {
+        "total_modules": {
+          "type": "integer",
+          "description": "Total number of registered modules."
+        },
+        "healthy": {
+          "type": "integer",
+          "description": "Number of healthy modules."
+        },
+        "degraded": {
+          "type": "integer",
+          "description": "Number of degraded modules."
+        },
+        "unhealthy": {
+          "type": "integer",
+          "description": "Number of unhealthy modules."
+        }
+      }
+    },
+    "modules": {
+      "type": "array",
+      "description": "Per-module health status entries.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "module_id": {
+            "type": "string",
+            "description": "Canonical module ID."
+          },
+          "status": {
+            "type": "string",
+            "description": "Health status: healthy, degraded, or unhealthy.",
+            "enum": ["healthy", "degraded", "unhealthy"]
+          }
+        }
+      }
+    }
+  }
+}

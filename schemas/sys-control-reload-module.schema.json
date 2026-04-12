@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://apcore.dev/schemas/sys-control-reload-module.schema.json",
+  "title": "system.control.reload_module Output",
+  "description": "Output schema for the system.control.reload_module module.",
+  "type": "object",
+  "required": ["success", "module_id"],
+  "additionalProperties": false,
+  "properties": {
+    "success": {
+      "type": "boolean",
+      "description": "Whether the module reload succeeded."
+    },
+    "module_id": {
+      "type": "string",
+      "description": "Canonical ID of the reloaded module."
+    },
+    "previous_version": {
+      "type": ["string", "null"],
+      "description": "Version string before reload, or null if unversioned."
+    },
+    "new_version": {
+      "type": ["string", "null"],
+      "description": "Version string after reload, or null if unversioned."
+    },
+    "reload_duration_ms": {
+      "type": "number",
+      "description": "Time taken for the reload operation in milliseconds."
+    }
+  }
+}

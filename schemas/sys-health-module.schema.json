@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://apcore.dev/schemas/sys-health-module.schema.json",
+  "title": "system.health.module Output",
+  "description": "Output schema for the system.health.module module.",
+  "type": "object",
+  "required": ["module_id", "status", "total_calls", "error_count", "error_rate"],
+  "additionalProperties": false,
+  "properties": {
+    "module_id": {
+      "type": "string",
+      "description": "Canonical module ID."
+    },
+    "status": {
+      "type": "string",
+      "description": "Health status: healthy, degraded, or unhealthy.",
+      "enum": ["healthy", "degraded", "unhealthy"]
+    },
+    "total_calls": {
+      "type": "integer",
+      "description": "Total number of calls to this module."
+    },
+    "error_count": {
+      "type": "integer",
+      "description": "Total number of errors from this module."
+    },
+    "error_rate": {
+      "type": "number",
+      "description": "Error rate as a decimal (0.0 to 1.0)."
+    },
+    "avg_latency_ms": {
+      "type": "number",
+      "description": "Average execution latency in milliseconds."
+    },
+    "p99_latency_ms": {
+      "type": "number",
+      "description": "99th percentile execution latency in milliseconds."
+    },
+    "recent_errors": {
+      "type": "array",
+      "description": "Recent error entries.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string",
+            "description": "Error code."
+          },
+          "message": {
+            "type": "string",
+            "description": "Error message."
+          },
+          "count": {
+            "type": "integer",
+            "description": "Number of occurrences."
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://apcore.dev/schemas/sys-manifest-module.schema.json",
+  "title": "system.manifest.module Output",
+  "description": "Output schema for the system.manifest.module module.",
+  "type": "object",
+  "required": ["module_id", "description"],
+  "additionalProperties": false,
+  "properties": {
+    "module_id": {
+      "type": "string",
+      "description": "Canonical module ID."
+    },
+    "description": {
+      "type": "string",
+      "description": "Module description (max 200 characters, plain text)."
+    },
+    "documentation": {
+      "type": ["string", "null"],
+      "description": "Extended documentation (max 5000 characters, Markdown allowed)."
+    },
+    "source_path": {
+      "type": ["string", "null"],
+      "description": "Source file path relative to extensions root."
+    },
+    "input_schema": {
+      "type": ["object", "null"],
+      "description": "Module input JSON Schema."
+    },
+    "output_schema": {
+      "type": ["object", "null"],
+      "description": "Module output JSON Schema."
+    },
+    "annotations": {
+      "type": ["object", "null"],
+      "description": "Module annotation metadata."
+    },
+    "tags": {
+      "type": "array",
+      "description": "Module tags.",
+      "items": {
+        "type": "string"
+      }
+    },
+    "dependencies": {
+      "type": "array",
+      "description": "Module dependency IDs.",
+      "items": {
+        "type": "string"
+      }
+    },
+    "metadata": {
+      "type": ["object", "null"],
+      "description": "Additional module metadata."
+    }
+  }
+}

@@ -205,8 +205,10 @@ sys_modules:
 === "Python"
     ```python
     from apcore import APCore
+    from apcore.config import Config
 
-    client = APCore(config_path="apcore.yaml")
+    config = Config.load("apcore.yaml")
+    client = APCore(config=config)
 
     # Subscribe with simple callback
     sub = client.on("error_threshold_exceeded", lambda e: print(f"Alert: {e.data}"))
@@ -226,9 +228,10 @@ sys_modules:
     ```
 === "TypeScript"
     ```typescript
-    import { APCore } from "apcore-js";
+    import { APCore, Config } from "apcore-js";
 
-    const client = new APCore({ configPath: 'apcore.yaml' });
+    const config = Config.load('apcore.yaml');
+    const client = new APCore({ config });
 
     // Subscribe with simple callback
     const sub = client.on("error_threshold_exceeded", (event) => console.log(event.data));

@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://apcore.dev/schemas/sys-manifest-full.schema.json",
+  "title": "system.manifest.full Output",
+  "description": "Output schema for the system.manifest.full module.",
+  "type": "object",
+  "required": ["project_name", "module_count", "modules"],
+  "additionalProperties": false,
+  "properties": {
+    "project_name": {
+      "type": "string",
+      "description": "Project name from configuration."
+    },
+    "module_count": {
+      "type": "integer",
+      "description": "Total number of registered modules."
+    },
+    "modules": {
+      "type": "array",
+      "description": "Array of module manifest entries.",
+      "items": {
+        "$ref": "sys-manifest-module.schema.json"
+      }
+    }
+  }
+}

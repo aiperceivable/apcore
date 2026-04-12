@@ -1,0 +1,153 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://apcore.dev/schemas/defaults.schema.json",
+  "title": "apcore Canonical Default Values",
+  "description": "Single source of truth for all configuration default values across apcore SDK implementations. SDKs MUST use these values as fallbacks when no explicit configuration is provided.",
+  "type": "object",
+  "properties": {
+    "extensions": {
+      "type": "object",
+      "description": "Extension discovery defaults.",
+      "properties": {
+        "root": {
+          "type": "string",
+          "description": "Default extensions root directory path.",
+          "default": "./extensions"
+        },
+        "auto_discover": {
+          "type": "boolean",
+          "description": "Whether to automatically discover modules.",
+          "default": true
+        },
+        "max_depth": {
+          "type": "integer",
+          "description": "Maximum directory scan depth under extensions root.",
+          "default": 8
+        },
+        "follow_symlinks": {
+          "type": "boolean",
+          "description": "Whether to follow symbolic links during scanning.",
+          "default": false
+        }
+      }
+    },
+    "schema": {
+      "type": "object",
+      "description": "Schema loading defaults.",
+      "properties": {
+        "root": {
+          "type": "string",
+          "description": "Default schema files root directory path.",
+          "default": "./schemas"
+        },
+        "strategy": {
+          "type": "string",
+          "description": "Default schema loading strategy.",
+          "default": "yaml_first"
+        },
+        "max_ref_depth": {
+          "type": "integer",
+          "description": "Maximum $ref recursion depth for schema resolution.",
+          "default": 32
+        }
+      }
+    },
+    "acl": {
+      "type": "object",
+      "description": "Access control defaults.",
+      "properties": {
+        "root": {
+          "type": "string",
+          "description": "Default ACL configuration files directory path.",
+          "default": "./acl"
+        },
+        "default_effect": {
+          "type": "string",
+          "description": "Default ACL effect when no rule matches. MUST default to deny.",
+          "default": "deny"
+        }
+      }
+    },
+    "executor": {
+      "type": "object",
+      "description": "Executor runtime defaults.",
+      "properties": {
+        "default_timeout": {
+          "type": "integer",
+          "description": "Default per-module execution timeout in milliseconds.",
+          "default": 30000
+        },
+        "global_timeout": {
+          "type": "integer",
+          "description": "Default global timeout for the entire call chain in milliseconds.",
+          "default": 60000
+        },
+        "max_call_depth": {
+          "type": "integer",
+          "description": "Maximum call chain depth before rejection.",
+          "default": 32
+        },
+        "max_module_repeat": {
+          "type": "integer",
+          "description": "Maximum times the same module ID can appear in a single call chain.",
+          "default": 3
+        }
+      }
+    },
+    "sys_modules": {
+      "type": "object",
+      "description": "System modules defaults.",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Whether system modules are enabled by default.",
+          "default": false
+        }
+      }
+    },
+    "observability": {
+      "type": "object",
+      "description": "Observability defaults.",
+      "properties": {
+        "tracing": {
+          "type": "object",
+          "description": "Distributed tracing defaults.",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "description": "Whether distributed tracing is enabled.",
+              "default": false
+            },
+            "sampling_rate": {
+              "type": "number",
+              "description": "Trace sampling rate.",
+              "default": 1.0
+            }
+          }
+        },
+        "metrics": {
+          "type": "object",
+          "description": "Metrics collection defaults.",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "description": "Whether metrics collection is enabled.",
+              "default": false
+            }
+          }
+        }
+      }
+    },
+    "stream": {
+      "type": "object",
+      "description": "Stream aggregation defaults.",
+      "properties": {
+        "max_merge_depth": {
+          "type": "integer",
+          "description": "Maximum recursion depth for deep-merging streaming chunks. Prevents denial-of-service via deeply nested payloads.",
+          "default": 32
+        }
+      }
+    }
+  }
+}

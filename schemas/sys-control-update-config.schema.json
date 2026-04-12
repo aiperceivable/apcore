@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://apcore.dev/schemas/sys-control-update-config.schema.json",
+  "title": "system.control.update_config Output",
+  "description": "Output schema for the system.control.update_config module. Sensitive values MUST be redacted as '***' in the return body.",
+  "type": "object",
+  "required": ["success", "key", "old_value", "new_value"],
+  "additionalProperties": false,
+  "properties": {
+    "success": {
+      "type": "boolean",
+      "description": "Whether the configuration update succeeded."
+    },
+    "key": {
+      "type": "string",
+      "description": "Dot-path of the updated configuration key."
+    },
+    "old_value": {
+      "description": "Previous value. Redacted as '***' when the key matches a sensitive pattern (token, secret, key, password, auth, credential)."
+    },
+    "new_value": {
+      "description": "New value. Redacted as '***' when the key matches a sensitive pattern (token, secret, key, password, auth, credential)."
+    }
+  }
+}

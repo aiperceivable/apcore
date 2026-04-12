@@ -429,7 +429,7 @@ test_case:
 
 | Case ID | Name | Scenario | Expected Result | Mandatory |
 |---------|------|------|---------|------|
-| T11-001 | Async execution start | Call execute_async() | Return task_id and pending status | Yes |
+| T11-001 | Async execution start | Call call_async() on an async module | Return task_id and pending status | Yes |
 | T11-002 | Status query | Query running task | Return running and progress | Yes |
 | T11-003 | Success completion | Task completes normally | Status is completed, contains result | Yes |
 | T11-004 | Execution failure | Task execution exception | Status is failed, contains error | Yes |

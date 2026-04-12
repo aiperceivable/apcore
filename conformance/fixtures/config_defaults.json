@@ -1,0 +1,95 @@
+{
+  "description": "Config default values conformance — all SDKs MUST return identical defaults when no explicit configuration is provided. Values sourced from schemas/defaults.schema.json.",
+  "test_cases": [
+    {
+      "id": "executor_default_timeout",
+      "key": "executor.default_timeout",
+      "expected": 30000
+    },
+    {
+      "id": "executor_global_timeout",
+      "key": "executor.global_timeout",
+      "expected": 60000
+    },
+    {
+      "id": "executor_max_call_depth",
+      "key": "executor.max_call_depth",
+      "expected": 32
+    },
+    {
+      "id": "executor_max_module_repeat",
+      "key": "executor.max_module_repeat",
+      "expected": 3
+    },
+    {
+      "id": "extensions_root",
+      "key": "extensions.root",
+      "expected": "./extensions"
+    },
+    {
+      "id": "extensions_auto_discover",
+      "key": "extensions.auto_discover",
+      "expected": true
+    },
+    {
+      "id": "extensions_max_depth",
+      "key": "extensions.max_depth",
+      "expected": 8
+    },
+    {
+      "id": "extensions_follow_symlinks",
+      "key": "extensions.follow_symlinks",
+      "expected": false
+    },
+    {
+      "id": "schema_root",
+      "key": "schema.root",
+      "expected": "./schemas"
+    },
+    {
+      "id": "schema_strategy",
+      "key": "schema.strategy",
+      "expected": "yaml_first"
+    },
+    {
+      "id": "schema_max_ref_depth",
+      "key": "schema.max_ref_depth",
+      "expected": 32
+    },
+    {
+      "id": "acl_root",
+      "key": "acl.root",
+      "expected": "./acl"
+    },
+    {
+      "id": "acl_default_effect",
+      "key": "acl.default_effect",
+      "expected": "deny"
+    },
+    {
+      "id": "sys_modules_enabled",
+      "key": "sys_modules.enabled",
+      "expected": false
+    },
+    {
+      "id": "observability_tracing_enabled",
+      "key": "observability.tracing.enabled",
+      "expected": false
+    },
+    {
+      "id": "observability_tracing_sampling_rate",
+      "key": "observability.tracing.sampling_rate",
+      "expected": 1.0
+    },
+    {
+      "id": "observability_metrics_enabled",
+      "key": "observability.metrics.enabled",
+      "expected": false
+    },
+    {
+      "id": "stream_max_merge_depth",
+      "key": "stream.max_merge_depth",
+      "expected": 32
+    }
+  ]
+}

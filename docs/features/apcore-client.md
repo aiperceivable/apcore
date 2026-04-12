@@ -8,7 +8,7 @@ The APCore class is the recommended high-level entry point for the apcore framew
 
 ### Unified Facade
 - Provide a single `APCore` class that wraps Registry, Executor, and optionally Config and MetricsCollector.
-- Accept configuration via either a `Config` object (`config`) or a file path string (`config_path` / `configPath` / `from_path`). The two parameters are mutually exclusive; providing both **MUST** raise an error.
+- Accept configuration via a `Config` object (`config`). Use `Config.load()` to load from a file path. In Rust, `APCore::from_path()` is kept as a convenience shortcut.
 - If no Registry or Executor is provided, the client **MUST** create them automatically with sensible defaults.
 - If a Config is provided (via either parameter) with `sys_modules.enabled: true`, the client **MUST** auto-register system modules and configure associated middleware (metrics, observability).
 
@@ -44,8 +44,7 @@ The APCore class is the recommended high-level entry point for the apcore framew
 | Mode | Config Required | System Modules | Use Case |
 |------|----------------|---------------|----------|
 | Zero-config | No | No | Quick prototyping, tests |
-| With config path | Yes (`config_path=`) | If `sys_modules.enabled` | Production (simple) |
-| With config object | Yes (`config=`) | If `sys_modules.enabled` | Production (with programmatic overrides) |
+| With config object | Yes (`config=`) | If `sys_modules.enabled` | Production |
 | With defaults | Yes (`from_defaults()`) | If configured | No YAML file needed |
 | Pre-built components | No | Via provided executor | Advanced / custom setups |
 
@@ -112,9 +111,7 @@ This allows users to subscribe with both sync and async callbacks without implem
 
 | Condition | Error |
 |-----------|-------|
-| Both `config` and `config_path` provided | `ValueError` (Python), `TypeError` (TypeScript). Rust prevents this by design — `from_path()` and `with_config()` are separate constructors. |
-| `configPath` used in browser environment | `TypeError` (TypeScript only) |
-| Config file not found or invalid | `ValueError` (Python), `ConfigNotFoundError` (TypeScript), `Err(ModuleError)` with `ConfigNotFound` or `ConfigInvalid` (Rust) |
+| Config file not found or invalid (via `Config.load()`) | `ValueError` (Python), `ConfigNotFoundError` (TypeScript), `Err(ModuleError)` with `ConfigNotFound` or `ConfigInvalid` (Rust) |
 | `on()`, `off()` without events enabled | `RuntimeError` |
 | `disable()`, `enable()` without sys_modules | `RuntimeError` |
 
@@ -191,8 +188,10 @@ For complete usage examples with all three languages, see the [APCore Client API
 === "Python"
     ```python
     from apcore import APCore
+    from apcore.config import Config
 
-    client = APCore(config_path="apcore.yaml")
+    config = Config.load("apcore.yaml")
+    client = APCore(config=config)
 
     # System modules, metrics, and events are auto-configured
     sub = client.on("error_threshold_exceeded", lambda e: alert(e.data))
@@ -202,9 +201,10 @@ For complete usage examples with all three languages, see the [APCore Client API
     ```
 === "TypeScript"
     ```typescript
-    import { APCore } from "apcore-js";
+    import { APCore, Config } from "apcore-js";
 
-    const client = new APCore({ configPath: 'apcore.yaml' });
+    const config = Config.load('apcore.yaml');
+    const client = new APCore({ config });
 
     // System modules, metrics, and events are auto-configured
     const sub = client.on("error_threshold_exceeded", (e) => alert(e.data));
@@ -247,7 +247,7 @@ For complete usage examples with all three languages, see the [APCore Client API
 ## Testing Strategy
 
 - **Zero-config tests** verify that `APCore()` creates a functional Registry and Executor without any arguments.
-- **Config path tests** verify that `config_path` loads and applies the config file, and that providing both `config` and `config_path` raises an error.
+- **Config object tests** verify that passing a `Config` object (loaded via `Config.load()`) applies the config file correctly.
 - **Config-based tests** verify that system modules are auto-registered when config provides `sys_modules.enabled: true`.
 - **Decorator tests** verify that `client.module()` registers functions as modules and they are callable.
 - **Execution tests** verify that `call()`, `call_async()`, `stream()`, and `validate()` delegate correctly to the underlying Executor.

@@ -1,0 +1,85 @@
+{
+  "description": "Stream chunk aggregation conformance — all SDKs MUST use recursive deep merge with max depth 32. Objects merge recursively; non-objects use last-value-wins.",
+  "test_cases": [
+    {
+      "id": "deep_merge_nested_objects",
+      "description": "Nested objects MUST merge recursively, not overwrite",
+      "chunks": [
+        {"a": {"b": 1}},
+        {"a": {"c": 2}}
+      ],
+      "expected": {"a": {"b": 1, "c": 2}}
+    },
+    {
+      "id": "overwrite_non_object",
+      "description": "Non-object values (arrays, primitives) use last-value-wins",
+      "chunks": [
+        {"a": [1, 2]},
+        {"a": [3]}
+      ],
+      "expected": {"a": [3]}
+    },
+    {
+      "id": "overwrite_primitive",
+      "description": "Primitive values are replaced by later chunks",
+      "chunks": [
+        {"count": 1},
+        {"count": 2},
+        {"count": 3}
+      ],
+      "expected": {"count": 3}
+    },
+    {
+      "id": "deep_merge_three_levels",
+      "description": "Three-level nested object merge",
+      "chunks": [
+        {"a": {"b": {"c": 1}}},
+        {"a": {"b": {"d": 2}}},
+        {"a": {"e": 3}}
+      ],
+      "expected": {"a": {"b": {"c": 1, "d": 2}, "e": 3}}
+    },
+    {
+      "id": "mixed_types_last_wins",
+      "description": "When a key changes from object to primitive, last value wins",
+      "chunks": [
+        {"a": {"b": 1}},
+        {"a": "replaced"}
+      ],
+      "expected": {"a": "replaced"}
+    },
+    {
+      "id": "empty_chunks",
+      "description": "Empty chunks do not alter the accumulated result",
+      "chunks": [
+        {"a": 1},
+        {},
+        {"b": 2}
+      ],
+      "expected": {"a": 1, "b": 2}
+    },
+    {
+      "id": "single_chunk",
+      "description": "Single chunk is returned as-is",
+      "chunks": [
+        {"result": "done", "status": 200}
+      ],
+      "expected": {"result": "done", "status": 200}
+    },
+    {
+      "id": "no_chunks",
+      "description": "Zero chunks produce null/empty",
+      "chunks": [],
+      "expected": null
+    },
+    {
+      "id": "null_value_overwrite",
+      "description": "Explicit null overwrites previous value",
+      "chunks": [
+        {"a": 1},
+        {"a": null}
+      ],
+      "expected": {"a": null}
+    }
+  ]
+}

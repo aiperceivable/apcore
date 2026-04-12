@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://apcore.dev/schemas/sys-control-toggle-feature.schema.json",
+  "title": "system.control.toggle_feature Output",
+  "description": "Output schema for the system.control.toggle_feature module.",
+  "type": "object",
+  "required": ["success", "module_id", "enabled"],
+  "additionalProperties": false,
+  "properties": {
+    "success": {
+      "type": "boolean",
+      "description": "Whether the toggle operation succeeded."
+    },
+    "module_id": {
+      "type": "string",
+      "description": "Canonical ID of the toggled module."
+    },
+    "enabled": {
+      "type": "boolean",
+      "description": "Whether the module is now enabled."
+    }
+  }
+}

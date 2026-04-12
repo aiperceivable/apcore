@@ -402,8 +402,10 @@ context = register_sys_modules(
 
     ```python
     from apcore import APCore
+    from apcore.config import Config
 
-    client = APCore(config_path="apcore.yaml")
+    config = Config.load("apcore.yaml")
+    client = APCore(config=config)
 
     # System modules auto-registered! Query them directly:
     health = client.call("system.health.summary", {})
@@ -417,9 +419,10 @@ context = register_sys_modules(
 === "TypeScript"
 
     ```typescript
-    import { APCore } from 'apcore-js';
+    import { APCore, Config } from 'apcore-js';
 
-    const client = new APCore({ configPath: 'apcore.yaml' });
+    const config = Config.load('apcore.yaml');
+    const client = new APCore({ config });
 
     // System modules auto-registered! Query them directly:
     const health = await client.call('system.health.summary', {});

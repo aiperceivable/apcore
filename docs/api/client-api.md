@@ -22,7 +22,6 @@ class APCore:
         registry: Registry | None = None,
         executor: Executor | None = None,
         config: Config | None = None,
-        config_path: str | None = None,
         metrics_collector: "MetricsCollector | None" = None,
     ) -> None:
         """
@@ -31,13 +30,9 @@ class APCore:
         Args:
             registry: Module registry (auto-created if None)
             executor: Module executor (auto-created if None)
-            config: Framework configuration (enables sys_modules if provided)
-            config_path: Path to config file (e.g. "apcore.yaml").
-                Shorthand for Config.load(path). Mutually exclusive with config.
+            config: Framework configuration (enables sys_modules if provided).
+                Use Config.load("apcore.yaml") to load from a file.
             metrics_collector: Metrics collector (auto-created if sys_modules enabled)
-
-        Raises:
-            ValueError: If both config and config_path are provided
         """
         ...
 
@@ -104,6 +99,11 @@ class APCore:
 
         Returns:
             PreflightResult with per-check results and .valid / .errors properties
+
+        Note:
+            Python's validate() is synchronous. TypeScript and Rust versions
+            are async (return a Promise/Future). This is an expected
+            language adaptation — see Section 10.
         """
         ...
 
@@ -255,39 +255,7 @@ class APCore:
 
 ### 2.2 With Config (Enables System Modules)
 
-Load directly from a config file path:
-
-=== "Python"
-
-    ```python
-    from apcore import APCore
-
-    client = APCore(config_path="apcore.yaml")
-
-    # System modules are auto-registered when config has sys_modules.enabled=true
-    ```
-
-=== "TypeScript"
-
-    ```typescript
-    import { APCore } from 'apcore-js';
-
-    const client = new APCore({ configPath: 'apcore.yaml' });
-
-    // System modules are auto-registered when config has sys_modules.enabled=true
-    ```
-
-=== "Rust"
-
-    ```rust
-    use apcore::APCore;
-
-    let client = APCore::from_path("apcore.yaml")?;
-
-    // System modules are auto-registered when config has sys_modules.enabled=true
-    ```
-
-Or pass a pre-loaded `Config` object for full control:
+Load configuration from a file using `Config.load()`, then pass it to the client:
 
 === "Python"
 
@@ -296,8 +264,9 @@ Or pass a pre-loaded `Config` object for full control:
     from apcore.config import Config
 
     config = Config.load("apcore.yaml")
-    # Modify config programmatically if needed
     client = APCore(config=config)
+
+    # System modules are auto-registered when config has sys_modules.enabled=true
     ```
 
 === "TypeScript"
@@ -305,23 +274,31 @@ Or pass a pre-loaded `Config` object for full control:
     ```typescript
     import { APCore, Config } from 'apcore-js';
 
-    const config = Config.load("apcore.yaml");
-    // Modify config programmatically if needed
+    const config = Config.load('apcore.yaml');
     const client = new APCore({ config });
+
+    // System modules are auto-registered when config has sys_modules.enabled=true
     ```
 
 === "Rust"
 
-    ```rust
-    use apcore::{APCore, Config};
+    Rust provides `from_path()` as a convenience shortcut, or you can load the config explicitly:
 
-    let config = Config::load("apcore.yaml")?;
-    // Modify config programmatically if needed
-    let client = APCore::with_config(config);
+    ```rust
+    use apcore::APCore;
+
+    // Convenience shortcut
+    let client = APCore::from_path("apcore.yaml")?;
+
+    // Or load config explicitly for programmatic modification
+    // let config = Config::load("apcore.yaml")?;
+    // let client = APCore::with_config(config);
+
+    // System modules are auto-registered when config has sys_modules.enabled=true
     ```
 
-!!! note "Mutually exclusive"
-    `config` and `config_path` cannot be used together. Providing both raises a `ValueError` (Python) or throws a `TypeError` (TypeScript). In Rust, this conflict is prevented by design — `from_path()` and `with_config()` are separate constructors.
+!!! tip "Loading from file"
+    Use `Config.load()` to load configuration from a YAML file before passing it to the APCore constructor. This gives you the opportunity to inspect or modify the config programmatically before initialization. In Rust, `APCore::from_path()` is available as a convenience shortcut that loads and applies the config in one step.
 
 ### 2.3 With Defaults (No YAML File)
 
@@ -613,20 +590,21 @@ Or pass a pre-loaded `Config` object for full control:
 
 === "Rust"
 
-    In Rust, `stream()` collects all chunks and returns them as a `Vec<Value>`:
+    In Rust, `stream()` returns a `Stream<Item = Result<Value, ModuleError>>` for true incremental streaming:
 
     ```rust
     use apcore::APCore;
+    use futures::StreamExt;
 
     let client = APCore::new();
-    let chunks = client.stream(
+    let mut stream = client.stream(
         "my.streaming_module",
         serde_json::json!({"query": "hello"}),
         None,
         None,
     ).await?;
-    for chunk in &chunks {
-        println!("{:?}", chunk);
+    while let Some(chunk) = stream.next().await {
+        println!("{:?}", chunk?);
     }
     ```
 
@@ -892,8 +870,10 @@ Requires `sys_modules.events.enabled: true` in config.
 
     ```python
     from apcore import APCore
+    from apcore.config import Config
 
-    client = APCore(config_path="apcore.yaml")  # sys_modules.events.enabled: true
+    config = Config.load("apcore.yaml")  # sys_modules.events.enabled: true
+    client = APCore(config=config)
 
     # Simple callback
     sub = client.on("apcore.module.toggled", lambda event: print(event.data))
@@ -908,9 +888,10 @@ Requires `sys_modules.events.enabled: true` in config.
 === "TypeScript"
 
     ```typescript
-    import { APCore } from 'apcore-js';
+    import { APCore, Config } from 'apcore-js';
 
-    const client = new APCore({ configPath: 'apcore.yaml' }); // sys_modules.events.enabled: true
+    const config = Config.load('apcore.yaml'); // sys_modules.events.enabled: true
+    const client = new APCore({ config });
 
     const sub = client.on("apcore.module.toggled", (event) => console.log(event.data));
     ```
@@ -1004,8 +985,10 @@ Requires `sys_modules.enabled: true` in config.
 
     ```python
     from apcore import APCore
+    from apcore.config import Config
 
-    client = APCore(config_path="apcore.yaml")  # sys_modules.enabled: true
+    config = Config.load("apcore.yaml")  # sys_modules.enabled: true
+    client = APCore(config=config)
 
     # Disable — calls to this module will raise ModuleDisabledError
     client.disable("risky.module", reason="Investigating issue")
@@ -1017,9 +1000,10 @@ Requires `sys_modules.enabled: true` in config.
 === "TypeScript"
 
     ```typescript
-    import { APCore } from 'apcore-js';
+    import { APCore, Config } from 'apcore-js';
 
-    const client = new APCore({ configPath: 'apcore.yaml' }); // sys_modules.enabled: true
+    const config = Config.load('apcore.yaml'); // sys_modules.enabled: true
+    const client = new APCore({ config });
 
     // Disable — calls to this module will throw ModuleDisabledError
     await client.disable("risky.module", "Investigating issue");
@@ -1051,8 +1035,10 @@ When system modules are enabled, you can query health, usage, and manifests dire
 
     ```python
     from apcore import APCore
+    from apcore.config import Config
 
-    client = APCore(config_path="apcore.yaml")  # sys_modules.enabled: true
+    config = Config.load("apcore.yaml")  # sys_modules.enabled: true
+    client = APCore(config=config)
 
     # Health overview
     health = client.call("system.health.summary", {})
@@ -1070,9 +1056,10 @@ When system modules are enabled, you can query health, usage, and manifests dire
 === "TypeScript"
 
     ```typescript
-    import { APCore } from 'apcore-js';
+    import { APCore, Config } from 'apcore-js';
 
-    const client = new APCore({ configPath: 'apcore.yaml' }); // sys_modules.enabled: true
+    const config = Config.load('apcore.yaml'); // sys_modules.enabled: true
+    const client = new APCore({ config });
 
     // Health overview
     const health = await client.call("system.health.summary", {});
@@ -1235,7 +1222,7 @@ The APCore interface follows each language's idioms while maintaining functional
 | `use_before()` | `useBefore()` | camelCase convention |
 | `use_after()` | `useAfter()` | camelCase convention |
 | `list_modules()` | `listModules()` | camelCase convention |
-| Constructor | `new APCore({ config })` or `new APCore({ configPath })` | Options object pattern |
+| Constructor | `new APCore({ config })` | Options object pattern |
 
 ### Rust
 
@@ -1246,9 +1233,9 @@ The APCore interface follows each language's idioms while maintaining functional
 | `use_after()` | `use_after()` | Accepts `Box<dyn AfterMiddleware>`, returns `Result<&mut Self, ModuleError>` |
 | `on()` | `on()` | Returns `String` (subscriber ID) instead of `EventSubscriber` object |
 | `off()` | `off()` | Accepts `&str` (subscriber ID) instead of `EventSubscriber` object |
-| `stream()` | `stream()` | Returns `Vec<Value>` (batch-collected chunks) instead of async iterator |
-| `disable()` | `disable()` | Returns `Result<(), ModuleError>` instead of `dict`; `reason` is `Option<&str>` |
-| `enable()` | `enable()` | Returns `Result<(), ModuleError>` instead of `dict`; `reason` is `Option<&str>` |
+| `stream()` | `stream()` | Returns `Stream<Item = Result<Value, ModuleError>>` (true incremental streaming) instead of async iterator |
+| `disable()` | `disable()` | Returns `Result<Value, ModuleError>` instead of `dict`; `reason` is `Option<&str>` |
+| `enable()` | `enable()` | Returns `Result<Value, ModuleError>` instead of `dict`; `reason` is `Option<&str>` |
 | Constructor | `APCore::new()`, `APCore::with_config(config)`, or `APCore::from_path(path)` | Three construction methods |
 | `module()` | N/A | Rust has no decorators; use `impl Module` trait + `register()` instead |
 | `events` property | `events()` method | Rust uses accessor methods instead of properties |
@@ -1262,7 +1249,6 @@ The APCore interface follows each language's idioms while maintaining functional
 | `with_components(registry, config)` | Build client from a pre-configured Registry |
 | `with_options(registry, executor, config, metrics_collector)` | Full constructor with all optional parameters |
 | `reload()` | Reload config and re-discover modules |
-| `shutdown()` | Release resources |
 
 ---
 

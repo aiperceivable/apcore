@@ -21,7 +21,7 @@ The Streaming System enables modules to produce output incrementally as a sequen
 The executor's `stream()` method operates in three phases:
 
 **Phase 1 — Pipeline Setup:**
-The standard execution pipeline runs through Steps 1–6 (Context Creation, Call Chain Guard, Module Lookup, ACL, Approval Gate, Middleware Before, Input Validation). The context is flagged with `stream=true`, and the module's `stream()` method is invoked instead of `execute()`.
+The standard execution pipeline runs through Steps 1–7 (Context Creation, Call Chain Guard, Module Lookup, ACL, Approval Gate, Middleware Before, Input Validation). The context is flagged with `stream=true`, and the module's `stream()` method is invoked instead of `execute()`.
 
 **Phase 2 — Chunk Emission:**
 The executor iterates over the module's async iterator, yielding each chunk to the caller immediately. Each chunk is also accumulated into a running merged output using the deep merge algorithm.
