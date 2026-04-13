@@ -344,6 +344,39 @@ All `APCore` client methods are also available as module-level functions via a d
     apcore.enable("some.module", reason="done")
     ```
 
+=== "TypeScript"
+
+    TypeScript does not have module-level functions. Use an `APCore` instance directly:
+
+    ```typescript
+    import { APCore, LoggingMiddleware } from "apcore-js";
+
+    const client = new APCore();
+
+    // Registration
+    client.register("math.add", myModule);
+    await client.discover();
+
+    // Execution
+    const result = await client.call("math.add", { a: 1, b: 2 });
+    const preflight = await client.validate("math.add", { a: 1 });
+
+    // Discovery & Inspection
+    const modules = client.listModules({ prefix: "math." });
+    const desc = client.describe("math.add");
+
+    // Middleware
+    client.use(new LoggingMiddleware());
+    client.useBefore((mid, inp, ctx) => console.log(`→ ${mid}`));
+    client.useAfter((mid, inp, out, ctx) => console.log(`← ${mid}`));
+
+    // Events & Control
+    const sub = client.on("apcore.module.toggled", handler);
+    client.off(sub);
+    await client.disable("some.module", "maintenance");
+    await client.enable("some.module");
+    ```
+
 === "Rust"
 
     Rust does not provide a global singleton. Use an explicit `APCore` instance:

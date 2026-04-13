@@ -174,7 +174,7 @@ The `traceparent` header follows the W3C format: `{version}-{trace_id}-{parent_i
 |--------|-------------|
 | `record(module_id, caller_id, latency_ms, success)` | Record a usage event |
 | `get_summary(period="24h") → list[ModuleUsageSummary]` | Aggregated summary for all modules |
-| `get_module(module_id, period="24h") → ModuleUsageDetail` | Detailed usage with caller breakdown and hourly distribution |
+| `UsageCollector.get_module(module_id, period="24h") → ModuleUsageDetail` | Detailed usage with caller breakdown and hourly distribution |
 | `get_latencies(module_id) → list[float]` | Raw latency values for p99 computation |
 
 **UsageMiddleware** records usage in `before()` (start timestamp), `after()` (success + latency), and `on_error()` (failure + latency) hooks.
