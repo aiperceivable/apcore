@@ -97,6 +97,94 @@ rules:
 
 Compound operators `$or` and `$not` can combine conditions. `$or` passes if any sub-condition passes. `$not` inverts its sub-condition.
 
+## Usage
+
+=== "Python"
+    ```python
+    from apcore import APCore
+    from apcore.acl import ACL, ACLRule
+    from apcore.context import Context, Identity
+
+    # Load ACL from YAML
+    acl = ACL.load("acl.yaml")
+
+    # Check access
+    identity = Identity(id="api.gateway", type="service", roles=["reader"])
+    ctx = Context.create(identity=identity)
+    allowed = acl.check("api.gateway", "db.query", ctx)  # True / False
+
+    # Runtime modification
+    acl.add_rule(ACLRule(
+        callers=["admin.*"],
+        targets=["*"],
+        effect="allow",
+        description="Admins can call any module",
+    ))
+
+    # Wire into executor via APCore
+    client = APCore()
+    client.executor.acl = acl
+    ```
+=== "TypeScript"
+    ```typescript
+    import { APCore } from "apcore-js";
+    import { ACL, ACLRule } from "apcore-js/acl";
+    import { Context, Identity } from "apcore-js/context";
+
+    // Load ACL from YAML
+    const acl = await ACL.load("acl.yaml");
+
+    // Check access
+    const identity: Identity = { id: "api.gateway", type: "service", roles: ["reader"] };
+    const ctx = Context.create({ identity });
+    const allowed = acl.check("api.gateway", "db.query", ctx);
+
+    // Runtime modification
+    acl.addRule(new ACLRule({
+        callers: ["admin.*"],
+        targets: ["*"],
+        effect: "allow",
+        description: "Admins can call any module",
+    }));
+
+    // Wire into executor via APCore
+    const client = new APCore();
+    client.executor.acl = acl;
+    ```
+=== "Rust"
+    ```rust
+    use apcore::acl::{ACL, ACLRule};
+    use apcore::context::{Context, Identity};
+    use apcore::APCore;
+
+    // Load ACL from YAML
+    let acl = ACL::load("acl.yaml")?;
+
+    // Check access
+    use std::collections::HashMap;
+    let identity = Identity::new(
+        "api.gateway".to_string(),
+        "service".to_string(),
+        vec!["reader".to_string()],
+        HashMap::new(),
+    );
+    let ctx = Context::create(Some(identity), None);
+    let allowed = acl.check("api.gateway", "db.query", Some(&ctx));
+
+    // Runtime modification
+    acl.add_rule(ACLRule {
+        callers: vec!["admin.*".to_string()],
+        targets: vec!["*".to_string()],
+        effect: "allow".to_string(),
+        description: Some("Admins can call any module".to_string()),
+        conditions: None,
+    });
+
+    // Wire into executor via APCore
+    let mut client = APCore::new();
+    client.executor_mut().set_acl(acl);
+    ```
+
 ## Dependencies
 
 - `apcore.context.Context` -- Provides `identity`, `call_chain`, and other context fields for conditional rule evaluation.

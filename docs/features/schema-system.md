@@ -31,28 +31,61 @@ The loader maintains an internal cache keyed by schema path and strategy, so rep
 
 These strategies are defined as the `SchemaStrategy` enum:
 
-```python
-from apcore import SchemaStrategy
+=== "Python"
+    ```python
+    from apcore import SchemaStrategy
 
-class SchemaStrategy(str, Enum):
-    YAML_FIRST = "yaml_first"
-    NATIVE_FIRST = "native_first"
-    YAML_ONLY = "yaml_only"
-```
+    class SchemaStrategy(str, Enum):
+        YAML_FIRST = "yaml_first"
+        NATIVE_FIRST = "native_first"
+        YAML_ONLY = "yaml_only"
+    ```
+=== "TypeScript"
+    ```typescript
+    import { SchemaStrategy } from "apcore-js/schema";
+
+    // "yaml_first" | "native_first" | "yaml_only"
+    const strategy: SchemaStrategy = "yaml_first";
+    ```
+=== "Rust"
+    ```rust
+    use apcore::schema::SchemaStrategy;
+
+    let strategy = SchemaStrategy::YamlFirst;
+    // SchemaStrategy::NativeFirst
+    // SchemaStrategy::YamlOnly
+    ```
 
 #### ExportProfile Enum
 
 The `ExportProfile` enum specifies which export format to use:
 
-```python
-from apcore import ExportProfile
+=== "Python"
+    ```python
+    from apcore import ExportProfile
 
-class ExportProfile(str, Enum):
-    MCP = "mcp"
-    OPENAI = "openai"
-    ANTHROPIC = "anthropic"
-    GENERIC = "generic"
-```
+    class ExportProfile(str, Enum):
+        MCP = "mcp"
+        OPENAI = "openai"
+        ANTHROPIC = "anthropic"
+        GENERIC = "generic"
+    ```
+=== "TypeScript"
+    ```typescript
+    import { ExportProfile } from "apcore-js/schema";
+
+    // "mcp" | "openai" | "anthropic" | "generic"
+    const profile: ExportProfile = "mcp";
+    ```
+=== "Rust"
+    ```rust
+    use apcore::schema::ExportProfile;
+
+    let profile = ExportProfile::Mcp;
+    // ExportProfile::OpenAi
+    // ExportProfile::Anthropic
+    // ExportProfile::Generic
+    ```
 
 Pass an `ExportProfile` value to `SchemaExporter.export()` or `Registry.export_schema(profile=...)` to control the output format.
 
@@ -109,6 +142,72 @@ The `strict` module provides a strict validation mode that rejects any fields no
 3. `RefResolver.resolve()` walks the dictionary, inlining all `$ref` targets and detecting cycles.
 4. The resolved dictionary is converted into a runtime model class.
 5. The model is cached and returned for use by the executor (validation) or exporter (format conversion).
+
+## Usage
+
+=== "Python"
+    ```python
+    from apcore.schema import SchemaLoader, SchemaExporter, SchemaValidator, SchemaStrategy, ExportProfile
+
+    # Load a schema from YAML
+    loader = SchemaLoader(strategy=SchemaStrategy.YAML_FIRST)
+    schema = loader.load("schemas/email_send.yaml")
+
+    # Validate data
+    validator = SchemaValidator()
+    errors = validator.validate(schema, {"to": "alice@example.com", "subject": "Hello"})
+    if errors:
+        print(f"Validation failed: {errors}")
+
+    # Export to MCP tool format
+    exporter = SchemaExporter()
+    mcp_tool = exporter.export(schema, profile=ExportProfile.MCP)
+    print(mcp_tool)  # {"name": "...", "description": "...", "inputSchema": {...}}
+    ```
+=== "TypeScript"
+    ```typescript
+    import { SchemaLoader, SchemaExporter, SchemaValidator } from "apcore-js/schema";
+    import type { SchemaStrategy, ExportProfile } from "apcore-js/schema";
+
+    // Load a schema from YAML
+    const loader = new SchemaLoader({ strategy: "yaml_first" });
+    const schema = await loader.load("schemas/email_send.yaml");
+
+    // Validate data
+    const validator = new SchemaValidator();
+    const errors = validator.validate(schema, { to: "alice@example.com", subject: "Hello" });
+    if (errors.length > 0) {
+        console.error("Validation failed:", errors);
+    }
+
+    // Export to OpenAI function format
+    const exporter = new SchemaExporter();
+    const openaiTool = exporter.export(schema, { profile: "openai" });
+    console.log(openaiTool);
+    ```
+=== "Rust"
+    ```rust
+    use apcore::schema::{SchemaLoader, SchemaExporter, SchemaValidator, SchemaStrategy, ExportProfile};
+
+    // Load a schema from YAML
+    let loader = SchemaLoader::new(SchemaStrategy::YamlFirst);
+    let schema = loader.load("schemas/email_send.yaml")?;
+
+    // Validate data
+    let validator = SchemaValidator::new();
+    let errors = validator.validate(&schema, &serde_json::json!({
+        "to": "alice@example.com",
+        "subject": "Hello"
+    }))?;
+    if !errors.is_empty() {
+        eprintln!("Validation failed: {:?}", errors);
+    }
+
+    // Export to Anthropic tool format
+    let exporter = SchemaExporter::new();
+    let anthropic_tool = exporter.export(&schema, ExportProfile::Anthropic)?;
+    println!("{}", anthropic_tool);
+    ```
 
 ## Dependencies
 

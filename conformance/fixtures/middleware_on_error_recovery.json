@@ -1,0 +1,58 @@
+{
+  "description": "Middleware after-chain error recovery. Verifies that when module execution raises an error, after-middleware still runs and that the first dict returned by any after-middleware replaces the error result (first-dict-wins).",
+  "algorithm": "A11",
+  "test_cases": [
+    {
+      "id": "after_middleware_runs_on_error",
+      "description": "After-middleware is invoked even when the module raises a ModuleError",
+      "module_raises_error": true,
+      "after_middleware": [
+        { "id": "logging_mw", "returns": null }
+      ],
+      "expected": {
+        "after_middleware_invoked": ["logging_mw"],
+        "outcome": "error"
+      }
+    },
+    {
+      "id": "first_dict_wins_recovery",
+      "description": "First after-middleware that returns a dict replaces the error as the pipeline result",
+      "module_raises_error": true,
+      "after_middleware": [
+        { "id": "recovery_mw", "returns": { "recovered": true } },
+        { "id": "second_mw",   "returns": { "other": true } }
+      ],
+      "expected": {
+        "after_middleware_invoked": ["recovery_mw", "second_mw"],
+        "outcome": "success",
+        "result": { "recovered": true }
+      }
+    },
+    {
+      "id": "no_recovery_when_middleware_returns_null",
+      "description": "After-middleware returning null does not suppress the error",
+      "module_raises_error": true,
+      "after_middleware": [
+        { "id": "null_mw", "returns": null }
+      ],
+      "expected": {
+        "after_middleware_invoked": ["null_mw"],
+        "outcome": "error"
+      }
+    },
+    {
+      "id": "no_recovery_on_success",
+      "description": "After-middleware dict return on a successful execution does not override the module output",
+      "module_raises_error": false,
+      "module_output": { "value": 42 },
+      "after_middleware": [
+        { "id": "override_attempt_mw", "returns": { "hijacked": true } }
+      ],
+      "expected": {
+        "after_middleware_invoked": ["override_attempt_mw"],
+        "outcome": "success",
+        "result": { "value": 42 }
+      }
+    }
+  ]
+}

@@ -111,20 +111,51 @@ apcore supports [W3C Trace Context](https://www.w3.org/TR/trace-context/) for di
 
 Integration with `Context.create()`:
 
-```python
-from apcore import Context
-from apcore.observability import TraceContext
+=== "Python"
+    ```python
+    from apcore import Context
+    from apcore.observability import TraceContext
 
-# Extract trace parent from incoming request
-trace_parent = TraceContext.extract(request.headers)
+    # Extract trace parent from incoming request
+    trace_parent = TraceContext.extract(request.headers)
 
-# Create context with propagated trace
-context = Context.create(trace_parent=trace_parent)
+    # Create context with propagated trace
+    context = Context.create(trace_parent=trace_parent)
 
-# Inject trace parent into outgoing request headers
-outgoing_headers = TraceContext.inject(context)
-# outgoing_headers = {"traceparent": "00-<trace_id>-<span_id>-01"}
-```
+    # Inject trace parent into outgoing request headers
+    outgoing_headers = TraceContext.inject(context)
+    # outgoing_headers = {"traceparent": "00-<trace_id>-<span_id>-01"}
+    ```
+=== "TypeScript"
+    ```typescript
+    import { Context } from "apcore-js/context";
+    import { TraceContext } from "apcore-js/observability";
+
+    // Extract trace parent from incoming request
+    const traceParent = TraceContext.extract(request.headers);
+
+    // Create context with propagated trace
+    const context = Context.create({ traceParent });
+
+    // Inject trace parent into outgoing request headers
+    const outgoingHeaders = TraceContext.inject(context);
+    // outgoingHeaders = { traceparent: "00-<trace_id>-<span_id>-01" }
+    ```
+=== "Rust"
+    ```rust
+    use apcore::context::Context;
+    use apcore::observability::TraceContext;
+
+    // Extract trace parent from incoming request
+    let trace_parent = TraceContext::extract(&request.headers)?;
+
+    // Create context with propagated trace
+    let context = Context::create(None, Some(trace_parent));
+
+    // Inject trace parent into outgoing request headers
+    let outgoing_headers = TraceContext::inject(&context);
+    // outgoing_headers = {"traceparent": "00-<trace_id>-<span_id>-01"}
+    ```
 
 The `traceparent` header follows the W3C format: `{version}-{trace_id}-{parent_id}-{trace_flags}`.
 
@@ -199,6 +230,110 @@ The `traceparent` header follows the W3C format: `{version}-{trace_id}-{parent_i
 | `apcore.health.recovered` | Recovery: error rate < threshold × 0.5 |
 
 **Hysteresis:** Once an alert fires for a module, it will not re-fire until the module recovers below `threshold × 0.5`, then crosses the threshold again. This prevents alert storms.
+
+## Usage
+
+=== "Python"
+    ```python
+    from apcore import APCore
+    from apcore.observability import (
+        TracingMiddleware,
+        MetricsMiddleware,
+        ObsLoggingMiddleware,
+        InMemoryExporter,
+        MetricsCollector,
+    )
+
+    # Build observability stack
+    exporter = InMemoryExporter()
+    tracing = TracingMiddleware(exporter=exporter, strategy="proportional", sampling_rate=0.1)
+    metrics = MetricsCollector()
+    metrics_mw = MetricsMiddleware(collector=metrics)
+    logging_mw = ObsLoggingMiddleware(log_inputs=True, log_outputs=True)
+
+    # Register in recommended order (outermost first)
+    client = APCore()
+    client.use(tracing)
+    client.use(metrics_mw)
+    client.use(logging_mw)
+
+    @client.module(id="math.add", description="Add two numbers")
+    def add(a: int, b: int) -> dict:
+        return {"sum": a + b}
+
+    client.call("math.add", {"a": 3, "b": 4})
+
+    # Inspect collected spans and metrics
+    spans = exporter.get_spans()
+    prometheus_text = metrics.export_prometheus()
+    print(prometheus_text)
+    ```
+=== "TypeScript"
+    ```typescript
+    import { APCore } from "apcore-js";
+    import {
+        TracingMiddleware,
+        MetricsMiddleware,
+        ObsLoggingMiddleware,
+        InMemoryExporter,
+        MetricsCollector,
+    } from "apcore-js/observability";
+
+    // Build observability stack
+    const exporter = new InMemoryExporter();
+    const tracing = new TracingMiddleware({ exporter, strategy: "proportional", samplingRate: 0.1 });
+    const collector = new MetricsCollector();
+    const metricsMw = new MetricsMiddleware({ collector });
+    const loggingMw = new ObsLoggingMiddleware({ logInputs: true, logOutputs: true });
+
+    // Register in recommended order (outermost first)
+    const client = new APCore();
+    client.use(tracing);
+    client.use(metricsMw);
+    client.use(loggingMw);
+
+    client.module({
+        id: "math.add",
+        description: "Add two numbers",
+        inputSchema: { type: "object", properties: { a: { type: "number" }, b: { type: "number" } } },
+        outputSchema: { type: "object", properties: { sum: { type: "number" } } },
+        execute: ({ a, b }: { a: number; b: number }) => ({ sum: a + b }),
+    });
+
+    await client.call("math.add", { a: 3, b: 4 });
+
+    // Inspect collected spans and metrics
+    const spans = exporter.getSpans();
+    const prometheusText = collector.exportPrometheus();
+    console.log(prometheusText);
+    ```
+=== "Rust"
+    ```rust
+    use apcore::APCore;
+    use apcore::observability::{
+        TracingMiddleware, MetricsMiddleware, ObsLoggingMiddleware,
+        InMemoryExporter, MetricsCollector, SamplingStrategy,
+    };
+    use std::sync::Arc;
+
+    // Build observability stack
+    let exporter = Arc::new(InMemoryExporter::new(10_000));
+    let tracing = TracingMiddleware::new(exporter.clone(), SamplingStrategy::Proportional(0.1));
+    let collector = Arc::new(MetricsCollector::new());
+    let metrics_mw = MetricsMiddleware::new(collector.clone());
+    let logging_mw = ObsLoggingMiddleware::new(true, true);
+
+    // Register in recommended order (outermost first)
+    let mut client = APCore::new();
+    client.use_middleware(Box::new(tracing));
+    client.use_middleware(Box::new(metrics_mw));
+    client.use_middleware(Box::new(logging_mw));
+
+    // After calling modules, inspect results
+    let spans = exporter.get_spans();
+    let prometheus_text = collector.export_prometheus();
+    println!("{}", prometheus_text);
+    ```
 
 ## Dependencies
 

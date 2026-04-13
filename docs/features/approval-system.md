@@ -6,7 +6,7 @@ The Approval System provides runtime enforcement of the `requires_approval` anno
 
 The Approval System is architecturally separate from the ACL System. ACL answers "who is allowed to call this module?" while Approval answers "does this particular invocation need sign-off before proceeding?"
 
-See [PROTOCOL_SPEC §7](../../PROTOCOL_SPEC.md#7-approval-system-approval-system) for the full specification.
+See [PROTOCOL_SPEC §7](../../PROTOCOL_SPEC.md#7-approval-system) for the full specification.
 
 ## Requirements
 
@@ -38,17 +38,33 @@ The approval gate is inserted between ACL Enforcement (Step 4) and Middleware Be
 
 ### ApprovalHandler Protocol
 
-```python
-class ApprovalHandler(Protocol):
-    async def request_approval(self, request: ApprovalRequest) -> ApprovalResult:
-        """Request approval for a module invocation. Returns the decision."""
-        ...
+=== "Python"
+    ```python
+    class ApprovalHandler(Protocol):
+        async def request_approval(self, request: ApprovalRequest) -> ApprovalResult:
+            """Request approval for a module invocation. Returns the decision."""
+            ...
 
-    async def check_approval(self, approval_id: str) -> ApprovalResult:
-        """Check status of a previously pending approval (Phase B).
-        Default implementation SHOULD return rejected."""
-        ...
-```
+        async def check_approval(self, approval_id: str) -> ApprovalResult:
+            """Check status of a previously pending approval (Phase B).
+            Default implementation SHOULD return rejected."""
+            ...
+    ```
+=== "TypeScript"
+    ```typescript
+    interface ApprovalHandler {
+        requestApproval(request: ApprovalRequest): Promise<ApprovalResult>;
+        checkApproval(approvalId: string): Promise<ApprovalResult>;
+    }
+    ```
+=== "Rust"
+    ```rust
+    #[async_trait]
+    pub trait ApprovalHandler: Send + Sync {
+        async fn request_approval(&self, request: ApprovalRequest) -> Result<ApprovalResult, ModuleError>;
+        async fn check_approval(&self, approval_id: &str) -> Result<ApprovalResult, ModuleError>;
+    }
+    ```
 
 Implementations receive an `ApprovalRequest` and return an `ApprovalResult`. The handler may block (waiting for human input via UI, Slack, etc.) or return immediately (auto-approve for testing).
 
@@ -113,6 +129,130 @@ These handlers are provided by the respective bridge packages, not by apcore cor
 |-------|-------|-------------|
 | **Phase A** | Synchronous approval: handler blocks until decision | **MUST** implement for conformance |
 | **Phase B** | Asynchronous approval: `pending` + `approval_id` + retry with `_approval_token` | **MAY** implement |
+
+## Usage
+
+=== "Python"
+    ```python
+    from apcore import APCore
+    from apcore.approval import (
+        ApprovalHandler,
+        ApprovalRequest,
+        ApprovalResult,
+        AutoApproveHandler,
+        CallbackApprovalHandler,
+    )
+
+    # Use the built-in auto-approve handler (for testing)
+    client = APCore()
+    client.executor.approval_handler = AutoApproveHandler()
+
+    # Register a module that requires approval
+    @client.module(
+        id="data.export",
+        description="Export sensitive data",
+        annotations={"requires_approval": True},
+    )
+    def export_data(query: str) -> dict:
+        return {"rows": []}
+
+    # Custom approval handler via callback
+    async def my_approver(request: ApprovalRequest) -> ApprovalResult:
+        # Check with human via Slack, email, etc.
+        approved = await ask_slack(request.module_id, request.arguments)
+        return ApprovalResult(
+            status="approved" if approved else "rejected",
+            approved_by="slack_user@example.com",
+        )
+
+    client.executor.approval_handler = CallbackApprovalHandler(my_approver)
+
+    # Calling a requires_approval module
+    try:
+        result = client.call("data.export", {"query": "SELECT *"})
+    except Exception as e:
+        print(f"Approval denied: {e}")
+    ```
+=== "TypeScript"
+    ```typescript
+    import { APCore } from "apcore-js";
+    import {
+        AutoApproveHandler,
+        CallbackApprovalHandler,
+        ApprovalRequest,
+        ApprovalResult,
+    } from "apcore-js/approval";
+
+    // Use the built-in auto-approve handler (for testing)
+    const client = new APCore();
+    client.executor.approvalHandler = new AutoApproveHandler();
+
+    // Register a module that requires approval
+    client.module({
+        id: "data.export",
+        description: "Export sensitive data",
+        annotations: { requiresApproval: true },
+        inputSchema: { type: "object", properties: { query: { type: "string" } } },
+        outputSchema: { type: "object", properties: { rows: { type: "array" } } },
+        execute: ({ query }: { query: string }) => ({ rows: [] }),
+    });
+
+    // Custom approval handler via callback
+    client.executor.approvalHandler = new CallbackApprovalHandler(
+        async (request: ApprovalRequest): Promise<ApprovalResult> => {
+            const approved = await askSlack(request.moduleId, request.arguments);
+            return { status: approved ? "approved" : "rejected", approvedBy: "slack_user" };
+        }
+    );
+
+    // Calling a requires_approval module
+    try {
+        const result = await client.call("data.export", { query: "SELECT *" });
+    } catch (e) {
+        console.error("Approval denied:", e);
+    }
+    ```
+=== "Rust"
+    ```rust
+    use apcore::APCore;
+    use apcore::approval::{ApprovalHandler, ApprovalRequest, ApprovalResult, AutoApproveHandler};
+    use apcore::errors::ModuleError;
+    use async_trait::async_trait;
+
+    // Use the built-in auto-approve handler (for testing)
+    let mut client = APCore::new();
+    client.executor_mut().set_approval_handler(Box::new(AutoApproveHandler));
+
+    // Custom approval handler
+    struct SlackApprovalHandler;
+
+    #[async_trait]
+    impl ApprovalHandler for SlackApprovalHandler {
+        async fn request_approval(
+            &self,
+            request: ApprovalRequest,
+        ) -> Result<ApprovalResult, ModuleError> {
+            // Ask human via Slack
+            let approved = ask_slack(&request.module_id, &request.arguments).await;
+            Ok(ApprovalResult {
+                status: if approved { "approved" } else { "rejected" }.to_string(),
+                approved_by: Some("slack_user".to_string()),
+                reason: None,
+                approval_id: None,
+                metadata: None,
+            })
+        }
+
+        async fn check_approval(
+            &self,
+            _approval_id: &str,
+        ) -> Result<ApprovalResult, ModuleError> {
+            Ok(ApprovalResult { status: "rejected".to_string(), ..Default::default() })
+        }
+    }
+
+    client.executor_mut().set_approval_handler(Box::new(SlackApprovalHandler));
+    ```
 
 ## Dependencies
 

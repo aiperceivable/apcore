@@ -53,6 +53,109 @@ On Error (if MW3.before fails):
           and recovery walks backwards through executed middlewares)
 ```
 
+## Usage
+
+=== "Python"
+    ```python
+    from apcore import APCore
+    from apcore.middleware import Middleware, BeforeMiddleware, AfterMiddleware
+
+    client = APCore()
+
+    # Subclass-based middleware
+    class AuditMiddleware(Middleware):
+        def before(self, module_id, inputs, context):
+            print(f"[AUDIT] calling {module_id}")
+
+        def after(self, module_id, inputs, output, context):
+            print(f"[AUDIT] {module_id} returned {output}")
+
+    # Register middleware
+    client.use(AuditMiddleware())
+
+    # Lightweight function adapters
+    client.use_before(lambda module_id, inputs, ctx: print(f"Before: {module_id}"))
+    client.use_after(lambda module_id, inputs, out, ctx: print(f"After: {module_id}"))
+
+    @client.module(id="greet", description="Say hello")
+    def greet(name: str) -> dict:
+        return {"message": f"Hello, {name}!"}
+
+    result = client.call("greet", {"name": "World"})
+    ```
+=== "TypeScript"
+    ```typescript
+    import { APCore, Middleware, BeforeMiddleware, AfterMiddleware } from "apcore-js";
+
+    const client = new APCore();
+
+    // Subclass-based middleware
+    class AuditMiddleware extends Middleware {
+        before(moduleId: string, inputs: Record<string, unknown>, context: unknown) {
+            console.log(`[AUDIT] calling ${moduleId}`);
+        }
+
+        after(moduleId: string, inputs: Record<string, unknown>, output: Record<string, unknown>, context: unknown) {
+            console.log(`[AUDIT] ${moduleId} returned`, output);
+        }
+    }
+
+    // Register middleware
+    client.use(new AuditMiddleware());
+
+    // Lightweight function adapters
+    client.use(new BeforeMiddleware((moduleId, inputs, ctx) => console.log(`Before: ${moduleId}`)));
+    client.use(new AfterMiddleware((moduleId, inputs, out, ctx) => console.log(`After: ${moduleId}`)));
+
+    client.module({
+        id: "greet",
+        description: "Say hello",
+        inputSchema: { type: "object", properties: { name: { type: "string" } } },
+        outputSchema: { type: "object", properties: { message: { type: "string" } } },
+        execute: ({ name }: { name: string }) => ({ message: `Hello, ${name}!` }),
+    });
+
+    const result = await client.call("greet", { name: "World" });
+    ```
+=== "Rust"
+    ```rust
+    use apcore::APCore;
+    use apcore::middleware::{Middleware, MiddlewareContext};
+    use apcore::context::Context;
+    use apcore::errors::ModuleError;
+    use async_trait::async_trait;
+    use serde_json::Value;
+
+    struct AuditMiddleware;
+
+    #[async_trait]
+    impl Middleware for AuditMiddleware {
+        async fn before(
+            &self,
+            module_id: &str,
+            inputs: &Value,
+            _ctx: &Context<Value>,
+        ) -> Result<Option<Value>, ModuleError> {
+            println!("[AUDIT] calling {}", module_id);
+            Ok(None)
+        }
+
+        async fn after(
+            &self,
+            module_id: &str,
+            _inputs: &Value,
+            output: &Value,
+            _ctx: &Context<Value>,
+        ) -> Result<Option<Value>, ModuleError> {
+            println!("[AUDIT] {} returned {:?}", module_id, output);
+            Ok(None)
+        }
+    }
+
+    let mut client = APCore::new();
+    client.use_middleware(Box::new(AuditMiddleware));
+    ```
+
 ## Dependencies
 
 - `apcore.context.Context` -- Execution context passed to all middleware methods, provides `trace_id`, `caller_id`, `redacted_inputs`, and `data` dict for per-call state storage.

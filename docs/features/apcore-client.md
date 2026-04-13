@@ -19,7 +19,7 @@ The APCore class is the recommended high-level entry point for the apcore framew
 
 ### Execution
 - Provide synchronous (`call()`), asynchronous (`call_async()`), and streaming (`stream()`) execution methods that delegate to the underlying Executor.
-- Provide a non-destructive preflight validation method (`validate()`) that runs pipeline steps 1–6 without executing the module.
+- Provide a non-destructive preflight validation method (`validate()`) that runs pipeline steps 1–6 plus optional module-level preflight (7 checks total) without executing the module.
 
 ### Middleware
 - Support chainable middleware registration: `use()`, `use_before()`, `use_after()`.
@@ -84,6 +84,9 @@ When a Config with `sys_modules.enabled: true` is provided:
 | **Properties** | `registry` | Registry | Underlying registry |
 | | `executor` | Executor | Underlying executor |
 | | `events` | EventEmitter \| None | Event emitter (if configured) |
+
+!!! note "Sync/async divergence"
+    Python `call()` is synchronous and blocks until the module returns. TypeScript and Rust `call()` return a `Promise`/`Future` and **MUST** be awaited. Python provides a separate `call_async()` for async contexts (e.g., inside `async def` functions or running under an event loop).
 
 ### Internal Callback Subscriber
 

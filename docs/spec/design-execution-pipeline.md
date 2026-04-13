@@ -161,7 +161,7 @@ PipelineContext {
 > **Field availability:** Steps MUST check for `nil` before reading fields set by
 > other steps. For example, a custom step inserted before `module_lookup` will see
 > `ctx.module == nil`. The standard pipeline guarantees field availability order:
-> `module` available after step 3, `validated_inputs` after step 6, `output` after
+> `module` available after step 3, `validated_inputs` after step 7, `output` after
 > step 8, `validated_output` after step 9. Custom pipelines that reorder steps
 > must handle nil fields accordingly.
 
@@ -421,7 +421,7 @@ def build_standard_strategy(
         name="standard",
         steps=[
             BuiltinContextCreation(config=config),
-            BuiltinSafetyCheck(config=config),
+            BuiltinCallChainGuard(config=config),
             BuiltinModuleLookup(registry=registry),
             BuiltinACLCheck(acl=acl),
             BuiltinApprovalGate(handler=approval_handler),
@@ -1220,7 +1220,7 @@ Sync steps simply return immediately without awaiting anything.
 | Step | All SDKs |
 |------|----------|
 | 2.1 | Extract current executor Step 1 (context creation) into `BuiltinContextCreation` |
-| 2.2 | Extract Step 2 (safety check) into `BuiltinSafetyCheck` |
+| 2.2 | Extract Step 2 (call chain guard) into `BuiltinCallChainGuard` |
 | 2.3 | Extract Step 3 (module lookup) into `BuiltinModuleLookup` |
 | 2.4 | Extract Step 4 (ACL) into `BuiltinACLCheck` |
 | 2.5 | Extract Step 5 (approval) into `BuiltinApprovalGate` |

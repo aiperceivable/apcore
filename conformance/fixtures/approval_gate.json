@@ -1,0 +1,66 @@
+{
+  "description": "Approval gate enforcement at Executor Step 5. Verifies gate fires only when both handler is configured and module declares requires_approval=true, and that all four result statuses map to the correct outcomes.",
+  "algorithm": "A05",
+  "test_cases": [
+    {
+      "id": "skip_when_no_handler",
+      "description": "Gate is skipped entirely when no ApprovalHandler is configured",
+      "approval_handler_configured": false,
+      "module_requires_approval": true,
+      "approval_result": null,
+      "expected": {
+        "gate_invoked": false,
+        "outcome": "proceed"
+      }
+    },
+    {
+      "id": "skip_when_approval_not_required",
+      "description": "Gate is skipped when handler is configured but module does not declare requires_approval=true",
+      "approval_handler_configured": true,
+      "module_requires_approval": false,
+      "approval_result": null,
+      "expected": {
+        "gate_invoked": false,
+        "outcome": "proceed"
+      }
+    },
+    {
+      "id": "gate_fires_approved",
+      "description": "Gate fires and allows execution when handler returns approved",
+      "approval_handler_configured": true,
+      "module_requires_approval": true,
+      "approval_result": { "status": "approved", "approved_by": "auto", "reason": null, "approval_id": null, "metadata": null },
+      "expected": {
+        "gate_invoked": true,
+        "outcome": "proceed"
+      }
+    },
+    {
+      "id": "gate_fires_rejected",
+      "description": "Gate fires and raises ApprovalDeniedError (APPROVAL_DENIED / HTTP 403) when handler returns rejected",
+      "approval_handler_configured": true,
+      "module_requires_approval": true,
+      "approval_result": { "status": "rejected", "approved_by": null, "reason": "Policy violation", "approval_id": null, "metadata": null },
+      "expected": {
+        "gate_invoked": true,
+        "outcome": "error",
+        "error_code": "APPROVAL_DENIED",
+        "http_status": 403
+      }
+    },
+    {
+      "id": "gate_fires_pending",
+      "description": "Gate fires and raises ApprovalPendingError (APPROVAL_PENDING / HTTP 202) when handler returns pending with approval_id",
+      "approval_handler_configured": true,
+      "module_requires_approval": true,
+      "approval_result": { "status": "pending", "approved_by": null, "reason": null, "approval_id": "req-abc123", "metadata": null },
+      "expected": {
+        "gate_invoked": true,
+        "outcome": "error",
+        "error_code": "APPROVAL_PENDING",
+        "http_status": 202,
+        "approval_id": "req-abc123"
+      }
+    }
+  ]
+}

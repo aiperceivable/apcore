@@ -104,6 +104,8 @@ nav:
       - Algorithm Reference: spec/algorithms.md
       - Type Mapping: spec/type-mapping.md
       - Conformance Definition: spec/conformance.md
+      - Execution Pipeline Design: spec/design-execution-pipeline.md
+      - Pipeline v2 RFC: spec/design-pipeline-v2.md
 
 extra:
   social:

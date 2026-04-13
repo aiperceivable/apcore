@@ -96,7 +96,7 @@ Streaming chunk accumulation uses recursive deep merge (depth-capped at 32) inst
 
 ### Validation (Preflight)
 
-The `validate()` method provides a non-destructive preflight check that runs Steps 1–6 of the pipeline (module ID format, module lookup, call chain safety, ACL, approval detection, schema validation) without executing module code or middleware. It returns a `PreflightResult` with per-check results and a `requires_approval` flag. The result is duck-type compatible with the legacy `ValidationResult` — `.valid` and `.errors` properties work identically.
+The `validate()` method provides a non-destructive preflight check that runs Steps 1–5 and Step 7 of the pipeline (module ID format, module lookup, call chain safety, ACL, approval detection, and input schema validation — skipping Step 6 Middleware Before Chain), plus an optional module-level preflight check, without executing module code or middleware. It returns a `PreflightResult` with per-check results and a `requires_approval` flag. The result is duck-type compatible with the legacy `ValidationResult` — `.valid` and `.errors` properties work identically.
 
 ## Dependencies
 

@@ -69,6 +69,118 @@ The registry provides several query methods:
 - `list(tags=None, prefix=None)` -- Returns all registered modules, optionally filtered by tags and/or ID prefix. When `tags` is provided, only modules whose metadata includes the specified tag(s) are returned. When `prefix` is provided, only modules whose IDs start with the given prefix are returned. Both filters can be combined.
 - `get_definition(module_id)` -- Returns a `ModuleDescriptor` for the specified module, including exported schemas.
 
+## Usage
+
+=== "Python"
+    ```python
+    from apcore.registry import Registry
+    from apcore.executor import Executor
+
+    # Create registry and register a module manually
+    registry = Registry()
+
+    class AddModule:
+        description = "Add two integers"
+        input_schema = {"type": "object", "properties": {"a": {"type": "integer"}, "b": {"type": "integer"}}}
+        output_schema = {"type": "object", "properties": {"sum": {"type": "integer"}}}
+
+        async def execute(self, inputs, ctx):
+            return {"sum": inputs["a"] + inputs["b"]}
+
+    registry.register("math.add", AddModule())
+
+    # Query the registry
+    module_ids = registry.list()                         # ["math.add"]
+    filtered = registry.list(tags=["math"])              # filter by tag
+    mod = registry.get("math.add")                       # retrieve module
+    descriptor = registry.get_definition("math.add")     # ModuleDescriptor with schemas
+
+    # Auto-discover from a directory
+    registry.discover(extension_dirs=["./modules"])
+
+    # Subscribe to register/unregister events
+    def on_register(module_id, metadata):
+        print(f"Registered: {module_id}")
+
+    registry.on("register", on_register)
+
+    # Wire into executor
+    executor = Executor(registry=registry)
+    ```
+=== "TypeScript"
+    ```typescript
+    import { Registry } from "apcore-js/registry";
+    import { Executor } from "apcore-js/executor";
+
+    // Create registry and register a module manually
+    const registry = new Registry();
+
+    registry.register("math.add", {
+        description: "Add two integers",
+        inputSchema: { type: "object", properties: { a: { type: "number" }, b: { type: "number" } } },
+        outputSchema: { type: "object", properties: { sum: { type: "number" } } },
+        execute: ({ a, b }: { a: number; b: number }) => ({ sum: a + b }),
+    });
+
+    // Query the registry
+    const moduleIds = registry.list();                        // ["math.add"]
+    const filtered = registry.list({ tags: ["math"] });       // filter by tag
+    const mod = registry.get("math.add");                     // retrieve module
+    const descriptor = registry.getDefinition("math.add");    // ModuleDescriptor with schemas
+
+    // Auto-discover from a directory
+    await registry.discover({ extensionDirs: ["./modules"] });
+
+    // Subscribe to register/unregister events
+    registry.on("register", (moduleId, metadata) => {
+        console.log(`Registered: ${moduleId}`);
+    });
+
+    // Wire into executor
+    const executor = new Executor({ registry });
+    ```
+=== "Rust"
+    ```rust
+    use apcore::registry::Registry;
+    use apcore::executor::Executor;
+    use apcore::module::Module;
+    use apcore::context::Context;
+    use apcore::errors::ModuleError;
+    use async_trait::async_trait;
+    use serde_json::{json, Value};
+
+    struct AddModule;
+
+    #[async_trait]
+    impl Module for AddModule {
+        fn description(&self) -> &str { "Add two integers" }
+        fn input_schema(&self) -> Value {
+            json!({"type": "object", "properties": {"a": {"type": "integer"}, "b": {"type": "integer"}}})
+        }
+        fn output_schema(&self) -> Value {
+            json!({"type": "object", "properties": {"sum": {"type": "integer"}}})
+        }
+        async fn execute(&self, inputs: Value, _ctx: &Context<Value>) -> Result<Value, ModuleError> {
+            let sum = inputs["a"].as_i64().unwrap_or(0) + inputs["b"].as_i64().unwrap_or(0);
+            Ok(json!({"sum": sum}))
+        }
+    }
+
+    let mut registry = Registry::new();
+    registry.register("math.add", Box::new(AddModule))?;
+
+    // Query the registry
+    let module_ids = registry.module_ids();           // vec!["math.add"]
+    let has_mod = registry.has("math.add");           // true
+    let count = registry.count();                     // 1
+
+    // Auto-discover from a directory
+    registry.discover(&["./modules"])?;
+
+    // Wire into executor
+    let executor = Executor::from_registry(registry);
+    ```
+
 ## Dependencies
 
 - **Schema System** -- The registry uses the Schema System (step 6 of the discovery pipeline) to load and validate module schemas.

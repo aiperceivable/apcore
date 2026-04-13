@@ -125,6 +125,89 @@ All binding-related errors inherit from `ModuleError`:
 - `BindingSchemaMissingError` -- Auto-schema failed on untyped callable (code: `BINDING_SCHEMA_MISSING`).
 - `BindingFileInvalidError` -- YAML file issues (missing, empty, parse error, structural) (code: `BINDING_FILE_INVALID`).
 
+## Language Equivalents
+
+The `@module` decorator and `BindingLoader` are Python SDK idioms. TypeScript and Rust provide equivalent ergonomics in their own idiom:
+
+=== "Python"
+    ```python
+    from apcore import APCore
+
+    client = APCore()
+
+    # Decorator form
+    @client.module(id="text.upper", description="Convert text to uppercase", tags=["text"])
+    def to_upper(text: str) -> dict:
+        return {"result": text.upper()}
+
+    # Bare decorator (auto-generates ID from module path + function name)
+    @client.module
+    def greet(name: str) -> dict:
+        """Greet a user by name."""
+        return {"message": f"Hello, {name}!"}
+
+    # YAML binding (declarative, no code changes needed)
+    # bindings.yaml:
+    #   bindings:
+    #     - module_id: "text.upper"
+    #       target: "myapp.handlers:to_upper"
+    #       description: "Convert text to uppercase"
+    from apcore.bindings import BindingLoader
+    from apcore.registry import Registry
+    registry = Registry()
+    BindingLoader().load_bindings("bindings.yaml", registry)
+    ```
+=== "TypeScript"
+    ```typescript
+    import { APCore } from "apcore-js";
+
+    const client = new APCore();
+
+    // defineModule() call form (TypeScript primary idiom)
+    client.module({
+        id: "text.upper",
+        description: "Convert text to uppercase",
+        tags: ["text"],
+        inputSchema: { type: "object", properties: { text: { type: "string" } } },
+        outputSchema: { type: "object", properties: { result: { type: "string" } } },
+        execute: ({ text }: { text: string }) => ({ result: text.toUpperCase() }),
+    });
+
+    // Decorator form (TypeScript decorators, requires experimentalDecorators)
+    // @apmodule({ id: "text.upper", description: "..." })
+    // class UpperModule implements Module { ... }
+    ```
+=== "Rust"
+    ```rust
+    use apcore::APCore;
+    use apcore::module::Module;
+    use apcore::context::Context;
+    use apcore::errors::ModuleError;
+    use async_trait::async_trait;
+    use serde_json::{json, Value};
+
+    // Rust primary idiom: implement the Module trait
+    struct UpperModule;
+
+    #[async_trait]
+    impl Module for UpperModule {
+        fn description(&self) -> &str { "Convert text to uppercase" }
+        fn input_schema(&self) -> Value {
+            json!({"type": "object", "properties": {"text": {"type": "string"}}})
+        }
+        fn output_schema(&self) -> Value {
+            json!({"type": "object", "properties": {"result": {"type": "string"}}})
+        }
+        async fn execute(&self, inputs: Value, _ctx: &Context<Value>) -> Result<Value, ModuleError> {
+            let text = inputs["text"].as_str().unwrap_or("").to_uppercase();
+            Ok(json!({"result": text}))
+        }
+    }
+
+    let mut client = APCore::new();
+    client.register("text.upper", Box::new(UpperModule)).unwrap();
+    ```
+
 ## Dependencies
 
 - `apcore.context.Context` -- Injected into wrapped functions when a Context-typed parameter is detected.
