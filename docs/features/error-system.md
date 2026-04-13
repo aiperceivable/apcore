@@ -190,6 +190,8 @@ The framework defines error subclasses grouped by domain. Each subclass sets an 
 | Error Class | Code | Retryable | Description |
 |---|---|---|---|
 | `ErrorCodeCollisionError` | `ERROR_CODE_COLLISION` | — | Error code collides with existing registration |
+| `VersionIncompatibleError` | `VERSION_INCOMPATIBLE` | — | Module declared version incompatible with SDK version |
+| `ErrorFormatterDuplicateError` | `ERROR_FORMATTER_DUPLICATE` | — | Error formatter already registered for adapter name |
 | `DependencyNotFoundError` | `DEPENDENCY_NOT_FOUND` | — | Required module dependency not found |
 
 #### Type Annotation Errors
@@ -284,6 +286,58 @@ The `ErrorCodeRegistry` enables modules to register custom error codes at runtim
 **Reserved framework error code prefixes:**
 
 `MODULE_`, `SCHEMA_`, `ACL_`, `GENERAL_`, `CONFIG_`, `CIRCULAR_`, `DEPENDENCY_`, `CALL_`, `FUNC_`, `BINDING_`, `MIDDLEWARE_`, `APPROVAL_`, `VERSION_`, `ERROR_CODE_`
+
+### ErrorFormatterRegistry
+
+The `ErrorFormatterRegistry` enables adapters (MCP, OpenAI, etc.) to register custom error formatters that transform `ModuleError` instances into adapter-specific error responses.
+
+=== "Python"
+    ```python
+    from apcore.errors import ErrorFormatterRegistry, ModuleError
+
+    # Register a formatter for an adapter
+    ErrorFormatterRegistry.register("mcp", lambda error, ctx: {
+        "code": error.code,
+        "message": error.message,
+    })
+
+    # Format an error for a specific adapter
+    formatted = ErrorFormatterRegistry.format("mcp", some_error)
+
+    # Get a registered formatter
+    formatter = ErrorFormatterRegistry.get("mcp")
+    ```
+=== "TypeScript"
+    ```typescript
+    import { ErrorFormatterRegistry, ModuleError } from "apcore-js";
+
+    // Register a formatter for an adapter
+    ErrorFormatterRegistry.register("mcp", (error, ctx) => ({
+        code: error.code,
+        message: error.message,
+    }));
+
+    // Format an error for a specific adapter
+    const formatted = ErrorFormatterRegistry.format("mcp", someError);
+
+    // Get a registered formatter
+    const formatter = ErrorFormatterRegistry.get("mcp");
+    ```
+=== "Rust"
+    ```rust
+    use apcore::errors::{ErrorFormatterRegistry, ModuleError};
+
+    // Register a formatter for an adapter
+    ErrorFormatterRegistry::register("mcp", Box::new(McpFormatter))?;
+
+    // Format an error for a specific adapter
+    let formatted = ErrorFormatterRegistry::format("mcp", &some_error, None);
+
+    // Check if a formatter is registered
+    let exists = ErrorFormatterRegistry::is_registered("mcp");
+    ```
+
+Registering a duplicate adapter name raises `ErrorFormatterDuplicateError`.
 
 ### Serialization
 

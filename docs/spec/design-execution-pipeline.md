@@ -1036,7 +1036,7 @@ class PipelineEngine:
         trace.total_duration_ms = (time.monotonic() - start) * 1000
         # Return the most-processed output available:
         # validated_output (if output_validation ran) > output (if only execute ran).
-        # For VALIDATE_ONLY strategy: BuiltinValidateOnly sets ctx.output to a
+        # For dry_run mode: the pipeline sets ctx.output to a
         # validation summary dict (not None), so final_output is meaningful.
         # If both are None (degenerate pipeline), returns None.
         final_output = ctx.validated_output if ctx.validated_output is not None else ctx.output

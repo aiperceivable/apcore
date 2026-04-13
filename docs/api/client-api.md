@@ -882,7 +882,7 @@ Requires `sys_modules.events.enabled: true` in config.
     async def on_error(event):
         await notify_admin(event.data)
 
-    sub = client.on("error_threshold_exceeded", on_error)
+    sub = client.on("apcore.error.threshold_exceeded", on_error)
     ```
 
 === "TypeScript"
@@ -942,8 +942,8 @@ Requires `sys_modules.events.enabled: true` in config.
 | `apcore.module.reloaded` | Module hot-reloaded via `system.control.reload_module` |
 | `apcore.module.toggled` | Module disabled/enabled via `system.control.toggle_feature` |
 | `apcore.health.recovered` | Module error rate recovered below threshold |
-| `error_threshold_exceeded` | Module error rate crosses threshold |
-| `latency_threshold_exceeded` | Module p99 latency exceeds threshold |
+| `apcore.error.threshold_exceeded` | Module error rate crosses threshold |
+| `apcore.latency.threshold_exceeded` | Module p99 latency exceeds threshold |
 
 ### 7.4 Direct EventEmitter Access
 

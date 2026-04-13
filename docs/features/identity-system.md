@@ -142,8 +142,8 @@ The ACL System uses the Identity for access control decisions. ACL rules can mat
 **Identity type conditions:**
 ```yaml
 rules:
-  - caller: "*"
-    target: "admin.*"
+  - callers: ["*"]
+    targets: ["admin.*"]
     effect: allow
     conditions:
       identity_types: ["user"]   # Only human users can call admin modules
@@ -152,8 +152,8 @@ rules:
 **Role-based conditions:**
 ```yaml
 rules:
-  - caller: "*"
-    target: "billing.*"
+  - callers: ["*"]
+    targets: ["billing.*"]
     effect: allow
     conditions:
       roles: ["finance", "admin"]   # Requires one of these roles

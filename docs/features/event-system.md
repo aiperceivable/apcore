@@ -211,7 +211,7 @@ sys_modules:
     client = APCore(config=config)
 
     # Subscribe with simple callback
-    sub = client.on("error_threshold_exceeded", lambda e: print(f"Alert: {e.data}"))
+    sub = client.on("apcore.error.threshold_exceeded", lambda e: print(f"Alert: {e.data}"))
 
     # Async handler
     async def notify_admin(event):
@@ -234,7 +234,7 @@ sys_modules:
     const client = new APCore({ config });
 
     // Subscribe with simple callback
-    const sub = client.on("error_threshold_exceeded", (event) => console.log(event.data));
+    const sub = client.on("apcore.error.threshold_exceeded", (event) => console.log(event.data));
 
     // Another subscription
     const sub2 = client.on("apcore.module.toggled", (event) => console.log(event.data));
@@ -254,7 +254,7 @@ sys_modules:
     let client = APCore::from_path("apcore.yaml")?;
 
     // Subscribe with simple callback
-    let sub = client.on("error_threshold_exceeded", Box::new(AlertSubscriber));
+    let sub = client.on("apcore.error.threshold_exceeded", Box::new(AlertSubscriber));
 
     // Another subscription
     let sub2 = client.on("apcore.module.toggled", Box::new(MySubscriber));

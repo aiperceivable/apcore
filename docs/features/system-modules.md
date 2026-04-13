@@ -461,8 +461,8 @@ sys_modules:
   events:
     enabled: true                 # Required for control modules
     thresholds:
-      error_rate: 0.1             # 10% triggers error_threshold_exceeded
-      latency_p99_ms: 5000.0      # 5s triggers latency_threshold_exceeded
+      error_rate: 0.1             # 10% triggers apcore.error.threshold_exceeded
+      latency_p99_ms: 5000.0      # 5s triggers apcore.latency.threshold_exceeded
     subscribers:
       - type: "webhook"
         url: "https://platform.example.com/events"

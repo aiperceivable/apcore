@@ -194,7 +194,7 @@ For complete usage examples with all three languages, see the [APCore Client API
     client = APCore(config=config)
 
     # System modules, metrics, and events are auto-configured
-    sub = client.on("error_threshold_exceeded", lambda e: alert(e.data))
+    sub = client.on("apcore.error.threshold_exceeded", lambda e: alert(e.data))
 
     # Runtime control
     client.disable("risky.module", reason="Investigating issue")
@@ -207,7 +207,7 @@ For complete usage examples with all three languages, see the [APCore Client API
     const client = new APCore({ config });
 
     // System modules, metrics, and events are auto-configured
-    const sub = client.on("error_threshold_exceeded", (e) => alert(e.data));
+    const sub = client.on("apcore.error.threshold_exceeded", (e) => alert(e.data));
 
     // Runtime control
     await client.disable("risky.module", "Investigating issue");
@@ -219,7 +219,7 @@ For complete usage examples with all three languages, see the [APCore Client API
     let client = APCore::from_path("apcore.yaml")?;
 
     // System modules, metrics, and events are auto-configured
-    let sub = client.on("error_threshold_exceeded", Box::new(AlertSubscriber));
+    let sub = client.on("apcore.error.threshold_exceeded", Box::new(AlertSubscriber));
 
     // Runtime control
     client.disable("risky.module", Some("Investigating issue"))?;

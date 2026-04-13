@@ -25,7 +25,7 @@ Adds an `extra` extension dictionary to `ModuleAnnotations` for ecosystem packag
 - Python: `cache_key_fields` stored as `tuple[str, ...] | None`, `extra` shallow-copied in `__post_init__`
 - TypeScript: 5 optional fields become required with defaults; `createAnnotations()` factory
 - TypeScript: `toJSON()` / `fromJSON()` with snake_case wire format
-- Rust: `#[serde(flatten)]` on `extra` for automatic unknown key capture
+- Rust: custom `Deserialize` impl captures unknown keys into nested `extra` field (see PROTOCOL_SPEC §4.4.1)
 - All: `DEFAULT_ANNOTATIONS` constant
 - Ecosystem migration: apcore-cli `approval_message` -> `extra["cli.approval_message"]`
 - Forward compatibility: unknown top-level keys in deserialized JSON placed into `extra`
@@ -298,7 +298,7 @@ impl Default for ModuleAnnotations {
 ```
 
 **Rust-specific notes:**
-- `#[serde(flatten)]` on `extra` automatically captures unknown JSON keys during deserialization. This provides forward compatibility without custom deserialization code.
+- Custom `Deserialize` impl captures unknown JSON keys into a nested `extra` field (per PROTOCOL_SPEC §4.4.1). The wire format is `{"extra": {"key": "value"}}`, not flattened. This ensures cross-language serialization consistency.
 - `cache_ttl: u64` is inherently non-negative (no validation needed).
 - `pagination_style: String` (already a String in Rust, no change needed).
 
@@ -330,7 +330,7 @@ Rules:
 
 - **Frozen dataclass (Python)**: `__post_init__` must use `object.__setattr__` to mutate fields on frozen instance. This is a standard Python pattern.
 - **Object.freeze (TypeScript)**: `createAnnotations()` returns frozen object. Mutation attempts throw in strict mode, fail silently in non-strict mode.
-- **serde(flatten) (Rust)**: `#[serde(flatten)]` has minor performance overhead due to intermediate buffering during deserialization. Acceptable for annotations (serialized once per module registration, not per-call).
+- **Custom deserialization (Rust)**: Custom `Deserialize` impl for nested `extra` field adds minimal overhead. Acceptable for annotations (serialized once per module registration, not per-call).
 
 ## Acceptance Criteria
 
@@ -346,7 +346,7 @@ Rules:
 | AC-025 | `fromJSON()` converts snake_case to camelCase internally | Unit test: parse `{"requires_approval": true}`, assert `requiresApproval === true` |
 | AC-026 | Round-trip: `fromJSON(toJSON(annotations))` preserves all fields | Unit test: construct with extra, toJSON, fromJSON, deep equality check |
 | AC-027 | Negative `cache_ttl` clamped to 0 with WARN log (Python/TS) | Unit test: construct with `cache_ttl=-5`, assert `cache_ttl == 0` |
-| AC-028 | Rust `#[serde(flatten)]` captures unknown JSON keys into `extra` | Unit test: deserialize JSON with `"future_field": 42`, assert `extra["future_field"]` |
+| AC-028 | Rust custom deserialize captures unknown JSON keys into nested `extra` | Unit test: deserialize JSON with `"extra": {"future_field": 42}`, assert `extra["future_field"]` |
 
 ## Error Handling
 
@@ -370,7 +370,7 @@ apcore-typescript/src/
 └── index.ts                      # Re-export new functions
 
 apcore-rust/src/
-└── module.rs                     # ModuleAnnotations struct (modify: add extra with serde(flatten))
+└── module.rs                     # ModuleAnnotations struct (modify: add extra with custom Deserialize)
 ```
 
 ## Test Module
