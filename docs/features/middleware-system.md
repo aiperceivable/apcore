@@ -104,8 +104,8 @@ On Error (if MW3.before fails):
     client.use(new AuditMiddleware());
 
     // Lightweight function adapters
-    client.use(new BeforeMiddleware((moduleId, inputs, ctx) => console.log(`Before: ${moduleId}`)));
-    client.use(new AfterMiddleware((moduleId, inputs, out, ctx) => console.log(`After: ${moduleId}`)));
+    client.useBefore((moduleId, inputs, ctx) => { console.log(`Before: ${moduleId}`); return null; });
+    client.useAfter((moduleId, inputs, out, ctx) => { console.log(`After: ${moduleId}`); return null; });
 
     client.module({
         id: "greet",

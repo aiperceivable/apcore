@@ -98,6 +98,95 @@ Streaming chunk accumulation uses recursive deep merge (depth-capped at 32) inst
 
 The `validate()` method provides a non-destructive preflight check that runs Steps 1–5 and Step 7 of the pipeline (module ID format, module lookup, call chain safety, ACL, approval detection, and input schema validation — skipping Step 6 Middleware Before Chain), plus an optional module-level preflight check, without executing module code or middleware. It returns a `PreflightResult` with per-check results and a `requires_approval` flag. The result is duck-type compatible with the legacy `ValidationResult` — `.valid` and `.errors` properties work identically.
 
+## Usage
+
+=== "Python"
+    ```python
+    import apcore
+    from apcore import APCore, Config, Identity
+
+    # Build a client with default config
+    client = APCore(Config())
+
+    # Register a module
+    @client.module(
+        module_id="math.add",
+        description="Add two numbers",
+    )
+    def add(inputs, ctx):
+        return {"sum": inputs["a"] + inputs["b"]}
+
+    # Synchronous call
+    result = client.call("math.add", {"a": 1, "b": 2})
+    print(result)  # {"sum": 3}
+
+    # Async call
+    import asyncio
+
+    async def main():
+        result = await client.call_async("math.add", {"a": 10, "b": 20})
+        print(result)  # {"sum": 30}
+
+    asyncio.run(main())
+    ```
+
+=== "TypeScript"
+    ```typescript
+    import { APCore } from 'apcore';
+
+    const client = new APCore();
+
+    // Register a module
+    client.module({
+        id: 'math.add',
+        description: 'Add two numbers',
+        inputSchema: { type: 'object', properties: { a: { type: 'number' }, b: { type: 'number' } }, required: ['a', 'b'] },
+        outputSchema: { type: 'object', properties: { sum: { type: 'number' } } },
+        execute: ({ a, b }: { a: number; b: number }) => ({ sum: a + b }),
+    });
+
+    // Call the module
+    const result = await client.call('math.add', { a: 1, b: 2 });
+    console.log(result); // { sum: 3 }
+    ```
+
+=== "Rust"
+    ```rust
+    use apcore::APCore;
+    use apcore::context::Context;
+    use apcore::errors::ModuleError;
+    use apcore::module::Module;
+    use async_trait::async_trait;
+    use serde_json::{json, Value};
+
+    struct AddModule;
+
+    #[async_trait]
+    impl Module for AddModule {
+        fn input_schema(&self) -> Value {
+            json!({ "type": "object", "properties": { "a": { "type": "number" }, "b": { "type": "number" } }, "required": ["a", "b"] })
+        }
+        fn output_schema(&self) -> Value {
+            json!({ "type": "object", "properties": { "sum": { "type": "number" } } })
+        }
+        fn description(&self) -> &'static str { "Add two numbers" }
+        async fn execute(&self, input: Value, _ctx: &Context<Value>) -> Result<Value, ModuleError> {
+            let a = input["a"].as_f64().unwrap_or(0.0);
+            let b = input["b"].as_f64().unwrap_or(0.0);
+            Ok(json!({ "sum": a + b }))
+        }
+    }
+
+    #[tokio::main]
+    async fn main() {
+        let client = APCore::default();
+        client.register("math.add", Box::new(AddModule));
+
+        let result = client.call("math.add", json!({"a": 1.0, "b": 2.0})).await.unwrap();
+        println!("{result}"); // {"sum":3.0}
+    }
+    ```
+
 ## Dependencies
 
 - **Registry** -- Module lookup (step 3) depends on the Registry system to resolve module names to loaded module instances.

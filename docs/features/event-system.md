@@ -161,18 +161,18 @@ register_subscriber_type("my_type", my_factory)
 
 Events emitted by the framework:
 
-| Event Type | Legacy Alias | Severity | Source | Payload (`data`) |
-|------------|-------------|----------|--------|-------------------|
-| `module_registered` | — | info | Registry bridge | `module_id` |
-| `module_unregistered` | — | info | Registry bridge | `module_id` |
-| `apcore.config.updated` | `config_changed` | info | `system.control.update_config` | `key`, `old_value`, `new_value` |
-| `apcore.module.reloaded` | `config_changed` | info | `system.control.reload_module` | `module_id`, `previous_version`, `new_version` |
-| `apcore.module.toggled` | `module_health_changed` | info | `system.control.toggle_feature` | `module_id`, `enabled` |
-| `apcore.health.recovered` | `module_health_changed` | info | `PlatformNotifyMiddleware` | `module_id`, recovery details |
-| `apcore.error.threshold_exceeded` | `error_threshold_exceeded` | error | `PlatformNotifyMiddleware` | `module_id`, `error_rate`, `threshold` |
-| `apcore.latency.threshold_exceeded` | `latency_threshold_exceeded` | warn | `PlatformNotifyMiddleware` | `module_id`, `p99_latency_ms`, `threshold` |
+| Event Type | Severity | Source | Payload (`data`) |
+|------------|----------|--------|-------------------|
+| `module_registered` | info | Registry bridge | `module_id` |
+| `module_unregistered` | info | Registry bridge | `module_id` |
+| `apcore.config.updated` | info | `system.control.update_config` | `key`, `old_value`, `new_value` |
+| `apcore.module.reloaded` | info | `system.control.reload_module` | `module_id`, `previous_version`, `new_version` |
+| `apcore.module.toggled` | info | `system.control.toggle_feature` | `module_id`, `enabled` |
+| `apcore.health.recovered` | info | `PlatformNotifyMiddleware` | `module_id`, recovery details |
+| `apcore.error.threshold_exceeded` | error | `PlatformNotifyMiddleware` | `module_id`, `error_rate`, `threshold` |
+| `apcore.latency.threshold_exceeded` | warn | `PlatformNotifyMiddleware` | `module_id`, `p99_latency_ms`, `threshold` |
 
-> **Note (§9.16):** Canonical `apcore.*` names are the only supported event types as of v0.18.0. Legacy aliases (`config_changed`, `module_health_changed`) were removed in v0.18.0 — subscribe to canonical names only.
+> **Note (§9.16):** As of v0.18.0, only canonical `apcore.*` event names are supported. Legacy aliases were removed in v0.18.0 — subscribe to canonical names only.
 
 ## Configuration
 
