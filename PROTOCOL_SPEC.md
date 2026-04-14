@@ -5,7 +5,7 @@
 > Version: 1.6.0-draft
 > Status: Draft Specification (RFC 2119 Conformant)
 > Stability: Specification content is stable, pending reference implementation verification
-> Last Updated: 2026-04-08
+> Last Updated: 2026-04-14
 
 ---
 
@@ -114,7 +114,7 @@ Core terms used in this specification are defined as follows:
 
 | Term | English | Definition |
 |------|------|------|
-| Module | Module | Basic execution unit of apcore, encapsulates a function, **must** define `input_schema`, `output_schema`, and `description` (≤200 characters). Can optionally define `documentation` (≤5000 characters) to provide detailed documentation |
+| Module | Module | Basic execution unit of apcore, encapsulates a function, **MUST** define `input_schema`, `output_schema`, and `description` (≤200 characters). Can optionally define `documentation` (≤5000 characters) to provide detailed documentation |
 | Schema | Schema | Data structure definition based on JSON Schema Draft 2020-12, used for validating input/output and for AI/LLM understanding |
 | Canonical ID | Canonical ID | Globally unique identifier for a module, automatically generated from directory path, format is dot-separated snake_case (e.g., `executor.email.send_email`) |
 | Registry | Registry | Core component responsible for module discovery, registration, loading, and management |
@@ -605,9 +605,9 @@ All modules **must** define `input_schema` and `output_schema` to support:
 |------|------|------|
 | Draft 2020-12 core vocabulary | **MUST** | type, properties, required, $ref, etc. |
 | Draft 2020-12 validation vocabulary | **MUST** | minimum, maximum, pattern, enum, etc. |
-| `$schema` declaration | **SHOULD** | Schema files **should** declare `$schema` field |
-| `x-` extension prefix | **MUST** | Custom extension fields **must** be named with `x-` prefix |
-| `additionalProperties` | **SHOULD** | input_schema **should** explicitly declare `additionalProperties: false` |
+| `$schema` declaration | **SHOULD** | Schema files **SHOULD** declare `$schema` field |
+| `x-` extension prefix | **MUST** | Custom extension fields **MUST** be named with `x-` prefix |
+| `additionalProperties` | **SHOULD** | input_schema **SHOULD** explicitly declare `additionalProperties: false` |
 
 ```yaml
 # schemas/executor/validator/db_params.schema.yaml
@@ -1943,7 +1943,7 @@ module_isolation:
 
 ### 5.6 Module Interface Protocol
 
-All modules **must** provide the following interface. Modules can be defined via a **decorator** (primary approach), a **class-based pattern** (no ABC inheritance required), or a **function call**. Implementations **MUST NOT** require modules to inherit from an abstract base class.
+All modules **MUST** provide the following interface. Modules can be defined via a **decorator** (primary approach), a **class-based pattern** (no ABC inheritance required), or a **function call**. Implementations **MUST NOT** require modules to inherit from an abstract base class.
 
 **Primary approach: Decorator**
 
@@ -6200,7 +6200,7 @@ Rules:
 
 ### 11.6 Extension Point Interface Formalization
 
-Implementations **should** support the following extension points, each **must** define clear interface contract:
+Implementations **SHOULD** support the following extension points. Each supported extension point **MUST** define a clear interface contract:
 
 ```
 Extension Point: SchemaLoader

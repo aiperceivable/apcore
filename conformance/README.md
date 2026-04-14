@@ -22,6 +22,26 @@ Shared JSON fixtures for cross-language conformance testing. All SDK implementat
 | `approval_gate.json` | A05 | Approval gate Step 5: skip/fire conditions and all four result-status outcomes |
 | `middleware_on_error_recovery.json` | A11 | After-middleware error recovery: first-dict-wins, null passthrough, success non-override |
 
+## Coverage Gaps
+
+The following PROTOCOL_SPEC algorithms do **not** yet have conformance fixtures:
+
+| Algorithm | Spec Section | Description |
+|-----------|-------------|-------------|
+| A01 | §2, §3.3 | Directory to canonical ID conversion |
+| A07 | §5.3 | Dependency topological sorting |
+| A12 | §9.3–§9.7 | Config validation (non-namespace mode) |
+| A21 | §12.8 | Safe module unregister |
+| A22 | §12.7.5 | Enforce timeout |
+| A23 | §4.16 | Strict schema conversion (`to_strict_schema`) |
+
+## Non-Standard Test Patterns
+
+Most test cases use `expected` for the expected result. Two fixtures use alternative patterns:
+
+- **`context_serialization.json`** — `all_identity_types_serialize` uses a `sub_cases` array instead of a single `expected`. Test runners should iterate each sub-case and validate `input_identity` → `expected_type`.
+- **`annotations_extra_round_trip.json`** — `producer_must_not_emit_both_forms` uses `forbidden_root_keys` instead of `expected`. Test runners should verify that none of the listed keys appear in the serialized output.
+
 ## Usage
 
 SDK test suites should load these fixtures and run each test case:

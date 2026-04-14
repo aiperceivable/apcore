@@ -4,9 +4,11 @@
   "title": "apcore Canonical Default Values",
   "description": "Single source of truth for all configuration default values across apcore SDK implementations. SDKs MUST use these values as fallbacks when no explicit configuration is provided.",
   "type": "object",
+  "additionalProperties": false,
   "properties": {
     "extensions": {
       "type": "object",
+      "additionalProperties": false,
       "description": "Extension discovery defaults.",
       "properties": {
         "root": {
@@ -33,6 +35,7 @@
     },
     "schema": {
       "type": "object",
+      "additionalProperties": false,
       "description": "Schema loading defaults.",
       "properties": {
         "root": {
@@ -54,6 +57,7 @@
     },
     "acl": {
       "type": "object",
+      "additionalProperties": false,
       "description": "Access control defaults.",
       "properties": {
         "root": {
@@ -70,6 +74,7 @@
     },
     "executor": {
       "type": "object",
+      "additionalProperties": false,
       "description": "Executor runtime defaults.",
       "properties": {
         "default_timeout": {
@@ -96,6 +101,7 @@
     },
     "sys_modules": {
       "type": "object",
+      "additionalProperties": false,
       "description": "System modules defaults.",
       "properties": {
         "enabled": {
@@ -107,10 +113,12 @@
     },
     "observability": {
       "type": "object",
+      "additionalProperties": false,
       "description": "Observability defaults.",
       "properties": {
         "tracing": {
           "type": "object",
+          "additionalProperties": false,
           "description": "Distributed tracing defaults.",
           "properties": {
             "enabled": {
@@ -127,6 +135,7 @@
         },
         "metrics": {
           "type": "object",
+          "additionalProperties": false,
           "description": "Metrics collection defaults.",
           "properties": {
             "enabled": {
@@ -140,6 +149,7 @@
     },
     "stream": {
       "type": "object",
+      "additionalProperties": false,
       "description": "Stream aggregation defaults.",
       "properties": {
         "max_merge_depth": {

@@ -14,6 +14,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **`APCore` constructor simplified** — removed `config_path` parameter; use `Config.load()` instead (e.g. `APCore(config=Config.load("apcore.yaml"))`). This applies to all SDKs: Python, TypeScript, and Rust. The explicit two-step pattern keeps the constructor focused and avoids mutual-exclusivity validation.
+- **System module JSON Schemas** — 6 new output schemas in `schemas/`: `sys-control-reload-module`, `sys-control-toggle-feature`, `sys-control-update-config`, `sys-health-module`, `sys-health-summary`, `sys-manifest-full`. Each declares `$schema`, `$id`, `additionalProperties: false`, and descriptions on every property.
+- **Conformance README coverage gap table** — Documents 6 algorithms (A01, A07, A12, A21, A22, A23) that lack conformance fixtures.
+- **Conformance README non-standard patterns section** — Documents `sub_cases` and `forbidden_root_keys` test patterns for SDK implementers.
 - **PROTOCOL_SPEC §2.7 — `canonical_id` maximum length raised from 128 to 192 characters.** Motivated by deep-namespace languages (Java/.NET/Spring FQN-derived IDs) where snake_case-converted fully-qualified names can exceed 128 in edge cases. 192 is filesystem-safe (`192 + ".binding.yaml" = 205 bytes < 255-byte filename limit on ext4/xfs/NTFS/APFS/btrfs`) and remains within `VARCHAR(255)` for typical persistence layers. MCP alias 64-char hard limit (OpenAI function name spec) is unchanged and still requires alias mapping for any module_id > 64. Schemas updated: `binding.schema.json`, `module-schema.schema.json`, `module-meta.schema.json` declare `module_id.maxLength: 192`; `acl-config.schema.json` `callers`/`targets` pattern strings raised to 192 to remain symmetric. Algorithm A01 (`directory_to_canonical_id`) Step 6 / 7 length threshold updated to 192. Conformance test T01-006 boundary updated to `>192 chars`. **Forward-compatible relaxation:** producers targeting mixed-version ecosystems should keep IDs ≤ 128 until all consumers are upgraded.
 - **PROTOCOL_SPEC §5.6 yaml block now declares `required_attributes:`** (`input_schema`, `output_schema`, `description`) explicitly. The pseudocode block already marked these as "Required definitions" but the yaml block beneath only listed `required_methods` and `optional_attributes`, so a reader of the yaml alone could not see the attribute requirement. Closes a sync audit contradiction.
 - **PROTOCOL_SPEC §4.4.1 — Annotations Extension Field (`extra`) Wire Format** — New normative section defining the canonical on-the-wire shape of `ModuleAnnotations.extra`. Producers MUST serialize as a nested `{"extra": {...}}` object and MUST NOT flatten extension keys to the annotations root. Consumers MUST accept the nested form; legacy top-level overflow keys MAY be tolerated for one MINOR cycle. When both forms appear in the same input, the nested value wins.
@@ -66,6 +69,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`docs/api/client-api.md` — Sync/async clarity.** Section "4.1 Synchronous Call" renamed to "4.1 Basic Call" with note explaining Python sync vs TypeScript/Rust async.
 - **`docs/spec/type-mapping.md` — Go/Java SDK scope clarified.** Added note that Go and Java type mappings are for future implementers; only Python, TypeScript, and Rust have official SDKs.
 - **`docs/guides/` — Cross-language notes added.** `acl-configuration.md`, `adapter-development.md`, and `testing-modules.md` now have a note at the top explaining how Python examples apply to TypeScript and Rust.
+- **PROTOCOL_SPEC.md RFC 2119 compliance** — 5 instances of lowercase bold `**must**`/`**should**` in normative contexts (§1.6, §4.2, §5.6, §11.6) corrected to uppercase `**MUST**`/`**SHOULD**`.
+- **PROTOCOL_SPEC.md §11.6 extension point semantics** — Clarified ambiguous mixed requirement: "Implementations SHOULD support the following extension points. Each supported extension point MUST define a clear interface contract."
+- **`docs/spec/algorithms.md` RFC 2119 compliance** — 5 lowercase `must` in A12 config validation constraints (lines 895–899) corrected to uppercase `MUST`.
+- **`schemas/sys-control-update-config.schema.json`** — Added missing `type` declarations to `old_value` and `new_value` properties.
+- **`schemas/defaults.schema.json`** — Added explicit `additionalProperties: false` to root and all 9 nested objects.
+- **`schemas/sys-health-summary.schema.json`** — Added explicit `additionalProperties: false` to root and all 3 nested objects.
+- **CHANGELOG.md v0.16.0 date** — Corrected from 2026-04-05 to 2026-04-03 (matching git history).
+- **`docs/features/config-bus.md`** — Converted all code examples to cross-language tabbed format (`=== "Python"` / `=== "TypeScript"` / `=== "Rust"`). Added missing Rust tab in Introspection section.
+- **Orphaned docs removed from `docs/features/`** — Moved 4 code-forge planning docs (`acl-conditions-redesign.md`, `annotations-redesign.md`, `context-redesign.md`, `overview.md`) out of the published docs tree; these already exist in `planning/`.
+- **`docs/spec/design-execution-pipeline.md`** — Merged `design-pipeline-v2.md` content, removed stale legacy alias column.
+- **Event naming standardization** — Canonical `apcore.*` prefix enforced across event system docs and identity rule schemas.
+- **Multi-language documentation** — Added cross-language examples and tabbed sections to feature docs, API references, and getting-started guide.
 
 ### Removed (BREAKING — apcore-python)
 
@@ -122,7 +137,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.16.0] - 2026-04-05
+## [0.16.0] - 2026-04-03
 
 ### Added
 

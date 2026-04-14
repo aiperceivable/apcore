@@ -19,49 +19,54 @@ Namespace mode is activated automatically when the loaded YAML contains a top-le
 
 Namespaces are registered globally (class-level) before loading a config file. The `env_prefix` is auto-derived from the namespace name when not specified:
 
-```python
-# Python — minimal (env_prefix auto-derived as "MY_PLUGIN")
-Config.register_namespace("my-plugin")
+=== "Python"
 
-# Python — full options
-Config.register_namespace(
-    "my-plugin",
-    env_prefix="MY_PLUGIN",         # optional, auto-derived if omitted
-    defaults={"timeout": 5000, "retries": 3},
-    env_style="auto",               # "auto" (default), "nested", or "flat"
-    max_depth=5,                     # max nesting depth (default 5)
-    env_map={"REDIS_URL": "cache"},  # bare env var → namespace key
-    schema=None,                     # optional JSON Schema
-)
-```
+    ```python
+    # Python — minimal (env_prefix auto-derived as "MY_PLUGIN")
+    Config.register_namespace("my-plugin")
 
-```typescript
-// TypeScript — minimal
-Config.registerNamespace({ name: 'my-plugin' });
+    # Python — full options
+    Config.register_namespace(
+        "my-plugin",
+        env_prefix="MY_PLUGIN",         # optional, auto-derived if omitted
+        defaults={"timeout": 5000, "retries": 3},
+        env_style="auto",               # "auto" (default), "nested", or "flat"
+        max_depth=5,                     # max nesting depth (default 5)
+        env_map={"REDIS_URL": "cache"},  # bare env var → namespace key
+        schema=None,                     # optional JSON Schema
+    )
+    ```
 
-// TypeScript — full options
-Config.registerNamespace({
-  name: 'my-plugin',
-  envPrefix: 'MY_PLUGIN',
-  defaults: { timeout: 5000, retries: 3 },
-  envStyle: 'auto',
-  maxDepth: 5,
-  envMap: { REDIS_URL: 'cache' },
-});
-```
+=== "TypeScript"
 
-```rust
-// Rust
-Config::register_namespace(NamespaceRegistration {
-    name: "my-plugin".into(),
-    env_prefix: None,  // auto-derived as "MY_PLUGIN"
-    defaults: Some(serde_json::json!({ "timeout": 5000, "retries": 3 })),
-    env_style: EnvStyle::Auto,
-    max_depth: DEFAULT_MAX_DEPTH,
-    env_map: Some(HashMap::from([("REDIS_URL".into(), "cache".into())])),
-    schema: None,
-})?;
-```
+    ```typescript
+    // TypeScript — minimal
+    Config.registerNamespace({ name: 'my-plugin' });
+
+    // TypeScript — full options
+    Config.registerNamespace({
+      name: 'my-plugin',
+      envPrefix: 'MY_PLUGIN',
+      defaults: { timeout: 5000, retries: 3 },
+      envStyle: 'auto',
+      maxDepth: 5,
+      envMap: { REDIS_URL: 'cache' },
+    });
+    ```
+
+=== "Rust"
+
+    ```rust
+    Config::register_namespace(NamespaceRegistration {
+        name: "my-plugin".into(),
+        env_prefix: None,  // auto-derived as "MY_PLUGIN"
+        defaults: Some(serde_json::json!({ "timeout": 5000, "retries": 3 })),
+        env_style: EnvStyle::Auto,
+        max_depth: DEFAULT_MAX_DEPTH,
+        env_map: Some(HashMap::from([("REDIS_URL".into(), "cache".into())])),
+        schema: None,
+    })?;
+    ```
 
 ### env_prefix Auto-Derivation
 
@@ -213,79 +218,93 @@ env_map / env_prefix overrides  >  YAML file  >  namespace defaults
 
 ## Namespace Access
 
-```python
-# Python
-config = Config.load("apcore.yaml")
+=== "Python"
 
-# Full namespace dict
-plugin_cfg = config.namespace("my-plugin")  # dict[str, Any]
+    ```python
+    from dataclasses import dataclass
+    from apcore import Config
 
-# Dot-path access
-timeout = config.get("my-plugin.timeout", 5000)
+    config = Config.load("apcore.yaml")
 
-# Top-level key (from global env_map)
-port = config.get("port")
+    # Full namespace dict
+    plugin_cfg = config.namespace("my-plugin")  # dict[str, Any]
 
-# Typed deserialization
-from dataclasses import dataclass
+    # Dot-path access
+    timeout = config.get("my-plugin.timeout", 5000)
 
-@dataclass
-class PluginConfig:
-    timeout: int = 5000
-    retries: int = 3
+    # Top-level key (from global env_map)
+    port = config.get("port")
 
-typed = config.bind("my-plugin", PluginConfig)
-```
+    # Typed deserialization
+    @dataclass
+    class PluginConfig:
+        timeout: int = 5000
+        retries: int = 3
 
-```typescript
-// TypeScript
-const config = Config.load('apcore.yaml');
+    typed = config.bind("my-plugin", PluginConfig)
+    ```
 
-const pluginCfg = config.namespace('my-plugin');
-const timeout = config.get('my-plugin.timeout', 5000);
-const port = config.get('port');  // from global env_map
+=== "TypeScript"
 
-class PluginConfig {
-  timeout: number;
-  retries: number;
-  constructor(data: Record<string, unknown>) {
-    this.timeout = (data['timeout'] as number) ?? 5000;
-    this.retries = (data['retries'] as number) ?? 3;
-  }
-}
-const typed = config.bind('my-plugin', PluginConfig);
-```
+    ```typescript
+    import { Config } from 'apcore';
 
-```rust
-// Rust
-let config = Config::load("apcore.yaml")?;
+    const config = Config.load('apcore.yaml');
 
-let plugin_cfg = config.namespace("my-plugin");
-let timeout: u64 = config.get_typed("my-plugin.timeout")?;
+    const pluginCfg = config.namespace('my-plugin');
+    const timeout = config.get('my-plugin.timeout', 5000);
+    const port = config.get('port');  // from global env_map
 
-#[derive(serde::Deserialize)]
-struct PluginConfig { timeout: u64, retries: u32 }
-let typed: PluginConfig = config.bind("my-plugin")?;
-```
+    class PluginConfig {
+      timeout: number;
+      retries: number;
+      constructor(data: Record<string, unknown>) {
+        this.timeout = (data['timeout'] as number) ?? 5000;
+        this.retries = (data['retries'] as number) ?? 3;
+      }
+    }
+    const typed = config.bind('my-plugin', PluginConfig);
+    ```
+
+=== "Rust"
+
+    ```rust
+    use apcore::Config;
+
+    let config = Config::load("apcore.yaml")?;
+
+    let plugin_cfg = config.namespace("my-plugin");
+    let timeout: u64 = config.get_typed("my-plugin.timeout")?;
+
+    #[derive(serde::Deserialize)]
+    struct PluginConfig { timeout: u64, retries: u32 }
+    let typed: PluginConfig = config.bind("my-plugin")?;
+    ```
 
 ## Mounting External Sources (§9.7)
 
 Attach data from a file or in-memory dict to a namespace. Mounted data is merged over namespace defaults.
 
-```python
-config.mount("my-plugin", source={"timeout": 10000})        # dict source
-config.mount("my-plugin", source="./my-plugin.yaml")         # file source
-```
+=== "Python"
 
-```typescript
-config.mount('my-plugin', { fromDict: { timeout: 10000 } });
-config.mount('my-plugin', { fromFile: './my-plugin.yaml' });
-```
+    ```python
+    config.mount("my-plugin", source={"timeout": 10000})        # dict source
+    config.mount("my-plugin", source="./my-plugin.yaml")         # file source
+    ```
 
-```rust
-config.mount("my-plugin", MountSource::Dict(data))?;
-config.mount("my-plugin", MountSource::File("./my-plugin.yaml".into()))?;
-```
+=== "TypeScript"
+
+    ```typescript
+    config.mount('my-plugin', { fromDict: { timeout: 10000 } });
+    config.mount('my-plugin', { fromFile: './my-plugin.yaml' });
+    ```
+
+=== "Rust"
+
+    ```rust
+    config.mount("my-plugin", MountSource::Dict(data))?;
+    config.mount("my-plugin", MountSource::File("./my-plugin.yaml".into()))?;
+    ```
 
 **Error:** `CONFIG_MOUNT_ERROR` if namespace is `_config`, source file is missing, or file is not a valid YAML mapping.
 
@@ -305,15 +324,23 @@ Deserialize a namespace subtree into a typed value:
 
 Re-read the source YAML, re-detect mode, re-apply namespace defaults, env overrides, validation, and mounts:
 
-```python
-config.reload()  # Python
-```
-```typescript
-config.reload(); // TypeScript
-```
-```rust
-config.reload()?; // Rust
-```
+=== "Python"
+
+    ```python
+    config.reload()
+    ```
+
+=== "TypeScript"
+
+    ```typescript
+    config.reload();
+    ```
+
+=== "Rust"
+
+    ```rust
+    config.reload()?;
+    ```
 
 ## Built-in Namespaces (§9.15)
 
@@ -384,17 +411,32 @@ The `_config` reserved namespace controls validation behavior. `strict: true` ca
 
 ## Introspection
 
-```python
-# Python
-namespaces = Config.registered_namespaces()
-# [{"name": "observability", "env_prefix": "APCORE_OBSERVABILITY", "has_schema": False}, ...]
-```
+=== "Python"
 
-```typescript
-// TypeScript
-const namespaces = Config.registeredNamespaces();
-// [{ name: 'observability', envPrefix: 'APCORE_OBSERVABILITY', hasSchema: false }, ...]
-```
+    ```python
+    from apcore import Config
+
+    namespaces = Config.registered_namespaces()
+    # [{"name": "observability", "env_prefix": "APCORE_OBSERVABILITY", "has_schema": False}, ...]
+    ```
+
+=== "TypeScript"
+
+    ```typescript
+    import { Config } from 'apcore';
+
+    const namespaces = Config.registeredNamespaces();
+    // [{ name: 'observability', envPrefix: 'APCORE_OBSERVABILITY', hasSchema: false }, ...]
+    ```
+
+=== "Rust"
+
+    ```rust
+    use apcore::Config;
+
+    let namespaces = Config::registered_namespaces();
+    // Vec<NamespaceInfo> with name, env_prefix, has_schema fields
+    ```
 
 ## Quick Reference
 

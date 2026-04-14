@@ -9,6 +9,7 @@
   "properties": {
     "project": {
       "type": "object",
+      "additionalProperties": false,
       "description": "Project metadata.",
       "properties": {
         "name": {
@@ -23,6 +24,7 @@
     },
     "summary": {
       "type": "object",
+      "additionalProperties": false,
       "description": "Aggregate health statistics.",
       "properties": {
         "total_modules": {
@@ -48,6 +50,7 @@
       "description": "Per-module health status entries.",
       "items": {
         "type": "object",
+        "additionalProperties": false,
         "properties": {
           "module_id": {
             "type": "string",
