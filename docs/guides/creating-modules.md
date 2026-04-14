@@ -91,8 +91,8 @@ my-project/
 
 ### 2. Create Module File
 
-!!! note "Module is a Protocol, not an ABC"
-    `Module` is defined as a `Protocol` — it describes a structural interface, not an abstract base class. Writing `class MyModule(Module):` is convenient for IDE autocompletion but not required. A plain `class MyModule:` with the correct attributes and `execute()` method is equally valid.
+!!! note "Module is a structural interface"
+    In all languages, `Module` defines a structural contract — not a base class to inherit from. Python: `Module` is a `Protocol`, so `class MyModule:` without inheritance is valid. Rust: `Module` is a `trait`. TypeScript: any object matching the type shape satisfies `Module`. Explicit inheritance/implementation is convenient for IDE support but not required.
 
 === "Python"
 

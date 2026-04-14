@@ -49,8 +49,16 @@ The Identity System provides a structured representation of the caller's identit
     ```
 === "Rust"
     ```rust
+    use std::collections::HashMap;
+    use apcore::Identity;
+
     // Fields are private; use getters to access
-    let identity = Identity::new("user-123", "user", vec!["admin"], HashMap::new());
+    let identity = Identity::new(
+        "user-123".to_string(),
+        "user".to_string(),
+        vec!["admin".to_string()],
+        HashMap::new(),
+    );
 
     identity.id()             // -> &str
     identity.identity_type()  // -> &str  (default: "user")
