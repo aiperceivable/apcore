@@ -748,7 +748,26 @@ Enum values and plain strings are completely identical in transmission format (e
 
 ---
 
-## 15. References
+## 15. Reserved Keyword Adaptations
+
+Some spec-defined method names conflict with language reserved keywords. Implementations **MUST** provide the equivalent functionality under a language-idiomatic alternative name. The following table documents all known keyword conflicts and their canonical adaptations:
+
+| Spec Method | Python | TypeScript | Rust | Reason |
+|---|---|---|---|---|
+| `use(middleware)` | `use(middleware)` | `use(middleware)` | `use_middleware(middleware)` | `use` is a Rust reserved keyword |
+
+**Rules:**
+
+- When a spec method name is a reserved keyword in a target language, the SDK **MUST** choose a name that preserves the verb and adds a noun suffix describing the argument (e.g., `use` → `use_middleware`).
+- The adapted name **MUST** be documented in the SDK's README API Overview section.
+- Implementations **MUST NOT** rely on language-specific escape mechanisms (e.g., Rust raw identifiers `r#keyword`, Kotlin backtick-quoted identifiers `` `keyword` ``) as the primary API surface. The adapted name **MUST** be a natural identifier in the target language.
+- Cross-language sync checks **MUST** treat the adapted name as equivalent to the spec name and **MUST NOT** flag it as a divergence.
+
+**Maintenance:** SDK implementers **SHOULD** check for keyword conflicts when adding new public methods and update this table accordingly. The table above is maintained as conflicts are discovered — it is not an exhaustive pre-analysis of all possible keyword collisions.
+
+---
+
+## 16. References
 
 - [PROTOCOL_SPEC §4 — Schema Specification](../../PROTOCOL_SPEC.md#4-schema-specification)
 - [PROTOCOL_SPEC §4.10 — Schema Implementations by Language](../../PROTOCOL_SPEC.md#410-schema-implementations-by-language)
