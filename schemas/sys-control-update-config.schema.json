@@ -16,11 +16,11 @@
       "description": "Dot-path of the updated configuration key."
     },
     "old_value": {
-      "type": ["string", "number", "boolean", "null"],
+      "type": ["string", "number", "boolean", "object", "array", "null"],
       "description": "Previous value. Redacted as '***' when the key matches a sensitive pattern (token, secret, key, password, auth, credential)."
     },
     "new_value": {
-      "type": ["string", "number", "boolean", "null"],
+      "type": ["string", "number", "boolean", "object", "array", "null"],
       "description": "New value. Redacted as '***' when the key matches a sensitive pattern (token, secret, key, password, auth, credential)."
     }
   }

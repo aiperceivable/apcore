@@ -6,7 +6,7 @@
 
 ### 1.1 Purpose
 
-apcore adopts JSON Schema Draft 2020-12 as the standard description format for module `input_schema` / `output_schema` (see [PROTOCOL_SPEC §4](../../PROTOCOL_SPEC.md#4-schema-specification)). When implementing SDKs in various languages, implementations **must** accurately map JSON Schema types to corresponding language native types to ensure:
+apcore adopts JSON Schema Draft 2020-12 as the standard description format for module `input_schema` / `output_schema` (see [PROTOCOL_SPEC §4](../../PROTOCOL_SPEC.md#4-schema-specification)). When implementing SDKs in various languages, implementations **MUST** accurately map JSON Schema types to corresponding language native types to ensure:
 
 - **Data Consistency**: The same JSON data has the same semantics when deserialized in different languages
 - **Type Safety**: Fully utilize each language's type system to detect errors as early as possible at compile-time or runtime
@@ -48,8 +48,8 @@ type: string
 
 **Notes:**
 
-- All implementations **must** support the complete Unicode character set
-- JSON transmission **must** use UTF-8 encoding
+- All implementations **MUST** support the complete Unicode character set
+- JSON transmission **MUST** use UTF-8 encoding
 - Java/TypeScript use UTF-16 internally; special attention needed for character length calculation when dealing with surrogate pairs
 
 ### 2.2 Integer Type (`integer`)
@@ -70,7 +70,7 @@ type: integer
 | Java | `long` | -2^63 ~ 2^63-1 | Can use `BigInteger` for larger range |
 | TypeScript | `number` | -(2^53-1) ~ 2^53-1 safe range | IEEE 754 double precision, see boundary cases |
 
-**Supported Constraints:** `minimum`, `maximum`, `exclusiveMinimum`, `exclusiveMaximum`, `multipleOf`. All SDK implementations **must** enforce these constraints during validation.
+**Supported Constraints:** `minimum`, `maximum`, `exclusiveMinimum`, `exclusiveMaximum`, `multipleOf`. All SDK implementations **MUST** enforce these constraints during validation.
 
 ### 2.3 Number Type (`number`)
 
@@ -112,7 +112,7 @@ type: boolean
 
 **Notes:**
 
-- JSON **must** use `true` / `false`, does not accept variants like `0` / `1` / `"true"` / `"false"`
+- JSON **MUST** use `true` / `false`, does not accept variants like `0` / `1` / `"true"` / `"false"`
 - If `schema.validation.coerce_types` is `true` (see PROTOCOL_SPEC §4.9), implementations **may** convert `0`/`1` to boolean values
 
 ### 2.5 Null Type (`null`)
@@ -181,7 +181,7 @@ items:
 | Java | `List<String>` | Usually uses `ArrayList` |
 | TypeScript | `string[]` or `Array<string>` | — |
 
-**Supported Constraints:** `minItems`, `maxItems`, `uniqueItems`. All SDK implementations **must** enforce these constraints during validation.
+**Supported Constraints:** `minItems`, `maxItems`, `uniqueItems`. All SDK implementations **MUST** enforce these constraints during validation.
 
 **Nested Array Example (Array of Objects):**
 
@@ -238,7 +238,7 @@ type: [string, "null"]
 
 **Serialization Rules:**
 
-- When value is `null`, JSON **must** output as `null` (not omit the field)
+- When value is `null`, JSON **MUST** output as `null` (not omit the field)
 - This has different semantics from "optional field omission" (see §6.1)
 
 ---
@@ -346,9 +346,9 @@ format: date-time
 
 **Notes:**
 
-- All implementations **must** output ISO 8601 / RFC 3339 format when serializing
-- Implementations **should** use UTC timezone (`Z` suffix) unless business explicitly requires timezone offset
-- Deserialization **must** accept formats with timezone offsets (e.g., `+08:00`)
+- All implementations **MUST** output ISO 8601 / RFC 3339 format when serializing
+- Implementations **SHOULD** use UTC timezone (`Z` suffix) unless business explicitly requires timezone offset
+- Deserialization **MUST** accept formats with timezone offsets (e.g., `+08:00`)
 
 ### 7.2 `date` Format
 
@@ -428,9 +428,9 @@ required: [user]
 
 **Naming Convention:**
 
-- Nested objects **should** be extracted as independent named types
-- Type names **should** be generated based on property paths (e.g., `user.address` corresponds to `UserAddress`)
-- When Schema uses `$ref` references (see PROTOCOL_SPEC §4.10), all languages **must** map to the same shared type
+- Nested objects **SHOULD** be extracted as independent named types
+- Type names **SHOULD** be generated based on property paths (e.g., `user.address` corresponds to `UserAddress`)
+- When Schema uses `$ref` references (see PROTOCOL_SPEC §4.10), all languages **MUST** map to the same shared type
 
 ---
 
@@ -544,7 +544,7 @@ additionalProperties:
 
 ### 10.3 `additionalProperties: false`
 
-When `input_schema` declares `additionalProperties: false` (PROTOCOL_SPEC §4.2 **should**), implementations **must** reject inputs containing unknown fields.
+When `input_schema` declares `additionalProperties: false` (PROTOCOL_SPEC §4.2 **SHOULD**), implementations **MUST** reject inputs containing unknown fields.
 
 ---
 
@@ -552,7 +552,7 @@ When `input_schema` declares `additionalProperties: false` (PROTOCOL_SPEC §4.2 
 
 ### 11.1 `format` Keyword
 
-The `format` keyword in JSON Schema provides semantic validation for `string` types. Implementations **should** perform validation for the following formats:
+The `format` keyword in JSON Schema provides semantic validation for `string` types. Implementations **SHOULD** perform validation for the following formats:
 
 | `format` Value | Meaning | Regex/Rule | Example |
 |-------------|------|----------|------|
@@ -567,7 +567,7 @@ The `format` keyword in JSON Schema provides semantic validation for `string` ty
 
 ### 11.2 Format Validation Requirements
 
-All SDK implementations **should** perform validation for the formats listed in §11.1. The specific validation libraries and methods are left to each SDK implementation.
+All SDK implementations **SHOULD** perform validation for the formats listed in §11.1. The specific validation libraries and methods are left to each SDK implementation.
 
 ---
 
@@ -605,7 +605,7 @@ The following table summarizes all JSON Schema type to language mappings:
 
 Serialization round-trip fidelity refers to whether data semantics remain consistent after serializing a language's native object to JSON and then deserializing to another language's native object.
 
-Implementations **must** guarantee perfect round-trips for the following types:
+Implementations **MUST** guarantee perfect round-trips for the following types:
 
 | Type | Fidelity Requirement | Description |
 |------|-----------|------|
@@ -615,18 +615,18 @@ Implementations **must** guarantee perfect round-trips for the following types:
 | `integer` (within safe range) | **MUST** perfect round-trip | Absolute value ≤ 2^53 - 1 (cross-language safe boundary) |
 | `number` (IEEE 754 representable) | **SHOULD** perfect round-trip | Floating-point precision limits |
 | `object` | **MUST** perfect round-trip | Field order **may** differ |
-| `array` | **MUST** perfect round-trip | Element order **must** be preserved |
+| `array` | **MUST** perfect round-trip | Element order **MUST** be preserved |
 
 ### 13.2 Serialization Specifications
 
 | Rule | Level | Description |
 |------|------|------|
-| Output **must** be valid JSON | **MUST** | RFC 8259 |
-| Character encoding **must** be UTF-8 | **MUST** | — |
-| Integers **must not** serialize as floats | **MUST** | `42` not `42.0` |
-| Floats **must** preserve decimal part | **MUST** | `3.14` not `3` |
-| `null` fields **should** be explicitly output | **SHOULD** | `{"field": null}` |
-| Object key order **may** not be guaranteed | **MAY** | But **should** maintain stable output |
+| Output **MUST** be valid JSON | **MUST** | RFC 8259 |
+| Character encoding **MUST** be UTF-8 | **MUST** | — |
+| Integers **MUST NOT** serialize as floats | **MUST** | `42` not `42.0` |
+| Floats **MUST** preserve decimal part | **MUST** | `3.14` not `3` |
+| `null` fields **SHOULD** be explicitly output | **SHOULD** | `{"field": null}` |
+| Object key order **may** not be guaranteed | **MAY** | But **SHOULD** maintain stable output |
 
 ---
 
@@ -658,11 +658,11 @@ apcore defines **2^53 - 1** (i.e., `9007199254740991`, JavaScript `Number.MAX_SA
 |------|------|------|
 | Integers with absolute value ≤ 2^53 - 1 | **MUST** use `type: integer` | All languages can handle losslessly |
 | Integers with absolute value > 2^53 - 1 | **MUST** use `type: string` + `format` | Avoid JavaScript precision loss |
-| Schema **should** explicitly declare `minimum` / `maximum` | **SHOULD** | Help languages choose appropriate native types |
+| Schema **SHOULD** explicitly declare `minimum` / `maximum` | **SHOULD** | Help languages choose appropriate native types |
 
 **Large Number `format` Specification:**
 
-Values exceeding the safe boundary **must** be transmitted using `type: string`, with `format` indicating semantics:
+Values exceeding the safe boundary **MUST** be transmitted using `type: string`, with `format` indicating semantics:
 
 | `format` Value | Meaning | Range | Language Mappings |
 |-------------|------|------|-----------|
@@ -720,9 +720,9 @@ Different languages handle timezones differently, which may cause date-time offs
 
 **Specification Requirements:**
 
-- Serialization **must** include timezone information (`Z` or `+HH:MM`)
-- Deserialization **must** correctly parse timezone offsets
-- If input lacks timezone information, implementations **should** treat as UTC
+- Serialization **MUST** include timezone information (`Z` or `+HH:MM`)
+- Deserialization **MUST** correctly parse timezone offsets
+- If input lacks timezone information, implementations **SHOULD** treat as UTC
 
 ### 14.4 Empty Object vs Empty Map Distinction
 
@@ -743,8 +743,8 @@ Enum values and plain strings are completely identical in transmission format (e
 
 **Specification Requirements:**
 
-- Deserialization **must** refer to Schema's `enum` constraint for validation
-- If input value is not in `enum` list, **must** return `SCHEMA_VALIDATION_ERROR`
+- Deserialization **MUST** refer to Schema's `enum` constraint for validation
+- If input value is not in `enum` list, **MUST** return `SCHEMA_VALIDATION_ERROR`
 
 ---
 

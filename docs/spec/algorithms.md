@@ -179,7 +179,7 @@ Steps:
 
 **Source**: PROTOCOL_SPEC §2.6
 
-**Description**: Detects whether a new ID conflicts with existing IDs or reserved words during module registration. Implementations **must** execute this algorithm during module scanning, module registration, and dynamic loading.
+**Description**: Detects whether a new ID conflicts with existing IDs or reserved words during module registration. Implementations **MUST** execute this algorithm during module scanning, module registration, and dynamic loading.
 
 **Input Parameters:**
 
@@ -202,8 +202,8 @@ Steps:
 **Postconditions:**
 
 - If returns `null`, then `new_id` can be safely registered
-- If returns a result with `severity: "error"`, registration **must** be aborted
-- If returns a result with `severity: "warning"`, registration can continue but **must** output a warning
+- If returns a result with `severity: "error"`, registration **MUST** be aborted
+- If returns a result with `severity: "warning"`, registration can continue but **MUST** output a warning
 
 **Pseudocode:**
 
@@ -311,7 +311,7 @@ Steps:
 - Ignore patterns (§3.5): starting with `.`, starting with `_`, `__pycache__/`, `node_modules/`, `*.pyc`
 - `supported_extensions` depends on language: `.py`, `.rs`, `.go`, `.java`, `.ts`/`.tsx`
 - Default depth limit is 8, maximum configurable to 16
-- Symlink following is disabled by default, when enabled **must** detect cycles
+- Symlink following is disabled by default, when enabled **MUST** detect cycles
 - Batch conflict detection should be executed uniformly after module discovery from **all root directories** to ensure cross-root ID uniqueness
 - In multi-root mode, if `namespace` is not explicitly configured, it is automatically derived from the directory name (e.g., `"./plugins"` → `"plugins"`)
 - In single-root mode (`extensions_roots` has only one element), `namespace` defaults to `null`, maintaining backward compatibility
@@ -324,7 +324,7 @@ Steps:
 
 **Source**: PROTOCOL_SPEC §4.10
 
-**Description**: Resolves `$ref` references in JSON Schema, supporting local references, cross-file references, and Canonical ID references. **Must** detect and reject circular references.
+**Description**: Resolves `$ref` references in JSON Schema, supporting local references, cross-file references, and Canonical ID references. **MUST** detect and reject circular references.
 
 **Input Parameters:**
 
@@ -378,7 +378,7 @@ Steps:
 
 **Implementation Notes:**
 
-- Implementations **should** limit maximum reference depth to 32 (configurable via `schema.max_ref_depth`)
+- Implementations **SHOULD** limit maximum reference depth to 32 (configurable via `schema.max_ref_depth`)
 - Reference formats come in three types:
   - Local reference: `#/definitions/ErrorDetail`
   - Relative path reference: `./common/error.schema.yaml#/definitions/ErrorDetail`
@@ -457,7 +457,7 @@ Steps:
 
 **Source**: PROTOCOL_SPEC §5.3
 
-**Description**: Uses topological sort (Kahn's algorithm) to resolve module loading order. **Must** detect circular dependencies.
+**Description**: Uses topological sort (Kahn's algorithm) to resolve module loading order. **MUST** detect circular dependencies.
 
 **Input Parameters:**
 
@@ -655,7 +655,7 @@ Steps:
 
 **Implementation Notes:**
 
-- When `caller_id` is `null`, it **must** be replaced with `"@external"`
+- When `caller_id` is `null`, it **MUST** be replaced with `"@external"`
 - Sorting stability is important: within same priority, deny must come before allow
 - Missing `actions` field is treated as `["*"]` (matches all operations)
 - Empty `callers` or `targets` array means the rule never matches
@@ -788,8 +788,8 @@ Steps:
 **Implementation Notes:**
 
 - Errors already ModuleError should append call chain rather than re-wrap, avoiding information loss
-- `timestamp` **must** be UTC time, format ISO 8601 (e.g., `"2026-02-07T10:30:00Z"`)
-- `call_chain` **must** be a copy not a reference, preventing subsequent modifications affecting error record
+- `timestamp` **MUST** be UTC time, format ISO 8601 (e.g., `"2026-02-07T10:30:00Z"`)
+- `call_chain` **MUST** be a copy not a reference, preventing subsequent modifications affecting error record
 - Error type mapping should be extensible, allowing implementations to add custom mapping rules
 
 ---
@@ -846,7 +846,7 @@ Steps:
 **Implementation Notes:**
 
 - Framework reserved error code prefixes include `MODULE_`, `SCHEMA_`, `ACL_`, `GENERAL_`, `CONFIG_`, `CIRCULAR_`, `DEPENDENCY_`
-- Module error code naming **should** follow `{MODULE_PREFIX}_{ERROR_NAME}` format
+- Module error code naming **SHOULD** follow `{MODULE_PREFIX}_{ERROR_NAME}` format
 - This detection should be executed during framework startup, report error immediately upon finding conflict
 
 ---
@@ -976,7 +976,7 @@ Steps:
 
 **Implementation Notes:**
 
-- Redaction **must** operate on copy, **forbidden** to modify original data
+- Redaction **MUST** operate on copy, **forbidden** to modify original data
 - Replacement value is fixed as `"***REDACTED***"`, must not leak length information of original value
 - `x-sensitive` fields in nested objects must also be recursively processed
 - Each element in array needs independent redaction (if items schema contains `x-sensitive`)
@@ -1046,7 +1046,7 @@ Steps:
 - semver parsing needs to handle pre-release tags (e.g., `1.0.0-draft`, `1.0.0-alpha`)
 - `max()` comparison follows semver specification: major > minor > patch > prerelease
 - Deprecation warning threshold is minor version difference > 2 (e.g., SDK 1.5.0 loading config declared as 1.2.0)
-- Framework **should** log version negotiation result
+- Framework **SHOULD** log version negotiation result
 
 ---
 
@@ -1403,13 +1403,13 @@ Steps:
 
 **Implementation Notes:**
 
-- Execution order of three checks **must** be: depth → cycle → frequency (depth check is cheapest, should execute first)
+- Execution order of three checks **MUST** be: depth → cycle → frequency (depth check is cheapest, should execute first)
 - `max_module_repeat` default value is 3, configurable via `apcore.yaml`'s `executor.max_module_repeat`, range `[1, 32]`
 - Step 2 cycle detection covers direct cycle (A→B→A) and indirect cycle (A→B→C→A)
 - Step 3 frequency detection covers non-cycle repeated calls (e.g., same module called multiple times in parallel orchestration then re-entered)
 - If step 2 already threw `CIRCULAR_CALL`, step 3 won't execute (short-circuit)
 - For modules with legitimate multiple call needs (e.g., retry logic), can configure `max_repeat_override` in module metadata to override default limit
-- All errors **must** carry complete `call_chain` copy for debugging and observability
+- All errors **MUST** carry complete `call_chain` copy for debugging and observability
 
 **Configuration Reference:**
 
@@ -1558,7 +1558,7 @@ Steps:
 
 2. **Timeout handling**:
    - Default 30 seconds adjustable via configuration
-   - After timeout **must** log detailed info (module_id, current ref_count)
+   - After timeout **MUST** log detailed info (module_id, current ref_count)
 
 3. **Idempotency**:
    - Multiple `unregister()` of same ID should silently succeed
@@ -1708,7 +1708,7 @@ Steps:
 
 2. **Force termination risk**:
    - Force termination may cause resource leaks (unclosed files, unreleased locks)
-   - **Should** only use after cooperative cancellation fails
+   - **SHOULD** only use after cooperative cancellation fails
    - Some languages (e.g., Java, Go) don't recommend forcing thread termination
 
 3. **Timeout timing start point**:
@@ -1853,10 +1853,10 @@ Steps:
 
 **Implementation Notes:**
 
-- Conversion **must** be performed on copy, **forbidden** to modify original Schema
-- `x-llm-description` **should** first replace corresponding field's `description` before stripping (see §4.3 export rules), then execute `strip_extensions()`
+- Conversion **MUST** be performed on copy, **forbidden** to modify original Schema
+- `x-llm-description` **SHOULD** first replace corresponding field's `description` before stripping (see §4.3 export rules), then execute `strip_extensions()`
 - Pure `$ref` nodes (no `type`) use `oneOf` wrapping when making nullable, rather than directly adding `type`
-- If `additionalProperties` already exists and is `true`, **must** change to `false`
+- If `additionalProperties` already exists and is `true`, **MUST** change to `false`
 - For fields already in `type: ["string", "null"]` form, should not add `"null"` again
 - `object` inside `items` also need recursive processing
 - `default` values are invalid in Strict Mode (AI won't auto-fill), so remove them as well

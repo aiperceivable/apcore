@@ -127,7 +127,7 @@ Core terms used in this specification are defined as follows:
 | Metadata | Metadata | Completely open key-value dictionary for storing extension information, framework does not validate its content |
 | Entry Point | Entry Point | Code entry location of module, format is `filename:ClassName`, can be auto-inferred or manually configured |
 | Call Chain | Call Chain | Complete list of module ID paths from root invocation to current invocation, used for loop detection and depth limiting |
-| Trace ID | Trace ID | Identifier uniquely identifying a complete invocation chain, **must** be UUID v4 format |
+| Trace ID | Trace ID | Identifier uniquely identifying a complete invocation chain, **MUST** be UUID v4 format |
 | Identity | Identity | Structured expression of caller_id identity (user/service/Agent/API Key/system), ACL engine depends on it |
 
 ### 1.7 API Naming Conventions
@@ -156,7 +156,7 @@ Implementations **MUST** follow these naming rules:
 
 **Directory path is the single source of truth for module IDs**. IDs are automatically generated from directory paths, zero configuration.
 
-Implementations **must** convert directory paths to Canonical IDs according to the following algorithm:
+Implementations **MUST** convert directory paths to Canonical IDs according to the following algorithm:
 
 ```
 Algorithm: directory_to_canonical_id(file_path, extensions_root)
@@ -233,7 +233,7 @@ All SDK implementations **MUST** validate module IDs against this pattern during
 
 ### 2.2 ID Map (Cross-language Conversion)
 
-**ID Map** module handles cross-language ID conversion, supporting automatic recognition and manual configuration. Implementations **must** support canonical conversion from various language native formats to Canonical ID.
+**ID Map** module handles cross-language ID conversion, supporting automatic recognition and manual configuration. Implementations **MUST** support canonical conversion from various language native formats to Canonical ID.
 
 ```
 Algorithm: normalize_to_canonical_id(local_id, language)
@@ -387,7 +387,7 @@ reserved_words:
 
 ### 2.6 ID Conflict Detection
 
-Implementations **must** perform conflict detection during module scanning, module registration, and dynamic loading.
+Implementations **MUST** perform conflict detection during module scanning, module registration, and dynamic loading.
 
 ```
 Algorithm: detect_id_conflicts(new_id, existing_ids, reserved_words)
@@ -437,7 +437,7 @@ conflict_detection:
 
 ### 2.7 ID Formal Grammar
 
-The formal definition of Canonical ID uses EBNF notation. All implementations **must** reject IDs that do not conform to this grammar.
+The formal definition of Canonical ID uses EBNF notation. All implementations **MUST** reject IDs that do not conform to this grammar.
 
 ```ebnf
 (* apcore Canonical ID EBNF *)
@@ -464,7 +464,7 @@ Equivalent regular expression: `^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$`
 
 ### 3.1 Standard Directory Structure
 
-Implementations **must** follow the directory structure below. The nesting depth under `extensions/` directory (not including `extensions/` itself) **must not** exceed 8 levels.
+Implementations **MUST** follow the directory structure below. The nesting depth under `extensions/` directory (not including `extensions/` itself) **MUST NOT** exceed 8 levels.
 
 ```
 {project_root}/
@@ -524,7 +524,7 @@ id_generation:
 
 ### 3.4 Symbolic Link Handling
 
-Implementations **must not** follow symbolic links (symlinks) in default mode. If symbolic link support is needed, it **must** be enabled through explicit configuration:
+Implementations **MUST NOT** follow symbolic links (symlinks) in default mode. If symbolic link support is needed, it **MUST** be enabled through explicit configuration:
 
 ```yaml
 # apcore.yaml
@@ -532,12 +532,12 @@ extensions:
   follow_symlinks: false  # Default value, MUST NOT follow
 ```
 
-- When symbolic link following is enabled, implementations **must** detect symbolic link loops
-- The resolved path of symbolic links **must** still be within the `extensions_root` scope
+- When symbolic link following is enabled, implementations **MUST** detect symbolic link loops
+- The resolved path of symbolic links **MUST** still be within the `extensions_root` scope
 
 ### 3.5 Hidden File Handling
 
-Implementations **must** ignore the following files and directories during module scanning:
+Implementations **MUST** ignore the following files and directories during module scanning:
 
 | Pattern | Example | Description |
 |------|------|------|
@@ -551,7 +551,7 @@ Implementations **may** extend the ignore pattern list through configuration.
 
 ### 3.6 Scanning Algorithm
 
-Implementations **must** scan the extensions directory according to the following algorithm:
+Implementations **MUST** scan the extensions directory according to the following algorithm:
 
 ```
 Algorithm: scan_extensions(extensions_root, config)
@@ -589,7 +589,7 @@ Complexity: O(n), where n is the number of filesystem entries
 
 ### 4.1 Overview
 
-All modules **must** define `input_schema` and `output_schema` to support:
+All modules **MUST** define `input_schema` and `output_schema` to support:
 - LLM tool calling (MCP compatible)
 - Runtime data validation
 - Automatic API documentation generation
@@ -597,7 +597,7 @@ All modules **must** define `input_schema` and `output_schema` to support:
 
 ### 4.2 Schema Format
 
-**Must** be based on **JSON Schema Draft 2020-12** ([RFC unpublished draft](https://json-schema.org/draft/2020-12/json-schema-core)), extending with LLM-friendly fields.
+**MUST** be based on **JSON Schema Draft 2020-12** ([RFC unpublished draft](https://json-schema.org/draft/2020-12/json-schema-core)), extending with LLM-friendly fields.
 
 **Compliance Requirements:**
 
@@ -1389,11 +1389,11 @@ schema:
 
 ### 4.10 Language-specific Schema Implementations
 
-Each language SDK **must** provide a native schema implementation that supports JSON Schema Draft 2020-12 validation and YAML schema loading. The specific library choices are left to SDK implementers.
+Each language SDK **MUST** provide a native schema implementation that supports JSON Schema Draft 2020-12 validation and YAML schema loading. The specific library choices are left to SDK implementers.
 
 ### 4.11 Schema References ($ref)
 
-Implementations **must** support `$ref` references and **must** resolve according to the following algorithm. Implementations **must** detect and reject circular references.
+Implementations **MUST** support `$ref` references and **MUST** resolve according to the following algorithm. Implementations **MUST** detect and reject circular references.
 
 ```
 Algorithm: resolve_ref(ref_string, current_file, schemas_dir, visited_refs)
@@ -1509,17 +1509,17 @@ schema_evolution:
 
 ### 4.13 Annotation Conflict Rules
 
-When both YAML metadata file (`*_meta.yaml`) and code define Annotations, conflicts **must** be resolved by the following priority:
+When both YAML metadata file (`*_meta.yaml`) and code define Annotations, conflicts **MUST** be resolved by the following priority:
 
 1. **YAML metadata file** (highest priority) — Operations teams can override behavior annotations without modifying code
 2. **Explicit definition in code** (secondary priority) — Developer defines on module class
 3. **Default values** (lowest priority) — Default values provided by framework
 
-Implementations **must** merge rather than replace when loading: If YAML only defines `readonly: true`, other fields **must** retain values from code or defaults.
+Implementations **MUST** merge rather than replace when loading: If YAML only defines `readonly: true`, other fields **MUST** retain values from code or defaults.
 
 ### 4.14 Schema Validation Error Format
 
-When Schema validation fails, implementations **must** return structured error information:
+When Schema validation fails, implementations **MUST** return structured error information:
 
 ```yaml
 schema_validation_error:
@@ -1555,7 +1555,7 @@ schema_validation_error:
 
 ### 4.15 Edge Case Handling
 
-Implementations **must** handle Schema edge cases according to the following table:
+Implementations **MUST** handle Schema edge cases according to the following table:
 
 | Scenario | Behavior | Level |
 |------|------|------|
@@ -1591,11 +1591,11 @@ OpenAI and Anthropic's `strict: true` mode requires JSON Schema to satisfy addit
 
 | Requirement | Description |
 |------|------|
-| `additionalProperties: false` | All nested `object` types **must** set this |
-| All fields `required` | All fields in `properties` **must** appear in `required` array |
+| `additionalProperties: false` | All nested `object` types **MUST** set this |
+| All fields `required` | All fields in `properties` **MUST** appear in `required` array |
 | Optional fields expressed with nullable | Originally optional fields become `required` + `type: ["original_type", "null"]` |
-| No `x-*` extension fields | All `x-*` fields **must** be stripped |
-| No `default` values | `default` fields **must** be removed |
+| No `x-*` extension fields | All `x-*` fields **MUST** be stripped |
+| No `default` values | `default` fields **MUST** be removed |
 
 **`to_strict_schema()` Conversion Rules:**
 
@@ -1710,7 +1710,7 @@ schemas/{canonical_id}.schema.yaml              # Schema definition
 
 ### 5.2 Metadata File and Entry Point Resolution
 
-Implementations **must** resolve module entry points according to the following algorithm:
+Implementations **MUST** resolve module entry points according to the following algorithm:
 
 ```
 Algorithm: resolve_entry_point(meta_yaml, file_path, language)
@@ -1816,7 +1816,7 @@ resources:
 
 ### 5.3 Dependency Management
 
-Implementations **must** use topological sorting to resolve dependency order and **must** detect circular dependencies.
+Implementations **MUST** use topological sorting to resolve dependency order and **MUST** detect circular dependencies.
 
 ```
 Algorithm: resolve_dependencies(modules)
@@ -2022,7 +2022,7 @@ Interface: Module
 | `input_schema` | `ClassVar[Type[BaseModel]]` | `type InputSchema: Serialize` | `InputSchema struct` | `Class<? extends Schema>` | `static inputSchema: ZodSchema` |
 | `Map<String, Any>` | `dict[str, Any]` | `HashMap<String, Value>` | `map[string]any` | `Map<String, Object>` | `Record<string, unknown>` |
 
-All modules **must** implement the following interface:
+All modules **MUST** implement the following interface:
 
 ```yaml
 module_interface:
@@ -2115,7 +2115,7 @@ module_interface:
 
 ### 5.7 Context Parameter Specification
 
-Each module invocation passes a `context` parameter containing runtime context information. In cross-process scenarios, Context **must** support serialization for transport.
+Each module invocation passes a `context` parameter containing runtime context information. In cross-process scenarios, Context **MUST** support serialization for transport.
 
 **Design Principle**: Only fields that the framework execution engine depends on are independent fields, everything else goes in `data` (referencing Go `context.Context`, OpenTelemetry Context design philosophy).
 
@@ -2210,7 +2210,7 @@ context_schema:
 
 **Context Serialization Specification (Cross-process Scenarios):**
 
-In cross-process/cross-network invocation scenarios, Context **must** be serializable to JSON format:
+In cross-process/cross-network invocation scenarios, Context **MUST** be serializable to JSON format:
 
 ```yaml
 context_serialization:
@@ -2230,7 +2230,7 @@ context_serialization:
 
 ### 5.8 Async Module Specification
 
-Async module state transitions **must** follow this state machine:
+Async module state transitions **MUST** follow this state machine:
 
 ```
                     ┌──────────────────────────────────────────┐
@@ -2444,7 +2444,7 @@ Implementations **MUST** provide `module()` mechanism to wrap existing callables
 
 - In languages supporting Decorator syntax (Python, TypeScript, Java annotations), **SHOULD** provide as Decorator form
 - In languages not supporting Decorator (Go, C), **MUST** provide as function call form
-- Both forms share the same parameter set, producing modules that **must** be completely equivalent in Registry/Executor/Schema behavior
+- Both forms share the same parameter set, producing modules that **MUST** be completely equivalent in Registry/Executor/Schema behavior
 
 #### 5.11.2 Cross-language Syntax Reference
 
@@ -2478,7 +2478,7 @@ options:
 
 #### 5.11.4 Type Inference and Schema Auto-generation
 
-Implementations **must** auto-generate JSON Schema from function signatures according to the following algorithm:
+Implementations **MUST** auto-generate JSON Schema from function signatures according to the following algorithm:
 
 ```
 Algorithm: generate_schema_from_function(callable)
@@ -2529,7 +2529,7 @@ Complexity: O(n), where n is number of parameters
 
 #### 5.11.6 Module ID Generation Rules
 
-When `module()` doesn't specify `id` parameter, **must** auto-generate from function full path:
+When `module()` doesn't specify `id` parameter, **MUST** auto-generate from function full path:
 
 ```
 Rule: generate_module_id(callable)
@@ -2544,7 +2544,7 @@ Steps:
 
 #### 5.11.7 Description Extraction Rules
 
-Implementations **must** extract module description by the following priority:
+Implementations **MUST** extract module description by the following priority:
 
 1. `module()`'s `description` parameter (highest priority)
 2. Function docstring / comment first line
@@ -2562,11 +2562,11 @@ Parameter-level description:
 | `def func(...)` | `execute()` |
 | `async def func(...)` | `execute()` |
 
-Implementations **should** support both sync and async functions. The framework auto-detects whether a function is sync or async and handles invocation accordingly. Both map to the module's `execute()` method; the separate `execute_async()` method is deprecated.
+Implementations **SHOULD** support both sync and async functions. The framework auto-detects whether a function is sync or async and handles invocation accordingly. Both map to the module's `execute()` method; the separate `execute_async()` method is deprecated.
 
 #### 5.11.9 Context Injection
 
-When function parameters include `context: Context` type annotation, framework **must** auto-inject Context object, and this parameter **must not** appear in generated `input_schema`.
+When function parameters include `context: Context` type annotation, framework **MUST** auto-inject Context object, and this parameter **MUST NOT** appear in generated `input_schema`.
 
 ```python
 # context parameter auto-injected, doesn't appear in Schema
@@ -2580,7 +2580,7 @@ def send_email(to: str, subject: str, body: str, context: Context) -> dict:
 
 #### 5.11.10 Equivalence Guarantee
 
-Function-defined modules and class-defined modules **must** be completely equivalent in:
+Function-defined modules and class-defined modules **MUST** be completely equivalent in:
 
 - Registration and discovery behavior in Registry
 - Executor's invocation flow (Schema validation → ACL → Middleware → Execution)
@@ -2660,7 +2660,7 @@ Implementations **MUST** support external Schema binding files, allowing existin
 
 #### 5.12.2 Binding File Format
 
-Binding files **must** be in YAML format, containing a `bindings` array:
+Binding files **MUST** be in YAML format, containing a `bindings` array:
 
 ```yaml
 # bindings/email.binding.yaml
@@ -2713,7 +2713,7 @@ bindings:
 
 #### 5.12.3 Target Resolution Algorithm
 
-Implementations **must** resolve `target_id` field according to the following algorithm:
+Implementations **MUST** resolve `target_id` field according to the following algorithm:
 
 ```
 Algorithm: resolve_target(target_string)
@@ -2760,9 +2760,9 @@ bindings:
 
 #### 5.12.5 `auto_schema` Mode
 
-When `auto_schema: true`, implementations **must** reuse the `generate_schema_from_function` algorithm from §5.11.4 to auto-generate Schema from target_id callable's type annotations.
+When `auto_schema: true`, implementations **MUST** reuse the `generate_schema_from_function` algorithm from §5.11.4 to auto-generate Schema from target_id callable's type annotations.
 
-If target_id callable lacks sufficient type information, **must** throw `BINDING_SCHEMA_MISSING` error.
+If target_id callable lacks sufficient type information, **MUST** throw `BINDING_SCHEMA_MISSING` error.
 
 #### 5.12.6 Discovery Mechanism
 
@@ -2778,13 +2778,13 @@ bindings:
   pattern: "*.binding.yaml"  # File matching pattern (default)
 ```
 
-- If `bindings.dir` is configured, implementations **must** scan files matching `pattern` in that directory
-- If `bindings.files` is configured, implementations **must** load specified file list
-- If neither configured, implementations **should** default to scanning `bindings/` directory
+- If `bindings.dir` is configured, implementations **MUST** scan files matching `pattern` in that directory
+- If `bindings.files` is configured, implementations **MUST** load specified file list
+- If neither configured, implementations **SHOULD** default to scanning `bindings/` directory
 
 #### 5.12.7 Validation Rules
 
-Implementations **must** perform the following validations when loading binding files:
+Implementations **MUST** perform the following validations when loading binding files:
 
 1. `module_id` conforms to Canonical ID format (§2.7)
 2. `target_id` can be resolved to valid callable
@@ -3280,7 +3280,7 @@ This allows users to start with zero-config convention discovery, then progressi
 
 ### 5.15 Edge Case Handling
 
-Implementations **must** handle module edge cases according to the following table:
+Implementations **MUST** handle module edge cases according to the following table:
 
 #### 5.15.1 execute() Return Value Edges
 
@@ -3290,7 +3290,7 @@ Implementations **must** handle module edge cases according to the following tab
 | `execute()` returns non-Map/dict type | Throw `MODULE_EXECUTE_ERROR` ("Return value must be Map") | **MUST** |
 | Return value doesn't match `output_schema` | Throw `SCHEMA_VALIDATION_ERROR` | **MUST** |
 | `execute()` throws non-`ModuleError` exception | Wrap as `MODULE_EXECUTE_ERROR` (cause points to original exception) | **MUST** |
-| `execute()` returns object with non-serializable objects | **Should** log warning but don't enforce check | **SHOULD** |
+| `execute()` returns object with non-serializable objects | **SHOULD** log warning but don't enforce check | **SHOULD** |
 
 #### 5.15.2 Module Dependency Loading Failures
 
@@ -3412,7 +3412,7 @@ audit:
 
 ### 6.2 Rule Matching
 
-Implementations **must** perform pattern matching according to the following algorithm:
+Implementations **MUST** perform pattern matching according to the following algorithm:
 
 ```
 Algorithm: match_pattern(pattern, module_id)
@@ -3455,11 +3455,11 @@ rule_matching:
 
 ### 6.3 Rule Evaluation Algorithm
 
-Implementations **must** evaluate ACL rules using a **first-match-wins** strategy. Rules are evaluated in definition order (not sorted by priority). The first rule whose patterns match the caller_id and target_id determines the access decision.
+Implementations **MUST** evaluate ACL rules using a **first-match-wins** strategy. Rules are evaluated in definition order (not sorted by priority). The first rule whose patterns match the caller_id and target_id determines the access decision.
 
 **Naming Convention:**
-- **Wire Format (JSON)**: All data transfer structures (e.g., Audit Logs, Context sync) **must** use `snake_case` (e.g., `caller_id`, `target_id`).
-- **SDK Surface**: Implementations **should** use idiomatic naming (e.g., `callerId` in TypeScript, `caller_id` in Python).
+- **Wire Format (JSON)**: All data transfer structures (e.g., Audit Logs, Context sync) **MUST** use `snake_case` (e.g., `caller_id`, `target_id`).
+- **SDK Surface**: Implementations **SHOULD** use idiomatic naming (e.g., `callerId` in TypeScript, `caller_id` in Python).
 
 ```
 Algorithm: evaluate_acl(caller, target, rules, default_effect, context)
@@ -3496,7 +3496,7 @@ Complexity: O(R × P), where R is number of rules, P is average patterns per rul
 
 ### 6.4 Pattern Specificity Scoring
 
-When further distinguishing rules within same priority is needed, implementations **should** calculate pattern specificity score:
+When further distinguishing rules within same priority is needed, implementations **SHOULD** calculate pattern specificity score:
 
 ```
 Algorithm: calculate_specificity(pattern)
@@ -3611,7 +3611,7 @@ A caller_id may pass ACL (they have the role to call `deploy.prod`) but still re
 
 ### 7.2 ApprovalHandler Protocol
 
-Implementations **must** define an `ApprovalHandler` protocol (or interface) with the following contract:
+Implementations **MUST** define an `ApprovalHandler` protocol (or interface) with the following contract:
 
 ```
 Interface: ApprovalHandler
@@ -3634,7 +3634,7 @@ Interface: ApprovalHandler
   check_approval(approval_id: String) → ApprovalResult
 ```
 
-Both methods **must** be asynchronous (async/await) in implementations that support it.
+Both methods **MUST** be asynchronous (async/await) in implementations that support it.
 
 ### 7.3 Data Types
 
@@ -3746,11 +3746,11 @@ Behavior:
 **Key behaviors:**
 - When no `ApprovalHandler` is configured, Step 5 is **completely skipped** — backward compatible with existing code.
 - The `_approval_token` mechanism (Phase B) allows clients to retry after external approval without re-triggering the approval flow.
-- The `_approval_token` key **must** be removed from arguments before passing to subsequent steps.
+- The `_approval_token` key **MUST** be removed from arguments before passing to subsequent steps.
 
 ### 7.5 Error Types
 
-Implementations **must** define the following error types under `ModuleError`:
+Implementations **MUST** define the following error types under `ModuleError`:
 
 ```yaml
 approval_error_codes:
@@ -3776,11 +3776,11 @@ ModuleError
 │   └── ApprovalPendingError   # APPROVAL_PENDING — Awaiting external approval
 ```
 
-Each approval error **must** carry a `result` field containing the full `ApprovalResult`.
+Each approval error **MUST** carry a `result` field containing the full `ApprovalResult`.
 
 ### 7.6 Built-in Handlers
 
-Implementations **should** provide these built-in handlers:
+Implementations **SHOULD** provide these built-in handlers:
 
 | Handler | Behavior | Use Case |
 |---------|----------|----------|
@@ -3790,7 +3790,7 @@ Implementations **should** provide these built-in handlers:
 
 ### 7.7 Protocol Bridge Handlers
 
-Protocol bridges (such as apcore-mcp, apcore-a2a, apcore-cli) **should** provide handlers that leverage their protocol's interaction capabilities:
+Protocol bridges (such as apcore-mcp, apcore-a2a, apcore-cli) **SHOULD** provide handlers that leverage their protocol's interaction capabilities:
 
 | Bridge | Handler | Mechanism |
 |--------|---------|-----------|
@@ -3893,7 +3893,7 @@ These fields are the foundation of apcore's **Self-Healing** mechanism, which se
 
 **Serialization rules:**
 
-- Implementations **must** use sparse serialization: fields with `null` values **should** be omitted from the serialized output.
+- Implementations **MUST** use sparse serialization: fields with `null` values **SHOULD** be omitted from the serialized output.
 - `retryable` defaults to the value specified in §8.6 for each error code. Callers may explicitly override this default.
 - `ai_guidance`, `user_fixable`, and `suggestion` default to `null` (omitted).
 
@@ -4059,7 +4059,7 @@ error_codes:
 
 ### 8.3 Error Propagation
 
-Implementations **must** propagate errors according to the following algorithm:
+Implementations **MUST** propagate errors according to the following algorithm:
 
 ```
 Algorithm: propagate_error(error, module_id, context)
@@ -4097,15 +4097,15 @@ Steps:
 error_propagation:
   # Module errors
   module_error:
-    - "Module-thrown errors **must** be wrapped as ModuleError"
-    - "Original error **must** be saved in cause field"
+    - "Module-thrown errors **MUST** be wrapped as ModuleError"
+    - "Original error **MUST** be saved in cause field"
     - "Error code prefixed with MODULE_"
 
   # Error context
   context:
-    - "Error **must** contain trace_id"
-    - "Error **should** contain occurrence location (module_id)"
-    - "**Must** support error chain tracing"
+    - "Error **MUST** contain trace_id"
+    - "Error **SHOULD** contain occurrence location (module_id)"
+    - "**MUST** support error chain tracing"
 ```
 
 ### 8.4 Custom Error Codes
@@ -4139,14 +4139,14 @@ custom_error_codes:
 
   # Error code registration
   registration:
-    - "Framework startup **must** collect all module error codes"
-    - "**Must** detect error code conflicts"
-    - "**Should** generate error code documentation"
+    - "Framework startup **MUST** collect all module error codes"
+    - "**MUST** detect error code conflicts"
+    - "**SHOULD** generate error code documentation"
 
   # Framework error code priority
   priority:
-    - "Framework error codes (MODULE_/SCHEMA_/ACL_/GENERAL_) **must** be reserved, modules **must not** use them"
-    - "Module custom error codes **must not** conflict with framework error codes"
+    - "Framework error codes (MODULE_/SCHEMA_/ACL_/GENERAL_) **MUST** be reserved, modules **MUST NOT** use them"
+    - "Module custom error codes **MUST NOT** conflict with framework error codes"
 
   # Collision detection algorithm
   collision_detection: |
@@ -4184,7 +4184,7 @@ error_response:
 
 ### 8.6 Retry Semantics
 
-Implementations **must not** default retry failed module invocations. Retry behavior **must** be explicitly controlled by caller_id or middleware.
+Implementations **MUST NOT** default retry failed module invocations. Retry behavior **MUST** be explicitly controlled by caller_id or middleware.
 
 **Retryability Classification:**
 
@@ -4226,19 +4226,19 @@ Implementations **must not** default retry failed module invocations. Retry beha
 | `VERSION_INCOMPATIBLE` | **No** | Version mismatch, needs upgrade or config fix |
 | `ERROR_CODE_COLLISION` | **No** | Error code conflict, needs code fix |
 
-Implementations **should** use this table as the default `retryable` value for each error subclass. Callers may override the default on a per-instance basis.
+Implementations **SHOULD** use this table as the default `retryable` value for each error subclass. Callers may override the default on a per-instance basis.
 
 > **Note:** `GENERAL_NOT_IMPLEMENTED` and `DEPENDENCY_NOT_FOUND` are included in the hierarchy above. Both are non-retryable by default.
 
-Retry middleware (if implemented) **should**:
+Retry middleware (if implemented) **SHOULD**:
 - Only retry errors marked as retryable
 - Only auto-retry modules with `annotations.idempotent == true`
 - Use exponential backoff strategy
-- Set max retry count limit (**should** not exceed 5 times)
+- Set max retry count limit (**SHOULD** not exceed 5 times)
 
 ### 8.7 Error Hierarchy
 
-All framework errors **must** extend from a single `ModuleError` base class using a flat hierarchy. Implementations use a flat hierarchy under `ModuleError` for simplicity.
+All framework errors **MUST** extend from a single `ModuleError` base class using a flat hierarchy. Implementations use a flat hierarchy under `ModuleError` for simplicity.
 
 ```
 ModuleError (base error for all framework errors)
@@ -4282,7 +4282,7 @@ ModuleError (base error for all framework errors)
 └── ErrorCodeCollisionError        # ERROR_CODE_COLLISION — Error code collision detected
 ```
 
-Each error class carries a `code` attribute set to the corresponding error code string (e.g., `MODULE_NOT_FOUND`). Implementations **must** ensure all framework-thrown errors are instances of `ModuleError`. Module custom errors **should** also extend `ModuleError` directly.
+Each error class carries a `code` attribute set to the corresponding error code string (e.g., `MODULE_NOT_FOUND`). Implementations **MUST** ensure all framework-thrown errors are instances of `ModuleError`. Module custom errors **SHOULD** also extend `ModuleError` directly.
 
 ### 8.8 Error Formatter Registry
 
@@ -4315,8 +4315,8 @@ ErrorFormatterRegistry.register(
 ```
 
 **Registration rules:**
-1. `adapter_name` **must** be unique. Registering the same name twice **must** raise `ERROR_FORMATTER_DUPLICATE`.
-2. Registration **should** happen at adapter initialization, before any module calls are processed.
+1. `adapter_name` **MUST** be unique. Registering the same name twice **MUST** raise `ERROR_FORMATTER_DUPLICATE`.
+2. Registration **SHOULD** happen at adapter initialization, before any module calls are processed.
 3. The registry is global and shared across all Executor instances.
 
 #### 8.8.3 Lookup Algorithm
@@ -4331,11 +4331,11 @@ Steps:
   3. Return formatter.format(error, context)
 ```
 
-The framework guarantees a result — callers **must not** handle exceptions from `format_error`.
+The framework guarantees a result — callers **MUST NOT** handle exceptions from `format_error`.
 
 #### 8.8.4 Ecosystem Adoption
 
-Ecosystem adapters **should** register their formatter at initialization:
+Ecosystem adapters **SHOULD** register their formatter at initialization:
 
 | Adapter | `adapter_name` | Responsibility |
 |---------|---------------|----------------|
@@ -4357,7 +4357,7 @@ apcore itself does not ship these formatters. Each adapter package owns its impl
 
 ### 9.1 Framework Configuration
 
-apcore.yaml is the core configuration file of the framework. Implementations **must** validate configuration files according to the following JSON Schema.
+apcore.yaml is the core configuration file of the framework. Implementations **MUST** validate configuration files according to the following JSON Schema.
 
 **apcore.yaml Complete JSON Schema Definition:**
 
@@ -4434,7 +4434,7 @@ id_map:
 
 #### 9.1.1 Default Values Summary
 
-Implementations **must** follow these default value conventions:
+Implementations **MUST** follow these default value conventions:
 
 | Configuration Item | Default Value | Valid Range | Description |
 |--------|--------|---------|------|
@@ -4455,14 +4455,14 @@ Implementations **must** follow these default value conventions:
 | `id_map.auto_detect` | `true` | `true`/`false` | Auto ID mapping detection |
 
 **Note**:
-- Configuration values exceeding ranges **must** be rejected in `validate_config()` (algorithm A12)
+- Configuration values exceeding ranges **MUST** be rejected in `validate_config()` (algorithm A12)
 - Implementations use a **dual-timeout model**: `default_timeout` applies to each individual module execution, while `global_timeout` applies to the entire call chain from root invocation. If either timeout is exceeded, a `MODULE_TIMEOUT` error is raised.
-- `timeout = 0` means disable that timeout, implementations **should** log WARN
+- `timeout = 0` means disable that timeout, implementations **SHOULD** log WARN
 - `max_call_depth` and `max_module_repeat` used for call chain safety checks (algorithm A20)
 
 ### 9.2 Environment Variable Override
 
-Implementations **must** support overriding configuration file values through environment variables.
+Implementations **MUST** support overriding configuration file values through environment variables.
 
 **Override Rules:**
 
@@ -4493,7 +4493,7 @@ Examples:
 
 ### 9.3 Configuration Validation Algorithm
 
-Implementations **must** validate configuration at startup:
+Implementations **MUST** validate configuration at startup:
 
 ```
 Algorithm: validate_config(config)
@@ -4534,7 +4534,7 @@ The apcore configuration system serves as a **Config Bus** — shared infrastruc
 | **Bus, not center** | apcore.Config does not own or mandate configuration; it provides registration, loading, validation, and access infrastructure. Packages that never call `register_namespace` are unaffected. |
 | **Zero-cost adoption** | Existing `apcore.yaml` files continue to work without modification. Namespace mode activates only when the file contains an `apcore:` top-level key. |
 | **Gradual integration** | Projects choose their integration depth: (1) apcore-only, (2) apcore + ecosystem packages, (3) apcore + third-party mount, (4) full unified file. Each level is independently valid. |
-| **Cross-language consistency** | All SDK implementations (Python, TypeScript, Rust, Go, Java) **must** implement the same namespace registration, loading, and validation semantics defined in this section. |
+| **Cross-language consistency** | All SDK implementations (Python, TypeScript, Rust, Go, Java) **MUST** implement the same namespace registration, loading, and validation semantics defined in this section. |
 | **Strict and flexible coexistence** | Strict mode enforces that every namespace is registered; flexible mode (default) passes through unknown namespaces with a warning. Both modes coexist within a single deployment. |
 
 #### 9.4.2 Terminology
@@ -4552,7 +4552,7 @@ The apcore configuration system serves as a **Config Bus** — shared infrastruc
 
 #### 9.5.1 Registration API
 
-All SDK implementations **must** expose a namespace registration method on the `Config` class (or its language-idiomatic equivalent).
+All SDK implementations **MUST** expose a namespace registration method on the `Config` class (or its language-idiomatic equivalent).
 
 **Canonical signature (pseudocode):**
 
@@ -4578,14 +4578,14 @@ Config.register_namespace(
 | `defaults` | MAY | Default configuration values for this namespace. Merged before file data (lowest priority). |
 | `env_style` | MAY | Controls how environment variable suffixes are converted to config keys. `"auto"` (default): matches the suffix against the `defaults` tree structure to determine the correct interpretation — flat keys match flat, nested paths match nested. When `defaults` is `nil`, falls back to `"nested"` behavior. `"nested"`: single `_` → `.` (section separator), double `__` → literal `_` — suitable for purely hierarchical config structures. `"flat"`: no conversion, suffix is lowercased as-is — suitable for purely flat snake_case config keys where `_` is part of the key name, not a hierarchy separator. When `nil`, defaults to `"auto"`. |
 | `max_depth` | MAY | Maximum nesting depth for environment variable key conversion. Applies to `"nested"` and `"auto"` styles; ignored for `"flat"`. After reaching `max_depth` levels, remaining `_` characters are preserved as literal underscores instead of being converted to `.` separators. Default: `5`. Example: `A_B_C_D_E_F_G` with `max_depth=5` → `a.b.c.d.e_f_g` (5 segments). |
-| `env_map` | MAY | Explicit mapping of bare (unprefixed) environment variable names to config keys within this namespace. Each key is an exact env var name (e.g., `"REDIS_URL"`), each value is the target_id config key (e.g., `"cache_url"`). Only explicitly listed env vars are captured. Same priority as `env_prefix` overrides. An env var name **must not** appear in more than one `env_map` (global or namespace) — duplicates raise `CONFIG_ENV_MAP_CONFLICT`. When `nil`, no bare env var mapping is applied. |
+| `env_map` | MAY | Explicit mapping of bare (unprefixed) environment variable names to config keys within this namespace. Each key is an exact env var name (e.g., `"REDIS_URL"`), each value is the target_id config key (e.g., `"cache_url"`). Only explicitly listed env vars are captured. Same priority as `env_prefix` overrides. An env var name **MUST NOT** appear in more than one `env_map` (global or namespace) — duplicates raise `CONFIG_ENV_MAP_CONFLICT`. When `nil`, no bare env var mapping is applied. |
 
 **Registration rules:**
 
-1. `register_namespace` **must** be callable before `Config.load()`. Implementations **may** also allow registration after load (see §9.5.3).
-2. Registering the same namespace name twice **must** raise `CONFIG_NAMESPACE_DUPLICATE`.
-3. The namespace `apcore` is implicitly registered by the framework itself. Attempting to register `apcore` externally **must** raise `CONFIG_NAMESPACE_RESERVED`.
-4. The reserved namespace `_config` **must not** be registerable. It is used for Config Bus meta-configuration (see §9.6.3). Attempting to register it **must** raise `CONFIG_NAMESPACE_RESERVED`.
+1. `register_namespace` **MUST** be callable before `Config.load()`. Implementations **may** also allow registration after load (see §9.5.3).
+2. Registering the same namespace name twice **MUST** raise `CONFIG_NAMESPACE_DUPLICATE`.
+3. The namespace `apcore` is implicitly registered by the framework itself. Attempting to register `apcore` externally **MUST** raise `CONFIG_NAMESPACE_RESERVED`.
+4. The reserved namespace `_config` **MUST NOT** be registerable. It is used for Config Bus meta-configuration (see §9.6.3). Attempting to register it **MUST** raise `CONFIG_NAMESPACE_RESERVED`.
 5. Namespace registration is permanent for the process lifetime. There is no `unregister_namespace` API in this version of the specification. This simplifies thread safety and avoids invalidation cascades across Config instances.
 
 #### 9.5.2 Cross-Language Registration Examples
@@ -4727,14 +4727,14 @@ Config.registerNamespace(NamespaceRegistration.builder()
 
 1. The namespace is added to the global registry immediately.
 2. **Already-loaded Config instances are not retroactively modified.** The new namespace takes effect on the next `Config.load()` or `config.reload()` call. This avoids surprising mutations to instances that callers may already be using.
-3. If the caller_id needs the new namespace to apply immediately to an existing instance, they **must** call `config.reload()` explicitly. The reload will pick up the newly registered namespace, apply its defaults and env overrides, and validate.
-4. Late registration **must not** invalidate previously loaded data in other namespaces.
+3. If the caller_id needs the new namespace to apply immediately to an existing instance, they **MUST** call `config.reload()` explicitly. The reload will pick up the newly registered namespace, apply its defaults and env overrides, and validate.
+4. Late registration **MUST NOT** invalidate previously loaded data in other namespaces.
 
 ### 9.6 Unified Configuration File
 
 #### 9.6.1 Mode Detection Algorithm
 
-When `Config.load(path)` is called, implementations **must** detect the file mode:
+When `Config.load(path)` is called, implementations **MUST** detect the file mode:
 
 ```
 Algorithm: detect_config_mode(parsed_yaml)
@@ -4800,7 +4800,7 @@ For the `apcore` namespace, legacy merge rules (§9.2) apply unchanged, using th
 
 #### 9.6.3 Config Bus Meta-Configuration
 
-The reserved `_config` namespace controls Config Bus behavior itself. It **must not** be registerable by external packages.
+The reserved `_config` namespace controls Config Bus behavior itself. It **MUST NOT** be registerable by external packages.
 
 ```yaml
 _config:
@@ -4810,7 +4810,7 @@ _config:
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `strict` | boolean | `false` | When `true`, every top-level key (except `_config`) **must** correspond to a registered namespace. Unknown namespaces cause a `ConfigError`. |
+| `strict` | boolean | `false` | When `true`, every top-level key (except `_config`) **MUST** correspond to a registered namespace. Unknown namespaces cause a `ConfigError`. |
 | `allow_unknown` | boolean | `true` | When `strict` is `false` and `allow_unknown` is `true`, unknown namespace data is stored and accessible via `get()` but not validated. When `allow_unknown` is `false`, unknown namespaces are silently ignored (not stored). |
 
 **Behavior matrix:**
@@ -4964,16 +4964,16 @@ config.mount(
 )
 ```
 
-Exactly one of `from_file` or `from_dict` **must** be provided.
+Exactly one of `from_file` or `from_dict` **MUST** be provided.
 
 **Mount rules:**
 
 1. The target_id namespace **may** or **may not** be previously registered via `register_namespace`.
    - If registered: mount data is merged (file/dict < env overrides), then validated against the registered schema.
-   - If not registered: mount data is stored as-is, accessible via `get()`, but not validated. A WARN **should** be logged.
-2. Mounting to a namespace that already has data (from the unified file or a prior mount) **must** deep-merge the mount data into the existing data. Mount data has lower priority than file data (see §9.6.2). This means the unified file is the authoritative source when both exist. If the caller_id intends the mounted file to be the authoritative source for a namespace, the namespace section **should not** appear in the unified file.
-3. Mounting to the `apcore` namespace is permitted but **should** log a WARN (it overrides framework configuration).
-4. Mounting to `_config` **must** raise a `CONFIG_MOUNT_ERROR`.
+   - If not registered: mount data is stored as-is, accessible via `get()`, but not validated. A WARN **SHOULD** be logged.
+2. Mounting to a namespace that already has data (from the unified file or a prior mount) **MUST** deep-merge the mount data into the existing data. Mount data has lower priority than file data (see §9.6.2). This means the unified file is the authoritative source when both exist. If the caller_id intends the mounted file to be the authoritative source for a namespace, the namespace section **SHOULD NOT** appear in the unified file.
+3. Mounting to the `apcore` namespace is permitted but **SHOULD** log a WARN (it overrides framework configuration).
+4. Mounting to `_config` **MUST** raise a `CONFIG_MOUNT_ERROR`.
 
 #### 9.7.2 Cross-Language Mount Examples
 
@@ -5142,15 +5142,15 @@ Examples (max_depth=5):
 
 **Type coercion** follows the same rules as §9.2: `"true"`/`"false"` → boolean, numeric strings → int/float, otherwise string.
 
-> **Note — apflow env var compatibility:** The apflow project currently uses a simpler convention where dots become single underscores without the double-underscore escape (e.g., `api.server_url` → `APFLOW_API_SERVER_URL`). This works because apflow's config keys do not contain literal underscores. When migrating to the Config Bus, apflow **should** adopt the §9.2 convention (`APFLOW_API_SERVER__URL`) for consistency, but implementations **may** accept both forms during a transition period by attempting double-underscore parsing first and falling back to the simpler form.
+> **Note — apflow env var compatibility:** The apflow project currently uses a simpler convention where dots become single underscores without the double-underscore escape (e.g., `api.server_url` → `APFLOW_API_SERVER_URL`). This works because apflow's config keys do not contain literal underscores. When migrating to the Config Bus, apflow **SHOULD** adopt the §9.2 convention (`APFLOW_API_SERVER__URL`) for consistency, but implementations **may** accept both forms during a transition period by attempting double-underscore parsing first and falling back to the simpler form.
 
 #### 9.8.2 Env Prefix Conflict Prevention
 
 Env prefix conflicts arise when one registered prefix is a string prefix of another, making it ambiguous which namespace owns a given env var. The following rules prevent this:
 
-1. Each `env_prefix` **must** be unique across all registered namespaces. Attempting to register a duplicate `env_prefix` **must** raise `CONFIG_ENV_PREFIX_CONFLICT`.
-2. Any `env_prefix` that starts with `APCORE_` (i.e., matches `^APCORE_[A-Z0-9]`) **must** raise `CONFIG_ENV_PREFIX_CONFLICT`. This prevents collision with the `apcore` namespace's `APCORE_` prefix. The double-underscore form (`^APCORE_[A-Z]`, e.g., `APCORE_MCP`) is explicitly permitted and dispatched via longest-prefix-match (see dispatch algorithm below).
-3. The prefix `APCORE` is reserved for the `apcore` namespace. Attempting to register it for another namespace **must** raise `CONFIG_NAMESPACE_RESERVED`.
+1. Each `env_prefix` **MUST** be unique across all registered namespaces. Attempting to register a duplicate `env_prefix` **MUST** raise `CONFIG_ENV_PREFIX_CONFLICT`.
+2. Any `env_prefix` that starts with `APCORE_` (i.e., matches `^APCORE_[A-Z0-9]`) **MUST** raise `CONFIG_ENV_PREFIX_CONFLICT`. This prevents collision with the `apcore` namespace's `APCORE_` prefix. The double-underscore form (`^APCORE_[A-Z]`, e.g., `APCORE_MCP`) is explicitly permitted and dispatched via longest-prefix-match (see dispatch algorithm below).
+3. The prefix `APCORE` is reserved for the `apcore` namespace. Attempting to register it for another namespace **MUST** raise `CONFIG_NAMESPACE_RESERVED`.
 
 **Resolving the `APCORE` / `APCORE_MCP` ambiguity:**
 
@@ -5167,7 +5167,7 @@ A naive prefix scheme would make `APCORE_MCP` (for apcore-mcp) collide with `APC
 
 This works because the `APCORE_` prefix matcher stops at the first `_` boundary. An env var like `APCORE_MCP_TRANSPORT` starts with `APCORE_` (double underscore), which the `APCORE_` prefix handler would interpret as key path `apcore._mcp.transport` — not a valid apcore config path. The `APCORE_MCP_` prefix handler correctly claims it.
 
-However, this convention introduces complexity. Implementations **must** use **longest-prefix-match** when dispatching env vars to namespaces:
+However, this convention introduces complexity. Implementations **MUST** use **longest-prefix-match** when dispatching env vars to namespaces:
 
 ```
 Algorithm: dispatch_env_var(env_key, registered_prefixes)
@@ -5269,11 +5269,11 @@ In legacy mode, `get()` behaves as before (no namespace prefix):
 config.get("executor.default_timeout")           → 30000
 ```
 
-**Implementations MUST NOT break legacy mode access patterns.** When the config is in legacy mode, `get("executor.default_timeout")` **must** continue to work without requiring an `apcore.` prefix.
+**Implementations MUST NOT break legacy mode access patterns.** When the config is in legacy mode, `get("executor.default_timeout")` **MUST** continue to work without requiring an `apcore.` prefix.
 
 **Dot-path namespace resolution algorithm:**
 
-Because namespace names may contain hyphens (e.g., `apcore-mcp`), implementations **must not** naively split on the first `.` to extract the namespace. Instead:
+Because namespace names may contain hyphens (e.g., `apcore-mcp`), implementations **MUST NOT** naively split on the first `.` to extract the namespace. Instead:
 
 ```
 Algorithm: resolve_namespace_path(dot_path, mode, known_namespaces)
@@ -5310,18 +5310,18 @@ Steps:
 
 #### 9.9.2 Namespace Accessor
 
-Implementations **should** provide a convenience method to retrieve the entire configuration subtree for a namespace:
+Implementations **SHOULD** provide a convenience method to retrieve the entire configuration subtree for a namespace:
 
 ```
 config.namespace("apflow")
 → {"api": {"server_url": "...", "timeout": 30.0}, "governance": {...}}
 ```
 
-This returns a deep copy. Mutations to the returned object **must not** affect the Config Bus.
+This returns a deep copy. Mutations to the returned object **MUST NOT** affect the Config Bus.
 
 #### 9.9.3 Typed Access
 
-Implementations **should** provide typed access methods appropriate to the language:
+Implementations **SHOULD** provide typed access methods appropriate to the language:
 
 **Statically typed languages (Rust, Go, Java, TypeScript):**
 
@@ -5342,13 +5342,13 @@ settings: ApflowSettings = config.bind("apflow", ApflowSettings)
 **Binding rules:**
 
 1. `bind()` deserializes the namespace subtree into the target_id type.
-2. If the namespace has a registered JSON Schema, validation **should** have already occurred at load time. `bind()` performs structural deserialization only — it **should not** re-validate.
-3. If deserialization fails (missing fields, type mismatch), `bind()` **must** raise a `ConfigError` with a clear message indicating the namespace and the failing field.
+2. If the namespace has a registered JSON Schema, validation **SHOULD** have already occurred at load time. `bind()` performs structural deserialization only — it **SHOULD NOT** re-validate.
+3. If deserialization fails (missing fields, type mismatch), `bind()` **MUST** raise a `ConfigError` with a clear message indicating the namespace and the failing field.
 4. The model type used in `bind()` is owned by the downstream package, not by apcore. apcore provides the mechanism, not the types.
 
 #### 9.9.4 Registered Namespace Introspection
 
-Implementations **should** expose a method to list registered namespaces:
+Implementations **SHOULD** expose a method to list registered namespaces:
 
 ```
 Config.registered_namespaces()
@@ -5411,7 +5411,7 @@ Steps:
 
 ### 9.11 Hot-Reload (Namespace Mode)
 
-`config.reload()` **must** support namespace mode:
+`config.reload()` **MUST** support namespace mode:
 
 1. Re-read the YAML file.
 2. Re-detect mode (legacy vs namespace).
@@ -5419,15 +5419,15 @@ Steps:
 4. Re-apply all environment variable overrides per registered namespace.
 5. Re-validate per A12-NS.
 6. Atomically replace the config data tree.
-7. Re-apply mount data for namespaces that were mounted (mount sources **should** be remembered).
+7. Re-apply mount data for namespaces that were mounted (mount sources **SHOULD** be remembered).
 
-If a mount source was `from_file`, the file **should** also be re-read during reload. If the mount source was `from_dict`, the original dict is re-applied (not re-read).
+If a mount source was `from_file`, the file **SHOULD** also be re-read during reload. If the mount source was `from_dict`, the original dict is re-applied (not re-read).
 
 ### 9.12 Cross-Language Implementation Requirements
 
 #### 9.12.1 Required API Surface
 
-All SDK implementations claiming Config Bus conformance **must** implement:
+All SDK implementations claiming Config Bus conformance **MUST** implement:
 
 | Method | Requirement Level | Description |
 |--------|-------------------|-------------|
@@ -5460,15 +5460,15 @@ All SDK implementations claiming Config Bus conformance **must** implement:
 
 #### 9.12.3 Thread Safety
 
-All Config Bus methods **must** be thread-safe / concurrency-safe:
+All Config Bus methods **MUST** be thread-safe / concurrency-safe:
 
-- `register_namespace()` **must** use a global lock or atomic registry (registrations can happen from multiple threads during framework startup).
-- `get()`, `set()`, `mount()`, `reload()` **must** be synchronized per Config instance (same requirement as §12.7).
+- `register_namespace()` **MUST** use a global lock or atomic registry (registrations can happen from multiple threads during framework startup).
+- `get()`, `set()`, `mount()`, `reload()` **MUST** be synchronized per Config instance (same requirement as §12.7).
 - `bind()` reads a snapshot — the returned object is independent and needs no synchronization.
 
 #### 9.12.4 Error Types
 
-Implementations **must** use the following error codes (extensions to §8). All config errors inherit from the base error type (`ModuleError` in Python, equivalent in other languages) and are non-retryable (`retryable = false`), consistent with the existing `CONFIG_NOT_FOUND` and `CONFIG_INVALID` codes defined in §8.2:
+Implementations **MUST** use the following error codes (extensions to §8). All config errors inherit from the base error type (`ModuleError` in Python, equivalent in other languages) and are non-retryable (`retryable = false`), consistent with the existing `CONFIG_NOT_FOUND` and `CONFIG_INVALID` codes defined in §8.2:
 
 | Error Code | Trigger | Existing? |
 |------------|---------|-----------|
@@ -5485,7 +5485,7 @@ Implementations **must** use the following error codes (extensions to §8). All 
 
 #### 9.13.1 apcore Ecosystem Packages
 
-Packages in the apcore ecosystem (apcore-mcp, apcore-a2a, apcore-cli, apflow, framework integrations) **should** follow this pattern:
+Packages in the apcore ecosystem (apcore-mcp, apcore-a2a, apcore-cli, apflow, framework integrations) **SHOULD** follow this pattern:
 
 ```python
 # In package __init__.py or equivalent entry point
@@ -5520,7 +5520,7 @@ Config.register_namespace(
 
 #### 9.13.2 Third-Party Package Integration
 
-Third-party packages that want to participate in the Config Bus **should** follow this pattern:
+Third-party packages that want to participate in the Config Bus **SHOULD** follow this pattern:
 
 ```python
 # In third-party package setup
@@ -5534,7 +5534,7 @@ Config.register_namespace(
 )
 ```
 
-Third-party packages **must not** assume that apcore.Config is the only configuration source. The registration is additive — if the application does not use the Config Bus, the package must fall back to its own configuration mechanism:
+Third-party packages **MUST NOT** assume that apcore.Config is the only configuration source. The registration is additive — if the application does not use the Config Bus, the package must fall back to its own configuration mechanism:
 
 ```python
 # Defensive integration pattern for third-party packages
@@ -5552,7 +5552,7 @@ def get_billing_config(apcore_config=None):
 
 #### 9.13.3 Framework Integration Auto-Registration
 
-Framework integrations (django-apcore, fastapi-apcore, etc.) **should** auto-register their namespace when the framework loads them:
+Framework integrations (django-apcore, fastapi-apcore, etc.) **SHOULD** auto-register their namespace when the framework loads them:
 
 **Django:**
 
@@ -5605,7 +5605,7 @@ Config.registerNamespace({
 
 ### 9.14 Config Discovery (Optional)
 
-Implementations **may** support automatic configuration file discovery. When `Config.load()` is called without a path argument, the following search order **should** be used:
+Implementations **may** support automatic configuration file discovery. When `Config.load()` is called without a path argument, the following search order **SHOULD** be used:
 
 ```
 Algorithm: discover_config_file()
@@ -5623,7 +5623,7 @@ If no file is found:
   → Use Config.from_defaults() (apcore namespace only, no error)
 ```
 
-This is a **MAY**-level feature. Implementations that do not support discovery **must** require an explicit path in `Config.load()`.
+This is a **MAY**-level feature. Implementations that do not support discovery **MUST** require an explicit path in `Config.load()`.
 
 > **Note:** The file name does not influence mode detection. A file named `project.yaml` may contain legacy-mode content, and a file named `apcore.yaml` may contain namespace-mode content. Mode is always determined by the presence of the `apcore:` top-level key (see §9.6.1).
 
@@ -5647,7 +5647,7 @@ Both namespaces promote existing flat keys that already live inside the `apcore`
 └─────────────────────────────────────────────────────────────┘
 ```
 
-Third-party packages **should** register their namespaces after step 2 and before step 4 (at import time).
+Third-party packages **SHOULD** register their namespaces after step 2 and before step 4 (at import time).
 
 #### 9.15.2 `observability` Namespace
 
@@ -5699,7 +5699,7 @@ APCORE_OBSERVABILITY_LOGGING_LEVEL=debug
 APCORE_OBSERVABILITY_METRICS_EXPORTER=prometheus
 ```
 
-**Ecosystem adoption** — adapter packages **should** read from this namespace rather than maintaining their own observability defaults:
+**Ecosystem adoption** — adapter packages **SHOULD** read from this namespace rather than maintaining their own observability defaults:
 
 | Package | Keys to read |
 |---------|-------------|
@@ -5739,7 +5739,7 @@ Config.register_namespace(
 )
 ```
 
-**Migration:** `register_sys_modules()` **must** prefer `config.namespace("sys_modules")` in namespace mode, falling back to `config.get("sys_modules.*")` in legacy mode. No breaking change.
+**Migration:** `register_sys_modules()` **MUST** prefer `config.namespace("sys_modules")` in namespace mode, falling back to `config.get("sys_modules.*")` in legacy mode. No breaking change.
 
 **Environment variable examples (`env_prefix = APCORE_SYS`):**
 
@@ -5762,7 +5762,7 @@ This section defines the canonical event type names and payload contracts, resol
 
 #### 9.16.1 Naming Convention
 
-Event type names **must** use dot-namespaced format. The prefix identifies ownership:
+Event type names **MUST** use dot-namespaced format. The prefix identifies ownership:
 
 | Prefix | Owner | Examples |
 |--------|-------|---------|
@@ -5773,11 +5773,11 @@ Event type names **must** use dot-namespaced format. The prefix identifies owner
 | `apflow.*` | apflow | `apflow.step_completed` |
 | Custom | Third-party | `billing.invoice_generated` |
 
-The `apcore.*` prefix is reserved. Ecosystem packages **must not** emit events with this prefix.
+The `apcore.*` prefix is reserved. Ecosystem packages **MUST NOT** emit events with this prefix.
 
 #### 9.16.2 Canonical Core Event Types
 
-The following are the canonical event type names, payload keys, and severity for all events emitted by apcore-python. Implementations **must** use these names. The previous short-form names (`module_registered`, `config_changed`, etc.) remain valid as **aliases** for backward compatibility.
+The following are the canonical event type names, payload keys, and severity for all events emitted by apcore-python. Implementations **MUST** use these names. The previous short-form names (`module_registered`, `config_changed`, etc.) remain valid as **aliases** for backward compatibility.
 
 | Canonical Name | Alias (legacy) | Severity | Emitted by | Payload Keys |
 |----------------|---------------|----------|------------|--------------|
@@ -5866,7 +5866,7 @@ metrics:
 
 ### 10.4 Usage Tracking
 
-Implementations **should** provide a `UsageCollector` that tracks per-module call statistics for the `system.usage.*` system modules:
+Implementations **SHOULD** provide a `UsageCollector` that tracks per-module call statistics for the `system.usage.*` system modules:
 
 ```yaml
 usage:
@@ -5883,11 +5883,11 @@ usage:
     - avg_latency_ms: gauge
 ```
 
-A `UsageMiddleware` **should** automatically record call data into the `UsageCollector` during Step 10 (Middleware After). The collected data is consumed by `system.usage.summary` and `system.usage.module` system modules.
+A `UsageMiddleware` **SHOULD** automatically record call data into the `UsageCollector` during Step 10 (Middleware After). The collected data is consumed by `system.usage.summary` and `system.usage.module` system modules.
 
 ### 10.5 Trace ID Format
 
-trace_id **must** use UUID v4 format. In distributed scenarios, **recommended** to be compatible with W3C Trace Context standard.
+trace_id **MUST** use UUID v4 format. In distributed scenarios, **recommended** to be compatible with W3C Trace Context standard.
 
 ```yaml
 trace_id_spec:
@@ -5906,7 +5906,7 @@ trace_id_spec:
 
 ### 10.6 Sensitive Data Redaction
 
-Implementations **must** redact fields marked as `x-sensitive` in logs and trace outputs.
+Implementations **MUST** redact fields marked as `x-sensitive` in logs and trace outputs.
 
 ```
 Algorithm: redact_sensitive(data, schema)
@@ -5935,7 +5935,7 @@ Complexity: O(n), where n is number of data fields
 
 ### 10.7 Sampling Strategy
 
-Implementations **should** support the following sampling strategies:
+Implementations **SHOULD** support the following sampling strategies:
 
 | Strategy | Configuration Value | Description |
 |------|--------|------|
@@ -5944,11 +5944,11 @@ Implementations **should** support the following sampling strategies:
 | Error-first | `sampling_strategy: "error_first"` | Always record error calls, successful calls by proportion |
 | Off | `sampling_rate: 0.0` | Don't record trace info |
 
-Sampling decision **must** be made at call chain root node, child calls **must** inherit parent call's sampling decision.
+Sampling decision **MUST** be made at call chain root node, child calls **MUST** inherit parent call's sampling decision.
 
 ### 10.8 Span Naming Convention
 
-Implementations **should** follow these Span naming conventions:
+Implementations **SHOULD** follow these Span naming conventions:
 
 ```yaml
 span_naming:
@@ -6169,7 +6169,7 @@ builtin_middleware:
 
 ### 11.5 Middleware Execution State Machine
 
-Middleware chain execution **must** follow this state machine:
+Middleware chain execution **MUST** follow this state machine:
 
 ```
                                      Error branch
@@ -6228,7 +6228,7 @@ Extension Point: Executor
 
 ### 11.7 Extension Loading Order
 
-Implementations **must** load extensions according to the following algorithm:
+Implementations **MUST** load extensions according to the following algorithm:
 
 ```
 Algorithm: load_extensions(config, extension_points)
@@ -6244,7 +6244,7 @@ Steps:
 
 ### 11.8 Edge Case Handling
 
-Implementations **must** handle middleware edge cases according to the following table:
+Implementations **MUST** handle middleware edge cases according to the following table:
 
 #### 11.8.1 on_error Cascade
 
@@ -6306,7 +6306,7 @@ Implementations **must** handle middleware edge cases according to the following
 
 ### 12.2 Core Component Interface Contracts
 
-Following are formalized interface definitions for each core component (language-agnostic pseudocode). All SDK implementations **must** provide equivalent implementations of these interfaces.
+Following are formalized interface definitions for each core component (language-agnostic pseudocode). All SDK implementations **MUST** provide equivalent implementations of these interfaces.
 
 ```
 Interface: IDConverter
@@ -6596,7 +6596,7 @@ When bridging `Executor.stream()` to MCP, implementations SHOULD use the standar
 
 ### 12.3 Cross-language Implementation Requirements
 
-All SDK implementations **must** satisfy the following requirements regardless of language:
+All SDK implementations **MUST** satisfy the following requirements regardless of language:
 
 | Requirement | Level |
 |------|--------|
@@ -6613,7 +6613,7 @@ All SDK implementations **must** satisfy the following requirements regardless o
 
 ### 12.4 Consistency Testing Requirements
 
-Each SDK implementation **must** pass the following consistency test suite to ensure cross-language behavior consistency:
+Each SDK implementation **MUST** pass the following consistency test suite to ensure cross-language behavior consistency:
 
 ```
 Consistency Test Suite:
@@ -6693,7 +6693,7 @@ Phase 4: Advanced
 
 ### 12.6 Language-specific Guidelines
 
-Each SDK implementation **should** use the idiomatic schema validation, async model, and package management conventions of its target_id language. Specific library choices are documented in each SDK's own repository.
+Each SDK implementation **SHOULD** use the idiomatic schema validation, async model, and package management conventions of its target_id language. Specific library choices are documented in each SDK's own repository.
 
 ### 12.7 Concurrency Model Specification
 
@@ -6703,15 +6703,15 @@ This section defines apcore's concurrency model and thread safety requirements, 
 
 **Singleton Model (MUST)**:
 
-- Each `module_id` **must** correspond to unique module instance (singleton)
+- Each `module_id` **MUST** correspond to unique module instance (singleton)
 - Instance created at `discover()` or first invocation, destroyed at `unregister()` or app shutdown
-- `on_load()` hook **must** be called only once during instance lifecycle
+- `on_load()` hook **MUST** be called only once during instance lifecycle
 
 **Reentrancy (MUST)**:
 
-- `execute()` method **must** support concurrent reentrant calls (thread-safe)
-- Module internal state (if any) **should** use thread-safe mechanisms (locks, atomic variables, etc.) for protection
-- Implementations **must not** assume `execute()` calls are serial
+- `execute()` method **MUST** support concurrent reentrant calls (thread-safe)
+- Module internal state (if any) **SHOULD** use thread-safe mechanisms (locks, atomic variables, etc.) for protection
+- Implementations **MUST NOT** assume `execute()` calls are serial
 
 **Example — Thread-safe counter module:**
 
@@ -6754,14 +6754,14 @@ class CounterModule:
 
 **Reference Sharing (MUST)**:
 
-- `context.data` **must** be the same dict/Map object across entire call chain (reference sharing)
+- `context.data` **MUST** be the same dict/Map object across entire call chain (reference sharing)
 - Parent module modifications to `context.data` visible to child modules, vice versa
-- When `child()` creates new Context, `data` field **must** copy reference (not deep copy)
+- When `child()` creates new Context, `data` field **MUST** copy reference (not deep copy)
 
 **Isolation (MUST)**:
 
-- Different top-level `call()` invocations **must** use independent `context.data` instances
-- Concurrently executing call chains **must not** share `context.data` (avoid race conditions)
+- Different top-level `call()` invocations **MUST** use independent `context.data` instances
+- Concurrently executing call chains **MUST NOT** share `context.data` (avoid race conditions)
 
 **Example — Context.data Sharing:**
 
@@ -6785,8 +6785,8 @@ print(context.data["key"])  # Reads "value" (reference sharing)
 
 **Concurrent Access Protection (SHOULD)**:
 
-- If `context.data` might be accessed by multiple threads (e.g., async middleware), **should** use thread-safe Map implementation
-- Python's `dict` is partially thread-safe in CPython (GIL protected), but **should** avoid relying on implementation details
+- If `context.data` might be accessed by multiple threads (e.g., async middleware), **SHOULD** use thread-safe Map implementation
+- Python's `dict` is partially thread-safe in CPython (GIL protected), but **SHOULD** avoid relying on implementation details
 
 #### 12.7.3 Hot Reload with State Migration
 
@@ -6805,11 +6805,11 @@ Hot-Reload Sequence:
 ```
 
 **Constraints:**
-- `on_suspend()` return value **must** be JSON-serializable (no functions, connections, file handles)
-- `on_resume()` **must** tolerate missing or extra keys (new version may have different state shape)
+- `on_suspend()` return value **MUST** be JSON-serializable (no functions, connections, file handles)
+- `on_resume()` **MUST** tolerate missing or extra keys (new version may have different state shape)
 - If `on_suspend()` raises, log ERROR and proceed with unload (state is lost)
 - If `on_resume()` raises, log ERROR and continue (module starts with fresh state)
-- Framework **must not** call `on_resume()` if `on_suspend()` returned null or was not implemented
+- Framework **MUST NOT** call `on_resume()` if `on_suspend()` returned null or was not implemented
 
 ```python
 # Example: Counter module with state preservation
@@ -6871,13 +6871,13 @@ Return:
 
 **Cooperative Cancellation (SHOULD)**:
 
-- SDK **should** prefer cooperative cancellation mechanism (e.g., Python `asyncio.CancelledError`, Go `context.Context`)
-- Module **should** check cancellation signal and actively exit
+- SDK **SHOULD** prefer cooperative cancellation mechanism (e.g., Python `asyncio.CancelledError`, Go `context.Context`)
+- Module **SHOULD** check cancellation signal and actively exit
 
 **Forced Termination (MAY)**:
 
 - If module doesn't respond to cancellation signal, SDK **may** forcibly terminate execution thread/coroutine
-- After forced termination **must** log ERROR including `module_id` and timeout duration
+- After forced termination **MUST** log ERROR including `module_id` and timeout duration
 
 **Timeout Enforcement Algorithm (MUST)**:
 
@@ -6916,13 +6916,13 @@ Return:
 
 **Call-level Isolation (MUST)**:
 
-- Each `call()`'s middleware chain execution **must** not interleave with other `call()`'s chain execution
-- Middleware chain's before → execute → after sequence **must** complete atomically (not interrupted by other calls)
+- Each `call()`'s middleware chain execution **MUST** not interleave with other `call()`'s chain execution
+- Middleware chain's before → execute → after sequence **MUST** complete atomically (not interrupted by other calls)
 
 **Instance Sharing (MUST)**:
 
 - Middleware instances shared at application level (similar to module singleton)
-- Middleware **must** be thread-safe, support concurrent calls
+- Middleware **MUST** be thread-safe, support concurrent calls
 
 **Example — Middleware Concurrent Execution:**
 
@@ -6938,14 +6938,14 @@ Thread 2:                      before1 → ...
 
 **State Isolation (SHOULD)**:
 
-- Middleware **should** store call-level state through `context.data` (e.g., request ID, timer)
-- **Must not** use middleware instance variables to store call-level state (causes race conditions)
+- Middleware **SHOULD** store call-level state through `context.data` (e.g., request ID, timer)
+- **MUST NOT** use middleware instance variables to store call-level state (causes race conditions)
 
 #### 12.7.7 Sync/Async Mixing
 
 **Bridging Strategy (MUST)**:
 
-Implementations **must** support mixed calls of sync and async modules, bridging according to these rules:
+Implementations **MUST** support mixed calls of sync and async modules, bridging according to these rules:
 
 | Caller | Called Module | Bridging Strategy | Description |
 |--------|-----------|---------|------|
@@ -6966,12 +6966,12 @@ Implementations **must** support mixed calls of sync and async modules, bridging
 
 **Performance Considerations:**
 
-- Sync→Async bridging blocks caller_id thread, **should** avoid frequent use in async contexts
-- Async→Sync bridging needs thread pool, **should** configure reasonable thread pool size (default CPU cores × 2)
+- Sync→Async bridging blocks caller_id thread, **SHOULD** avoid frequent use in async contexts
+- Async→Sync bridging needs thread pool, **SHOULD** configure reasonable thread pool size (default CPU cores × 2)
 
 #### 12.7.8 Resource Cleanup Guarantees
 
-Implementations **must** guarantee resource cleanup according to this table:
+Implementations **MUST** guarantee resource cleanup according to this table:
 
 | Exit Scenario | `on_unload()` Called | `finally` Block Executed | File/Network Closed | Memory Released | Level |
 |---------|-------------------|-----------------|--------------|---------|------|
@@ -6982,9 +6982,9 @@ Implementations **must** guarantee resource cleanup according to this table:
 
 **Best Practices:**
 
-- Modules **should** use RAII (Resource Acquisition Is Initialization) pattern to manage resources
-- **Should** acquire resources in `on_load()`, release in `on_unload()`
-- **Should** avoid opening long-term resources in `execute()` (e.g., database connections), use connection pools instead
+- Modules **SHOULD** use RAII (Resource Acquisition Is Initialization) pattern to manage resources
+- **SHOULD** acquire resources in `on_load()`, release in `on_unload()`
+- **SHOULD** avoid opening long-term resources in `execute()` (e.g., database connections), use connection pools instead
 
 **Example — Resource Cleanup:**
 
@@ -7027,7 +7027,7 @@ Each check in validate() calls the same helper functions used by the `call()` pi
 
 #### 12.8.3 PreflightResult Type
 
-`PreflightResult` **must** contain the following fields:
+`PreflightResult` **MUST** contain the following fields:
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -7038,7 +7038,7 @@ Each check in validate() calls the same helper functions used by the `call()` pi
 
 #### 12.8.4 PreflightCheckResult Type
 
-`PreflightCheckResult` **must** contain the following fields:
+`PreflightCheckResult` **MUST** contain the following fields:
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -7099,7 +7099,7 @@ prerelease: draft, alpha, beta, rc
 
 ### 13.3 Version Negotiation Algorithm
 
-When SDK loads configuration or Schema, **must** perform version negotiation:
+When SDK loads configuration or Schema, **MUST** perform version negotiation:
 
 ```
 Algorithm: negotiate_version(declared_version, sdk_version)
@@ -7128,7 +7128,7 @@ Steps:
 
 ### 13.4 Schema Migration
 
-When Schema version changes, implementations **should** support automatic migration:
+When Schema version changes, implementations **SHOULD** support automatic migration:
 
 ```
 Algorithm: migrate_schema(schema, from_version, to_version)
@@ -7354,7 +7354,7 @@ apcore supports three module definition methods to meet different scenario needs
 
 **Cross-language Syntax Reference:**
 
-Each language SDK **should** provide idiomatic module definition syntax. The following illustrates the general patterns:
+Each language SDK **SHOULD** provide idiomatic module definition syntax. The following illustrates the general patterns:
 
 | Pattern | Class-based | Decorator/Attribute | Function Call | External Binding |
 |------|------------|--------------------------|-------------------------|-----------------|

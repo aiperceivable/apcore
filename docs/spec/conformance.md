@@ -6,7 +6,7 @@
 
 ### 1.1 Purpose
 
-As a cross-language AI-Perceivable module standard, apcore needs to ensure behavioral consistency among SDK implementations in various languages. This conformance specification defines three progressive conformance levels, with each level clearly listing **must**, **should**, and **may** implement components, as well as corresponding test requirements.
+As a cross-language AI-Perceivable module standard, apcore needs to ensure behavioral consistency among SDK implementations in various languages. This conformance specification defines three progressive conformance levels, with each level clearly listing **MUST**, **SHOULD**, and **may** implement components, as well as corresponding test requirements.
 
 Implementers can choose their target conformance level based on their needs and verify conformance through the corresponding test suite.
 
@@ -235,7 +235,7 @@ Level 2 adds all extension points, async modules, hot loading, and advanced obse
 
 ### 5.2 Test Case Format
 
-Each test case **must** contain the following structure:
+Each test case **MUST** contain the following structure:
 
 ```yaml
 test_case:
@@ -456,7 +456,7 @@ test_case:
 
 | Standard | Requirement |
 |------|------|
-| Mandatory test pass rate | **100%** (all tests with `mandatory: true` **must** pass) |
+| Mandatory test pass rate | **100%** (all tests with `mandatory: true` **MUST** pass) |
 | Overall test pass rate | **>=80%** (including non-mandatory tests) |
 | Coverage categories | All mandatory tests from T01, T02, T03, T04, T06, T07 |
 
@@ -482,7 +482,7 @@ test_case:
 
 ### 6.1 Declaration Format
 
-When declaring conformance, implementers **must** include the following structured declaration in the project root or documentation:
+When declaring conformance, implementers **MUST** include the following structured declaration in the project root or documentation:
 
 ```yaml
 # apcore-conformance.yaml
@@ -558,11 +558,11 @@ conformance:
 
 | Rule | Level | Description |
 |------|------|------|
-| Declared level **must** be consistent with test results | **MUST** | Cannot falsely claim conformance level |
-| Mandatory tests **must** all pass | **MUST** | Cannot claim that level if any mandatory test fails |
-| Known deviations **must** be listed honestly | **MUST** | — |
-| Declaration **should** be accompanied by reproducible test results | **SHOULD** | Such as CI report link |
-| Declaration **should** be regularly updated | **SHOULD** | At least once per minor version |
+| Declared level **MUST** be consistent with test results | **MUST** | Cannot falsely claim conformance level |
+| Mandatory tests **MUST** all pass | **MUST** | Cannot claim that level if any mandatory test fails |
+| Known deviations **MUST** be listed honestly | **MUST** | — |
+| Declaration **SHOULD** be accompanied by reproducible test results | **SHOULD** | Such as CI report link |
+| Declaration **SHOULD** be regularly updated | **SHOULD** | At least once per minor version |
 
 ### 6.3 Conformance Badges
 
@@ -578,7 +578,7 @@ apcore Conformant — Level 2 (Full)
 
 ## 7. Known Deviations
 
-The following features are specified in PROTOCOL_SPEC but not yet fully implemented in current SDK releases (apcore-python, apcore-typescript). Implementers **should** document these deviations in their conformance declarations.
+The following features are specified in PROTOCOL_SPEC but not yet fully implemented in current SDK releases (apcore-python, apcore-typescript). Implementers **SHOULD** document these deviations in their conformance declarations.
 
 | Feature | Spec Reference | Current Status |
 |---------|---------------|----------------|
@@ -591,7 +591,7 @@ The following features are specified in PROTOCOL_SPEC but not yet fully implemen
 | Multi-version coexistence | PROTOCOL_SPEC §5.4 | Multiple versions of the same module running concurrently not yet implemented. |
 | `AsyncTaskManager.submit()` / `cancel()` sync vs async | PROTOCOL_SPEC §5.8 | Python `AsyncTaskManager.submit()` and `cancel()` are async methods; TypeScript equivalents are synchronous. |
 
-Implementations declaring conformance **must** list any of these deviations that apply in their `known_deviations` section.
+Implementations declaring conformance **MUST** list any of these deviations that apply in their `known_deviations` section.
 
 ---
 
