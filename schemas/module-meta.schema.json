@@ -197,8 +197,8 @@
         },
         "pagination_style": {
           "type": "string",
-          "description": "Pagination strategy. Only meaningful when paginated=true.",
-          "enum": ["cursor", "offset", "page"],
+          "description": "Pagination strategy. Well-known values: 'cursor', 'offset', 'page'. Custom strategies are allowed. Only meaningful when paginated=true.",
+          "examples": ["cursor", "offset", "page"],
           "default": "cursor"
         },
         "extra": {

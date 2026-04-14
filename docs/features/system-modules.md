@@ -23,7 +23,7 @@ Built-in `system.*` modules provide AI bidirectional introspection — allowing 
 - `system.control.reload_module` — Hot-reload a module from disk without restart.
 - `system.control.toggle_feature` — Enable/disable modules at runtime with reason tracking.
 
-Control modules require `requires_approval: true` and are only registered when `sys_modules.events.enabled: true`.
+Control modules require `requires_approval: true` and are only registered when `sys_modules.enabled: true`.
 
 ## Module Reference
 

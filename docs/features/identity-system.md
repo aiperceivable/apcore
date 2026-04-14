@@ -49,12 +49,13 @@ The Identity System provides a structured representation of the caller's identit
     ```
 === "Rust"
     ```rust
-    pub struct Identity {
-        pub id: String,
-        pub identity_type: String,   // Default: "user"
-        pub roles: Vec<String>,
-        pub attrs: HashMap<String, serde_json::Value>,
-    }
+    // Fields are private; use getters to access
+    let identity = Identity::new("user-123", "user", vec!["admin"], HashMap::new());
+
+    identity.id()             // -> &str
+    identity.identity_type()  // -> &str  (default: "user")
+    identity.roles()          // -> &[String]
+    identity.attrs()          // -> &HashMap<String, Value>
     ```
 
 ### Well-Known Identity Types

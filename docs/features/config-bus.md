@@ -247,7 +247,7 @@ env_map / env_prefix overrides  >  YAML file  >  namespace defaults
 === "TypeScript"
 
     ```typescript
-    import { Config } from 'apcore';
+    import { Config } from 'apcore-js';
 
     const config = Config.load('apcore.yaml');
 
@@ -423,7 +423,7 @@ The `_config` reserved namespace controls validation behavior. `strict: true` ca
 === "TypeScript"
 
     ```typescript
-    import { Config } from 'apcore';
+    import { Config } from 'apcore-js';
 
     const namespaces = Config.registeredNamespaces();
     // [{ name: 'observability', envPrefix: 'APCORE_OBSERVABILITY', hasSchema: false }, ...]

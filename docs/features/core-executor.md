@@ -132,7 +132,7 @@ The `validate()` method provides a non-destructive preflight check that runs Ste
 
 === "TypeScript"
     ```typescript
-    import { APCore } from 'apcore';
+    import { APCore } from 'apcore-js';
 
     const client = new APCore();
 
@@ -190,7 +190,7 @@ The `validate()` method provides a non-destructive preflight check that runs Ste
 ## Dependencies
 
 - **Registry** -- Module lookup (step 3) depends on the Registry system to resolve module names to loaded module instances.
-- **Schema System** -- Input and output validation (steps 6 and 9) depend on the Schema System for runtime model generation from YAML schemas.
+- **Schema System** -- Input and output validation (steps 7 and 9) depend on the Schema System for runtime model generation from YAML schemas.
 
 ??? info "Python SDK reference"
     The following tables are **not protocol requirements** — they document the Python SDK's source layout and runtime dependencies for implementers/users of `apcore-python`.

@@ -23,10 +23,10 @@ The framework's own technical layering, defining the complete flow from module r
 │                    Execution Layer                                │
 │   ┌─────────────────────────────────────────────────────────┐   │
 │   │                       Executor                           │   │
-│   │  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌─────────┐ │   │
-│   │  │  ACL     │  │Validate  │  │Middleware│  │ Execute │ │   │
-│   │  │  Check   │→ │  Input   │→ │  Chain   │→ │ Module  │ │   │
-│   │  └──────────┘  └──────────┘  └──────────┘  └─────────┘ │   │
+│   │  ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐ ┌─────────┐│   │
+│   │  │  ACL   │ │Approval│ │Middlew.│ │Validate│ │ Execute ││   │
+│   │  │  Check │→│  Gate  │→│ Before │→│  Input │→│ Module  ││   │
+│   │  └────────┘ └────────┘ └────────┘ └────────┘ └─────────┘│   │
 │   └─────────────────────────────────────────────────────────┘   │
 │                                 ▲                                │
 │                                 │ Look up module                 │

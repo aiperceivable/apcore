@@ -95,7 +95,7 @@ class APCore:
         context: Context | None = None,
     ) -> PreflightResult:
         """
-        Non-destructive preflight check (Steps 1-7, no execution)
+        Non-destructive preflight check (6 validation checks plus optional module-level preflight, no execution)
 
         Returns:
             PreflightResult with per-check results and .valid / .errors properties

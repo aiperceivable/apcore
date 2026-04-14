@@ -802,9 +802,9 @@ annotations:
 
     pagination_style:
       type: string
-      enum: [cursor, offset, page]
       default: cursor
-      description: "Pagination strategy. 'cursor' = opaque continuation token; 'offset' = numeric offset+limit; 'page' = page-number-based pagination. Only meaningful when paginated=true."
+      description: "Pagination strategy. Well-known values: 'cursor' (opaque continuation token), 'offset' (numeric offset+limit), 'page' (page-number-based). Custom strategies are allowed. Only meaningful when paginated=true."
+      examples: [cursor, offset, page]
 
     extra:
       type: object

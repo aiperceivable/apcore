@@ -137,7 +137,7 @@ class Executor:
         context: Context | None = None,
     ) -> "PreflightResult":
         """
-        Non-destructive preflight check (Steps 1-6, plus optional module-level preflight)
+        Non-destructive preflight check (6 validation checks plus optional module-level preflight, no execution)
 
         Runs up to 6 pipeline steps plus optional module-level preflight without executing module code or middleware:
         1. Module ID format validation
@@ -451,7 +451,7 @@ except ValidationError as e:
 ### 4.2 Pre-validation (Preflight)
 
 ```python
-# Non-destructive preflight check (Steps 1-6 plus optional module-level preflight, no execution)
+# Non-destructive preflight check (6 validation checks plus optional module-level preflight, no execution)
 preflight = executor.validate(
     module_id="executor.email.send_email",
     inputs={"to": "user@example.com", "subject": "Hi"}
