@@ -194,7 +194,7 @@ Executor is responsible for module invocation and execution.
 │  └───────────────────────┬──────────────────────────────┘  │
 │                          ▼                                   │
 │  ┌──────────────────────────────────────────────────────┐  │
-│  │  2. Safety Checks                                     │  │
+│  │  2. Call Chain Guard                                  │  │
 │  │     - Call depth, circular call, frequency limits     │  │
 │  └───────────────────────┬──────────────────────────────┘  │
 │                          ▼                                   │
@@ -217,15 +217,15 @@ Executor is responsible for module invocation and execution.
 │  └───────────────────────┬──────────────────────────────┘  │
 │                          ▼                                   │
 │  ┌──────────────────────────────────────────────────────┐  │
-│  │  6. Input Validation                                  │  │
-│  │     - Validate against input_schema                   │  │
-│  │     - Throw SchemaValidationError on failure           │  │
+│  │  6. Middleware Before                                 │  │
+│  │     - Execute middleware.before() in order            │  │
+│  │     - Can modify inputs                               │  │
 │  └───────────────────────┬──────────────────────────────┘  │
 │                          ▼                                   │
 │  ┌──────────────────────────────────────────────────────┐  │
-│  │  7. Middleware Before                                 │  │
-│  │     - Execute middleware.before() in order            │  │
-│  │     - Can modify inputs                               │  │
+│  │  7. Input Validation                                  │  │
+│  │     - Validate against input_schema                   │  │
+│  │     - Throw SchemaValidationError on failure           │  │
 │  └───────────────────────┬──────────────────────────────┘  │
 │                          ▼                                   │
 │  ┌──────────────────────────────────────────────────────┐  │
@@ -393,21 +393,21 @@ Middleware executes in an onion model.
 
 ```
 ┌─────────┐     ┌─────────┐     ┌─────────┐     ┌──────────┐
-│ Client  │────▶│Executor │────▶│  ACL    │────▶│ Validate │
-│         │     │ .call() │     │ .check()│     │  inputs  │
+│ Client  │────▶│Executor │────▶│  ACL    │────▶│Middleware│
+│         │     │ .call() │     │ .check()│     │  .before │
 └─────────┘     └─────────┘     └─────────┘     └──────────┘
+                                                      │
+                                                      ▼
+                                                 ┌──────────┐
+                                                 │ Validate │
+                                                 │  inputs  │
+                                                 └──────────┘
                                                       │
                                                       ▼
 ┌─────────┐     ┌──────────┐     ┌─────────┐     ┌──────────┐
 │ Return  │◀────│Middleware │◀────│Validate │◀────│  Module  │
 │ result  │     │  .after  │     │ output  │     │ .execute │
 └─────────┘     └──────────┘     └─────────┘     └──────────┘
-                                                      ▲
-                                                      │
-                                                 ┌──────────┐
-                                                 │Middleware │
-                                                 │  .before │
-                                                 └──────────┘
 ```
 
 ### 3.3 Error Handling Flow
@@ -518,7 +518,7 @@ my-project/
 
 ## 5. Extension Points
 
-apcore provides a formal `ExtensionManager` API for managing pluggable extension points. The five built-in extension points are: `discoverer`, `middleware`, `acl`, `span_exporter`, and `module_validator`.
+apcore provides a formal `ExtensionManager` API for managing pluggable extension points. The six built-in extension points are: `discoverer`, `middleware`, `acl`, `span_exporter`, `module_validator`, and `approval_handler`.
 
 ### 5.1 ExtensionManager API
 

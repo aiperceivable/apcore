@@ -772,6 +772,6 @@ Some spec-defined method names conflict with language reserved keywords. Impleme
 - [PROTOCOL_SPEC §4 — Schema Specification](../../PROTOCOL_SPEC.md#4-schema-specification)
 - [PROTOCOL_SPEC §4.10 — Schema Implementations by Language](../../PROTOCOL_SPEC.md#410-schema-implementations-by-language)
 - [PROTOCOL_SPEC §4.11 — Schema References ($ref)](../../PROTOCOL_SPEC.md#411-schema-references-ref)
-- [PROTOCOL_SPEC §11.3 — Cross-language Implementation Requirements](../../PROTOCOL_SPEC.md#113-cross-language-implementation-requirements)
+- [PROTOCOL_SPEC §12.3 — Cross-language Implementation Requirements](../../PROTOCOL_SPEC.md#123-cross-language-implementation-requirements)
 - [JSON Schema Draft 2020-12](https://json-schema.org/draft/2020-12/json-schema-core)
 - [RFC 8259 — The JavaScript Object Notation (JSON) Data Interchange Format](https://www.rfc-editor.org/rfc/rfc8259)

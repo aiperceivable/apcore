@@ -5,7 +5,7 @@
 > Version: 1.6.0-draft
 > Status: Draft Specification (RFC 2119 Conformant)
 > Stability: Specification content is stable, pending reference implementation verification
-> Last Updated: 2026-04-14
+> Last Updated: 2026-04-15
 
 ---
 
@@ -6125,7 +6125,7 @@ extension_points:
 > | `id_converter`      | *(not yet implemented)*  | Deferred; not a common runtime customization need |
 > | `executor`          | *(not yet implemented)*  | Deferred; local execution covers current use cases |
 >
-> Implementations declaring Level 2 conformance use the actual names (`discoverer`, `middleware`, `acl`, `span_exporter`, `module_validator`) in `ExtensionManager`.
+> Implementations declaring Level 2 conformance use the actual names (`discoverer`, `middleware`, `acl`, `span_exporter`, `module_validator`, `approval_handler`) in `ExtensionManager`.
 
 ### 11.4 Framework Built-in Middleware
 
@@ -6224,7 +6224,7 @@ Extension Point: Executor
   execute(module: Module, method: String, inputs: Map, context: Context) → Map
 ```
 
-> **NOTE:** The interface contracts above use the original theoretical names. See the mapping table in §11.3 for the actual extension point names used in SDK implementations (`discoverer`, `middleware`, `acl`, `span_exporter`, `module_validator`).
+> **NOTE:** The interface contracts above use the original theoretical names. See the mapping table in §11.3 for the actual extension point names used in SDK implementations (`discoverer`, `middleware`, `acl`, `span_exporter`, `module_validator`, `approval_handler`).
 
 ### 11.7 Extension Loading Order
 
@@ -6573,7 +6573,7 @@ stream(inputs, context) → AsyncIterable<Record>
 
 **Executor.stream() pipeline:**
 
-1. Steps 1–7 identical to `call()`: context creation, safety checks, module lookup, ACL, approval gate, input validation, before-middleware.
+1. Steps 1–7 identical to `call()`: context creation, call chain guard, module lookup, ACL, approval gate, before-middleware, input validation.
 2. If module lacks `stream()`: fall back to `call()`, yield single chunk, return.
 3. Iterate `module.stream(inputs, context)`, yield each chunk to caller.
 4. After all chunks: validate accumulated output against `output_schema`, run after-middleware on accumulated result.
@@ -7003,7 +7003,7 @@ class DatabaseModule:
 
 ### 12.8 Executor.validate() Cross-Language Implementation Guide
 
-The `validate()` preflight method (§12.2, SHOULD level) runs Steps 1–6 of the Executor pipeline
+The `validate()` preflight method (§12.2, SHOULD level) runs Steps 1–5 and Step 7 of the Executor pipeline
 (plus optional module-level preflight Check 7) without executing module code or middleware. This section provides language-specific guidance for
 SDK implementers.
 

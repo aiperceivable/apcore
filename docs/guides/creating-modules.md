@@ -177,6 +177,31 @@ my-project/
             "Send email module"
         }
 
+        fn input_schema(&self) -> serde_json::Value {
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "to":      { "type": "string", "description": "Recipient email address" },
+                    "subject": { "type": "string", "description": "Email subject line" },
+                    "body":    { "type": "string", "description": "Email body content" }
+                },
+                "required": ["to", "subject", "body"],
+                "additionalProperties": false
+            })
+        }
+
+        fn output_schema(&self) -> serde_json::Value {
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "success":    { "type": "boolean", "description": "Whether the email was sent" },
+                    "message_id": { "type": ["string", "null"], "description": "Provider message ID" }
+                },
+                "required": ["success"],
+                "additionalProperties": false
+            })
+        }
+
         fn execute(&self, inputs: serde_json::Value, _ctx: &Context) -> ModuleResult {
             let input: SendEmailInput = serde_json::from_value(inputs)?;
             // Implement logic here

@@ -137,9 +137,9 @@ class Executor:
         context: Context | None = None,
     ) -> "PreflightResult":
         """
-        Non-destructive preflight check (6 validation checks plus optional module-level preflight, no execution)
+        Non-destructive preflight check (7 validation checks including optional module-level preflight, no execution)
 
-        Runs up to 6 pipeline steps plus optional module-level preflight without executing module code or middleware:
+        Runs up to 7 pipeline steps including optional module-level preflight without executing module code or middleware:
         1. Module ID format validation
         2. Module lookup
         3. Call chain safety (if context provided)

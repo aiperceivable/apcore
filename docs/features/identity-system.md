@@ -129,16 +129,16 @@ The Identity System provides a structured representation of the caller's identit
     use std::collections::HashMap;
 
     // Create identity
-    let admin = Identity {
-        id: "admin@example.com".to_string(),
-        identity_type: "user".to_string(),
-        roles: vec!["admin".to_string(), "operator".to_string()],
-        attrs: HashMap::from([("department".to_string(), serde_json::json!("engineering"))]),
-    };
+    let admin = Identity::new(
+        "admin@example.com".to_string(),
+        "user".to_string(),
+        vec!["admin".to_string(), "operator".to_string()],
+        HashMap::from([("department".to_string(), serde_json::json!("engineering"))]),
+    );
 
     // Attach to context
     let ctx = Context::create(Some(admin));
-    println!("{}", ctx.identity.as_ref().unwrap().id); // "admin@example.com"
+    println!("{}", ctx.identity.as_ref().unwrap().id()); // "admin@example.com"
 
     // Identity propagates to child contexts
     let child = ctx.child("target.module");
@@ -230,12 +230,12 @@ The `ContextFactory` protocol enables web framework integrations to extract `Ide
     impl ContextFactory for AxumContextFactory {
         fn create_context(&self, request: &dyn std::any::Any) -> Context<serde_json::Value> {
             // Extract identity from framework-specific request type
-            let identity = Identity {
-                id: "extracted-user-id".to_string(),
-                identity_type: "user".to_string(),
-                roles: vec!["viewer".to_string()],
-                attrs: HashMap::new(),
-            };
+            let identity = Identity::new(
+                "extracted-user-id".to_string(),
+                "user".to_string(),
+                vec!["viewer".to_string()],
+                HashMap::new(),
+            );
             Context::create(Some(identity))
         }
     }

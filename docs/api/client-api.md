@@ -936,8 +936,8 @@ Requires `sys_modules.events.enabled: true` in config.
 
 | Event Type | Emitted When |
 |------------|-------------|
-| `module_registered` | Module added to registry |
-| `module_unregistered` | Module removed from registry |
+| `apcore.module.registered` | Module added to registry |
+| `apcore.module.unregistered` | Module removed from registry |
 | `apcore.config.updated` | Runtime config updated via `system.control.update_config` |
 | `apcore.module.reloaded` | Module hot-reloaded via `system.control.reload_module` |
 | `apcore.module.toggled` | Module disabled/enabled via `system.control.toggle_feature` |

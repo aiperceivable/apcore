@@ -21,6 +21,7 @@ Shared JSON fixtures for cross-language conformance testing. All SDK implementat
 | `stream_aggregation.json` | — | Stream chunk deep-merge aggregation algorithm |
 | `approval_gate.json` | A05 | Approval gate Step 5: skip/fire conditions and all four result-status outcomes |
 | `middleware_on_error_recovery.json` | A11 | After-middleware error recovery: first-dict-wins, null passthrough, success non-override |
+| `identity_system.json` | — | Identity construction, field access, and context propagation (AC-014, AC-015) |
 
 ## Coverage Gaps
 

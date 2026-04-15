@@ -1,0 +1,78 @@
+{
+  "description": "Identity construction, field access, and context propagation (AC-014, AC-015)",
+  "test_cases": [
+    {
+      "id": "identity_default_type",
+      "description": "Identity type defaults to 'user' when not specified",
+      "input_id": "user@example.com",
+      "input_roles": [],
+      "input_attrs": {},
+      "expected_type": "user"
+    },
+    {
+      "id": "identity_explicit_type_service",
+      "description": "Identity type is preserved when explicitly set to 'service'",
+      "input_id": "svc-account",
+      "input_type": "service",
+      "input_roles": ["read", "write"],
+      "input_attrs": {},
+      "expected_type": "service",
+      "expected_roles": ["read", "write"]
+    },
+    {
+      "id": "identity_explicit_type_ai",
+      "description": "AI agent identity type is accepted",
+      "input_id": "agent-007",
+      "input_type": "ai",
+      "input_roles": [],
+      "input_attrs": { "model": "gpt-4" },
+      "expected_type": "ai"
+    },
+    {
+      "id": "identity_roles_immutable",
+      "description": "Roles are stored as an immutable sequence",
+      "input_id": "user-123",
+      "input_type": "user",
+      "input_roles": ["admin", "operator"],
+      "input_attrs": {},
+      "expected_roles": ["admin", "operator"]
+    },
+    {
+      "id": "identity_attrs_preserved",
+      "description": "Arbitrary attrs are preserved verbatim",
+      "input_id": "user-456",
+      "input_type": "user",
+      "input_roles": [],
+      "input_attrs": { "department": "engineering", "tier": 2 },
+      "expected_attrs": { "department": "engineering", "tier": 2 }
+    },
+    {
+      "id": "identity_propagates_to_child_context",
+      "description": "Identity attached to a parent context is accessible on child contexts",
+      "input_id": "admin@example.com",
+      "input_type": "user",
+      "input_roles": ["admin"],
+      "input_attrs": {},
+      "child_module_id": "target.module",
+      "expected": "child.identity === parent.identity"
+    },
+    {
+      "id": "identity_anonymous_type",
+      "description": "Anonymous identity type is accepted without roles",
+      "input_id": "anon",
+      "input_type": "anonymous",
+      "input_roles": [],
+      "input_attrs": {},
+      "expected_type": "anonymous"
+    },
+    {
+      "id": "identity_custom_type",
+      "description": "Custom identity types beyond well-known values are accepted",
+      "input_id": "robot-1",
+      "input_type": "robot",
+      "input_roles": [],
+      "input_attrs": {},
+      "expected_type": "robot"
+    }
+  ]
+}
