@@ -2,3 +2,6 @@ site/
 ideas/
 .idea/
 .DS_Store
+.claude/scheduled_tasks.lock
+.claude/settings.local.json
+.claude/tasks.lock
