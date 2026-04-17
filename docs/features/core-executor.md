@@ -110,7 +110,7 @@ The `validate()` method provides a non-destructive preflight check that runs Ste
 
     # Register a module
     @client.module(
-        module_id="math.add",
+        id="math.add",
         description="Add two numbers",
     )
     def add(inputs, ctx):

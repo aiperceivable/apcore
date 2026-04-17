@@ -132,10 +132,12 @@ The Extension System provides a pluggable architecture for customizing and exten
 
     // Register extensions
     manager.register("discoverer", Box::new(my_discoverer))?;
+    manager.register("module_validator", Box::new(my_validator))?;
     manager.register("middleware", Box::new(logging_middleware))?;
     manager.register("middleware", Box::new(metrics_middleware))?;
     manager.register("span_exporter", Box::new(stdout_exporter))?;
     manager.register("acl", Box::new(my_acl))?;
+    manager.register("approval_handler", Box::new(my_approval_handler))?;
 
     // Wire everything into registry and executor
     manager.apply(&mut registry, &mut executor)?;
