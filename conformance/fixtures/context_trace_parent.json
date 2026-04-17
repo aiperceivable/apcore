@@ -1,0 +1,116 @@
+{
+  "description": "Context.create trace_parent input handling — strict 32-char lowercase hex, no auto-normalization at Context.create. See PROTOCOL_SPEC.md §10.5 external_trace_parent_handling.",
+  "test_cases": [
+    {
+      "id": "valid_32_hex",
+      "description": "Well-formed 32-char lowercase hex trace_id is accepted verbatim",
+      "input": {
+        "trace_parent_trace_id": "4bf92f3577b34da6a3ce929d0e0e4736"
+      },
+      "expected": {
+        "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736",
+        "regenerated": false,
+        "warn_logged": false
+      }
+    },
+    {
+      "id": "invalid_dashed_uuid",
+      "description": "Canonical UUID form with dashes is NOT auto-normalized; regenerated with WARN",
+      "input": {
+        "trace_parent_trace_id": "550e8400-e29b-41d4-a716-446655440000"
+      },
+      "expected": {
+        "regenerated": true,
+        "warn_logged": true
+      }
+    },
+    {
+      "id": "invalid_uppercase",
+      "description": "Uppercase hex is NOT auto-lowercased; regenerated with WARN",
+      "input": {
+        "trace_parent_trace_id": "4BF92F3577B34DA6A3CE929D0E0E4736"
+      },
+      "expected": {
+        "regenerated": true,
+        "warn_logged": true
+      }
+    },
+    {
+      "id": "invalid_all_zero",
+      "description": "All-zero trace_id is invalid per W3C Trace Context; regenerated with WARN",
+      "input": {
+        "trace_parent_trace_id": "00000000000000000000000000000000"
+      },
+      "expected": {
+        "regenerated": true,
+        "warn_logged": true
+      }
+    },
+    {
+      "id": "invalid_all_f",
+      "description": "All-f trace_id is invalid per W3C Trace Context; regenerated with WARN",
+      "input": {
+        "trace_parent_trace_id": "ffffffffffffffffffffffffffffffff"
+      },
+      "expected": {
+        "regenerated": true,
+        "warn_logged": true
+      }
+    },
+    {
+      "id": "invalid_too_short",
+      "description": "Wrong length regenerates with WARN",
+      "input": {
+        "trace_parent_trace_id": "deadbeef"
+      },
+      "expected": {
+        "regenerated": true,
+        "warn_logged": true
+      }
+    },
+    {
+      "id": "invalid_too_long",
+      "description": "Wrong length regenerates with WARN",
+      "input": {
+        "trace_parent_trace_id": "4bf92f3577b34da6a3ce929d0e0e47360000"
+      },
+      "expected": {
+        "regenerated": true,
+        "warn_logged": true
+      }
+    },
+    {
+      "id": "invalid_non_hex",
+      "description": "Non-hex characters regenerates with WARN",
+      "input": {
+        "trace_parent_trace_id": "req_abc123xyz_not_hex_at_all_nope"
+      },
+      "expected": {
+        "regenerated": true,
+        "warn_logged": true
+      }
+    },
+    {
+      "id": "invalid_empty",
+      "description": "Empty string regenerates with WARN",
+      "input": {
+        "trace_parent_trace_id": ""
+      },
+      "expected": {
+        "regenerated": true,
+        "warn_logged": true
+      }
+    },
+    {
+      "id": "no_trace_parent",
+      "description": "Absent trace_parent generates fresh trace_id without WARN (normal top-level case)",
+      "input": {
+        "trace_parent_trace_id": null
+      },
+      "expected": {
+        "regenerated": true,
+        "warn_logged": false
+      }
+    }
+  ]
+}

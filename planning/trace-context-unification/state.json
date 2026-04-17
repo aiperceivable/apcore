@@ -1,0 +1,83 @@
+{
+  "feature": "trace-context-unification",
+  "created": "2026-04-17T00:00:00Z",
+  "updated": "2026-04-17T00:00:00Z",
+  "status": "pending",
+  "execution_order": [
+    "spec-patch",
+    "conformance-fixture",
+    "python-reject-invalid",
+    "typescript-warn",
+    "rust-trace-parent",
+    "integration-guide",
+    "framework-factories"
+  ],
+  "progress": {
+    "total_tasks": 7,
+    "completed": 1,
+    "in_progress": 0,
+    "pending": 6
+  },
+  "tasks": [
+    {
+      "id": "spec-patch",
+      "file": "tasks/spec-patch.md",
+      "title": "Draft PROTOCOL_SPEC.md amendments and open maintainer issue",
+      "status": "pending",
+      "started_at": null,
+      "completed_at": null
+    },
+    {
+      "id": "conformance-fixture",
+      "file": "tasks/conformance-fixture.md",
+      "title": "Cross-language context_trace_parent.json fixture",
+      "status": "pending",
+      "started_at": null,
+      "completed_at": null
+    },
+    {
+      "id": "python-reject-invalid",
+      "file": "tasks/python-reject-invalid.md",
+      "title": "Python SDK: reject W3C-invalid all-zero and all-f trace_ids",
+      "status": "pending",
+      "started_at": null,
+      "completed_at": null
+    },
+    {
+      "id": "typescript-warn",
+      "file": "tasks/typescript-warn.md",
+      "title": "TypeScript SDK: add WARN log and W3C-invalid-value rejection",
+      "status": "pending",
+      "started_at": null,
+      "completed_at": null
+    },
+    {
+      "id": "rust-trace-parent",
+      "file": "tasks/rust-trace-parent.md",
+      "title": "Rust SDK: add trace_parent via builder and switch to 32-char hex",
+      "status": "pending",
+      "started_at": null,
+      "completed_at": null
+    },
+    {
+      "id": "integration-guide",
+      "file": "tasks/integration-guide.md",
+      "title": "User guide for integrating apcore into existing projects",
+      "status": "completed",
+      "started_at": "2026-04-17T00:00:00Z",
+      "completed_at": "2026-04-17T00:00:00Z"
+    },
+    {
+      "id": "framework-factories",
+      "file": "tasks/framework-factories.md",
+      "title": "Default ContextFactory in django/flask/nestjs integrations",
+      "status": "pending",
+      "started_at": null,
+      "completed_at": null
+    }
+  ],
+  "metadata": {
+    "source_doc": "planning/trace-context-unification/overview.md",
+    "created_by": "manual"
+  }
+}

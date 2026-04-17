@@ -2,7 +2,7 @@
 
 > Practical guides for apcore, from beginner to advanced.
 
-This directory contains 7 practical guides covering the complete module development workflow. Documents are arranged by learning path; it is recommended to read the first four in order, then selectively read the rest as needed.
+This directory contains 8 practical guides covering the complete module development workflow. Documents are arranged by learning path; it is recommended to read the first four in order, then selectively read the rest as needed.
 
 ## Document List
 
@@ -15,6 +15,7 @@ This directory contains 7 practical guides covering the complete module developm
 | [testing-modules.md](./testing-modules.md) | Module testing strategies, covering unit tests, Schema tests, integration tests, and Mock techniques |
 | [adapter-development.md](./adapter-development.md) | Adapter development, developing apcore adapters for third-party Web frameworks |
 | [multi-language.md](./multi-language.md) | Cross-language development, using YAML Schema to develop modules in multiple languages |
+| [integrating-existing-projects.md](./integrating-existing-projects.md) | Adopt apcore in applications that already have their own request-ID / correlation-ID system |
 
 ## Learning Path
 
@@ -33,5 +34,6 @@ This directory contains 7 practical guides covering the complete module developm
 
 6. [Adapter Development](./adapter-development.md) -- Framework integration
 7. [Multi-Language Development](./multi-language.md) -- Cross-language collaboration
+8. [Integrating into Existing Projects](./integrating-existing-projects.md) -- Adopt apcore alongside an existing request-ID / correlation-ID system
 
 Before reading these guides, it is recommended to first understand the [Core Concepts](../concepts.md); for API details, please refer to the [API Reference](../api/).

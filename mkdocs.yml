@@ -99,6 +99,7 @@ nav:
       - Testing Modules: guides/testing-modules.md
       - Adapter Development: guides/adapter-development.md
       - Multi-Language Development: guides/multi-language.md
+      - Integrating into Existing Projects: guides/integrating-existing-projects.md
   - Framework Specifications:
       - Overview: spec/README.md
       - Algorithm Reference: spec/algorithms.md
