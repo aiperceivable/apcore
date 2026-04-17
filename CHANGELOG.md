@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.19.0] - 2026-04-17
+
+### Changed
+
+- **PROTOCOL_SPEC §5.7 — `trace_id` format pattern tightened** from `format: uuid` (ambiguous: dashed vs hex) to `pattern: "^[0-9a-f]{32}$"` (32-char lowercase hex, W3C Trace Context compatible). Resolves internal spec contradiction between §5.7 (`format: uuid`), §10.5 example (dashed UUID), and §10.5 `traceparent_header` (hex without dashes).
+- **PROTOCOL_SPEC §10.5 — Trace ID Format section rewritten** to align with W3C Trace Context Level 2. Adds explicit `external_trace_parent_handling` rules: strict 32-hex validation only; all-zero and all-f rejected per W3C; no auto-normalization (dashed UUID stripping, case folding) at `Context.create` — pushed to TraceParent parser or user's ContextFactory. Implementations MUST regenerate + log WARN on invalid input; MUST NOT raise.
+
+### Added
+
+- **PROTOCOL_SPEC §5.7 — Note on external correlation IDs.** Documents that existing projects' request/correlation identifiers (`X-Request-ID`, ULID, AWS X-Ray, etc.) SHOULD be preserved in `context.data["x-correlation-id"]` alongside `trace_id`, not used to overwrite it. Establishes the dual-ID model at the spec level.
+- **PROTOCOL_SPEC §10.5 — Forward-compatibility Note.** Non-normative acknowledgment that `trace_id` format is a versioned contract, not a permanent guarantee. Future protocol versions MAY introduce alternative formats or structured trace IDs for multi-agent or non-linear trace topologies.
+- **`docs/guides/integrating-existing-projects.md`** — New user guide covering Django, Express, and Actix integration patterns for projects already carrying their own request-ID / correlation-ID system.
+- **`conformance/fixtures/context_trace_parent.json`** — Cross-language fixture with 10 test cases covering valid 32-hex, dashed UUID rejection, uppercase rejection, W3C-invalid all-zero/all-f rejection, length errors, non-hex characters, empty string, and the no-trace_parent baseline.
+- **`docs/spec/DECLARATIVE_CONFIG_SPEC.md` v1.0** — New unified specification for declarative YAML configuration across all three SDKs. Covers bindings YAML (§3), pipeline config (§4), entry-point meta (§5), `auto_schema` semantics (§6), canonical error model with exact message templates (§7), configurable policy limits (§9). Establishes core principles: YAML syntax 100% consistent across SDKs; never silently drop fields; auto-processing as default; JSON Schema for structure, apcore.yaml for policy.
+- **`schemas/binding.schema.json` updates** — Relaxed `target` regex to support TypeScript ESM specifiers (`./relative`, `@scope/pkg`) and Rust handler-map keys. `auto_schema` field now accepts boolean or `"true"` / `"permissive"` / `"strict"` enum. Schema mode mutex rules rewritten from `oneOf` to `allOf` + `if/then` (supports implicit auto default when no mode specified). `DisplayOverlay` changed from `additionalProperties: false` to `propertyNames` pattern + `additionalProperties: SurfaceOverride` for future surface extensibility. `Annotations` expanded from 5 to 12 fields (added `streaming`, `cacheable`, `cache_ttl`, `cache_key_fields`, `paginated`, `pagination_style`, `extra`) to align with `module-meta.schema.json`. `version` field pattern moved to configurable policy (`version_require_semver`). Added `spec_version` top-level field.
+- **`schemas/apcore-config.schema.json` — `pipeline` and `validation` sections** — New `PipelineConfig` definition with `remove`, `configure`, `steps` structure; `PipelineStep` with `type`/`handler` mutual exclusion, `after`/`before` positioning, and metadata fields (`match_modules`, `ignore_errors`, `pure`, `timeout_ms`). New `ValidationConfig` with configurable policy limits for bindings (`description_max_length`, `documentation_max_length`, `tags_pattern`, `version_require_semver`) and pipeline (`step_name_max_length`, `timeout_ms_max`).
+- **`conformance/fixtures/binding_yaml_canonical.yaml`** — Cross-SDK binding YAML conformance fixture with 3 entries testing explicit auto_schema (permissive), explicit input/output schemas with display overlay, and auto_schema strict mode. All three SDKs must parse this fixture identically.
+- **`conformance/fixtures/binding_errors.json`** — 6 canonical error message test cases for cross-SDK byte-for-byte message parity (`BindingFileInvalidError`, `BindingSchemaModeConflictError`, `BindingSchemaInferenceFailedError`, `PipelineHandlerNotSupportedError`, `BindingInvalidTargetError`, `BindingModuleNotFoundError`).
+
+### Deprecated
+
+- The pre-existing `MUST NOT allow externally provided unvalidated trace_id` rule in §10.5 is superseded by the explicit validation/normalization pipeline — "unvalidated" is now impossible because every input is either accepted verbatim or replaced with a fresh trace_id.
+
+---
+
 ## [0.18.0] - 2026-04-15
 
 > **Breaking changes in this release.** See [`MIGRATION-v0.18.md`](./MIGRATION-v0.18.md) for the consolidated migration guide covering all four repositories.
