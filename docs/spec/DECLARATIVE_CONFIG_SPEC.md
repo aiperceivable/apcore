@@ -1,6 +1,6 @@
 # APCore Declarative Configuration Specification
 
-**Spec version**: `1.0` (draft v2)
+**Spec version**: `1.0`
 **Applies to SDKs**: `apcore-python >= 0.19.0`, `apcore-typescript >= 0.19.0`, `apcore-rust >= 0.19.0`
 **Status**: Draft for review — not yet implemented
 **Canonical location**: `apcore/docs/spec/DECLARATIVE_CONFIG_SPEC.md`
@@ -637,8 +637,7 @@ Each SDK's test suite MUST validate its example YAML fixtures against these sche
 
 | Version | Date | Change |
 |---|---|---|
-| 1.0 (draft v2) | 2026-04-16 | Hardened design pass: implicit auto_schema as cross-SDK default; `auto_schema: true \| strict \| permissive` values; relaxed target regex for TS/Rust paths; `display` surfaces extensible via `patternProperties`; soft limits moved to `apcore.yaml` policy; exact cross-SDK error message templates; `spec_version` deprecation warning toward 1.1 mandatory; TS pipeline `handler:` now functional; Rust supports method-form target via opaque handler keys; Rust pipeline metadata fields honored. |
-| 1.0 (draft v1) | 2026-04-16 | Initial draft (superseded). |
+| 1.0 | 2026-04-17 | Initial unified specification. Defines cross-SDK YAML parity for bindings, pipeline config, and entry-point meta. Implicit auto_schema as default; `auto_schema: true \| strict \| permissive` values; relaxed target regex for TS/Rust paths; `display` surfaces extensible via `patternProperties`; soft limits moved to `apcore.yaml` policy; exact cross-SDK error message templates; `spec_version` field with deprecation warning toward 1.1 mandatory; TS pipeline `handler:` functional via `await import()`; Rust method-form target via opaque handler keys; Rust pipeline metadata fields honored; `EntryPointRuntimeUnsupportedError` reserved for future Rust runtime loading APIs. |
 
 ---
 
