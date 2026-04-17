@@ -42,6 +42,12 @@
     "executor": {
       "$ref": "#/$defs/ExecutorConfig"
     },
+    "pipeline": {
+      "$ref": "#/$defs/PipelineConfig"
+    },
+    "validation": {
+      "$ref": "#/$defs/ValidationConfig"
+    },
     "id_map": {
       "$ref": "#/$defs/IDMapConfig"
     }
@@ -355,6 +361,160 @@
           "default": 3,
           "minimum": 1,
           "maximum": 32
+        }
+      }
+    },
+    "PipelineConfig": {
+      "type": "object",
+      "description": "Pipeline customization. See DECLARATIVE_CONFIG_SPEC.md §4.",
+      "additionalProperties": false,
+      "properties": {
+        "remove": {
+          "type": "array",
+          "description": "Built-in step names to remove from the default strategy.",
+          "items": { "type": "string" },
+          "default": []
+        },
+        "configure": {
+          "type": "object",
+          "description": "Field overrides for existing steps. Key = step name, value = field overrides.",
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "default": {}
+        },
+        "steps": {
+          "type": "array",
+          "description": "Custom step insertions.",
+          "items": { "$ref": "#/$defs/PipelineStep" },
+          "default": []
+        }
+      }
+    },
+    "PipelineStep": {
+      "type": "object",
+      "description": "A custom pipeline step entry. Must specify exactly one of 'type' or 'handler', and exactly one of 'after' or 'before'. See DECLARATIVE_CONFIG_SPEC.md §4.3.",
+      "required": ["name"],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Unique step instance name. Length governed by apcore.validation.pipeline.step_name_max_length.",
+          "minLength": 1
+        },
+        "type": {
+          "type": "string",
+          "description": "Key into the step-type registry (register_step_type)."
+        },
+        "handler": {
+          "type": "string",
+          "description": "module:Class reference for dynamic import. Supported in Python and TypeScript; parse-time error in Rust (see DECLARATIVE_CONFIG_SPEC.md §4.4).",
+          "pattern": "^[@./a-zA-Z_][-@./a-zA-Z0-9_]*:[a-zA-Z_][a-zA-Z0-9_.]*$"
+        },
+        "config": {
+          "type": "object",
+          "description": "Constructor arguments for the step factory.",
+          "additionalProperties": true,
+          "default": {}
+        },
+        "match_modules": {
+          "type": "array",
+          "description": "Glob patterns; restrict step to matching modules.",
+          "items": { "type": "string" }
+        },
+        "ignore_errors": {
+          "type": "boolean",
+          "description": "If true, step errors are logged but do not abort the pipeline.",
+          "default": false
+        },
+        "pure": {
+          "type": "boolean",
+          "description": "Marks the step as side-effect-free (enables caching).",
+          "default": false
+        },
+        "timeout_ms": {
+          "type": "integer",
+          "description": "Per-step timeout in milliseconds. 0 = no timeout. Max governed by apcore.validation.pipeline.timeout_ms_max.",
+          "minimum": 0,
+          "default": 0
+        },
+        "after": {
+          "type": "string",
+          "description": "Insert this step after the named step."
+        },
+        "before": {
+          "type": "string",
+          "description": "Insert this step before the named step."
+        }
+      },
+      "allOf": [
+        {
+          "comment": "Exactly one of 'type' or 'handler'.",
+          "oneOf": [
+            { "required": ["type"], "not": { "required": ["handler"] } },
+            { "required": ["handler"], "not": { "required": ["type"] } }
+          ]
+        },
+        {
+          "comment": "Exactly one of 'after' or 'before'.",
+          "oneOf": [
+            { "required": ["after"], "not": { "required": ["before"] } },
+            { "required": ["before"], "not": { "required": ["after"] } }
+          ]
+        }
+      ]
+    },
+    "ValidationConfig": {
+      "type": "object",
+      "description": "Soft / UX policy limits enforced at parse time. See DECLARATIVE_CONFIG_SPEC.md §9.",
+      "additionalProperties": false,
+      "properties": {
+        "binding": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "description_max_length": {
+              "type": ["integer", "null"],
+              "description": "Max length of binding entry 'description'. null = unlimited.",
+              "default": 500,
+              "minimum": 1
+            },
+            "documentation_max_length": {
+              "type": ["integer", "null"],
+              "description": "Max length of binding entry 'documentation'. null = unlimited.",
+              "default": null,
+              "minimum": 1
+            },
+            "tags_pattern": {
+              "type": ["string", "null"],
+              "description": "Regex each tag MUST match. null = no constraint.",
+              "default": "^[a-z][a-z0-9_]*$"
+            },
+            "version_require_semver": {
+              "type": "boolean",
+              "description": "If true, binding 'version' MUST match SemVer pattern. If false, any string accepted.",
+              "default": true
+            }
+          }
+        },
+        "pipeline": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "step_name_max_length": {
+              "type": ["integer", "null"],
+              "description": "Max length of pipeline step 'name'. null = unlimited.",
+              "default": 64,
+              "minimum": 1
+            },
+            "timeout_ms_max": {
+              "type": ["integer", "null"],
+              "description": "Max value for step 'timeout_ms'. null = unlimited.",
+              "default": 300000,
+              "minimum": 1
+            }
+          }
         }
       }
     },

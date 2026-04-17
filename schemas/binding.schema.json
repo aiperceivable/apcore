@@ -6,6 +6,12 @@
   "type": "object",
   "required": ["bindings"],
   "properties": {
+    "spec_version": {
+      "type": "string",
+      "description": "Declarative config spec version (DECLARATIVE_CONFIG_SPEC.md). Optional in 1.0 with deprecation warning if absent; mandatory in 1.1. Defaults to '1.0' when omitted.",
+      "default": "1.0",
+      "examples": ["1.0"]
+    },
     "bindings": {
       "type": "array",
       "description": "List of module bindings",
@@ -30,8 +36,8 @@
         },
         "target": {
           "type": "string",
-          "description": "Target callable path in format 'module.path:callable_name' or 'module.path:ClassName.method_name'",
-          "pattern": "^[a-zA-Z_][a-zA-Z0-9_.]*:[a-zA-Z_][a-zA-Z0-9_.]*$"
+          "description": "Target callable path in format 'module.path:callable_name' or 'module.path:ClassName.method_name'. Pattern relaxed in 1.0 to admit TypeScript ESM specifiers (./relative, @scope/pkg) and Rust handler-map keys. SDKs MUST add language-specific security validation (e.g., reject '..' segments). See DECLARATIVE_CONFIG_SPEC.md §2.2.",
+          "pattern": "^[@./a-zA-Z_][-@./a-zA-Z0-9_]*:[a-zA-Z_][a-zA-Z0-9_.]*$"
         },
         "description": {
           "type": "string",
@@ -46,9 +52,11 @@
           "description": "Output JSON Schema definition. Required if auto_schema is not true."
         },
         "auto_schema": {
-          "type": "boolean",
-          "description": "If true, generate Schema automatically from target callable's type annotations",
-          "default": false
+          "description": "Auto-derive schema from target's type declarations. Accepts: true (alias for 'permissive'), 'permissive' (native types as-is), 'strict' (OpenAI/Anthropic strict-schema-compatible: additionalProperties=false, all required, restricted type set). When omitted entirely AND no input_schema/output_schema/schema_ref present, behavior is implicit auto_schema:true (DECLARATIVE_CONFIG_SPEC.md §3.4).",
+          "oneOf": [
+            { "type": "boolean" },
+            { "type": "string", "enum": ["true", "permissive", "strict"] }
+          ]
         },
         "schema_ref": {
           "type": "string",
@@ -66,9 +74,9 @@
         },
         "version": {
           "type": "string",
-          "description": "Module version (semver format)",
-          "pattern": "^\\d+\\.\\d+\\.\\d+(-[a-zA-Z0-9.]+)?$",
-          "default": "1.0.0"
+          "description": "Module version. SemVer format enforced by default policy (apcore.validation.binding.version_require_semver: true) — set to false in apcore.yaml to allow alternative versioning (calver, internal schemes). See DECLARATIVE_CONFIG_SPEC.md §9.",
+          "default": "1.0.0",
+          "examples": ["1.0.0", "2.1.0-beta.1"]
         },
         "metadata": {
           "type": "object",
@@ -83,21 +91,50 @@
           "$ref": "#/$defs/DisplayOverlay"
         }
       },
-      "oneOf": [
+      "allOf": [
         {
-          "required": ["input_schema", "output_schema"],
-          "properties": {
-            "auto_schema": { "const": false }
+          "comment": "Mode mutex: schema_ref excludes everything else.",
+          "if": { "required": ["schema_ref"] },
+          "then": {
+            "not": {
+              "anyOf": [
+                { "required": ["input_schema"] },
+                { "required": ["output_schema"] },
+                { "required": ["auto_schema"] }
+              ]
+            }
           }
         },
         {
-          "required": ["auto_schema"],
-          "properties": {
-            "auto_schema": { "const": true }
+          "comment": "Mode mutex: auto_schema excludes input/output_schema and schema_ref.",
+          "if": { "required": ["auto_schema"] },
+          "then": {
+            "not": {
+              "anyOf": [
+                { "required": ["input_schema"] },
+                { "required": ["output_schema"] },
+                { "required": ["schema_ref"] }
+              ]
+            }
           }
         },
         {
-          "required": ["schema_ref"]
+          "comment": "Mode mutex: explicit input_schema requires output_schema and excludes auto_schema and schema_ref.",
+          "if": {
+            "anyOf": [
+              { "required": ["input_schema"] },
+              { "required": ["output_schema"] }
+            ]
+          },
+          "then": {
+            "required": ["input_schema", "output_schema"],
+            "not": {
+              "anyOf": [
+                { "required": ["auto_schema"] },
+                { "required": ["schema_ref"] }
+              ]
+            }
+          }
         }
       ],
       "additionalProperties": false
@@ -196,39 +233,85 @@
           ]
         }
       },
-      "additionalProperties": false
+      "propertyNames": {
+        "pattern": "^[a-z][a-z0-9_]*$",
+        "description": "All keys MUST be lowercase snake_case identifiers. Catches typos like 'MCP' or 'CLI'."
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/SurfaceOverride",
+        "description": "Future surfaces (e.g., display.graphql, display.http) validate against the SurfaceOverride contract. See DECLARATIVE_CONFIG_SPEC.md §3.6."
+      }
     },
     "Annotations": {
       "type": "object",
-      "description": "Module behavior annotations for AI/LLM decision making",
+      "description": "Module behavior annotations. Hints (not enforced constraints) to help AI/LLM make invocation decisions. MUST be kept structurally identical to module-meta.schema.json's Annotations definition — both describe the same module's annotation contract. Aligned with MCP ToolAnnotations.",
+      "additionalProperties": false,
       "properties": {
         "readonly": {
           "type": "boolean",
-          "description": "Module is read-only (no side effects)",
+          "description": "Whether the module is read-only (no side effects). true = AI can safely invoke without confirmation.",
           "default": false
         },
         "destructive": {
           "type": "boolean",
-          "description": "Module has destructive operations",
+          "description": "Whether the module performs destructive operations (e.g., delete/overwrite data). true = AI should warn the user before invoking.",
           "default": false
         },
         "idempotent": {
           "type": "boolean",
-          "description": "Module is idempotent (safe to retry)",
+          "description": "Whether the module is idempotent. true = repeated calls with same inputs produce no additional side effects. AI can safely retry.",
           "default": false
         },
         "requires_approval": {
           "type": "boolean",
-          "description": "Requires human approval before execution",
+          "description": "Whether human approval is required before invocation. true = AI must ask for user consent before calling.",
           "default": false
         },
         "open_world": {
           "type": "boolean",
-          "description": "Connects to external systems",
+          "description": "Whether the module interacts with external systems (APIs, networks, services). true = calls may be slow and depend on external availability.",
           "default": true
+        },
+        "streaming": {
+          "type": "boolean",
+          "description": "Whether the module supports streaming output. true = module can emit partial results progressively.",
+          "default": false
+        },
+        "cacheable": {
+          "type": "boolean",
+          "description": "Whether the module output can be cached. true = identical inputs produce identical outputs within cache_ttl.",
+          "default": false
+        },
+        "cache_ttl": {
+          "type": "integer",
+          "description": "Suggested cache duration in seconds. 0 = no caching. Only meaningful when cacheable=true.",
+          "minimum": 0,
+          "default": 0
+        },
+        "cache_key_fields": {
+          "type": ["array", "null"],
+          "description": "Input fields that determine cache key. null = all input fields are used. Only meaningful when cacheable=true.",
+          "items": { "type": "string" },
+          "default": null
+        },
+        "paginated": {
+          "type": "boolean",
+          "description": "Whether the module returns paginated results. true = accepts pagination parameters and returns partial result sets.",
+          "default": false
+        },
+        "pagination_style": {
+          "type": "string",
+          "description": "Pagination strategy. Well-known values: 'cursor', 'offset', 'page'. Custom strategies allowed. Only meaningful when paginated=true.",
+          "examples": ["cursor", "offset", "page"],
+          "default": "cursor"
+        },
+        "extra": {
+          "type": "object",
+          "description": "Open extension map for ecosystem-specific or vendor annotation metadata. Keys SHOULD use a <namespace>.<name> form (e.g. 'mcp.category', 'cli.approval_message'). The 'core.*' namespace is reserved. Wire format MUST be a nested object — see PROTOCOL_SPEC §4.4.1.",
+          "additionalProperties": true,
+          "default": {}
         }
-      },
-      "additionalProperties": false
+      }
     }
   }
 }

@@ -1,0 +1,63 @@
+## Cross-SDK binding YAML conformance fixture.
+##
+## This file must parse successfully on all three SDKs (Python, TypeScript, Rust).
+## Each SDK's test suite loads this fixture and asserts:
+##   1. Parsing succeeds without error
+##   2. Correct number of bindings loaded (3)
+##   3. module_id, target, description, tags, version fields round-trip correctly
+##   4. auto_schema mode detected correctly (implicit, explicit true, explicit strict)
+##   5. schema_ref resolved correctly
+##   6. annotations and display fields preserved
+##
+## See DECLARATIVE_CONFIG_SPEC.md §3.
+
+spec_version: "1.0"
+bindings:
+  # Entry 1: explicit auto_schema (permissive)
+  - module_id: "conformance.auto_permissive"
+    target: "conformance_mod:auto_permissive_fn"
+    description: "Auto-schema permissive mode"
+    tags:
+      - "conformance"
+      - "auto_schema"
+    version: "1.0.0"
+    auto_schema: true
+    annotations:
+      readonly: true
+      idempotent: true
+
+  # Entry 2: explicit input/output schemas
+  - module_id: "conformance.explicit_schema"
+    target: "conformance_mod:explicit_fn"
+    description: "Explicit input/output schemas"
+    tags:
+      - "conformance"
+    version: "2.0.0"
+    input_schema:
+      type: object
+      properties:
+        name:
+          type: string
+        count:
+          type: integer
+      required:
+        - name
+    output_schema:
+      type: object
+      properties:
+        greeting:
+          type: string
+      required:
+        - greeting
+    display:
+      alias: "explicit_test"
+      cli:
+        alias: "explicit-test"
+
+  # Entry 3: auto_schema strict mode
+  - module_id: "conformance.auto_strict"
+    target: "conformance_mod:strict_fn"
+    description: "Auto-schema strict mode for OpenAI/Anthropic"
+    auto_schema: strict
+    metadata:
+      owner_team: "conformance"

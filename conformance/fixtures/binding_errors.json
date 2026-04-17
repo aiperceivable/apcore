@@ -1,0 +1,75 @@
+{
+  "description": "Binding error message conformance (DECLARATIVE_CONFIG_SPEC.md §7.2). Each SDK must produce byte-identical messages for the same error conditions.",
+  "spec_ref": "DECLARATIVE_CONFIG_SPEC.md §7",
+  "test_cases": [
+    {
+      "id": "binding_file_invalid_missing_bindings_key",
+      "error_code": "BINDING_FILE_INVALID",
+      "input": {
+        "file_path": "bindings.yaml",
+        "reason": "missing required top-level key 'bindings'"
+      },
+      "expected_message": "Invalid binding file 'bindings.yaml': missing required top-level key 'bindings'"
+    },
+    {
+      "id": "binding_schema_mode_conflict",
+      "error_code": "BINDING_SCHEMA_MODE_CONFLICT",
+      "input": {
+        "module_id": "utils.format_date",
+        "modes_listed": ["auto_schema", "input_schema/output_schema"],
+        "file_path": "bindings.yaml"
+      },
+      "expected_message": "bindings.yaml: binding 'utils.format_date' specifies multiple schema modes (auto_schema, input_schema/output_schema). Choose one. See DECLARATIVE_CONFIG_SPEC.md §3.4"
+    },
+    {
+      "id": "binding_schema_inference_failed_python",
+      "error_code": "BINDING_SCHEMA_INFERENCE_FAILED",
+      "input": {
+        "target": "myapp:func",
+        "module_id": "app.thing",
+        "file_path": "b.yaml"
+      },
+      "expected_message_contains": [
+        "b.yaml",
+        "app.thing",
+        "auto schema inference failed for target 'myapp:func'",
+        "DECLARATIVE_CONFIG_SPEC.md §6"
+      ]
+    },
+    {
+      "id": "pipeline_handler_not_supported_rust",
+      "error_code": "PIPELINE_HANDLER_NOT_SUPPORTED",
+      "input": {
+        "step_name": "custom_audit",
+        "handler_path": "my_app.steps:CustomAuditStep"
+      },
+      "expected_message_contains": [
+        "custom_audit",
+        "handler",
+        "not supported in apcore-rust",
+        "register_step_type",
+        "DECLARATIVE_CONFIG_SPEC.md §4.4"
+      ]
+    },
+    {
+      "id": "binding_invalid_target_missing_colon",
+      "error_code": "BINDING_INVALID_TARGET",
+      "input": {
+        "target": "no-colon-here"
+      },
+      "expected_message_contains": [
+        "no-colon-here"
+      ]
+    },
+    {
+      "id": "binding_module_not_found",
+      "error_code": "BINDING_MODULE_NOT_FOUND",
+      "input": {
+        "module_path": "nonexistent.module"
+      },
+      "expected_message_contains": [
+        "nonexistent.module"
+      ]
+    }
+  ]
+}
