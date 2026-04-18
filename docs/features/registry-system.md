@@ -69,6 +69,72 @@ The registry provides several query methods:
 - `list(tags=None, prefix=None)` -- Returns all registered modules, optionally filtered by tags and/or ID prefix. When `tags` is provided, only modules whose metadata includes the specified tag(s) are returned. When `prefix` is provided, only modules whose IDs start with the given prefix are returned. Both filters can be combined.
 - `get_definition(module_id)` -- Returns a `ModuleDescriptor` for the specified module, including exported schemas.
 
+## Contract: Registry.register
+
+Normative behavioral contract. All SDK implementations MUST satisfy these guarantees.
+
+### Inputs
+
+- `module_id`: string, required. Must pass module-ID validation (see Schema System). Empty, malformed, or reserved IDs MUST be rejected before any mutation of the registry.
+- `module`: Module instance, required. Must implement the module protocol (`description`, `input_schema`, `output_schema`, `execute`).
+
+### Preconditions
+
+- The registry's internal lock MUST be acquired before the duplicate-ID check.
+- `module.on_load()` MUST NOT be invoked until the registry has confirmed the module is uniquely registered.
+
+### Side Effects (ordered)
+
+1. Acquire registry lock.
+2. Validate `module_id` and module structure.
+3. Check for duplicate `module_id`; reject with `InvalidInputError(code=DUPLICATE_MODULE_ID)` if already registered (unless overwrite semantics are explicitly opted in).
+4. Insert the module into the internal store.
+5. Release the registry lock.
+6. Invoke `module.on_load()` if defined. If it raises, remove the module from the store (rollback) and re-raise.
+7. Emit a `register` event to subscribers.
+
+### Errors
+
+- `InvalidInputError(code=INVALID_MODULE_ID)` -- `module_id` fails validation.
+- `InvalidInputError(code=DUPLICATE_MODULE_ID)` -- `module_id` is already registered.
+
+### Returns
+
+- On success: `None` (Python), `void` (TypeScript), `Ok(())` (Rust).
+- On failure: raises (Python/TypeScript) / returns `Err` (Rust).
+
+### Properties
+
+- `async`: `false`.
+- `thread_safe`: `true` -- reentrant lock held during mutation. Single-threaded language runtimes (e.g., JavaScript) MAY treat the lock as a no-op.
+- `pure`: `false` -- mutates the internal store; may trigger external `on_load` side effects.
+- `idempotent`: `false` -- duplicate registration is an error, not a no-op.
+
+## Contract: Scanner.scan_extensions
+
+Normative contract for the filesystem scanner used by step 1 of the discovery pipeline.
+
+### Inputs
+
+- `root`: string path, required. Directory to scan for module candidates.
+- `max_depth`: integer, optional (default `8`). Maximum directory depth.
+- `follow_symlinks`: boolean, optional (default `false`).
+
+### Errors
+
+- `ConfigNotFoundError(code=CONFIG_NOT_FOUND)` -- `root` does not exist or is not readable.
+
+### Returns
+
+- On success: ordered sequence of `DiscoveredModule` records, in stable filesystem-traversal order.
+- On failure: raises / returns `Err`.
+
+### Properties
+
+- `async`: `false`.
+- `thread_safe`: `true` -- no shared mutable state.
+- `pure`: `false` -- reads the filesystem.
+
 ## Usage
 
 === "Python"

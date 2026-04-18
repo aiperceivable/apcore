@@ -98,6 +98,76 @@ Streaming chunk accumulation uses recursive deep merge (depth-capped at 32) inst
 
 The `validate()` method provides a non-destructive preflight check that runs Steps 1–5 and Step 7 of the pipeline (module ID format, module lookup, call chain safety, ACL, approval detection, and input schema validation — skipping Step 6 Middleware Before Chain), plus an optional module-level preflight check, without executing module code or middleware. It returns a `PreflightResult` with per-check results and a `requires_approval` flag. The result is duck-type compatible with the legacy `ValidationResult` — `.valid` and `.errors` properties work identically.
 
+## Contract: Executor.call
+
+Normative behavioral contract. All SDK implementations MUST satisfy these guarantees.
+
+### Inputs
+
+- `module_id`: string, required. Validated at method entry via `validate_module_id(allow_reserved=true)` -- reserved prefixes permitted so that `sys.*` invocation is legal. Empty / over-length / malformed IDs MUST be rejected before the pipeline context is constructed.
+- `inputs`: object, required. Payload conforming to the module's input schema.
+- `options`: object, optional. Call-site overrides (identity, trace_parent, per-call timeout).
+
+### Preconditions
+
+- Entry-guard: `module_id` MUST be validated before constructing a pipeline context. Implementations MUST NOT defer this check to downstream pipeline steps.
+
+### Side Effects (ordered)
+
+1. Validate `module_id` at method entry; reject fast with `InvalidInputError(code=INVALID_MODULE_ID)`.
+2. Construct `PipelineContext` and run the 11-step execution pipeline (see Execution Pipeline above).
+3. Emit observability spans and metrics per observability configuration.
+
+### Errors
+
+- `InvalidInputError(code=INVALID_MODULE_ID)` -- `module_id` fails entry-guard validation.
+- `ModuleNotFoundError(code=MODULE_NOT_FOUND)` -- `module_id` not present in the registry.
+- `ACLDeniedError`, `ApprovalDeniedError`, `ApprovalTimeoutError`, `ApprovalPendingError`, `ModuleTimeoutError`, `ExecutionCancelledError`, `ModuleError` -- propagated from pipeline stages.
+
+### Returns
+
+- On success: validated output object conforming to the module's output schema.
+- On failure: raises (Python/TypeScript) / returns `Err` (Rust).
+
+### Properties
+
+- `async`: SDK-specific. `call()` is synchronous in Python (wraps `call_async`); asynchronous in TypeScript and Rust. Both surfaces MUST be provided where the host language supports both.
+- `thread_safe`: `true`.
+- `pure`: `false` -- pipeline stages may emit events, mutate observability state, and transitively invoke other modules.
+
+## Contract: Context.create
+
+Normative behavioral contract for the constructor entry point used by callers producing a new call context.
+
+### Inputs
+
+- `identity`: Identity, optional (default `None` / `null`). When omitted, the constructor synthesizes an `@external` identity.
+- `trace_parent`: string, optional. W3C trace-parent value. When present, it MUST be a 32-character hex trace ID that is neither all zeros (`0000…0000`) nor all `f`s (`ffff…ffff`); otherwise rejected.
+- `services`: object, optional. Ambient service registry (logger, metrics, cancel token).
+- `data`: object, optional. User-propagated state carried through the call chain.
+- `caller_id`: string, optional. Derived from `identity` when omitted.
+- `global_deadline`: absolute timestamp, optional. When present, bounds the total execution time for the call tree rooted at this context.
+
+### Preconditions
+
+- `trace_parent`, when present, MUST pass the 32-hex / not-all-zero / not-all-`f` validation before context construction completes.
+
+### Errors
+
+- `InvalidInputError(code=INVALID_TRACE_PARENT)` -- `trace_parent` fails format or sentinel-value validation.
+
+### Returns
+
+- On success: a fresh `Context` instance with a freshly generated 32-character hex `trace_id` (either derived from `trace_parent` when present, or newly generated otherwise).
+- On failure: raises / returns `Err`.
+
+### Properties
+
+- `async`: `false`.
+- `thread_safe`: `true` -- constructor only; no shared state is mutated.
+- `pure`: `false` -- a new `trace_id` is generated for each call.
+- `idempotent`: `false` -- each call yields a new Context with a unique `trace_id`.
+
 ## Usage
 
 === "Python"

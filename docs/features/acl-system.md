@@ -97,6 +97,43 @@ rules:
 
 Compound operators `$or` and `$not` can combine conditions. `$or` passes if any sub-condition passes. `$not` inverts its sub-condition.
 
+## Contract: ACL.check
+
+Normative behavioral contract. All SDK implementations MUST satisfy these guarantees.
+
+### Inputs
+
+- `caller_id`: string, optional (default `None` / `null`). When omitted, the effective caller is `@external`.
+- `target_id`: string, required. Module ID being accessed.
+- `context`: ExecutionContext, optional. Provides identity type, roles, and call chain for conditional rule evaluation.
+
+### Preconditions
+
+- The rule-list snapshot MUST be taken under the ACL lock; evaluation MAY then proceed outside the lock.
+
+### Side Effects (ordered)
+
+1. Acquire ACL lock.
+2. Snapshot the rule list and `default_effect` under the lock.
+3. Release the ACL lock.
+4. Evaluate rules in order (first-match-wins).
+5. Emit an audit event carrying the decision (via the finalize path).
+
+### Errors
+
+- None under normal operation. `check` MUST NOT raise to indicate a deny; it MUST return `false`. Raising is reserved for unrecoverable internal failures (e.g., a corrupted rule list) that the host language's idioms require be surfaced as exceptions.
+
+### Returns
+
+- On success: plain `bool` (`true` = allow, `false` = deny). The return type MUST NOT be wrapped in a `Result`/`Either` type.
+
+### Properties
+
+- `async`: `false`.
+- `thread_safe`: `true` -- snapshot-under-lock pattern.
+- `pure`: `false` -- emits an audit event on every call.
+- `idempotent`: `true` -- repeated calls with identical inputs yield identical decisions (audit events are still emitted each time).
+
 ## Usage
 
 === "Python"
