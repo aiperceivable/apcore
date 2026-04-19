@@ -283,3 +283,22 @@ On deserialization, the Identity is reconstructed from the serialized form.
 - **Serialization tests** verify round-trip serialization/deserialization of Identity within Context.
 - **ACL integration tests** verify that identity type conditions and role conditions produce correct allow/deny decisions.
 - **ContextFactory tests** verify that custom factories produce valid Context objects with correctly extracted Identity.
+
+## Contract: ContextFactory.create_context
+
+### Inputs
+- `identity` (Identity, optional) — caller identity; defaults to `@external` when absent
+- `caller_id` (str/string/&str, optional) — caller module ID for call-chain tracking
+- `data` (dict/object/Value, optional) — initial context data payload
+
+### Errors
+- No errors raised (invalid identity fields are sanitized, not rejected)
+
+### Returns
+- On success: `Context` — initialized execution context with assigned trace ID and caller identity
+
+### Properties
+- async: false
+- thread_safe: true
+- pure: false (generates a new trace ID on each call; not idempotent)
+- idempotent: false
