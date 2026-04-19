@@ -85,6 +85,16 @@ When a Config with `sys_modules.enabled: true` is provided:
 | | `executor` | Executor | Underlying executor |
 | | `events` | EventEmitter \| None | Event emitter (if configured) |
 
+!!! note "Rust keyword conflict: `use` → `use_middleware`"
+    In Rust, `use` is a reserved keyword. The method that Python and TypeScript expose as `.use(middleware)` is named **`.use_middleware(middleware)`** in the Rust SDK. All other method names are identical across languages. This is the only renamed method in the APCore client API.
+
+    ```rust
+    // Rust — use use_middleware() where Python/TS use .use()
+    client.use_middleware(Box::new(logging_middleware));
+    client.use_before(|ctx| { ... });
+    client.use_after(|ctx| { ... });
+    ```
+
 !!! note "Sync/async divergence"
     Python `call()` is synchronous and blocks until the module returns. TypeScript and Rust `call()` return a `Promise`/`Future` and **MUST** be awaited. Python provides a separate `call_async()` for async contexts (e.g., inside `async def` functions or running under an event loop).
 

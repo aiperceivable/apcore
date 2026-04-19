@@ -485,6 +485,137 @@ cfg.get("myapp.devto_api_key")     # → "abc123" (auto: flat key in defaults)
 cfg.get("myapp.publish.delay")     # → 10 (auto: nested key in defaults)
 ```
 
+## Contract: Config.register_namespace
+
+### Inputs
+- `name` (str/string/&str, required) — namespace name; must not be `"apcore"` or `"_config"` (reserved); reject with `ConfigNamespaceReservedError(code=CONFIG_NAMESPACE_RESERVED)`
+- `env_prefix` (str/string/&str, optional) — env var prefix; auto-derived from `name` when absent; reject duplicate prefix with `ConfigEnvPrefixConflictError(code=CONFIG_ENV_PREFIX_CONFLICT)`
+- `defaults` (dict/object/Value, optional) — default values merged under this namespace before YAML/env overrides
+- `env_style` (str/string/EnvStyle, optional) — `"auto"` (default), `"nested"`, or `"flat"`; controls env var suffix conversion
+- `max_depth` (int/number/u32, optional) — maximum nesting depth for nested/auto routing; default 5
+- `env_map` (dict/object/HashMap, optional) — bare env var → namespace key mapping; each key must be globally unique; reject conflicts with `ConfigEnvMapConflictError(code=CONFIG_ENV_MAP_CONFLICT)`
+- `schema` (dict/object/Value, optional) — JSON Schema Draft 2020-12 for namespace values; validation runs at load time
+
+### Errors
+- `ConfigNamespaceReservedError(code=CONFIG_NAMESPACE_RESERVED)` — `name` is `"apcore"` or `"_config"`
+- `ConfigNamespaceDuplicateError(code=CONFIG_NAMESPACE_DUPLICATE)` — namespace already registered under this name
+- `ConfigEnvPrefixConflictError(code=CONFIG_ENV_PREFIX_CONFLICT)` — derived or explicit `env_prefix` already claimed by another namespace
+- `ConfigEnvMapConflictError(code=CONFIG_ENV_MAP_CONFLICT)` — a bare env var in `env_map` is already mapped by another namespace or the global env_map
+
+### Returns
+- On success: void/None/() — namespace is registered class-globally for all future `Config.load()` calls
+
+### Properties
+- async: false
+- thread_safe: false (call before any concurrent `Config.load()`)
+- pure: false (mutates class-level namespace registry)
+- idempotent: false (duplicate registration raises an error)
+
+## Contract: Config.load
+
+### Inputs
+- `path` (str/string/&str or Path, optional) — file path to a YAML config file; if absent, falls back to `Config.discover()` search order
+
+### Errors
+- `ConfigNotFoundError(code=CONFIG_NOT_FOUND)` — path was provided but does not exist on disk
+- `ConfigInvalidError(code=CONFIG_INVALID)` — file exists but is not valid YAML or its structure cannot be parsed
+
+### Returns
+- On success: `Config` instance with namespace data, env overrides, and defaults merged
+
+### Properties
+- async: false
+- thread_safe: false (safe to call from multiple threads only if namespace registry is fully populated and frozen)
+- pure: false (reads filesystem and environment variables)
+- idempotent: true (loading the same file twice produces equivalent Config instances)
+
+## Contract: Config.get
+
+### Inputs
+- `key` (str/string/&str, required) — dot-path key (e.g., `"my-plugin.timeout"` or `"port"`); empty string is rejected with `ValueError`/`ConfigInvalidError`
+- `default` (Any/unknown/Value, optional) — value returned when key is absent; when absent and key is missing, returns `None`/`null`/`None`
+
+### Errors
+- No errors raised under normal operation (missing key returns `default` or `None`)
+
+### Returns
+- On success: the resolved value at `key`, or `default` if absent
+
+### Properties
+- async: false
+- thread_safe: true
+- pure: true (no side effects; reads merged config snapshot)
+- idempotent: true
+
+## Contract: Config.namespace
+
+### Inputs
+- `name` (str/string/&str, required) — registered namespace name; returns empty dict/object when namespace has no values (does not raise)
+
+### Errors
+- No errors under normal operation; unregistered namespace returns empty result
+
+### Returns
+- On success: `dict[str, Any]` / `Record<string, unknown>` / `HashMap<String, Value>` — all values under that namespace, merged from defaults + YAML + env overrides
+
+### Properties
+- async: false
+- thread_safe: true
+- pure: true
+
+## Contract: Config.bind
+
+### Inputs
+- `namespace` (str/string/&str, required) — namespace name to deserialize
+- `type` (type/class/generic, required) — dataclass type (Python), constructor class (TypeScript), or Rust generic `T: Deserialize`
+
+### Errors
+- `ConfigBindError(code=CONFIG_BIND_ERROR)` — deserialization/instantiation fails (type mismatch, missing required field, constructor raises)
+
+### Returns
+- On success: an instance of `type` populated with namespace values
+
+### Properties
+- async: false
+- thread_safe: true
+- pure: true (reads snapshot; does not mutate config)
+
+## Contract: Config.mount
+
+### Inputs
+- `namespace` (str/string/&str, required) — target namespace; must NOT be `"_config"` (reserved)
+- `source` (dict/object/MountSource, required) — either an in-memory dict or a path to a YAML file (relative paths resolved from CWD)
+
+### Errors
+- `ConfigMountError(code=CONFIG_MOUNT_ERROR)` — namespace is `_config`; or source is a file path that does not exist; or file is not a valid YAML mapping
+
+### Returns
+- On success: void/None/() — source data is merged into the namespace, over defaults, under env overrides
+
+### Properties
+- async: false
+- thread_safe: false (do not call concurrently with reads)
+- pure: false (mutates config state)
+- idempotent: false (mounting the same source twice stacks; call once per source)
+
+## Contract: Config.reload
+
+### Inputs
+- No inputs
+
+### Errors
+- `ConfigNotFoundError(code=CONFIG_NOT_FOUND)` — source file no longer exists
+- `ConfigInvalidError(code=CONFIG_INVALID)` — source file is now invalid YAML
+
+### Returns
+- On success: void/None/() — config is refreshed from disk; env overrides and mounts are re-applied
+
+### Properties
+- async: false
+- thread_safe: false (call outside of concurrent request handling; no in-flight read protection)
+- pure: false (re-reads filesystem and environment variables)
+- idempotent: true (calling reload twice with unchanged files produces identical state)
+
 ## Key Files
 
 | File | Purpose |

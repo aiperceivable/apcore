@@ -173,6 +173,100 @@ class _CompositeExporter:
                 pass  # Log and continue
 ```
 
+## Contract: ExtensionManager.register
+
+### Inputs
+- `point_name` (str/string/&str, required) — name of an existing extension point (e.g., `"discoverer"`, `"middleware"`); unknown names raise an error
+- `extension` (Any/unknown/Box<dyn Trait>, required) — must satisfy the extension point's declared type; type checking is performed at registration time
+
+### Errors
+- `ExtensionPointNotFoundError` (or `ValueError` / `Err(ModuleError)`) — `point_name` is not a registered extension point
+- `ExtensionTypeError` (or `TypeError` / `Err(ModuleError)`) — `extension` does not satisfy the point's expected type/trait
+
+### Returns
+- On success: void/None/() — extension is stored; for single-cardinality points, replaces any prior registration
+
+### Properties
+- async: false
+- thread_safe: false (do not call concurrently with `apply()` or other `register()` calls)
+- pure: false (mutates internal extension store)
+- idempotent: false for single-cardinality (replaces); accumulating for multi-cardinality (`middleware`, `span_exporter`)
+
+## Contract: ExtensionManager.get
+
+### Inputs
+- `point_name` (str/string/&str, required) — name of a single-cardinality extension point
+
+### Errors
+- No errors raised; returns `None`/`null`/`None` when nothing is registered
+
+### Returns
+- On success: the registered extension object, or `None`/`null`/`None`
+
+### Properties
+- async: false
+- thread_safe: true
+- pure: true
+
+## Contract: ExtensionManager.get_all
+
+### Inputs
+- `point_name` (str/string/&str, required) — name of a multi-cardinality extension point
+
+### Errors
+- No errors raised; returns empty list when nothing is registered
+
+### Returns
+- On success: `list` / `Array` / `Vec` of all registered extensions in registration order
+
+### Properties
+- async: false
+- thread_safe: true
+- pure: true
+
+## Contract: ExtensionManager.unregister
+
+### Inputs
+- `point_name` (str/string/&str, required) — name of the extension point
+- `extension` (Any/unknown/ref, required) — the exact extension object to remove (identity comparison)
+
+### Errors
+- No error if the extension is not found (silent no-op)
+
+### Returns
+- On success: void/None/()
+
+### Properties
+- async: false
+- thread_safe: false
+- pure: false (mutates extension store)
+
+## Contract: ExtensionManager.apply
+
+### Inputs
+- `registry` (Registry, required) — registry to wire extensions into (discoverer, module_validator)
+- `executor` (Executor, required) — executor to wire extensions into (acl, approval_handler, middleware, span_exporter)
+
+### Errors
+- `ExtensionApplyError` (or propagated from Registry/Executor) — wiring a span exporter fails because no `TracingMiddleware` is present in the executor chain; or Registry/Executor APIs raise
+
+### Returns
+- On success: void/None/() — all registered extensions wired in the documented order (discoverer → module_validator → acl → approval_handler → middleware chain → span exporters)
+
+### Side Effects (ordered)
+1. `registry.set_discoverer(ext)` if discoverer registered
+2. `registry.set_validator(ext)` if module_validator registered
+3. `executor.set_acl(ext)` if acl registered
+4. `executor.set_approval_handler(ext)` if approval_handler registered
+5. `executor.use(mw)` for each middleware in registration order
+6. Locate `TracingMiddleware` in executor chain; set single exporter directly or wrap multiple in `CompositeExporter`
+
+### Properties
+- async: false
+- thread_safe: false (call once during startup, before concurrent request handling)
+- pure: false (mutates registry and executor)
+- idempotent: false (calling apply twice stacks middleware and re-wires other extensions)
+
 ## Dependencies
 
 - **Registry** — Extension points `discoverer` and `module_validator` are wired into the Registry.

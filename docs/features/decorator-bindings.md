@@ -234,6 +234,75 @@ The `@module` decorator and `BindingLoader` are Python SDK idioms. TypeScript an
     - `pathlib` (stdlib) -- Path operations for binding file and schema_ref resolution.
     - `yaml` (PyYAML) -- YAML parsing for binding files and schema references.
 
+## Contract: module
+
+### Inputs
+- `func_or_none` (callable/None, positional) — the function to wrap; `None` when used as `@module(id=...)` (argument form)
+- `id` (str, optional) — explicit module ID; auto-generated from `__module__.__qualname__` when absent
+- `description` (str, optional) — human-readable description; falls back to first line of docstring, then `"Module {func_name}"`
+- `input_schema` (type/BaseModel subclass, optional) — explicit Pydantic input model; auto-generated when absent
+- `output_schema` (type/BaseModel subclass, optional) — explicit Pydantic output model; auto-generated when absent
+- `tags` (list[str], optional) — searchable tags
+- `version` (str, optional) — semantic version string
+- `registry` (Registry, optional) — if provided, the resulting `FunctionModule` is immediately registered
+
+### Errors
+- `FuncMissingTypeHintError(code=FUNC_MISSING_TYPE_HINT)` — a parameter lacks a type annotation and `input_schema` was not provided
+- `FuncMissingReturnTypeError(code=FUNC_MISSING_RETURN_TYPE)` — function lacks a return type annotation and `output_schema` was not provided
+
+### Returns
+- Decorator forms (`@module`, `@module(...)`): returns the original function with `.apcore_module` attribute attached
+- Function-call form (`module(func, ...)`): returns the `FunctionModule` instance directly
+
+### Properties
+- async: false (the decorator itself is synchronous; `FunctionModule.execute` is async if the wrapped function is async)
+- thread_safe: true (module creation is idempotent; no shared state mutated unless `registry` is provided)
+- pure: false when `registry` is provided (registration mutates registry state)
+
+## Contract: BindingLoader.load_bindings
+
+### Inputs
+- `path` (str/Path, required) — path to a YAML binding file; must exist and contain a `bindings` list
+- `registry` (Registry, required) — registry to register the loaded modules into
+
+### Errors
+- `BindingFileInvalidError(code=BINDING_FILE_INVALID)` — file not found, empty, invalid YAML, missing `bindings` key, non-list `bindings`, or missing `module_id`/`target` per entry
+- `BindingInvalidTargetError(code=BINDING_INVALID_TARGET)` — target string missing `:` separator
+- `BindingModuleNotFoundError(code=BINDING_MODULE_NOT_FOUND)` — Python module in target path cannot be imported
+- `BindingCallableNotFoundError(code=BINDING_CALLABLE_NOT_FOUND)` — callable not found in the imported module
+- `BindingNotCallableError(code=BINDING_NOT_CALLABLE)` — resolved attribute is not callable
+- `BindingSchemaMissingError(code=BINDING_SCHEMA_MISSING)` — auto-schema inference failed because callable lacks type hints
+- `FuncMissingTypeHintError(code=FUNC_MISSING_TYPE_HINT)` — parameter lacks annotation during auto-schema
+- `FuncMissingReturnTypeError(code=FUNC_MISSING_RETURN_TYPE)` — return type absent during auto-schema
+
+### Returns
+- On success: `list[FunctionModule]` — all successfully loaded and registered modules
+
+### Properties
+- async: false
+- thread_safe: false (mutates registry)
+- pure: false (reads filesystem, imports Python modules, mutates registry)
+- idempotent: false (calling twice re-registers modules, raising a duplicate error from the Registry)
+
+## Contract: BindingLoader.load_binding_dir
+
+### Inputs
+- `directory` (str/Path, required) — directory to scan; must exist
+- `registry` (Registry, required) — registry to register modules into
+- `pattern` (str, optional) — glob pattern for binding files; default `"*.binding.yaml"`
+
+### Errors
+- `BindingFileInvalidError(code=BINDING_FILE_INVALID)` — nonexistent directory, or any file within fails to parse (fail-fast on first error)
+
+### Returns
+- On success: `list[FunctionModule]` — all modules from all matched files; empty list if no files match
+
+### Properties
+- async: false
+- thread_safe: false (mutates registry)
+- pure: false (reads filesystem)
+- idempotent: false
+
 ## Testing Strategy
 
 ### Decorator Tests (`tests/test_decorator.py`)
