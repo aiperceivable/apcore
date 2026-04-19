@@ -400,3 +400,38 @@ The `traceparent` header follows the W3C format: `{version}-{trace_id}-{parent_i
 - **Redaction**: `_secret_` prefix keys redacted to `***REDACTED***`, no redaction when disabled.
 - **Custom output**: Writing to custom `io.StringIO` target.
 - **ObsLoggingMiddleware**: Is Middleware subclass, before() pushes start and logs, after() pops and logs completion with duration, on_error() pops and logs failure with error type, input/output logging toggles, stack-based nested calls (4 log entries for 2 nested calls), and auto-creates ContextLogger when None.
+
+## Contract: Tracer.start_span
+
+### Inputs
+- `name` (str/string/&str, required) — span name; MUST NOT be empty
+- `parent` (Span/SpanContext, optional) — parent span for distributed tracing; creates a root span when absent
+
+### Errors
+- No errors raised (span creation failures are silently swallowed and return a no-op span)
+
+### Returns
+- On success: `Span` — active span; MUST be ended with `.end()` or used as a context manager
+
+### Properties
+- async: false
+- thread_safe: true
+- pure: false (registers span in the active trace context)
+
+## Contract: MetricsEmitter.record
+
+### Inputs
+- `metric_name` (str/string/&str, required) — metric key; MUST be a registered metric constant
+- `value` (float/number/f64, required) — numeric measurement
+- `labels` (dict/object/HashMap, optional) — dimensional labels for the metric
+
+### Errors
+- No errors raised (metric emission failures are silently swallowed)
+
+### Returns
+- On success: void/None/()
+
+### Properties
+- async: false
+- thread_safe: true
+- pure: false (side-effect: metric emitted to configured backend)
