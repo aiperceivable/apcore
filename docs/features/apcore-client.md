@@ -73,7 +73,7 @@ When a Config with `sys_modules.enabled: true` is provided:
 | | `validate(module_id, inputs?, context?)` | PreflightResult | Non-destructive preflight |
 | **Inspection** | `list_modules(tags?, prefix?)` | list[str] | List module IDs (sorted) |
 | | `describe(module_id)` | str | Markdown description for AI |
-| **Middleware** | `use(middleware)` | self | Add class-based middleware |
+| **Middleware** | `use(middleware)` | self | Add class-based middleware (Rust: `use_middleware()` — `use` is a reserved keyword) |
 | | `use_before(callback)` | self | Add before-middleware |
 | | `use_after(callback)` | self | Add after-middleware |
 | | `remove(middleware)` | bool | Remove by identity |
