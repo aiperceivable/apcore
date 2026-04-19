@@ -277,3 +277,22 @@ These handlers are provided by the respective bridge packages, not by apcore cor
 - **Skip tests** confirm the gate is skipped when no handler is set, or when the module does not require approval.
 - **Integration tests** run a full pipeline execution with approval handlers to verify end-to-end behavior including error propagation to callers.
 - Test naming follows the `test_<unit>_<behavior>` convention.
+
+## Contract: ApprovalHandler.request_approval
+
+### Inputs
+- `request` (ApprovalRequest, required) — describes the action requiring approval; MUST contain `module_id`, `caller_id`, and `action`
+
+### Errors
+- `ApprovalDeniedError(code=APPROVAL_DENIED)` — approval was explicitly denied by the handler
+- `ApprovalTimeoutError(code=APPROVAL_TIMEOUT)` — approval was not received within the deadline
+- `ApprovalPendingError(code=APPROVAL_PENDING)` — approval is deferred to an async out-of-band process
+
+### Returns
+- On success (approved): `ApprovalResult` with `approved=true`
+
+### Properties
+- async: true (approval may require human interaction or external service call)
+- thread_safe: true
+- pure: false (may emit notifications or persist state)
+- idempotent: false
