@@ -198,3 +198,58 @@ Tests are split across two files targeting different abstraction levels:
 
 ### Integration Tests (`tests/integration/test_middleware_chain.py`)
 - Full pipeline tests exercising middleware through the `Executor.call()` path.
+
+## Contract: Middleware.before
+
+### Inputs
+- `module_id` (str/string/&str, required) — ID of the module about to execute
+- `inputs` (dict/object/Value, required) — module inputs (may be modified and returned)
+- `context` (Context, required) — current execution context
+
+### Errors
+- Any error raised by the middleware propagates and aborts the execution pipeline (downstream middlewares' `before` hooks are skipped; `on_error` hooks of already-executed middlewares are invoked)
+
+### Returns
+- On success: `dict`/`Record<string, unknown>`/`Value` or None/null/() — modified inputs (or None to pass inputs unchanged)
+
+### Properties
+- async: language-dependent (Python allows sync or async; TypeScript and Rust MUST be async)
+- thread_safe: true (called under executor lock on shared mutable state)
+- pure: false (may mutate context or inputs)
+
+## Contract: Middleware.after
+
+### Errors
+- Any error raised by the middleware: **behavior is SDK-defined**. Python and Rust propagate the first error immediately; TypeScript catches per-hook and rethrows the first error after all hooks have run. See PROTOCOL_SPEC.md §Middleware for the normative MUST once aligned.
+
+### Inputs
+- `module_id` (str/string/&str, required)
+- `inputs` (dict/object/Value, required)
+- `output` (dict/object/Value, required) — module output
+- `context` (Context, required)
+
+### Returns
+- On success: `dict`/`Record<string, unknown>`/`Value` or None/null/() — modified output (or None to pass unchanged)
+
+### Properties
+- async: language-dependent
+- thread_safe: true
+
+## Contract: Middleware.on_error
+
+### Inputs
+- `module_id` (str/string/&str, required)
+- `inputs` (dict/object/Value, required)
+- `error` (ModuleError, required) — the error that terminated execution
+- `context` (Context, required)
+
+### Errors
+- No errors raised (on_error MUST NOT raise)
+
+### Returns
+- On success with recovery: `dict`/`Record<string, unknown>`/`Value` — replacement output; **Python and TypeScript return immediately on first recovery value; Rust continues calling all hooks but keeps first recovery**. See note under `Middleware.after`.
+- On pass-through: None/null/None — signals no recovery; error continues propagating
+
+### Properties
+- async: language-dependent
+- thread_safe: true
