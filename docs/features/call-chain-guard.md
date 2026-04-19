@@ -191,3 +191,24 @@ Modules that perform nested calls (calling other modules within their execution)
 - **Frequency tests** verify rejection at exactly `max_module_repeat + 1` and acceptance at `max_module_repeat`.
 - **Order tests** verify that depth is checked before circular, and circular before frequency (a chain that fails both depth and circular should raise `CallDepthExceededError`).
 - **Configuration tests** verify that custom limits override defaults.
+
+## Contract: guard_call_chain
+
+### Inputs
+- `context` (Context, required) — current execution context containing the call chain
+- `module_id` (str/string/&str, required) — the module about to be called
+- `max_depth` (int, optional, default=`DEFAULT_MAX_CALL_DEPTH`) — maximum allowed call-chain depth
+- `max_repeat` (int, optional, default=`DEFAULT_MAX_REPEAT`) — maximum allowed repeat invocations of the same module in the current chain
+
+### Errors
+- `CallDepthExceededError(code=CALL_DEPTH_EXCEEDED)` — call chain depth exceeds `max_depth`
+- `CircularCallError(code=CIRCULAR_CALL)` — `module_id` already appears in the current call chain (cycle detected)
+- `FrequencyExceededError(code=FREQUENCY_EXCEEDED)` — `module_id` has been invoked more than `max_repeat` times in this chain
+
+### Returns
+- On success (guard passes): void/None/() — no return value; raises on violation
+
+### Properties
+- async: false
+- thread_safe: true
+- pure: true (reads context state, does not mutate)
