@@ -130,12 +130,14 @@ The `CancelToken` is an optional field on the `Context` object. When a parent co
 === "TypeScript"
     ```typescript
     import { Context, CancelToken } from "apcore-js";
-    import { v4 as uuidv4 } from "uuid";
+    import { randomBytes } from "crypto";
 
     const token = new CancelToken();
+    // Generate a W3C-compatible 32-char hex trace_id
+    const traceId = randomBytes(16).toString("hex");
     // CancelToken is passed via the Context constructor (not Context.create)
     const ctx = new Context(
-        uuidv4(),       // traceId
+        traceId,        // traceId (32-char lowercase hex)
         null,           // callerId
         [],             // callChain
         null,           // executor
@@ -263,3 +265,36 @@ Modules performing long-running work **SHOULD** check the cancel token periodica
 - **Context propagation tests** verify that the token propagates through `Context.child()`.
 - **Executor timeout tests** verify that timeout triggers `token.cancel()`, the grace period is respected, and `ModuleTimeoutError` is raised after grace expiry.
 - **Concurrent cancellation tests** verify thread-safety when `cancel()` is called from a timer thread while `check()` is called from the module thread.
+
+## Contract: CancelToken.cancel
+
+### Inputs
+- No inputs
+
+### Errors
+- No errors raised
+
+### Returns
+- On success: void/None/()
+
+### Properties
+- async: false
+- thread_safe: true
+- idempotent: true (multiple calls to cancel are safe; subsequent calls are no-ops)
+
+## Contract: CancelToken.raise_if_cancelled
+
+### Inputs
+- No inputs
+
+### Errors
+- `ExecutionCancelledError(code=EXECUTION_CANCELLED)` — if the token has been cancelled
+
+### Returns
+- On success (not cancelled): void/None/()
+- On failure: raises `ExecutionCancelledError`
+
+### Properties
+- async: false
+- thread_safe: true
+- pure: true (no side effects; only checks internal cancelled state)
