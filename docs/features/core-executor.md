@@ -142,7 +142,7 @@ Normative behavioral contract for the constructor entry point used by callers pr
 ### Inputs
 
 - `identity`: Identity, optional (default `None` / `null`). When omitted, the constructor synthesizes an `@external` identity.
-- `trace_parent`: string, optional. W3C trace-parent value. When present, it MUST be a 32-character hex trace ID that is neither all zeros (`0000…0000`) nor all `f`s (`ffff…ffff`); otherwise rejected.
+- `trace_parent`: string, optional. W3C trace-parent value. When present, it SHOULD be a 32-character hex trace ID that is neither all zeros (`0000…0000`) nor all `f`s (`ffff…ffff`); invalid values are ignored with a WARN log and a fresh trace_id is generated.
 - `services`: object, optional. Ambient service registry (logger, metrics, cancel token).
 - `data`: object, optional. User-propagated state carried through the call chain.
 - `caller_id`: string, optional. Derived from `identity` when omitted.
@@ -150,16 +150,15 @@ Normative behavioral contract for the constructor entry point used by callers pr
 
 ### Preconditions
 
-- `trace_parent`, when present, MUST pass the 32-hex / not-all-zero / not-all-`f` validation before context construction completes.
+- `trace_parent` (if present) is validated; invalid values trigger regeneration (not rejection).
 
 ### Errors
 
-- `InvalidInputError(code=INVALID_TRACE_PARENT)` -- `trace_parent` fails format or sentinel-value validation.
+No errors raised under normal operation. Invalid `trace_parent` values are silently ignored — the implementation logs a WARN and generates a fresh trace ID instead of raising.
 
 ### Returns
 
-- On success: a fresh `Context` instance with a freshly generated 32-character hex `trace_id` (either derived from `trace_parent` when present, or newly generated otherwise).
-- On failure: raises / returns `Err`.
+- A fresh `Context` instance with a freshly generated 32-character hex `trace_id` (either derived from `trace_parent` when valid, or newly generated when absent or invalid). Invalid `trace_parent` values log a WARN and never raise an error (per PROTOCOL_SPEC §10.5).
 
 ### Properties
 
