@@ -23,6 +23,7 @@ Shared JSON fixtures for cross-language conformance testing. All SDK implementat
 | `middleware_on_error_recovery.json` | A11 | After-middleware error recovery: first-dict-wins, null passthrough, success non-override |
 | `identity_system.json` | — | Identity construction, field access, and context propagation (AC-014, AC-015) |
 | `context_trace_parent.json` | §10.5 | Context.create trace_parent strict validation: 32-hex only, W3C-invalid rejection, no auto-normalization |
+| `dependency_version_constraints.json` | §5.3, §5.15.2 | Dependency `version` constraint enforcement: exact, `>=`, `<=`, `^`, `~`, ranges, optional skip |
 
 ## Coverage Gaps
 

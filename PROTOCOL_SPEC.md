@@ -3305,6 +3305,8 @@ Implementations **MUST** handle module edge cases according to the following tab
 | Module in `dependencies.optional` doesn't exist | Log INFO, continue loading | **MUST** |
 | Module in `dependencies.requires` fails to load | Throw `MODULE_LOAD_ERROR`, refuse loading | **MUST** |
 | Module in `dependencies.optional` fails to load | Log WARN, continue loading | **MUST** |
+| Module in `dependencies.requires` exists but its registered version does not satisfy the declared `version` constraint | Throw `DEPENDENCY_VERSION_MISMATCH`, refuse loading | **MUST** |
+| Module in `dependencies.optional` exists but its registered version does not satisfy the declared `version` constraint | Log WARN, skip the dependency edge, continue loading | **MUST** |
 | Reverse dependency (A depends on B, B also depends on A) | Throw `CIRCULAR_DEPENDENCY` | **MUST** |
 | Indirect circular dependency (A → B → C → A) | Throw `CIRCULAR_DEPENDENCY` | **MUST** |
 
@@ -4026,6 +4028,9 @@ error_codes:
     http_status: 500
   DEPENDENCY_NOT_FOUND:
     description: "Dependent module doesn't exist"
+    http_status: 500
+  DEPENDENCY_VERSION_MISMATCH:
+    description: "Dependent module exists but its registered version does not satisfy the declared version constraint"
     http_status: 500
 
   # General errors (GENERAL_*)

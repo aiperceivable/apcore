@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.19.0] - 2026-04-17
+## [0.19.0] - 2026-04-19
 
 ### Changed
 
@@ -15,7 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **PROTOCOL_SPEC §10.5 — Trace ID Format section rewritten** to align with W3C Trace Context Level 2. Adds explicit `external_trace_parent_handling` rules: strict 32-hex validation only; all-zero and all-f rejected per W3C; no auto-normalization (dashed UUID stripping, case folding) at `Context.create` — pushed to TraceParent parser or user's ContextFactory. Implementations MUST regenerate + log WARN on invalid input; MUST NOT raise.
 
 ### Added
-
+- **PROTOCOL_SPEC §5.15.2 — `DEPENDENCY_VERSION_MISMATCH` error code** (new, non-retryable). Raised when a module in `dependencies.requires` exists but its registered version does not satisfy the declared `version` constraint. For `dependencies.optional` the same situation logs WARN and skips the dependency edge.
+- **`conformance/fixtures/dependency_version_constraints.json`** — 15 cross-SDK test cases covering exact match, `>=`/`<=`, range (`>=1.0.0,<2.0.0`), caret (`^1.2.3`, including `^0.2.3` major-zero semantics), tilde (`~1.2.3`), partial-version shortcuts (`"1"` matches `1.x.x`), no-constraint accepts any, and optional-dependency skip-on-mismatch.
 - **PROTOCOL_SPEC §5.7 — Note on external correlation IDs.** Documents that existing projects' request/correlation identifiers (`X-Request-ID`, ULID, AWS X-Ray, etc.) SHOULD be preserved in `context.data["x-correlation-id"]` alongside `trace_id`, not used to overwrite it. Establishes the dual-ID model at the spec level.
 - **PROTOCOL_SPEC §10.5 — Forward-compatibility Note.** Non-normative acknowledgment that `trace_id` format is a versioned contract, not a permanent guarantee. Future protocol versions MAY introduce alternative formats or structured trace IDs for multi-agent or non-linear trace topologies.
 - **`docs/guides/integrating-existing-projects.md`** — New user guide covering Django, Express, and Actix integration patterns for projects already carrying their own request-ID / correlation-ID system.
@@ -25,6 +26,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`schemas/apcore-config.schema.json` — `pipeline` and `validation` sections** — New `PipelineConfig` definition with `remove`, `configure`, `steps` structure; `PipelineStep` with `type`/`handler` mutual exclusion, `after`/`before` positioning, and metadata fields (`match_modules`, `ignore_errors`, `pure`, `timeout_ms`). New `ValidationConfig` with configurable policy limits for bindings (`description_max_length`, `documentation_max_length`, `tags_pattern`, `version_require_semver`) and pipeline (`step_name_max_length`, `timeout_ms_max`).
 - **`conformance/fixtures/binding_yaml_canonical.yaml`** — Cross-SDK binding YAML conformance fixture with 3 entries testing explicit auto_schema (permissive), explicit input/output schemas with display overlay, and auto_schema strict mode. All three SDKs must parse this fixture identically.
 - **`conformance/fixtures/binding_errors.json`** — 6 canonical error message test cases for cross-SDK byte-for-byte message parity (`BindingFileInvalidError`, `BindingSchemaModeConflictError`, `BindingSchemaInferenceFailedError`, `PipelineHandlerNotSupportedError`, `BindingInvalidTargetError`, `BindingModuleNotFoundError`).
+
+### Fixed
+
+- **PROTOCOL_SPEC §8 Error Code Registry** — Added missing `DEPENDENCY_VERSION_MISMATCH` entry alongside `DEPENDENCY_NOT_FOUND`. Previously the behavior was implied by §5.3 version constraint syntax (`^`, `~`, ranges) without a corresponding error code in §8, leaving SDKs without a normative failure mode.
+- **SDK compliance with §5.15.2 `DEPENDENCY_NOT_FOUND`** — All three SDKs (`apcore-python`, `apcore-typescript`, `apcore-rust`) now raise the spec-mandated `DEPENDENCY_NOT_FOUND` error code for missing required dependencies. Previously all three raised `MODULE_LOAD_ERROR`, silently diverging from the spec.
+- **SDK `CircularDependencyError.details.cycle_path` parity** — Rust SDK now carries `cycle_path` as structured details, matching Python (`details["cycle_path"]`) and TypeScript (`details.cyclePath`). Previously Rust only placed the path in the message string, forcing downstream consumers to parse it.
 
 ### Deprecated
 

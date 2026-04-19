@@ -874,32 +874,92 @@ Steps:
 
 ### 9.1 Custom Discoverer
 
-> Implemented in apcore-python v0.5.1+ and apcore-typescript v0.3.0+.
+> Implemented in apcore-python v0.5.1+, apcore-typescript v0.3.0+, and apcore-rust v0.19.0+.
 
-```python
-from apcore import Registry, ModuleDiscoverer
+The `Discoverer` contract replaces the default filesystem scan. `discover()` receives
+the configured extension roots and returns a batch of discovered entries. The registry
+then performs: module-id validation (per `PROTOCOL_SPEC` §2.7) → duplicate check →
+optional custom-validator call → registration. Malformed or rejected entries are
+skipped with a warning; a single bad entry does **not** abort the batch.
 
+=== "Python"
 
-class CustomDiscoverer(ModuleDiscoverer):
-    """Custom module discoverer"""
+    ```python
+    from apcore import Registry
+    from apcore.registry.registry import Discoverer
 
-    def discover(self, path: str) -> list[tuple[str, Type[Module]]]:
-        """
-        Discover modules
+    class CustomDiscoverer(Discoverer):
+        """Return a list of dicts, each with 'module_id' and 'module' keys."""
 
-        Returns:
-            [(module_id, module_class), ...]
-        """
-        # Custom discovery logic
-        modules = []
-        # ...
-        return modules
+        def discover(self, roots: list[str]) -> list[dict]:
+            return [
+                {"module_id": "custom.hello", "module": HelloModule()},
+            ]
 
+    registry = Registry(extensions_dir="./extensions")
+    registry.set_discoverer(CustomDiscoverer())
+    registry.discover()  # returns count of successfully registered modules
+    ```
 
-registry = Registry(extensions_dir="./extensions")
-registry.set_discoverer(CustomDiscoverer())
-registry.discover()
-```
+=== "TypeScript"
+
+    ```typescript
+    import { Registry, Discoverer } from 'apcore';
+
+    const discoverer: Discoverer = {
+      async discover(roots: string[]) {
+        return [
+          { moduleId: 'custom.hello', module: new HelloModule() },
+        ];
+      },
+    };
+
+    const registry = new Registry({ extensionsDir: './extensions' });
+    registry.setDiscoverer(discoverer);
+    await registry.discover();
+    ```
+
+=== "Rust"
+
+    ```rust
+    use apcore::registry::registry::{
+        DiscoveredModule, Discoverer, ModuleDescriptor, Registry,
+    };
+    use apcore::errors::ModuleError;
+    use async_trait::async_trait;
+    use std::sync::Arc;
+
+    struct CustomDiscoverer;
+
+    #[async_trait]
+    impl Discoverer for CustomDiscoverer {
+        async fn discover(
+            &self,
+            _roots: &[String],
+        ) -> Result<Vec<DiscoveredModule>, ModuleError> {
+            Ok(vec![DiscoveredModule {
+                name: "custom.hello".to_string(),
+                source: "in-memory".to_string(),
+                descriptor: /* build a ModuleDescriptor for this module */ todo!(),
+                module: Arc::new(HelloModule) as Arc<dyn apcore::module::Module>,
+            }])
+        }
+    }
+
+    let registry = Registry::new();
+    registry.set_discoverer(Box::new(CustomDiscoverer));
+    let count = registry.discover_internal().await?;
+    ```
+
+!!! tip "Out-of-process modules"
+    Discoverers for subprocess, RPC, or network-hosted modules wrap the external
+    resource in a `Module` impl — for example, a
+    `SubprocessModule { executable: PathBuf, descriptor }` whose `execute`
+    spawns the binary and pipes JSON through stdin/stdout. The registry then
+    treats subprocess-backed and in-process modules identically: it runs the
+    custom validator, calls `on_load`, and exposes the instance through
+    `registry.get(name)`. This keeps `Discoverer` semantics uniform across
+    Python, TypeScript, and Rust.
 
 ### 9.2 Module Validator
 

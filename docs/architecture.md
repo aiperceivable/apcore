@@ -563,21 +563,28 @@ points = manager.list_points()  # [ExtensionPoint(...), ...]
 ### 5.2 Custom Discoverer
 
 ```python
-from apcore.registry.scanner import scan_extensions
+import requests
+from apcore import Registry
+from apcore.registry.registry import Discoverer
 
 
-class RemoteDiscoverer:
-    """Discover modules from remote service"""
+class RemoteDiscoverer(Discoverer):
+    """Discover modules from a remote service."""
 
-    def discover(self, config: dict) -> list[tuple[str, Type[Module]]]:
-        # Get module definitions from remote service
-        response = requests.get(config["remote_url"])
-        modules = []
-        for item in response.json():
-            module_class = self._build_module(item)
-            modules.append((item["id"], module_class))
-        return modules
+    def __init__(self, remote_url: str) -> None:
+        self._remote_url = remote_url
+
+    def discover(self, roots: list[str]) -> list[dict]:
+        response = requests.get(self._remote_url)
+        return [
+            {"module_id": item["id"], "module": self._build_module(item)}
+            for item in response.json()
+        ]
 ```
+
+See [`registry-api.md §9.1`](./api/registry-api.md#91-custom-discoverer) for
+cross-language examples (Python / TypeScript / Rust) and a description of the
+Rust-specific descriptor-only discovery path.
 
 ### 5.3 Custom Validator
 
