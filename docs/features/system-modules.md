@@ -495,6 +495,95 @@ System modules use the reserved `system.*` namespace. Registration bypasses rese
     | `src/apcore/sys_modules/usage.py` | `UsageSummaryModule`, `UsageModuleModule` |
     | `src/apcore/sys_modules/control.py` | `UpdateConfigModule`, `ReloadModuleModule`, `ToggleFeatureModule`, `ToggleState` |
 
+## Contract: register_sys_modules
+
+### Inputs
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `registry` | `Registry` | Yes | Registry to register system modules into. |
+| `executor` | `Executor` | Yes | Executor used for ACL, middleware, and module call routing. |
+| `config` | `Config` | Yes | Config instance; reads `sys_modules.*` keys. |
+| `metrics_collector` | `MetricsCollector \| None` | No | If `None`, a new one is created and attached. |
+
+### Errors
+
+| Code | Condition |
+|---|---|
+| `MODULE_REGISTER_FAILED` | Registry rejects a system module (internal name collision or schema error). |
+| `CONFIG_INVALID` | Required `sys_modules.*` keys are malformed. |
+
+### Returns
+
+`SysModulesContext` — a named-field record holding references to all created sub-components:
+
+| Field | Type | Present when |
+|---|---|---|
+| `error_history` | `ErrorHistory` | Always |
+| `error_history_middleware` | `ErrorHistoryMiddleware` | Always |
+| `usage_collector` | `UsageCollector` | Always |
+| `usage_middleware` | `UsageMiddleware` | Always |
+| `event_emitter` | `EventEmitter` | `sys_modules.events.enabled = true` |
+| `platform_notify_middleware` | `PlatformNotifyMiddleware` | `sys_modules.events.enabled = true` |
+
+### Properties
+
+- **Idempotent:** No — calling twice on the same registry registers duplicate modules.
+- **Thread-safe:** No — must be called during initialisation before the executor is shared across threads.
+- **Side effects (ordered):**
+    1. `ErrorHistory` and `ErrorHistoryMiddleware` attached to executor.
+    2. `UsageCollector` and `UsageMiddleware` attached to executor.
+    3. Health, manifest, and usage modules registered in registry.
+    4. If events enabled: `EventEmitter`, `PlatformNotifyMiddleware`, control modules, and subscriber instances created; registry events bridged to emitter.
+
+---
+
+## Contract: checkModuleDisabled / check_module_disabled
+
+### Inputs
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `module_id` | `str` | Yes | Fully-qualified module ID to inspect. |
+| `registry` | `Registry` | Yes | Registry that holds toggle state. |
+
+### Errors
+
+| Code | Condition |
+|---|---|
+| `MODULE_DISABLED` | The module's current `ToggleState` is `DISABLED`. |
+
+### Returns
+
+`None` — raises/throws on disabled; returns normally when enabled.
+
+### Properties
+
+- **Pure:** Yes — reads registry state only, no side effects.
+- **Throws:** `ModuleDisabledError` (code `MODULE_DISABLED`).
+
+---
+
+## Contract: isModuleDisabled / is_module_disabled
+
+### Inputs
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `module_id` | `str` | Yes | Fully-qualified module ID to inspect. |
+| `registry` | `Registry` | Yes | Registry that holds toggle state. |
+
+### Returns
+
+`bool` — `true` if disabled, `false` if enabled or toggle state not set.
+
+### Properties
+
+- **Pure:** Yes — reads registry state only, no side effects.
+- **Does not throw.**
+
+---
+
 ## Testing Strategy
 
 - **Health modules**: Verify status classification thresholds, error aggregation from ErrorHistory, latency metrics from MetricsCollector.
