@@ -319,3 +319,54 @@ emitter.flush(timeout=5.0)
 - **A2ASubscriber**: Auth modes (string/dict/None), payload format, error logging.
 - **Subscriber registry**: Custom type registration, factory invocation from config, reset to defaults.
 - **PlatformNotifyMiddleware**: Threshold crossing detection, hysteresis (recovery at 50% of threshold), event emission verification.
+
+## Contract: EventEmitter.emit
+
+### Inputs
+- `event_type` (str/string/&str, required) — event type identifier; MUST NOT be empty
+- `payload` (dict/object/Value, optional) — event payload; passed as-is to subscribers
+
+### Errors
+- No errors raised (emit is fire-and-forget; subscriber errors are caught and logged internally)
+
+### Returns
+- On success: void/None/()
+
+### Properties
+- async: false in Python (synchronous dispatch); async in TypeScript and Rust
+- thread_safe: true
+- pure: false (invokes subscriber callbacks)
+- idempotent: false
+
+## Contract: EventEmitter.subscribe
+
+### Inputs
+- `event_type` (str/string/&str, required) — event type to subscribe to
+- `handler` (callable/function/fn, required) — called with `(event_type, payload)` on each emission
+
+### Errors
+- No errors raised
+
+### Returns
+- On success: `EventSubscriber`/`EventSubscriber`/`String` — subscription handle (pass to `unsubscribe`/`off`)
+
+### Properties
+- async: false
+- thread_safe: true
+- idempotent: false (each call creates a new subscription)
+
+## Contract: WebhookSubscriber.deliver
+
+### Inputs
+- `event` (ApCoreEvent, required) — event to deliver via HTTP POST
+
+### Errors
+- `DeliveryError(code=WEBHOOK_DELIVERY_FAILED)` — HTTP delivery failed after retry exhaustion
+
+### Returns
+- On success: void/None/()
+
+### Properties
+- async: true
+- thread_safe: true
+- pure: false (outbound HTTP)
