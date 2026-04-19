@@ -213,3 +213,22 @@ This annotation enables:
 - **Pipeline integration tests** verify that before-middleware runs before streaming starts and after-middleware runs after all chunks are emitted.
 - **Validation tests** verify that output validation runs on the accumulated output and that validation failures in Phase 3 do not invalidate already-yielded chunks.
 - **Cancellation tests** verify that cancelling during streaming stops chunk emission and raises `ExecutionCancelledError`.
+
+## Contract: Module.stream
+
+### Inputs
+- `inputs` (dict/object/Value, required) — validated against the module's `input_schema`
+- `context` (Context, required) — execution context
+
+### Errors
+- `SchemaValidationError(code=SCHEMA_VALIDATION_FAILED)` — `inputs` fails validation
+- Any error raised mid-stream is surfaced as the final item in the async iterator (iterator terminates after the error item)
+
+### Returns
+- On success: `AsyncIterator[dict]`/`AsyncIterable<Record<string,unknown>>`/`Stream<Value>` — lazy sequence of partial output dicts; the iterator MUST be exhausted or explicitly closed to release resources
+
+### Properties
+- async: true (streaming MUST be async in all SDK languages)
+- thread_safe: false (a stream instance MUST NOT be shared across concurrent consumers)
+- pure: false (may hold open connections or file handles)
+- idempotent: false
