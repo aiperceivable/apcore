@@ -257,3 +257,58 @@ For complete usage examples with all three languages, see the [APCore Client API
 - **Middleware tests** verify chainable `use()`, `use_before()`, `use_after()`, and `remove()`.
 - **Event tests** verify that `on()` / `off()` work correctly and raise `RuntimeError` when events are not configured.
 - **Control tests** verify that `disable()` / `enable()` delegate to system.control.toggle_feature and raise `RuntimeError` when sys_modules are not enabled.
+
+## Contract: ApCoreClient.call
+
+### Inputs
+- `module_id` (str/string/&str, required) — target module ID; validated against `MODULE_ID_PATTERN`; reject empty or malformed with `InvalidInputError(code=INVALID_MODULE_ID)`
+- `inputs` (dict/object/Value, required) — validated against the module's `input_schema`
+- `context` (Context, optional) — execution context; created fresh when absent
+- `version_hint` (str/string/&str, optional) — preferred version constraint; falls back to latest on TS/Rust pending implementation
+
+### Errors
+- `InvalidInputError(code=INVALID_MODULE_ID)` — `module_id` is empty or malformed
+- `ModuleNotFoundError(code=MODULE_NOT_FOUND)` — no module registered under `module_id`
+- `SchemaValidationError(code=SCHEMA_VALIDATION_FAILED)` — `inputs` fails the module's `input_schema`
+- Any error raised by the module's `execute` handler propagates unchanged
+
+### Returns
+- On success: `dict`/`Record<string, unknown>`/`serde_json::Value` — the module's validated output
+
+### Properties
+- async: sync surface (`call`) + async surface (`call_async`) in Python; async-only in TypeScript and Rust
+- thread_safe: true (Executor holds an internal lock on shared state)
+- pure: false (side-effects: span created, metrics emitted, middleware hooks invoked)
+- idempotent: false (module `execute` is not guaranteed idempotent)
+
+## Contract: ApCoreClient.start
+
+### Inputs
+- No required inputs (uses configuration from constructor)
+
+### Errors
+- `ConfigError(code=CONFIG_INVALID)` — if configuration validation fails on startup
+
+### Returns
+- On success: void/None/()
+
+### Properties
+- async: false in Python; async in TypeScript and Rust
+- thread_safe: false (call once before any concurrent usage)
+- idempotent: false
+
+## Contract: ApCoreClient.stop
+
+### Inputs
+- No required inputs
+
+### Errors
+- No errors raised under normal operation
+
+### Returns
+- On success: void/None/()
+
+### Properties
+- async: false in Python; async in TypeScript and Rust
+- thread_safe: false (do not call concurrently with active requests)
+- idempotent: true (multiple stops are safe)
