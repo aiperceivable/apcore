@@ -20,7 +20,7 @@ The Error System provides a structured, hierarchical error model designed for bo
 
 ### Error Code Registry
 - Provide an `ErrorCodeRegistry` for registering custom module-specific error codes at runtime.
-- Framework error code prefixes (`MODULE_`, `SCHEMA_`, `ACL_`, `CONFIG_`, `GENERAL_`, `CIRCULAR_`, `APPROVAL_`, etc.) are reserved and **MUST NOT** be used by user modules.
+- Framework error code prefixes are reserved and **MUST NOT** be used by user modules. Reserved prefixes: `ACL_`, `APPROVAL_`, `BINDING_`, `CALL_`, `CIRCULAR_`, `CONFIG_`, `DEPENDENCY_`, `ERROR_CODE_`, `ERROR_FORMATTER_`, `EXECUTION_`, `FUNC_`, `GENERAL_`, `MIDDLEWARE_`, `MODULE_`, `RELOAD_`, `SCHEMA_`, `TASK_`, `VERSION_`.
 - Duplicate code registration **MUST** raise `ErrorCodeCollisionError`.
 
 ### Error Formatters

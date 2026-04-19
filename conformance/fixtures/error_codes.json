@@ -52,21 +52,23 @@
     }
   ],
   "framework_prefixes": [
-    "CONFIG_",
     "ACL_",
-    "MODULE_",
-    "SCHEMA_",
+    "APPROVAL_",
+    "BINDING_",
     "CALL_",
     "CIRCULAR_",
-    "GENERAL_",
-    "FUNC_",
-    "BINDING_",
-    "MIDDLEWARE_",
-    "APPROVAL_",
-    "VERSION_",
-    "ERROR_CODE_",
+    "CONFIG_",
     "DEPENDENCY_",
+    "ERROR_CODE_",
+    "ERROR_FORMATTER_",
     "EXECUTION_",
-    "RELOAD_"
+    "FUNC_",
+    "GENERAL_",
+    "MIDDLEWARE_",
+    "MODULE_",
+    "RELOAD_",
+    "SCHEMA_",
+    "TASK_",
+    "VERSION_"
   ]
 }

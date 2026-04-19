@@ -611,9 +611,9 @@ Since apcore is a library (not a REST service), the "API" here is the public cla
 ### 9.2 Detailed API Specifications
 
 Detailed method signatures, parameter types, return types, and logic steps are in the individual feature specs:
-- [`docs/features/context-redesign.md`](../features/context-redesign.md) -- ContextKey API, built-in keys, serialization
-- [`docs/features/annotations-redesign.md`](../features/annotations-redesign.md) -- extra field, factory, wire format
-- [`docs/features/acl-conditions-redesign.md`](../features/acl-conditions-redesign.md) -- handler protocol, registration, evaluation
+- [`docs/features/schema-system.md`](../features/schema-system.md) -- ContextKey API, built-in keys, serialization
+- [`docs/features/registry-system.md`](../features/registry-system.md) -- extra field, factory, wire format
+- [`docs/features/acl-system.md`](../features/acl-system.md) -- handler protocol, registration, evaluation
 
 ---
 

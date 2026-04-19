@@ -35,8 +35,17 @@ check(caller_id, target_id, context)
   |      3. Test conditions (AND logic: all conditions must pass)
   |      4. If all pass -> return rule.effect == "allow"
   |
-  +--> No rule matched -> return default_effect == "allow"
+  +--> No rule matched -> return default_effect  (MUST be "deny" in production; see warning below)
 ```
+
+!!! danger "default_effect: always use deny in production"
+    Setting `default_effect: allow` means every caller that does not match any
+    explicit rule is **automatically allowed**. This creates an open-by-default
+    system and violates the protocol's security model.  
+    **Always use `default_effect: deny`** in production configurations. The
+    `allow` value exists only for narrow opt-in scenarios (e.g., public-read
+    APIs) and MUST be accompanied by explicit `deny` rules for all sensitive
+    targets.
 
 #### Pattern Matching
 
