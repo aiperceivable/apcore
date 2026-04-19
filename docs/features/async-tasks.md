@@ -219,3 +219,40 @@ When `cancel()` is called on a running task:
 - **Cleanup tests** verify that only terminal-state tasks older than the threshold are removed.
 - **Shutdown tests** verify that all pending/running tasks are cancelled and the manager enters a clean state.
 - **Result retrieval tests** verify that `get_result()` raises for non-completed tasks and returns the correct output for completed tasks.
+
+## Contract: AsyncTaskManager.submit
+
+### Inputs
+- `module_id` (str/string/&str, required) — module to execute asynchronously
+- `inputs` (dict/object/Value, required) — module inputs
+- `context` (Context, optional) — execution context
+
+### Errors
+- `InvalidInputError(code=INVALID_MODULE_ID)` — malformed module_id
+- `ModuleNotFoundError(code=MODULE_NOT_FOUND)` — no such module
+
+### Returns
+- On success: `AsyncTask` — task handle with `task_id`, `status`, `result` (when complete)
+
+### Properties
+- async: true
+- thread_safe: true
+- pure: false (spawns background work, persists task state)
+- idempotent: false
+
+## Contract: AsyncTaskManager.cancel
+
+### Inputs
+- `task_id` (str/string/&str, required) — ID of the task to cancel
+
+### Errors
+- `TaskNotFoundError(code=TASK_NOT_FOUND)` — no task with this ID exists
+- `TaskAlreadyCompletedError(code=TASK_ALREADY_COMPLETED)` — task has already finished (cannot cancel)
+
+### Returns
+- On success: void/None/()
+
+### Properties
+- async: false
+- thread_safe: true
+- idempotent: false (cancelling an already-cancelled task is a `TaskNotFoundError` on some implementations)
