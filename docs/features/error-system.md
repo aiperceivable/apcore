@@ -383,3 +383,28 @@ Errors serialize to sparse JSON — null/None fields are omitted:
 - **AI guidance tests** verify that `retryable`, `ai_guidance`, `user_fixable`, and `suggestion` are preserved through serialization.
 - **ErrorCodeRegistry tests** exercise registration, collision detection (both cross-module and framework-prefix), unregistration, and the `all_codes` aggregation.
 - **Error-specific property tests** confirm that domain-specific properties (e.g., `ACLDeniedError.caller_id`, `CallDepthExceededError.max_depth`, `ApprovalPendingError.approval_id`) are accessible.
+
+## Contract: ModuleError.to_dict
+
+### Inputs
+- No inputs
+
+### Errors
+- No errors raised
+
+### Returns
+- On success: `dict`/`Record<string, unknown>`/`serde_json::Value` — serialized error with guaranteed keys: `code` (string), `message` (string), `ai_guidance` (string), plus any optional keys (`context`, `details`, `source`, `timestamp`)
+
+### Properties
+- async: false
+- thread_safe: true
+- pure: true
+- idempotent: true
+
+## Invariants: ModuleError
+
+The following invariants MUST hold for every `ModuleError` instance across all language implementations:
+- `code` MUST be a non-empty string from the registered error-code registry
+- `message` MUST be a non-empty human-readable string
+- `ai_guidance` MUST be a non-empty string with actionable recovery guidance for AI agents
+- Error code constants `INVALID_MODULE_ID` and `DUPLICATE_MODULE_ID` MUST be defined and used where the spec declares them — see `docs/features/core-executor.md` §Contract and `docs/features/registry-system.md` §Contract
