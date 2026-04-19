@@ -105,7 +105,7 @@ Level 1 adds permission control, middleware, basic observability, and structured
 | **Middleware framework** | Onion model middleware chain, supports `before`, `after`, `on_error` hooks | PROTOCOL_SPEC §11.1 |
 | **Middleware priority** | Higher numbers execute first | PROTOCOL_SPEC §11.2 |
 | **Built-in middleware (required)** | `schema_validation` (priority 1000), `acl_check` (priority 999) | PROTOCOL_SPEC §11.4 |
-| **Trace ID** | `trace_id` generation (UUID v4), propagation (child calls inherit) | PROTOCOL_SPEC §10.4 |
+| **Trace ID** | `trace_id` generation (32-char lowercase hex, W3C Trace Context), propagation (child calls inherit) | PROTOCOL_SPEC §10.4 |
 | **Structured logging** | JSON format logs, includes `timestamp`, `level`, `message`, `trace_id`, `module_id` | PROTOCOL_SPEC §10.2 |
 | **Context complete implementation** | `trace_id`, `caller_id`, `call_chain`, `executor`, `identity`, `data` | PROTOCOL_SPEC §5.7 |
 | **Circular call detection** | Detect circular calls based on `call_chain` | PROTOCOL_SPEC §5.7 |
@@ -384,7 +384,7 @@ test_case:
 
 | Case ID | Name | Scenario | Expected Result | Mandatory |
 |---------|------|------|---------|------|
-| T08-001 | trace_id generation | Top-level call | Auto-generate UUID v4 | Yes |
+| T08-001 | trace_id generation | Top-level call | Auto-generate 32-char lowercase hex | Yes |
 | T08-002 | trace_id propagation | Child call | Inherit parent call's trace_id | Yes |
 | T08-003 | Structured logging | Module execution log | JSON format, contains necessary fields | Yes |
 | T08-004 | Log level | Configure level: warn | Don't output info level logs | Yes |

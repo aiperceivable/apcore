@@ -112,6 +112,9 @@ Normative behavioral contract. All SDK implementations MUST satisfy these guaran
 
 ## Contract: Scanner.scan_extensions
 
+!!! info "Internal component"
+    `Scanner` is an internal pipeline component — no SDK exposes it as a public class. This contract documents the behavior that `Registry.discover()` delegates to step 1 of the discovery pipeline; it is normative for SDK implementors, not for module authors.
+
 Normative contract for the filesystem scanner used by step 1 of the discovery pipeline.
 
 ### Inputs

@@ -125,7 +125,7 @@ class Context:
 
 | Field | Type | Required | Max Length/Depth | Thread Safe | Serializable |
 |------|------|------|--------------|---------|---------|
-| `trace_id` | string (UUID v4) | **MUST** | 36 chars | Read-only, safe | **MUST** |
+| `trace_id` | string (32-char hex) | **MUST** | 32 chars | Read-only, safe | **MUST** |
 | `caller_id` | string \| null | **MUST** | 128 chars | Read-only, safe | **MUST** |
 | `call_chain` | list[string] | **MUST** | Max depth 32 | Read-only, safe | **MUST** |
 | `executor` | Executor | **MUST** | — | Thread-safe | **MUST NOT** |
@@ -274,7 +274,7 @@ def execute(self, inputs: dict, context: Context) -> dict:
 |------|------|
 | Uniqueness | Each top-level call generates a new trace_id |
 | Propagation | Subcalls inherit parent's trace_id |
-| Format | UUID v4 (required); W3C trace-id recommended in distributed scenarios |
+| Format | 32-char lowercase hex (W3C Trace Context compatible); MUST NOT be all-zeros or all-f |
 
 ---
 
@@ -877,7 +877,7 @@ Implementations **MUST** handle Context edge cases per the following table:
 | `context.data` exceeds memory limit | Behavior depends on language runtime (OOM or exception), **SHOULD** log WARN | **SHOULD** |
 | Non-serializable value stored in `context.data` | Allow (in-memory passing), but fail when passing across processes | **MUST** |
 | `call_chain` reaches `max_call_depth` | Throw `CALL_DEPTH_EXCEEDED` | **MUST** |
-| `trace_id` is invalid UUID format | Log WARN and regenerate a UUID v4 | **SHOULD** |
+| `trace_id` is invalid 32-hex format | Log WARN and regenerate a 32-char hex trace_id | **SHOULD** |
 | `caller_id` exceeds 128 chars | Log WARN, allow continued execution | **SHOULD** |
 | `context.data` key conflict (parent/child same key) | Later write overwrites earlier value (dict semantics) | **MUST** |
 | Concurrent modification of `context.data` (multi-threaded) | Behavior undefined (race condition), **SHOULD** use locks for protection | **SHOULD** |

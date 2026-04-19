@@ -127,7 +127,7 @@ Core terms used in this specification are defined as follows:
 | Metadata | Metadata | Completely open key-value dictionary for storing extension information, framework does not validate its content |
 | Entry Point | Entry Point | Code entry location of module, format is `filename:ClassName`, can be auto-inferred or manually configured |
 | Call Chain | Call Chain | Complete list of module ID paths from root invocation to current invocation, used for loop detection and depth limiting |
-| Trace ID | Trace ID | Identifier uniquely identifying a complete invocation chain, **MUST** be UUID v4 format |
+| Trace ID | Trace ID | Identifier uniquely identifying a complete invocation chain, **MUST** be 32-char lowercase hex (W3C Trace Context format) |
 | Identity | Identity | Structured expression of caller_id identity (user/service/Agent/API Key/system), ACL engine depends on it |
 
 ### 1.7 API Naming Conventions
@@ -1984,11 +1984,6 @@ Interface: Module
       Exception: ModuleError
 
   Optional implementations:
-    execute_async(inputs: Map<String, Any>, context: Context) → Future<Map<String, Any>>
-      # Deprecated as a separate method. Implementations typically expose a
-      # single execute() method. The framework auto-detects sync vs async
-      # (e.g., via inspect.iscoroutinefunction) and handles invocation
-      # accordingly. execute_async is retained here for reference only.
     validate(inputs: Map<String, Any>) → ValidationResult
     on_load() → void
     on_unload() → void
@@ -2032,8 +2027,6 @@ module_interface:
       description: "Execute module main logic"
       input: "Defined by input_schema"
       output: "Defined by output_schema"
-      async_variant: "execute_async"  # Deprecated: framework auto-detects sync/async
-
   # Required attributes (mirrors the "Required definitions" block in the
   # pseudocode interface above; every module MUST expose these)
   required_attributes:
@@ -2255,7 +2248,7 @@ Async module state transitions **MUST** follow this state machine:
                                         (can resubmit)
 
   State transition rules:
-    idle → pending       : When execute_async() is called
+    idle → pending       : When submit() is called on AsyncTaskManager
     pending → running    : When executor starts processing
     running → completed  : When execution succeeds
     running → failed     : When execution throws exception
@@ -2274,8 +2267,8 @@ For long-running modules, async execution mode is supported:
 async_module:
   # Async execution methods
   methods:
-    # Start async task
-    execute_async:
+    # Start async task (framework invokes execute() asynchronously via AsyncTaskManager.submit())
+    submit:
       input: "Defined by input_schema"
       output:
         type: object
@@ -2567,7 +2560,7 @@ Parameter-level description:
 | `def func(...)` | `execute()` |
 | `async def func(...)` | `execute()` |
 
-Implementations **SHOULD** support both sync and async functions. The framework auto-detects whether a function is sync or async and handles invocation accordingly. Both map to the module's `execute()` method; the separate `execute_async()` method is deprecated.
+Implementations **SHOULD** support both sync and async functions. The framework auto-detects whether a function is sync or async and handles invocation accordingly. Both map to the module's `execute()` method.
 
 #### 5.11.9 Context Injection
 
@@ -5815,7 +5808,7 @@ tracing:
   # Trace context
   context:
     trace_id:
-      format: "uuid-v4 or w3c trace-id"
+      format: "32-char lowercase hex (W3C Trace Context compatible)"
       propagation: "Must propagate in call chain"
     span_id:
       format: "16 character hexadecimal"
@@ -6670,7 +6663,7 @@ Consistency Test Suite:
    - Call depth limiting
 
 6. Observability Tests:
-   - trace_id is valid UUID v4
+   - trace_id is valid 32-char lowercase hex
    - Sensitive data redaction
    - Structured log format
 

@@ -44,7 +44,7 @@ All three SDKs MUST implement exactly these fields:
 ```
 Context<T> {
   // ─── Core (MUST, execution engine contract) ───
-  trace_id:        string              // UUID v4, immutable after creation
+  trace_id:        string              // 32-char hex (W3C Trace Context), immutable after creation
   caller_id:       string | nil        // module that initiated this call
   call_chain:      list[string]        // ordered call stack, max depth 32
   executor:        Executor | nil      // for nested calls, MUST NOT serialize

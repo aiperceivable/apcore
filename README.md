@@ -676,7 +676,7 @@ Context is the execution context that runs through the entire call chain, carryi
 
 ```python
 class Context:
-  trace_id: str           # Call trace ID (UUID v4; W3C trace-id compatible in distributed scenarios)
+  trace_id: str           # Call trace ID (32-char lowercase hex, W3C Trace Context compatible)
     caller_id: str | None   # Caller module ID (None for top-level calls)
     call_chain: list[str]   # Call chain (accumulated in call order)
     executor: Executor      # Executor reference (entry point for inter-module calls)

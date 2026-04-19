@@ -1015,6 +1015,32 @@ print(f"Sent {len([r for r in results if not isinstance(r, Exception)])} emails"
 
 ---
 
+## Pipeline Strategy API
+
+The execution pipeline is driven by an `ExecutionStrategy` — a named, ordered sequence of steps. Strategies can be swapped at construction time or registered globally for selection by name.
+
+### `Executor.register_strategy(name, strategy)` (class method)
+
+Register a named strategy for resolution by string name at construction time.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `name` | string | Strategy name (e.g., `"minimal"`, `"audit"`) |
+| `strategy` | ExecutionStrategy | Strategy instance to register |
+
+### `executor.list_strategies()` → `list[StrategyInfo]`
+
+Return `StrategyInfo` for the current strategy and all registered strategies.
+
+```python
+for info in executor.list_strategies():
+    print(info.name, info.step_count)
+```
+
+See [Core Executor Feature](../features/core-executor.md) for available built-in strategies and how to author custom ones.
+
+---
+
 ## Next Steps
 
 - [Registry API](./registry-api.md) - Module registration and discovery

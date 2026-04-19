@@ -29,6 +29,8 @@ The apcore specification defines multiple algorithms that must or should be impl
 | A15 | `migrate_schema()` | Schema migration | §13.4 | **SHOULD** |
 | A16 | `load_extensions()` | Extension loading | §11.7 | **MUST** |
 | A17 | `detect_error_code_collisions()` | Error code collision detection | §8.4 | **MUST** |
+| A18 | `generate_schema_from_function()` | Generate JSON Schema from function signature | §5.11.4 | **SHOULD** |
+| A19 | `resolve_target()` | Resolve binding target for function-based modules | §5.12.3 | **SHOULD** |
 | A20 | `guard_call_chain()` | Call chain safety check | §Executor | **MUST** |
 | A21 | `safe_unregister()` | Hot-reload safe unregistration | §12.7.4 | **MUST** |
 | A22 | `enforce_timeout()` | Timeout enforcement | §12.7.5 | **MUST** |
