@@ -767,7 +767,28 @@ Some spec-defined method names conflict with language reserved keywords. Impleme
 
 ---
 
-## 16. References
+## 16. Per-SDK Validation Library Notes
+
+### 16.1 TypeScript SDK — TypeBox
+
+The TypeScript SDK uses **`@sinclair/typebox`** (^0.34) for JSON Schema–shaped validation rather than a standalone Draft 2020-12 validator (e.g., `ajv`). TypeBox is a schema builder/validator hybrid that provides static TypeScript types from the same schema object.
+
+**Supported Draft 2020-12 keywords** (validated at runtime by TypeBox's `Value.Check` / `TypeCompiler`):
+`type`, `properties`, `required`, `enum`, `const`, `items`, `minItems`, `maxItems`, `uniqueItems`, `minimum`, `maximum`, `exclusiveMinimum`, `exclusiveMaximum`, `multipleOf`, `minLength`, `maxLength`, `pattern`, `format` (subset), `$ref` (within the same schema — not cross-file).
+
+**Known limitations vs. full Draft 2020-12:**
+- `$ref` to external URIs / files is not supported; use `apcore`'s schema registry for cross-module references.
+- `unevaluatedProperties` and `unevaluatedItems` are not enforced.
+- Complex combinators (`if/then/else`, `contains`, `prefixItems`) have partial support; test coverage is advised before relying on them.
+
+For modules whose schemas exercise the above limitations, implementers **SHOULD** validate with a Draft 2020-12–conformant tool (e.g., `ajv ^8` with `ajv-formats` and the `2020` meta-schema) and treat TypeBox as the TypeScript type inference layer only.
+
+**Python SDK** uses `jsonschema ^4.21` (fully Draft 2020-12 conformant).
+**Rust SDK** uses `jsonschema ^0.28` (pre-1.0; conformance grows with each minor; check release notes).
+
+---
+
+## 18. References
 
 - [PROTOCOL_SPEC §4 — Schema Specification](../../PROTOCOL_SPEC.md#4-schema-specification)
 - [PROTOCOL_SPEC §4.10 — Schema Implementations by Language](../../PROTOCOL_SPEC.md#410-schema-implementations-by-language)
