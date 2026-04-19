@@ -242,3 +242,40 @@ The `strict` module provides a strict validation mode that rejects any fields no
 - **Exporter tests** verify that each target format (MCP, OpenAI, Anthropic, generic) produces correct output and that `x-*` fields are appropriately handled per format.
 - **Model generation tests** confirm that dynamically created models enforce constraints (required fields, types, patterns, enums) and that `x-sensitive` annotations flow through to the executor's redaction logic.
 - Test naming follows the `test_<unit>_<behavior>` convention.
+
+## Contract: Schema.validate
+
+### Inputs
+- `data` (dict/object/Value, required) — data to validate
+- `schema` (dict/object/Value, required) — JSON Schema Draft 2020-12 schema object
+
+### Errors
+- `SchemaValidationError(code=SCHEMA_VALIDATION_FAILED)` — `data` does not conform to `schema`
+
+### Returns
+- On success: void/None/() — validation passed (no return value; raises on failure)
+
+### Properties
+- async: false
+- thread_safe: true
+- pure: true (no side effects; deterministic given same data and schema)
+- idempotent: true
+
+## Contract: Schema.resolve_refs
+
+### Inputs
+- `schema` (dict/object/Value, required) — JSON Schema containing `$ref` references
+- `base_uri` (str/string/&str, optional) — base URI for resolving relative references
+
+### Errors
+- `SchemaCircularRefError(code=SCHEMA_CIRCULAR_REF)` — a `$ref` cycle was detected
+- `SchemaRefNotFoundError(code=SCHEMA_REF_NOT_FOUND)` — a referenced schema cannot be resolved
+
+### Returns
+- On success: `dict`/`Record<string, unknown>`/`Value` — schema with all `$ref` entries resolved inline
+
+### Properties
+- async: false
+- thread_safe: true
+- pure: true
+- idempotent: true
