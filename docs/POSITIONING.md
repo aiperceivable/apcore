@@ -17,41 +17,41 @@ Traditional software has **UI** for humans and **API** for programs. apcore adds
 ## Where apcore Sits in the Stack
 
 ```
-┌─────────────────────────────────────────────────────────┐
+┌───────────────────────────────────────────────────────-──┐
 │              AI Clients / Callers                        │
 │    Claude    Cursor    GPT    Other Agents    Human CLI  │
-└───────┬─────────┬────────┬──────────┬───────────┬───────┘
+└───────┬─────────┬────────┬──────────┬───────────┬─────-──┘
         │         │        │          │           │
         ▼         ▼        ▼          ▼           ▼
-┌─────────────────────────────────────────────────────────┐
+┌────────────────────────────────────────────────────────-─┐
 │              Surface Adapters                            │
-│  ┌───────┐ ┌───────┐ ┌───────┐ ┌───────┐ ┌───────────┐ │
-│  │  MCP  │ │  A2A  │ │  CLI  │ │ REST  │ │ Future... │ │
-│  └───┬───┘ └───┬───┘ └───┬───┘ └───┬───┘ └─────┬─────┘ │
-└──────┼─────────┼─────────┼─────────┼───────────┼────────┘
+│  ┌───────┐ ┌───────┐ ┌───────┐ ┌───────┐ ┌───────────┐.  │
+│  │  MCP  │ │  A2A  │ │  CLI  │ │ REST  │ │ Future... │   │
+│  └───┬───┘ └───┬───┘ └───┬───┘ └───┬───┘ └─────┬─────┘   │
+└──────┼─────────┼─────────┼─────────┼───────────┼───────-─┘
        │         │         │         │           │
        ▼         ▼         ▼         ▼           ▼
-┌─────────────────────────────────────────────────────────┐
+┌───────────────────────────────────────────────────────-──┐
 │              apcore Module Standard                      │
 │                                                          │
-│  ┌─────────────────────────────────────────────────┐    │
+│  ┌───────────────────────────────────────────────-──┐    │
 │  │ Execution Engine (11-step pipeline)              │    │
 │  │ ACL → Approval → Validation → Middleware →       │    │
 │  │ Execute → Validation → Middleware → Return       │    │
-│  └─────────────────────────────────────────────────┘    │
+│  └────────────────────────────────────────────────-─┘    │
 │                                                          │
-│  ┌─────────────────────────────────────────────────┐    │
+│  ┌────────────────────────────────────────────────-─┐    │
 │  │ Registry (auto-discovery, ID mapping, caching)   │    │
-│  └─────────────────────────────────────────────────┘    │
+│  └───────────────────────────────────────────────-──┘    │
 │                                                          │
-│  ┌─────────────────────────────────────────────────┐    │
+│  ┌────────────────────────────────────────────────-─┐    │
 │  │ Modules (user-written business logic)            │    │
 │  │ Enforced: input_schema + output_schema +         │    │
 │  │           description + annotations + ACL        │    │
-│  └─────────────────────────────────────────────────┘    │
+│  └───────────────────────────────────────────────-──┘    │
 │                                                          │
 │  Python SDK · TypeScript SDK · Rust SDK                  │
-└─────────────────────────────────────────────────────────┘
+└───────────────────────────────────────────────────-──────┘
 ```
 
 **apcore is not at the same layer as MCP, A2A, or CLI.** It is the foundation beneath all of them.
@@ -121,12 +121,12 @@ Every module **must** declare `input_schema`, `output_schema`, and `description`
 │ → AI perceives: "what this module does"              │
 ├──────────────────────────────────────────────────────┤
 │ ANNOTATIONS (Recommended)                            │
-│ readonly / destructive / requires_approval /          │
+│ readonly / destructive / requires_approval /         │
 │ idempotent / open_world / cacheable / paginated      │
 │ → AI understands: "how to use it safely"             │
 ├──────────────────────────────────────────────────────┤
 │ EXTENSIONS (Optional)                                │
-│ x-when-to-use / x-common-mistakes / x-cost-per-call │
+│ x-when-to-use / x-common-mistakes / x-cost-per-call  │
 │ x-preconditions / x-rate-limit                       │
 │ → AI gains wisdom: "when and why to use it"          │
 └──────────────────────────────────────────────────────┘
@@ -333,10 +333,6 @@ apcore supports progressive adoption for existing codebases:
 
 ## Links
 
-- **Protocol Specification**: [PROTOCOL_SPEC.md](https://github.com/aiperceivable/apcore/blob/main/PROTOCOL_SPEC.md)
-- **Roadmap**: [ROADMAP.md](https://github.com/aiperceivable/apcore/blob/main/ROADMAP.md)
-- **SDKs**: [Python](https://github.com/aiperceivable/apcore-python) | [TypeScript](https://github.com/aiperceivable/apcore-typescript) | [Rust](https://github.com/aiperceivable/apcore-rust)
-- **MCP Bridge**: [Python](https://github.com/aiperceivable/apcore-mcp-python) | [TypeScript](https://github.com/aiperceivable/apcore-mcp-typescript) | [Rust](https://github.com/aiperceivable/apcore-mcp-rust)
-- **A2A Bridge**: [Python](https://github.com/aiperceivable/apcore-a2a-python) | [TypeScript](https://github.com/aiperceivable/apcore-a2a-typescript)
-- **CLI Adapter**: [Python](https://github.com/aiperceivable/apcore-cli-python) | [TypeScript](https://github.com/aiperceivable/apcore-cli-typescript) | [Rust](https://github.com/aiperceivable/apcore-cli-rust)
-- **Framework Adapters**: [Django](https://github.com/aiperceivable/django-apcore) | [Flask](https://github.com/aiperceivable/flask-apcore) | [FastAPI](https://github.com/aiperceivable/fastapi-apcore) | [NestJS](https://github.com/aiperceivable/nestjs-apcore) | [Axum](https://github.com/aiperceivable/axum-apcore) | [Tiptap](https://github.com/aiperceivable/tiptap-apcore)
+* **Official Website:** [aiperceivable.com](https://aiperceivable.com) (Vision & Concept)
+* **Protocol Core & Documentation:** [apcore.aiperceivable.com/POSITIONING/](https://apcore.aiperceivable.com/POSITIONING/) (The Architecture Standard)
+* **GitHub Organization:** [github.com/aiperceivable](https://github.com/aiperceivable) (Open Source Ecosystem & SDKs)
