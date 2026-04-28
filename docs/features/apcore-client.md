@@ -322,3 +322,315 @@ For complete usage examples with all three languages, see the [APCore Client API
 - async: false in Python; async in TypeScript and Rust
 - thread_safe: false (do not call concurrently with active requests)
 - idempotent: true (multiple stops are safe)
+
+## Contract: APCoreClient.on
+
+### Inputs
+- `event_type` (str/string, required) — canonical event type string (e.g. `"module_registered"`); MUST be a non-empty string; filtered by exact equality match inside the subscriber
+- `handler` (callable/Function, required) — sync or async callback receiving an `ApCoreEvent`; MUST NOT be null/None; Python accepts both sync and async callables (detected via `asyncio.iscoroutinefunction`); TypeScript accepts `(event: ApCoreEvent) => void | Promise<void>`
+
+### Errors
+- `RuntimeError` (Python) / `Error` (TypeScript) — raised immediately if `sys_modules.events` is not enabled (i.e., the `events` property returns `None`/`null`); message: `"Events are not enabled. Set sys_modules.enabled=true and sys_modules.events.enabled=true in config."`
+
+### Returns
+- On success: `EventSubscriber` — the created subscriber object; pass to `off()` to cancel the subscription
+
+### Properties
+- async: false (synchronous in both Python and TypeScript)
+- thread_safe: true (Python `EventEmitter.subscribe` holds an internal lock before appending)
+- pure: false (registers handler into the emitter's internal subscriber list)
+- idempotent: false (registering the same handler twice creates two independent subscriptions that each fire)
+
+## Contract: APCoreClient.off
+
+### Inputs
+- `subscriber` (EventSubscriber, required) — the handle returned by a prior call to `on()`; MUST NOT be null/None
+
+### Errors
+- `RuntimeError` (Python) / `Error` (TypeScript) — raised immediately if `sys_modules.events` is not enabled (same guard as `on()`); message identical to `on()` error
+
+### Returns
+- On success: void/None — no return value
+
+### Properties
+- async: false (synchronous in both Python and TypeScript)
+- thread_safe: true (Python `EventEmitter.unsubscribe` holds an internal lock before removing)
+- pure: false (mutates the emitter's internal subscriber list)
+- idempotent: true (unsubscribing a subscriber that is not present is a no-op; Python implementation uses `list.remove` under a guard that tolerates absence)
+
+## Contract: APCoreClient.stream
+
+### Inputs
+- `module_id` (str/string, required) — target module ID; validated via `_validate_module_id`; MUST be a non-empty string matching the module ID pattern
+- `inputs` (dict/object, optional) — input arguments for the module; `None`/`null` is treated as `{}`
+- `context` (Context, optional) — execution context; auto-created when absent
+- `version_hint` (str/string, optional) — preferred version constraint; falls back to latest
+
+### Errors
+- `InvalidInputError(code=INVALID_MODULE_ID)` — `module_id` is empty or malformed (raised before pipeline starts)
+- `ModuleNotFoundError(code=MODULE_NOT_FOUND)` — no module registered under `module_id`
+- `SchemaValidationError(code=SCHEMA_VALIDATION_FAILED)` — `inputs` fails the module's `input_schema`
+- `ExecutionCancelledError` — propagated unchanged if the execution context is cancelled mid-stream
+- Any error raised by the module's `execute`/`stream` handler: in Python, a recovery dict chunk is yielded and the generator returns cleanly; retry signals during streaming are ignored and the original error is re-raised
+
+### Returns
+- On success: async generator / `AsyncGenerator` / `AsyncIterator` that yields `dict`/`Record<string, unknown>` chunks
+- If the module does not implement a `stream()` method, the pipeline falls back to a single `execute()` call and yields its output as one chunk
+
+### Properties
+- async: true (Python: `async def stream()` coroutine / async generator; TypeScript: `async *stream()` async generator)
+- thread_safe: true (delegates to Executor which holds internal locks)
+- pure: false (side-effects: span created, metrics emitted, middleware hooks invoked)
+- idempotent: false (module execution is not guaranteed idempotent)
+
+## Contract: APCoreClient.validate
+
+### Inputs
+- `module_id` (str/string, required) — target module ID; MUST be a non-empty string matching the module ID pattern
+- `inputs` (dict/object, optional) — input data to validate against the module's `input_schema`; `None`/`null` is treated as `{}`
+- `context` (Context, optional) — execution context used for ACL and call-chain checks; auto-created when absent
+
+### Errors
+- No errors are raised for validation failures — failures are captured in the returned `PreflightResult`
+- `InvalidInputError(code=INVALID_MODULE_ID)` — raised if `module_id` is empty or malformed (before pipeline begins)
+
+### Returns
+- On success: `PreflightResult` — an object with:
+  - `valid: bool` — `True` only if all checks passed
+  - `checks: list[PreflightCheckResult]` — per-step results covering: `module_id`, `module_lookup`, `call_chain`, `acl`, `approval`, `schema`, `module_preflight` (7 checks total)
+  - `requires_approval: bool` — `True` if the module carries a `requires_approval` annotation (informational only; not enforced by validate)
+  - `errors: list[dict]` — convenience property; aggregates `error` fields from failed checks
+
+### Properties
+- async: sync in Python (delegates to async impl via sync-in-thread model); async in TypeScript (`Promise<PreflightResult>`)
+- thread_safe: true
+- pure: false (pipeline dry-run creates a span and invokes middleware up to the execute step)
+- idempotent: true (no state mutation; repeated calls with the same arguments return equivalent results)
+
+## Contract: APCoreClient.disable
+
+### Inputs
+- `module_id` (str/string, required) — ID of the module to disable; passed directly to `system.control.toggle_feature`
+- `reason` (str/string, optional) — audit reason string; defaults to `"Disabled via APCore client"`
+
+### Errors
+- `RuntimeError` (Python) / `Error` (TypeScript) — raised immediately if `sys_modules` are not enabled; Python message: `"disable() requires sys_modules to be enabled. Pass a Config with sys_modules.enabled=true to APCore()."` TypeScript message: `"Cannot call disable(): sys_modules must be enabled in config."`
+- Any error raised by `system.control.toggle_feature` (e.g., `ModuleNotFoundError` if `module_id` is not registered) propagates unchanged
+
+### Returns
+- On success: `dict`/`Record<string, unknown>` — result from `system.control.toggle_feature`, containing at minimum: `success` (bool), `module_id` (str), `enabled` (bool, `false` on success)
+
+### Properties
+- async: sync in Python (delegates via sync-in-thread model); async in TypeScript (`Promise<Record<string, unknown>>`)
+- thread_safe: true (delegates to Executor)
+- pure: false (mutates the runtime disabled-modules registry)
+- idempotent: true (disabling an already-disabled module SHOULD succeed without error)
+
+## Contract: APCoreClient.enable
+
+### Inputs
+- `module_id` (str/string, required) — ID of the module to re-enable; passed directly to `system.control.toggle_feature`
+- `reason` (str/string, optional) — audit reason string; defaults to `"Enabled via APCore client"`
+
+### Errors
+- `RuntimeError` (Python) / `Error` (TypeScript) — raised immediately if `sys_modules` are not enabled; Python message: `"enable() requires sys_modules to be enabled. Pass a Config with sys_modules.enabled=true to APCore()."` TypeScript message: `"Cannot call enable(): sys_modules must be enabled in config."`
+- Any error raised by `system.control.toggle_feature` propagates unchanged
+
+### Returns
+- On success: `dict`/`Record<string, unknown>` — result from `system.control.toggle_feature`, containing at minimum: `success` (bool), `module_id` (str), `enabled` (bool, `true` on success)
+
+### Properties
+- async: sync in Python (delegates via sync-in-thread model); async in TypeScript (`Promise<Record<string, unknown>>`)
+- thread_safe: true (delegates to Executor)
+- pure: false (mutates the runtime disabled-modules registry)
+- idempotent: true (enabling an already-enabled module SHOULD succeed without error)
+
+## Contract: APCore.__init__
+
+### Inputs
+- `registry` (Registry, optional) — pre-built Registry instance; a new `Registry()` is created when absent
+- `executor` (Executor, optional) — pre-built Executor instance; a new `Executor(registry=..., config=...)` is created when absent
+- `config` (Config, optional) — framework configuration object; use `Config.load(path)` to load from a YAML file; when absent the client runs in zero-config mode with no system modules
+- `metrics_collector` (MetricsCollector, optional) — observability collector; auto-created when `config.sys_modules.enabled=true` and none is provided; ignored in zero-config mode
+
+### Errors
+- No errors are raised by `__init__` itself; if `sys_modules` registration fails, the error is caught, logged at WARNING level, and the client continues with an empty `_sys_modules_context` (system-module methods will raise `RuntimeError` on use)
+
+### Returns
+- On success: a fully initialized `APCore` instance
+
+### Properties
+- async: false (synchronous in all languages)
+- thread_safe: false (do not share a partially-constructed instance across threads; all concurrent usage must start after construction is complete)
+- pure: false (creates Registry/Executor, optionally registers system modules, adds middleware)
+- idempotent: false
+
+## Contract: APCore.module
+
+### Inputs
+- `id` (str/string, optional) — module ID to register the function under; MUST match `MODULE_ID_PATTERN` when provided; when absent the registry derives an ID from the decorated function's name
+- `description` (str/string, optional) — short human-readable description of the module
+- `documentation` (str/string, optional) — extended Markdown documentation
+- `annotations` (dict/object, optional) — key-value annotations for routing or platform metadata (e.g. `requires_approval`)
+- `tags` (list[str]/string[], optional) — tag strings for filtering via `list_modules(tags=...)`
+- `version` (str/string, optional) — semver version string; defaults to `"1.0.0"`
+- `metadata` (dict/object, optional) — additional metadata stored alongside the module descriptor
+- `display` (dict/object, optional) — display hints (name, icon, color) for UIs
+- `examples` (list/array, optional) — input/output examples for documentation and AI tool discovery
+
+### Errors
+- `InvalidInputError(code=INVALID_MODULE_ID)` — `id` is provided but empty, malformed, exceeds `MAX_MODULE_ID_LENGTH`, or contains a reserved first-segment word
+- `InvalidInputError` — `id` is already registered (duplicate registration)
+
+### Returns
+- On success: the decorated function, unchanged (the function is registered as a `FunctionModule` as a side effect; the original callable is returned so it remains directly callable in Python)
+
+### Properties
+- async: false (synchronous decorator in Python and TypeScript)
+- thread_safe: true (delegates to `Registry.register` which holds an internal RLock)
+- pure: false (registers the function into the client's Registry as a side effect)
+- idempotent: false (applying the decorator twice registers two entries and raises `InvalidInputError` on the second)
+
+## Contract: APCore.register
+
+### Inputs
+- `module_id` (str/string/&str, required) — unique ID to register the module under; MUST be a non-empty string matching `MODULE_ID_PATTERN`, ≤192 characters, with no reserved first-segment word
+- `module_obj` (any Module instance, required) — the module object to register; MUST NOT be null/None; raw-dict `input_schema`/`output_schema` are wrapped in a `_DictSchemaAdapter` automatically
+
+### Errors
+- `InvalidInputError(code=INVALID_MODULE_ID)` — `module_id` is empty, malformed, exceeds the length limit, contains a reserved word, or is already registered under that ID
+- `RuntimeError` — if the module's `on_load()` hook raises (the partial registration is rolled back before propagating)
+
+### Returns
+- On success: void/None/() — no return value
+
+### Properties
+- async: false (synchronous in all languages)
+- thread_safe: true (Registry holds an internal RLock around the write)
+- pure: false (mutates the registry's module map, triggers `register` event callbacks)
+- idempotent: false (registering the same `module_id` twice raises `InvalidInputError` on the second call)
+
+## Contract: APCore.discover
+
+### Inputs
+- No parameters — discovery roots come from `extensions.root` in the config provided at construction time (defaults to the framework default root when no config is given)
+
+### Errors
+- `CircularDependencyError` — if circular inter-module dependencies are detected in the discovered set
+- `ConfigNotFoundError` — if a configured extension root directory does not exist on disk
+- File-level errors (import failures, validation failures, `on_load()` failures) are logged at WARNING/ERROR level and silently skipped; they do NOT propagate to the caller
+
+### Returns
+- On success: `int` — count of modules successfully registered in this discovery pass (0 if no modules are found or all fail validation)
+
+### Properties
+- async: false (synchronous in all languages; file-system I/O and module imports run on the calling thread)
+- thread_safe: true (each `Registry.register` call inside discovery holds the registry's RLock)
+- pure: false (imports Python files, instantiates module classes, and mutates the registry)
+- idempotent: false (calling `discover()` twice on a directory that has not changed will attempt to re-register already-registered modules, raising `InvalidInputError` for duplicates; callers should guard with `list_modules()` or unregister first)
+
+## Contract: APCore.list_modules
+
+### Inputs
+- `tags` (list[str]/string[], optional) — when provided, only modules possessing ALL listed tags (via module attribute or merged metadata) are included; `None`/`null` means no tag filtering
+- `prefix` (str/string, optional) — when provided, only modules whose ID starts with this string are included; `None`/`null` means no prefix filtering
+
+### Errors
+- No errors raised under normal operation
+
+### Returns
+- On success: `list[str]`/`string[]` — alphabetically sorted list of matching module IDs; empty list when no modules match
+
+### Properties
+- async: false (synchronous in all languages)
+- thread_safe: true (Registry takes a snapshot under its RLock before filtering)
+- pure: true (read-only; no state mutation)
+- idempotent: true
+
+## Contract: APCore.describe
+
+### Inputs
+- `module_id` (str/string/&str, required) — ID of the module to describe; MUST be a non-empty string
+
+### Errors
+- `ModuleNotFoundError` — raised if no module is registered under `module_id`
+
+### Returns
+- On success: `str`/`string` — Markdown-formatted description string; if the module defines a `describe()` method, its return value is used verbatim; otherwise the registry auto-generates a description from the module's `ModuleDescriptor` (title, description, tags, parameter list, documentation)
+
+### Properties
+- async: false (synchronous in all languages)
+- thread_safe: true (reads from the Registry under its RLock)
+- pure: true (read-only; no state mutation)
+- idempotent: true
+
+## Contract: APCore.use / APCore.use_middleware
+
+### Inputs
+- `middleware` (Middleware instance, required) — a class-based middleware object implementing the `Middleware` protocol; MUST NOT be null/None; `priority` attribute (int, 0–1000) controls insertion order — higher priority runs first; equal priorities preserve registration order
+
+### Errors
+- `ValueError` — if `middleware.priority` exceeds 1000
+
+### Returns
+- On success: `self`/`APCore` — returns the client instance for method chaining (e.g. `client.use(a).use(b).use(c)`)
+
+### Properties
+- async: false (synchronous in all languages)
+- thread_safe: true (MiddlewareManager holds an internal lock during insertion)
+- pure: false (mutates the executor's middleware chain)
+- idempotent: false (adding the same middleware instance twice inserts it twice, running it twice per execution)
+
+!!! note "Rust keyword conflict"
+    In Rust, this method is named `use_middleware()` because `use` is a reserved keyword. Python and TypeScript expose it as `.use()`.
+
+## Contract: APCore.use_before
+
+### Inputs
+- `callback` (callable/Function, required) — a sync or async function invoked before module execution; signature: `(context: Context) -> None` (Python) / `(ctx: Context) => void | Promise<void>` (TypeScript); MUST NOT be null/None; the callback is wrapped in a `BeforeMiddleware` adapter with default priority 0
+
+### Errors
+- No errors raised during registration; errors raised inside `callback` at execution time propagate through the middleware chain
+
+### Returns
+- On success: `self`/`APCore` — returns the client instance for method chaining
+
+### Properties
+- async: false (the registration call is synchronous; the callback itself may be sync or async)
+- thread_safe: true (delegates to MiddlewareManager which holds an internal lock)
+- pure: false (mutates the executor's middleware chain by inserting a wrapped `BeforeMiddleware`)
+- idempotent: false (registering the same callback twice inserts two independent `BeforeMiddleware` wrappers)
+
+## Contract: APCore.use_after
+
+### Inputs
+- `callback` (callable/Function, required) — a sync or async function invoked after module execution; signature: `(context: Context) -> None` (Python) / `(ctx: Context) => void | Promise<void>` (TypeScript); MUST NOT be null/None; the callback is wrapped in an `AfterMiddleware` adapter with default priority 0
+
+### Errors
+- No errors raised during registration; errors raised inside `callback` at execution time propagate through the middleware chain
+
+### Returns
+- On success: `self`/`APCore` — returns the client instance for method chaining
+
+### Properties
+- async: false (the registration call is synchronous; the callback itself may be sync or async)
+- thread_safe: true (delegates to MiddlewareManager which holds an internal lock)
+- pure: false (mutates the executor's middleware chain by inserting a wrapped `AfterMiddleware`)
+- idempotent: false (registering the same callback twice inserts two independent `AfterMiddleware` wrappers)
+
+## Contract: APCore.remove
+
+### Inputs
+- `middleware` (Middleware instance, required) — the exact middleware object to remove; identity comparison (`is`) is used, not equality (`==`); pass the same object reference returned or stored when originally calling `use()`, `use_before()`, or `use_after()`
+
+### Errors
+- No errors raised under normal operation
+
+### Returns
+- On success: `bool` — `True` if the middleware was found by identity and removed; `False` if no matching instance was present in the chain
+
+### Properties
+- async: false (synchronous in all languages)
+- thread_safe: true (MiddlewareManager holds an internal lock during removal)
+- pure: false (mutates the executor's middleware chain)
+- idempotent: true (calling `remove()` on a middleware not in the chain returns `False` without error; calling it again after a successful removal also returns `False` safely)

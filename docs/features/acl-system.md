@@ -143,6 +143,179 @@ Normative behavioral contract. All SDK implementations MUST satisfy these guaran
 - `pure`: `false` -- emits an audit event on every call.
 - `idempotent`: `true` -- repeated calls with identical inputs yield identical decisions (audit events are still emitted each time).
 
+## Contract: ACL.load
+
+### Inputs
+
+- `yaml_path`: string, required. Path to the YAML configuration file.
+  - validation: file must exist at the given path (`os.path.isfile(yaml_path)` must return true)
+  - reject_with: `ConfigNotFoundError(config_path=yaml_path)`
+
+### Preconditions
+
+- The file at `yaml_path` must be readable and contain valid YAML that parses to a mapping.
+
+### Side Effects (ordered)
+
+1. Open and parse the YAML file from disk.
+2. Validate the top-level structure and each rule entry.
+3. Construct a new `ACL` instance (no mutation of any existing ACL state).
+4. Set `_yaml_path` on the returned instance to `yaml_path` (enabling future `reload()` calls).
+
+### Postconditions
+
+- The returned `ACL` instance has `_yaml_path` set to `yaml_path`.
+- `default_effect` is `"deny"` if not explicitly specified in the file.
+- Rules are ordered identically to their order in the YAML file.
+
+### Errors
+
+- `ConfigNotFoundError(config_path=yaml_path)` — file does not exist at `yaml_path`.
+- `ACLRuleError` — YAML parse failure, top-level value is not a mapping, `rules` key is absent, `rules` value is not a list, any rule entry is not a mapping, any rule is missing a required key (`callers`, `targets`, or `effect`), `effect` value is not `"allow"` or `"deny"`, or `callers`/`targets` value is not a list.
+
+### Returns
+
+- On success: a new `ACL` instance populated from the file.
+
+### Properties
+
+- `async`: `false`
+- `thread_safe`: `true` — creates a new instance; no shared mutable state accessed
+- `pure`: `false` — reads from the filesystem
+- `idempotent`: `true` — repeated calls with identical file content return equivalent instances
+- `reentrant`: `true`
+
+## Contract: ACL.add_rule
+
+### Inputs
+
+- `rule`: `ACLRule`, optional (default `None`). A pre-built rule to insert. If provided, all keyword arguments are ignored.
+- `callers`: `list[str] | str`, required if `rule` is `None`. Caller pattern(s). A bare string is coerced to a single-element list.
+  - validation: must not be `None` when `rule` is `None`
+  - reject_with: `ValueError("Must provide either 'rule' or both 'callers' and 'targets'")`
+- `targets`: `list[str] | str`, required if `rule` is `None`. Target pattern(s). A bare string is coerced to a single-element list.
+  - validation: must not be `None` when `rule` is `None`
+  - reject_with: `ValueError("Must provide either 'rule' or both 'callers' and 'targets'")`
+- `effect`: string, optional (default `"deny"`). Rule effect when `rule` is `None`.
+- `description`: string, optional (default `""`). Human-readable description when `rule` is `None`.
+- `conditions`: `dict[str, Any] | None`, optional (default `None`). Condition map when `rule` is `None`.
+
+### Preconditions
+
+- Either `rule` is provided, or both `callers` and `targets` are provided.
+
+### Side Effects (ordered)
+
+1. If `rule` is `None`, construct a new `ACLRule` from keyword arguments.
+2. Acquire the ACL lock.
+3. Insert the rule at index 0 of the internal rule list (highest priority).
+4. Release the ACL lock.
+
+### Postconditions
+
+- The rule is the first entry in the rule list; all prior rules shift up by one index.
+- Any subsequent `check()` call evaluates the new rule before all previously inserted rules.
+
+### Errors
+
+- `ValueError` — `rule` is `None` and either `callers` or `targets` is also `None`.
+
+### Returns
+
+- On success: `None`
+
+### Properties
+
+- `async`: `false`
+- `thread_safe`: `true` — insert is performed under the ACL lock
+- `pure`: `false` — mutates internal rule list
+- `idempotent`: `false` — each call inserts an additional rule at position 0; calling twice with identical inputs adds two identical rules
+- `reentrant`: `false` — acquires the internal lock; re-entrant call from within the same thread would deadlock on non-reentrant lock implementations
+
+## Contract: ACL.remove_rule
+
+### Inputs
+
+- `callers`: `list[str]`, required. Caller patterns to match (exact list equality).
+- `targets`: `list[str]`, required. Target patterns to match (exact list equality).
+
+### Side Effects (ordered)
+
+1. Acquire the ACL lock.
+2. Iterate the rule list to find the first rule where `rule.callers == callers` and `rule.targets == targets`.
+3. Remove that rule from the list (if found).
+4. Release the ACL lock.
+
+### Postconditions
+
+- If a matching rule was found, it is no longer present in the rule list; all subsequent rules shift down by one index.
+- At most one rule is removed per call (the first match).
+
+### Errors
+
+- _(none — infallible; absence of a matching rule returns `False`, not an exception)_
+
+### Returns
+
+- `True` — a matching rule was found and removed.
+- `False` — no rule with the given `callers` and `targets` patterns exists.
+
+### Properties
+
+- `async`: `false`
+- `thread_safe`: `true` — removal is performed under the ACL lock
+- `pure`: `false` — mutates internal rule list
+- `idempotent`: `false` — the first call removes the rule and returns `True`; a second identical call finds no match and returns `False`
+- `reentrant`: `false` — acquires the internal lock
+
+## Contract: ACL.reload
+
+### Inputs
+
+_(none — operates on the YAML path stored during `ACL.load`)_
+
+### Preconditions
+
+- The ACL instance must have been created via `ACL.load()` (i.e., `_yaml_path` is not `None`).
+  - reject_with: `ACLRuleError("Cannot reload: ACL was not loaded from a YAML file")`
+- The file at the stored `_yaml_path` must still exist and be valid YAML.
+  - reject_with: `ConfigNotFoundError` or `ACLRuleError` (propagated from `ACL.load`)
+
+### Side Effects (ordered)
+
+1. Acquire the ACL lock.
+2. Snapshot `_yaml_path` under the lock.
+3. Release the ACL lock.
+4. Call `ACL.load(yaml_path)` outside the lock (reads and validates the YAML file).
+5. Acquire the ACL lock again.
+6. Replace `_rules` with the newly loaded rule list.
+7. Replace `_default_effect` with the newly loaded default effect.
+8. Release the ACL lock.
+
+### Postconditions
+
+- `_rules` and `_default_effect` reflect the current content of the YAML file.
+- `_yaml_path` is unchanged.
+- `_audit_logger` is unchanged (not replaced from the reloaded instance).
+- Any `add_rule()` or `remove_rule()` mutations made between the two lock acquisitions (steps 2–5) are discarded.
+
+### Errors
+
+- `ACLRuleError` — instance was not created via `ACL.load()` (no stored YAML path), or the YAML file fails structural validation.
+- `ConfigNotFoundError` — the stored YAML file no longer exists at the original path.
+
+### Returns
+
+- On success: `None`
+
+### Properties
+
+- `async`: `false`
+- `thread_safe`: `true` — mutations to `_rules` and `_default_effect` are performed under the ACL lock; note that two separate lock acquisitions are used (snapshot then write), so concurrent mutations between the two acquisitions are possible (see Postconditions)
+- `pure`: `false` — reads from the filesystem and mutates internal state
+- `idempotent`: `true` — repeated calls with the same file content produce the same rule list
+- `reentrant`: `false` — acquires the internal lock
+
 ## Usage
 
 === "Python"
