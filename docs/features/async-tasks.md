@@ -113,7 +113,7 @@ The Async Task Management system provides background module execution with concu
     const manager = new AsyncTaskManager({ executor, maxConcurrent: 10, maxTasks: 1000 });
 
     // Submit a background task
-    const taskId = manager.submit("data.process_batch", { items: largeList });
+    const taskId = await manager.submit("data.process_batch", { items: largeList });
 
     // Check status
     const info = manager.getStatus(taskId);
@@ -123,7 +123,7 @@ The Async Task Management system provides background module execution with concu
     const result = manager.getResult(taskId);
 
     // Cancel a task
-    const cancelled = manager.cancel(taskId);
+    const cancelled = await manager.cancel(taskId);
 
     // List tasks (optionally filtered by status)
     const allTasks = manager.listTasks();
@@ -133,7 +133,7 @@ The Async Task Management system provides background module execution with concu
     const removed = manager.cleanup(3600);
 
     // Graceful shutdown
-    manager.shutdown();
+    await manager.shutdown();
     ```
 === "Rust"
     ```rust
@@ -256,3 +256,470 @@ When `cancel()` is called on a running task:
 - async: false
 - thread_safe: true
 - idempotent: false (cancelling an already-cancelled task is a `TaskNotFoundError` on some implementations)
+
+---
+
+## AsyncTaskManager Evolution (Issue #34)
+
+This section defines three capability extensions to `AsyncTaskManager`: pluggable storage backends, configurable retry with exponential backoff, and automatic TTL-based cleanup via a Reaper background task.
+
+### 1.1 Pluggable Task Storage
+
+The `AsyncTaskManager` MUST support pluggable storage backends via a `TaskStore` interface. This decouples task state from in-process memory, enabling distributed deployments and persistence across process restarts.
+
+**Normative rules:**
+
+- Implementations MUST define a `TaskStore` protocol/interface/trait with the following methods:
+    - `save(task_info)` — create or overwrite a task record
+    - `get(task_id) → TaskInfo | None` — retrieve a task by ID
+    - `list(status_filter?) → List[TaskInfo]` — list all tasks, optionally filtered by status
+    - `delete(task_id)` — remove a task record
+    - `list_expired(before_timestamp) → List[TaskInfo]` — return tasks whose `completed_at` is before the given timestamp
+- Implementations MUST provide `InMemoryTaskStore` as the default backend.
+- Implementations SHOULD provide `RedisTaskStore` and `SqlTaskStore` as optional backends.
+- The store MUST be injected at construction time: `AsyncTaskManager(store=InMemoryTaskStore())`.
+
+**Using the default `InMemoryTaskStore` (no change from existing API):**
+
+=== "Python"
+    ```python
+    from apcore.async_task import AsyncTaskManager, InMemoryTaskStore
+    from apcore import Executor, Registry
+
+    executor = Executor(registry=Registry())
+    # Default: InMemoryTaskStore is used when no store is specified
+    manager = AsyncTaskManager(executor, store=InMemoryTaskStore())
+    ```
+=== "TypeScript"
+    ```typescript
+    import { AsyncTaskManager, InMemoryTaskStore, Executor, Registry } from "apcore-js";
+
+    const executor = new Executor({ registry: new Registry() });
+    // Default: InMemoryTaskStore is used when no store is specified
+    const manager = new AsyncTaskManager({ executor, store: new InMemoryTaskStore() });
+    ```
+=== "Rust"
+    ```rust
+    use apcore::async_task::{AsyncTaskManager, InMemoryTaskStore};
+    use apcore::{Executor, Registry};
+
+    let executor = Executor::new(Registry::new());
+    // Default: InMemoryTaskStore is used when no store is specified
+    let manager = AsyncTaskManager::new(executor, InMemoryTaskStore::new());
+    ```
+
+**Injecting a `RedisTaskStore`:**
+
+=== "Python"
+    ```python
+    from apcore.async_task import AsyncTaskManager, RedisTaskStore
+    from apcore import Executor, Registry
+
+    executor = Executor(registry=Registry())
+    store = RedisTaskStore(redis_url="redis://localhost:6379", key_prefix="apcore:tasks:")
+    manager = AsyncTaskManager(executor, store=store)
+    ```
+=== "TypeScript"
+    ```typescript
+    import { AsyncTaskManager, RedisTaskStore, Executor, Registry } from "apcore-js/async-task";
+
+    const executor = new Executor({ registry: new Registry() });
+    const store = new RedisTaskStore({ url: "redis://localhost:6379" });
+    const manager = new AsyncTaskManager({ executor, store });
+    ```
+=== "Rust"
+    ```rust
+    use apcore::async_task::{AsyncTaskManager, RedisTaskStore};
+    use apcore::{Executor, Registry};
+
+    let executor = Executor::new(Registry::new());
+    let store = RedisTaskStore::new("redis://localhost:6379")?;
+    let manager = AsyncTaskManager::new(executor, store);
+    ```
+
+## Contract: TaskStore.save
+
+### Inputs
+- `task_info` (TaskInfo, required) — the task to persist (creates or overwrites)
+
+### Errors
+- `TaskStoreError(code=TASK_STORE_UNAVAILABLE)` — backend is unreachable
+
+### Returns
+- On success: void/None/()
+
+### Properties
+- async: true (MAY be async for network-backed stores)
+- thread_safe: true
+- pure: false
+- idempotent: true (calling save twice with same task_id overwrites)
+
+---
+
+### 1.2 Retry with Configurable Backoff
+
+`AsyncTaskManager` MUST support per-task retry configuration to handle transient failures in module execution.
+
+**Normative rules:**
+
+- `AsyncTaskManager` MUST support per-task retry configuration with the following fields: `max_retries` (int, default 0), `retry_delay_ms` (int, default 1000), `backoff_multiplier` (float, default 2.0), `max_retry_delay_ms` (int, default 60000).
+- When a task fails and `max_retries > 0`, the manager MUST reschedule the task with delay calculated as: `min(retry_delay_ms * (backoff_multiplier ^ attempt), max_retry_delay_ms)`.
+- After exhausting all retries, the task status MUST be set to `FAILED` with the `error` field populated.
+- Retry count and attempt number MUST be stored in `TaskInfo` as `retry_count` (current attempt number, 0-indexed) and `max_retries`.
+
+**Default retry configuration (YAML):**
+
+```yaml
+async_task:
+  default_retry:
+    max_retries: 3
+    retry_delay_ms: 1000
+    backoff_multiplier: 2.0
+    max_retry_delay_ms: 30000
+```
+
+**Submitting a task with custom retry configuration:**
+
+=== "Python"
+    ```python
+    from apcore.async_task import AsyncTaskManager, RetryConfig
+
+    manager = AsyncTaskManager(executor)
+
+    task_id = await manager.submit(
+        "data.process_batch",
+        {"items": large_list},
+        retry=RetryConfig(
+            max_retries=3,
+            retry_delay_ms=500,
+            backoff_multiplier=2.0,
+            max_retry_delay_ms=30000,
+        ),
+    )
+    ```
+=== "TypeScript"
+    ```typescript
+    import { AsyncTaskManager, RetryConfig } from "apcore-js/async-task";
+
+    const manager = new AsyncTaskManager({ executor });
+
+    const taskId = await manager.submit(
+        "data.process_batch",
+        { items: largeList },
+        {
+            retry: new RetryConfig({
+                maxRetries: 3,
+                retryDelayMs: 500,
+                backoffMultiplier: 2.0,
+                maxRetryDelayMs: 30000,
+            }),
+        },
+    );
+    ```
+=== "Rust"
+    ```rust
+    use apcore::async_task::{AsyncTaskManager, RetryConfig};
+
+    let manager = AsyncTaskManager::new(executor, store);
+
+    let task_id = manager.submit(
+        "data.process_batch",
+        serde_json::json!({"items": large_list}),
+        Some(RetryConfig {
+            max_retries: 3,
+            retry_delay_ms: 500,
+            backoff_multiplier: 2.0,
+            max_retry_delay_ms: 30000,
+        }),
+    ).await?;
+    ```
+
+---
+
+### 1.3 Automatic TTL-Based Cleanup (Reaper)
+
+The Reaper is an opt-in background task that automatically removes terminal-state tasks older than a configurable TTL, preventing unbounded storage growth in long-running deployments.
+
+**Normative rules:**
+
+- Implementations SHOULD run a Reaper background task that periodically calls `store.list_expired(before=now - ttl_seconds)` and deletes all returned tasks.
+- The Reaper MUST be opt-in: it MUST NOT run unless `reaper_enabled: true` is configured.
+- Default `ttl_seconds`: 3600 (1 hour). Default `sweep_interval_ms`: 300000 (5 minutes).
+- The Reaper MUST NOT delete tasks in `PENDING` or `RUNNING` status.
+- When the Reaper deletes a task batch, it SHOULD log at DEBUG level with count.
+
+**Reaper configuration (YAML):**
+
+```yaml
+async_task:
+  reaper:
+    enabled: true
+    ttl_seconds: 7200
+    sweep_interval_ms: 600000
+```
+
+**Enabling the Reaper at runtime:**
+
+=== "Python"
+    ```python
+    from apcore.async_task import AsyncTaskManager
+
+    manager = AsyncTaskManager(executor)
+
+    # Start the background reaper; returns a handle to stop it later
+    reaper_handle = await manager.start_reaper(
+        ttl_seconds=7200,
+        sweep_interval_ms=600000,
+    )
+
+    # ... application runs ...
+
+    # Graceful shutdown
+    await reaper_handle.stop()
+    ```
+=== "TypeScript"
+    ```typescript
+    import { AsyncTaskManager } from "apcore-js/async-task";
+
+    const manager = new AsyncTaskManager({ executor });
+
+    // Start the background reaper; returns a handle to stop it later
+    const reaperHandle = await manager.startReaper({
+        ttlSeconds: 7200,
+        sweepIntervalMs: 600000,
+    });
+
+    // ... application runs ...
+
+    // Graceful shutdown
+    await reaperHandle.stop();
+    ```
+=== "Rust"
+    ```rust
+    use apcore::async_task::AsyncTaskManager;
+
+    let manager = AsyncTaskManager::new(executor, store);
+
+    // Start the background reaper; returns a handle to stop it later
+    let reaper_handle = manager.start_reaper(7200.0, 600_000).await;
+
+    // ... application runs ...
+
+    // Graceful shutdown
+    reaper_handle.stop().await;
+    ```
+
+## Contract: AsyncTaskManager.start_reaper
+
+### Inputs
+- `ttl_seconds` (float, optional, default=3600) — task age threshold in seconds; tasks with `completed_at` older than `now - ttl_seconds` are eligible for deletion
+- `sweep_interval_ms` (int, optional, default=300000) — how often (in milliseconds) the Reaper sweeps for expired tasks
+
+### Errors
+- None — if the underlying store is unavailable during a sweep, log WARN and retry next interval
+
+### Returns
+- On success: `ReaperHandle` — a handle to stop the background task (call `.stop()` to cancel the Reaper)
+
+### Properties
+- async: true (spawns background coroutine/task/thread)
+- thread_safe: true
+- pure: false (starts background process)
+- idempotent: false (calling twice starts two Reapers; implementations SHOULD guard against this)
+
+---
+
+## Contract: AsyncTaskManager.get_status
+
+### Inputs
+- `task_id` (str/string, required) — UUID v4 identifying the task
+
+### Errors
+- None — unknown `task_id` returns `None`/`null` rather than raising
+
+### Returns
+- On success: `TaskInfo | None` — the current snapshot of the task record, or `None`/`null` if no task with that ID exists
+- The returned object is a **copy** (TypeScript) or the live dataclass reference (Python); callers MUST NOT rely on mutation of the returned value to reflect state changes
+
+### Properties
+- async: false
+- thread_safe: true
+- pure: false (reads mutable task state)
+- idempotent: true
+
+---
+
+## Contract: AsyncTaskManager.get_result
+
+### Inputs
+- `task_id` (str/string, required) — UUID v4 identifying the task
+
+### Errors
+- `KeyError` / `Error("Task not found: <id>")` — no task with the given `task_id` exists; raised unconditionally regardless of task state
+- `RuntimeError` / `Error("Task <id> is not completed (status=<value>)")` — task exists but status is not `COMPLETED`; this includes `PENDING`, `RUNNING`, `FAILED`, and `CANCELLED`
+
+### Returns
+- On success: the `result` field of the `TaskInfo` record — Python type is `Any` (module-defined); TypeScript type is `Record<string, unknown>`
+- Result is only populated when `status == COMPLETED`; in all other terminal states (`FAILED`, `CANCELLED`) the result field is `None`/`null`
+
+### Properties
+- async: false
+- thread_safe: true
+- pure: false (reads mutable task state)
+- idempotent: true
+
+---
+
+## Contract: AsyncTaskManager.list_tasks
+
+### Inputs
+- `status` (TaskStatus, optional) — when provided, only tasks with this exact status are returned; when omitted, all tasks are returned regardless of status
+
+### Errors
+- None
+
+### Returns
+- On success: `list[TaskInfo]` / `TaskInfo[]` — a snapshot list of matching task records; Python returns references to live dataclass objects; TypeScript returns shallow copies (`{ ...info }`)
+- The list order is insertion order (Python dict / JavaScript Map)
+- An empty list is returned if no tasks match the filter
+
+### Properties
+- async: false
+- thread_safe: true
+- pure: false (reads mutable task state)
+- idempotent: true
+
+---
+
+## Contract: AsyncTaskManager.cleanup
+
+### Inputs
+- `max_age_seconds` (float, optional, default=3600.0) — age threshold in seconds; only tasks whose reference timestamp is **at least** this many seconds in the past are removed
+
+### Reference timestamp selection
+The reference time used to compute age differs by task completion state:
+
+- If `completed_at` is set (task reached a terminal state normally): `completed_at` is used
+- If `completed_at` is `None` (e.g. task was never started): `submitted_at` is used as the fallback
+
+### Eligible states
+Only tasks in terminal states are considered: `COMPLETED`, `FAILED`, `CANCELLED`. Tasks in `PENDING` or `RUNNING` are never removed by `cleanup`.
+
+### Errors
+- None
+
+### Returns
+- On success: `int` — count of tasks removed from the store during this call; returns `0` if nothing was eligible
+
+### Properties
+- async: false
+- thread_safe: true
+- pure: false (mutates task store)
+- idempotent: false (a second call with the same threshold removes nothing if all eligible tasks were already removed, but the side-effect on state differs from no-op)
+
+---
+
+## Contract: AsyncTaskManager.shutdown
+
+### Inputs
+- None
+
+### Behavior
+Iterates all tasks currently in `PENDING` or `RUNNING` state and cancels each one. In Python, each cancellation awaits the underlying `asyncio.Task` to finish (cooperative cancellation). In TypeScript, `cancel()` is called for each such task and then `Promise.allSettled` awaits all task promises to settle.
+
+After `shutdown` returns, every task that was `PENDING` or `RUNNING` at the time of the call will be in `CANCELLED` state.
+
+### Errors
+- None raised to caller; unexpected exceptions from individual task bodies during cancellation are logged at `WARNING` level (Python) or printed to `console.warn` (TypeScript) and not re-raised
+
+### Returns
+- On success: `None` / `void`
+
+### Properties
+- async: true
+- thread_safe: true
+- pure: false (mutates task state)
+- idempotent: true (calling shutdown on an already-shut-down manager with no active tasks is a no-op)
+
+---
+
+## Contract: TaskStore.get
+
+!!! note "Planned interface — not yet implemented in any SDK"
+    `TaskStore` is specified as part of the pluggable-storage evolution (Issue #34). The contracts below describe the normative interface that all SDK implementations MUST satisfy. The in-process `AsyncTaskManager` behavior documented above is equivalent to what an `InMemoryTaskStore` will provide.
+
+### Inputs
+- `task_id` (str/string/&str, required) — UUID v4 identifying the task
+
+### Errors
+- `TaskStoreError(code=TASK_STORE_UNAVAILABLE)` — backend unreachable (network-backed stores only); in-memory implementations MUST NOT raise this
+
+### Returns
+- On success: `TaskInfo | None` — the stored task record, or `None`/`null` if no task with that ID exists
+
+### Properties
+- async: true (MAY be async for network-backed stores)
+- thread_safe: true
+- pure: false (reads external state)
+- idempotent: true
+
+---
+
+## Contract: TaskStore.list
+
+### Inputs
+- `status` (TaskStatus, optional) — when provided, only tasks with this exact status are returned; when omitted, all stored tasks are returned
+
+### Errors
+- `TaskStoreError(code=TASK_STORE_UNAVAILABLE)` — backend unreachable (network-backed stores only)
+
+### Returns
+- On success: `List[TaskInfo]` / `TaskInfo[]` — all matching task records; empty list if none match
+
+### Properties
+- async: true (MAY be async for network-backed stores)
+- thread_safe: true
+- pure: false (reads external state)
+- idempotent: true
+
+---
+
+## Contract: TaskStore.delete
+
+### Inputs
+- `task_id` (str/string/&str, required) — UUID v4 identifying the task to remove
+
+### Errors
+- `TaskStoreError(code=TASK_STORE_UNAVAILABLE)` — backend unreachable (network-backed stores only)
+- Deleting a non-existent `task_id` MUST be a no-op (no error raised)
+
+### Returns
+- On success: `None` / `void` / `()`
+
+### Properties
+- async: true (MAY be async for network-backed stores)
+- thread_safe: true
+- pure: false (mutates store)
+- idempotent: true (deleting an already-absent task_id succeeds silently)
+
+---
+
+## Contract: TaskStore.list_expired
+
+### Inputs
+- `before_timestamp` (float, required) — Unix timestamp (seconds); tasks whose `completed_at` is strictly less than this value are considered expired
+
+### Eligible states
+Only terminal-state tasks (`COMPLETED`, `FAILED`, `CANCELLED`) are eligible for expiry. Tasks without a `completed_at` (i.e. still `PENDING` or `RUNNING`) MUST NOT be returned by this method.
+
+### Errors
+- `TaskStoreError(code=TASK_STORE_UNAVAILABLE)` — backend unreachable (network-backed stores only)
+
+### Returns
+- On success: `List[TaskInfo]` / `TaskInfo[]` — all terminal-state tasks whose `completed_at < before_timestamp`; empty list if none qualify
+
+### Properties
+- async: true (MAY be async for network-backed stores)
+- thread_safe: true
+- pure: false (reads external state)
+- idempotent: true

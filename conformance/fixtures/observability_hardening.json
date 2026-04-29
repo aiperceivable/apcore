@@ -1,0 +1,217 @@
+{
+  "description": "Observability hardening cross-language conformance: pluggable storage, BatchSpanProcessor, O(log N) ErrorHistory eviction, error fingerprinting, configurable redaction, and K8s/Prometheus integration hooks (Issue #43).",
+  "test_cases": [
+    {
+      "id": "pluggable_store_default_inmemory",
+      "description": "When no store is specified at construction, ErrorHistory uses InMemoryObservabilityStore.",
+      "input": {
+        "constructor_args": {}
+      },
+      "expected": {
+        "store_type": "InMemoryObservabilityStore"
+      }
+    },
+    {
+      "id": "batch_processor_buffers_spans",
+      "description": "Spans submitted to BatchSpanProcessor are enqueued and not exported immediately (export happens in a background batch).",
+      "input": {
+        "processor": "batch",
+        "schedule_delay_ms": 5000,
+        "spans_submitted": 3,
+        "elapsed_ms_after_submit": 0
+      },
+      "expected": {
+        "spans_exported_immediately": 0,
+        "queue_size": 3,
+        "spans_dropped": 0
+      }
+    },
+    {
+      "id": "batch_processor_drops_on_full_queue",
+      "description": "When the BatchSpanProcessor queue is at max_queue_size, additional spans are dropped and spans_dropped is incremented.",
+      "input": {
+        "processor": "batch",
+        "max_queue_size": 5,
+        "queue_size_before": 5,
+        "new_spans_submitted": 2
+      },
+      "expected": {
+        "queue_size_after": 5,
+        "spans_dropped": 2
+      }
+    },
+    {
+      "id": "error_history_evicts_oldest_first",
+      "description": "When ErrorHistory is at max_total_entries capacity, recording a new error evicts the entry with the oldest last_seen_at timestamp.",
+      "input": {
+        "max_total_entries": 3,
+        "existing_entries": [
+          {
+            "module_id": "executor.a",
+            "code": "ERR_A",
+            "last_seen_at": "2026-01-01T10:00:00Z"
+          },
+          {
+            "module_id": "executor.b",
+            "code": "ERR_B",
+            "last_seen_at": "2026-01-01T11:00:00Z"
+          },
+          {
+            "module_id": "executor.c",
+            "code": "ERR_C",
+            "last_seen_at": "2026-01-01T12:00:00Z"
+          }
+        ],
+        "new_entry": {
+          "module_id": "executor.d",
+          "code": "ERR_D",
+          "last_seen_at": "2026-01-01T13:00:00Z"
+        }
+      },
+      "expected": {
+        "evicted_entry_code": "ERR_A",
+        "remaining_entry_codes": ["ERR_B", "ERR_C", "ERR_D"],
+        "total_entries": 3
+      }
+    },
+    {
+      "id": "error_fingerprint_dedup_same_error",
+      "description": "Recording the same error (same code, module_id, and message) twice results in count=2, not two separate entries.",
+      "input": {
+        "records": [
+          {
+            "module_id": "executor.db.query",
+            "code": "DB_TIMEOUT",
+            "message": "connection timed out"
+          },
+          {
+            "module_id": "executor.db.query",
+            "code": "DB_TIMEOUT",
+            "message": "connection timed out"
+          }
+        ]
+      },
+      "expected": {
+        "total_entries": 1,
+        "entry_count": 2
+      }
+    },
+    {
+      "id": "error_fingerprint_normalization",
+      "description": "A message containing a UUID is normalized to <UUID> before fingerprint hashing, so two messages differing only by UUID produce the same fingerprint.",
+      "input": {
+        "module_id": "executor.auth",
+        "code": "TOKEN_INVALID",
+        "messages": [
+          "token a1b2c3d4-e5f6-7890-abcd-ef1234567890 is invalid",
+          "token 00000000-0000-0000-0000-000000000001 is invalid"
+        ]
+      },
+      "expected": {
+        "normalized_messages": [
+          "token <uuid> is invalid",
+          "token <uuid> is invalid"
+        ],
+        "fingerprints_equal": true
+      }
+    },
+    {
+      "id": "fingerprint_different_errors_no_collision",
+      "description": "Two errors with different error codes produce different fingerprints (no hash collision).",
+      "input": {
+        "entries": [
+          {
+            "module_id": "executor.db.query",
+            "code": "DB_TIMEOUT",
+            "message": "connection timed out"
+          },
+          {
+            "module_id": "executor.db.query",
+            "code": "DB_CONN_REFUSED",
+            "message": "connection timed out"
+          }
+        ]
+      },
+      "expected": {
+        "fingerprints_equal": false
+      }
+    },
+    {
+      "id": "redaction_field_pattern_match",
+      "description": "A field named 'user_password' matches the glob pattern '*password*' and its value is replaced with the configured replacement string.",
+      "input": {
+        "redaction_config": {
+          "field_patterns": ["*password*"],
+          "value_patterns": [],
+          "replacement": "***REDACTED***"
+        },
+        "log_entry": {
+          "module_id": "executor.auth.login",
+          "caller_id": "api.gateway",
+          "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736",
+          "inputs": {
+            "username": "alice",
+            "user_password": "hunter2"
+          }
+        }
+      },
+      "expected": {
+        "logged_inputs": {
+          "username": "alice",
+          "user_password": "***REDACTED***"
+        },
+        "trace_id_present": true,
+        "caller_id_present": true,
+        "module_id_present": true
+      }
+    },
+    {
+      "id": "redaction_value_pattern_match",
+      "description": "A field value 'Bearer abc123xyz' matches the regex '^Bearer .*' and is replaced with the configured replacement string.",
+      "input": {
+        "redaction_config": {
+          "field_patterns": [],
+          "value_patterns": ["^Bearer .*"],
+          "replacement": "***REDACTED***"
+        },
+        "log_entry": {
+          "module_id": "executor.http.request",
+          "caller_id": "api.gateway",
+          "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736",
+          "inputs": {
+            "url": "https://api.example.com/data",
+            "authorization": "Bearer abc123xyz"
+          }
+        }
+      },
+      "expected": {
+        "logged_inputs": {
+          "url": "https://api.example.com/data",
+          "authorization": "***REDACTED***"
+        },
+        "trace_id_present": true,
+        "caller_id_present": true,
+        "module_id_present": true
+      }
+    },
+    {
+      "id": "prometheus_format_includes_required_metrics",
+      "description": "PrometheusExporter.export returns text containing the three required apcore metric names.",
+      "input": {
+        "collector_state": {
+          "apcore_module_calls_total": 42,
+          "apcore_module_errors_total": 3,
+          "apcore_module_duration_seconds_observations": [0.01, 0.05, 0.12]
+        }
+      },
+      "expected": {
+        "output_contains": [
+          "apcore_module_calls_total",
+          "apcore_module_errors_total",
+          "apcore_module_duration_seconds"
+        ],
+        "format": "prometheus_text"
+      }
+    }
+  ]
+}

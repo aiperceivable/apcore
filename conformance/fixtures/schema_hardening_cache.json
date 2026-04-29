@@ -1,0 +1,83 @@
+{
+  "description": "Content-addressable schema cache: deduplication by SHA-256 of canonical JSON. Implementations must return the same cached model for schemas with identical content regardless of load path or key order. PROTOCOL_SPEC §4.15.",
+  "test_cases": [
+    {
+      "id": "same_content_two_paths",
+      "description": "Two schema objects with identical content loaded from different paths must produce the same content hash and share one cached model object",
+      "schemas": [
+        {
+          "type": "object",
+          "properties": { "name": { "type": "string" } },
+          "required": ["name"]
+        },
+        {
+          "type": "object",
+          "properties": { "name": { "type": "string" } },
+          "required": ["name"]
+        }
+      ],
+      "expected": { "same_hash": true }
+    },
+    {
+      "id": "different_content_different_hash",
+      "description": "Two schemas with different content must produce different hashes — cache must not merge distinct schemas",
+      "schemas": [
+        {
+          "type": "object",
+          "properties": { "name": { "type": "string" } },
+          "required": ["name"]
+        },
+        {
+          "type": "object",
+          "properties": { "age": { "type": "integer" } },
+          "required": ["age"]
+        }
+      ],
+      "expected": { "same_hash": false }
+    },
+    {
+      "id": "canonical_json_key_order",
+      "description": "The same schema with object keys in different order must produce the same hash after canonical JSON normalization (sort_keys=True)",
+      "schemas": [
+        {
+          "required": ["name"],
+          "type": "object",
+          "properties": { "name": { "type": "string" } }
+        },
+        {
+          "type": "object",
+          "properties": { "name": { "type": "string" } },
+          "required": ["name"]
+        }
+      ],
+      "expected": { "same_hash": true }
+    },
+    {
+      "id": "ref_resolved_schema_hash",
+      "description": "Schema is hashed after $ref resolution — the resolved (inlined) form is used for hashing, not the pre-resolution form containing $ref",
+      "schemas": [
+        {
+          "type": "object",
+          "properties": { "label": { "type": "string" } },
+          "required": ["label"]
+        },
+        {
+          "type": "object",
+          "properties": { "label": { "$ref": "#/$defs/StringField" } },
+          "$defs": { "StringField": { "type": "string" } },
+          "required": ["label"]
+        }
+      ],
+      "expected": { "same_hash": false }
+    },
+    {
+      "id": "empty_schema_hash",
+      "description": "The empty schema {} has a deterministic and stable hash — canonical form of {} is always the same across implementations",
+      "schemas": [
+        {},
+        {}
+      ],
+      "expected": { "same_hash": true }
+    }
+  ]
+}

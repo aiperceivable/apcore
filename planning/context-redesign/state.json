@@ -91,7 +91,8 @@
     }
   ],
   "metadata": {
-    "source_doc": "docs/features/context-redesign.md",
+    "source_doc": "docs/api/context-object.md",
+    "note": "context-redesign was SDK-only (no spec doc created). Deliverables: ContextKey<T>, builtin-keys, data-key migration, serialization protocol — all implemented in SDK repos only.",
     "created_by": "code-forge",
     "version": "1.0"
   }

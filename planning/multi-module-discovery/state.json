@@ -1,0 +1,52 @@
+{
+  "feature": "multi-module-discovery",
+  "created": "2026-04-28T00:00:00Z",
+  "updated": "2026-04-28T00:00:00Z",
+  "status": "completed",
+  "execution_order": [
+    "spec-patch",
+    "feature-doc",
+    "fixture",
+    "mkdocs-update"
+  ],
+  "progress": { "total_tasks": 4, "completed": 4, "in_progress": 0, "pending": 0 },
+  "tasks": [
+    {
+      "id": "spec-patch",
+      "file": "tasks/spec-patch.md",
+      "title": "Add opt-in multi_class discovery mode and ID derivation rules to PROTOCOL_SPEC.md §2.1 and §2.7",
+      "status": "completed",
+      "started_at": null,
+      "completed_at": "2026-04-28T00:00:00Z"
+    },
+    {
+      "id": "feature-doc",
+      "file": "tasks/feature-doc.md",
+      "title": "Create docs/features/multi-module-discovery.md with full spec, examples in Python/TypeScript/Rust",
+      "status": "completed",
+      "started_at": null,
+      "completed_at": "2026-04-28T00:00:00Z"
+    },
+    {
+      "id": "fixture",
+      "file": "tasks/fixture.md",
+      "title": "Create conformance fixture for multi-class ID derivation, conflict detection, and single-class fallback",
+      "status": "completed",
+      "started_at": null,
+      "completed_at": "2026-04-28T00:00:00Z"
+    },
+    {
+      "id": "mkdocs-update",
+      "file": "tasks/mkdocs-update.md",
+      "title": "Add multi-module-discovery.md to mkdocs.yml nav and README.md Documentation Index",
+      "status": "completed",
+      "started_at": null,
+      "completed_at": "2026-04-28T00:00:00Z"
+    }
+  ],
+  "metadata": {
+    "source_doc": "docs/features/multi-module-discovery.md",
+    "created_by": "code-forge",
+    "github_issue": "#32"
+  }
+}

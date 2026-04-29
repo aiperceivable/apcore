@@ -1,0 +1,248 @@
+{
+  "description": "System modules hardening: config persistence, contextual audit trail, Prometheus UsageCollector metrics, path-filter reload, and startup failure handling. Closes Issue #45.",
+  "test_cases": [
+    {
+      "id": "overrides_persisted_on_update",
+      "description": "update_config with overrides_path configured writes the change to the YAML overrides file",
+      "setup": {
+        "overrides_path": "/tmp/apcore_test_overrides.yaml",
+        "initial_overrides_file": null
+      },
+      "action": {
+        "module_id": "system.control.update_config",
+        "input": {
+          "key": "executor.default_timeout",
+          "value": 60000,
+          "reason": "increase timeout for tests"
+        }
+      },
+      "expected": {
+        "call_success": true,
+        "overrides_file_written": true,
+        "overrides_file_contains": {
+          "executor.default_timeout": 60000
+        }
+      }
+    },
+    {
+      "id": "overrides_loaded_on_startup",
+      "description": "When overrides.yaml exists on startup, its values are applied after the base config",
+      "setup": {
+        "base_config": {
+          "executor.default_timeout": 30000
+        },
+        "overrides_file_content": {
+          "executor.default_timeout": 60000
+        }
+      },
+      "expected": {
+        "resolved_value": {
+          "key": "executor.default_timeout",
+          "value": 60000
+        },
+        "base_not_modified": true
+      }
+    },
+    {
+      "id": "audit_entry_records_actor",
+      "description": "update_config call with context.identity set produces an audit entry with actor_id from context.identity.id",
+      "setup": {
+        "audit_store": "InMemoryAuditStore"
+      },
+      "action": {
+        "module_id": "system.control.update_config",
+        "input": {
+          "key": "executor.default_timeout",
+          "value": 45000,
+          "reason": "audit trail test"
+        },
+        "context_identity": {
+          "id": "user-abc-123",
+          "type": "user"
+        }
+      },
+      "expected": {
+        "audit_entries_count": 1,
+        "audit_entry": {
+          "action": "update_config",
+          "target_module_id": "system.control.update_config",
+          "actor_id": "user-abc-123",
+          "actor_type": "user"
+        },
+        "timestamp_present": true,
+        "trace_id_present": true
+      }
+    },
+    {
+      "id": "audit_entry_records_change",
+      "description": "toggle_feature call produces an audit entry with before/after values in the change field",
+      "setup": {
+        "audit_store": "InMemoryAuditStore",
+        "initial_module_state": {
+          "module_id": "risky.module",
+          "enabled": true
+        }
+      },
+      "action": {
+        "module_id": "system.control.toggle_feature",
+        "input": {
+          "module_id": "risky.module",
+          "enabled": false,
+          "reason": "maintenance window"
+        },
+        "context_identity": {
+          "id": "svc-deploy-agent",
+          "type": "service"
+        }
+      },
+      "expected": {
+        "audit_entries_count": 1,
+        "audit_entry": {
+          "action": "toggle_feature",
+          "target_module_id": "risky.module",
+          "actor_id": "svc-deploy-agent",
+          "actor_type": "service",
+          "change": {
+            "before": true,
+            "after": false
+          }
+        }
+      }
+    },
+    {
+      "id": "prometheus_usage_exports_calls_total",
+      "description": "When Prometheus is enabled and UsageCollector has call data, GET /metrics includes apcore_usage_calls_total",
+      "setup": {
+        "observability_prometheus_enabled": true,
+        "usage_collector_data": [
+          {
+            "module_id": "math.add",
+            "call_count": 5000,
+            "error_count": 2,
+            "status_breakdown": {
+              "success": 4998,
+              "error": 2
+            }
+          }
+        ]
+      },
+      "expected": {
+        "metrics_endpoint_contains": [
+          "apcore_usage_calls_total{module_id=\"math.add\",status=\"success\"}",
+          "apcore_usage_calls_total{module_id=\"math.add\",status=\"error\"}",
+          "apcore_usage_error_rate{module_id=\"math.add\"}",
+          "apcore_usage_p99_latency_ms{module_id=\"math.add\"}"
+        ],
+        "export_within_timeout_ms": 1000
+      }
+    },
+    {
+      "id": "reload_with_path_filter",
+      "description": "reload_module with path_filter 'executor.*' reloads all modules matching the pattern in dependency topological order",
+      "setup": {
+        "registered_modules": [
+          "executor.email.send",
+          "executor.math.add",
+          "executor.pdf.render",
+          "orchestrator.main"
+        ]
+      },
+      "action": {
+        "module_id": "system.control.reload_module",
+        "input": {
+          "path_filter": "executor.*",
+          "reload_dependents": false,
+          "reason": "bulk reload after deploy"
+        }
+      },
+      "expected": {
+        "call_success": true,
+        "reloaded_modules": [
+          "executor.email.send",
+          "executor.math.add",
+          "executor.pdf.render"
+        ],
+        "not_reloaded": ["orchestrator.main"],
+        "reload_order": "topological"
+      }
+    },
+    {
+      "id": "reload_module_id_and_filter_conflict",
+      "description": "Providing both module_id and path_filter to reload_module raises MODULE_RELOAD_CONFLICT",
+      "action": {
+        "module_id": "system.control.reload_module",
+        "input": {
+          "module_id": "executor.email.send",
+          "path_filter": "executor.*",
+          "reason": "conflict test"
+        }
+      },
+      "expected": {
+        "call_success": false,
+        "error_code": "MODULE_RELOAD_CONFLICT",
+        "error_message_contains": "mutually exclusive"
+      }
+    },
+    {
+      "id": "startup_fail_on_error_true_raises",
+      "description": "When fail_on_error=True and a system module registration fails, register_sys_modules raises SysModuleRegistrationError immediately",
+      "setup": {
+        "simulated_failure": {
+          "module_id": "system.health.summary",
+          "error": "schema validation error"
+        }
+      },
+      "action": {
+        "function": "register_sys_modules",
+        "params": {
+          "fail_on_error": true
+        }
+      },
+      "expected": {
+        "raises": true,
+        "error_code": "SYS_MODULE_REGISTRATION_FAILED",
+        "error_includes_module_id": "system.health.summary"
+      }
+    },
+    {
+      "id": "startup_fail_on_error_false_continues",
+      "description": "When fail_on_error=False (default) and a system module registration fails, register_sys_modules logs at ERROR level and continues",
+      "setup": {
+        "simulated_failure": {
+          "module_id": "system.health.summary",
+          "error": "schema validation error"
+        }
+      },
+      "action": {
+        "function": "register_sys_modules",
+        "params": {
+          "fail_on_error": false
+        }
+      },
+      "expected": {
+        "raises": false,
+        "log_level_on_failure": "ERROR",
+        "remaining_modules_registered": true
+      }
+    },
+    {
+      "id": "rust_register_returns_result",
+      "description": "Rust register_sys_modules returns Result<(), SysModuleError> — Ok(()) on success, Err(SysModuleError) on failure",
+      "language": "rust",
+      "setup": {
+        "simulated_failure": null
+      },
+      "action": {
+        "function": "register_sys_modules",
+        "params": {}
+      },
+      "expected": {
+        "return_type": "Result",
+        "ok_variant": "()",
+        "err_variant": "SysModuleError",
+        "panics": false,
+        "returns_option": false
+      }
+    }
+  ]
+}

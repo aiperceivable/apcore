@@ -1,0 +1,52 @@
+{
+  "feature": "pipeline-hardening",
+  "created": "2026-04-28T00:00:00Z",
+  "updated": "2026-04-28T00:00:00Z",
+  "status": "completed",
+  "execution_order": [
+    "spec-patch",
+    "run-until-spec",
+    "pipeline-fixture",
+    "control-flow-spec"
+  ],
+  "progress": { "total_tasks": 4, "completed": 4, "in_progress": 0, "pending": 0 },
+  "tasks": [
+    {
+      "id": "spec-patch",
+      "file": "tasks/spec-patch.md",
+      "title": "Add normative fail-fast, replace semantic, and step-level middleware rules to PROTOCOL_SPEC.md and core-executor.md",
+      "status": "completed",
+      "started_at": "2026-04-28T00:00:00Z",
+      "completed_at": "2026-04-28T00:00:00Z"
+    },
+    {
+      "id": "run-until-spec",
+      "file": "tasks/run-until-spec.md",
+      "title": "Document unified run_until pattern for conditional pipeline termination in core-executor.md",
+      "status": "completed",
+      "started_at": "2026-04-28T00:00:00Z",
+      "completed_at": "2026-04-28T00:00:00Z"
+    },
+    {
+      "id": "pipeline-fixture",
+      "file": "tasks/pipeline-fixture.md",
+      "title": "Create conformance fixture for fail-fast, replace-step, and run_until behaviors",
+      "status": "completed",
+      "started_at": "2026-04-28T00:00:00Z",
+      "completed_at": "2026-04-28T00:00:00Z"
+    },
+    {
+      "id": "control-flow-spec",
+      "file": "tasks/control-flow-spec.md",
+      "title": "Add O(1) step name lookup requirement to PROTOCOL_SPEC.md",
+      "status": "completed",
+      "started_at": "2026-04-28T00:00:00Z",
+      "completed_at": "2026-04-28T00:00:00Z"
+    }
+  ],
+  "metadata": {
+    "source_doc": "docs/features/core-executor.md",
+    "created_by": "code-forge",
+    "github_issue": "#33"
+  }
+}

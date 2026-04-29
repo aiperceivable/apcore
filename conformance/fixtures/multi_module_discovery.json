@@ -1,0 +1,122 @@
+{
+  "description": "Multi-class discovery: ID derivation, snake_case conversion, conflict detection, and backward compatibility (PROTOCOL_SPEC §2.1.1)",
+  "test_cases": [
+    {
+      "id": "single_class_id_unchanged",
+      "description": "A file with exactly one Module class must produce the base_id unchanged, regardless of multi_class mode",
+      "input": {
+        "file_path": "extensions/math/math_ops.py",
+        "extensions_root": "extensions",
+        "multi_class_enabled": true,
+        "classes": [
+          { "name": "MathOps", "implements_module": true }
+        ]
+      },
+      "expected": {
+        "module_ids": ["math.math_ops"],
+        "error": null
+      }
+    },
+    {
+      "id": "two_classes_distinct_ids",
+      "description": "Two Module classes in one file each receive a distinct ID with the correct snake_case class segment appended",
+      "input": {
+        "file_path": "extensions/math/math_ops.py",
+        "extensions_root": "extensions",
+        "multi_class_enabled": true,
+        "classes": [
+          { "name": "Addition", "implements_module": true },
+          { "name": "Subtraction", "implements_module": true }
+        ]
+      },
+      "expected": {
+        "module_ids": ["math.math_ops.addition", "math.math_ops.subtraction"],
+        "error": null
+      }
+    },
+    {
+      "id": "class_name_snake_case_addition",
+      "description": "Class name 'Addition' converts to snake_case segment 'addition'",
+      "input": {
+        "class_name": "Addition"
+      },
+      "expected": {
+        "class_segment": "addition"
+      }
+    },
+    {
+      "id": "class_name_snake_case_math_ops",
+      "description": "Class name 'MathOps' converts to snake_case segment 'math_ops'",
+      "input": {
+        "class_name": "MathOps"
+      },
+      "expected": {
+        "class_segment": "math_ops"
+      }
+    },
+    {
+      "id": "class_name_snake_case_https_sender",
+      "description": "Class name 'HTTPSender' converts to snake_case segment 'http_sender'",
+      "input": {
+        "class_name": "HTTPSender"
+      },
+      "expected": {
+        "class_segment": "http_sender"
+      }
+    },
+    {
+      "id": "conflict_same_segment",
+      "description": "Two classes in the same file that produce the same snake_case segment must raise MODULE_ID_CONFLICT; no modules from the file are registered",
+      "input": {
+        "file_path": "extensions/math/math_ops.py",
+        "extensions_root": "extensions",
+        "multi_class_enabled": true,
+        "classes": [
+          { "name": "MyModule", "implements_module": true },
+          { "name": "My_Module", "implements_module": true }
+        ]
+      },
+      "expected": {
+        "module_ids": [],
+        "error": {
+          "code": "MODULE_ID_CONFLICT",
+          "conflicting_segment": "my_module"
+        }
+      }
+    },
+    {
+      "id": "full_id_grammar_valid",
+      "description": "The full derived multi-class ID must conform to the canonical_id grammar ^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)*$",
+      "input": {
+        "file_path": "extensions/executor/math/arithmetic.py",
+        "extensions_root": "extensions",
+        "multi_class_enabled": true,
+        "classes": [
+          { "name": "Addition", "implements_module": true }
+        ]
+      },
+      "expected": {
+        "module_ids": ["executor.math.arithmetic.addition"],
+        "grammar_valid": true,
+        "error": null
+      }
+    },
+    {
+      "id": "disabled_by_default",
+      "description": "With multi_class disabled (default), a file with two Module classes is treated as a single-class file; the base_id is returned and the second class is ignored or an SDK-policy error is raised",
+      "input": {
+        "file_path": "extensions/math/math_ops.py",
+        "extensions_root": "extensions",
+        "multi_class_enabled": false,
+        "classes": [
+          { "name": "Addition", "implements_module": true },
+          { "name": "Subtraction", "implements_module": true }
+        ]
+      },
+      "expected": {
+        "module_ids": ["math.math_ops"],
+        "note": "Only the first qualifying class is loaded in single-class mode; the second is silently ignored or causes an error per SDK policy. The base_id is never suffixed."
+      }
+    }
+  ]
+}

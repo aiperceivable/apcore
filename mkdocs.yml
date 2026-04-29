@@ -82,6 +82,7 @@ nav:
       - Extension System: features/extension-system.md
       - Identity System: features/identity-system.md
       - Middleware System: features/middleware-system.md
+      - Multi-Module Discovery: features/multi-module-discovery.md
       - Observability: features/observability.md
       - Registry System: features/registry-system.md
       - Schema System: features/schema-system.md

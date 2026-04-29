@@ -1,0 +1,25 @@
+{
+  "feature": "system-modules-hardening",
+  "github_issue": "#45",
+  "status": "completed",
+  "tasks": [
+    {
+      "id": "feature-doc-hardening",
+      "title": "Append System Modules Hardening section to docs/features/system-modules.md",
+      "status": "completed",
+      "file": "docs/features/system-modules.md"
+    },
+    {
+      "id": "conformance-fixture",
+      "title": "Create conformance/fixtures/system_modules_hardening.json with 10 test cases",
+      "status": "completed",
+      "file": "conformance/fixtures/system_modules_hardening.json"
+    },
+    {
+      "id": "conformance-readme-update",
+      "title": "Update conformance/README.md fixture table and CHANGELOG.md [Unreleased] section",
+      "status": "completed",
+      "files": ["conformance/README.md", "CHANGELOG.md"]
+    }
+  ]
+}

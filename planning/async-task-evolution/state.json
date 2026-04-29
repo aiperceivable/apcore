@@ -1,0 +1,43 @@
+{
+  "feature": "async-task-evolution",
+  "created": "2026-04-28T00:00:00Z",
+  "updated": "2026-04-28T00:00:00Z",
+  "status": "completed",
+  "execution_order": [
+    "pluggable-storage",
+    "retry-backoff",
+    "reaper-cleanup"
+  ],
+  "progress": { "total_tasks": 3, "completed": 3, "in_progress": 0, "pending": 0 },
+  "tasks": [
+    {
+      "id": "pluggable-storage",
+      "file": "tasks/pluggable-storage.md",
+      "title": "Define TaskStore interface and InMemoryTaskStore/RedisTaskStore/SqlTaskStore backends with injection at construction time",
+      "status": "completed",
+      "started_at": "2026-04-28T00:00:00Z",
+      "completed_at": "2026-04-28T00:00:00Z"
+    },
+    {
+      "id": "retry-backoff",
+      "file": "tasks/retry-backoff.md",
+      "title": "Add per-task retry configuration (max_retries, retry_delay_ms, backoff_multiplier, max_retry_delay_ms) with exponential backoff scheduling",
+      "status": "completed",
+      "started_at": "2026-04-28T00:00:00Z",
+      "completed_at": "2026-04-28T00:00:00Z"
+    },
+    {
+      "id": "reaper-cleanup",
+      "file": "tasks/reaper-cleanup.md",
+      "title": "Add opt-in Reaper background task for automatic TTL-based deletion of terminal-state tasks",
+      "status": "completed",
+      "started_at": "2026-04-28T00:00:00Z",
+      "completed_at": "2026-04-28T00:00:00Z"
+    }
+  ],
+  "metadata": {
+    "source_doc": "docs/features/async-tasks.md",
+    "created_by": "code-forge",
+    "github_issue": "#34"
+  }
+}

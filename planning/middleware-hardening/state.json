@@ -1,0 +1,39 @@
+{
+  "feature": "middleware-hardening",
+  "created": "2026-04-28T00:00:00Z",
+  "updated": "2026-04-28T00:00:00Z",
+  "status": "completed",
+  "execution_order": ["feature-doc-hardening", "conformance-fixture", "conformance-readme-update"],
+  "progress": { "total_tasks": 3, "completed": 3, "in_progress": 0, "pending": 0 },
+  "tasks": [
+    {
+      "id": "feature-doc-hardening",
+      "file": "tasks/feature-doc-hardening.md",
+      "title": "Append hardening section to middleware-system.md",
+      "status": "completed",
+      "started_at": "2026-04-28T00:00:00Z",
+      "completed_at": "2026-04-28T00:00:00Z"
+    },
+    {
+      "id": "conformance-fixture",
+      "file": "tasks/conformance-fixture.md",
+      "title": "Create middleware_hardening.json fixture",
+      "status": "completed",
+      "started_at": "2026-04-28T00:00:00Z",
+      "completed_at": "2026-04-28T00:00:00Z"
+    },
+    {
+      "id": "conformance-readme-update",
+      "file": "tasks/conformance-readme-update.md",
+      "title": "Update conformance/README.md",
+      "status": "completed",
+      "started_at": "2026-04-28T00:00:00Z",
+      "completed_at": "2026-04-28T00:00:00Z"
+    }
+  ],
+  "metadata": {
+    "source_doc": "docs/features/middleware-system.md",
+    "created_by": "code-forge",
+    "github_issue": "#42"
+  }
+}

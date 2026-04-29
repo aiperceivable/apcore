@@ -287,3 +287,111 @@ Normative contract for the filesystem scanner used by step 1 of the discovery pi
 - **Event system tests** verify that register/unregister callbacks are invoked with correct arguments and that callback exceptions do not break the registry.
 - **ID map override tests** confirm that module IDs are correctly remapped and that queries use the overridden IDs.
 - Test naming follows the `test_<unit>_<behavior>` convention.
+
+## Contract: Registry.get
+
+Normative behavioral contract. All SDK implementations MUST satisfy these guarantees.
+
+### Inputs
+
+- `module_id` (str/string/&str, required) — the canonical module ID to look up.
+- `version_hint` (str/string/&str, optional, default `None`/`null`) — if provided, the registry MUST resolve to the best matching version using semantic-version range matching. If omitted, the latest registered version MUST be returned.
+
+### Preconditions
+
+- `module_id` MUST NOT be an empty string. An empty `module_id` MUST be rejected before any lock is acquired.
+
+### Errors
+
+- `ModuleNotFoundError(module_id="")` — raised/thrown if `module_id` is an empty string. Implementations MUST NOT accept empty IDs silently.
+- No error is raised for a well-formed `module_id` that is simply not registered — `get` returns `None`/`null` in that case.
+
+### Returns
+
+- On success (found): the registered module instance (type varies by SDK).
+- On success (not found): `None` (Python), `null` (TypeScript), `None` (Rust `Option`).
+
+!!! note "Version resolution"
+    In Python, `version_hint` routes through the `VersionedStore`; if no versioned entry exists, it falls back to the primary `_modules` map. TypeScript does not expose `version_hint` on `get()` — the TypeScript `get(moduleId)` always returns the single registered instance, with no version-hint parameter. Implement accordingly when porting.
+
+### Properties
+
+- async: false
+- thread_safe: true (Python acquires the reentrant lock; TypeScript is single-threaded)
+- pure: false (acquires lock; reads shared state)
+- idempotent: true (read-only; repeated calls with the same args return the same result if the registry has not changed)
+
+## Contract: Registry.list
+
+Normative behavioral contract. All SDK implementations MUST satisfy these guarantees.
+
+### Inputs
+
+- `tags` (list[str]/string[]/Vec<String>, optional) — if provided, only modules whose tag set is a superset of all supplied tags are included. Tag matching MUST be all-or-nothing (every supplied tag must be present). An empty `tags` list MUST be treated the same as `None`/`null` (no tag filter).
+- `prefix` (str/string/&str, optional) — if provided, only modules whose `module_id` starts with this prefix are included. Prefix matching is exact string prefix (`startsWith`), not a glob or regex.
+
+### Errors
+
+- None. Invalid or unknown tags and prefixes that match nothing return an empty list without error.
+
+### Returns
+
+- On success: lexicographically sorted list of unique module ID strings. The sort order MUST be consistent across calls when the registry has not changed.
+
+!!! note "Tag source"
+    Tags are sourced from both the module object's own `tags` attribute and from merged YAML metadata. Both sources are unioned before the filter is applied.
+
+### Properties
+
+- async: false
+- thread_safe: true (Python takes a snapshot under the lock before filtering; TypeScript iterates `_modules` without a lock due to single-threaded runtime)
+- pure: false (reads shared mutable state)
+- idempotent: true
+
+## Contract: Registry.get_definition
+
+Normative behavioral contract. All SDK implementations MUST satisfy these guarantees.
+
+### Inputs
+
+- `module_id` (str/string/&str, required) — the canonical module ID to describe.
+- `version_hint` (str/string/&str, optional, default `None`/`null`) — passed through to `get()` for version-aware lookup (Python only; TypeScript omits this parameter).
+
+### Errors
+
+- Any error that `get(module_id)` raises is propagated (e.g., `ModuleNotFoundError` on an empty string).
+- No error is raised for a well-formed `module_id` that is simply not registered — returns `None`/`null`.
+
+### Returns
+
+- On success (found): a `ModuleDescriptor` record with the following fields:
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `module_id` | string | Canonical module ID |
+| `name` | string \| null | Human-readable name, or null if not set |
+| `description` | string | Plain text, ≤ 200 chars; empty string if absent |
+| `documentation` | string \| null | Markdown, ≤ 5000 chars; null if absent |
+| `input_schema` | object | JSON Schema object; `{}` if absent |
+| `output_schema` | object | JSON Schema object; `{}` if absent |
+| `version` | string | Semantic version; defaults to `"1.0.0"` if not set |
+| `tags` | string[] | List of tag strings; empty list if absent |
+| `annotations` | object \| null | `ModuleAnnotations` or null |
+| `examples` | object[] | `ModuleExample[]`; empty list if absent |
+| `metadata` | object | Arbitrary extension metadata; `{}` if absent |
+| `sunset_date` | string \| null | ISO 8601 date or null |
+
+- On success (not found): `None` (Python), `null` (TypeScript).
+
+!!! note "Schema coercion"
+    Python calls `model_rebuild()` on Pydantic schema classes before exporting to ensure forward-references are resolved. The TypeScript implementation reads `inputSchema`/`outputSchema` directly from the module object without additional coercion.
+
+!!! note "Versioned metadata merge"
+    In Python, if versioned metadata exists for the resolved version, it is merged on top of the base metadata before constructing the `ModuleDescriptor`. TypeScript reads `_moduleMeta` as-is without version-layer merging.
+
+### Properties
+
+- async: false
+- thread_safe: true
+- pure: false (may invoke Pydantic `model_rebuild()` as a side effect in Python)
+- idempotent: true (for the same registry state, returns the same descriptor)

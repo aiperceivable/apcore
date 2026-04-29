@@ -1,0 +1,160 @@
+{
+  "description": "Middleware architecture hardening conformance: context namespacing, CircuitBreakerMiddleware state machine, TracingMiddleware span lifecycle, and async handler detection (Issue #42).",
+  "test_cases": [
+    {
+      "id": "context_namespace_apcore_prefix",
+      "description": "Framework middleware writing a key with the _apcore.* prefix is valid and must not produce a warning or error.",
+      "input": {
+        "writer": "framework",
+        "key": "_apcore.mw.logging.start_time",
+        "value": 1714262400.0
+      },
+      "expected": {
+        "valid": true,
+        "warning": false,
+        "error": false
+      }
+    },
+    {
+      "id": "context_namespace_ext_prefix",
+      "description": "User extension middleware writing a key with the ext.* prefix is valid and must not produce a warning or error.",
+      "input": {
+        "writer": "user",
+        "key": "ext.my_company.request_id",
+        "value": "req-abc123"
+      },
+      "expected": {
+        "valid": true,
+        "warning": false,
+        "error": false
+      }
+    },
+    {
+      "id": "context_namespace_violation",
+      "description": "User middleware attempting to write a key with the _apcore.* prefix must produce a warning or error — this is a namespace violation.",
+      "input": {
+        "writer": "user",
+        "key": "_apcore.mw.tracing.span_id",
+        "value": "user-injected-span"
+      },
+      "expected": {
+        "valid": false,
+        "warning": true
+      }
+    },
+    {
+      "id": "circuit_breaker_opens_at_threshold",
+      "description": "When the error rate in the rolling window exceeds open_threshold, the circuit must transition to OPEN.",
+      "input": {
+        "module_id": "executor.payment.charge",
+        "caller_id": "orchestrator.billing",
+        "open_threshold": 0.5,
+        "window_size": 10,
+        "errors_in_window": 6,
+        "successes_in_window": 4
+      },
+      "expected": {
+        "circuit_state": "OPEN",
+        "event_emitted": "apcore.circuit.opened"
+      }
+    },
+    {
+      "id": "circuit_breaker_short_circuits_open",
+      "description": "A call attempted while the circuit is in OPEN state must be short-circuited and raise CircuitBreakerOpenError without reaching the module.",
+      "input": {
+        "module_id": "executor.payment.charge",
+        "caller_id": "orchestrator.billing",
+        "circuit_state": "OPEN",
+        "recovery_window_ms": 30000,
+        "ms_since_opened": 5000
+      },
+      "expected": {
+        "error": "CircuitBreakerOpenError",
+        "module_reached": false
+      }
+    },
+    {
+      "id": "circuit_breaker_half_open_probe",
+      "description": "After recovery_window_ms has elapsed since the circuit opened, the circuit must transition to HALF_OPEN and allow exactly one probe call through.",
+      "input": {
+        "module_id": "executor.payment.charge",
+        "caller_id": "orchestrator.billing",
+        "circuit_state": "OPEN",
+        "recovery_window_ms": 30000,
+        "ms_since_opened": 35000
+      },
+      "expected": {
+        "circuit_state": "HALF_OPEN",
+        "probe_call_allowed": true,
+        "max_concurrent_probes": 1
+      }
+    },
+    {
+      "id": "circuit_breaker_closes_on_success",
+      "description": "A successful probe call in HALF_OPEN state must transition the circuit back to CLOSED and emit apcore.circuit.closed.",
+      "input": {
+        "module_id": "executor.payment.charge",
+        "caller_id": "orchestrator.billing",
+        "circuit_state": "HALF_OPEN",
+        "probe_result": "success"
+      },
+      "expected": {
+        "circuit_state": "CLOSED",
+        "event_emitted": "apcore.circuit.closed"
+      }
+    },
+    {
+      "id": "tracing_span_created",
+      "description": "TracingMiddleware must create a span in before() with the correct name and mandatory attributes.",
+      "input": {
+        "module_id": "executor.email.send_email",
+        "caller_id": "orchestrator.notifications",
+        "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736",
+        "otel_available": true
+      },
+      "expected": {
+        "span_created": true,
+        "span_name": "executor.email.send_email",
+        "span_attributes": {
+          "apcore.trace_id": "4bf92f3577b34da6a3ce929d0e0e4736",
+          "apcore.caller_id": "orchestrator.notifications",
+          "apcore.module_id": "executor.email.send_email"
+        },
+        "span_id_stored_in_context": true,
+        "context_key": "_apcore.mw.tracing.span_id"
+      }
+    },
+    {
+      "id": "tracing_noop_without_otel",
+      "description": "TracingMiddleware must not raise any error when the OpenTelemetry SDK is not installed; it must silently operate as a no-op.",
+      "input": {
+        "module_id": "executor.email.send_email",
+        "caller_id": "orchestrator.notifications",
+        "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736",
+        "otel_available": false
+      },
+      "expected": {
+        "error_raised": false,
+        "span_created": false,
+        "execution_continues": true
+      }
+    },
+    {
+      "id": "async_detection_coroutine_function",
+      "description": "inspect.iscoroutinefunction() must return true for an async def function and false for a plain def function.",
+      "input": {
+        "language": "python",
+        "handler_type": "coroutine_function",
+        "detection_method": "inspect.iscoroutinefunction"
+      },
+      "expected": {
+        "is_async": true,
+        "incorrect_method_result": {
+          "method": "isawaitable",
+          "result_on_uncalled_function": false,
+          "note": "isawaitable() always returns false for uncalled functions; must not be used for async detection"
+        }
+      }
+    }
+  ]
+}

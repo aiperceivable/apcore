@@ -1,0 +1,70 @@
+{
+  "feature": "schema-hardening",
+  "created": "2026-04-28T00:00:00Z",
+  "updated": "2026-04-28T00:00:00Z",
+  "status": "completed",
+  "execution_order": [
+    "union-type-fixture",
+    "recursive-schema-fixture",
+    "rust-validator-fixture",
+    "format-mapping-fixture",
+    "content-hash-fixture",
+    "conformance-readme-update"
+  ],
+  "progress": { "total_tasks": 6, "completed": 6, "in_progress": 0, "pending": 0 },
+  "tasks": [
+    {
+      "id": "union-type-fixture",
+      "file": "tasks/union-type-fixture.md",
+      "title": "Create union type conformance fixture (anyOf/oneOf)",
+      "status": "completed",
+      "started_at": "2026-04-28T00:00:00Z",
+      "completed_at": "2026-04-28T00:00:00Z"
+    },
+    {
+      "id": "recursive-schema-fixture",
+      "file": "tasks/recursive-schema-fixture.md",
+      "title": "Create recursive schema conformance fixture (tree node, depth 1-5)",
+      "status": "completed",
+      "started_at": "2026-04-28T00:00:00Z",
+      "completed_at": "2026-04-28T00:00:00Z"
+    },
+    {
+      "id": "rust-validator-fixture",
+      "file": "tasks/rust-validator-fixture.md",
+      "title": "Create constraint validation fixture (min/max/minLength/maxLength/pattern)",
+      "status": "completed",
+      "started_at": "2026-04-28T00:00:00Z",
+      "completed_at": "2026-04-28T00:00:00Z"
+    },
+    {
+      "id": "format-mapping-fixture",
+      "file": "tasks/format-mapping-fixture.md",
+      "title": "Create format mapping fixture (date-time/date/time/email/uri)",
+      "status": "completed",
+      "started_at": "2026-04-28T00:00:00Z",
+      "completed_at": "2026-04-28T00:00:00Z"
+    },
+    {
+      "id": "content-hash-fixture",
+      "file": "tasks/content-hash-fixture.md",
+      "title": "Create content-hash deduplication cache fixture",
+      "status": "completed",
+      "started_at": "2026-04-28T00:00:00Z",
+      "completed_at": "2026-04-28T00:00:00Z"
+    },
+    {
+      "id": "conformance-readme-update",
+      "file": "tasks/conformance-readme-update.md",
+      "title": "Add all 5 new fixture files to conformance/README.md fixtures table",
+      "status": "completed",
+      "started_at": "2026-04-28T00:00:00Z",
+      "completed_at": "2026-04-28T00:00:00Z"
+    }
+  ],
+  "metadata": {
+    "source_doc": "docs/features/schema-system.md",
+    "created_by": "code-forge",
+    "github_issue": "#44"
+  }
+}

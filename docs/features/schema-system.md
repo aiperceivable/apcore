@@ -279,3 +279,748 @@ The `strict` module provides a strict validation mode that rejects any fields no
 - thread_safe: true
 - pure: true
 - idempotent: true
+
+---
+
+## Schema System Hardening (Issue #44)
+
+This section documents five normative hardening requirements introduced in Issue #44. Each requirement addresses a known behavioral gap across the Python, TypeScript, and Rust SDKs.
+
+### 1. Union Type Standardization
+
+**Problem:** Python and TypeScript currently short-circuit union evaluation — they test only the first branch of `anyOf`/`oneOf` and return success if it matches, without evaluating remaining branches. This causes `oneOf` to behave identically to `anyOf`, masking ambiguous schemas where multiple branches match.
+
+**Normative requirements:**
+
+Implementations MUST evaluate ALL branches of `anyOf`/`oneOf` before returning a result. An input MUST be accepted for `anyOf` if it matches at least one branch. An input MUST be accepted for `oneOf` if it matches exactly one branch. Implementations MUST NOT return success after testing only the first branch.
+
+For `oneOf`: if more than one branch matches, implementations MUST treat this as a validation error.
+
+!!! warning "Breaking change for existing modules using `oneOf`"
+    Schemas that relied on short-circuit `oneOf` evaluation — where multiple branches could match the same input — will begin failing validation after this change is applied. Authors MUST audit `oneOf` schemas to ensure branches are mutually exclusive.
+
+=== "Python"
+    ```python
+    from typing import Annotated, Union
+    from pydantic import BaseModel, Field, model_validator
+
+    class CircleShape(BaseModel):
+        kind: str = "circle"
+        radius: float
+
+    class RectShape(BaseModel):
+        kind: str = "rect"
+        width: float
+        height: float
+
+    # Pydantic discriminated union — evaluated exhaustively at model_validate time
+    Shape = Annotated[
+        Union[CircleShape, RectShape],
+        Field(discriminator="kind"),
+    ]
+
+    class DrawCommand(BaseModel):
+        shape: Shape
+
+    # anyOf: succeeds if any branch matches
+    result = DrawCommand.model_validate({"shape": {"kind": "circle", "radius": 5.0}})
+
+    # oneOf: Pydantic discriminated union enforces mutual exclusivity by key
+    # For non-discriminated oneOf, use a custom model_validator to assert exactly one branch matched
+    from pydantic import model_validator as mv
+
+    def _try_validate(model, data):
+        try:
+            model.model_validate(data)
+            return True
+        except Exception:
+            return False
+
+    class StrictOneOf(BaseModel):
+        value: Union[CircleShape, RectShape]
+
+        @mv(mode="before")
+        @classmethod
+        def enforce_one_of(cls, data: dict) -> dict:
+            matched = sum(
+                _try_validate(m, data.get("value", {}))
+                for m in (CircleShape, RectShape)
+            )
+            if matched != 1:
+                raise ValueError(f"oneOf: expected exactly 1 match, got {matched}")
+            return data
+    ```
+
+!!! info "Pydantic discriminated unions"
+    When a `discriminator` field is available, prefer `Field(discriminator=...)` — Pydantic validates only the correct branch and raises clearly if the discriminator value is missing or unrecognized. For schemas without a discriminator, implement the exhaustive check shown above.
+
+=== "TypeScript"
+    ```typescript
+    import { Type, Static, TUnion } from "@sinclair/typebox";
+    import { Value } from "@sinclair/typebox/value";
+
+    const CircleShape = Type.Object({ kind: Type.Literal("circle"), radius: Type.Number() });
+    const RectShape = Type.Object({ kind: Type.Literal("rect"), width: Type.Number(), height: Type.Number() });
+
+    // anyOf: Value.Check returns true if any branch matches
+    const AnyOfShape = Type.Union([CircleShape, RectShape]);
+    const anyOfResult = Value.Check(AnyOfShape, { kind: "circle", radius: 5.0 }); // true
+
+    // oneOf: evaluate all branches and assert exactly one matches
+    function validateOneOf<T>(schemas: TUnion["anyOf"], data: unknown): T {
+        const matches = schemas.filter((s) => Value.Check(s, data));
+        if (matches.length !== 1) {
+            throw new Error(`oneOf: expected exactly 1 match, got ${matches.length}`);
+        }
+        return data as T;
+    }
+
+    const oneOfResult = validateOneOf([CircleShape, RectShape], { kind: "rect", width: 10, height: 20 });
+    ```
+
+=== "Rust"
+    ```rust
+    use jsonschema::{JSONSchema, Draft};
+    use serde_json::{json, Value};
+
+    fn validate_any_of(branches: &[Value], data: &Value) -> bool {
+        branches.iter().any(|branch| {
+            let compiled = JSONSchema::options()
+                .with_draft(Draft::Draft202012)
+                .compile(branch)
+                .expect("invalid branch schema");
+            compiled.is_valid(data)
+        })
+    }
+
+    fn validate_one_of(branches: &[Value], data: &Value) -> Result<(), String> {
+        let matched: usize = branches
+            .iter()
+            .filter(|branch| {
+                let compiled = JSONSchema::options()
+                    .with_draft(Draft::Draft202012)
+                    .compile(branch)
+                    .expect("invalid branch schema");
+                compiled.is_valid(data)
+            })
+            .count();
+        match matched {
+            1 => Ok(()),
+            n => Err(format!("oneOf: expected exactly 1 match, got {n}")),
+        }
+    }
+
+    fn main() {
+        let circle_schema = json!({
+            "type": "object",
+            "properties": { "kind": { "const": "circle" }, "radius": { "type": "number" } },
+            "required": ["kind", "radius"]
+        });
+        let rect_schema = json!({
+            "type": "object",
+            "properties": { "kind": { "const": "rect" }, "width": { "type": "number" }, "height": { "type": "number" } },
+            "required": ["kind", "width", "height"]
+        });
+        let branches = vec![circle_schema, rect_schema];
+        let data = json!({ "kind": "circle", "radius": 5.0 });
+
+        assert!(validate_any_of(&branches, &data));
+        assert!(validate_one_of(&branches, &data).is_ok());
+    }
+    ```
+
+---
+
+### 2. Recursive Schema Support
+
+**Problem:** Schemas that reference themselves (e.g., tree nodes, nested comment threads) cause infinite loops in the current `$ref` resolver because it eagerly inlines every `$ref` it encounters, including self-references, until stack overflow.
+
+**Normative requirements:**
+
+Implementations MUST support self-referencing schemas via lazy resolution. When a `$ref` resolves to the schema's own `$id`, implementations MUST replace the reference with a lazy (deferred) reference rather than inlining the schema body again. Implementations MUST NOT eagerly inline a `$ref` that would re-enter the currently-resolving schema.
+
+The canonical recursive schema example used across all SDK conformance tests is:
+
+```json
+{
+  "$id": "TreeNode",
+  "type": "object",
+  "properties": {
+    "value": { "type": "string" },
+    "children": {
+      "type": "array",
+      "items": { "$ref": "TreeNode" }
+    }
+  },
+  "required": ["value"]
+}
+```
+
+=== "Python"
+    ```python
+    from __future__ import annotations
+    from typing import Optional
+    from pydantic import BaseModel
+
+    class TreeNode(BaseModel):
+        value: str
+        children: Optional[list[TreeNode]] = None
+
+    # model_rebuild() resolves the forward reference introduced by `from __future__ import annotations`
+    TreeNode.model_rebuild()
+
+    root = TreeNode(
+        value="root",
+        children=[
+            TreeNode(value="child1", children=[TreeNode(value="grandchild")]),
+            TreeNode(value="child2"),
+        ],
+    )
+    assert root.children[0].children[0].value == "grandchild"
+    ```
+
+!!! info "Why `model_rebuild()` is required"
+    Pydantic defers resolution of forward references until `model_rebuild()` is called. Without it, the `TreeNode` type annotation inside `list[TreeNode]` is an unresolved string at class-creation time, and validation will fail with a `PydanticUserError`.
+
+=== "TypeScript"
+    ```typescript
+    import { Type, Static } from "@sinclair/typebox";
+    import { Value } from "@sinclair/typebox/value";
+
+    // TypeBox Recursive() wraps the schema in a self-referential $ref
+    const TreeNode = Type.Recursive((self) =>
+        Type.Object({
+            value: Type.String(),
+            children: Type.Optional(Type.Array(self)),
+        }),
+        { $id: "TreeNode" }
+    );
+
+    type TreeNode = Static<typeof TreeNode>;
+
+    const root: TreeNode = {
+        value: "root",
+        children: [
+            { value: "child1", children: [{ value: "grandchild" }] },
+            { value: "child2" },
+        ],
+    };
+
+    const valid = Value.Check(TreeNode, root);
+    console.assert(valid === true);
+    ```
+
+=== "Rust"
+    ```rust
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Debug, Serialize, Deserialize)]
+    struct TreeNode {
+        value: String,
+        // Box<T> breaks the infinite-size cycle; Option makes the field optional
+        #[serde(skip_serializing_if = "Option::is_none")]
+        children: Option<Vec<Box<TreeNode>>>,
+    }
+
+    fn main() {
+        let root = TreeNode {
+            value: "root".into(),
+            children: Some(vec![
+                Box::new(TreeNode {
+                    value: "child1".into(),
+                    children: Some(vec![Box::new(TreeNode {
+                        value: "grandchild".into(),
+                        children: None,
+                    })]),
+                }),
+                Box::new(TreeNode { value: "child2".into(), children: None }),
+            ]),
+        };
+
+        let json = serde_json::to_string(&root).unwrap();
+        let parsed: TreeNode = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.children.as_ref().unwrap()[0].value, "child1");
+    }
+    ```
+
+---
+
+### 3. Rust Validator Enhancement
+
+**Problem:** The Rust validator performs only basic type checking. It does not enforce composition keywords (`allOf`, `anyOf`, `oneOf`, `not`) or numerical and string constraints (`minimum`, `maximum`, `minLength`, `maxLength`, `pattern`). This creates a cross-language behavioral gap where inputs rejected by Python/TypeScript validators are accepted by the Rust validator.
+
+**Normative requirements:**
+
+The Rust validator MUST support all constraint types that the Python and TypeScript validators support. The Rust validator MUST reject data that violates `minimum`, `maximum`, `minLength`, `maxLength`, or `pattern` constraints.
+
+**Recommended approach:** Replace the hand-written validator with the `jsonschema` crate (formerly `jsonschema-rs`), which supports JSON Schema Draft 2020-12 natively.
+
+**Alternative:** Incrementally extend the existing hand-written logic. The table below compares both approaches:
+
+| Dimension | `jsonschema` crate | Incremental hand-written |
+|---|---|---|
+| Implementation cost | Low — swap validation call site | High — reimplement each keyword |
+| Draft 2020-12 coverage | Complete | Partial (only what is written) |
+| Maintenance burden | Low — upstream tracks spec changes | High — every new keyword requires a PR |
+| Performance | Comparable; crate is optimized | Potentially faster for simple schemas |
+| `allOf`/`anyOf`/`oneOf`/`not` | Supported out of the box | Must be hand-written |
+| Numerical/string constraints | Supported out of the box | Must be hand-written |
+
+!!! info "Recommended migration path"
+    Add `jsonschema = "0.22"` (or latest) to `Cargo.toml` and route all `SchemaValidator::validate` calls through `JSONSchema::compile` + `compiled.validate(data)`. The existing hand-written type-check logic can be removed once the crate is wired in and all conformance fixtures pass.
+
+=== "Python"
+    ```python
+    from pydantic import BaseModel, Field, ValidationError
+
+    class RangedValue(BaseModel):
+        count: int = Field(ge=1, le=100)
+        label: str = Field(min_length=1, max_length=50, pattern=r"^[a-z_]+$")
+
+    try:
+        RangedValue(count=200, label="INVALID LABEL!")
+    except ValidationError as exc:
+        print(exc)
+        # count: Input should be less than or equal to 100
+        # label: String should match pattern '^[a-z_]+'
+    ```
+
+=== "TypeScript"
+    ```typescript
+    import { Type } from "@sinclair/typebox";
+    import { Value } from "@sinclair/typebox/value";
+
+    const RangedValue = Type.Object({
+        count: Type.Integer({ minimum: 1, maximum: 100 }),
+        label: Type.String({ minLength: 1, maxLength: 50, pattern: "^[a-z_]+$" }),
+    });
+
+    const errors = [...Value.Errors(RangedValue, { count: 200, label: "INVALID LABEL!" })];
+    console.log(errors);
+    // [ { path: '/count', message: 'Expected integer to be less than or equal to 100' }, ... ]
+    ```
+
+=== "Rust"
+    ```rust
+    use jsonschema::{JSONSchema, Draft};
+    use serde_json::json;
+
+    fn main() {
+        let schema = json!({
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object",
+            "properties": {
+                "count": { "type": "integer", "minimum": 1, "maximum": 100 },
+                "label": { "type": "string", "minLength": 1, "maxLength": 50, "pattern": "^[a-z_]+$" }
+            },
+            "required": ["count", "label"]
+        });
+
+        let compiled = JSONSchema::options()
+            .with_draft(Draft::Draft202012)
+            .compile(&schema)
+            .expect("invalid schema");
+
+        let data = json!({ "count": 200, "label": "INVALID LABEL!" });
+        let result = compiled.validate(&data);
+
+        if let Err(errors) = result {
+            for error in errors {
+                eprintln!("Validation error: {} at {}", error, error.instance_path);
+            }
+        }
+    }
+    ```
+
+---
+
+### 4. Semantic Format Mapping
+
+**Problem:** JSON Schema `format` keywords (`date-time`, `email`, `uri`, etc.) are currently treated as annotations — they are passed through without enforcement. This means a field declared `format: date-time` accepts any string, even one that is not a valid ISO 8601 timestamp.
+
+**Normative requirements:**
+
+Implementations SHOULD map `format: date-time` to the language-native datetime type: `datetime.datetime` in Python, `Date` in TypeScript, `chrono::DateTime<Utc>` in Rust. Implementations MAY map other `format` values to native types. Unmapped `format` values SHOULD be preserved as `string` without raising an error.
+
+!!! warning "Format enforcement is opt-in (SHOULD, not MUST)"
+    Enforcing `format` as a type constraint is a breaking change for any module that stores non-conformant strings in a `format`-annotated field. Enable format enforcement incrementally and validate existing module inputs before deploying.
+
+**Canonical format mapping table:**
+
+| JSON Schema `format` | Python | TypeScript | Rust |
+|---|---|---|---|
+| `date-time` | `datetime.datetime` | `Date` | `chrono::DateTime<Utc>` |
+| `date` | `datetime.date` | `string` (ISO 8601 date) | `chrono::NaiveDate` |
+| `time` | `datetime.time` | `string` (ISO 8601 time) | `chrono::NaiveTime` |
+| `email` | `pydantic.EmailStr` | `string` (format-validated) | `String` (regex-validated) |
+| `uri` | `pydantic.AnyUrl` | `URL` | `url::Url` |
+| `uuid` | `uuid.UUID` | `string` (UUID regex) | `uuid::Uuid` |
+| `ipv4` | `IPv4Address` | `string` (format-validated) | `std::net::Ipv4Addr` |
+| `ipv6` | `IPv6Address` | `string` (format-validated) | `std::net::Ipv6Addr` |
+
+=== "Python"
+    ```python
+    from datetime import datetime
+    from ipaddress import IPv4Address, IPv6Address
+    from uuid import UUID
+    from pydantic import BaseModel, AnyUrl, EmailStr
+
+    class EventRecord(BaseModel):
+        event_id: UUID
+        occurred_at: datetime       # format: date-time
+        source_ip: IPv4Address      # format: ipv4
+        callback_url: AnyUrl        # format: uri
+        contact: EmailStr           # format: email
+
+    record = EventRecord(
+        event_id="550e8400-e29b-41d4-a716-446655440000",
+        occurred_at="2024-01-15T09:30:00Z",
+        source_ip="192.168.1.1",
+        callback_url="https://example.com/hook",
+        contact="user@example.com",
+    )
+    print(record.occurred_at)  # 2024-01-15 09:30:00+00:00 (datetime object)
+    ```
+
+=== "TypeScript"
+    ```typescript
+    import { Type } from "@sinclair/typebox";
+    import { Value } from "@sinclair/typebox/value";
+
+    const EventRecord = Type.Object({
+        event_id: Type.String({ format: "uuid" }),
+        occurred_at: Type.String({ format: "date-time" }),
+        source_ip: Type.String({ format: "ipv4" }),
+        callback_url: Type.String({ format: "uri" }),
+        contact: Type.String({ format: "email" }),
+    });
+
+    // TypeBox format validation requires the `@sinclair/typebox/format` registry
+    import { Format } from "@sinclair/typebox/format";
+    Format.Set("date-time", (v) => !isNaN(new Date(v).getTime()));
+    Format.Set("uuid", (v) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v));
+
+    const valid = Value.Check(EventRecord, {
+        event_id: "550e8400-e29b-41d4-a716-446655440000",
+        occurred_at: "2024-01-15T09:30:00Z",
+        source_ip: "192.168.1.1",
+        callback_url: "https://example.com/hook",
+        contact: "user@example.com",
+    });
+    console.assert(valid === true);
+    ```
+
+=== "Rust"
+    ```rust
+    use chrono::{DateTime, Utc};
+    use serde::{Deserialize, Serialize};
+    use std::net::Ipv4Addr;
+    use url::Url;
+    use uuid::Uuid;
+
+    #[derive(Debug, Serialize, Deserialize)]
+    struct EventRecord {
+        event_id: Uuid,
+        occurred_at: DateTime<Utc>,
+        source_ip: Ipv4Addr,
+        callback_url: Url,
+        contact: String, // email validated separately via regex or lettre
+    }
+
+    fn main() {
+        let json = r#"{
+            "event_id": "550e8400-e29b-41d4-a716-446655440000",
+            "occurred_at": "2024-01-15T09:30:00Z",
+            "source_ip": "192.168.1.1",
+            "callback_url": "https://example.com/hook",
+            "contact": "user@example.com"
+        }"#;
+
+        let record: EventRecord = serde_json::from_str(json).unwrap();
+        println!("{}", record.occurred_at); // 2024-01-15 09:30:00 UTC
+    }
+    ```
+
+---
+
+### 5. Global Schema Cache by Content Hash
+
+**Problem:** The current schema cache is keyed by `(path, strategy)`. This means the same schema content loaded from two different file paths is cached twice and occupies duplicate memory. It also means that when schema file content changes without a path change (e.g., in-place edits during development), the stale cached model continues to be returned.
+
+**Design:** Replace the single-level path cache with a two-level content-addressable cache:
+
+1. **Path index** (`path, strategy` → `sha256_hex`): maps a load request to the content hash of the schema it resolved to.
+2. **Content cache** (`sha256_hex` → `model`): stores the compiled model, keyed by the SHA-256 of the canonical JSON serialization of the resolved schema dict.
+
+The canonical JSON form is defined as: `json.dumps(schema, sort_keys=True, separators=(',', ':'))` (Python), `JSON.stringify(sortedKeys(schema))` (TypeScript), `serde_json::to_string` with sorted keys (Rust).
+
+**Normative requirements:**
+
+Implementations MUST deduplicate identical schema content. When two schema paths resolve to the same content hash, implementations MUST return the same cached model object. Implementations MUST NOT generate two separate model objects for schemas that are byte-for-byte identical after canonical JSON serialization.
+
+=== "Python"
+    ```python
+    import hashlib
+    import json
+    from typing import Any
+
+    _path_index: dict[tuple[str, str], str] = {}    # (path, strategy) -> sha256_hex
+    _content_cache: dict[str, Any] = {}             # sha256_hex -> compiled model
+
+    def _content_hash(schema: dict) -> str:
+        canonical = json.dumps(schema, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(canonical.encode()).hexdigest()
+
+    def load_with_content_cache(path: str, strategy: str, resolve_fn, compile_fn):
+        cache_key = (path, strategy)
+        if cache_key in _path_index:
+            return _content_cache[_path_index[cache_key]]
+
+        raw_schema = resolve_fn(path, strategy)
+        digest = _content_hash(raw_schema)
+
+        if digest not in _content_cache:
+            _content_cache[digest] = compile_fn(raw_schema)
+
+        _path_index[cache_key] = digest
+        return _content_cache[digest]
+    ```
+
+=== "TypeScript"
+    ```typescript
+    import { createHash } from "crypto";
+
+    const pathIndex = new Map<string, string>();     // `${path}:${strategy}` -> sha256hex
+    const contentCache = new Map<string, unknown>(); // sha256hex -> compiled model
+
+    function sortedKeysStringify(obj: unknown): string {
+        if (obj === null || typeof obj !== "object") return JSON.stringify(obj);
+        if (Array.isArray(obj)) return `[${obj.map(sortedKeysStringify).join(",")}]`;
+        const sorted = Object.keys(obj as object).sort();
+        const pairs = sorted.map((k) => `${JSON.stringify(k)}:${sortedKeysStringify((obj as Record<string, unknown>)[k])}`);
+        return `{${pairs.join(",")}}`;
+    }
+
+    function contentHash(schema: unknown): string {
+        return createHash("sha256").update(sortedKeysStringify(schema)).digest("hex");
+    }
+
+    function loadWithContentCache(
+        path: string,
+        strategy: string,
+        resolveFn: (p: string, s: string) => unknown,
+        compileFn: (schema: unknown) => unknown,
+    ): unknown {
+        const pathKey = `${path}:${strategy}`;
+        if (pathIndex.has(pathKey)) {
+            return contentCache.get(pathIndex.get(pathKey)!)!;
+        }
+        const rawSchema = resolveFn(path, strategy);
+        const digest = contentHash(rawSchema);
+        if (!contentCache.has(digest)) {
+            contentCache.set(digest, compileFn(rawSchema));
+        }
+        pathIndex.set(pathKey, digest);
+        return contentCache.get(digest)!;
+    }
+    ```
+
+=== "Rust"
+    ```rust
+    use sha2::{Digest, Sha256};
+    use serde_json::Value;
+    use std::collections::HashMap;
+
+    struct SchemaCache {
+        path_index: HashMap<(String, String), String>,   // (path, strategy) -> sha256_hex
+        content_cache: HashMap<String, Value>,           // sha256_hex -> compiled schema/model
+    }
+
+    impl SchemaCache {
+        fn new() -> Self {
+            Self {
+                path_index: HashMap::new(),
+                content_cache: HashMap::new(),
+            }
+        }
+
+        fn content_hash(schema: &Value) -> String {
+            // serde_json serializes object keys in insertion order;
+            // sort them for a stable canonical form
+            let canonical = sort_keys_serialize(schema);
+            let mut hasher = Sha256::new();
+            hasher.update(canonical.as_bytes());
+            format!("{:x}", hasher.finalize())
+        }
+
+        fn load(
+            &mut self,
+            path: &str,
+            strategy: &str,
+            resolve: impl Fn(&str, &str) -> Value,
+            compile: impl Fn(Value) -> Value,
+        ) -> &Value {
+            let path_key = (path.to_string(), strategy.to_string());
+            if let Some(digest) = self.path_index.get(&path_key) {
+                return self.content_cache.get(digest).unwrap();
+            }
+            let raw_schema = resolve(path, strategy);
+            let digest = Self::content_hash(&raw_schema);
+            if !self.content_cache.contains_key(&digest) {
+                self.content_cache.insert(digest.clone(), compile(raw_schema));
+            }
+            self.path_index.insert(path_key, digest.clone());
+            self.content_cache.get(&digest).unwrap()
+        }
+    }
+
+    fn sort_keys_serialize(value: &Value) -> String {
+        match value {
+            Value::Object(map) => {
+                let mut keys: Vec<&String> = map.keys().collect();
+                keys.sort();
+                let pairs: Vec<String> = keys
+                    .iter()
+                    .map(|k| format!("\"{}\":{}", k, sort_keys_serialize(&map[*k])))
+                    .collect();
+                format!("{{{}}}", pairs.join(","))
+            }
+            _ => value.to_string(),
+        }
+    }
+    ```
+
+---
+
+### Conformance Fixtures
+
+The following fixture stubs MUST be added to `conformance/fixtures/schema_hardening.json` to provide cross-language behavioral verification for the hardening requirements above.
+
+**`union_type_all_branches_evaluated`** — validates that `anyOf` accepts a matching branch and that `oneOf` rejects inputs where multiple branches match:
+
+```json
+{
+  "id": "union_type_all_branches_evaluated",
+  "description": "anyOf accepts first-branch match; oneOf rejects multi-branch match",
+  "schema": {
+    "oneOf": [
+      { "type": "object", "properties": { "kind": { "const": "a" } }, "required": ["kind"] },
+      { "type": "object", "properties": { "kind": { "const": "b" } }, "required": ["kind"] }
+    ]
+  },
+  "test_cases": [
+    { "id": "one_of_single_match", "input": { "kind": "a" }, "expected": true },
+    { "id": "one_of_no_match", "input": { "kind": "c" }, "expected": false },
+    { "id": "any_of_first_branch", "input": { "kind": "a" }, "schema_keyword": "anyOf", "expected": true },
+    { "id": "any_of_second_branch", "input": { "kind": "b" }, "schema_keyword": "anyOf", "expected": true }
+  ]
+}
+```
+
+**`recursive_schema_tree_node`** — validates tree node recursion up to depth 5:
+
+```json
+{
+  "id": "recursive_schema_tree_node",
+  "description": "Self-referencing TreeNode schema validates nested structures up to depth 5",
+  "schema": {
+    "$id": "TreeNode",
+    "type": "object",
+    "properties": {
+      "value": { "type": "string" },
+      "children": { "type": "array", "items": { "$ref": "TreeNode" } }
+    },
+    "required": ["value"]
+  },
+  "test_cases": [
+    { "id": "depth_1", "input": { "value": "root" }, "expected": true },
+    { "id": "depth_2", "input": { "value": "root", "children": [{ "value": "child" }] }, "expected": true },
+    { "id": "depth_5", "input": { "value": "a", "children": [{ "value": "b", "children": [{ "value": "c", "children": [{ "value": "d", "children": [{ "value": "e" }] }] }] }] }, "expected": true },
+    { "id": "missing_value", "input": { "children": [] }, "expected": false }
+  ]
+}
+```
+
+**`rust_validator_constraints`** — validates `minimum`, `maximum`, `minLength`, `maxLength`, and `pattern` enforcement:
+
+```json
+{
+  "id": "rust_validator_constraints",
+  "description": "Numeric and string constraints enforced by all three SDK validators",
+  "schema": {
+    "type": "object",
+    "properties": {
+      "count": { "type": "integer", "minimum": 1, "maximum": 100 },
+      "label": { "type": "string", "minLength": 1, "maxLength": 50, "pattern": "^[a-z_]+$" }
+    },
+    "required": ["count", "label"]
+  },
+  "test_cases": [
+    { "id": "valid_input", "input": { "count": 50, "label": "hello_world" }, "expected": true },
+    { "id": "count_below_minimum", "input": { "count": 0, "label": "hello" }, "expected": false },
+    { "id": "count_above_maximum", "input": { "count": 101, "label": "hello" }, "expected": false },
+    { "id": "label_too_short", "input": { "count": 5, "label": "" }, "expected": false },
+    { "id": "label_too_long", "input": { "count": 5, "label": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }, "expected": false },
+    { "id": "label_pattern_mismatch", "input": { "count": 5, "label": "UPPER_CASE" }, "expected": false }
+  ]
+}
+```
+
+---
+
+## Contract: Schema.validate_union
+
+### Inputs
+- `data` (dict/object/Value, required) — data to validate against the union schema
+- `schema` (dict/object/Value, required) — JSON Schema Draft 2020-12 schema object containing `anyOf` or `oneOf`
+- `keyword` (`"anyOf"` | `"oneOf"`, required) — which union keyword governs validation
+
+### Errors
+- `SchemaValidationError(code=SCHEMA_UNION_NO_MATCH)` — no branch matched (for `anyOf`) or zero branches matched (for `oneOf`)
+- `SchemaValidationError(code=SCHEMA_UNION_AMBIGUOUS)` — more than one branch matched a `oneOf` schema
+
+### Returns
+- On success: void/None/() — validation passed; raises on failure
+
+### Properties
+- async: false
+- thread_safe: true
+- pure: true
+- idempotent: true
+
+## Contract: Schema.validate_recursive
+
+### Inputs
+- `data` (dict/object/Value, required) — potentially deeply-nested data to validate
+- `schema` (dict/object/Value, required) — JSON Schema Draft 2020-12 schema that may contain a self-referencing `$ref`
+- `max_depth` (int/number/usize, optional, default=32) — maximum recursion depth before raising a depth-limit error
+
+### Errors
+- `SchemaValidationError(code=SCHEMA_VALIDATION_FAILED)` — data does not conform to schema at any nesting level
+- `SchemaCircularRefError(code=SCHEMA_MAX_DEPTH_EXCEEDED)` — recursion depth exceeded `max_depth`
+
+### Returns
+- On success: void/None/() — validation passed at all nesting levels
+
+### Properties
+- async: false
+- thread_safe: true
+- pure: true
+- idempotent: true
+
+## Contract: Schema.content_hash
+
+### Inputs
+- `schema` (dict/object/Value, required) — resolved JSON Schema dict (all `$ref` entries already inlined)
+
+### Errors
+- None — this operation MUST NOT raise; serialization failures MUST surface as panics in development and be caught as internal errors in production
+
+### Returns
+- On success: `str`/`string`/`String` — lowercase hexadecimal SHA-256 digest of the canonical JSON serialization of `schema` (64 characters)
+
+### Properties
+- async: false
+- thread_safe: true
+- pure: true
+- idempotent: true

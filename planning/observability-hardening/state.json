@@ -1,0 +1,43 @@
+{
+  "feature": "observability-hardening",
+  "created": "2026-04-28T00:00:00Z",
+  "updated": "2026-04-28T00:00:00Z",
+  "status": "completed",
+  "execution_order": [
+    "feature-doc-hardening",
+    "conformance-fixture",
+    "conformance-readme-update"
+  ],
+  "progress": { "total_tasks": 3, "completed": 3, "in_progress": 0, "pending": 0 },
+  "tasks": [
+    {
+      "id": "feature-doc-hardening",
+      "file": "tasks/feature-doc-hardening.md",
+      "title": "Append Observability Hardening section to docs/features/observability.md: pluggable storage backends, BatchSpanProcessor, O(log N) ErrorHistory eviction, error fingerprinting, configurable redaction, and K8s/Prometheus integration hooks",
+      "status": "completed",
+      "started_at": "2026-04-28T00:00:00Z",
+      "completed_at": "2026-04-28T00:00:00Z"
+    },
+    {
+      "id": "conformance-fixture",
+      "file": "tasks/conformance-fixture.md",
+      "title": "Create conformance/fixtures/observability_hardening.json with 10 cross-language test cases covering all six hardening areas",
+      "status": "completed",
+      "started_at": "2026-04-28T00:00:00Z",
+      "completed_at": "2026-04-28T00:00:00Z"
+    },
+    {
+      "id": "conformance-readme-update",
+      "file": "tasks/conformance-readme-update.md",
+      "title": "Add observability_hardening.json row to conformance/README.md fixtures table and update CHANGELOG.md [Unreleased] section",
+      "status": "completed",
+      "started_at": "2026-04-28T00:00:00Z",
+      "completed_at": "2026-04-28T00:00:00Z"
+    }
+  ],
+  "metadata": {
+    "source_doc": "docs/features/observability.md",
+    "created_by": "code-forge",
+    "github_issue": "#43"
+  }
+}

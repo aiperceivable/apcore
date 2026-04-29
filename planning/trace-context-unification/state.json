@@ -1,8 +1,8 @@
 {
   "feature": "trace-context-unification",
   "created": "2026-04-17T00:00:00Z",
-  "updated": "2026-04-17T00:00:00Z",
-  "status": "pending",
+  "updated": "2026-04-28T00:00:00Z",
+  "status": "completed",
   "execution_order": [
     "spec-patch",
     "conformance-fixture",
@@ -14,50 +14,55 @@
   ],
   "progress": {
     "total_tasks": 7,
-    "completed": 1,
+    "completed": 7,
     "in_progress": 0,
-    "pending": 6
+    "pending": 0
   },
   "tasks": [
     {
       "id": "spec-patch",
       "file": "tasks/spec-patch.md",
       "title": "Draft PROTOCOL_SPEC.md amendments and open maintainer issue",
-      "status": "pending",
-      "started_at": null,
-      "completed_at": null
+      "status": "completed",
+      "started_at": "2026-04-19T00:00:00Z",
+      "completed_at": "2026-04-19T00:00:00Z",
+      "note": "Shipped in v0.19.0. §5.7 pattern tightened, §10.5 rewritten, §8.5 example fixed (2026-04-28)."
     },
     {
       "id": "conformance-fixture",
       "file": "tasks/conformance-fixture.md",
       "title": "Cross-language context_trace_parent.json fixture",
-      "status": "pending",
-      "started_at": null,
-      "completed_at": null
+      "status": "completed",
+      "started_at": "2026-04-19T00:00:00Z",
+      "completed_at": "2026-04-19T00:00:00Z",
+      "note": "Shipped in v0.19.0. 10 test cases in conformance/fixtures/context_trace_parent.json."
     },
     {
       "id": "python-reject-invalid",
       "file": "tasks/python-reject-invalid.md",
       "title": "Python SDK: reject W3C-invalid all-zero and all-f trace_ids",
-      "status": "pending",
-      "started_at": null,
-      "completed_at": null
+      "status": "completed",
+      "started_at": "2026-04-19T00:00:00Z",
+      "completed_at": "2026-04-19T00:00:00Z",
+      "note": "apcore-python context.py: all-zero/all-f check + logging.warning on regeneration."
     },
     {
       "id": "typescript-warn",
       "file": "tasks/typescript-warn.md",
       "title": "TypeScript SDK: add WARN log and W3C-invalid-value rejection",
-      "status": "pending",
-      "started_at": null,
-      "completed_at": null
+      "status": "completed",
+      "started_at": "2026-04-19T00:00:00Z",
+      "completed_at": "2026-04-19T00:00:00Z",
+      "note": "apcore-typescript context.ts: regex + all-zero/all-f check + console.warn on regeneration."
     },
     {
       "id": "rust-trace-parent",
       "file": "tasks/rust-trace-parent.md",
       "title": "Rust SDK: add trace_parent via builder and switch to 32-char hex",
-      "status": "pending",
-      "started_at": null,
-      "completed_at": null
+      "status": "completed",
+      "started_at": "2026-04-19T00:00:00Z",
+      "completed_at": "2026-04-19T00:00:00Z",
+      "note": "apcore-rust context.rs: accept_or_regenerate_trace_id(), generate_trace_id() with uuid::simple(), tracing::warn!."
     },
     {
       "id": "integration-guide",
@@ -71,9 +76,10 @@
       "id": "framework-factories",
       "file": "tasks/framework-factories.md",
       "title": "Default ContextFactory in django/flask/nestjs integrations",
-      "status": "pending",
-      "started_at": null,
-      "completed_at": null
+      "status": "completed",
+      "started_at": "2026-04-28T00:00:00Z",
+      "completed_at": "2026-04-28T00:00:00Z",
+      "note": "django-apcore DjangoContextFactory, flask-apcore FlaskContextFactory already shipped. nestjs-apcore NestContextFactory created (src/context/nest-context.factory.ts, 13 tests)."
     }
   ],
   "metadata": {

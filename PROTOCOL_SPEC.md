@@ -210,6 +210,30 @@ directory_to_id:
     max_length: 192
 ```
 
+#### 2.1.1 Multi-Class Discovery (Opt-In)
+
+Implementations **MAY** support multi-class discovery mode, which allows multiple module classes to be defined in a single file. Multi-class discovery **MUST** be explicitly enabled — the default (single-class) behavior **MUST** remain unchanged.
+
+When multi-class discovery is enabled for a file:
+
+1. The scanner **MUST** enumerate all exported classes in the file.
+2. For each class that implements the Module interface, derive its ID:
+   - `base_id` ← `directory_to_canonical_id(file_path, extensions_root)`   [Algorithm A01]
+   - `class_segment` ← `snake_case(ClassName)`
+   - `module_id` ← `base_id + "." + class_segment`
+3. The resulting `module_id` **MUST** conform to the Canonical ID grammar (§2.7).
+4. If two classes in the same file produce the same `class_segment`, implementations **MUST** raise `MODULE_ID_CONFLICT`.
+5. A file with exactly one Module class **MUST** produce the same ID whether multi-class mode is on or off (backward compatibility guarantee).
+
+`snake_case` conversion: replace non-alphanumeric characters with `_`, lowercase all, collapse consecutive `_` to one, strip leading/trailing `_`.
+
+Examples:
+```
+class Addition   → "addition"
+class MathOps    → "math_ops"
+class HTTPSender → "http_sender"
+```
+
 #### Module ID Format Constraint
 
 All module IDs **MUST** conform to the following regular expression:
@@ -454,6 +478,12 @@ digit           = "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" ;
 (* 2. segment MUST NOT be a reserved word (see §2.5) *)
 (* 3. segment MUST NOT start with a digit (guaranteed by production) *)
 (* 4. segment MUST NOT contain consecutive double underscores "__" *)
+```
+
+```ebnf
+(* In multi-class discovery mode, module_id = base_id "." class_segment where *)
+(* class_segment is the snake_case-converted class name. The full ID must still *)
+(* conform to the canonical_id production above. *)
 ```
 
 Equivalent regular expression: `^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$`
@@ -3318,6 +3348,20 @@ Implementations **MUST** handle module edge cases according to the following tab
 - Dependency topological sorting uses algorithm A07 (§5.3)
 - Circular dependency detection should complete in `discover()` phase, avoiding runtime failures
 
+### 5.16 Pipeline Control Flow Requirements
+
+Implementations **MUST** enforce the following control flow invariants on the execution pipeline (see §5.6 and `docs/features/core-executor.md`).
+
+1. **Fail-fast on step error.** When a pipeline step raises an error, implementations **MUST** stop pipeline execution immediately and propagate the error wrapped in a `PipelineStepError` carrying the failing step name and the original error. Implementations **MUST NOT** continue to the next step unless that step is explicitly configured with `ignore_errors: true`.
+
+2. **O(1) step name resolution.** Implementations **MUST** use a hash map (dictionary) keyed by step name for all step lookups during execution. Implementations **MUST NOT** perform linear scans over a step list to locate a step by name. This requirement **MUST** be enforced at code review time.
+
+3. **Replace semantic for step configuration.** When `configure_step` (or the equivalent declarative `configure:` directive) targets a step name that already exists in the current pipeline strategy, implementations **MUST** replace the existing step definition entirely. Implementations **MUST NOT** create a duplicate step entry or append a second handler under the same name. The replaced step **MUST** retain its original position in the execution order.
+
+4. **`run_until` termination predicate.** Implementations **MUST** support a `run_until` call option that accepts a predicate receiving the current `PipelineState` (step name, accumulated outputs, context) and returning a boolean. When the predicate returns `true` after step N completes, implementations **MUST** skip all remaining steps and return the accumulated result from steps 1 through N. If the predicate never returns `true`, the pipeline runs to completion normally.
+
+5. **Step-level middleware ordering.** Implementations **SHOULD** support middleware scoped to individual pipeline steps. When both global middleware and step-level middleware are registered, global middleware **MUST** execute before step-level middleware in the before-phase, and after step-level middleware in the after-phase.
+
 ---
 
 ## 6. ACL Specification
@@ -4176,7 +4220,7 @@ error_response:
     field: "table"
     value: "User-Info"
     expected: "Only lowercase letters and underscores allowed"
-  trace_id: "550e8400-e29b-41d4-a716-446655440000"
+  trace_id: "4bf92f3577b34da6a3ce929d0e0e4736"
   timestamp: "2026-02-05T10:30:00Z"
   cause: null  # Or nested error object
   retryable: false

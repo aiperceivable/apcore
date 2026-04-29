@@ -1,0 +1,209 @@
+{
+  "description": "Cross-language SubscriberFactory parity, built-in File/Stdout/Filter subscribers, and circuit-breaker state machine conformance (Issue #36).",
+  "test_cases": [
+    {
+      "id": "subscriber_factory_registered_type",
+      "description": "A custom subscriber type registered via register_subscriber_type is instantiated when referenced by name in configuration.",
+      "input": {
+        "registered_types": ["slack"],
+        "subscriber_config": {
+          "type": "slack",
+          "webhook_url": "https://hooks.slack.com/services/TEST",
+          "channel": "#alerts"
+        }
+      },
+      "expected": {
+        "subscriber_created": true,
+        "subscriber_type": "slack"
+      }
+    },
+    {
+      "id": "builtin_stdout_type",
+      "description": "The stdout subscriber type is available as a built-in without any registration call.",
+      "input": {
+        "subscriber_config": {
+          "type": "stdout",
+          "format": "json",
+          "level_filter": "error"
+        }
+      },
+      "expected": {
+        "subscriber_created": true,
+        "subscriber_type": "stdout",
+        "requires_registration": false
+      }
+    },
+    {
+      "id": "builtin_file_type",
+      "description": "The file subscriber type is available as a built-in without any registration call.",
+      "input": {
+        "subscriber_config": {
+          "type": "file",
+          "path": "/var/log/apcore/events.jsonl",
+          "format": "json",
+          "rotate_bytes": 10485760
+        }
+      },
+      "expected": {
+        "subscriber_created": true,
+        "subscriber_type": "file",
+        "requires_registration": false
+      }
+    },
+    {
+      "id": "builtin_filter_passes_matching",
+      "description": "A filter subscriber forwards an event whose type matches an entry in include_events.",
+      "input": {
+        "subscriber_config": {
+          "type": "filter",
+          "delegate_type": "webhook",
+          "delegate_config": {
+            "url": "https://example.com/hook"
+          },
+          "include_events": [
+            "apcore.error.*",
+            "apcore.latency.threshold_exceeded"
+          ]
+        },
+        "event": {
+          "event_type": "apcore.error.threshold_exceeded",
+          "module_id": "executor.email.send_email",
+          "timestamp": "2026-04-28T00:00:00Z",
+          "severity": "error",
+          "data": {
+            "module_id": "executor.email.send_email",
+            "error_rate": 0.25,
+            "threshold": 0.1
+          }
+        }
+      },
+      "expected": {
+        "delivery_attempted": true,
+        "discarded": false
+      }
+    },
+    {
+      "id": "builtin_filter_discards_nonmatching",
+      "description": "A filter subscriber silently discards an event whose type does not match include_events.",
+      "input": {
+        "subscriber_config": {
+          "type": "filter",
+          "delegate_type": "webhook",
+          "delegate_config": {
+            "url": "https://example.com/hook"
+          },
+          "include_events": [
+            "apcore.error.*"
+          ]
+        },
+        "event": {
+          "event_type": "apcore.config.updated",
+          "module_id": null,
+          "timestamp": "2026-04-28T00:00:00Z",
+          "severity": "info",
+          "data": {
+            "key": "sys_modules.events.thresholds.error_rate",
+            "old_value": 0.1,
+            "new_value": 0.2
+          }
+        }
+      },
+      "expected": {
+        "delivery_attempted": false,
+        "discarded": true
+      }
+    },
+    {
+      "id": "circuit_open_after_threshold",
+      "description": "After consecutive_failures reaches open_threshold, the circuit transitions to OPEN.",
+      "input": {
+        "circuit_breaker_config": {
+          "timeout_ms": 3000,
+          "open_threshold": 3,
+          "recovery_window_ms": 30000
+        },
+        "failure_sequence": [
+          {"attempt": 1, "outcome": "failure"},
+          {"attempt": 2, "outcome": "failure"},
+          {"attempt": 3, "outcome": "failure"}
+        ]
+      },
+      "expected": {
+        "circuit_state": "OPEN",
+        "consecutive_failures": 3,
+        "event_emitted": "apcore.subscriber.circuit_opened"
+      }
+    },
+    {
+      "id": "circuit_discards_in_open_state",
+      "description": "In OPEN state, deliver() is not called — the event is silently discarded.",
+      "input": {
+        "circuit_state": "OPEN",
+        "event": {
+          "event_type": "apcore.module.toggled",
+          "module_id": "executor.email.send_email",
+          "timestamp": "2026-04-28T00:00:00Z",
+          "severity": "info",
+          "data": {
+            "module_id": "executor.email.send_email",
+            "enabled": false
+          }
+        }
+      },
+      "expected": {
+        "delivery_attempted": false,
+        "circuit_state": "OPEN"
+      }
+    },
+    {
+      "id": "circuit_half_open_after_window",
+      "description": "After recovery_window_ms has elapsed since last_failure_at, the circuit transitions from OPEN to HALF_OPEN.",
+      "input": {
+        "circuit_breaker_config": {
+          "timeout_ms": 3000,
+          "open_threshold": 3,
+          "recovery_window_ms": 30000
+        },
+        "circuit_state": "OPEN",
+        "last_failure_at": "2026-04-28T00:00:00Z",
+        "current_time": "2026-04-28T00:00:31Z"
+      },
+      "expected": {
+        "circuit_state": "HALF_OPEN"
+      }
+    },
+    {
+      "id": "circuit_closes_on_success",
+      "description": "A successful delivery attempt in HALF_OPEN state transitions the circuit back to CLOSED and emits the circuit_closed event.",
+      "input": {
+        "circuit_state": "HALF_OPEN",
+        "delivery_outcome": "success"
+      },
+      "expected": {
+        "circuit_state": "CLOSED",
+        "consecutive_failures": 0,
+        "event_emitted": "apcore.subscriber.circuit_closed"
+      }
+    },
+    {
+      "id": "event_naming_canonical",
+      "description": "All built-in framework events follow the apcore.<subsystem>.<event> naming pattern.",
+      "input": {
+        "events_to_check": [
+          "apcore.config.updated",
+          "apcore.module.reloaded",
+          "apcore.module.toggled",
+          "apcore.health.recovered",
+          "apcore.error.threshold_exceeded",
+          "apcore.latency.threshold_exceeded",
+          "apcore.subscriber.circuit_opened",
+          "apcore.subscriber.circuit_closed"
+        ]
+      },
+      "expected": {
+        "all_match_pattern": true,
+        "pattern": "^apcore\\.[a-z_]+\\.[a-z_]+$"
+      }
+    }
+  ]
+}

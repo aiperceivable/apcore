@@ -1,0 +1,141 @@
+{
+  "description": "Rust validator parity: numerical constraints (minimum, maximum, exclusiveMinimum), string constraints (minLength, maxLength, pattern), and not keyword. All three SDKs must reject inputs that violate these constraints. PROTOCOL_SPEC §4.15.",
+  "test_cases": [
+    {
+      "id": "minimum_satisfied",
+      "description": "Integer value equals minimum — must be accepted (inclusive boundary)",
+      "schema": {
+        "type": "object",
+        "properties": { "count": { "type": "integer", "minimum": 1 } },
+        "required": ["count"]
+      },
+      "input": { "count": 1 },
+      "expected": { "valid": true, "error_code": null }
+    },
+    {
+      "id": "minimum_violated",
+      "description": "Integer value is below minimum — must be rejected",
+      "schema": {
+        "type": "object",
+        "properties": { "count": { "type": "integer", "minimum": 1 } },
+        "required": ["count"]
+      },
+      "input": { "count": 0 },
+      "expected": { "valid": false, "error_code": "SCHEMA_VALIDATION_FAILED" }
+    },
+    {
+      "id": "maximum_satisfied",
+      "description": "Integer value equals maximum — must be accepted (inclusive boundary)",
+      "schema": {
+        "type": "object",
+        "properties": { "count": { "type": "integer", "maximum": 100 } },
+        "required": ["count"]
+      },
+      "input": { "count": 100 },
+      "expected": { "valid": true, "error_code": null }
+    },
+    {
+      "id": "maximum_violated",
+      "description": "Integer value exceeds maximum — must be rejected",
+      "schema": {
+        "type": "object",
+        "properties": { "count": { "type": "integer", "maximum": 100 } },
+        "required": ["count"]
+      },
+      "input": { "count": 101 },
+      "expected": { "valid": false, "error_code": "SCHEMA_VALIDATION_FAILED" }
+    },
+    {
+      "id": "exclusive_minimum_boundary",
+      "description": "Value equals exclusiveMinimum — must be rejected because exclusiveMinimum is strictly less than, not less than or equal",
+      "schema": {
+        "type": "object",
+        "properties": { "score": { "type": "number", "exclusiveMinimum": 0 } },
+        "required": ["score"]
+      },
+      "input": { "score": 0 },
+      "expected": { "valid": false, "error_code": "SCHEMA_VALIDATION_FAILED" }
+    },
+    {
+      "id": "min_length_satisfied",
+      "description": "String length equals minLength — must be accepted (inclusive boundary)",
+      "schema": {
+        "type": "object",
+        "properties": { "label": { "type": "string", "minLength": 1 } },
+        "required": ["label"]
+      },
+      "input": { "label": "x" },
+      "expected": { "valid": true, "error_code": null }
+    },
+    {
+      "id": "min_length_violated",
+      "description": "String length is below minLength (empty string) — must be rejected",
+      "schema": {
+        "type": "object",
+        "properties": { "label": { "type": "string", "minLength": 1 } },
+        "required": ["label"]
+      },
+      "input": { "label": "" },
+      "expected": { "valid": false, "error_code": "SCHEMA_VALIDATION_FAILED" }
+    },
+    {
+      "id": "max_length_satisfied",
+      "description": "String length equals maxLength — must be accepted (inclusive boundary)",
+      "schema": {
+        "type": "object",
+        "properties": { "label": { "type": "string", "maxLength": 10 } },
+        "required": ["label"]
+      },
+      "input": { "label": "helloworld" },
+      "expected": { "valid": true, "error_code": null }
+    },
+    {
+      "id": "max_length_violated",
+      "description": "String length exceeds maxLength — must be rejected",
+      "schema": {
+        "type": "object",
+        "properties": { "label": { "type": "string", "maxLength": 10 } },
+        "required": ["label"]
+      },
+      "input": { "label": "helloworldx" },
+      "expected": { "valid": false, "error_code": "SCHEMA_VALIDATION_FAILED" }
+    },
+    {
+      "id": "pattern_match",
+      "description": "String matches the required regex pattern — must be accepted",
+      "schema": {
+        "type": "object",
+        "properties": { "slug": { "type": "string", "pattern": "^[a-z_]+$" } },
+        "required": ["slug"]
+      },
+      "input": { "slug": "hello_world" },
+      "expected": { "valid": true, "error_code": null }
+    },
+    {
+      "id": "pattern_no_match",
+      "description": "String does not match the required regex pattern — must be rejected",
+      "schema": {
+        "type": "object",
+        "properties": { "slug": { "type": "string", "pattern": "^[a-z_]+$" } },
+        "required": ["slug"]
+      },
+      "input": { "slug": "UPPER_CASE" },
+      "expected": { "valid": false, "error_code": "SCHEMA_VALIDATION_FAILED" }
+    },
+    {
+      "id": "not_keyword",
+      "description": "Input satisfies the negated schema — not keyword means the input must NOT match the inner schema, so this must be rejected",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "not": { "type": "string", "const": "deleted" }
+          }
+        },
+        "required": ["status"]
+      },
+      "input": { "status": "deleted" },
+      "expected": { "valid": false, "error_code": "SCHEMA_VALIDATION_FAILED" }
+    }
+  ]
+}

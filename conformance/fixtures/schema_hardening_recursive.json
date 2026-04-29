@@ -1,0 +1,91 @@
+{
+  "description": "Recursive schema support: TreeNode self-referencing pattern via $ref, depth 1-5 validation, invalid child types, empty and absent children. PROTOCOL_SPEC §4.15.",
+  "schema": {
+    "$id": "TreeNode",
+    "type": "object",
+    "properties": {
+      "value": { "type": "string" },
+      "children": {
+        "type": "array",
+        "items": { "$ref": "#" }
+      }
+    },
+    "required": ["value"]
+  },
+  "test_cases": [
+    {
+      "id": "tree_node_depth_1",
+      "description": "Single root node with no children — simplest valid tree",
+      "input": { "value": "root" },
+      "expected": { "valid": true, "error_code": null }
+    },
+    {
+      "id": "tree_node_depth_3",
+      "description": "Three-level deep tree: root → child → grandchild",
+      "input": {
+        "value": "root",
+        "children": [
+          {
+            "value": "child",
+            "children": [
+              { "value": "grandchild" }
+            ]
+          }
+        ]
+      },
+      "expected": { "valid": true, "error_code": null }
+    },
+    {
+      "id": "tree_node_depth_5",
+      "description": "Five-level deep tree — boundary test for stack-safe recursive resolution",
+      "input": {
+        "value": "a",
+        "children": [
+          {
+            "value": "b",
+            "children": [
+              {
+                "value": "c",
+                "children": [
+                  {
+                    "value": "d",
+                    "children": [
+                      { "value": "e" }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "expected": { "valid": true, "error_code": null }
+    },
+    {
+      "id": "tree_node_invalid_child_type",
+      "description": "Child node's value field is an integer instead of a string — must fail at the nested level",
+      "input": {
+        "value": "root",
+        "children": [
+          { "value": 42 }
+        ]
+      },
+      "expected": { "valid": false, "error_code": "SCHEMA_VALIDATION_FAILED" }
+    },
+    {
+      "id": "tree_node_empty_children_array",
+      "description": "Children property is an empty array — empty is allowed since children is not required to be non-empty",
+      "input": {
+        "value": "leaf",
+        "children": []
+      },
+      "expected": { "valid": true, "error_code": null }
+    },
+    {
+      "id": "tree_node_null_children",
+      "description": "Children property is absent — valid because children is optional (not in required array)",
+      "input": { "value": "solo" },
+      "expected": { "valid": true, "error_code": null }
+    }
+  ]
+}

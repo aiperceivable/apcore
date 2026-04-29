@@ -1,0 +1,288 @@
+{
+  "description": "Async task evolution conformance: pluggable TaskStore, retry with configurable backoff, and Reaper TTL-based cleanup (Issue #34).",
+  "test_cases": [
+    {
+      "id": "in_memory_store_default",
+      "description": "When no store is injected, AsyncTaskManager uses InMemoryTaskStore by default.",
+      "config": {},
+      "action": "construct_manager",
+      "expected": {
+        "store_type": "InMemoryTaskStore"
+      }
+    },
+    {
+      "id": "custom_store_injected",
+      "description": "AsyncTaskManager accepts a custom TaskStore implementation at construction time.",
+      "config": {
+        "store": {
+          "type": "RedisTaskStore",
+          "url": "redis://localhost:6379",
+          "key_prefix": "apcore:tasks:"
+        }
+      },
+      "action": "construct_manager",
+      "expected": {
+        "store_type": "RedisTaskStore"
+      }
+    },
+    {
+      "id": "task_store_save_and_get",
+      "description": "TaskStore.save persists a TaskInfo record that can be retrieved via TaskStore.get.",
+      "task_info": {
+        "task_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+        "module_id": "data.process_batch",
+        "status": "completed",
+        "submitted_at": 1700000000.0,
+        "started_at": 1700000001.0,
+        "completed_at": 1700000005.0,
+        "result": {"processed": 42},
+        "error": null,
+        "retry_count": 0,
+        "max_retries": 0
+      },
+      "action": "save_then_get",
+      "lookup_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+      "expected": {
+        "found": true,
+        "task_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+        "status": "completed",
+        "result": {"processed": 42}
+      }
+    },
+    {
+      "id": "task_store_list_by_status",
+      "description": "TaskStore.list returns only tasks matching the given status filter.",
+      "stored_tasks": [
+        {
+          "task_id": "task-001",
+          "module_id": "worker.job",
+          "status": "completed",
+          "submitted_at": 1700000000.0,
+          "started_at": 1700000001.0,
+          "completed_at": 1700000002.0,
+          "result": null,
+          "error": null,
+          "retry_count": 0,
+          "max_retries": 0
+        },
+        {
+          "task_id": "task-002",
+          "module_id": "worker.job",
+          "status": "running",
+          "submitted_at": 1700000003.0,
+          "started_at": 1700000004.0,
+          "completed_at": null,
+          "result": null,
+          "error": null,
+          "retry_count": 0,
+          "max_retries": 0
+        },
+        {
+          "task_id": "task-003",
+          "module_id": "worker.job",
+          "status": "failed",
+          "submitted_at": 1700000005.0,
+          "started_at": 1700000006.0,
+          "completed_at": 1700000007.0,
+          "result": null,
+          "error": "timeout",
+          "retry_count": 0,
+          "max_retries": 0
+        }
+      ],
+      "action": "list_by_status",
+      "status_filter": "completed",
+      "expected": {
+        "count": 1,
+        "task_ids": ["task-001"]
+      }
+    },
+    {
+      "id": "retry_scheduled_on_failure",
+      "description": "When a task fails and max_retries > 0, the manager reschedules the task instead of setting status to FAILED.",
+      "task_info": {
+        "task_id": "retry-task-001",
+        "module_id": "worker.flaky_job",
+        "status": "pending",
+        "submitted_at": 1700000000.0,
+        "started_at": null,
+        "completed_at": null,
+        "result": null,
+        "error": null,
+        "retry_count": 0,
+        "max_retries": 3
+      },
+      "retry_config": {
+        "max_retries": 3,
+        "retry_delay_ms": 1000,
+        "backoff_multiplier": 2.0,
+        "max_retry_delay_ms": 30000
+      },
+      "simulated_failure": "connection_error",
+      "action": "execute_and_observe",
+      "expected": {
+        "status_after_first_failure": "pending",
+        "retry_count_after_first_failure": 1,
+        "next_retry_delay_ms": 1000
+      }
+    },
+    {
+      "id": "backoff_multiplier_applied",
+      "description": "On attempt N, the retry delay equals min(retry_delay_ms * (backoff_multiplier ^ N), max_retry_delay_ms).",
+      "retry_config": {
+        "retry_delay_ms": 1000,
+        "backoff_multiplier": 2.0,
+        "max_retry_delay_ms": 30000
+      },
+      "action": "compute_retry_delays",
+      "expected": {
+        "attempt_0_delay_ms": 1000,
+        "attempt_1_delay_ms": 2000,
+        "attempt_2_delay_ms": 4000,
+        "attempt_3_delay_ms": 8000,
+        "attempt_4_delay_ms": 16000,
+        "attempt_5_delay_ms": 30000
+      }
+    },
+    {
+      "id": "max_retries_exhausted_becomes_failed",
+      "description": "After exhausting all retries, the task status MUST be set to FAILED with the error field populated.",
+      "task_info": {
+        "task_id": "exhaust-task-001",
+        "module_id": "worker.always_fails",
+        "status": "pending",
+        "submitted_at": 1700000000.0,
+        "started_at": null,
+        "completed_at": null,
+        "result": null,
+        "error": null,
+        "retry_count": 0,
+        "max_retries": 2
+      },
+      "retry_config": {
+        "max_retries": 2,
+        "retry_delay_ms": 100,
+        "backoff_multiplier": 1.0,
+        "max_retry_delay_ms": 1000
+      },
+      "simulated_failure": "persistent_error",
+      "action": "execute_until_exhausted",
+      "expected": {
+        "final_status": "failed",
+        "retry_count": 2,
+        "error_populated": true
+      }
+    },
+    {
+      "id": "reaper_disabled_by_default",
+      "description": "When no reaper configuration is provided, no background cleanup runs and expired tasks remain.",
+      "config": {},
+      "stored_expired_tasks": [
+        {
+          "task_id": "old-task-001",
+          "module_id": "worker.old_job",
+          "status": "completed",
+          "submitted_at": 1699990000.0,
+          "started_at": 1699990001.0,
+          "completed_at": 1699990002.0,
+          "result": null,
+          "error": null,
+          "retry_count": 0,
+          "max_retries": 0
+        }
+      ],
+      "action": "wait_and_check_store",
+      "now_timestamp": 1700000000.0,
+      "expected": {
+        "reaper_running": false,
+        "expired_task_still_present": true
+      }
+    },
+    {
+      "id": "reaper_deletes_expired_tasks",
+      "description": "When the Reaper is enabled and ttl_seconds elapses, tasks with completed_at older than now - ttl_seconds are deleted on the next sweep.",
+      "config": {
+        "reaper": {
+          "enabled": true,
+          "ttl_seconds": 3600,
+          "sweep_interval_ms": 300000
+        }
+      },
+      "stored_tasks": [
+        {
+          "task_id": "expired-task-001",
+          "module_id": "worker.old_job",
+          "status": "completed",
+          "submitted_at": 1699990000.0,
+          "started_at": 1699990001.0,
+          "completed_at": 1699990002.0,
+          "result": null,
+          "error": null,
+          "retry_count": 0,
+          "max_retries": 0
+        },
+        {
+          "task_id": "fresh-task-001",
+          "module_id": "worker.new_job",
+          "status": "completed",
+          "submitted_at": 1699999000.0,
+          "started_at": 1699999001.0,
+          "completed_at": 1699999002.0,
+          "result": null,
+          "error": null,
+          "retry_count": 0,
+          "max_retries": 0
+        }
+      ],
+      "action": "trigger_reaper_sweep",
+      "now_timestamp": 1700003000.0,
+      "expected": {
+        "deleted_task_ids": ["expired-task-001"],
+        "remaining_task_ids": ["fresh-task-001"]
+      }
+    },
+    {
+      "id": "reaper_skips_running_tasks",
+      "description": "The Reaper MUST NOT delete tasks in PENDING or RUNNING status, even if their submitted_at exceeds the TTL threshold.",
+      "config": {
+        "reaper": {
+          "enabled": true,
+          "ttl_seconds": 3600,
+          "sweep_interval_ms": 300000
+        }
+      },
+      "stored_tasks": [
+        {
+          "task_id": "long-running-task-001",
+          "module_id": "worker.long_job",
+          "status": "running",
+          "submitted_at": 1699990000.0,
+          "started_at": 1699990001.0,
+          "completed_at": null,
+          "result": null,
+          "error": null,
+          "retry_count": 0,
+          "max_retries": 0
+        },
+        {
+          "task_id": "long-pending-task-001",
+          "module_id": "worker.queued_job",
+          "status": "pending",
+          "submitted_at": 1699990000.0,
+          "started_at": null,
+          "completed_at": null,
+          "result": null,
+          "error": null,
+          "retry_count": 0,
+          "max_retries": 0
+        }
+      ],
+      "action": "trigger_reaper_sweep",
+      "now_timestamp": 1700003000.0,
+      "expected": {
+        "deleted_task_ids": [],
+        "remaining_task_ids": ["long-running-task-001", "long-pending-task-001"]
+      }
+    }
+  ]
+}

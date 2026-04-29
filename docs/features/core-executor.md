@@ -285,3 +285,371 @@ No errors raised under normal operation. Invalid `trace_parent` values are silen
 - **Redaction tests** confirm that `x-sensitive` fields are properly masked in logs and error messages while remaining intact in the actual data passed to the module.
 - **Integration tests** run full pipeline executions through the executor with real Registry and Schema instances to verify end-to-end behavior.
 - Test naming follows the `test_<unit>_<behavior>` convention.
+
+---
+
+## Pipeline Hardening (Issue #33)
+
+This section documents normative hardening requirements added on top of the base 11-step pipeline. These rules apply to all SDK implementations.
+
+### 1.1 Fail-Fast Error Handling
+
+When a pipeline step produces an error, implementations MUST stop pipeline execution and propagate the error **unless** the step is configured with `ignore_errors: true`. Implementations MUST NOT silently swallow errors and continue to the next step. The error MUST be wrapped in a `PipelineStepError` that includes the failing step name and the original error.
+
+When `ignore_errors: true` is set on a step, a failure logs a WARN and execution continues to the next step. The step's output is treated as absent (null/None/nil) for downstream steps.
+
+=== "Python"
+    ```python
+    # apcore.yaml — step with ignore_errors: true
+    # pipeline:
+    #   configure:
+    #     - name: validate_input
+    #       ignore_errors: true
+
+    import apcore
+    from apcore import APCore, Config
+
+    client = APCore(Config.load("apcore.yaml"))
+
+    @client.module(id="demo.process", description="Process with lenient validation")
+    def process(inputs, ctx):
+        return {"result": inputs.get("value", "default")}
+
+    # Even if validate_input raises, the pipeline continues to execute.
+    result = client.call("demo.process", {"value": 42})
+    print(result)  # {"result": 42}
+
+    # Step WITHOUT ignore_errors — fail fast
+    # apcore.yaml:
+    # pipeline:
+    #   configure:
+    #     - name: validate_input
+    #       ignore_errors: false   # default
+
+    # A validation failure here raises PipelineStepError immediately;
+    # no subsequent steps run.
+    try:
+        client.call("demo.process", {"unexpected_key": True})
+    except apcore.PipelineStepError as e:
+        print(e.step_name)   # "validate_input"
+        print(e.cause)       # original SchemaValidationError
+    ```
+
+=== "TypeScript"
+    ```typescript
+    // apcore.yaml — step with ignore_errors: true
+    // pipeline:
+    //   configure:
+    //     - name: validate_input
+    //       ignore_errors: true
+
+    import { APCore } from 'apcore-js';
+
+    const client = new APCore({ configPath: 'apcore.yaml' });
+
+    client.module({
+        id: 'demo.process',
+        description: 'Process with lenient validation',
+        execute: ({ value }: { value?: number }) => ({ result: value ?? 'default' }),
+    });
+
+    // ignore_errors: true — pipeline continues even if validate_input fails.
+    const result = await client.call('demo.process', { value: 42 });
+    console.log(result); // { result: 42 }
+
+    // Step WITHOUT ignore_errors — fail fast
+    try {
+        await client.call('demo.process', { unexpected_key: true });
+    } catch (e) {
+        if (e instanceof PipelineStepError) {
+            console.log(e.stepName);  // "validate_input"
+            console.log(e.cause);     // original SchemaValidationError
+        }
+    }
+    ```
+
+=== "Rust"
+    ```rust
+    // apcore.yaml — step with ignore_errors: true
+    // pipeline:
+    //   configure:
+    //     - name: validate_input
+    //       ignore_errors: true
+
+    use apcore::{APCore, Config};
+    use apcore::errors::PipelineStepError;
+    use serde_json::json;
+
+    #[tokio::main]
+    async fn main() {
+        let client = APCore::with_config(Config::load("apcore.yaml").unwrap());
+
+        // ignore_errors: true — pipeline continues even if validate_input fails.
+        let result = client.call("demo.process", json!({"value": 42})).await.unwrap();
+        println!("{result}"); // {"result":42}
+
+        // Step WITHOUT ignore_errors — fail fast
+        match client.call("demo.process", json!({"unexpected_key": true})).await {
+            Err(e) if e.is::<PipelineStepError>() => {
+                let pse = e.downcast_ref::<PipelineStepError>().unwrap();
+                println!("{}", pse.step_name);  // "validate_input"
+                println!("{:?}", pse.cause);    // original SchemaValidationError
+            }
+            _ => {}
+        }
+    }
+    ```
+
+### 1.2 Replace Semantic for Pipeline Configuration
+
+When configuring a pipeline step that already exists (same step name), implementations MUST replace the existing step definition entirely. Implementations MUST NOT create a duplicate step or append a second step with the same name. The replacement MUST preserve the step's position in the execution order.
+
+This applies to both built-in steps and custom steps. Calling `configure_step` (or the equivalent YAML `configure:` directive) twice with the same step name is idempotent with respect to count — there is always exactly one step with that name.
+
+```yaml
+# apcore.yaml — replace the built-in validate_input step with a custom handler
+pipeline:
+  configure:
+    - name: validate_input
+      handler: "myapp.pipeline.custom_validator:validate"
+      ignore_errors: false
+      timeout_ms: 500
+```
+
+After this configuration, the pipeline has exactly one `validate_input` step (the custom one). The built-in handler is fully replaced. The step remains at position 7 in the execution order (between the Middleware Before Chain and Module Execution steps).
+
+### 1.3 Step-Level Middleware
+
+Implementations SHOULD support step-level middleware — middleware that applies only to specific pipeline steps rather than the entire call. Step-level middleware MUST execute in the same before/after pattern as global middleware but scoped to the target step only. Global middleware MUST execute before step-level middleware in the before-phase, and after step-level middleware in the after-phase.
+
+The execution order for a step with both global and step-level middleware is:
+
+1. Global middleware — before phase (all registered global before-hooks)
+2. Step-level middleware — before phase (scoped to this step)
+3. Step handler executes
+4. Step-level middleware — after phase (scoped to this step, reverse order)
+5. Global middleware — after phase (all registered global after-hooks, reverse order)
+
+=== "Python"
+    ```python
+    import time
+    import apcore
+    from apcore import APCore, Config
+
+    client = APCore(Config())
+
+    # Attach a timing middleware only to the validate_input step
+    @client.step_middleware("validate_input")
+    def timing_middleware(step_name, ctx, inputs, next_fn):
+        start = time.perf_counter()
+        result = next_fn(ctx, inputs)
+        elapsed_ms = (time.perf_counter() - start) * 1000
+        ctx.services.logger.info(f"step={step_name} elapsed_ms={elapsed_ms:.2f}")
+        return result
+
+    @client.module(id="demo.greet", description="Greet the user")
+    def greet(inputs, ctx):
+        return {"message": f"Hello, {inputs['name']}!"}
+
+    result = client.call("demo.greet", {"name": "World"})
+    print(result)  # {"message": "Hello, World!"}
+    # Log output: step=validate_input elapsed_ms=0.42
+    ```
+
+=== "TypeScript"
+    ```typescript
+    import { APCore } from 'apcore-js';
+
+    const client = new APCore();
+
+    // Attach a timing middleware only to the validate_input step
+    client.stepMiddleware('validate_input', async (stepName, ctx, inputs, next) => {
+        const start = performance.now();
+        const result = await next(ctx, inputs);
+        const elapsedMs = performance.now() - start;
+        ctx.services.logger.info(`step=${stepName} elapsed_ms=${elapsedMs.toFixed(2)}`);
+        return result;
+    });
+
+    client.module({
+        id: 'demo.greet',
+        description: 'Greet the user',
+        execute: ({ name }: { name: string }) => ({ message: `Hello, ${name}!` }),
+    });
+
+    const result = await client.call('demo.greet', { name: 'World' });
+    console.log(result); // { message: 'Hello, World!' }
+    // Log output: step=validate_input elapsed_ms=0.42
+    ```
+
+=== "Rust"
+    ```rust
+    use apcore::{APCore, Config};
+    use apcore::middleware::StepMiddlewareFn;
+    use serde_json::json;
+    use std::time::Instant;
+
+    #[tokio::main]
+    async fn main() {
+        let mut client = APCore::default();
+
+        // Attach a timing middleware only to the validate_input step
+        client.step_middleware("validate_input", |step_name, ctx, inputs, next| {
+            Box::pin(async move {
+                let start = Instant::now();
+                let result = next(ctx, inputs).await;
+                let elapsed_ms = start.elapsed().as_secs_f64() * 1000.0;
+                ctx.services.logger.info(
+                    &format!("step={step_name} elapsed_ms={elapsed_ms:.2f}")
+                );
+                result
+            })
+        });
+
+        client.register("demo.greet", Box::new(GreetModule));
+        let result = client.call("demo.greet", json!({"name": "World"})).await.unwrap();
+        println!("{result}"); // {"message":"Hello, World!"}
+        // Log output: step=validate_input elapsed_ms=0.42
+    }
+    ```
+
+### 1.4 Unified run_until Pattern
+
+Implementations MUST support a `run_until` termination condition that halts pipeline execution when a predicate returns true. The predicate receives the current `PipelineState` (step name, outputs so far, context) and MUST return a boolean. When `run_until` returns true after step N, steps N+1 onward MUST NOT execute and the pipeline MUST return the accumulated result from steps 1 through N.
+
+`run_until` is evaluated **after** each step completes (not before). If the predicate never returns true, the full pipeline runs to completion normally.
+
+=== "Python"
+    ```python
+    import apcore
+    from apcore import APCore, Config
+
+    client = APCore(Config())
+
+    @client.module(id="cache.fetch", description="Fetch from cache or compute")
+    def cache_fetch(inputs, ctx):
+        # Simulate a cache hit for known keys
+        cache = {"key_abc": {"value": 99}}
+        return {"hit": inputs["key"] in cache, "result": cache.get(inputs["key"])}
+
+    # run_until: stop as soon as we get a cache hit after module_lookup
+    def stop_on_cache_hit(state):
+        # state.step_name is the step that just completed
+        # state.outputs is a dict of step_name -> output so far
+        if state.step_name == "module_lookup":
+            # We haven't executed yet; continue
+            return False
+        # After execute step, check if we got a cache hit
+        execute_output = state.outputs.get("execute")
+        return bool(execute_output and execute_output.get("hit"))
+
+    result = client.call(
+        "cache.fetch",
+        {"key": "key_abc"},
+        options={"run_until": stop_on_cache_hit},
+    )
+    print(result)  # {"hit": True, "result": {"value": 99}}
+    # Steps after execute (output_validation, middleware_after, return_result) did NOT run.
+    ```
+
+=== "TypeScript"
+    ```typescript
+    import { APCore, PipelineState } from 'apcore-js';
+
+    const client = new APCore();
+
+    client.module({
+        id: 'cache.fetch',
+        description: 'Fetch from cache or compute',
+        execute: ({ key }: { key: string }) => {
+            const cache: Record<string, unknown> = { key_abc: { value: 99 } };
+            return { hit: key in cache, result: cache[key] ?? null };
+        },
+    });
+
+    // run_until: stop as soon as we get a cache hit
+    const stopOnCacheHit = (state: PipelineState): boolean => {
+        if (state.stepName !== 'execute') return false;
+        const output = state.outputs['execute'] as { hit?: boolean } | undefined;
+        return output?.hit === true;
+    };
+
+    const result = await client.call(
+        'cache.fetch',
+        { key: 'key_abc' },
+        { runUntil: stopOnCacheHit },
+    );
+    console.log(result); // { hit: true, result: { value: 99 } }
+    // Steps after execute did NOT run.
+    ```
+
+=== "Rust"
+    ```rust
+    use apcore::{APCore, PipelineState};
+    use serde_json::json;
+
+    #[tokio::main]
+    async fn main() {
+        let client = APCore::default();
+
+        // run_until: stop as soon as we get a cache hit
+        let stop_on_cache_hit = |state: &PipelineState| -> bool {
+            if state.step_name != "execute" {
+                return false;
+            }
+            state
+                .outputs
+                .get("execute")
+                .and_then(|o| o.get("hit"))
+                .and_then(|h| h.as_bool())
+                .unwrap_or(false)
+        };
+
+        let result = client
+            .call_with_options(
+                "cache.fetch",
+                json!({"key": "key_abc"}),
+                |opts| opts.run_until(stop_on_cache_hit),
+            )
+            .await
+            .unwrap();
+        println!("{result}"); // {"hit":true,"result":{"value":99}}
+        // Steps after execute did NOT run.
+    }
+    ```
+
+### 1.5 O(1) Control Flow Lookups
+
+Implementations MUST use O(1) lookup structures (hash maps, dictionaries) for step name resolution within the pipeline. Implementations MUST NOT use linear scans (list iteration) to find a step by name during execution. This is a **performance requirement**; violation does not cause incorrect behavior but MUST be flagged during code review.
+
+The step registry MUST be a hash map keyed by step name, built once when the pipeline is configured. Any operation that modifies the pipeline (adding, replacing, or removing a step) MUST update both the ordered list and the hash map atomically so they remain in sync.
+
+!!! warning "Code Review Requirement"
+    During code review, reviewers MUST verify that step name resolution inside the execution loop uses a hash map lookup (e.g., `steps_by_name[step_name]`) and never iterates over a list to find a step by name (e.g., `next(s for s in steps if s.name == step_name)`). Flag any violation even if tests pass.
+
+---
+
+## Contract: Pipeline.configure_step
+
+Normative behavioral contract. All SDK implementations MUST satisfy these guarantees.
+
+### Inputs
+
+- `step_name` (str/string/String, required) — target step to configure or replace
+- `handler` (callable/function/fn, required) — replacement handler for the step
+- `options` (dict/object/HashMap, optional) — step options: `ignore_errors` (bool), `match_modules` (glob list), `timeout_ms` (int)
+
+### Errors
+
+- `PipelineStepNotFoundError(code=PIPELINE_STEP_NOT_FOUND)` — `step_name` does not exist in the current strategy
+
+### Returns
+
+- On success: void/None/()
+
+### Properties
+
+- `async`: false
+- `thread_safe`: false — pipeline configuration MUST be completed before the first `call()` invocation
+- `pure`: false — mutates pipeline state
+- `idempotent`: true — replacing the same step twice with the same handler produces the same result

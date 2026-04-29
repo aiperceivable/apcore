@@ -1,0 +1,146 @@
+{
+  "description": "Semantic format mapping: format keyword validation for date-time, date, email, uri, uuid, ipv4, ipv6. Format enforcement is SHOULD-level (opt-in), so invalid formats produce a warn_logged signal rather than hard errors. PROTOCOL_SPEC §4.15.",
+  "format_mappings": {
+    "date-time": {
+      "python": "datetime.datetime",
+      "typescript": "Date",
+      "rust": "chrono::DateTime<Utc>"
+    },
+    "date": {
+      "python": "datetime.date",
+      "typescript": "string (ISO 8601 date)",
+      "rust": "chrono::NaiveDate"
+    },
+    "time": {
+      "python": "datetime.time",
+      "typescript": "string (ISO 8601 time)",
+      "rust": "chrono::NaiveTime"
+    },
+    "email": {
+      "python": "pydantic.EmailStr",
+      "typescript": "string (format-validated)",
+      "rust": "String (regex-validated)"
+    },
+    "uri": {
+      "python": "pydantic.AnyUrl",
+      "typescript": "URL",
+      "rust": "url::Url"
+    },
+    "uuid": {
+      "python": "uuid.UUID",
+      "typescript": "string (UUID regex)",
+      "rust": "uuid::Uuid"
+    },
+    "ipv4": {
+      "python": "IPv4Address",
+      "typescript": "string (format-validated)",
+      "rust": "std::net::Ipv4Addr"
+    },
+    "ipv6": {
+      "python": "IPv6Address",
+      "typescript": "string (format-validated)",
+      "rust": "std::net::Ipv6Addr"
+    }
+  },
+  "test_cases": [
+    {
+      "id": "datetime_valid_iso8601",
+      "description": "Valid ISO 8601 datetime string with UTC offset — must be accepted",
+      "schema": {
+        "type": "object",
+        "properties": { "occurred_at": { "type": "string", "format": "date-time" } },
+        "required": ["occurred_at"]
+      },
+      "input": { "occurred_at": "2026-04-28T12:00:00Z" },
+      "expected": { "valid": true, "warn_logged": false, "error_code": null }
+    },
+    {
+      "id": "datetime_invalid",
+      "description": "Plaintext string where date-time is expected — format enforcement is SHOULD-level so this produces a warning, not a hard error",
+      "schema": {
+        "type": "object",
+        "properties": { "occurred_at": { "type": "string", "format": "date-time" } },
+        "required": ["occurred_at"]
+      },
+      "input": { "occurred_at": "not-a-date" },
+      "expected": { "valid": true, "warn_logged": true, "error_code": null }
+    },
+    {
+      "id": "date_valid",
+      "description": "Valid ISO 8601 date string — must be accepted",
+      "schema": {
+        "type": "object",
+        "properties": { "birthday": { "type": "string", "format": "date" } },
+        "required": ["birthday"]
+      },
+      "input": { "birthday": "2026-04-28" },
+      "expected": { "valid": true, "warn_logged": false, "error_code": null }
+    },
+    {
+      "id": "email_valid",
+      "description": "Well-formed email address — must be accepted",
+      "schema": {
+        "type": "object",
+        "properties": { "contact": { "type": "string", "format": "email" } },
+        "required": ["contact"]
+      },
+      "input": { "contact": "alice@example.com" },
+      "expected": { "valid": true, "warn_logged": false, "error_code": null }
+    },
+    {
+      "id": "email_invalid",
+      "description": "String that is not a valid email address — format enforcement is SHOULD-level so this produces a warning, not a hard error",
+      "schema": {
+        "type": "object",
+        "properties": { "contact": { "type": "string", "format": "email" } },
+        "required": ["contact"]
+      },
+      "input": { "contact": "not-an-email" },
+      "expected": { "valid": true, "warn_logged": true, "error_code": null }
+    },
+    {
+      "id": "uri_valid",
+      "description": "Valid HTTPS URI — must be accepted",
+      "schema": {
+        "type": "object",
+        "properties": { "callback_url": { "type": "string", "format": "uri" } },
+        "required": ["callback_url"]
+      },
+      "input": { "callback_url": "https://example.com/path" },
+      "expected": { "valid": true, "warn_logged": false, "error_code": null }
+    },
+    {
+      "id": "uuid_valid",
+      "description": "Valid UUID v4 string — must be accepted",
+      "schema": {
+        "type": "object",
+        "properties": { "event_id": { "type": "string", "format": "uuid" } },
+        "required": ["event_id"]
+      },
+      "input": { "event_id": "4bf92f35-77b3-4da6-a3ce-929d0e0e4736" },
+      "expected": { "valid": true, "warn_logged": false, "error_code": null }
+    },
+    {
+      "id": "ipv4_valid",
+      "description": "Valid IPv4 address — must be accepted",
+      "schema": {
+        "type": "object",
+        "properties": { "source_ip": { "type": "string", "format": "ipv4" } },
+        "required": ["source_ip"]
+      },
+      "input": { "source_ip": "192.168.1.1" },
+      "expected": { "valid": true, "warn_logged": false, "error_code": null }
+    },
+    {
+      "id": "ipv4_invalid",
+      "description": "Malformed IPv4 address with out-of-range octets — format enforcement is SHOULD-level so this produces a warning, not a hard error",
+      "schema": {
+        "type": "object",
+        "properties": { "source_ip": { "type": "string", "format": "ipv4" } },
+        "required": ["source_ip"]
+      },
+      "input": { "source_ip": "999.999.999.999" },
+      "expected": { "valid": true, "warn_logged": true, "error_code": null }
+    }
+  ]
+}

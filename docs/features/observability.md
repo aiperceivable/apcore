@@ -12,7 +12,7 @@ Comprehensive observability with distributed tracing, metrics collection, and st
 - Support four sampling strategies: `full` (always export), `proportional` (random sampling at configurable rate), `error_first` (always export errors, proportional for successes), and `off` (never export).
 - Inherit sampling decisions from parent spans in nested calls.
 - Define a `SpanExporter` protocol with three implementations: `StdoutExporter` (JSON lines to stdout), `InMemoryExporter` (bounded in-memory collection for testing), and `OTLPExporter` (OpenTelemetry bridge).
-- `InMemoryExporter` must be bounded (deque with configurable maxlen, default 10,000) to prevent unbounded memory growth.
+- `InMemoryExporter` MUST be bounded (deque with configurable maxlen, default 10,000) to prevent unbounded memory growth.
 
 ### Metrics
 - Implement a `MetricsCollector` with thread-safe counters and histograms (with configurable bucket boundaries).
@@ -435,3 +435,546 @@ The `traceparent` header follows the W3C format: `{version}-{trace_id}-{parent_i
 - async: false
 - thread_safe: true
 - pure: false (side-effect: metric emitted to configured backend)
+
+---
+
+## Observability Hardening (Issue #43)
+
+### 1.1 Pluggable Observability Storage
+
+`ErrorHistory` and `MetricsCollector` currently use in-memory storage only. Production deployments need persistence through pluggable storage backends.
+
+#### Normative Rules
+
+- Implementations MUST define an `ObservabilityStore` interface/protocol/trait with the following methods: `record_error(entry)`, `get_errors(module_id?, limit?) → List[ErrorEntry]`, `record_metric(metric)`, `get_metrics(module_id?, metric_name?) → List[MetricPoint]`, `flush()`, `clear()`.
+- Implementations MUST provide `InMemoryObservabilityStore` as the default backend.
+- Implementations SHOULD provide `RedisObservabilityStore` and `SqlObservabilityStore` as optional backends.
+- The store MUST be injected into `ErrorHistory` and `MetricsCollector` at construction time: `ErrorHistory(store=InMemoryObservabilityStore())`. It MUST NOT be set after construction.
+
+=== "Python"
+    ```python
+    from apcore.observability import (
+        ErrorHistory,
+        MetricsCollector,
+        InMemoryObservabilityStore,
+        RedisObservabilityStore,
+    )
+
+    # Default: in-memory store
+    history = ErrorHistory(store=InMemoryObservabilityStore())
+    collector = MetricsCollector(store=InMemoryObservabilityStore())
+
+    # Production: Redis-backed store
+    redis_store = RedisObservabilityStore(
+        host="redis.internal",
+        port=6379,
+        key_prefix="apcore:obs:",
+        ttl_seconds=86400,
+    )
+    history = ErrorHistory(store=redis_store)
+    collector = MetricsCollector(store=redis_store)
+    ```
+=== "TypeScript"
+    ```typescript
+    import {
+        ErrorHistory,
+        MetricsCollector,
+        InMemoryObservabilityStore,
+        RedisObservabilityStore,
+    } from "apcore-js/observability";
+
+    // Default: in-memory store
+    const history = new ErrorHistory({ store: new InMemoryObservabilityStore() });
+    const collector = new MetricsCollector({ store: new InMemoryObservabilityStore() });
+
+    // Production: Redis-backed store
+    const redisStore = new RedisObservabilityStore({
+        host: "redis.internal",
+        port: 6379,
+        keyPrefix: "apcore:obs:",
+        ttlSeconds: 86400,
+    });
+    const historyProd = new ErrorHistory({ store: redisStore });
+    const collectorProd = new MetricsCollector({ store: redisStore });
+    ```
+=== "Rust"
+    ```rust
+    use apcore::observability::{
+        ErrorHistory, MetricsCollector,
+        InMemoryObservabilityStore, RedisObservabilityStore,
+    };
+    use std::sync::Arc;
+
+    // Default: in-memory store
+    let store = Arc::new(InMemoryObservabilityStore::new());
+    let history = ErrorHistory::new(store.clone());
+    let collector = MetricsCollector::new(store.clone());
+
+    // Production: Redis-backed store
+    let redis_store = Arc::new(
+        RedisObservabilityStore::new("redis://redis.internal:6379")
+            .with_key_prefix("apcore:obs:")
+            .with_ttl_seconds(86400),
+    );
+    let history_prod = ErrorHistory::new(redis_store.clone());
+    let collector_prod = MetricsCollector::new(redis_store.clone());
+    ```
+
+---
+
+### 1.2 BatchSpanProcessor for Non-Blocking OTEL Export
+
+The current span exporter is synchronous — blocking the calling thread during each export. `BatchSpanProcessor` moves export to a background thread/task, keeping the hot path non-blocking.
+
+#### Normative Rules
+
+- Implementations MUST support a `BatchSpanProcessor` that buffers spans in an internal queue and exports them asynchronously in background batches.
+- `BatchSpanProcessor` MUST have the following configurable parameters:
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `max_queue_size` | 2048 | Maximum number of spans held in the buffer |
+| `schedule_delay_ms` | 5000 | Delay between successive export attempts (milliseconds) |
+| `max_export_batch_size` | 512 | Maximum spans per single export call |
+| `export_timeout_ms` | 30000 | Deadline for the final flush on shutdown |
+
+- When the queue is full, new spans MUST be dropped (not block) and a counter `spans_dropped` MUST be incremented.
+- `BatchSpanProcessor` MUST flush all remaining buffered spans on shutdown, within the `export_timeout_ms` deadline. Spans not flushed within the deadline MUST be discarded.
+- `SimpleSpanProcessor` (synchronous, immediate export) MUST remain available as an alternative for development and testing environments.
+
+#### Processor Comparison
+
+| Property | SimpleSpanProcessor | BatchSpanProcessor |
+|----------|--------------------|--------------------|
+| Use case | Development / testing | Production |
+| Blocking | Yes — blocks caller per span | No — enqueues and returns immediately |
+| Memory | O(1) — no buffer | O(max_queue_size) |
+| Reliability | Guaranteed delivery (synchronous) | Best-effort (drops on full queue) |
+
+#### Configuration (YAML)
+
+```yaml
+tracing:
+  processor: "batch"
+  batch:
+    max_queue_size: 2048
+    schedule_delay_ms: 5000
+    max_export_batch_size: 512
+    export_timeout_ms: 30000
+```
+
+=== "Python"
+    ```python
+    from apcore.observability import (
+        BatchSpanProcessor,
+        SimpleSpanProcessor,
+        OTLPExporter,
+        TracingMiddleware,
+    )
+
+    # Production: non-blocking batch export to OTLP endpoint
+    exporter = OTLPExporter(endpoint="http://otel-collector:4318")
+    processor = BatchSpanProcessor(
+        exporter=exporter,
+        max_queue_size=2048,
+        schedule_delay_ms=5000,
+        max_export_batch_size=512,
+        export_timeout_ms=30000,
+    )
+    tracing = TracingMiddleware(processor=processor, strategy="proportional", sampling_rate=0.1)
+
+    # Development: synchronous simple processor
+    dev_processor = SimpleSpanProcessor(exporter=OTLPExporter(endpoint="http://localhost:4318"))
+    dev_tracing = TracingMiddleware(processor=dev_processor, strategy="full")
+    ```
+=== "TypeScript"
+    ```typescript
+    import {
+        BatchSpanProcessor,
+        SimpleSpanProcessor,
+        OTLPExporter,
+        TracingMiddleware,
+    } from "apcore-js/observability";
+
+    // Production: non-blocking batch export to OTLP endpoint
+    const exporter = new OTLPExporter({ endpoint: "http://otel-collector:4318" });
+    const processor = new BatchSpanProcessor({
+        exporter,
+        maxQueueSize: 2048,
+        scheduleDelayMs: 5000,
+        maxExportBatchSize: 512,
+        exportTimeoutMs: 30000,
+    });
+    const tracing = new TracingMiddleware({ processor, strategy: "proportional", samplingRate: 0.1 });
+
+    // Development: synchronous simple processor
+    const devProcessor = new SimpleSpanProcessor({
+        exporter: new OTLPExporter({ endpoint: "http://localhost:4318" }),
+    });
+    const devTracing = new TracingMiddleware({ processor: devProcessor, strategy: "full" });
+    ```
+=== "Rust"
+    ```rust
+    use apcore::observability::{
+        BatchSpanProcessor, SimpleSpanProcessor,
+        OTLPExporter, TracingMiddleware, SamplingStrategy,
+    };
+    use std::sync::Arc;
+
+    // Production: non-blocking batch export to OTLP endpoint
+    let exporter = Arc::new(OTLPExporter::new("http://otel-collector:4318"));
+    let processor = BatchSpanProcessor::builder(exporter.clone())
+        .max_queue_size(2048)
+        .schedule_delay_ms(5000)
+        .max_export_batch_size(512)
+        .export_timeout_ms(30000)
+        .build();
+    let tracing = TracingMiddleware::new(
+        Box::new(processor),
+        SamplingStrategy::Proportional(0.1),
+    );
+
+    // Development: synchronous simple processor
+    let dev_processor = SimpleSpanProcessor::new(exporter.clone());
+    let dev_tracing = TracingMiddleware::new(
+        Box::new(dev_processor),
+        SamplingStrategy::Full,
+    );
+    ```
+
+---
+
+### 1.3 O(log N) ErrorHistory Eviction with Min-Heap
+
+The current ring-buffer eviction is O(M) where M = `max_total_entries`. At scale (millions of calls per day) this causes measurable latency spikes. Replacing the ring buffer with a min-heap keyed on `last_seen_at` reduces eviction cost to O(log N).
+
+#### Normative Rules
+
+- Implementations MUST maintain a min-heap of `ErrorEntry` objects keyed on `last_seen_at` timestamp.
+- When the total entry count exceeds `max_total_entries`, the entry with the OLDEST `last_seen_at` MUST be evicted (min-heap pop). This is a normative data structure requirement, not a recommendation, because O(M) eviction causes measurable latency at production scale.
+- Heap operations MUST be protected by a lock in multi-threaded environments.
+- The public API (`record`, `get_errors`, `count`) MUST remain unchanged from the existing spec.
+
+#### Data Structure
+
+```
+ErrorHistory:
+  heap: min-heap[ErrorEntry] keyed on last_seen_at
+  index: dict[module_id → list[ErrorEntry ref]]  # O(1) module lookup
+```
+
+The `index` provides O(1) lookup by `module_id` for `get_errors(module_id)` without requiring a heap scan. Both the heap and the index reference the same `ErrorEntry` objects; eviction removes from both structures atomically under the lock.
+
+!!! note "Why this is a MUST, not a SHOULD"
+    At 1M calls/day with `max_total_entries=1000`, eviction fires ~1000 times/day. O(1000) per eviction with a naive ring buffer amounts to 1M comparisons/day in the eviction path alone. The min-heap reduces this to ~10 comparisons per eviction. This difference is measurable in profiling at sustained high throughput.
+
+---
+
+### 1.4 Error Fingerprinting for Deduplication
+
+Current deduplication is keyed on `(code, message)` tuple, which fails to deduplicate errors whose messages contain ephemeral values (UUIDs, timestamps, numeric IDs). Content-addressable fingerprinting normalizes these values before hashing.
+
+#### Normative Rules
+
+- Implementations MUST compute an error fingerprint as: `SHA-256(error_code + ":" + module_id + ":" + normalized_message)`, encoded as a 64-character lowercase hex string.
+- `normalized_message` MUST be produced by the normalization algorithm below.
+- When recording an error, if an entry with the same fingerprint already exists, implementations MUST increment its `count` and update its `last_seen_at`. Implementations MUST NOT create a duplicate entry.
+- The fingerprint MUST be stored in `ErrorEntry` as a `fingerprint` field (64-char hex string).
+
+#### Normalization Algorithm
+
+```
+normalize_message(msg):
+  1. Replace UUID patterns (8-4-4-4-12 hex, optionally hyphenated) with <UUID>
+  2. Replace integers > 3 digits with <ID>
+  3. Replace ISO 8601 timestamps (date, datetime, datetime+timezone) with <TIMESTAMP>
+  4. Strip leading/trailing whitespace
+  5. Lowercase entire string
+  Return normalized string
+```
+
+=== "Python"
+    ```python
+    import hashlib
+    import re
+
+    def normalize_message(msg: str) -> str:
+        # Step 1: UUID patterns (with or without hyphens)
+        msg = re.sub(
+            r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}",
+            "<UUID>", msg,
+        )
+        # Step 2: integers > 3 digits
+        msg = re.sub(r"\b\d{4,}\b", "<ID>", msg)
+        # Step 3: ISO 8601 timestamps
+        msg = re.sub(
+            r"\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})?)?",
+            "<TIMESTAMP>", msg,
+        )
+        return msg.strip().lower()
+
+    def compute_fingerprint(error_code: str, module_id: str, message: str) -> str:
+        normalized = normalize_message(message)
+        raw = f"{error_code}:{module_id}:{normalized}"
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+    # Example usage
+    fp = compute_fingerprint(
+        "DB_TIMEOUT",
+        "executor.db.query",
+        "Connection to host 192.168.1.100 timed out after 30000ms (request-id: a1b2c3d4-e5f6-7890-abcd-ef1234567890)",
+    )
+    # normalized: "connection to host <id>.<id>.<id>.<id> timed out after <id>ms (request-id: <uuid>)"
+    print(fp)  # 64-char hex string
+    ```
+=== "TypeScript"
+    ```typescript
+    import { createHash } from "crypto";
+
+    function normalizeMessage(msg: string): string {
+        // Step 1: UUID patterns
+        msg = msg.replace(
+            /[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/g,
+            "<UUID>",
+        );
+        // Step 2: integers > 3 digits
+        msg = msg.replace(/\b\d{4,}\b/g, "<ID>");
+        // Step 3: ISO 8601 timestamps
+        msg = msg.replace(
+            /\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})?)?/g,
+            "<TIMESTAMP>",
+        );
+        return msg.trim().toLowerCase();
+    }
+
+    function computeFingerprint(errorCode: string, moduleId: string, message: string): string {
+        const normalized = normalizeMessage(message);
+        const raw = `${errorCode}:${moduleId}:${normalized}`;
+        return createHash("sha256").update(raw, "utf8").digest("hex");
+    }
+
+    // Example usage
+    const fp = computeFingerprint(
+        "DB_TIMEOUT",
+        "executor.db.query",
+        "Connection to host 192.168.1.100 timed out after 30000ms (request-id: a1b2c3d4-e5f6-7890-abcd-ef1234567890)",
+    );
+    console.log(fp); // 64-char hex string
+    ```
+=== "Rust"
+    ```rust
+    use sha2::{Sha256, Digest};
+    use regex::Regex;
+
+    fn normalize_message(msg: &str) -> String {
+        let uuid_re = Regex::new(
+            r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+        ).unwrap();
+        let id_re = Regex::new(r"\b\d{4,}\b").unwrap();
+        let ts_re = Regex::new(
+            r"\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})?)?"
+        ).unwrap();
+
+        let msg = uuid_re.replace_all(msg, "<UUID>");
+        let msg = id_re.replace_all(&msg, "<ID>");
+        let msg = ts_re.replace_all(&msg, "<TIMESTAMP>");
+        msg.trim().to_lowercase()
+    }
+
+    fn compute_fingerprint(error_code: &str, module_id: &str, message: &str) -> String {
+        let normalized = normalize_message(message);
+        let raw = format!("{}:{}:{}", error_code, module_id, normalized);
+        let mut hasher = Sha256::new();
+        hasher.update(raw.as_bytes());
+        format!("{:x}", hasher.finalize())
+    }
+
+    // Example usage
+    let fp = compute_fingerprint(
+        "DB_TIMEOUT",
+        "executor.db.query",
+        "Connection to host 192.168.1.100 timed out after 30000ms",
+    );
+    println!("{}", fp); // 64-char hex string
+    ```
+
+---
+
+### 1.5 Configurable Redaction Rules
+
+Currently redaction is driven solely by `x-sensitive: true` schema annotations. Runtime-configurable rules extend this to cover field name patterns and value patterns without requiring schema changes.
+
+#### Normative Rules
+
+- Implementations MUST support a `RedactionConfig` with three fields:
+  - `field_patterns` — list of glob patterns matching field names to redact (e.g., `"*password*"`)
+  - `value_patterns` — list of regex patterns matching field values to redact (e.g., `"^Bearer .*"`)
+  - `replacement` — string substituted for redacted values; default `"***REDACTED***"`
+- When logging inputs/outputs, the redaction engine MUST apply both schema-level (`x-sensitive`) and config-level (`RedactionConfig`) rules. The union of all matched fields and values is redacted.
+- Implementations MUST NOT redact `trace_id`, `caller_id`, or `module_id` — these fields are required for observability correlation and MUST always appear in logs unmodified.
+
+#### Configuration (YAML)
+
+```yaml
+observability:
+  redaction:
+    field_patterns:
+      - "*password*"
+      - "*token*"
+      - "*secret*"
+      - "*api_key*"
+    value_patterns:
+      - "^Bearer .*"
+      - "^sk-[A-Za-z0-9]+"
+    replacement: "***REDACTED***"
+```
+
+=== "Python"
+    ```python
+    from apcore.observability import RedactionConfig, ObsLoggingMiddleware
+
+    redaction = RedactionConfig(
+        field_patterns=["*password*", "*token*", "*secret*", "*api_key*"],
+        value_patterns=[r"^Bearer .*", r"^sk-[A-Za-z0-9]+"],
+        replacement="***REDACTED***",
+    )
+    logging_mw = ObsLoggingMiddleware(
+        log_inputs=True,
+        log_outputs=True,
+        redaction_config=redaction,
+    )
+    ```
+=== "TypeScript"
+    ```typescript
+    import { RedactionConfig, ObsLoggingMiddleware } from "apcore-js/observability";
+
+    const redaction = new RedactionConfig({
+        fieldPatterns: ["*password*", "*token*", "*secret*", "*api_key*"],
+        valuePatterns: [/^Bearer .*/, /^sk-[A-Za-z0-9]+/],
+        replacement: "***REDACTED***",
+    });
+    const loggingMw = new ObsLoggingMiddleware({
+        logInputs: true,
+        logOutputs: true,
+        redactionConfig: redaction,
+    });
+    ```
+=== "Rust"
+    ```rust
+    use apcore::observability::{RedactionConfig, ObsLoggingMiddleware};
+
+    let redaction = RedactionConfig::builder()
+        .field_patterns(vec!["*password*", "*token*", "*secret*", "*api_key*"])
+        .value_patterns(vec![r"^Bearer .*", r"^sk-[A-Za-z0-9]+"])
+        .replacement("***REDACTED***")
+        .build();
+    let logging_mw = ObsLoggingMiddleware::new(true, true)
+        .with_redaction_config(redaction);
+    ```
+
+---
+
+### 1.6 K8s/Prometheus Integration Hooks
+
+#### Normative Rules
+
+- Implementations MUST expose a `/metrics` HTTP endpoint returning Prometheus text format when `observability.prometheus.enabled: true` is configured.
+- Implementations SHOULD expose a `/healthz` liveness endpoint and a `/readyz` readiness endpoint.
+- The Prometheus `/metrics` endpoint MUST include the following standard apcore metrics: `apcore_module_calls_total`, `apcore_module_errors_total`, `apcore_module_duration_seconds` (histogram).
+- Implementations SHOULD document the required K8s ServiceMonitor annotation `prometheus.io/scrape: "true"` so that Prometheus Operator can auto-discover the endpoint.
+
+#### Configuration (YAML)
+
+```yaml
+observability:
+  prometheus:
+    enabled: true
+    port: 9090
+    path: "/metrics"
+  health:
+    liveness_path: "/healthz"
+    readiness_path: "/readyz"
+```
+
+#### K8s ServiceMonitor annotations
+
+```yaml
+# Kubernetes Pod/Deployment annotation for Prometheus auto-discovery
+annotations:
+  prometheus.io/scrape: "true"
+  prometheus.io/port: "9090"
+  prometheus.io/path: "/metrics"
+```
+
+=== "Python"
+    ```python
+    from apcore import APCore
+    from apcore.observability import MetricsCollector, PrometheusExporter
+
+    collector = MetricsCollector()
+    exporter = PrometheusExporter(collector=collector)
+
+    # Start the metrics HTTP server (non-blocking, runs in background thread)
+    exporter.start(port=9090, path="/metrics")
+
+    # Health endpoints are served on the same port
+    # GET /healthz → 200 OK  (liveness)
+    # GET /readyz  → 200 OK  (readiness, after APCore finishes loading modules)
+
+    client = APCore()
+    client.configure_observability(prometheus_exporter=exporter)
+    ```
+=== "TypeScript"
+    ```typescript
+    import { APCore } from "apcore-js";
+    import { MetricsCollector, PrometheusExporter } from "apcore-js/observability";
+
+    const collector = new MetricsCollector();
+    const exporter = new PrometheusExporter({ collector });
+
+    // Start the metrics HTTP server (non-blocking)
+    await exporter.start({ port: 9090, path: "/metrics" });
+
+    // Health endpoints served on same port:
+    // GET /healthz → 200 OK  (liveness)
+    // GET /readyz  → 200 OK  (readiness)
+
+    const client = new APCore();
+    client.configureObservability({ prometheusExporter: exporter });
+    ```
+=== "Rust"
+    ```rust
+    use apcore::APCore;
+    use apcore::observability::{MetricsCollector, PrometheusExporter};
+    use std::sync::Arc;
+
+    let collector = Arc::new(MetricsCollector::new());
+    let exporter = PrometheusExporter::new(collector.clone());
+
+    // Start the metrics HTTP server (non-blocking, spawns background task)
+    exporter.start(9090, "/metrics").await?;
+
+    // Health endpoints served on same port:
+    // GET /healthz → 200 OK  (liveness)
+    // GET /readyz  → 200 OK  (readiness)
+
+    let mut client = APCore::new();
+    client.configure_observability(exporter);
+    ```
+
+## Contract: PrometheusExporter.export
+
+### Inputs
+- `collector` (MetricsCollector, required) — source of metrics data
+
+### Errors
+- None — export errors MUST be logged and MUST NOT propagate to callers
+
+### Returns
+- On success: str/string/String — Prometheus text exposition format, UTF-8
+
+### Properties
+- async: false
+- thread_safe: true
+- pure: false (reads from live collector state)
+- idempotent: true

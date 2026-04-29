@@ -1,0 +1,165 @@
+{
+  "description": "Union type evaluation (anyOf/oneOf/allOf): all-branches exhaustive evaluation, ambiguous-oneOf rejection, no-match errors. PROTOCOL_SPEC §4.15.",
+  "test_cases": [
+    {
+      "id": "anyof_first_branch_valid",
+      "description": "anyOf input matches first branch — must be accepted without requiring second branch to also match",
+      "schema": {
+        "anyOf": [
+          {
+            "type": "object",
+            "properties": { "kind": { "const": "circle" }, "radius": { "type": "number" } },
+            "required": ["kind", "radius"]
+          },
+          {
+            "type": "object",
+            "properties": { "kind": { "const": "rect" }, "width": { "type": "number" }, "height": { "type": "number" } },
+            "required": ["kind", "width", "height"]
+          }
+        ]
+      },
+      "input": { "kind": "circle", "radius": 5.0 },
+      "expected": { "valid": true, "error_code": null }
+    },
+    {
+      "id": "anyof_second_branch_valid",
+      "description": "anyOf input fails first branch but matches second — must be accepted; first-branch failure alone must not reject input",
+      "schema": {
+        "anyOf": [
+          {
+            "type": "object",
+            "properties": { "kind": { "const": "circle" }, "radius": { "type": "number" } },
+            "required": ["kind", "radius"]
+          },
+          {
+            "type": "object",
+            "properties": { "kind": { "const": "rect" }, "width": { "type": "number" }, "height": { "type": "number" } },
+            "required": ["kind", "width", "height"]
+          }
+        ]
+      },
+      "input": { "kind": "rect", "width": 10.0, "height": 20.0 },
+      "expected": { "valid": true, "error_code": null }
+    },
+    {
+      "id": "anyof_no_branch_valid",
+      "description": "anyOf input matches no branch — must produce SCHEMA_UNION_NO_MATCH error",
+      "schema": {
+        "anyOf": [
+          {
+            "type": "object",
+            "properties": { "kind": { "const": "circle" }, "radius": { "type": "number" } },
+            "required": ["kind", "radius"]
+          },
+          {
+            "type": "object",
+            "properties": { "kind": { "const": "rect" }, "width": { "type": "number" }, "height": { "type": "number" } },
+            "required": ["kind", "width", "height"]
+          }
+        ]
+      },
+      "input": { "kind": "triangle", "base": 3.0, "height": 4.0 },
+      "expected": { "valid": false, "error_code": "SCHEMA_UNION_NO_MATCH" }
+    },
+    {
+      "id": "oneof_exactly_one_match",
+      "description": "oneOf input matches exactly one branch — must be accepted",
+      "schema": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": { "kind": { "const": "circle" }, "radius": { "type": "number" } },
+            "required": ["kind", "radius"]
+          },
+          {
+            "type": "object",
+            "properties": { "kind": { "const": "rect" }, "width": { "type": "number" }, "height": { "type": "number" } },
+            "required": ["kind", "width", "height"]
+          }
+        ]
+      },
+      "input": { "kind": "circle", "radius": 7.5 },
+      "expected": { "valid": true, "error_code": null }
+    },
+    {
+      "id": "oneof_ambiguous",
+      "description": "oneOf input matches more than one branch — must produce SCHEMA_UNION_AMBIGUOUS error; regression test for short-circuit evaluation bug",
+      "schema": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": { "value": { "type": "integer" } },
+            "required": ["value"]
+          },
+          {
+            "type": "object",
+            "properties": { "value": { "type": "number" } },
+            "required": ["value"]
+          }
+        ]
+      },
+      "input": { "value": 42 },
+      "expected": { "valid": false, "error_code": "SCHEMA_UNION_AMBIGUOUS" }
+    },
+    {
+      "id": "oneof_no_match",
+      "description": "oneOf input matches no branch — must produce SCHEMA_UNION_NO_MATCH error",
+      "schema": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": { "kind": { "const": "circle" }, "radius": { "type": "number" } },
+            "required": ["kind", "radius"]
+          },
+          {
+            "type": "object",
+            "properties": { "kind": { "const": "rect" }, "width": { "type": "number" }, "height": { "type": "number" } },
+            "required": ["kind", "width", "height"]
+          }
+        ]
+      },
+      "input": { "kind": "pentagon", "sides": 5 },
+      "expected": { "valid": false, "error_code": "SCHEMA_UNION_NO_MATCH" }
+    },
+    {
+      "id": "allof_all_satisfied",
+      "description": "allOf input satisfies every branch — must be accepted",
+      "schema": {
+        "allOf": [
+          {
+            "type": "object",
+            "properties": { "name": { "type": "string" } },
+            "required": ["name"]
+          },
+          {
+            "type": "object",
+            "properties": { "age": { "type": "integer" } },
+            "required": ["age"]
+          }
+        ]
+      },
+      "input": { "name": "Alice", "age": 30 },
+      "expected": { "valid": true, "error_code": null }
+    },
+    {
+      "id": "allof_one_fails",
+      "description": "allOf input fails one branch — must produce a validation error because all branches must be satisfied",
+      "schema": {
+        "allOf": [
+          {
+            "type": "object",
+            "properties": { "name": { "type": "string" } },
+            "required": ["name"]
+          },
+          {
+            "type": "object",
+            "properties": { "age": { "type": "integer" } },
+            "required": ["age"]
+          }
+        ]
+      },
+      "input": { "name": "Bob" },
+      "expected": { "valid": false, "error_code": "SCHEMA_VALIDATION_FAILED" }
+    }
+  ]
+}

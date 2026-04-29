@@ -253,3 +253,203 @@ Tests are split across two files targeting different abstraction levels:
 ### Properties
 - async: language-dependent
 - thread_safe: true
+
+---
+
+## Middleware Architecture Hardening (Issue #42)
+
+### 1.1 Context Namespacing
+
+Context keys in `context.data` are partitioned by namespace to prevent collisions between framework internals and user extensions.
+
+**Normative rules:**
+
+- Framework-owned keys MUST use the `_apcore.*` prefix (e.g., `_apcore.mw.logging.start_time`).
+- User extensions MUST use the `ext.*` prefix (e.g., `ext.my_company.request_id`).
+- Implementations MUST NOT write to keys in the other party's namespace. A framework implementation MUST NOT write `ext.*` keys; user middleware MUST NOT write `_apcore.*` keys.
+- Keys that begin with neither prefix are allowed for backward compatibility but SHOULD be migrated to one of the two namespaces.
+
+**Canonical `_apcore.*` keys:**
+
+| Key | Set by | Value |
+|-----|--------|-------|
+| `_apcore.mw.logging.start_time` | `LoggingMiddleware.before()` | Wall-clock time (float, seconds since epoch) at the start of the module call |
+| `_apcore.mw.tracing.span_id` | `TracingMiddleware.before()` | Active span ID string for the current module execution span |
+| `_apcore.mw.circuit.state` | `CircuitBreakerMiddleware.before()` | Circuit state string: `CLOSED`, `OPEN`, or `HALF_OPEN` |
+
+### 1.2 CircuitBreakerMiddleware
+
+The `CircuitBreakerMiddleware` tracks per-module error rates and latencies, and opens a circuit when thresholds are exceeded, preventing calls to unhealthy modules.
+
+**Normative rules:**
+
+- `CircuitBreakerMiddleware` MUST track per-(`module_id`, `caller_id`) error statistics in a configurable rolling window.
+- When the error rate in the window exceeds `open_threshold` (default: `0.5`), the circuit for that pair MUST transition to `OPEN`. In `OPEN` state, calls MUST be short-circuited and MUST raise `CircuitBreakerOpenError`.
+- The circuit MUST transition to `HALF_OPEN` after `recovery_window_ms` (default: `30000`) has elapsed since the circuit opened. In `HALF_OPEN` state, exactly one probe call is allowed through. A successful probe transitions the circuit to `CLOSED`; a failed probe transitions it back to `OPEN`.
+- `CircuitBreakerMiddleware` MUST store the current circuit state in `context.data["_apcore.mw.circuit.state"]` on every call.
+- Implementations MUST emit `apcore.circuit.opened` and `apcore.circuit.closed` events via the `EventEmitter` when state transitions occur.
+
+=== "Python"
+    ```python
+    from apcore import APCore
+    from apcore.middleware import CircuitBreakerMiddleware
+
+    client = APCore()
+
+    client.use(CircuitBreakerMiddleware(
+        open_threshold=0.3,        # open if >30% of calls fail
+        recovery_window_ms=60000,  # probe after 60 seconds
+        window_size=20,            # rolling window of 20 calls
+    ))
+
+    result = client.call("executor.payment.charge", {"amount": 100})
+    ```
+=== "TypeScript"
+    ```typescript
+    import { APCore, CircuitBreakerMiddleware } from "apcore-js";
+
+    const client = new APCore();
+
+    client.use(new CircuitBreakerMiddleware({
+        openThreshold: 0.3,        // open if >30% of calls fail
+        recoveryWindowMs: 60000,   // probe after 60 seconds
+        windowSize: 20,            // rolling window of 20 calls
+    }));
+
+    const result = await client.call("executor.payment.charge", { amount: 100 });
+    ```
+=== "Rust"
+    ```rust
+    use apcore::APCore;
+    use apcore::middleware::CircuitBreakerMiddleware;
+
+    let mut client = APCore::new();
+
+    client.use_middleware(Box::new(
+        CircuitBreakerMiddleware::builder()
+            .open_threshold(0.3)         // open if >30% of calls fail
+            .recovery_window_ms(60_000)  // probe after 60 seconds
+            .window_size(20)             // rolling window of 20 calls
+            .build(),
+    ));
+
+    let result = client.call("executor.payment.charge", json!({ "amount": 100 })).await?;
+    ```
+
+### 1.3 TracingMiddleware (OpenTelemetry-Compatible)
+
+The `TracingMiddleware` creates spans around module execution compatible with OTLP exporters.
+
+**Normative rules:**
+
+- `TracingMiddleware` MUST create a span in `before()` with span name equal to `module_id` and attributes `{ apcore.trace_id, apcore.caller_id, apcore.module_id }`.
+- `TracingMiddleware` MUST end the span in `after()` with the execution result status (`ok` on success, `error` on failure).
+- `TracingMiddleware` MUST store the span ID in `context.data["_apcore.mw.tracing.span_id"]`.
+- `TracingMiddleware` SHOULD propagate W3C `traceparent` headers to outbound calls.
+- `TracingMiddleware` MUST NOT raise if the OpenTelemetry SDK is not installed; in that case it MUST operate as a no-op.
+
+=== "Python"
+    ```python
+    from apcore import APCore
+    from apcore.middleware import TracingMiddleware
+
+    # opentelemetry-api must be installed for active tracing;
+    # if absent, TracingMiddleware silently becomes a no-op.
+    client = APCore()
+
+    client.use(TracingMiddleware(
+        service_name="my-service",
+        propagate_traceparent=True,
+    ))
+
+    result = client.call("executor.email.send_email", {"to": "user@example.com"})
+    ```
+=== "TypeScript"
+    ```typescript
+    import { APCore, TracingMiddleware } from "apcore-js";
+    // @opentelemetry/api must be installed for active tracing;
+    // if absent, TracingMiddleware silently becomes a no-op.
+
+    const client = new APCore();
+
+    client.use(new TracingMiddleware({
+        serviceName: "my-service",
+        propagateTraceparent: true,
+    }));
+
+    const result = await client.call("executor.email.send_email", { to: "user@example.com" });
+    ```
+=== "Rust"
+    ```rust
+    use apcore::APCore;
+    use apcore::middleware::TracingMiddleware;
+    // opentelemetry crate must be in Cargo.toml for active tracing;
+    // if absent (feature-flag disabled), TracingMiddleware is a no-op.
+
+    let mut client = APCore::new();
+
+    client.use_middleware(Box::new(
+        TracingMiddleware::builder()
+            .service_name("my-service")
+            .propagate_traceparent(true)
+            .build(),
+    ));
+
+    let result = client.call("executor.email.send_email", json!({ "to": "user@example.com" })).await?;
+    ```
+
+### 1.4 Declarative Middleware Configuration (YAML-Driven)
+
+Config-over-code: middleware chains SHOULD be configurable via `apcore.yaml` without writing any application code.
+
+```yaml
+middleware:
+  - type: "tracing"
+    match_modules: ["executor.*"]
+  - type: "circuit_breaker"
+    open_threshold: 0.3
+    recovery_window_ms: 60000
+  - type: "logging"
+    log_inputs: true
+    log_outputs: false
+  - type: "custom"
+    handler: "myapp.middleware.RateLimiter"
+    config:
+      requests_per_second: 100
+```
+
+**Normative rules:**
+
+- Implementations MUST support at minimum the `tracing`, `circuit_breaker`, and `logging` built-in middleware types via YAML configuration.
+- Custom middleware types MUST be resolvable via a dotted module path supplied in the `handler` field (e.g., `myapp.middleware.RateLimiter`). Implementations MUST raise a clear configuration error if the handler cannot be imported or does not implement the `Middleware` interface.
+- The `match_modules` field, when present, restricts the middleware to module IDs matching the provided glob patterns. When absent, the middleware applies to all modules.
+
+### 1.5 Async Handler Detection
+
+Incorrect async detection causes middleware to be invoked synchronously when it should be awaited, silently swallowing results.
+
+!!! warning
+    Using `isawaitable(handler)` in Python always returns `False` for non-called functions — it tests whether an *object* is awaitable, not whether a *function* is a coroutine function. Use `inspect.iscoroutinefunction(handler)` instead.
+
+**Normative rules:**
+
+- **Python:** Implementations MUST use `inspect.iscoroutinefunction(handler)` to detect async handlers. Using `isawaitable(handler)` on an uncalled function is incorrect and MUST NOT be used for this purpose.
+- **TypeScript:** Implementations MUST check `handler.constructor.name === 'AsyncFunction'` to detect async handlers before invocation. Checking `instanceof Promise` after invocation is too late (the function has already been called synchronously). Preferred approach: inspect the function itself via `handler.constructor.name`.
+- **Rust:** Async handlers are statically typed via `async_trait`; no runtime detection is needed or possible.
+
+## Contract: Middleware.detect_async
+
+### Inputs
+- `handler` (callable/Function/fn, required) — the middleware function to inspect
+
+### Errors
+- None
+
+### Returns
+- On success: bool/boolean/bool — `true` if the handler is asynchronous, `false` otherwise
+
+### Properties
+- async: false
+- thread_safe: true
+- pure: true
+- idempotent: true

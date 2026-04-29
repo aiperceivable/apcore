@@ -66,10 +66,12 @@ The five `schema_hardening_*.json` fixtures added in Issue #44 close the §4.15 
 
 ## Non-Standard Test Patterns
 
-Most test cases use `expected` for the expected result. Two fixtures use alternative patterns:
+Most test cases use `expected` for the expected result. Four fixtures use alternative or extended patterns:
 
 - **`context_serialization.json`** — `all_identity_types_serialize` uses a `sub_cases` array instead of a single `expected`. Test runners should iterate each sub-case and validate `input_identity` → `expected_type`.
 - **`annotations_extra_round_trip.json`** — `producer_must_not_emit_both_forms` uses `forbidden_root_keys` instead of `expected`. Test runners should verify that none of the listed keys appear in the serialized output.
+- **`schema_hardening_recursive.json`** — has a root-level `schema` object (the shared `TreeNode` recursive schema) used by all test cases. Test runners should read the top-level `schema` as the schema-under-test for every case in this file; individual test cases do not carry their own `schema` field.
+- **`schema_hardening_formats.json`** — has a root-level `format_mappings` object listing the canonical language-native type for each JSON Schema `format` keyword across Python, TypeScript, and Rust. This is reference metadata for SDK implementors; test runners may ignore it and process `test_cases` normally.
 
 ## Usage
 

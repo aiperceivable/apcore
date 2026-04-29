@@ -6,6 +6,8 @@
 
 > **AI-Perceivable**: When modules, interfaces, and tools are clearly perceived by AI, the model can understand their structure and purpose, and therefore know exactly how to invoke, orchestrate, and act on them. From perception → cognition → execution.
 
+**[📖 Full Documentation](https://aiperceivable.github.io/apcore/)** · [Getting Started](https://aiperceivable.github.io/apcore/getting-started/) · [Protocol Spec](./PROTOCOL_SPEC.md)
+
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/12294/badge)](https://www.bestpractices.dev/projects/12294)
 [![Python Version](https://img.shields.io/badge/python-3.11%2B-blue)](https://github.com/aiperceivable/apcore-python)
@@ -1145,6 +1147,7 @@ Development guide: see [Adapter Development Guide](./docs/guides/adapter-develop
 | [Extension System](./docs/features/extension-system.md) | Pluggable extension points for discoverers, middleware, ACL, exporters |
 | [Identity System](./docs/features/identity-system.md) | Caller identity with types, roles, and ContextFactory protocol |
 | [Middleware System](./docs/features/middleware-system.md) | Composable middleware pipeline with onion execution model |
+| [Multi-Module Discovery](./docs/features/multi-module-discovery.md) | Opt-in multi-class discovery: multiple Module classes per file, each with a snake_case-derived ID |
 | [Observability](./docs/features/observability.md) | Distributed tracing, metrics, and structured logging |
 | [Registry System](./docs/features/registry-system.md) | Module discovery, registration, and querying |
 | [Schema System](./docs/features/schema-system.md) | Schema loading, validation, `$ref` resolution, and export |
