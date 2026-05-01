@@ -414,7 +414,7 @@ For complete usage examples with all three languages, see the [APCore Client API
 - `reason` (str/string, optional) — audit reason string; defaults to `"Disabled via APCore client"`
 
 ### Errors
-- `RuntimeError` (Python) / `Error` (TypeScript) — raised immediately if `sys_modules` are not enabled; Python message: `"disable() requires sys_modules to be enabled. Pass a Config with sys_modules.enabled=true to APCore()."` TypeScript message: `"Cannot call disable(): sys_modules must be enabled in config."`
+- `RuntimeError` (Python) / `Error` (TypeScript) / `Err(ModuleError(code=SYS_MODULES_DISABLED))` (Rust) — raised immediately if `sys_modules` are not enabled. Python message: `"disable() requires sys_modules to be enabled. Pass a Config with sys_modules.enabled=true to APCore()."` TypeScript message: `"Cannot call disable(): sys_modules must be enabled in config."` Rust message: `"disable() requires sys_modules to be enabled. Pass a Config with sys_modules.enabled=true to APCore::new()."`
 - Any error raised by `system.control.toggle_feature` (e.g., `ModuleNotFoundError` if `module_id` is not registered) propagates unchanged
 
 ### Returns
@@ -433,7 +433,7 @@ For complete usage examples with all three languages, see the [APCore Client API
 - `reason` (str/string, optional) — audit reason string; defaults to `"Enabled via APCore client"`
 
 ### Errors
-- `RuntimeError` (Python) / `Error` (TypeScript) — raised immediately if `sys_modules` are not enabled; Python message: `"enable() requires sys_modules to be enabled. Pass a Config with sys_modules.enabled=true to APCore()."` TypeScript message: `"Cannot call enable(): sys_modules must be enabled in config."`
+- `RuntimeError` (Python) / `Error` (TypeScript) / `Err(ModuleError(code=SYS_MODULES_DISABLED))` (Rust) — raised immediately if `sys_modules` are not enabled. Python message: `"enable() requires sys_modules to be enabled. Pass a Config with sys_modules.enabled=true to APCore()."` TypeScript message: `"Cannot call enable(): sys_modules must be enabled in config."` Rust message: `"enable() requires sys_modules to be enabled. Pass a Config with sys_modules.enabled=true to APCore::new()."`
 - Any error raised by `system.control.toggle_feature` propagates unchanged
 
 ### Returns

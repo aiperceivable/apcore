@@ -143,6 +143,18 @@ Normative behavioral contract. All SDK implementations MUST satisfy these guaran
 - `pure`: `false` -- emits an audit event on every call.
 - `idempotent`: `true` -- repeated calls with identical inputs yield identical decisions (audit events are still emitted each time).
 
+!!! info "Sync handler resolution (cross-language)"
+    When a registered condition handler returns a Future / coroutine / Promise from sync `check()`:
+
+    - **If the awaitable completes without suspending** (e.g., an `async def` whose body never reaches an `await`, or a Promise that resolves synchronously on Rust), `check()` MUST use the resolved value.
+    - **If the awaitable genuinely suspends** (Pending on first poll, or Promise that resolves later), `check()` MUST treat the condition as unsatisfied. Callers requiring true async handlers MUST use `async_check()`.
+
+    Implementation:
+
+    - **apcore-python** advances the coroutine one step via `coroutine.send(None)` and captures `StopIteration.value` for sync-only bodies.
+    - **apcore-rust** polls the future once with a noop `Waker`; `Poll::Ready(v)` uses `v`, `Poll::Pending` denies.
+    - **apcore-typescript** can NOT inspect a Promise synchronously; if the handler returns a `Promise`, sync `check()` treats it as unsatisfied. Use `asyncCheck()` to support Promise-returning handlers.
+
 ## Contract: ACL.load
 
 ### Inputs

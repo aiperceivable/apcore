@@ -78,6 +78,17 @@ Normative behavioral contract. All SDK implementations MUST satisfy these guaran
 - `module_id`: string, required. Must pass module-ID validation (see Schema System). Empty, malformed, or reserved IDs MUST be rejected before any mutation of the registry.
 - `module`: Module instance, required. Must implement the module protocol (`description`, `input_schema`, `output_schema`, `execute`).
 
+!!! info "Multi-version registration (optional, Phase B)"
+    SDKs MAY accept additional `version` and `metadata` parameters to support [§5.4 Multi-version Coexistence](../../PROTOCOL_SPEC.md#54-multi-version-coexistence). When supported, the same `module_id` MAY be registered with multiple distinct versions, and `Registry.get(module_id, version_hint=...)` resolves via semantic-version range matching.
+
+    **SDK status (Phase B)**:
+
+    - **apcore-python** implements multi-version registration via an internal `VersionedStore`. `register(module_id, module, version=None, metadata=None)` accepts the optional version/metadata arguments.
+    - **apcore-typescript** does NOT currently expose multi-version registration. `register(moduleId, module)` always replaces any prior registration for the same ID.
+    - **apcore-rust** does NOT currently expose multi-version registration. `register(name, Box<dyn Module>, ModuleDescriptor)` is single-version.
+
+    Implementations that omit multi-version support MUST behave as single-version registries. Cross-language portable code SHOULD NOT rely on `version` / `metadata` parameters until all SDKs implement them.
+
 ### Preconditions
 
 - The registry's internal lock MUST be acquired before the duplicate-ID check.
