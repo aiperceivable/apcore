@@ -3792,6 +3792,8 @@ Behavior:
 - The `_approval_token` mechanism (Phase B) allows clients to retry after external approval without re-triggering the approval flow.
 - The `_approval_token` key **MUST** be removed from arguments before passing to subsequent steps.
 
+**Resume semantics.** When a caller retries an `APPROVAL_PENDING` call by injecting `_approval_token` into `arguments`, the executor **MUST** re-enter the pipeline from Step 1. Implementations **MUST NOT** preserve any intermediate `PipelineContext` state across the suspend/resume boundary — the pipeline is stateless across the approval gate, and resumption is a fresh top-to-bottom traversal of the 11 steps with `_approval_token` present in `arguments`. Modules **MUST NOT** assume that side-effects performed in pre-approval steps (for example, logging or tracing in `Middleware.before`) are skipped on resume — they re-execute. Middleware authors who require at-most-once semantics across an approval gate **SHOULD** inspect `_approval_token` in their own logic and short-circuit accordingly. This contract enables external retry/replay layers to drive long-running pause/resume cycles by persisting `approval_id` plus the original inputs, without any mid-pipeline checkpointing in apcore. See [`docs/spec/design-durability-boundary.md`](./docs/spec/design-durability-boundary.md) §2.2 for downstream integration patterns.
+
 ### 7.5 Error Types
 
 Implementations **MUST** define the following error types under `ModuleError`:

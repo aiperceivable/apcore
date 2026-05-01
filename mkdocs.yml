@@ -104,6 +104,7 @@ nav:
       - Type Mapping: spec/type-mapping.md
       - Conformance Definition: spec/conformance.md
       - Execution Pipeline Design: spec/design-execution-pipeline.md
+      - Durability Boundary: spec/design-durability-boundary.md
 
 extra:
   social:
