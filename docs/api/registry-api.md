@@ -94,42 +94,21 @@ class Registry:
         """Iterate over all modules"""
         ...
 
-    # ============ Schema Query and Export (OPTIONAL) ============
+    # ============ Schema Export (canonical) ============
     #
-    # These are convenience facades. Implementations may delegate to
-    # SchemaLoader/SchemaExporter instead of providing these directly
-    # on the Registry. They are marked OPTIONAL — implementations may
-    # provide them as independent helper functions, e.g.:
-    #   get_schema(registry, module_id)
-    #   export_schema(registry, module_id, format=...)
+    # Registry exposes only `export_schema` for resolved module schemas.
+    # For richer formatting, profile-targeted output, or bulk export,
+    # use the standalone `SchemaExporter` class — `Registry.get_schema`
+    # and `Registry.get_all_schemas` are NOT part of the canonical
+    # surface (see docs/spec/conformance.md).
 
-    def get_schema(self, module_id: str) -> dict | None:
-        """OPTIONAL. Get module Schema (structured dict, for in-program processing)"""
-        ...
+    def export_schema(self, module_id: str, strict: bool = False) -> dict | None:
+        """Export the resolved input/output schema for a module as a dict.
 
-    def get_all_schemas(self) -> dict[str, dict]:
-        """OPTIONAL. Get all module Schemas (structured dict)"""
-        ...
-
-    def export_schema(
-        self,
-        module_id: str,
-        format: str = "json",
-        strict: bool = False,
-        compact: bool = False,
-        profile: str | None = None
-    ) -> str:
-        """OPTIONAL. Export module Schema (serialized string, for transmission/storage)"""
-        ...
-
-    def export_all_schemas(
-        self,
-        format: str = "json",
-        strict: bool = False,
-        compact: bool = False,
-        profile: str | None = None
-    ) -> str:
-        """OPTIONAL. Export all module Schemas (serialized string)"""
+        Returns ``None`` when the module is not registered.
+        Use ``SchemaExporter`` for serialized (JSON/YAML) output, profile
+        targeting (MCP/OpenAI/Anthropic/Generic), or bulk export.
+        """
         ...
 
     # ============ Module Control ============
@@ -566,31 +545,31 @@ for module_id, module in registry.iter():
 
 ---
 
-## 6. Schema Query and Export
+## 6. Schema Export
 
-> **`get_schema()` vs `export_schema()`**: `get_schema()` returns structured `dict` for in-program processing (e.g., passing to LLM, validators); `export_schema()` returns serialized string (JSON/YAML) for transmission, storage, or file export.
+> **Canonical surface:** `Registry.export_schema(module_id, strict=False)` returns the resolved input/output schema as a `dict` for in-program processing (passing to LLM, validators, etc.). For serialized output (JSON/YAML), profile-targeted export (MCP/OpenAI/Anthropic/Generic), or bulk export, use the standalone `SchemaExporter` class — `Registry.get_schema` and `Registry.get_all_schemas` are NOT part of the canonical Registry surface.
 
-### 6.1 Get Structured Schema
+### 6.1 Resolved Schema (dict)
 
 ```python
-# Get single module's structured Schema (dict)
-schema = registry.get_schema("executor.email.send_email")
+# Get the resolved schema for a single module
+schema = registry.export_schema("executor.email.send_email")
 if schema:
     print(schema["input_schema"]["properties"])
     # Can pass directly to LLM as tool definition
-
-# Get all module Schemas (structured)
-all_schemas = registry.get_all_schemas()
-# {"executor.email.send_email": {...}, "executor.sms.send_sms": {...}}
 ```
 
-### 6.2 Export Serialized Schema
+### 6.2 Serialized / Profile-Targeted Export
+
+For JSON/YAML serialization or LLM-platform-specific output, use `SchemaExporter`:
 
 ```python
-# JSON format (string)
-json_schema = registry.export_schema(
-    module_id="executor.email.send_email",
-    format="json"
+from apcore import SchemaExporter, ExportProfile
+
+exporter = SchemaExporter()
+json_schema = exporter.export(
+    registry.get_definition("executor.email.send_email"),
+    profile=ExportProfile.OPENAI,
 )
 print(json_schema)
 ```
@@ -640,10 +619,12 @@ print(json_schema)
 ### 6.3 Export YAML Format
 
 ```python
-yaml_schema = registry.export_schema(
-    module_id="executor.email.send_email",
-    format="yaml"
-)
+import yaml
+from apcore import SchemaExporter
+
+exporter = SchemaExporter()
+schema_dict = exporter.export(registry.get_definition("executor.email.send_email"))
+yaml_schema = yaml.safe_dump(schema_dict, sort_keys=False)
 print(yaml_schema)
 ```
 
@@ -687,11 +668,15 @@ output_schema:
 ### 6.4 Export All Schemas
 
 ```python
-# Export all module Schemas (serialized string, for AI/LLM)
-all_schemas_json = registry.export_all_schemas(format="json")
+import json
+from apcore import SchemaExporter
 
-# Or get structured data to pass directly to LLM
-all_schemas = registry.get_all_schemas()
+exporter = SchemaExporter()
+all_schemas = {
+    module_id: exporter.export(registry.get_definition(module_id))
+    for module_id in registry.module_ids
+}
+all_schemas_json = json.dumps(all_schemas, indent=2)
 ```
 
 ### 6.5 Strict Mode Export
@@ -711,19 +696,19 @@ Transformation rules detailed in [PROTOCOL_SPEC §4.16](../../PROTOCOL_SPEC.md) 
 
 ### 6.6 Compact Export
 
-During module discovery phase, AI typically only needs basic information to decide whether to invoke. Use `compact=True` to export condensed Schema, reducing token consumption:
+During module discovery phase, AI typically only needs basic information to decide whether to invoke. Use `SchemaExporter` with the appropriate profile to export condensed Schema, reducing token consumption:
 
 ```python
-# Compact export (module discovery phase)
-compact_schema = registry.export_schema(
-    module_id="executor.email.send_email",
-    compact=True
-)
+from apcore import SchemaExporter, ExportProfile
+
+exporter = SchemaExporter()
+definition = registry.get_definition("executor.email.send_email")
+
+# Compact export for module discovery (LLM tool selection)
+compact_schema = exporter.export(definition, profile=ExportProfile.GENERIC, compact=True)
 
 # Load full Schema after selecting module
-full_schema = registry.export_schema(
-    module_id="executor.email.send_email"
-)
+full_schema = registry.export_schema("executor.email.send_email")
 ```
 
 **Compact Export (`compact=True`) Transformation Rules:**
@@ -1040,7 +1025,13 @@ for module_id in registry.list(prefix="executor.email"):
     print(f"  {module_id}")
 
 # 5. Export Schemas (for AI/LLM use)
-schemas = registry.export_all_schemas(format="json")
+import json
+from apcore import SchemaExporter
+exporter = SchemaExporter()
+schemas = json.dumps({
+    mid: exporter.export(registry.get_definition(mid))
+    for mid in registry.module_ids
+})
 print(f"\nExported {registry.count} module schemas")
 
 # 6. Create Executor and use

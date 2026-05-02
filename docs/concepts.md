@@ -535,11 +535,11 @@ module = registry.get("executor.email.send_email")
 # Get module definition descriptor (cross-language compatible, replaces get_class)
 definition = registry.get_definition("executor.email.send_email")
 
-# Get structured Schema (dict) for programmatic processing
-schema = registry.get_schema("executor.email.send_email")
+# Get the resolved input/output schema (dict) for programmatic processing
+schema = registry.export_schema("executor.email.send_email")
 
-# Export serialized Schema (str) for transmission/storage
-schema_json = registry.export_schema("executor.email.send_email", format="json")
+# Export strict-mode schema for OpenAI/Anthropic tool definitions
+schema_strict = registry.export_schema("executor.email.send_email", strict=True)
 
 # List all modules
 all_modules = registry.list()

@@ -85,7 +85,7 @@ Normative behavioral contract. All SDK implementations MUST satisfy these guaran
 
     - **apcore-python** implements multi-version registration via an internal `VersionedStore`. `register(module_id, module, version=None, metadata=None)` accepts the optional version/metadata arguments.
     - **apcore-typescript** does NOT currently expose multi-version registration. `register(moduleId, module)` always replaces any prior registration for the same ID.
-    - **apcore-rust** does NOT currently expose multi-version registration. `register(name, Box<dyn Module>, ModuleDescriptor)` is single-version.
+    - **apcore-rust** does NOT currently expose multi-version registration. The 3-arg form `register(name, Box<dyn Module>, descriptor: Option<ModuleDescriptor>)` accepts an optional `ModuleDescriptor` for code-side metadata (a Rust-only signature divergence from the spec's `register(module_id, module, version?, metadata?)` shape — tracked for cross-language alignment). The 2-arg convenience form `register_module(name, Box<dyn Module>)` mirrors the Python/TS shape.
 
     Implementations that omit multi-version support MUST behave as single-version registries. Cross-language portable code SHOULD NOT rely on `version` / `metadata` parameters until all SDKs implement them.
 
@@ -175,8 +175,9 @@ Normative contract for the filesystem scanner used by step 1 of the discovery pi
     mod = registry.get("math.add")                       # retrieve module
     descriptor = registry.get_definition("math.add")     # ModuleDescriptor with schemas
 
-    # Auto-discover from a directory
-    registry.discover(extension_dirs=["./modules"])
+    # Auto-discover modules from extension directories
+    # (extension dirs are configured via Registry constructor or Config)
+    discovered_count = registry.discover()
 
     # Subscribe to register/unregister events
     def on_register(module_id, metadata):
@@ -208,8 +209,9 @@ Normative contract for the filesystem scanner used by step 1 of the discovery pi
     const mod = registry.get("math.add");                     // retrieve module
     const descriptor = registry.getDefinition("math.add");    // ModuleDescriptor with schemas
 
-    // Auto-discover from a directory
-    await registry.discover({ extensionDirs: ["./modules"] });
+    // Auto-discover modules from extension directories
+    // (extension dirs are configured via Registry constructor options)
+    const discoveredCount = await registry.discover();
 
     // Subscribe to register/unregister events
     registry.on("register", (moduleId, metadata) => {
@@ -247,15 +249,18 @@ Normative contract for the filesystem scanner used by step 1 of the discovery pi
     }
 
     let mut registry = Registry::new();
-    registry.register("math.add", Box::new(AddModule))?;
+    // 2-arg form for parity with Python/TS; equivalent to `register("math.add", Box::new(AddModule), None)`
+    registry.register_module("math.add", Box::new(AddModule))?;
 
     // Query the registry
     let module_ids = registry.module_ids();           // vec!["math.add"]
     let has_mod = registry.has("math.add");           // true
     let count = registry.count();                     // 1
 
-    // Auto-discover from a directory
-    registry.discover(&["./modules"])?;
+    // Auto-discover modules from extension directories
+    // (configure extension roots via `registry.set_extension_roots(...)` or `Registry::with_options`)
+    let discoverer = apcore::registry::DefaultDiscoverer::new();
+    let discovered_count = registry.discover(&discoverer).await?;
 
     // Wire into executor
     let executor = Executor::from_registry(registry);

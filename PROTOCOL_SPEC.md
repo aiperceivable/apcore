@@ -5826,7 +5826,7 @@ The `apcore.*` prefix is reserved. Ecosystem packages **MUST NOT** emit events w
 
 #### 9.16.2 Canonical Core Event Types
 
-The following are the canonical event type names, payload keys, and severity for all events emitted by apcore-python. Implementations **MUST** use these names. The previous short-form names (`module_registered`, `config_changed`, etc.) remain valid as **aliases** for backward compatibility.
+The following are the canonical event type names, payload keys, and severity for all events emitted by apcore-python. Implementations **MUST** use these names. The previous short-form names (`module_registered`, `config_changed`, `module_health_changed`, etc.) were emitted as transitional aliases up to v0.17.x and were **REMOVED in v0.18.0**. The legacy column below is retained for historical reference only — implementations **MUST NOT** emit those names.
 
 | Canonical Name | Alias (legacy) | Severity | Emitted by | Payload Keys |
 |----------------|---------------|----------|------------|--------------|
@@ -5839,7 +5839,7 @@ The following are the canonical event type names, payload keys, and severity for
 | `apcore.latency.threshold_exceeded` | `latency_threshold_exceeded` | `warn` | `PlatformNotifyMiddleware` | `module_id`, `p99_latency_ms`, `threshold` |
 | `apcore.health.recovered` | *(new — was collision)* | `info` | `PlatformNotifyMiddleware` | `module_id`, `error_rate` |
 
-> **Collision resolution:** `"module_health_changed"` is retired. Its two usages are replaced by `apcore.module.toggled` (enable/disable) and `apcore.health.recovered` (error rate recovery). `"config_changed"` is retired and split into `apcore.module.reloaded` and `apcore.config.updated`. All four legacy names remain emitted as aliases during a transition period.
+> **Collision resolution:** `"module_health_changed"` was retired. Its two usages are replaced by `apcore.module.toggled` (enable/disable) and `apcore.health.recovered` (error rate recovery). `"config_changed"` was retired and split into `apcore.module.reloaded` and `apcore.config.updated`. The four legacy names were emitted as transitional aliases up to v0.17.x and were **REMOVED in v0.18.0**; implementations **MUST NOT** emit them.
 
 ---
 
