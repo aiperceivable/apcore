@@ -94,7 +94,27 @@ Decision template per item:
 
 **Recommendation**: **A**. snake_case is already the protocol convention (per CLAUDE.md, PROTOCOL_SPEC, type-mapping). TS is the only outlier. Fixing TS aligns with 2 of 3 SDKs and the spec text. Add deprecation period: `errorOnDeprecated: false` mode logs warning when old key is used.
 
-**Action**: see Step C below — already scheduled in this PR set.
+**Action** (deferred — needs dedicated PR):
+A first attempt was made on 2026-05-02 (Step C of this decision-log batch) but stalled mid-rename. The rename touches:
+- `src/errors.ts` — ~50 error subclass constructors writing detail keys (`moduleId`, `callerId`, `targetId`, `modulePath`, `callableName`, `approvalId`, `errorCode`, ...)
+- `src/sys-modules/audit.ts` — AuditEntry interface fields (`targetModuleId`, `actorId`, `actorType`, `traceId`)
+- `src/utils/error-propagation.ts` — duplicate-key writes
+- ~30 test files that reference the old field names directly (`err.traceId`, `err.details.moduleId`, `entry.actorId`)
+
+Plus deprecation getters on ModuleError instances for `traceId` / `aiGuidance` / `userFixable` with one-shot deprecation warnings.
+
+**Why deferred**: the mechanical scope is too brittle for an unattended sub-agent. Recommend a dedicated PR with a codemod (jscodeshift or simple sed/AST rename) that:
+
+1. Scans every test file for `\.(traceId|aiGuidance|userFixable)\b` and `details\.(moduleId|callerId|...)` — produces a rename plan
+2. Applies the source-side rename atomically (errors.ts + audit.ts + error-propagation.ts in one commit)
+3. Applies the test-side rename atomically (one commit per test directory)
+4. Adds the deprecated camelCase getters with one-shot console.warn (separate commit)
+5. Updates CHANGELOG.md `### Changed` with a v0.21.0 deprecation notice + removal target v0.22.0
+
+Expected commit count: 4–6.
+Expected duration: 1–2 hours of focused work.
+
+Blocking factor: needs a dev session with full test-suite re-validation, not an unattended agent.
 
 ---
 
@@ -568,6 +588,9 @@ For backoff_multiplier=2.5 and retry_delay_ms=1000, attempt=2: Python/TS return 
 ## Recommended sequence
 
 1. Apply doc-only fixes as a single PR in `apcore` (D-01, D-07, D-09, D-16, D-17, D-18, D-26, D-30, D-31). Low risk.
-2. Apply single-SDK code fixes per repo as separate PRs (TS D-04 first since round-3 deferred it; Python D-10..D-13 next).
-3. Multi-SDK fixes (D-03, D-15, D-24) batched into a v0.21.0 release.
-4. Epic D-21/D-22 (Extension Arc migration) — open an RFC, defer to v0.22.0 or later.
+2. Apply single-SDK code fixes per repo as separate PRs:
+   - TS D-04 (snake_case wire alignment) — needs codemod tooling, see action note
+   - Python D-10..D-13 (TaskStore + start_reaper alignment)
+   - Rust D-14, D-19, D-27, D-28 (RetryConfig default, chunk shape, UsageCollector parity, ContextLogger schema)
+3. Multi-SDK fixes (D-03 ApprovalRequest fields, D-15 discover_multi_class method, D-24 update_config rollback) batched into a v0.21.0 release.
+4. Epic D-21/D-22 (Extension Arc migration) — RFC scheduled for 2026-05-18 (routine `trig_01DCE8sCcBxm9qRxZiMvUgQo`), target v0.22.0.
