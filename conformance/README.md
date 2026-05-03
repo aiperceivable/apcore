@@ -51,6 +51,8 @@ SDK conformance runners **must** load `.json` files with a JSON parser. The `.ya
 | `trace_context.json` | Issue #35 | TraceContext W3C alignment: ordered tracestate roundtrip, 32-entry cap, malformed-entry tolerance, case-insensitive `traceparent`/`tracestate` header lookup, dynamic `trace_flags` honoring, optional `parent_id` override on `inject()` (`^[0-9a-f]{16}$`) with `INVALID_PARENT_ID` rejection |
 | `event_naming.json` | Issue #36 / D-34 | Event-name canonicalization: `apcore.<subsystem>.<event>` form for registry/health events, legacy dual-emit during v0.21.x with `deprecated:true`, glob subscription matching for `apcore.registry.*` / `apcore.health.*`, scoping that prevents cross-subsystem glob bleed |
 | `contextual_audit.json` | Issue #45.2 / D-35 | Contextual auditing for control-plane modules: `caller_id` populated in audit event payloads for `update_config` / `toggle_feature` / `reload_module`, `@external` default for unauthenticated callers, redacted `identity` snapshot inclusion, `x-sensitive` field redaction, audit emission even when no `AuditStore` is configured |
+| `pipeline_step_middleware.json` | Issue #33 | Pipeline `StepMiddleware` lifecycle: before/after onion order, on_step_error first-recovery-wins, null-passthrough propagation, executed-only on_step_error invocation when before_step raises, async callbacks awaited, before_step input replacement |
+| `pipeline_failfast_config.json` | Issue #33 | Pipeline configuration fail-fast: `ConfigurationError` at parse time for missing step references in `configure:` and `step_middleware:`, `PipelineDependencyError` at strategy construction for unmet `requires`/`provides` |
 
 ## Coverage Gaps
 
