@@ -48,6 +48,7 @@ SDK conformance runners **must** load `.json` files with a JSON parser. The `.ya
 | `async_task_evolution.json` | Issue #34 | Pluggable TaskStore backends (InMemory/Redis), retry with configurable exponential backoff, Reaper TTL-based auto-cleanup |
 | `observability_hardening.json` | Issue #43 | Pluggable ObservabilityStore, BatchSpanProcessor queue/drop behaviour, O(log N) ErrorHistory eviction, error fingerprint deduplication and normalization, configurable redaction (field+value patterns), Prometheus required-metric presence |
 | `system_modules_hardening.json` | Issue #45 | Config/toggle persistence to overrides file, overrides loaded after base config on startup, audit entry actor extraction, audit entry before/after change recording, Prometheus UsageCollector metrics export, path-filter bulk reload, module_id+path_filter conflict error, startup fail_on_error=True raises, fail_on_error=False continues, Rust Result return type |
+| `trace_context.json` | Issue #35 | TraceContext W3C alignment: ordered tracestate roundtrip, 32-entry cap, malformed-entry tolerance, case-insensitive `traceparent`/`tracestate` header lookup, dynamic `trace_flags` honoring, optional `parent_id` override on `inject()` (`^[0-9a-f]{16}$`) with `INVALID_PARENT_ID` rejection |
 
 ## Coverage Gaps
 
