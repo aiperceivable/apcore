@@ -157,22 +157,99 @@ register_subscriber_type("my_type", my_factory)
 - `unregister_subscriber_type(type_name)` — Remove a type.
 - `reset_subscriber_registry()` — Reset to built-in types only.
 
+## Event Naming Convention
+
+Framework-emitted events **MUST** use the form `apcore.<subsystem>.<event>` where:
+
+- `<subsystem>` is one of: `registry`, `health`, `config`, `module`, `modules`, `task`, `acl`, `approval`, `subscriber` (extensible — additional subsystem names may be reserved by future spec revisions).
+- `<event>` is a `snake_case` past-tense verb describing the state transition (e.g., `module_registered`, `error_threshold_exceeded`, `recovered`, `updated`).
+
+**Examples:**
+
+- `apcore.registry.module_registered`
+- `apcore.registry.module_unregistered`
+- `apcore.health.error_threshold_exceeded`
+- `apcore.health.latency_threshold_exceeded`
+- `apcore.health.recovered`
+- `apcore.config.updated`
+
+Subscribers **MAY** filter by glob patterns: `apcore.registry.*`, `apcore.health.*`, `apcore.*`.
+
+### Glob subscription example
+
+=== "Python"
+    ```python
+    from apcore import APCore
+    from apcore.config import Config
+
+    config = Config.load("apcore.yaml")
+    client = APCore(config=config)
+
+    # Subscribe to every registry event (module_registered + module_unregistered)
+    client.on("apcore.registry.*", lambda e: print(f"registry: {e.event_type} {e.data}"))
+
+    # Subscribe to every health event
+    client.on("apcore.health.*", lambda e: print(f"health: {e.event_type}"))
+    ```
+=== "TypeScript"
+    ```typescript
+    import { APCore, Config } from "apcore-js";
+
+    const config = Config.load("apcore.yaml");
+    const client = new APCore({ config });
+
+    // Subscribe to every registry event
+    client.on("apcore.registry.*", (event) =>
+        console.log(`registry: ${event.eventType}`, event.data),
+    );
+
+    // Subscribe to every health event
+    client.on("apcore.health.*", (event) =>
+        console.log(`health: ${event.eventType}`),
+    );
+    ```
+=== "Rust"
+    ```rust
+    use apcore::APCore;
+
+    let client = APCore::from_path("apcore.yaml")?;
+
+    // Subscribe to every registry event
+    client.on("apcore.registry.*", Box::new(RegistryLogger));
+
+    // Subscribe to every health event
+    client.on("apcore.health.*", Box::new(HealthLogger));
+    ```
+
+### Deprecation: legacy event names
+
+Some early SDK builds emitted unprefixed names (`module_registered`, `module_unregistered`) and `apcore.error.threshold_exceeded` / `apcore.latency.threshold_exceeded` (with `error` / `latency` as the subsystem segment). These names do not conform to the `apcore.<subsystem>.<event>` convention above.
+
+**Normative rule:** Implementations **MUST** emit the canonical form. During the v0.21.x cycle, implementations **MUST** also dual-emit the legacy name with `data.deprecated: true` so existing subscribers continue to receive events. Legacy names will be removed in v0.22.0.
+
+| Legacy name | Canonical name | Removal target |
+|-------------|----------------|----------------|
+| `module_registered` | `apcore.registry.module_registered` | v0.22.0 |
+| `module_unregistered` | `apcore.registry.module_unregistered` | v0.22.0 |
+| `apcore.error.threshold_exceeded` | `apcore.health.error_threshold_exceeded` | v0.22.0 |
+| `apcore.latency.threshold_exceeded` | `apcore.health.latency_threshold_exceeded` | v0.22.0 |
+
+> **Historical note (§9.16):** v0.18.0 removed an earlier set of legacy aliases. The dual-emit cycle described above is a separate canonicalization pass tracked under issue #36 / D-34.
+
 ## Event Types
 
-Events emitted by the framework:
+Events emitted by the framework (canonical names):
 
 | Event Type | Severity | Source | Payload (`data`) |
 |------------|----------|--------|-------------------|
-| `module_registered` | info | Registry bridge | `module_id` |
-| `module_unregistered` | info | Registry bridge | `module_id` |
+| `apcore.registry.module_registered` | info | Registry bridge | `module_id` |
+| `apcore.registry.module_unregistered` | info | Registry bridge | `module_id` |
 | `apcore.config.updated` | info | `system.control.update_config` | `key`, `old_value`, `new_value` |
 | `apcore.module.reloaded` | info | `system.control.reload_module` | `module_id`, `previous_version`, `new_version` |
 | `apcore.module.toggled` | info | `system.control.toggle_feature` | `module_id`, `enabled` |
 | `apcore.health.recovered` | info | `PlatformNotifyMiddleware` | `module_id`, recovery details |
-| `apcore.error.threshold_exceeded` | error | `PlatformNotifyMiddleware` | `module_id`, `error_rate`, `threshold` |
-| `apcore.latency.threshold_exceeded` | warn | `PlatformNotifyMiddleware` | `module_id`, `p99_latency_ms`, `threshold` |
-
-> **Note (§9.16):** As of v0.18.0, only canonical `apcore.*` event names are supported. Legacy aliases were removed in v0.18.0 — subscribe to canonical names only.
+| `apcore.health.error_threshold_exceeded` | error | `PlatformNotifyMiddleware` | `module_id`, `error_rate`, `threshold` |
+| `apcore.health.latency_threshold_exceeded` | warn | `PlatformNotifyMiddleware` | `module_id`, `p99_latency_ms`, `threshold` |
 
 ## Configuration
 
@@ -487,8 +564,67 @@ subscribers:
     delegate_config:
       url: "https://pagerduty.example.com/hook"
     include_events:
-      - "apcore.error.*"
-      - "apcore.latency.threshold_exceeded"
+      - "apcore.health.*"
+      - "apcore.health.error_threshold_exceeded"
+```
+
+### Configuration-driven subscribers
+
+The five built-in factories (`webhook`, `a2a`, `file`, `stdout`, `filter`) plus any types added through `register_subscriber_type` can be instantiated declaratively from `apcore.yaml`. Implementations **MUST** invoke each registered factory exactly once per matching subscriber entry, passing the entry's config sub-object (with `type` removed).
+
+**Factory registration API (cross-language):**
+
+=== "Python"
+    ```python
+    from apcore.sys_modules.registration import register_subscriber_type
+
+    def slack_factory(config: dict) -> "EventSubscriber":
+        return SlackSubscriber(webhook_url=config["webhook_url"])
+
+    register_subscriber_type("slack", slack_factory)
+    ```
+=== "TypeScript"
+    ```typescript
+    import { registerSubscriberType } from "apcore-js/events";
+
+    registerSubscriberType("slack", (config) => new SlackSubscriber(config));
+    ```
+=== "Rust"
+    ```rust
+    use apcore::events::register_subscriber_type;
+
+    register_subscriber_type(
+        "slack",
+        |config| Box::new(SlackSubscriber::from_config(config)),
+    );
+    ```
+
+**YAML example loading three subscribers:**
+
+```yaml
+sys_modules:
+  enabled: true
+  events:
+    enabled: true
+    subscribers:
+      - type: "stdout"            # Built-in: pretty-print to stderr/stdout
+        format: "json"
+        level_filter: "info"
+
+      - type: "file"              # Built-in: append to a local JSONL log
+        path: "/var/log/apcore/events.jsonl"
+        format: "json"
+        rotate_bytes: 10485760
+
+      - type: "filter"            # Built-in: wrap a webhook with event filter
+        delegate_type: "webhook"
+        delegate_config:
+          url: "https://platform.example.com/events"
+          headers:
+            Authorization: "Bearer ${PLATFORM_TOKEN}"
+        include_events:
+          - "apcore.health.*"
+          - "apcore.registry.*"
 ```
 
 ### Circuit-Breaker Resilience

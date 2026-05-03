@@ -1,0 +1,178 @@
+{
+  "description": "Contextual auditing for control-plane modules (Issue #45.2). Verifies that system.control.* modules include caller_id and a redacted identity snapshot in their emitted audit events, defaulting caller_id to '@external' when the caller is unauthenticated.",
+  "test_cases": [
+    {
+      "id": "update_config_with_caller_id",
+      "description": "When context.caller_id is set, the apcore.config.updated event payload MUST include that caller_id verbatim.",
+      "module_id": "system.control.update_config",
+      "context": {
+        "caller_id": "ops.console",
+        "identity": null
+      },
+      "input": {
+        "key": "executor.default_timeout",
+        "value": 60000,
+        "reason": "increase timeout"
+      },
+      "expected": {
+        "event_type": "apcore.config.updated",
+        "data_contains": {
+          "key": "executor.default_timeout",
+          "old_value": 30000,
+          "new_value": 60000,
+          "caller_id": "ops.console"
+        },
+        "data_must_not_contain_keys": ["identity"]
+      }
+    },
+    {
+      "id": "update_config_external_default",
+      "description": "When context.caller_id is null/empty, the audit event payload caller_id MUST default to the literal string '@external'.",
+      "module_id": "system.control.update_config",
+      "context": {
+        "caller_id": null,
+        "identity": null
+      },
+      "input": {
+        "key": "executor.default_timeout",
+        "value": 60000,
+        "reason": "increase timeout"
+      },
+      "expected": {
+        "event_type": "apcore.config.updated",
+        "data_contains": {
+          "caller_id": "@external"
+        },
+        "data_must_not_contain_keys": ["identity"]
+      }
+    },
+    {
+      "id": "update_config_empty_string_caller_external_default",
+      "description": "An empty-string caller_id MUST be treated as unauthenticated and defaulted to '@external'.",
+      "module_id": "system.control.update_config",
+      "context": {
+        "caller_id": "",
+        "identity": null
+      },
+      "input": {
+        "key": "executor.default_timeout",
+        "value": 60000,
+        "reason": "increase timeout"
+      },
+      "expected": {
+        "event_type": "apcore.config.updated",
+        "data_contains": {
+          "caller_id": "@external"
+        }
+      }
+    },
+    {
+      "id": "toggle_feature_includes_identity",
+      "description": "When context.identity is set, the apcore.module.toggled event MUST include a redacted identity snapshot (id, type, optional display_name).",
+      "module_id": "system.control.toggle_feature",
+      "context": {
+        "caller_id": "user-42",
+        "identity": {
+          "id": "user-42",
+          "type": "user",
+          "display_name": "alice@example.com"
+        }
+      },
+      "input": {
+        "module_id": "risky.module",
+        "enabled": false,
+        "reason": "incident-1234"
+      },
+      "expected": {
+        "event_type": "apcore.module.toggled",
+        "data_contains": {
+          "module_id": "risky.module",
+          "enabled": false,
+          "caller_id": "user-42",
+          "identity": {
+            "id": "user-42",
+            "type": "user",
+            "display_name": "alice@example.com"
+          }
+        }
+      }
+    },
+    {
+      "id": "toggle_feature_redacts_sensitive_identity_fields",
+      "description": "Identity fields marked x-sensitive (e.g., bearer_token) MUST be replaced with '<redacted>' in the audit event payload.",
+      "module_id": "system.control.toggle_feature",
+      "context": {
+        "caller_id": "service-bot",
+        "identity": {
+          "id": "service-bot",
+          "type": "service",
+          "bearer_token": "secret-abc-123"
+        }
+      },
+      "input": {
+        "module_id": "risky.module",
+        "enabled": true,
+        "reason": "rollback"
+      },
+      "expected": {
+        "event_type": "apcore.module.toggled",
+        "data_contains": {
+          "caller_id": "service-bot",
+          "identity": {
+            "id": "service-bot",
+            "type": "service",
+            "bearer_token": "<redacted>"
+          }
+        }
+      }
+    },
+    {
+      "id": "reload_module_includes_caller_and_identity",
+      "description": "system.control.reload_module MUST include caller_id + identity in apcore.module.reloaded events.",
+      "module_id": "system.control.reload_module",
+      "context": {
+        "caller_id": "deploy-bot",
+        "identity": {
+          "id": "deploy-bot",
+          "type": "service"
+        }
+      },
+      "input": {
+        "module_id": "executor.email.send",
+        "reason": "hotfix"
+      },
+      "expected": {
+        "event_type": "apcore.module.reloaded",
+        "data_contains": {
+          "module_id": "executor.email.send",
+          "caller_id": "deploy-bot",
+          "identity": {
+            "id": "deploy-bot",
+            "type": "service"
+          }
+        }
+      }
+    },
+    {
+      "id": "audit_event_emitted_without_audit_store",
+      "description": "Even when no AuditStore is configured, the audit event MUST still be emitted on the event bus with caller_id populated.",
+      "module_id": "system.control.update_config",
+      "context": {
+        "caller_id": "ops.console",
+        "identity": null
+      },
+      "audit_store": null,
+      "input": {
+        "key": "executor.default_timeout",
+        "value": 60000,
+        "reason": "increase timeout"
+      },
+      "expected": {
+        "event_type": "apcore.config.updated",
+        "data_contains": {
+          "caller_id": "ops.console"
+        }
+      }
+    }
+  ]
+}

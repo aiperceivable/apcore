@@ -607,9 +607,54 @@ the same fixture file.
 
 ---
 
+## D-34 — Event naming canonicalization
+
+**Status**: resolved
+
+**Status quo**
+- Registry bridge emits `module_registered` / `module_unregistered` (no `apcore.` prefix)
+- `PlatformNotifyMiddleware` emits `apcore.error.threshold_exceeded` / `apcore.latency.threshold_exceeded` — `error` and `latency` are not subsystems, they are categories
+- Other framework events already follow `apcore.<subsystem>.<event>` (e.g., `apcore.config.updated`, `apcore.module.toggled`)
+- Subscribers cannot reliably glob by subsystem (`apcore.health.*` misses both threshold variants and registry events)
+
+**Options**
+- **A** Rename to canonical form (`apcore.registry.module_registered`, `apcore.health.error_threshold_exceeded`, `apcore.health.latency_threshold_exceeded`) and dual-emit legacy names with `deprecated:true` for one minor cycle, removing legacy in v0.22.0
+- **B** Keep existing names; document the inconsistency
+
+**Recommendation**: **A**. Glob filtering by subsystem is the documented subscriber pattern; the inconsistency was an accidental drift. Dual-emit gives subscribers one minor-version cycle to migrate.
+
+**Action**: emit canonical names in all 3 SDKs; dual-emit legacy names with `data.deprecated: true` during v0.21.x; remove legacy in v0.22.0. Spec recorded in `docs/features/event-system.md` § "Event Naming Convention"; conformance in `conformance/fixtures/event_naming.json` (8 cases).
+
+---
+
+## D-35 — Contextual auditing for control plane
+
+**Status**: resolved
+
+**Status quo**
+- §1.2 (System Modules Hardening) already defines `AuditEntry.actor_id` extraction from `context.identity.id` and persistence via the optional `AuditStore`
+- The event-bus payload (`apcore.config.updated`, `apcore.module.toggled`, `apcore.module.reloaded`) does **not** carry `caller_id` or any identity snapshot today — real-time subscribers must cross-reference the audit store to know who made the change
+- When the caller is unauthenticated, no event field signals the absence of an identity (handlers cannot distinguish "no caller" from "caller field forgotten")
+
+**Options**
+- **A** Extend audit event payloads with `caller_id` (defaulting to `"@external"` when unauthenticated) and an optional redacted `identity` snapshot — same data the AuditStore already records, mirrored on the event bus
+- **B** Require subscribers to query the AuditStore when they need actor context — keeps event payloads minimal but creates a hard dependency on AuditStore availability
+- **C** Embed the entire `Context` in the event payload — wasteful and leaks unrelated data
+
+**Recommendation**: **A**. The cost is two extra fields (`caller_id` + optional `identity`); the benefit is real-time subscribers (Slack notifier, SIEM forwarder) becoming standalone. AuditStore parity is already enforced — both surfaces draw from the same in-memory snapshot.
+
+**Action**: 
+- Update `docs/features/system-modules.md` with a "Contextual Auditing" subsection making the rule normative.
+- All 3 SDKs populate `caller_id` and (when `context.identity` is set) a redacted `identity` snapshot in audit event payloads emitted by `update_config`, `toggle_feature`, `reload_module`.
+- `caller_id` defaults to the literal string `"@external"` when `context.caller_id` is `None`/`null`/`""`.
+- Sensitive Identity fields (those marked `x-sensitive: true`) MUST be replaced with `"<redacted>"`.
+- Conformance recorded in `conformance/fixtures/contextual_audit.json` (7 cases).
+
+---
+
 ## Resolution status
 
-- **Resolved** (no further action): D-02, D-05, D-23, D-29
+- **Resolved** (no further action): D-02, D-05, D-23, D-29, D-34, D-35
 - **Doc-only fixes** (1-line each): D-01, D-07, D-09, D-16, D-17, D-18, D-26, D-30, D-31
 - **Code fix needed in 1 SDK**: D-04 (TS), D-08 (Python), D-10 (Python), D-11 (Python), D-12 (Python), D-13 (Python), D-14 (Rust), D-19 (Rust), D-25 (TS+Rust), D-27 (Rust), D-28 (Rust), D-32 (TS)
 - **Multi-SDK code fix**: D-03 (all 3), D-15 (Python+TS), D-24 (TS+Rust)

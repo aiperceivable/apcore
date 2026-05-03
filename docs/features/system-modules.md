@@ -879,6 +879,148 @@ AuditEntry:
 
 ---
 
+## Contextual Auditing
+
+Control modules (`system.control.update_config`, `system.control.toggle_feature`, `system.control.reload_module`) **MUST** include `caller_id` and (if present) a redacted `identity` snapshot in their emitted audit events. When the caller is unauthenticated, `caller_id` **MUST** default to `"@external"`.
+
+This requirement complements the structured audit-store contract in §1.2. While §1.2 governs the persisted `AuditEntry` shape, this section governs the **event payload** that is published on the event bus (e.g., `apcore.config.updated`, `apcore.module.toggled`, `apcore.module.reloaded`) so that real-time subscribers see the same identity context the audit store retains.
+
+### Normative rules
+
+- The event payload (`event.data`) **MUST** carry a `caller_id` string field.
+- When `context.caller_id` is `None`/`null`/`""`, the payload `caller_id` **MUST** be the literal string `"@external"`.
+- When `context.identity` is set, the payload **MUST** include an `identity` object containing `id`, `type`, and (optionally) `display_name`. Any field marked `x-sensitive: true` in the Identity schema **MUST** be redacted before inclusion (replaced with `"<redacted>"`).
+- When `context.identity` is `None`/`null`, the payload **MUST NOT** contain an `identity` field (omit, do not emit `null`).
+- Implementations **MUST NOT** include raw bearer tokens, API keys, or other credential material in the audit event payload — only the redacted Identity snapshot is permitted.
+
+### Audit event payload shape
+
+=== "Python"
+
+    ```python
+    # Emitted by system.control.update_config when context.caller_id and
+    # context.identity are populated.
+    event = ApCoreEvent(
+        event_type="apcore.config.updated",
+        module_id="system.control.update_config",
+        timestamp="2026-05-03T12:00:00Z",
+        severity="info",
+        data={
+            "key": "executor.default_timeout",
+            "old_value": 30000,
+            "new_value": 60000,
+            "reason": "increase timeout",
+            "caller_id": "ops.console",
+            "identity": {
+                "id": "user-42",
+                "type": "user",
+                "display_name": "alice@example.com",
+            },
+        },
+    )
+
+    # Unauthenticated caller — caller_id defaults to @external, identity omitted.
+    event = ApCoreEvent(
+        event_type="apcore.module.toggled",
+        module_id="system.control.toggle_feature",
+        timestamp="2026-05-03T12:00:00Z",
+        severity="info",
+        data={
+            "module_id": "risky.module",
+            "enabled": False,
+            "reason": "incident-1234",
+            "caller_id": "@external",
+        },
+    )
+    ```
+
+=== "TypeScript"
+
+    ```typescript
+    // Emitted by system.control.update_config when context.caller_id and
+    // context.identity are populated.
+    const event = new ApCoreEvent({
+        eventType: "apcore.config.updated",
+        moduleId: "system.control.update_config",
+        timestamp: "2026-05-03T12:00:00Z",
+        severity: "info",
+        data: {
+            key: "executor.default_timeout",
+            old_value: 30000,
+            new_value: 60000,
+            reason: "increase timeout",
+            caller_id: "ops.console",
+            identity: {
+                id: "user-42",
+                type: "user",
+                display_name: "alice@example.com",
+            },
+        },
+    });
+
+    // Unauthenticated caller — caller_id defaults to @external, identity omitted.
+    const externalEvent = new ApCoreEvent({
+        eventType: "apcore.module.toggled",
+        moduleId: "system.control.toggle_feature",
+        timestamp: "2026-05-03T12:00:00Z",
+        severity: "info",
+        data: {
+            module_id: "risky.module",
+            enabled: false,
+            reason: "incident-1234",
+            caller_id: "@external",
+        },
+    });
+    ```
+
+=== "Rust"
+
+    ```rust
+    use apcore::events::ApCoreEvent;
+    use serde_json::json;
+
+    // Emitted by system.control.update_config when context.caller_id and
+    // context.identity are populated.
+    let event = ApCoreEvent {
+        event_type: "apcore.config.updated".to_string(),
+        module_id: "system.control.update_config".to_string(),
+        timestamp: "2026-05-03T12:00:00Z".to_string(),
+        severity: "info".to_string(),
+        data: json!({
+            "key": "executor.default_timeout",
+            "old_value": 30000,
+            "new_value": 60000,
+            "reason": "increase timeout",
+            "caller_id": "ops.console",
+            "identity": {
+                "id": "user-42",
+                "type": "user",
+                "display_name": "alice@example.com"
+            }
+        }),
+    };
+
+    // Unauthenticated caller — caller_id defaults to @external, identity omitted.
+    let external_event = ApCoreEvent {
+        event_type: "apcore.module.toggled".to_string(),
+        module_id: "system.control.toggle_feature".to_string(),
+        timestamp: "2026-05-03T12:00:00Z".to_string(),
+        severity: "info".to_string(),
+        data: json!({
+            "module_id": "risky.module",
+            "enabled": false,
+            "reason": "incident-1234",
+            "caller_id": "@external"
+        }),
+    };
+    ```
+
+### Relationship to §1.2 AuditStore
+
+When both an `AuditStore` (§1.2) and the event bus are configured, implementations **MUST** populate both surfaces from the same in-memory snapshot of `caller_id` + `identity` so the persisted `AuditEntry.actor_id` and the event payload `caller_id` agree. Implementations **MUST NOT** drop the audit event when no `AuditStore` is configured — the event bus is the minimum surface for contextual auditing.
+
+---
+
 ### 1.3 Prometheus Exporter for UsageCollector
 
 #### Normative Rules
