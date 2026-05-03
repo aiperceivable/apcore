@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Added
+
+- Pipeline `StepMiddleware` extension point in all 3 SDKs (#33). Lifecycle-shaped API (`before_step` / `after_step` / `on_step_error`) mirroring module-level `Middleware` — onion ordering, first-recovery-wins on errors, async support across Python/TypeScript/Rust. Documented in `docs/features/middleware-system.md` "Pipeline Step Middleware (Issue #33)" with three contract blocks. Conformance: `conformance/fixtures/pipeline_step_middleware.json` (6 cases).
+- Python `BatchSpanProcessor` for non-blocking span export (#43, parity with TS+Rust). Cross-SDK parity contract — identical default tunables (`max_queue_size=2048`, `max_export_batch_size=512`, `schedule_delay_ms=5000`, `export_timeout_ms=30000`), identical `on_end` / `force_flush` / `shutdown` lifecycle, identical drop-on-full-queue semantics. Documented in `docs/features/observability.md` "Batch span processing" section.
+- `docs/spec/2026-05-decision-log.md` — D-36 (Pipeline StepMiddleware), D-37 (Pipeline configuration fail-fast), D-38 (BatchSpanProcessor cross-SDK parity), all resolved.
+
+### Changed
+
+- Pipeline configuration is now fail-fast: missing step references and unmet `requires`/`provides` raise errors instead of logging warnings (#33). `ConfigurationError` is raised at YAML parse time for unknown step names in `pipeline.configure[]` and `pipeline.step_middleware[]`. `PipelineDependencyError` is raised at strategy construction time for unsatisfied capability declarations. Documented in `docs/features/middleware-system.md` "Configuration safety" subsection. Conformance: `conformance/fixtures/pipeline_failfast_config.json` (4 cases).
+
+---
+
 ## [v0.20.0]
 
 ### Added

@@ -1,0 +1,82 @@
+{
+  "description": "Pipeline configuration fail-fast (Issue #33): missing step references and unmet requires/provides MUST raise typed errors at parse/construction time, not log warnings or defer to first call(). References middleware-system.md 'Configuration safety' subsection.",
+  "test_cases": [
+    {
+      "id": "missing_step_in_configure_raises_configuration_error",
+      "description": "YAML configures a step name that does not exist in the active strategy; ConfigurationError MUST be raised at parse time",
+      "input": {
+        "yaml": {
+          "pipeline": {
+            "configure": [
+              { "name": "validate_input", "ignore_errors": true },
+              { "name": "nonexistent_step", "timeout_ms": 500 }
+            ]
+          }
+        }
+      },
+      "expected": {
+        "raises": true,
+        "error_type": "ConfigurationError",
+        "error_message_contains": "nonexistent_step",
+        "raised_at": "parse_time",
+        "deferred_to_first_call": false
+      }
+    },
+    {
+      "id": "missing_step_in_step_middleware_raises_configuration_error",
+      "description": "step_middleware: targets an unknown step name; ConfigurationError MUST be raised at parse time",
+      "input": {
+        "yaml": {
+          "pipeline": {
+            "step_middleware": [
+              { "step": "no_such_step", "handler": "myapp.mw:Timing" }
+            ]
+          }
+        }
+      },
+      "expected": {
+        "raises": true,
+        "error_type": "ConfigurationError",
+        "error_message_contains": "no_such_step",
+        "raised_at": "parse_time"
+      }
+    },
+    {
+      "id": "unmet_requires_raises_pipeline_dependency_error",
+      "description": "A step declares requires: ['validated_inputs'] but no upstream step provides it; PipelineDependencyError MUST be raised at strategy construction (before first call())",
+      "input": {
+        "strategy": {
+          "name": "custom",
+          "steps": [
+            { "name": "context_creation", "provides": ["context.identity"] },
+            { "name": "execute", "requires": ["validated_inputs"] }
+          ]
+        }
+      },
+      "expected": {
+        "raises": true,
+        "error_type": "PipelineDependencyError",
+        "error_message_contains": ["validated_inputs", "execute"],
+        "raised_at": "strategy_construction"
+      }
+    },
+    {
+      "id": "satisfied_requires_constructs_successfully",
+      "description": "When all requires: are satisfied by upstream provides:, strategy construction MUST succeed without warnings",
+      "input": {
+        "strategy": {
+          "name": "custom",
+          "steps": [
+            { "name": "context_creation", "provides": ["context.identity"] },
+            { "name": "validate_input", "requires": ["context.identity"], "provides": ["validated_inputs"] },
+            { "name": "execute", "requires": ["validated_inputs"] }
+          ]
+        }
+      },
+      "expected": {
+        "raises": false,
+        "strategy_callable": true
+      }
+    }
+  ]
+}

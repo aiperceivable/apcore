@@ -1,0 +1,105 @@
+{
+  "description": "Pipeline StepMiddleware lifecycle (Issue #33): before_step/after_step/on_step_error invocation order, recovery semantics, error propagation, and async support. References middleware-system.md 'Pipeline Step Middleware' section.",
+  "test_cases": [
+    {
+      "id": "before_after_invocation_order",
+      "description": "before_step runs in registration order; after_step runs in reverse registration order (onion model)",
+      "input": {
+        "step": "validate_input",
+        "register_order": ["mw_a", "mw_b", "mw_c"]
+      },
+      "expected": {
+        "before_step_order": ["mw_a", "mw_b", "mw_c"],
+        "after_step_order": ["mw_c", "mw_b", "mw_a"]
+      }
+    },
+    {
+      "id": "on_step_error_recovery_short_circuits",
+      "description": "First on_step_error handler returning a non-null value provides recovery and short-circuits remaining handlers; the original error MUST NOT propagate",
+      "input": {
+        "step": "execute",
+        "step_raises": {
+          "code": "DEMO_FAILURE",
+          "message": "synthetic step failure"
+        },
+        "register_order": ["mw_a", "mw_b", "mw_c"],
+        "on_step_error_returns": {
+          "mw_c": null,
+          "mw_b": { "recovered": true, "by": "mw_b" },
+          "mw_a": { "recovered": true, "by": "mw_a" }
+        }
+      },
+      "expected": {
+        "on_step_error_invoked": ["mw_c", "mw_b"],
+        "step_output": { "recovered": true, "by": "mw_b" },
+        "error_propagated": false
+      }
+    },
+    {
+      "id": "on_step_error_null_propagates_error",
+      "description": "When all on_step_error handlers return null/None, the original error MUST continue propagating (subject to ignore_errors)",
+      "input": {
+        "step": "execute",
+        "step_raises": {
+          "code": "DEMO_FAILURE",
+          "message": "synthetic step failure"
+        },
+        "register_order": ["mw_a", "mw_b"],
+        "on_step_error_returns": {
+          "mw_b": null,
+          "mw_a": null
+        },
+        "ignore_errors": false
+      },
+      "expected": {
+        "on_step_error_invoked": ["mw_b", "mw_a"],
+        "error_propagated": true,
+        "error_code": "DEMO_FAILURE",
+        "wrapped_in": "PipelineStepError"
+      }
+    },
+    {
+      "id": "on_step_error_only_executed_middlewares",
+      "description": "If before_step of mw_b raises, on_step_error MUST be invoked only on mw_b (and earlier executed mws), reverse order; mw_c (not yet executed) MUST NOT be invoked",
+      "input": {
+        "step": "validate_input",
+        "register_order": ["mw_a", "mw_b", "mw_c"],
+        "before_step_raises_in": "mw_b"
+      },
+      "expected": {
+        "before_step_invoked": ["mw_a", "mw_b"],
+        "on_step_error_invoked": ["mw_b", "mw_a"],
+        "wrapped_in": "MiddlewareChainError"
+      }
+    },
+    {
+      "id": "async_middleware_awaited",
+      "description": "Async StepMiddleware callbacks MUST be awaited; the step body MUST observe the resolved value, not a coroutine/Promise/Future",
+      "input": {
+        "step": "validate_input",
+        "register_order": ["async_mw"],
+        "async_before_step_returns": { "validated": true, "from_async": true }
+      },
+      "expected": {
+        "step_received_inputs": { "validated": true, "from_async": true },
+        "callback_was_awaited": true
+      }
+    },
+    {
+      "id": "before_step_input_replacement",
+      "description": "before_step returning a non-null dict MUST replace inputs to the step body; returning null/None MUST pass through unchanged",
+      "input": {
+        "step": "input_validation",
+        "register_order": ["mw_replace", "mw_passthrough"],
+        "before_step_returns": {
+          "mw_replace": { "name": "replaced" },
+          "mw_passthrough": null
+        },
+        "original_inputs": { "name": "original" }
+      },
+      "expected": {
+        "step_received_inputs": { "name": "replaced" }
+      }
+    }
+  ]
+}

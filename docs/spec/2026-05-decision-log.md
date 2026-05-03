@@ -577,9 +577,57 @@ For backoff_multiplier=2.5 and retry_delay_ms=1000, attempt=2: Python/TS return 
 
 ---
 
+## D-36 — Pipeline StepMiddleware
+
+**Status quo**
+- `core-executor.md` §1.3 documents step-level middleware as a `next`-callback wrapper (`step_middleware(name, handler)` style).
+- A separate, finer-grained extension point with the same lifecycle shape as module-level `Middleware` (`before_step` / `after_step` / `on_step_error`) was needed so SDK authors and AI integrators could reuse the existing onion-model mental model and so async callbacks could be uniformly detected per language.
+
+**Options**
+- **A** Keep only the `next`-callback API and document the lifecycle behavior implicitly through the wrapper.
+- **B** Ship a parallel lifecycle-shaped `StepMiddleware` API (`before_step`/`after_step`/`on_step_error`) alongside the wrapper, with normative onion ordering and recovery semantics that mirror module-level middleware exactly.
+
+**Recommendation**: **B**. The wrapper API stays for ergonomic step inspection; the lifecycle API is what conformance fixtures and AI-introspection target. Both compile to the same internal step-execution loop.
+
+**Resolution**: **resolved**. `docs/features/middleware-system.md` "Pipeline Step Middleware (Issue #33)" section documents the lifecycle, recovery contract (`on_step_error` returning non-null = recovery, mirroring module-level), onion ordering across multiple registrations, async-callback support per SDK, and three contract blocks. Conformance: `conformance/fixtures/pipeline_step_middleware.json` (6 cases).
+
+---
+
+## D-37 — Pipeline configuration fail-fast
+
+**Status quo**
+- Some pre-Issue-#33 SDK behavior tolerated unknown step names in `pipeline.configure[]` directives by logging a warning and continuing.
+- Step `requires`/`provides` capability declarations could be left unsatisfied without surfacing a typed error until first `call()`.
+
+**Options**
+- **A** Continue to log warnings; first `call()` produces a confusing low-level error.
+- **B** Fail fast at YAML parse time (`ConfigurationError`) for missing step references, and fail fast at strategy construction (`PipelineDependencyError`) for unmet `requires`/`provides`.
+
+**Recommendation**: **B**. Misconfiguration must surface during application startup, not under load. Strategy construction is all-or-nothing.
+
+**Resolution**: **resolved**. Documented as the "Configuration safety" subsection inside `docs/features/middleware-system.md` "Pipeline Step Middleware (Issue #33)". Conformance: `conformance/fixtures/pipeline_failfast_config.json` (4 cases) covering both error classes and the satisfied-requires happy path.
+
+---
+
+## D-38 — BatchSpanProcessor cross-SDK parity
+
+**Status quo**
+- TypeScript and Rust SDKs ship a non-blocking `BatchSpanProcessor` aligned with OpenTelemetry conventions.
+- Python initially shipped only the synchronous `SimpleSpanProcessor`, blocking the caller per span exported. This was an observability-hot-path regression at sustained throughput.
+
+**Options**
+- **A** Defer Python BatchSpanProcessor; rely on `SimpleSpanProcessor` plus user-side queuing.
+- **B** Implement Python `BatchSpanProcessor` with identical default tunables (`max_queue_size=2048`, `max_export_batch_size=512`, `schedule_delay_ms=5000`, `export_timeout_ms=30000`), identical lifecycle (`on_end` → `force_flush` → `shutdown`), and identical drop-on-full semantics so cross-language fixtures pass without per-SDK conditionals.
+
+**Recommendation**: **B**. The deeper §1.2 spec already prescribed the contract; Python parity closes the gap.
+
+**Resolution**: **resolved**. `docs/features/observability.md` "Batch span processing" section restates the cross-SDK parity contract with default-tunables table, lifecycle table, and Python/TypeScript/Rust usage tabs. Existing conformance fixture `observability_hardening.json` (Issue #43) covers BatchSpanProcessor buffering and drop-on-full-queue behavior; no new fixture needed.
+
+---
+
 ## Resolution status
 
-- **Resolved** (no further action): D-02, D-05, D-23, D-29
+- **Resolved** (no further action): D-02, D-05, D-23, D-29, D-36, D-37, D-38
 - **Doc-only fixes** (1-line each): D-01, D-07, D-09, D-16, D-17, D-18, D-26, D-30, D-31
 - **Code fix needed in 1 SDK**: D-04 (TS), D-08 (Python), D-10 (Python), D-11 (Python), D-12 (Python), D-13 (Python), D-14 (Rust), D-19 (Rust), D-25 (TS+Rust), D-27 (Rust), D-28 (Rust), D-32 (TS)
 - **Multi-SDK code fix**: D-03 (all 3), D-15 (Python+TS), D-24 (TS+Rust)

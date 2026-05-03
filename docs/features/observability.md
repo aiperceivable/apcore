@@ -978,3 +978,115 @@ annotations:
 - thread_safe: true
 - pure: false (reads from live collector state)
 - idempotent: true
+
+---
+
+## Batch span processing
+
+`BatchSpanProcessor` is the production-grade non-blocking span exporter. The deeper normative spec for queue/drop behavior, configuration, and lifecycle lives in [§1.2 BatchSpanProcessor for Non-Blocking OTEL Export](#12-batchspanprocessor-for-non-blocking-otel-export). This section restates the **cross-SDK parity contract** so SDK maintainers can verify their implementation at a glance.
+
+### Cross-SDK parity
+
+- All three SDKs (Python, TypeScript, Rust) MUST ship a non-blocking `BatchSpanProcessor` as part of the observability surface. Prior to Issue #43 only TypeScript and Rust shipped one; Python now reaches parity.
+- The TypeScript and Rust BatchSpanProcessors are wired to the OpenTelemetry-API conventions for batch export. The Python BatchSpanProcessor MUST behave identically as a black box (same default tunables, same drop semantics, same flush/shutdown ordering) so cross-language conformance fixtures pass without per-SDK conditionals.
+- `SimpleSpanProcessor` MUST also remain available in all three SDKs as the synchronous fallback for development and testing.
+
+### Default tunables
+
+Every SDK MUST default the four tunables to the values below. These match the upstream OpenTelemetry SDK defaults and are the values verified by the `observability_hardening.json` conformance fixture.
+
+| Parameter | Default | Notes |
+|-----------|---------|-------|
+| `max_queue_size` | `2048` | Maximum spans buffered. New spans dropped when full. |
+| `max_export_batch_size` | `512` | MUST be `<= max_queue_size`. Maximum spans per single export call. |
+| `schedule_delay_ms` | `5000` | Worker idle delay between export attempts. |
+| `export_timeout_ms` | `30000` | Final flush deadline on shutdown. |
+
+### Lifecycle
+
+The processor exposes three normative methods:
+
+| Method | Behavior |
+|--------|----------|
+| `on_end(span)` | Called by `TracingMiddleware` when a span ends. MUST enqueue the span and return immediately (non-blocking). When the queue is at `max_queue_size`, the span MUST be dropped and `spans_dropped` MUST be incremented. |
+| `force_flush(timeout_ms?)` | Drains the queue synchronously up to the optional timeout. MUST return `true` if the queue was fully drained within the deadline, `false` otherwise. Idempotent. |
+| `shutdown(timeout_ms?)` | Calls `force_flush` with `export_timeout_ms` (or the supplied timeout), then stops the worker. After `shutdown` returns, `on_end` MUST treat further spans as dropped without enqueuing. |
+
+### Cross-language usage
+
+=== "Python"
+    ```python
+    from apcore.observability import (
+        BatchSpanProcessor,
+        OTLPExporter,
+        TracingMiddleware,
+    )
+
+    exporter = OTLPExporter(endpoint="http://otel-collector:4318")
+    processor = BatchSpanProcessor(
+        exporter=exporter,
+        max_queue_size=2048,
+        max_export_batch_size=512,
+        schedule_delay_ms=5000,
+        export_timeout_ms=30000,
+    )
+    tracing = TracingMiddleware(processor=processor, strategy="proportional", sampling_rate=0.1)
+
+    # Lifecycle:
+    #   on_end(span) is called automatically by TracingMiddleware.after()
+    #   force_flush() drains the queue (e.g. before a synchronous test assertion)
+    #   shutdown() flushes within export_timeout_ms then stops the worker
+    processor.force_flush()
+    processor.shutdown()
+    ```
+=== "TypeScript"
+    ```typescript
+    import {
+        BatchSpanProcessor,
+        OTLPExporter,
+        TracingMiddleware,
+    } from "apcore-js/observability";
+
+    const exporter = new OTLPExporter({ endpoint: "http://otel-collector:4318" });
+    const processor = new BatchSpanProcessor({
+        exporter,
+        maxQueueSize: 2048,
+        maxExportBatchSize: 512,
+        scheduleDelayMs: 5000,
+        exportTimeoutMs: 30000,
+    });
+    const tracing = new TracingMiddleware({ processor, strategy: "proportional", samplingRate: 0.1 });
+
+    // Lifecycle:
+    //   onEnd(span) is called automatically by TracingMiddleware.after()
+    //   forceFlush() drains the queue before assertions in tests
+    //   shutdown() flushes within exportTimeoutMs and stops the worker
+    await processor.forceFlush();
+    await processor.shutdown();
+    ```
+=== "Rust"
+    ```rust
+    use apcore::observability::{
+        BatchSpanProcessor, OTLPExporter, TracingMiddleware, SamplingStrategy,
+    };
+    use std::sync::Arc;
+
+    let exporter = Arc::new(OTLPExporter::new("http://otel-collector:4318"));
+    let processor = BatchSpanProcessor::builder(exporter.clone())
+        .max_queue_size(2048)
+        .max_export_batch_size(512)
+        .schedule_delay_ms(5000)
+        .export_timeout_ms(30000)
+        .build();
+    let tracing = TracingMiddleware::new(
+        Box::new(processor.clone()),
+        SamplingStrategy::Proportional(0.1),
+    );
+
+    // Lifecycle:
+    //   on_end(span) is called automatically by TracingMiddleware.after()
+    //   force_flush() drains the queue before test assertions
+    //   shutdown() flushes within export_timeout_ms then stops the worker task
+    processor.force_flush(None).await;
+    processor.shutdown(None).await;
+    ```

@@ -48,6 +48,8 @@ SDK conformance runners **must** load `.json` files with a JSON parser. The `.ya
 | `async_task_evolution.json` | Issue #34 | Pluggable TaskStore backends (InMemory/Redis), retry with configurable exponential backoff, Reaper TTL-based auto-cleanup |
 | `observability_hardening.json` | Issue #43 | Pluggable ObservabilityStore, BatchSpanProcessor queue/drop behaviour, O(log N) ErrorHistory eviction, error fingerprint deduplication and normalization, configurable redaction (field+value patterns), Prometheus required-metric presence |
 | `system_modules_hardening.json` | Issue #45 | Config/toggle persistence to overrides file, overrides loaded after base config on startup, audit entry actor extraction, audit entry before/after change recording, Prometheus UsageCollector metrics export, path-filter bulk reload, module_id+path_filter conflict error, startup fail_on_error=True raises, fail_on_error=False continues, Rust Result return type |
+| `pipeline_step_middleware.json` | Issue #33 | Pipeline `StepMiddleware` lifecycle: before/after onion order, on_step_error first-recovery-wins, null-passthrough propagation, executed-only on_step_error invocation when before_step raises, async callbacks awaited, before_step input replacement |
+| `pipeline_failfast_config.json` | Issue #33 | Pipeline configuration fail-fast: `ConfigurationError` at parse time for missing step references in `configure:` and `step_middleware:`, `PipelineDependencyError` at strategy construction for unmet `requires`/`provides` |
 
 ## Coverage Gaps
 

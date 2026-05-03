@@ -453,3 +453,238 @@ Incorrect async detection causes middleware to be invoked synchronously when it 
 - thread_safe: true
 - pure: true
 - idempotent: true
+
+---
+
+## Pipeline Step Middleware (Issue #33)
+
+Module-level middleware (`before` / `after` / `on_error`) wraps the entire 11-step pipeline. **Pipeline step middleware** is a finer-grained extension point: it wraps the execution of a single named pipeline step (e.g., `validate_input`, `acl_check`, `execute`). This is the lifecycle-shaped surface for the step-level middleware concept introduced in [`core-executor.md` §1.3](./core-executor.md#13-step-level-middleware) — the core-executor section documents the wrapper-style `next`-callback API, while this section documents the lifecycle-shaped API that mirrors module-level `Middleware`.
+
+### Lifecycle
+
+A registered `StepMiddleware` participates in three callbacks per step invocation:
+
+```
+before_step(step_name, ctx, inputs)
+  --> step body executes
+       |
+       +-- on success: after_step(step_name, ctx, inputs, output)
+       +-- on failure: on_step_error(step_name, ctx, inputs, error)
+```
+
+### Normative Rules
+
+- Implementations MUST provide a `StepMiddleware` extension point with three callbacks: `before_step`, `after_step`, and `on_step_error`. Each callback MAY be omitted (default no-op).
+- `before_step(step_name, ctx, inputs)` MUST be invoked before the step body executes. Returning a non-null/non-None/`Some(...)` dict MUST replace the inputs passed to the step body. Returning null/None/`None` MUST pass inputs through unchanged.
+- `after_step(step_name, ctx, inputs, output)` MUST be invoked after the step body completes successfully. Returning a non-null/non-None/`Some(...)` dict MUST replace the step output observed by downstream steps.
+- `on_step_error(step_name, ctx, inputs, error)` MUST be invoked when the step body raises. **Returning a non-null/non-None/`Some(...)` value MUST be treated as recovery output**, mirroring the recovery contract of module-level `on_error`. The error MUST NOT propagate further; the recovery value becomes the step's output.
+- Returning null/None/`None` from `on_step_error` MUST cause the original error to continue propagating (subject to the step's `ignore_errors` setting per [§1.1 Fail-Fast Error Handling](./core-executor.md#11-fail-fast-error-handling)).
+- When multiple `StepMiddleware` instances are registered for the same step, `before_step` callbacks MUST run in registration order, and `after_step` callbacks MUST run in **reverse** registration order (onion model, identical to module-level middleware).
+- `on_step_error` callbacks MUST run in reverse registration order over only the middlewares whose `before_step` had executed before the failure. The first non-null recovery value short-circuits remaining handlers (first-recovery-wins).
+- Async `StepMiddleware` callbacks MUST be supported in all SDKs. Python SDKs MUST detect async callbacks via `inspect.iscoroutinefunction`; TypeScript SDKs MUST inspect `handler.constructor.name === "AsyncFunction"`; Rust SDKs MUST use `async_trait` (see [§1.5 Async Handler Detection](#15-async-handler-detection)).
+- Step middleware errors raised from `before_step` itself (not from the step body) MUST be wrapped in `MiddlewareChainError`, identical to the module-level contract.
+
+### Configuration safety
+
+Pipeline configuration MUST fail fast on structural errors so that misconfiguration is caught at startup rather than at first request.
+
+- Implementations MUST raise `ConfigurationError` at YAML/config parse time when a `pipeline.configure[].name` references a step that does not exist in the active strategy. Implementations MUST NOT silently ignore the directive or log a warning and continue.
+- Implementations MUST raise `PipelineDependencyError` at strategy construction time (before any `call()` runs) when a step's declared `requires:` is not satisfied by an upstream step's `provides:`. The error message MUST include the unsatisfied capability name and the dependent step name.
+- Implementations MUST NOT defer dependency validation until first invocation. Strategy construction MUST be all-or-nothing: a strategy either validates cleanly and is callable, or construction fails with a typed error.
+
+```yaml
+# apcore.yaml — declarative step middleware + dependency contract
+pipeline:
+  step_middleware:
+    - step: validate_input
+      handler: "myapp.pipeline.tracing:TimingStepMiddleware"
+    - step: execute
+      handler: "myapp.pipeline.cost:CostStepMiddleware"
+
+  configure:
+    - name: validate_input
+      requires: ["context.identity"]   # provided by context_creation
+      provides: ["validated_inputs"]   # consumed by execute
+```
+
+### Cross-language usage
+
+A tracing-style `StepMiddleware` that logs the wall-clock duration of each step:
+
+=== "Python"
+    ```python
+    import time
+    from apcore import APCore
+    from apcore.middleware import StepMiddleware
+
+    class TimingStepMiddleware(StepMiddleware):
+        async def before_step(self, step_name, ctx, inputs):
+            ctx.data[f"_apcore.step.{step_name}.start"] = time.perf_counter()
+            return None  # pass inputs through unchanged
+
+        async def after_step(self, step_name, ctx, inputs, output):
+            start = ctx.data.pop(f"_apcore.step.{step_name}.start", None)
+            if start is not None:
+                elapsed_ms = (time.perf_counter() - start) * 1000
+                print(f"step={step_name} elapsed_ms={elapsed_ms:.2f}")
+            return None  # pass output through unchanged
+
+        async def on_step_error(self, step_name, ctx, inputs, error):
+            start = ctx.data.pop(f"_apcore.step.{step_name}.start", None)
+            elapsed_ms = (time.perf_counter() - start) * 1000 if start else 0.0
+            print(f"step={step_name} elapsed_ms={elapsed_ms:.2f} error={type(error).__name__}")
+            return None  # do not recover; let the error propagate
+
+    client = APCore()
+    client.use_step_middleware("validate_input", TimingStepMiddleware())
+
+    @client.module(id="demo.greet", description="Greet the user")
+    def greet(name: str) -> dict:
+        return {"message": f"Hello, {name}!"}
+
+    result = client.call("demo.greet", {"name": "World"})
+    ```
+=== "TypeScript"
+    ```typescript
+    import { APCore, StepMiddleware } from "apcore-js";
+
+    class TimingStepMiddleware extends StepMiddleware {
+        async beforeStep(stepName: string, ctx: any, inputs: Record<string, unknown>) {
+            ctx.data[`_apcore.step.${stepName}.start`] = performance.now();
+            return null; // pass inputs through unchanged
+        }
+
+        async afterStep(stepName: string, ctx: any, inputs: Record<string, unknown>, output: Record<string, unknown>) {
+            const start = ctx.data[`_apcore.step.${stepName}.start`];
+            delete ctx.data[`_apcore.step.${stepName}.start`];
+            if (start !== undefined) {
+                const elapsedMs = performance.now() - start;
+                console.log(`step=${stepName} elapsed_ms=${elapsedMs.toFixed(2)}`);
+            }
+            return null; // pass output through unchanged
+        }
+
+        async onStepError(stepName: string, ctx: any, inputs: Record<string, unknown>, error: Error) {
+            const start = ctx.data[`_apcore.step.${stepName}.start`];
+            delete ctx.data[`_apcore.step.${stepName}.start`];
+            const elapsedMs = start !== undefined ? performance.now() - start : 0;
+            console.log(`step=${stepName} elapsed_ms=${elapsedMs.toFixed(2)} error=${error.constructor.name}`);
+            return null; // do not recover; let the error propagate
+        }
+    }
+
+    const client = new APCore();
+    client.useStepMiddleware("validate_input", new TimingStepMiddleware());
+
+    client.module({
+        id: "demo.greet",
+        description: "Greet the user",
+        inputSchema: { type: "object", properties: { name: { type: "string" } } },
+        outputSchema: { type: "object", properties: { message: { type: "string" } } },
+        execute: ({ name }: { name: string }) => ({ message: `Hello, ${name}!` }),
+    });
+
+    const result = await client.call("demo.greet", { name: "World" });
+    ```
+=== "Rust"
+    ```rust
+    use apcore::APCore;
+    use apcore::middleware::StepMiddleware;
+    use apcore::context::Context;
+    use apcore::errors::ModuleError;
+    use async_trait::async_trait;
+    use serde_json::Value;
+    use std::time::Instant;
+
+    struct TimingStepMiddleware;
+
+    #[async_trait]
+    impl StepMiddleware for TimingStepMiddleware {
+        async fn before_step(
+            &self,
+            step_name: &str,
+            ctx: &mut Context<Value>,
+            _inputs: &Value,
+        ) -> Result<Option<Value>, ModuleError> {
+            let key = format!("_apcore.step.{}.start", step_name);
+            ctx.data.insert(key, Value::String(format!("{:?}", Instant::now())));
+            Ok(None)
+        }
+
+        async fn after_step(
+            &self,
+            step_name: &str,
+            _ctx: &mut Context<Value>,
+            _inputs: &Value,
+            _output: &Value,
+        ) -> Result<Option<Value>, ModuleError> {
+            println!("step={} completed", step_name);
+            Ok(None)
+        }
+
+        async fn on_step_error(
+            &self,
+            step_name: &str,
+            _ctx: &mut Context<Value>,
+            _inputs: &Value,
+            error: &ModuleError,
+        ) -> Result<Option<Value>, ModuleError> {
+            println!("step={} error={}", step_name, error.code());
+            Ok(None) // do not recover; let the error propagate
+        }
+    }
+
+    let mut client = APCore::new();
+    client.use_step_middleware("validate_input", Box::new(TimingStepMiddleware));
+    ```
+
+### Contract: StepMiddleware.before_step
+
+#### Inputs
+- `step_name` (str/string/&str, required) — pipeline step name (e.g., `validate_input`)
+- `ctx` (PipelineContext, required) — current pipeline context
+- `inputs` (dict/object/Value, required) — current inputs to the step
+
+#### Errors
+- Any error raised aborts the step body and triggers `on_step_error` callbacks of already-executed step middlewares (mirrors `MiddlewareChainError` for the module-level chain)
+
+#### Returns
+- On success: dict/object/Value or null/None/None — replacement inputs (null = pass through unchanged)
+
+#### Properties
+- async: language-dependent (Python sync or async; TypeScript and Rust MUST be async)
+- thread_safe: true
+- pure: false (may mutate ctx)
+
+### Contract: StepMiddleware.after_step
+
+#### Inputs
+- `step_name`, `ctx`, `inputs` (same as `before_step`)
+- `output` (dict/object/Value, required) — step output
+
+#### Errors
+- Behavior is SDK-defined (see Middleware.after for parity rule)
+
+#### Returns
+- On success: dict/object/Value or null/None/None — replacement output (null = pass through)
+
+#### Properties
+- async: language-dependent
+- thread_safe: true
+
+### Contract: StepMiddleware.on_step_error
+
+#### Inputs
+- `step_name`, `ctx`, `inputs` (same as `before_step`)
+- `error` (ModuleError, required) — the error raised by the step body
+
+#### Errors
+- on_step_error MUST NOT raise; exceptions inside the handler MUST be logged and iteration continues with the next handler
+
+#### Returns
+- On success with recovery: dict/object/Value — replacement output, short-circuits remaining handlers
+- On pass-through: null/None/None — error continues propagating
+
+#### Properties
+- async: language-dependent
+- thread_safe: true
