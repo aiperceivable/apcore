@@ -105,6 +105,7 @@ nav:
       - Conformance Definition: spec/conformance.md
       - Execution Pipeline Design: spec/design-execution-pipeline.md
       - Durability Boundary: spec/design-durability-boundary.md
+      - Decision Log (2026-05): spec/2026-05-decision-log.md
 
 extra:
   social:
