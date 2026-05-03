@@ -822,6 +822,18 @@ Status updates landed since the original 2026-05-02 sync:
 
 The remaining open items (D-04 TS snake_case rename, D-21/D-22 ExtensionManager Arc migration, D-32 TS pipeline-stage refactor) retain the recommendations and ownership noted in the original entries.
 
+### Resolution status — iter-8 addendum (D-47..D-53)
+
+Status updates landed in the iter-8 sync alignment round:
+
+- **D-47** — resolved. `OverridesStore` is now a `Protocol` (Python) / `trait` (Rust) / interface (TypeScript) in all 3 SDKs; `FileOverridesStore` and `InMemoryOverridesStore` ship as defaults.
+- **D-48** — resolved. Reaper `sweep_interval_ms` defaults to `300_000` ms (5 minutes) in all 3 SDKs, matching the spec normative rule.
+- **D-49** — resolved. `RetryConfig` method name canonicalized to `compute_delay_ms` (Python) / `computeDelayMs` (TypeScript) / `compute_delay_ms` (Rust). Old names (`computeDelay`, `delay_for_attempt`) retained as deprecated aliases; removal target v0.22.0.
+- **D-50** — resolved. Rust `TraceContext::inject` now reads `_apcore.trace.flags` from context data and propagates inbound `trace_flags`, matching Python+TypeScript.
+- **D-51** — resolved. Rust `TraceContext::inject` rejects malformed `parent_id` overrides with `INVALID_PARENT_ID`, matching Python+TypeScript.
+- **D-52** — resolved. Rust pipeline now raises distinct `ConfigurationError` (YAML parse time, unknown step) and `PipelineDependencyError` (strategy-construction time, unsatisfied requires/provides) error codes, matching Python+TypeScript.
+- **D-53** — resolved. TypeScript `RedactionConfig.fromConfig` now reads canonical `obs.redaction.regex_patterns` and `obs.redaction.sensitive_keys`; legacy `observability.redaction.field_patterns` / `observability.redaction.value_patterns` honored for one minor cycle with a deprecation warning.
+
 ---
 
 ## D-39 — StorageBackend cross-SDK abstraction
@@ -851,3 +863,104 @@ Issue #45 §1.1 introduced the `overrides_path` / `OverridesStore` mechanism for
 TypeScript SDK adds `OverridesStore` interface, `FileOverridesStore` (YAML-backed at the configured path), and `InMemoryOverridesStore` (for tests). The startup path applies `overrides_store.get_all()` on top of base config in all 3 SDKs. Missing override path on first run is treated as an empty store (no error) — the file is created lazily on the first save.
 
 **Status**: **resolved**. See [`docs/features/system-modules.md` § Persistent Overrides](../features/system-modules.md#persistent-overrides-pluggable-overridesstore) and `conformance/fixtures/overrides_store.json`.
+
+---
+
+## D-47 — OverridesStore cross-SDK trait/interface/protocol parity
+
+**Status quo (pre-resolution)**
+- D-40 closed the existence gap (TypeScript shipped `OverridesStore`), but the surface was not yet uniformly *pluggable* across the 3 SDKs:
+  - TypeScript exposed `OverridesStore` as a structural interface that `APCore` accepted.
+  - Python exposed only the concrete `FileOverridesStore` / `InMemoryOverridesStore` classes; users wishing to plug in a custom backend (Redis, etcd, KMS-backed) had to subclass an internal class rather than implement a documented `Protocol`.
+  - Rust exposed only the two concrete structs; there was no public `trait OverridesStore` consumers could implement.
+- This meant the cross-SDK trait/interface/protocol form documented in `docs/features/system-modules.md` was honored only by TypeScript.
+
+**Resolution**
+- Python: `OverridesStore` is now a `typing.Protocol` (runtime-checkable) with the four canonical methods (`save`, `get`, `get_all`, `delete`). `FileOverridesStore` and `InMemoryOverridesStore` ship as defaults and remain the recommended choices.
+- Rust: `OverridesStore` is now a public `trait` (with `Send + Sync` bounds) over the same four methods. `FileOverridesStore` and `InMemoryOverridesStore` implement the trait; `APCore::with_overrides_store` accepts `Arc<dyn OverridesStore>`.
+- TypeScript: unchanged — already exposed the interface form.
+
+**Status**: **resolved**. See `docs/features/system-modules.md` § "Persistent Overrides — pluggable `OverridesStore`" (Python/TypeScript/Rust tabs all show interface/trait/protocol form).
+
+---
+
+## D-48 — Reaper sweep_interval_ms default alignment
+
+**Status quo (pre-resolution)**
+- D-11/D-42 standardized the *signature* `start_reaper(ttl_seconds, sweep_interval_ms) -> ReaperHandle` across the 3 SDKs but left default values implicit. In practice each SDK shipped a slightly different default sweep cadence (Python kept the historical 60_000 ms in some helpers; Rust used 600_000 ms in one builder; TypeScript matched the spec at 300_000 ms).
+
+**Resolution**
+- All 3 SDKs now default `sweep_interval_ms` to `300_000` (5 minutes), matching the normative rule in `docs/features/async-tasks.md` §1.3 ("Default `ttl_seconds`: 3600 (1 hour). Default `sweep_interval_ms`: 300000 (5 minutes).").
+- `ttl_seconds` default of `3600` was already aligned in the previous round.
+
+**Status**: **resolved**. See `docs/features/async-tasks.md` §1.3 normative rules and `## Contract: AsyncTaskManager.start_reaper` Inputs section.
+
+---
+
+## D-49 — D-08 follow-through: rename TS+Rust to canonical `compute_delay_ms`
+
+**Status quo (pre-resolution)**
+- D-08 picked `compute_delay_ms` as the canonical method name on `RetryConfig`, but only the spec text was updated; TypeScript still exposed `RetryConfig.computeDelay(attempt)` and Rust still exposed `RetryConfig::delay_for_attempt(attempt)`.
+
+**Resolution**
+- TypeScript: method renamed to `computeDelayMs(attempt)`. `computeDelay(attempt)` retained as a deprecated alias that forwards to `computeDelayMs` and emits a one-shot deprecation warning. Removal target: v0.22.0.
+- Rust: method renamed to `compute_delay_ms(attempt)`. `delay_for_attempt(attempt)` retained as a `#[deprecated]` thin wrapper. Removal target: v0.22.0.
+- Python: already canonical (`compute_delay_ms`), unchanged.
+
+**Status**: **resolved**. Method-name parity table added to `docs/features/async-tasks.md` §1.2 RetryConfig section.
+
+---
+
+## D-50 — Rust trace inject inbound flag propagation
+
+**Status quo (pre-resolution)**
+- The W3C Alignment Rules in `docs/features/observability.md` (D-33) require that `inject()` emit the same `trace_flags` byte that `extract()` parsed from the incoming `traceparent`, so the upstream sampling decision is preserved end-to-end.
+- Python read `_apcore.trace.flags` from `context.data` (populated by `extract()`) and emitted it on `inject()`.
+- Rust hardcoded `01` on `inject()` regardless of inbound flags, silently overriding upstream `00` (unsampled) decisions.
+
+**Resolution**
+- Rust `TraceContext::inject` now reads `_apcore.trace.flags` from `context.data` (the same key Python uses) and falls back to `01` only when the key is absent. Behavior now matches Python+TypeScript.
+
+**Status**: **resolved**. See `docs/features/observability.md` "W3C Alignment Rules" §"Dynamic trace_flags honoring" (already normative; Rust now implements it).
+
+---
+
+## D-51 — Trace inject malformed parent_id rejection
+
+**Status quo (pre-resolution)**
+- D-33 §"Optional `parent_id` Override on `inject()`" requires that a non-`^[0-9a-f]{16}$` value raise `INVALID_PARENT_ID`.
+- Python+TypeScript raised; Rust silently truncated/padded the bad value, so a typo like `"ZZZZ"` produced a malformed but successfully-emitted `traceparent` header.
+
+**Resolution**
+- Rust `TraceContext::inject` now validates the optional `parent_id` argument against `^[0-9a-f]{16}$` before emitting and returns `Err(TraceError::InvalidParentId)` (mapped to error code `INVALID_PARENT_ID`) on mismatch, matching Python+TypeScript.
+
+**Status**: **resolved**. See `docs/features/observability.md` "W3C Alignment Rules" §"Optional `parent_id` Override on `inject()`".
+
+---
+
+## D-52 — Rust pipeline ConfigurationError variant
+
+**Status quo (pre-resolution)**
+- D-37 ("Pipeline configuration fail-fast") declared two distinct fail-fast surfaces:
+  - `ConfigurationError` at YAML parse time when a `pipeline.configure[]` or `pipeline.step_middleware[]` entry references an unknown step name.
+  - `PipelineDependencyError` at strategy construction time when a step's `requires`/`provides` declarations are unsatisfied.
+- Rust collapsed both into a single `PipelineError::Dependency` variant, so callers could not distinguish "you wrote a typo in YAML" from "your topology is unsatisfiable".
+
+**Resolution**
+- Rust now ships a distinct `PipelineError::Configuration` variant mapped to error code `PIPELINE_CONFIGURATION_ERROR`, raised at YAML parse time for unknown step references. `PipelineError::Dependency` (code `PIPELINE_DEPENDENCY_ERROR`) is reserved for strategy-construction-time capability mismatches. Python+TypeScript already raised the two distinct codes.
+
+**Status**: **resolved**. See `docs/features/middleware-system.md` "Pipeline Step Middleware (Issue #33)" → "Configuration safety" subsection.
+
+---
+
+## D-53 — TS redaction Config key alignment
+
+**Status quo (pre-resolution)**
+- D-46 canonicalized `obs.redaction.regex_patterns` and `obs.redaction.sensitive_keys` as the YAML config keys feeding `RedactionConfig`.
+- Python+Rust read the canonical keys.
+- TypeScript still read the older `observability.redaction.field_patterns` / `observability.redaction.value_patterns` keys (a hold-over from §1.5's pre-D-46 prose), so YAML written against the spec produced empty redaction rules in TS deployments.
+
+**Resolution**
+- TypeScript `RedactionConfig.fromConfig(config)` now reads `obs.redaction.regex_patterns`, `obs.redaction.sensitive_keys`, and `obs.redaction.replacement` as the canonical source. The legacy keys (`observability.redaction.field_patterns`, `observability.redaction.value_patterns`) are still honored for one minor cycle and emit a `console.warn` deprecation notice when found. Removal target: v0.22.0.
+
+**Status**: **resolved**. See `docs/features/observability.md` "Redaction configuration" → "TypeScript legacy keys" note.

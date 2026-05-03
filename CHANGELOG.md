@@ -54,6 +54,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Rust `UsageCollector` now computes trend from samples and supports period filter (D-27).
 - Rust `ContextLogger` output schema aligned with Python+TS (lowercase level, nested `extra`, `module_id`) (D-28).
 - Python `start_reaper` now uses `(ttl_seconds, sweep_interval_ms)` and returns `ReaperHandle` matching TS+Rust; old kwargs aliased with DeprecationWarning (D-11).
+- `OverridesStore` is now a pluggable trait/interface/protocol in all 3 SDKs (#45.1, D-47); `FileOverridesStore` and `InMemoryOverridesStore` ship as defaults.
+- Reaper default `sweep_interval_ms` aligned across 3 SDKs to `300_000` (D-48).
+- TypeScript `RetryConfig.computeDelay` → `computeDelayMs`; Rust `RetryConfig::delay_for_attempt` → `compute_delay_ms` (old names deprecated, removal target v0.22.0) (D-08, D-49).
+- Rust `inject()` now propagates inbound `trace_flags` from context data (D-50).
+- Rust `inject()` now returns an error on malformed `parent_id` override, matching PY+TS (D-51).
+- Rust pipeline `ConfigurationError` is a distinct error code from `PipelineDependencyError` (D-52).
+- TypeScript redaction reads canonical `obs.redaction.{regex_patterns,sensitive_keys}` Config keys; legacy `observability.redaction.{field_patterns,value_patterns}` honored with deprecation warning (D-53).
 
 ### Fixed
 

@@ -391,6 +391,16 @@ The `AsyncTaskManager` MUST support pluggable storage backends via a `TaskStore`
 !!! note "Rust `RetryConfig::default()` alignment"
     Earlier Rust builds (≤ v0.20) defaulted `max_retries` to `3`, surprising callers using `..Default::default()`. The Rust default is now `max_retries = 0`, matching Python and TypeScript and the spec — retries are strictly opt-in across all three SDKs.
 
+**`RetryConfig` delay-computation method (canonical name — decision D-08 / D-49):**
+
+| SDK | Canonical method | Returns | Deprecated alias |
+|-----|------------------|---------|------------------|
+| Python | `RetryConfig.compute_delay_ms(attempt: int) -> float` | float ms | — |
+| TypeScript | `RetryConfig.computeDelayMs(attempt: number) -> number` | number ms | `computeDelay(attempt)` (one-shot deprecation warning; removal in v0.22.0) |
+| Rust | `RetryConfig::compute_delay_ms(&self, attempt: u32) -> u64` | u64 ms (truncated) | `delay_for_attempt(&self, attempt)` (`#[deprecated]`; removal in v0.22.0) |
+
+All three implementations MUST produce numerically equivalent values for the same inputs (subject to Rust's `u64` truncation of fractional milliseconds — see decision D-20).
+
 **Default retry configuration (YAML):**
 
 ```yaml
@@ -468,7 +478,7 @@ The Reaper is an opt-in background task that automatically removes terminal-stat
 
 - Implementations SHOULD run a Reaper background task that periodically calls `store.list_expired(before=now - ttl_seconds)` and deletes all returned tasks.
 - The Reaper MUST be opt-in: it MUST NOT run unless `reaper_enabled: true` is configured.
-- Default `ttl_seconds`: 3600 (1 hour). Default `sweep_interval_ms`: 300000 (5 minutes).
+- Default `ttl_seconds`: 3600 (1 hour). Default `sweep_interval_ms`: 300000 (5 minutes). These defaults are normative across **all three SDKs** (decision **D-48**); earlier per-SDK divergence (e.g. Rust's 600_000 builder, historical Python 60_000 helpers) has been retired.
 - The Reaper MUST NOT delete tasks in `PENDING` or `RUNNING` status.
 - When the Reaper deletes a task batch, it SHOULD log at DEBUG level with count.
 

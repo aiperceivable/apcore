@@ -1673,3 +1673,18 @@ obs:
     ```
 
 The `obs.redaction.*` config schema supersedes the §1.5 `RedactionConfig` constructor arguments at the YAML level: §1.5 documents the in-code object; this section documents how operators provision it from `apcore.yaml`.
+
+#### Canonical Config keys (cross-SDK)
+
+`obs.redaction.regex_patterns`, `obs.redaction.sensitive_keys`, and `obs.redaction.replacement` are the **canonical** YAML keys that all three SDKs MUST read when constructing a `RedactionConfig` from `Config` (decision **D-53**). Any divergence from these keys is a conformance bug.
+
+#### TypeScript legacy keys (deprecated, accepted for backwards-compat)
+
+Pre-D-53 TypeScript builds read the following legacy keys, mirroring the §1.5 prose that pre-dated the canonical schema:
+
+| Legacy key (TS, deprecated) | Canonical replacement |
+|------------------------------|------------------------|
+| `observability.redaction.field_patterns` | `obs.redaction.sensitive_keys` |
+| `observability.redaction.value_patterns` | `obs.redaction.regex_patterns` |
+
+`RedactionConfig.fromConfig(config)` continues to honor the legacy keys for one minor cycle (v0.21.x). When a legacy key is present in `apcore.yaml`, the TypeScript SDK MUST emit a one-shot `console.warn` deprecation notice naming the legacy key and the canonical replacement, and continue applying the rule. Removal target: **v0.22.0**. Python and Rust SDKs only ever supported the canonical keys and are unaffected.
