@@ -48,6 +48,8 @@ SDK conformance runners **must** load `.json` files with a JSON parser. The `.ya
 | `async_task_evolution.json` | Issue #34 | Pluggable TaskStore backends (InMemory/Redis), retry with configurable exponential backoff, Reaper TTL-based auto-cleanup |
 | `observability_hardening.json` | Issue #43 | Pluggable ObservabilityStore, BatchSpanProcessor queue/drop behaviour, O(log N) ErrorHistory eviction, error fingerprint deduplication and normalization, configurable redaction (field+value patterns), Prometheus required-metric presence |
 | `system_modules_hardening.json` | Issue #45 | Config/toggle persistence to overrides file, overrides loaded after base config on startup, audit entry actor extraction, audit entry before/after change recording, Prometheus UsageCollector metrics export, path-filter bulk reload, module_id+path_filter conflict error, startup fail_on_error=True raises, fail_on_error=False continues, Rust Result return type |
+| `event_naming.json` | Issue #36 / D-34 | Event-name canonicalization: `apcore.<subsystem>.<event>` form for registry/health events, legacy dual-emit during v0.21.x with `deprecated:true`, glob subscription matching for `apcore.registry.*` / `apcore.health.*`, scoping that prevents cross-subsystem glob bleed |
+| `contextual_audit.json` | Issue #45.2 / D-35 | Contextual auditing for control-plane modules: `caller_id` populated in audit event payloads for `update_config` / `toggle_feature` / `reload_module`, `@external` default for unauthenticated callers, redacted `identity` snapshot inclusion, `x-sensitive` field redaction, audit emission even when no `AuditStore` is configured |
 
 ## Coverage Gaps
 

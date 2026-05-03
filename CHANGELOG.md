@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Added
+
+- **`docs/features/event-system.md` — Event Naming Convention section (#36)** — Normative `apcore.<subsystem>.<event>` form for framework-emitted events, glob-subscription examples (`apcore.registry.*` / `apcore.health.*`) across Python/TypeScript/Rust, and a deprecation table mapping legacy names (`module_registered`, `module_unregistered`, `apcore.error.threshold_exceeded`, `apcore.latency.threshold_exceeded`) to their canonical replacements with v0.22.0 removal target. Adds a "Configuration-driven subscribers" section listing all five built-in factories (`webhook`, `a2a`, `file`, `stdout`, `filter`) with a multi-subscriber YAML example.
+- **`docs/features/system-modules.md` — Contextual Auditing subsection (#45.2)** — Normative rule that control modules (`update_config`, `toggle_feature`, `reload_module`) MUST include `caller_id` and (when present) a redacted `identity` snapshot in their emitted audit events; `caller_id` defaults to the literal string `"@external"` when unauthenticated; `x-sensitive` Identity fields are replaced with `"<redacted>"`. Cross-language Python/TypeScript/Rust examples of the audit event payload shape.
+- Public SubscriberFactory API in Python SDK (parity with TS+Rust) (#36).
+- **`conformance/fixtures/event_naming.json`** (#36 / D-34) — 8 cross-language test cases: canonical `apcore.registry.module_registered` / `apcore.registry.module_unregistered`, dual-emit of legacy names with `deprecated:true` during v0.21.x, glob subscription matching for `apcore.registry.*` and `apcore.health.*`, canonical `apcore.health.error_threshold_exceeded` / `apcore.health.latency_threshold_exceeded`, and cross-subsystem glob isolation.
+- **`conformance/fixtures/contextual_audit.json`** (#45.2 / D-35) — 7 cross-language test cases: `caller_id` propagation in `apcore.config.updated`, `@external` default for `null`/empty `caller_id`, redacted `identity` snapshot inclusion for `apcore.module.toggled`, `x-sensitive` field redaction (e.g., `bearer_token` → `<redacted>`), `caller_id` + `identity` in `apcore.module.reloaded`, and audit event emission even when no `AuditStore` is configured.
+- **`docs/spec/2026-05-decision-log.md` D-34 (event naming canonicalization)** and **D-35 (contextual auditing for control plane)** — both marked resolved with action: rename + dual-emit during v0.21.x for D-34; payload extension for D-35.
+
+### Changed
+
+- Event names normalized to `apcore.<subsystem>.<event>` form (#36). Legacy names dual-emitted; removal target v0.22.0.
+- Control-plane modules (`update_config`, `toggle_feature`, `reload`) now include `caller_id` + `identity` in audit events (#45.2).
+
+---
+
 ## [v0.20.0]
 
 ### Added
