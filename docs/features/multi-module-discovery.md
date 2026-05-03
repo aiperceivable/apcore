@@ -220,6 +220,7 @@ All three SDKs expose `discover_multi_class` as a **method on `Registry`**, matc
 
 - `file_path` (str/string/&str, required) — path to the file to scan, relative to the project root
 - `extensions_root` (str/string/&str, optional, default=`"extensions"`) — root directory name used by Algorithm A01
+- `pre_approval_hook` (callable, **Python-only**, optional) — pre-import safety check; see [Python-only `pre_approval_hook`](#python-only-pre_approval_hook) below
 
 ### Errors
 
@@ -269,6 +270,72 @@ All three SDKs expose `discover_multi_class` as a **method on `Registry`**, matc
         println!("{} -> {:?}", module_id, class_ref);
     }
     ```
+
+### Python-only `pre_approval_hook`
+
+!!! note "Python-only safety hook"
+    `pre_approval_hook` (`Registry.discover_multi_class(file_path, extensions_root, pre_approval_hook=...)`) protects against importing arbitrary code, since Python imports the file at scan time. TypeScript and Rust do **not** import code from disk for discovery — they parse static AST/source — so the hook is **not** present in those SDKs. Callers using TypeScript or Rust should sandbox file system access externally (e.g. constrain `extensions_root`, run discovery under an OS-level allowlist, or pre-resolve the file list themselves) (D-30).
+
+The hook receives the absolute path of the file the registry is about to import; returning `False` (or raising) skips the file. The free-function form `_discover_multi_class(...)` accepts the same parameter.
+
+=== "Python"
+    ```python
+    from pathlib import Path
+    from apcore import Registry
+
+    ALLOWED_DIRS = (Path("extensions/math").resolve(),)
+
+    def is_safe(path: str) -> bool:
+        resolved = Path(path).resolve()
+        return any(resolved.is_relative_to(allowed) for allowed in ALLOWED_DIRS)
+
+    registry = Registry()
+    discovered = registry.discover_multi_class(
+        "extensions/math/math_ops.py",
+        extensions_root="extensions",
+        pre_approval_hook=is_safe,
+    )
+    ```
+
+=== "TypeScript"
+    ```typescript
+    // No pre_approval_hook — TS parses static AST and never imports code at scan time.
+    // Sandbox file system access externally before calling discoverMultiClass.
+    import { Registry } from "apcore-js";
+
+    const registry = new Registry();
+    const discovered = await registry.discoverMultiClass(
+        "extensions/math/math_ops.ts",
+        { extensionsRoot: "extensions" },
+    );
+    ```
+
+=== "Rust"
+    ```rust
+    // No pre_approval_hook — Rust parses source via `syn`/proc-macros and never executes code at scan time.
+    // Sandbox file system access externally (e.g., constrain `extensions_root` or use an OS allowlist).
+    use apcore::Registry;
+
+    let registry = Registry::new();
+    let discovered = registry.discover_multi_class("extensions/math/math_ops.rs")?;
+    ```
+
+## File extensions and skip patterns
+
+Multi-module discovery scans a configured directory tree for module definitions. Each SDK ships sensible language-native defaults; the table below documents them so cross-language projects can reason about what gets picked up (D-31).
+
+| SDK | Extensions | Skip patterns |
+|---|---|---|
+| Python | `.py` | `__pycache__/`, `*.pyc`, files starting with `_` |
+| TypeScript | `.ts`, `.js` | `*.d.ts`, `*.test.*`, `*.spec.*` |
+| Rust | `.rs` (configurable via `with_extensions`) | (none — Rust scans only `.rs`) |
+
+**Notes:**
+
+- Python's leading-`_` skip rule preserves the long-standing convention that `_private.py`, `__init__.py`, and similar files are not auto-discovered.
+- TypeScript's `*.d.ts` / `*.test.*` / `*.spec.*` skip patterns prevent declaration files and test files from being mistaken for module sources during AST parsing.
+- Rust's extension list is configurable: callers may pass additional extensions to `RegistryBuilder::with_extensions(...)` (e.g. for projects that generate `.rs.in` templates), but the default is `[".rs"]` only.
+- Implementations **MAY** expose extension/skip-pattern overrides as configuration knobs in the future; the table above documents the canonical defaults all 3 SDKs ship today.
 
 ## Testing Strategy
 

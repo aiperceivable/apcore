@@ -1,0 +1,57 @@
+{
+  "description": "UsageExporter push interface (#45 §3, D-55). All 3 SDKs MUST ship a UsageExporter Protocol/interface/trait, NoopUsageExporter (default, drops summaries), and PeriodicUsageExporter (bundled timer wrapper, default interval_seconds=3600). PeriodicUsageExporter.start() spawns a background task that polls UsageCollector.summary() at the configured interval and calls exporter.export(summary). PeriodicUsageExporter.stop() halts the loop and awaits exporter.shutdown(). stop() MUST be idempotent. See docs/features/observability.md#usageexporter-push-style.",
+  "test_cases": [
+    {
+      "id": "noop_usage_exporter_drops_summary",
+      "scenario": "NoopUsageExporter is the default; export() returns without side effects, shutdown() returns without error.",
+      "exporter_type": "NoopUsageExporter",
+      "operations": [
+        { "op": "export", "summary": [{ "module_id": "executor.math.add", "calls": 5 }] },
+        { "op": "shutdown" }
+      ],
+      "expected": {
+        "calls_observed": [],
+        "shutdown_completed": true,
+        "errors": []
+      }
+    },
+    {
+      "id": "periodic_usage_exporter_pushes_at_interval",
+      "scenario": "PeriodicUsageExporter.start() polls UsageCollector.summary() every interval_seconds and calls exporter.export(summary). Test simulates 3 ticks at a virtual 100 ms interval and asserts the captured exporter received 3 export() calls with the expected summary payload at each tick.",
+      "exporter_type": "PeriodicUsageExporter",
+      "config": {
+        "interval_seconds": 0.1,
+        "ticks": 3
+      },
+      "usage_records": [
+        { "module_id": "executor.math.add", "caller_id": "api.calc", "latency_ms": 12.0, "success": true },
+        { "module_id": "executor.math.add", "caller_id": "api.calc", "latency_ms": 8.0, "success": true }
+      ],
+      "expected": {
+        "export_call_count": 3,
+        "each_export_summary_includes": "executor.math.add",
+        "shutdown_completed_after_stop": true
+      }
+    },
+    {
+      "id": "periodic_usage_exporter_stop_is_idempotent_and_drains",
+      "scenario": "PeriodicUsageExporter.stop() halts the timer, awaits exporter.shutdown(), and is safe to call multiple times. Any in-flight export() at the moment of stop() MUST complete or be cancelled before shutdown() returns.",
+      "exporter_type": "PeriodicUsageExporter",
+      "config": {
+        "interval_seconds": 0.05
+      },
+      "operations": [
+        { "op": "start" },
+        { "op": "wait_ms", "duration_ms": 60 },
+        { "op": "stop" },
+        { "op": "stop" }
+      ],
+      "expected": {
+        "stop_idempotent": true,
+        "shutdown_call_count": 1,
+        "background_task_terminated": true,
+        "errors": []
+      }
+    }
+  ]
+}

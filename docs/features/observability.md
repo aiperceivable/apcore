@@ -371,6 +371,140 @@ W3C interoperability across Python, TypeScript, and Rust SDKs.
 
 **UsageMiddleware** records usage in `before()` (start timestamp), `after()` (success + latency), and `on_error()` (failure + latency) hooks.
 
+## UsageExporter (push-style)
+
+The `UsageExporter` interface lets you **push** periodic `UsageCollector` summaries to external sinks (HTTP, Kafka, ClickHouse, custom). It is distinct from the **pull-style** `PrometheusExporter` documented in [`PrometheusExporter.export`](#contract-prometheusexporterexport): Prometheus scrapes; `UsageExporter` ships (decision **D-55**, Issue #45 §3).
+
+**Lifecycle:**
+
+- `start()` spawns a background task (Python `asyncio.Task` / TypeScript `setInterval`+timer / Rust `tokio::task::spawn`) that polls `UsageCollector.summary()` at a configurable interval (**default 1 hour**) and calls `exporter.export(summary)` for each registered exporter.
+- `stop()` halts the background loop and awaits `exporter.shutdown()` for graceful drain.
+- The default registered exporter is `NoopUsageExporter`, which silently drops summaries — apcore does **NOT** ship HTTP, Kafka, or other transport-bound exporters; implementations are user responsibility.
+- A bundled `PeriodicUsageExporter` wraps the timer + polling logic and accepts any user-supplied `UsageExporter` as its sink.
+
+**Normative rules:**
+
+- All 3 SDKs **MUST** ship a `UsageExporter` Protocol (Python) / interface (TypeScript) / trait (Rust) with two methods: `export(summary)` and `shutdown()`.
+- All 3 SDKs **MUST** ship `NoopUsageExporter` as the default.
+- All 3 SDKs **MUST** ship `PeriodicUsageExporter` as the bundled timer wrapper. Default `interval_seconds: 3600` (1 hour).
+- `stop()` **MUST** await `exporter.shutdown()`; in-flight `export()` calls **MUST** complete or be cancelled before `shutdown()` returns.
+- `PeriodicUsageExporter` **MUST** be safe to call `stop()` multiple times (idempotent).
+- apcore SDKs **MUST NOT** ship transport-specific exporters (HTTP/Kafka/etc.); these are explicitly out-of-tree and a user concern.
+
+=== "Python"
+    ```python
+    from typing import Protocol
+    from apcore.observability import (
+        UsageCollector,
+        NoopUsageExporter,
+        PeriodicUsageExporter,
+    )
+
+    class UsageExporter(Protocol):
+        async def export(self, summary: list) -> None: ...
+        async def shutdown(self) -> None: ...
+
+    class HttpUsageExporter:
+        def __init__(self, url: str) -> None:
+            self._url = url
+
+        async def export(self, summary: list) -> None:
+            # POST summary to self._url; user-implemented.
+            ...
+
+        async def shutdown(self) -> None:
+            # Close any pooled connections.
+            ...
+
+    collector = UsageCollector()
+    exporter = HttpUsageExporter("https://metrics.example.com/usage")
+    periodic = PeriodicUsageExporter(
+        collector=collector,
+        exporter=exporter,
+        interval_seconds=3600,  # default
+    )
+    await periodic.start()
+    # ... application runs ...
+    await periodic.stop()  # awaits exporter.shutdown()
+    ```
+
+=== "TypeScript"
+    ```typescript
+    import {
+        UsageCollector,
+        NoopUsageExporter,
+        PeriodicUsageExporter,
+        UsageExporter,
+        UsageSummary,
+    } from "apcore-js/observability";
+
+    class HttpUsageExporter implements UsageExporter {
+        constructor(private readonly url: string) {}
+
+        async export(summary: UsageSummary[]): Promise<void> {
+            // POST to this.url; user-implemented.
+        }
+
+        async shutdown(): Promise<void> {
+            // Close pooled connections.
+        }
+    }
+
+    const collector = new UsageCollector();
+    const exporter = new HttpUsageExporter("https://metrics.example.com/usage");
+    const periodic = new PeriodicUsageExporter({
+        collector,
+        exporter,
+        intervalSeconds: 3600,  // default
+    });
+    await periodic.start();
+    // ... application runs ...
+    await periodic.stop();  // awaits exporter.shutdown()
+    ```
+
+=== "Rust"
+    ```rust
+    use std::sync::Arc;
+    use apcore::observability::{
+        UsageCollector,
+        UsageExporter,
+        UsageSummary,
+        NoopUsageExporter,
+        PeriodicUsageExporter,
+    };
+    use async_trait::async_trait;
+
+    pub struct HttpUsageExporter {
+        url: String,
+    }
+
+    #[async_trait]
+    impl UsageExporter for HttpUsageExporter {
+        async fn export(&self, _summary: Vec<UsageSummary>) -> apcore::Result<()> {
+            // POST to self.url; user-implemented.
+            Ok(())
+        }
+
+        async fn shutdown(&self) -> apcore::Result<()> {
+            // Close pooled connections.
+            Ok(())
+        }
+    }
+
+    let collector = Arc::new(UsageCollector::new());
+    let exporter: Arc<dyn UsageExporter> = Arc::new(HttpUsageExporter {
+        url: "https://metrics.example.com/usage".into(),
+    });
+    let periodic = PeriodicUsageExporter::builder()
+        .collector(collector)
+        .exporter(exporter)
+        .interval_seconds(3600)  // default
+        .build();
+    periodic.start().await?;
+    // ... application runs ...
+    periodic.stop().await?;  // awaits exporter.shutdown()
+    ```
+
 ### Platform Notify Middleware
 
 `PlatformNotifyMiddleware` is a threshold-based sensor that emits events when module error rates or latency exceed configured thresholds.
@@ -1586,6 +1720,69 @@ sensitive_keys:
   - session
   - bearer
 ```
+
+### Canonical default `sensitive_keys`
+
+The following 16-entry list is the canonical superset that all three SDKs (Python, TypeScript, Rust) **MUST** ship as the default value of `obs.redaction.sensitive_keys` when no override is provided (decision **D-54**). The leading `_secret_*` glob preserves the legacy `_secret_`-prefix behavior as a substring/prefix match while the remaining 15 entries cover the common credential vocabulary observed across HTTP, OAuth, AWS, GCP, and database client conventions.
+
+```python
+[
+    "_secret_*", "password", "passwd", "secret", "token",
+    "api_key", "apikey", "apiKey", "access_key", "private_key",
+    "authorization", "auth", "credential", "cookie", "session", "bearer"
+]
+```
+
+**Normative rules:**
+
+- Implementations **MUST** ship this exact 16-entry list as the default `obs.redaction.sensitive_keys` value when the YAML key is absent.
+- Implementations **MUST** allow operators to fully override the default by setting `obs.redaction.sensitive_keys` in `apcore.yaml` (the override **replaces** the default; it does not merge).
+- The match is case-insensitive substring against field names, so `apiKey` and `apikey` both match `Authorization-API-Key` headers; the redundant `apiKey` entry is retained explicitly so test-fixture diffs across SDKs are byte-stable.
+- The leading `_secret_*` glob is matched as a substring (the `*` is informational only) so legacy `_secret_token` keys remain redacted under the canonical default.
+
+=== "Python"
+    ```python
+    from apcore.observability import RedactionConfig
+
+    # Default: ships with the canonical 16-entry sensitive_keys list.
+    redaction = RedactionConfig()
+    assert "password" in redaction.sensitive_keys
+    assert "_secret_*" in redaction.sensitive_keys
+    assert len(redaction.sensitive_keys) == 16
+
+    # Override (replace, not merge):
+    custom = RedactionConfig(sensitive_keys=["password", "internal_token"])
+    ```
+
+=== "TypeScript"
+    ```typescript
+    import { RedactionConfig } from "apcore-js/observability";
+
+    // Default: ships with the canonical 16-entry sensitiveKeys list.
+    const redaction = new RedactionConfig();
+    console.assert(redaction.sensitiveKeys.includes("password"));
+    console.assert(redaction.sensitiveKeys.includes("_secret_*"));
+    console.assert(redaction.sensitiveKeys.length === 16);
+
+    // Override (replace, not merge):
+    const custom = new RedactionConfig({ sensitiveKeys: ["password", "internal_token"] });
+    ```
+
+=== "Rust"
+    ```rust
+    use apcore::observability::RedactionConfig;
+
+    // Default: ships with the canonical 16-entry sensitive_keys list.
+    let redaction = RedactionConfig::default();
+    assert!(redaction.sensitive_keys.iter().any(|k| k == "password"));
+    assert!(redaction.sensitive_keys.iter().any(|k| k == "_secret_*"));
+    assert_eq!(redaction.sensitive_keys.len(), 16);
+
+    // Override (replace, not merge):
+    let custom = RedactionConfig::builder()
+        .sensitive_keys(vec!["password".into(), "internal_token".into()])
+        .build();
+    ```
 
 **Normative rules:**
 

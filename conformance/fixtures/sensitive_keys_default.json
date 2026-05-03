@@ -1,0 +1,103 @@
+{
+  "description": "Canonical default obs.redaction.sensitive_keys list (D-54). All 3 SDKs MUST ship the exact 16-entry default when no override is provided. The match is case-insensitive substring against field names. Override (via apcore.yaml obs.redaction.sensitive_keys) MUST replace the default, not merge. The leading _secret_* entry preserves the legacy _secret_-prefix behavior under the canonical default. trace_id, caller_id, target_id, module_id, span_id MUST NEVER be redacted regardless of sensitive_keys content. See docs/features/observability.md#canonical-default-sensitive_keys.",
+  "test_cases": [
+    {
+      "id": "default_list_is_canonical_16_entries",
+      "scenario": "RedactionConfig() with no override exposes the canonical 16-entry default list in the documented order.",
+      "construction": "default",
+      "expected": {
+        "sensitive_keys": [
+          "_secret_*",
+          "password",
+          "passwd",
+          "secret",
+          "token",
+          "api_key",
+          "apikey",
+          "apiKey",
+          "access_key",
+          "private_key",
+          "authorization",
+          "auth",
+          "credential",
+          "cookie",
+          "session",
+          "bearer"
+        ],
+        "length": 16
+      }
+    },
+    {
+      "id": "default_redacts_legacy_underscore_secret_prefix",
+      "scenario": "Legacy `_secret_*` glob in the canonical default redacts `_secret_token` and `_secret_password` keys via case-insensitive substring match.",
+      "construction": "default",
+      "input": {
+        "_secret_token": "abc123",
+        "_secret_password": "hunter2",
+        "username": "alice",
+        "trace_id": "00000000000000000000000000000001"
+      },
+      "expected": {
+        "_secret_token": "***REDACTED***",
+        "_secret_password": "***REDACTED***",
+        "username": "alice",
+        "trace_id": "00000000000000000000000000000001"
+      }
+    },
+    {
+      "id": "default_redacts_common_credential_terms",
+      "scenario": "Canonical default redacts the 15 common credential terms across HTTP, OAuth, AWS, GCP, and database conventions, case-insensitively.",
+      "construction": "default",
+      "input": {
+        "Password": "p1",
+        "X-API-KEY": "k1",
+        "Authorization": "Bearer xyz",
+        "AccessKey": "ak1",
+        "private_key_pem": "...",
+        "session_id": "sid1",
+        "Cookie": "user=alice",
+        "user_id": "alice",
+        "module_id": "executor.test",
+        "caller_id": "api.test",
+        "trace_id": "00000000000000000000000000000001",
+        "span_id": "0000000000000001",
+        "target_id": "executor.test"
+      },
+      "expected": {
+        "Password": "***REDACTED***",
+        "X-API-KEY": "***REDACTED***",
+        "Authorization": "***REDACTED***",
+        "AccessKey": "***REDACTED***",
+        "private_key_pem": "***REDACTED***",
+        "session_id": "***REDACTED***",
+        "Cookie": "***REDACTED***",
+        "user_id": "alice",
+        "module_id": "executor.test",
+        "caller_id": "api.test",
+        "trace_id": "00000000000000000000000000000001",
+        "span_id": "0000000000000001",
+        "target_id": "executor.test"
+      }
+    },
+    {
+      "id": "override_replaces_default_does_not_merge",
+      "scenario": "Operator-provided sensitive_keys MUST replace the default list, not merge with it. After override, terms only present in the default (e.g., 'cookie', 'token') MUST NOT match.",
+      "construction": "override",
+      "override_sensitive_keys": ["password", "internal_token"],
+      "input": {
+        "password": "p1",
+        "internal_token": "t1",
+        "cookie": "user=alice",
+        "authorization": "Bearer xyz",
+        "username": "alice"
+      },
+      "expected": {
+        "password": "***REDACTED***",
+        "internal_token": "***REDACTED***",
+        "cookie": "user=alice",
+        "authorization": "Bearer xyz",
+        "username": "alice"
+      }
+    }
+  ]
+}
