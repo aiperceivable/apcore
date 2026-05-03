@@ -48,6 +48,8 @@ SDK conformance runners **must** load `.json` files with a JSON parser. The `.ya
 | `async_task_evolution.json` | Issue #34 | Pluggable TaskStore backends (InMemory/Redis), retry with configurable exponential backoff, Reaper TTL-based auto-cleanup |
 | `observability_hardening.json` | Issue #43 | Pluggable ObservabilityStore, BatchSpanProcessor queue/drop behaviour, O(log N) ErrorHistory eviction, error fingerprint deduplication and normalization, configurable redaction (field+value patterns), Prometheus required-metric presence |
 | `system_modules_hardening.json` | Issue #45 | Config/toggle persistence to overrides file, overrides loaded after base config on startup, audit entry actor extraction, audit entry before/after change recording, Prometheus UsageCollector metrics export, path-filter bulk reload, module_id+path_filter conflict error, startup fail_on_error=True raises, fail_on_error=False continues, Rust Result return type |
+| `storage_backend.json` | Issue #43, D-39 | StorageBackend trait/interface: save+get round-trip, list-with-prefix, idempotent delete, namespace isolation, save-overwrites |
+| `overrides_store.json` | Issue #45.1, D-40 | OverridesStore (FileOverridesStore + InMemoryOverridesStore): save persists across reopen, startup applies overrides after base config, in-memory store for tests, missing path on first run is OK, delete idempotency |
 
 ## Coverage Gaps
 

@@ -978,3 +978,171 @@ annotations:
 - thread_safe: true
 - pure: false (reads from live collector state)
 - idempotent: true
+
+---
+
+## Pluggable storage backends
+
+`ErrorHistory`, `UsageCollector`, and `MetricsCollector` are designed around a small key/value persistence surface called `StorageBackend`. The trait/interface lets the same observability primitives run with the bundled in-process default in tests, or with an external store (Redis, Postgres, S3, …) in production — without any code change inside the collectors themselves.
+
+This section documents the cross-SDK shape of the abstraction. Concrete network-backed implementations (Redis, Postgres, S3) are explicitly **out of tree** — apcore does not ship them. Users who need them implement `StorageBackend` against their preferred client library, or pull a community-maintained adapter.
+
+### Normative rules
+
+- All three SDKs MUST expose a `StorageBackend` trait/interface/protocol with the following methods:
+    - `save(namespace, key, value)` — create or overwrite a record
+    - `get(namespace, key) → value | None` — retrieve a record
+    - `list(namespace, prefix?) → list[(key, value)]` — list entries; optional key prefix filter
+    - `delete(namespace, key)` — remove a record (idempotent — deleting an absent key is a no-op)
+- All three SDKs MUST provide `InMemoryStorageBackend` as the default implementation. It MUST be thread-safe and namespace-isolated (entries written under one `namespace` MUST NOT be visible from another).
+- `ErrorHistory`, `UsageCollector`, and `MetricsCollector` MUST accept an optional `StorageBackend` at construction time. When omitted, `InMemoryStorageBackend` MUST be used.
+- The backend MUST NOT be reassigned after construction.
+- apcore SDKs MUST NOT ship Redis, Postgres, S3, or other network-backed implementations. Users implement those externally; the package surface remains free of optional heavy dependencies.
+
+### Cross-SDK examples
+
+=== "Python"
+    ```python
+    from apcore.observability import (
+        ErrorHistory,
+        UsageCollector,
+        MetricsCollector,
+        InMemoryStorageBackend,
+        StorageBackend,
+    )
+
+    # Default: every collector gets its own in-memory backend
+    history = ErrorHistory()
+    usage = UsageCollector()
+    metrics = MetricsCollector()
+
+    # Or share one backend across collectors (namespace-isolated internally)
+    backend = InMemoryStorageBackend()
+    history = ErrorHistory(storage=backend)
+    usage = UsageCollector(storage=backend)
+    metrics = MetricsCollector(storage=backend)
+
+    # Out-of-tree: implement your own backend (Redis shown, not bundled)
+    class RedisStorageBackend(StorageBackend):
+        def __init__(self, client):
+            self._client = client
+
+        def save(self, namespace: str, key: str, value: bytes) -> None:
+            self._client.hset(namespace, key, value)
+
+        def get(self, namespace: str, key: str) -> bytes | None:
+            return self._client.hget(namespace, key)
+
+        def list(self, namespace: str, prefix: str | None = None):
+            entries = self._client.hgetall(namespace).items()
+            if prefix:
+                entries = [(k, v) for k, v in entries if k.startswith(prefix)]
+            return list(entries)
+
+        def delete(self, namespace: str, key: str) -> None:
+            self._client.hdel(namespace, key)
+
+    backend = RedisStorageBackend(my_redis_client)
+    history = ErrorHistory(storage=backend)
+    ```
+=== "TypeScript"
+    ```typescript
+    import {
+        ErrorHistory,
+        UsageCollector,
+        MetricsCollector,
+        InMemoryStorageBackend,
+        StorageBackend,
+    } from "apcore-js/observability";
+
+    // Default: every collector gets its own in-memory backend
+    const history = new ErrorHistory();
+    const usage = new UsageCollector();
+    const metrics = new MetricsCollector();
+
+    // Or share one backend across collectors (namespace-isolated internally)
+    const backend = new InMemoryStorageBackend();
+    const sharedHistory = new ErrorHistory({ storage: backend });
+    const sharedUsage = new UsageCollector({ storage: backend });
+    const sharedMetrics = new MetricsCollector({ storage: backend });
+
+    // Out-of-tree: implement your own backend (Redis shown, not bundled)
+    class RedisStorageBackend implements StorageBackend {
+        constructor(private readonly client: RedisClient) {}
+
+        async save(namespace: string, key: string, value: Uint8Array): Promise<void> {
+            await this.client.hset(namespace, key, value);
+        }
+
+        async get(namespace: string, key: string): Promise<Uint8Array | null> {
+            return this.client.hget(namespace, key);
+        }
+
+        async list(namespace: string, prefix?: string): Promise<Array<[string, Uint8Array]>> {
+            const all = await this.client.hgetall(namespace);
+            const entries = Object.entries(all);
+            return prefix ? entries.filter(([k]) => k.startsWith(prefix)) : entries;
+        }
+
+        async delete(namespace: string, key: string): Promise<void> {
+            await this.client.hdel(namespace, key);
+        }
+    }
+
+    const redisBackend = new RedisStorageBackend(myRedisClient);
+    const prodHistory = new ErrorHistory({ storage: redisBackend });
+    ```
+=== "Rust"
+    ```rust
+    use apcore::observability::{
+        ErrorHistory, UsageCollector, MetricsCollector,
+        InMemoryStorageBackend, StorageBackend,
+    };
+    use std::sync::Arc;
+
+    // Default: every collector gets its own in-memory backend
+    let history = ErrorHistory::new();
+    let usage = UsageCollector::new();
+    let metrics = MetricsCollector::new();
+
+    // Or share one backend across collectors (namespace-isolated internally)
+    let backend: Arc<dyn StorageBackend> = Arc::new(InMemoryStorageBackend::new());
+    let shared_history = ErrorHistory::with_storage(backend.clone());
+    let shared_usage = UsageCollector::with_storage(backend.clone());
+    let shared_metrics = MetricsCollector::with_storage(backend.clone());
+
+    // Out-of-tree: implement your own backend (Redis shown, not bundled)
+    pub struct RedisStorageBackend {
+        client: redis::Client,
+    }
+
+    impl StorageBackend for RedisStorageBackend {
+        fn save(&self, namespace: &str, key: &str, value: &[u8]) -> Result<(), StorageError> {
+            // delegate to redis crate
+            Ok(())
+        }
+        fn get(&self, namespace: &str, key: &str) -> Result<Option<Vec<u8>>, StorageError> {
+            Ok(None)
+        }
+        fn list(&self, namespace: &str, prefix: Option<&str>) -> Result<Vec<(String, Vec<u8>)>, StorageError> {
+            Ok(vec![])
+        }
+        fn delete(&self, namespace: &str, key: &str) -> Result<(), StorageError> {
+            Ok(())
+        }
+    }
+    ```
+
+### Relationship to `ObservabilityStore` (Issue #43 §1.1)
+
+The `ObservabilityStore` interface defined in [§1.1](#11-pluggable-observability-storage) is a higher-level convenience that bundles the error-record / metric-record API together. `StorageBackend` is the lower-level primitive that all three collectors share. Implementations MAY layer `ObservabilityStore` on top of a `StorageBackend`, or implement `ObservabilityStore` directly — both are conformant.
+
+---
+
+## ErrorHistory eviction performance
+
+The `ErrorHistory` ring buffer described in [Error History](#error-history) above MUST evict the entry with the oldest `last_seen_at` whenever total entries exceed `max_total_entries`. Implementations use a min-heap keyed on `last_seen_at` to make this a O(log N) operation, with an auxiliary `module_id → list[ErrorEntry ref]` index for O(1) per-module lookup.
+
+**Lazy-deletion semantics.** Heap entries are not physically removed when their `count` is updated by deduplication. Instead, a duplicate record updates `last_seen_at` in place and pushes a *fresh* heap node referencing the same `ErrorEntry`. On eviction, the heap-pop loop checks each popped node against the current `ErrorEntry.last_seen_at` and discards stale nodes (where the heap key does not match the record's current `last_seen_at`) before evicting a real entry. Stale nodes accumulate at most O(N) at any time and are amortized away by subsequent evictions.
+
+This is a performance note, not a normative requirement: the public API of `ErrorHistory.record / get / get_all` is unchanged. Implementations MAY use any data structure that achieves the same asymptotic bound and observable behavior.

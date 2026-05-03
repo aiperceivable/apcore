@@ -208,6 +208,14 @@ The single-class guarantee ensures zero breaking changes for existing module fil
 
 ## Contract: Registry.discover_multi_class
 
+All three SDKs expose `discover_multi_class` as a **method on `Registry`**, matching the spec contract. The free-function form remains available as an internal helper for SDK-internal use, but new application code SHOULD prefer the method form.
+
+| SDK | Public method | Internal helper |
+|---|---|---|
+| Python | `Registry.discover_multi_class(file_path)` | `apcore.registry.multi_class._discover_multi_class(...)` |
+| TypeScript | `Registry.discoverMultiClass(filePath)` | `_discoverMultiClass(...)` (module-private) |
+| Rust | `Registry::discover_multi_class(&self, file_path)` | `derive_module_ids(...)` free function |
+
 ### Inputs
 
 - `file_path` (str/string/&str, required) — path to the file to scan, relative to the project root
@@ -229,6 +237,38 @@ The single-class guarantee ensures zero breaking changes for existing module fil
 - thread_safe: true
 - pure: false (reads file system)
 - idempotent: true (repeated calls with the same file produce the same result)
+
+### Cross-SDK usage
+
+=== "Python"
+    ```python
+    from apcore import Registry
+
+    registry = Registry()
+    discovered = registry.discover_multi_class("extensions/math/math_ops.py")
+    for module_id, cls in discovered:
+        print(module_id, cls.__name__)
+    ```
+=== "TypeScript"
+    ```typescript
+    import { Registry } from "apcore-js";
+
+    const registry = new Registry();
+    const discovered = await registry.discoverMultiClass("extensions/math/math_ops.ts");
+    for (const [moduleId, cls] of discovered) {
+        console.log(moduleId, cls.name);
+    }
+    ```
+=== "Rust"
+    ```rust
+    use apcore::Registry;
+
+    let registry = Registry::new();
+    let discovered = registry.discover_multi_class("extensions/math/math_ops.rs")?;
+    for (module_id, class_ref) in discovered {
+        println!("{} -> {:?}", module_id, class_ref);
+    }
+    ```
 
 ## Testing Strategy
 
