@@ -1160,12 +1160,14 @@ observability:
 
 ### 1.4 Granular Reload via Path Filtering
 
-Currently `system.control.reload_module` reloads a single module by ID.
+Currently `system.control.reload_module` reloads a single module by ID. The optional `path_filter` input restricts re-discovery to module IDs matching a glob pattern, enabling partial reloads (e.g., only `executor.email.*`) instead of a full registry sweep.
 
 #### Normative Rules
 
-- Implementations MUST support a `path_filter` input field on `system.control.reload_module` that accepts a glob pattern. When specified, the module MUST reload all modules whose IDs match the pattern.
+- Implementations MUST support an **optional** `path_filter` input field on `system.control.reload_module` that accepts a glob pattern (e.g., `executor.*`, `analytics.reports.*`). When specified, the module MUST restrict re-discovery to module IDs matching the pattern and reload only those modules.
 - `path_filter` and `module_id` MUST be mutually exclusive. If both are provided, implementations MUST raise a `MODULE_RELOAD_CONFLICT` error.
+- A `path_filter` that matches zero modules MUST be a no-op: `reloaded_modules` is the empty list and no error is raised.
+- When `path_filter` is omitted **and** `module_id` is omitted, implementations MUST raise `InvalidInputError` (one of the two MUST be present).
 - Reload order for multiple matches MUST follow the dependency topological order (leaf modules first, then modules that depend on them).
 
 #### Updated Input for `system.control.reload_module`
@@ -1243,6 +1245,36 @@ Currently `system.control.reload_module` reloads a single module by ID.
     ).await?;
     // result["reloaded_modules"] contains the list of reloaded module IDs
     ```
+
+#### Rust-only: `Config::reload_from_disk()`
+
+The Rust SDK additionally exposes `Config::reload_from_disk()` for refreshing **static** configuration (the `apcore.yaml` base file plus any `overrides_path` overlay) without restarting the binary. This is distinct from `system.control.reload_module`, which reloads module *code*; `reload_from_disk` reloads only the configuration tree.
+
+**Rationale:** Rust applications run as long-lived single binaries with no equivalent of Python's importlib reload or TypeScript's `require.cache` invalidation. Operators need a way to re-read the YAML files to pick up SRE-driven config edits (timeouts, feature flags, redaction rules) without taking the process down. Python and TypeScript can already achieve this by re-running `Config.load()` and re-attaching it to the client; Rust's borrow rules make that pattern awkward, so the SDK provides an explicit API.
+
+**Normative rules (Rust-only):**
+
+- `Config::reload_from_disk()` MUST re-read the original YAML path passed to `Config::load`/`Config::from_path` and apply any configured `sys_modules.control.overrides_path` overlay on top.
+- The reload MUST be atomic: either the new config fully replaces the old one or, on parse error, the old config remains active and the call MUST return `Err(ConfigError)`.
+- `reload_from_disk` MUST emit `apcore.config.reloaded` via the `EventEmitter` (if events are enabled) on success.
+- The reload MUST NOT mutate `sys_modules.enabled` post-startup: that key is restricted (see [`system.control.update_config` restrictions](#systemcontrolupdate_config)) and MUST be ignored if changed on disk after process start.
+- Python and TypeScript SDKs do **not** require this method; their callers re-construct `Config` and rebuild `APCore` to achieve equivalent behavior.
+
+```rust
+use apcore::config::Config;
+use apcore::APCore;
+use std::sync::Arc;
+
+let config = Arc::new(Config::from_path("apcore.yaml")?);
+let client = APCore::new(config.clone())?;
+
+// ... process runs; SRE edits apcore.yaml on disk ...
+
+// Re-read YAML + overrides without restarting the binary.
+config.reload_from_disk()?;
+// Subscribers to apcore.config.reloaded see the new values.
+// In-flight calls continue under the snapshot they started with.
+```
 
 ---
 

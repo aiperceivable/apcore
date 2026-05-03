@@ -32,6 +32,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`docs/spec/2026-05-decision-log.md` — `## Resolution status — 2026-05-03 addendum`** marking D-10, D-12, D-13, D-14, D-15, D-19, D-25, D-27, and D-28 resolved; added new entries `## D-39 — StorageBackend cross-SDK abstraction` (resolved) and `## D-40 — TS overrides persistence parity` (resolved).
 - **`conformance/fixtures/storage_backend.json`** — 5 cross-language test cases covering `StorageBackend` save+get round-trip, list-with-prefix filtering, idempotent delete, namespace isolation, and save-overwrites semantics.
 - **`conformance/fixtures/overrides_store.json`** — 5 cross-language test cases covering `OverridesStore`: save persists across reopen, startup applies overrides after base config, in-memory store for tests, missing path on first run is OK, delete idempotency.
+- Granular reload via `path_filter` input in `ReloadModule` across all 3 SDKs (#45.4).
+- Rust `Config::reload_from_disk()` for refreshing static config without binary restart (#45.5).
+- Error fingerprinting in `ErrorHistory` across all 3 SDKs — dedup by (error_code, top-frame hash, sanitized message template) instead of exact message (#43 §4).
+- Configurable redaction via `obs.redaction.regex_patterns` and `obs.redaction.sensitive_keys` Config keys (#43 §5).
 
 ### Changed
 
@@ -49,10 +53,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Rust `update_config` raises `CONFIG_KEY_RESTRICTED` for restricted keys (D-25).
 - Rust `UsageCollector` now computes trend from samples and supports period filter (D-27).
 - Rust `ContextLogger` output schema aligned with Python+TS (lowercase level, nested `extra`, `module_id`) (D-28).
+- Python `start_reaper` now uses `(ttl_seconds, sweep_interval_ms)` and returns `ReaperHandle` matching TS+Rust; old kwargs aliased with DeprecationWarning (D-11).
 
 ### Fixed
 
 - **Cross-language naming alignment for the `context_namespace` middleware module** (audit N-003) — Python and Rust shipped `ContextWriter` / `NamespaceCheck`; TypeScript shipped `ContextKeyWriter` / `ContextKeyValidation`. TypeScript renamed in `apcore-typescript` v0.20.x to match the Python+Rust majority; the prior TS names are retained as deprecated aliases for one release cycle. No spec text change needed — all three SDKs now agree on the canonical names.
+- Async `on_error` middleware in Python+TS now detects awaitable/thenable RETURN values rather than inspecting function shape, fixing silent Promise leaks for `partial`-wrapped handlers (#42).
 
 ---
 

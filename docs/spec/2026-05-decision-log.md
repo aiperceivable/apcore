@@ -700,9 +700,95 @@ the same fixture file.
 
 ---
 
+## D-41 — Async middleware correctness (return-value detection)
+
+**Status quo (pre-resolution)**
+- Python+TS gated awaiting on **function-shape**: `inspect.iscoroutinefunction(handler)` / `handler.constructor.name === 'AsyncFunction'`.
+- Wrapped handlers — `functools.partial(async_fn, ...)`, factory closures returning a coroutine, decorated class methods rebound onto instances — are not literally async-declared but DO return coroutines/Promises when called.
+- Function-shape detection silently dropped these returns; no `await`, no error, no log. Promises leaked.
+- Rust unaffected: `#[async_trait]` enforces the `Future` return type at the type level — the bug class is impossible.
+
+**Resolution**: Implementations MUST inspect the **return value** of every middleware invocation. If the return is awaitable / thenable, the manager MUST `await` it. Function-shape checks are a fast-path optimization, not the gate.
+
+**Status**: **resolved** in iter5. See `docs/features/middleware-system.md` "## Async middleware correctness". Conformance: function-shape unchanged for `async def` handlers; the new path catches `partial`-wrapped handlers and arrow-factory closures.
+
+**Action (completed)**:
+- Python: `inspect.isawaitable(result)` after invocation; await if true.
+- TypeScript: thenable check on the return value; await if thenable.
+- Rust: no change — `async_trait` already enforces correctness.
+
+---
+
+## D-42 — Reaper signature alignment (D-11 closeout)
+
+**Status quo (pre-resolution)**
+- Python: `start_reaper(interval_seconds=3600.0, max_age_seconds=3600.0)` — sync, returns `None`, sweep unit in **seconds**.
+- TS: `startReaper({ttlSeconds, sweepIntervalMs})` — async, returns `ReaperHandle`, sweep unit in **milliseconds**.
+- Rust: `start_reaper(ReaperConfig { ttl_seconds, sweep_interval_ms })` — returns `ReaperHandle`.
+
+**Resolution**: Canonical signature `start_reaper(ttl_seconds, sweep_interval_ms) -> ReaperHandle` everywhere (D-11 Option A). Python's old kwargs `interval_seconds` / `max_age_seconds` are kept as deprecated aliases that emit `DeprecationWarning`; `interval_seconds` value is multiplied by 1000 for unit conversion. Scheduled for removal in next MAJOR.
+
+**Status**: **resolved** in iter5. See `docs/features/async-tasks.md` "Canonical signature" + "Python deprecation note".
+
+**Action (completed)**: Python alias layer added; cross-language `ReaperHandle.stop()` is async everywhere. CHANGELOG entry under "### Changed".
+
+---
+
+## D-43 — Granular reload via `path_filter` (Issue #45.4 closeout)
+
+**Status quo (pre-resolution)**
+- `system.control.reload_module` accepted only a single `module_id`. Bulk reload required a manual loop over IDs at the caller, with no dependency-order guarantee.
+
+**Resolution**: Added optional `path_filter` glob input. Mutually exclusive with `module_id` (`MODULE_RELOAD_CONFLICT` if both present). Zero-match filter is a no-op (no error). Reload order follows dependency topological order (leaf modules first).
+
+**Status**: **resolved** in iter5. See `docs/features/system-modules.md` §1.4 and `conformance/fixtures/reload_path_filter.json`.
+
+**Action (completed)**: spec + fixture in apcore. SDKs implement in v0.21.0.
+
+---
+
+## D-44 — Rust `Config::reload_from_disk()` (Issue #45.5 closeout)
+
+**Status quo (pre-resolution)**
+- Python and TypeScript can re-read `apcore.yaml` by reconstructing `Config` and rebuilding the client. Borrow rules make this awkward in Rust; long-lived binaries had no equivalent for live config refresh.
+
+**Resolution**: Rust SDK adds `Config::reload_from_disk()` that re-reads the original YAML path + any `overrides_path` overlay atomically. Emits `apcore.config.reloaded` on success. Restricted keys (e.g. `sys_modules.enabled`) are ignored on reload. Python and TypeScript are unaffected — they keep the rebuild pattern.
+
+**Status**: **resolved** in iter5. See `docs/features/system-modules.md` "Rust-only: `Config::reload_from_disk()`".
+
+**Action (completed)**: Rust-only spec note. CHANGELOG entry under "### Added".
+
+---
+
+## D-45 — Error fingerprinting in ErrorHistory (Issue #43 §4 closeout)
+
+**Status quo (pre-resolution)**
+- `ErrorHistory` deduplicated on `(code, message)`. Any message containing a UUID, timestamp, or numeric ID created a fresh entry per occurrence — the ring buffer flooded with near-identical errors and meaningful patterns were buried.
+
+**Resolution**: Replace the tuple key with `SHA-256(error_code + ':' + top_frame_hash + ':' + sanitized_message_template)`. Sanitization: UUIDs → `<UUID>`, ISO 8601 timestamps → `<TIMESTAMP>`, integers ≥ 4 digits → `<ID>`, lowercase, trim. Same fingerprint = increment count + update `last_seen_at`. Different `error_code` never collapses; different top-frame call site never collapses (even with identical normalized message).
+
+**Status**: **resolved** in iter5. See `docs/features/observability.md` "## Error fingerprinting" and §1.4. Fixture: `conformance/fixtures/error_fingerprinting.json`.
+
+**Action (completed)**: spec + fixture in apcore. CHANGELOG entry under "### Added".
+
+---
+
+## D-46 — Redaction configuration (Issue #43 §5 closeout)
+
+**Status quo (pre-resolution)**
+- `ContextLogger` redacted only fields whose name had the literal `_secret_` prefix. This was hardcoded, undiscoverable, required app-code rename to opt fields in, and could not match real-world conventions like `Authorization` / `X-API-Key`.
+
+**Resolution**: Add `obs.redaction.regex_patterns` (full-match value regex) and `obs.redaction.sensitive_keys` (case-insensitive substring against field names) Config keys. Default `sensitive_keys` covers `password`, `passwd`, `secret`, `token`, `api_key`, `apikey`, `access_key`, `private_key`, `authorization`, `auth`, `credential`, `cookie`, `session`, `bearer`. Union with existing `x-sensitive` schema annotations. `trace_id`, `caller_id`, `target_id`, `module_id`, `span_id` MUST NEVER be redacted. The `_secret_` prefix is deprecated for backward compatibility.
+
+**Status**: **resolved** in iter5. See `docs/features/observability.md` "## Redaction configuration" and §1.5. Fixture: `conformance/fixtures/redaction_config.json`.
+
+**Action (completed)**: spec + fixture in apcore. CHANGELOG entry under "### Added".
+
+---
+
 ## Resolution status
 
-- **Resolved** (no further action): D-02, D-05, D-23, D-29, D-34, D-35, D-36, D-37, D-38
+- **Resolved** (no further action): D-02, D-05, D-23, D-29, D-34, D-35, D-36, D-37, D-38, D-41, D-42, D-43, D-44, D-45, D-46
 - **Doc-only fixes** (1-line each): D-01, D-07, D-09, D-16, D-17, D-18, D-26, D-30, D-31
 - **Code fix needed in 1 SDK**: D-04 (TS), D-08 (Python), D-10 (Python), D-11 (Python), D-12 (Python), D-13 (Python), D-14 (Rust), D-19 (Rust), D-25 (TS+Rust), D-27 (Rust), D-28 (Rust), D-32 (TS)
 - **Multi-SDK code fix**: D-03 (all 3), D-15 (Python+TS), D-24 (TS+Rust)

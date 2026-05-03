@@ -535,6 +535,32 @@ async_task:
 
 ## Contract: AsyncTaskManager.start_reaper
 
+### Canonical signature
+
+`start_reaper(ttl_seconds, sweep_interval_ms) -> ReaperHandle` is the canonical signature across **all three SDKs** (decision **D-11**). The two named arguments and the `ReaperHandle` return type are normative.
+
+| SDK | Signature | Notes |
+|-----|-----------|-------|
+| Python | `await manager.start_reaper(ttl_seconds=3600.0, sweep_interval_ms=300_000) -> ReaperHandle` | Returns awaitable; `ReaperHandle.stop()` is async |
+| TypeScript | `await manager.startReaper({ ttlSeconds, sweepIntervalMs }) -> Promise<ReaperHandle>` | Object-style kwargs; `reaperHandle.stop()` is async |
+| Rust | `manager.start_reaper(ttl_seconds: f64, sweep_interval_ms: u64).await -> ReaperHandle` | `ReaperHandle::stop` is async |
+
+### Python deprecation note
+
+Pre-D-11 Python releases used `start_reaper(interval_seconds=..., max_age_seconds=...)` (sync, returned `None`, sweep unit was **seconds**). These keyword arguments are now **deprecated aliases**:
+
+- `interval_seconds=N` — accepted with `DeprecationWarning("interval_seconds is deprecated; use sweep_interval_ms (note unit change to milliseconds)")`. Internally multiplied by 1000 to convert to milliseconds.
+- `max_age_seconds=N` — accepted with `DeprecationWarning("max_age_seconds is deprecated; use ttl_seconds")`. Same unit (seconds), only the name changed.
+- The deprecation aliases are scheduled for removal in the next MAJOR release.
+
+```python
+# Deprecated form (still works, emits DeprecationWarning)
+handle = await manager.start_reaper(interval_seconds=600.0, max_age_seconds=7200.0)
+
+# Canonical form (D-11 alignment)
+handle = await manager.start_reaper(ttl_seconds=7200.0, sweep_interval_ms=600_000)
+```
+
 ### Inputs
 - `ttl_seconds` (float, optional, default=3600) — task age threshold in seconds; tasks with `completed_at` older than `now - ttl_seconds` are eligible for deletion
 - `sweep_interval_ms` (int, optional, default=300000) — how often (in milliseconds) the Reaper sweeps for expired tasks

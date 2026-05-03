@@ -1,0 +1,113 @@
+{
+  "description": "Error fingerprinting and deduplication for ErrorHistory. Fingerprint composition: SHA-256(error_code + ':' + top_frame_hash + ':' + sanitized_message_template). Sanitization replaces UUID, ISO 8601 timestamps, and integers >= 4 digits with placeholders, lowercases, and trims. Two errors with the same fingerprint MUST collapse into a single ErrorEntry (count incremented, last_seen_at updated). Different error_code values MUST produce distinct fingerprints. The top_frame_hash field is computed from the first non-framework stack frame; for the purpose of this fixture, callers SHOULD substitute caller_id when stack traces are unavailable. See docs/features/observability.md#error-fingerprinting and #14-error-fingerprinting-for-deduplication.",
+  "test_cases": [
+    {
+      "id": "uuid_message_dedup",
+      "errors": [
+        {
+          "error_code": "DB_TIMEOUT",
+          "caller_id": "executor.db.query",
+          "message": "Connection timed out for request a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+        },
+        {
+          "error_code": "DB_TIMEOUT",
+          "caller_id": "executor.db.query",
+          "message": "Connection timed out for request 11111111-2222-3333-4444-555555555555"
+        },
+        {
+          "error_code": "DB_TIMEOUT",
+          "caller_id": "executor.db.query",
+          "message": "Connection timed out for request ffffffff-eeee-dddd-cccc-bbbbbbbbbbbb"
+        }
+      ],
+      "expected": {
+        "entry_count": 1,
+        "fingerprints_distinct": 1,
+        "first_entry_count": 3
+      }
+    },
+    {
+      "id": "timestamp_message_dedup",
+      "errors": [
+        {
+          "error_code": "RATE_LIMIT_EXCEEDED",
+          "caller_id": "api.web.search",
+          "message": "Rate limit exceeded at 2026-05-03T10:15:30Z, retry after 30s"
+        },
+        {
+          "error_code": "RATE_LIMIT_EXCEEDED",
+          "caller_id": "api.web.search",
+          "message": "Rate limit exceeded at 2026-05-03T11:20:45Z, retry after 30s"
+        }
+      ],
+      "expected": {
+        "entry_count": 1,
+        "fingerprints_distinct": 1,
+        "first_entry_count": 2
+      }
+    },
+    {
+      "id": "numeric_id_message_dedup",
+      "errors": [
+        {
+          "error_code": "ORDER_NOT_FOUND",
+          "caller_id": "executor.orders.get",
+          "message": "Order 123456 not found in shard 42"
+        },
+        {
+          "error_code": "ORDER_NOT_FOUND",
+          "caller_id": "executor.orders.get",
+          "message": "Order 987654 not found in shard 42"
+        }
+      ],
+      "expected": {
+        "entry_count": 1,
+        "fingerprints_distinct": 1,
+        "first_entry_count": 2,
+        "_note": "shard 42 (2 digits) is preserved; 123456/987654 (>=4 digits) collapse to <ID>"
+      }
+    },
+    {
+      "id": "distinct_error_codes_no_collapse",
+      "errors": [
+        {
+          "error_code": "DB_TIMEOUT",
+          "caller_id": "executor.db.query",
+          "message": "Connection timed out"
+        },
+        {
+          "error_code": "DB_AUTH_FAILED",
+          "caller_id": "executor.db.query",
+          "message": "Connection timed out"
+        }
+      ],
+      "expected": {
+        "entry_count": 2,
+        "fingerprints_distinct": 2,
+        "_note": "Identical message after normalization, but different error_code MUST yield distinct fingerprints"
+      }
+    },
+    {
+      "id": "distinct_call_sites_no_collapse",
+      "errors": [
+        {
+          "error_code": "VALIDATION_FAILED",
+          "caller_id": "executor.users.create",
+          "top_frame": "users.py:create:42",
+          "message": "Field is required"
+        },
+        {
+          "error_code": "VALIDATION_FAILED",
+          "caller_id": "executor.orders.create",
+          "top_frame": "orders.py:create:88",
+          "message": "Field is required"
+        }
+      ],
+      "expected": {
+        "entry_count": 2,
+        "fingerprints_distinct": 2,
+        "_note": "Same code + same normalized message but different top_frame_hash MUST yield distinct fingerprints"
+      }
+    }
+  ]
+}

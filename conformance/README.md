@@ -55,6 +55,9 @@ SDK conformance runners **must** load `.json` files with a JSON parser. The `.ya
 | `pipeline_failfast_config.json` | Issue #33 | Pipeline configuration fail-fast: `ConfigurationError` at parse time for missing step references in `configure:` and `step_middleware:`, `PipelineDependencyError` at strategy construction for unmet `requires`/`provides` |
 | `storage_backend.json` | Issue #43, D-39 | StorageBackend trait/interface: save+get round-trip, list-with-prefix, idempotent delete, namespace isolation, save-overwrites |
 | `overrides_store.json` | Issue #45.1, D-40 | OverridesStore (FileOverridesStore + InMemoryOverridesStore): save persists across reopen, startup applies overrides after base config, in-memory store for tests, missing path on first run is OK, delete idempotency |
+| `error_fingerprinting.json` | Issue #43 §4 | Error fingerprint = (error_code, top-frame hash, sanitized message template). UUID/timestamp/numeric-ID dedup, distinct error codes never collapse, distinct call sites never collapse |
+| `redaction_config.json` | Issue #43 §5 | Configurable redaction via `obs.redaction.regex_patterns` and `obs.redaction.sensitive_keys`. Default sensitive_keys cover common credential terms; trace_id/caller_id/target_id/module_id/span_id MUST never be redacted |
+| `reload_path_filter.json` | Issue #45.4 | Granular reload — `path_filter` glob restricts re-discovery, no `path_filter` = single-`module_id` reload unchanged, zero-match filter is a no-op, both fields together raises `MODULE_RELOAD_CONFLICT` |
 
 ## Coverage Gaps
 
