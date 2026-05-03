@@ -48,6 +48,9 @@ SDK conformance runners **must** load `.json` files with a JSON parser. The `.ya
 | `async_task_evolution.json` | Issue #34 | Pluggable TaskStore backends (InMemory/Redis), retry with configurable exponential backoff, Reaper TTL-based auto-cleanup |
 | `observability_hardening.json` | Issue #43 | Pluggable ObservabilityStore, BatchSpanProcessor queue/drop behaviour, O(log N) ErrorHistory eviction, error fingerprint deduplication and normalization, configurable redaction (field+value patterns), Prometheus required-metric presence |
 | `system_modules_hardening.json` | Issue #45 | Config/toggle persistence to overrides file, overrides loaded after base config on startup, audit entry actor extraction, audit entry before/after change recording, Prometheus UsageCollector metrics export, path-filter bulk reload, module_id+path_filter conflict error, startup fail_on_error=True raises, fail_on_error=False continues, Rust Result return type |
+| `error_fingerprinting.json` | Issue #43 §4 | Error fingerprint = (error_code, top-frame hash, sanitized message template). UUID/timestamp/numeric-ID dedup, distinct error codes never collapse, distinct call sites never collapse |
+| `redaction_config.json` | Issue #43 §5 | Configurable redaction via `obs.redaction.regex_patterns` and `obs.redaction.sensitive_keys`. Default sensitive_keys cover common credential terms; trace_id/caller_id/target_id/module_id/span_id MUST never be redacted |
+| `reload_path_filter.json` | Issue #45.4 | Granular reload — `path_filter` glob restricts re-discovery, no `path_filter` = single-`module_id` reload unchanged, zero-match filter is a no-op, both fields together raises `MODULE_RELOAD_CONFLICT` |
 
 ## Coverage Gaps
 

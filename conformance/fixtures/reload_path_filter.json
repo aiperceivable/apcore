@@ -1,0 +1,72 @@
+{
+  "description": "Granular reload via path_filter glob input on system.control.reload_module. path_filter and module_id are mutually exclusive (MODULE_RELOAD_CONFLICT). path_filter that matches zero modules is a no-op. Reload order MUST follow dependency topological order. See docs/features/system-modules.md#14-granular-reload-via-path-filtering.",
+  "test_cases": [
+    {
+      "id": "glob_filter_restricts_rediscovery",
+      "registered_modules": [
+        "executor.email.send",
+        "executor.email.verify",
+        "executor.math.add",
+        "executor.math.multiply",
+        "analytics.reports.daily"
+      ],
+      "input": {
+        "path_filter": "executor.email.*",
+        "reason": "deploy email service"
+      },
+      "expected": {
+        "success": true,
+        "reloaded_modules_set": ["executor.email.send", "executor.email.verify"],
+        "_note": "Only matching IDs are re-discovered and reloaded."
+      }
+    },
+    {
+      "id": "no_filter_uses_module_id_for_single_reload",
+      "registered_modules": [
+        "executor.email.send",
+        "executor.email.verify"
+      ],
+      "input": {
+        "module_id": "executor.email.send",
+        "reason": "hotfix"
+      },
+      "expected": {
+        "success": true,
+        "reloaded_modules_set": ["executor.email.send"],
+        "_note": "Existing module_id-based single reload is unchanged when path_filter is absent."
+      }
+    },
+    {
+      "id": "no_match_filter_is_no_op",
+      "registered_modules": [
+        "executor.email.send",
+        "executor.math.add"
+      ],
+      "input": {
+        "path_filter": "analytics.*",
+        "reason": "no analytics modules registered yet"
+      },
+      "expected": {
+        "success": true,
+        "reloaded_modules_set": [],
+        "error": null,
+        "_note": "Zero matches MUST NOT raise; reloaded_modules is empty."
+      }
+    },
+    {
+      "id": "module_id_and_path_filter_conflict",
+      "registered_modules": [
+        "executor.email.send"
+      ],
+      "input": {
+        "module_id": "executor.email.send",
+        "path_filter": "executor.*",
+        "reason": "ambiguous request"
+      },
+      "expected": {
+        "error_code": "MODULE_RELOAD_CONFLICT",
+        "_note": "Providing both module_id and path_filter MUST raise MODULE_RELOAD_CONFLICT."
+      }
+    }
+  ]
+}

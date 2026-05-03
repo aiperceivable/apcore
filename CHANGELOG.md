@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Added
+
+- Granular reload via `path_filter` input in `ReloadModule` across all 3 SDKs (#45.4).
+- Rust `Config::reload_from_disk()` for refreshing static config without binary restart (#45.5).
+- Error fingerprinting in `ErrorHistory` across all 3 SDKs — dedup by (error_code, top-frame hash, sanitized message template) instead of exact message (#43 §4).
+- Configurable redaction via `obs.redaction.regex_patterns` and `obs.redaction.sensitive_keys` Config keys (#43 §5).
+
+### Changed
+
+- Python `start_reaper` now uses `(ttl_seconds, sweep_interval_ms)` and returns `ReaperHandle` matching TS+Rust; old kwargs aliased with DeprecationWarning (D-11).
+
+### Fixed
+
+- Async `on_error` middleware in Python+TS now detects awaitable/thenable RETURN values rather than inspecting function shape, fixing silent Promise leaks for `partial`-wrapped handlers (#42).
+
+---
+
 ## [v0.20.0]
 
 ### Added

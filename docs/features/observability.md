@@ -978,3 +978,246 @@ annotations:
 - thread_safe: true
 - pure: false (reads from live collector state)
 - idempotent: true
+
+---
+
+## Error fingerprinting
+
+`ErrorHistory` deduplicates structurally similar errors using a content-addressable fingerprint. The fingerprint replaces the legacy `(code, message)` tuple key (which over-counted any message containing a UUID, timestamp, or numeric ID) and is shared across all three SDKs.
+
+**Fingerprint composition:**
+
+```
+fingerprint = SHA-256(
+    error_code + ":" +
+    top_frame_hash + ":" +
+    sanitized_message_template
+)
+```
+
+| Component | Source | Purpose |
+|-----------|--------|---------|
+| `error_code` | `ModuleError.code` (e.g., `DB_TIMEOUT`) | Primary discriminator |
+| `top_frame_hash` | SHA-1 of the top non-framework frame `(file, function, line)` from the traceback | Distinguishes same-code-different-call-site errors |
+| `sanitized_message_template` | Output of the message normalizer (UUIDs → `<UUID>`, ISO timestamps → `<TIMESTAMP>`, integers ≥ 4 digits → `<ID>`, lowercase, trimmed) | Collapses ephemeral values so repeated errors hash identically |
+
+**Behavior:**
+
+- Two errors that differ only in UUID values, timestamps, or numeric IDs collapse into a single entry (count is incremented, `last_seen_at` is updated).
+- Two errors with the same `error_code` raised from different call sites produce **distinct** fingerprints because `top_frame_hash` differs.
+- Two errors with **different** `error_code` values never collapse, even if message text is identical after normalization.
+
+The full normalization algorithm and per-SDK reference implementation is documented in [§1.4 Error Fingerprinting for Deduplication](#14-error-fingerprinting-for-deduplication). The `top_frame_hash` field is an implementation refinement layered on top of the §1.4 contract — it is the second positional component in the SHA-256 input. SDKs that cannot cheaply extract a top-frame (e.g., environments without traceback support) MUST substitute `module_id` and document the substitution; see PROTOCOL_SPEC §10 for the interop note.
+
+=== "Python"
+    ```python
+    import hashlib
+    import re
+    import traceback
+
+    def top_frame_hash(exc: BaseException) -> str:
+        tb = traceback.extract_tb(exc.__traceback__)
+        # Walk from innermost frame; skip apcore framework frames.
+        for frame in reversed(tb):
+            if "/apcore/" not in frame.filename and "site-packages/apcore" not in frame.filename:
+                key = f"{frame.filename}:{frame.name}:{frame.lineno}"
+                return hashlib.sha1(key.encode("utf-8")).hexdigest()[:16]
+        return "unknown"
+
+    def sanitized_template(msg: str) -> str:
+        msg = re.sub(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", "<UUID>", msg, flags=re.IGNORECASE)
+        msg = re.sub(r"\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})?)?", "<TIMESTAMP>", msg)
+        msg = re.sub(r"\b\d{4,}\b", "<ID>", msg)
+        return msg.strip().lower()
+
+    def fingerprint(error_code: str, exc: BaseException, msg: str) -> str:
+        raw = f"{error_code}:{top_frame_hash(exc)}:{sanitized_template(msg)}"
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+    ```
+=== "TypeScript"
+    ```typescript
+    import { createHash } from "crypto";
+
+    function topFrameHash(stack: string | undefined): string {
+        if (!stack) return "unknown";
+        for (const line of stack.split("\n")) {
+            if (line.includes("/apcore/") || line.includes("node_modules/apcore-js")) continue;
+            const m = line.match(/at\s+(.+?)\s+\((.+?):(\d+):\d+\)/);
+            if (m) {
+                const key = `${m[2]}:${m[1]}:${m[3]}`;
+                return createHash("sha1").update(key, "utf8").digest("hex").slice(0, 16);
+            }
+        }
+        return "unknown";
+    }
+
+    function sanitizedTemplate(msg: string): string {
+        msg = msg.replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi, "<UUID>");
+        msg = msg.replace(/\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})?)?/g, "<TIMESTAMP>");
+        msg = msg.replace(/\b\d{4,}\b/g, "<ID>");
+        return msg.trim().toLowerCase();
+    }
+
+    export function fingerprint(errorCode: string, err: Error, msg: string): string {
+        const raw = `${errorCode}:${topFrameHash(err.stack)}:${sanitizedTemplate(msg)}`;
+        return createHash("sha256").update(raw, "utf8").digest("hex");
+    }
+    ```
+=== "Rust"
+    ```rust
+    use sha1::{Sha1, Digest as Sha1Digest};
+    use sha2::Sha256;
+    use regex::Regex;
+
+    fn top_frame_hash(bt: &std::backtrace::Backtrace) -> String {
+        // Walk frames; skip apcore::* crates, return SHA-1 of (file:fn:line) for first
+        // user frame. Falls back to "unknown" if the runtime omits backtraces.
+        let s = format!("{bt}");
+        for line in s.lines() {
+            if line.contains("apcore::") || line.contains("apcore_") { continue; }
+            let mut h = Sha1::new();
+            h.update(line.as_bytes());
+            return format!("{:x}", h.finalize())[..16].to_string();
+        }
+        "unknown".into()
+    }
+
+    fn sanitized_template(msg: &str) -> String {
+        let uuid = Regex::new(r"(?i)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}").unwrap();
+        let ts = Regex::new(r"\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})?)?").unwrap();
+        let id = Regex::new(r"\b\d{4,}\b").unwrap();
+        let msg = uuid.replace_all(msg, "<UUID>");
+        let msg = ts.replace_all(&msg, "<TIMESTAMP>");
+        let msg = id.replace_all(&msg, "<ID>");
+        msg.trim().to_lowercase()
+    }
+
+    pub fn fingerprint(error_code: &str, bt: &std::backtrace::Backtrace, msg: &str) -> String {
+        use sha2::Digest;
+        let raw = format!("{}:{}:{}", error_code, top_frame_hash(bt), sanitized_template(msg));
+        let mut h = Sha256::new();
+        h.update(raw.as_bytes());
+        format!("{:x}", h.finalize())
+    }
+    ```
+
+---
+
+## Redaction configuration
+
+`ContextLogger`'s legacy redaction triggered only on the `_secret_` key prefix. This was hardcoded, undiscoverable, and required application code to opt fields into redaction by renaming. The `obs.redaction.*` config keys replace it with declarative, schema-free rules that an SRE can adjust without touching application code.
+
+**Config keys (all under `obs.redaction.*`):**
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `obs.redaction.regex_patterns` | list[regex] | `[]` | Regex patterns matched against field **values**. Any value that fully matches one of the patterns is replaced with `replacement`. |
+| `obs.redaction.sensitive_keys` | list[string] | see below | Substring patterns matched (case-insensitive) against field **names** in `extra` dicts and module input/output. Matching fields are redacted. |
+| `obs.redaction.replacement` | string | `"***REDACTED***"` | Substituted token used in place of redacted values. |
+
+**Default `obs.redaction.sensitive_keys`** (SHOULD be applied unless explicitly overridden):
+
+```yaml
+sensitive_keys:
+  - password
+  - passwd
+  - secret
+  - token
+  - api_key
+  - apikey
+  - access_key
+  - private_key
+  - authorization
+  - auth
+  - credential
+  - cookie
+  - session
+  - bearer
+```
+
+**Normative rules:**
+
+- Implementations MUST replace the previous `_secret_`-prefix logic with `obs.redaction.sensitive_keys` matching. The `_secret_` prefix MAY remain as a SHOULD-redact token for backward compatibility but is deprecated.
+- Redaction MUST apply both at log emission (in `ContextLogger`) and at the executor's input/output capture point.
+- Redaction MUST be applied as the **union** of: (a) `x-sensitive` schema annotations, (b) `obs.redaction.sensitive_keys` substring matches, and (c) `obs.redaction.regex_patterns` value matches.
+- Implementations MUST NOT redact `trace_id`, `caller_id`, `module_id`, or `span_id`; these correlation fields MUST appear unmodified in every log entry.
+- The match against `sensitive_keys` MUST be case-insensitive substring (so `"X-API-Key"` matches `api_key`).
+
+#### YAML configuration
+
+```yaml
+obs:
+  redaction:
+    regex_patterns:
+      - "^Bearer\\s+[A-Za-z0-9._\\-]+$"
+      - "^sk-[A-Za-z0-9]{20,}$"
+      - "^[0-9]{12,19}$"          # naive PAN
+    sensitive_keys:
+      - password
+      - secret
+      - token
+      - api_key
+      - authorization
+      - cookie
+    replacement: "***REDACTED***"
+```
+
+=== "Python"
+    ```python
+    from apcore import APCore
+    from apcore.config import Config
+    from apcore.observability import RedactionConfig, ObsLoggingMiddleware
+
+    config = Config.load("apcore.yaml")  # reads obs.redaction.* keys
+    client = APCore(config=config)
+
+    # Or build programmatically:
+    redaction = RedactionConfig.from_config(config)
+    # redaction.regex_patterns == [...]
+    # redaction.sensitive_keys == ["password", "secret", "token", ...]
+    # redaction.replacement == "***REDACTED***"
+
+    logging_mw = ObsLoggingMiddleware(redaction_config=redaction, log_inputs=True, log_outputs=True)
+    client.use(logging_mw)
+    ```
+=== "TypeScript"
+    ```typescript
+    import { APCore, Config } from "apcore-js";
+    import { RedactionConfig, ObsLoggingMiddleware } from "apcore-js/observability";
+
+    const config = Config.load("apcore.yaml");  // reads obs.redaction.* keys
+    const client = new APCore({ config });
+
+    // Or build programmatically:
+    const redaction = RedactionConfig.fromConfig(config);
+    // redaction.regexPatterns === [...]
+    // redaction.sensitiveKeys === ["password", "secret", "token", ...]
+    // redaction.replacement === "***REDACTED***"
+
+    const loggingMw = new ObsLoggingMiddleware({
+        redactionConfig: redaction,
+        logInputs: true,
+        logOutputs: true,
+    });
+    client.use(loggingMw);
+    ```
+=== "Rust"
+    ```rust
+    use apcore::APCore;
+    use apcore::config::Config;
+    use apcore::observability::{RedactionConfig, ObsLoggingMiddleware};
+
+    let config = Config::from_path("apcore.yaml")?;  // reads obs.redaction.* keys
+    let mut client = APCore::new(config.clone())?;
+
+    // Or build programmatically:
+    let redaction = RedactionConfig::from_config(&config);
+    // redaction.regex_patterns == vec![...]
+    // redaction.sensitive_keys == vec!["password", "secret", "token", ...]
+    // redaction.replacement == "***REDACTED***"
+
+    let logging_mw = ObsLoggingMiddleware::new(true, true).with_redaction_config(redaction);
+    client.use_middleware(Box::new(logging_mw));
+    ```
+
+The `obs.redaction.*` config schema supersedes the §1.5 `RedactionConfig` constructor arguments at the YAML level: §1.5 documents the in-code object; this section documents how operators provision it from `apcore.yaml`.

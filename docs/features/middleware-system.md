@@ -453,3 +453,123 @@ Incorrect async detection causes middleware to be invoked synchronously when it 
 - thread_safe: true
 - pure: true
 - idempotent: true
+
+---
+
+## Async middleware correctness
+
+The `iscoroutinefunction`-style detection in §1.5 is **necessary but not sufficient**. Higher-order wrappers like Python's `functools.partial`, JavaScript closures returned from factories, or class methods rebound onto instances are not literally `async def` / `async function`, yet they MAY return a coroutine / Promise when invoked. Function-shape inspection misses these cases and silently drops the awaited result.
+
+To preserve correctness across all wrapper styles, middleware managers MUST detect awaitability on the **return value** of each `before` / `after` / `on_error` invocation, not on the function shape alone.
+
+### Normative rules
+
+- Implementations MUST inspect each handler's RETURN value: if the returned object is awaitable (Python: `inspect.isawaitable(value)`) or a thenable (TypeScript: object with a callable `.then` method) or a future (Rust: a `Future` resolved by the runtime), the middleware manager MUST `await` it before proceeding to the next phase.
+- Implementations MUST NOT rely solely on `iscoroutinefunction` / `handler.constructor.name === 'AsyncFunction'` as the gating check. These checks SHOULD remain as a fast-path optimization but MUST be supplemented by return-value detection.
+- The function-shape check from §1.5 is RETAINED as guidance for the warning case (e.g., `async def` declared but never awaited at the call site), but the **authoritative** decision MUST use the actual return value.
+- Synchronous middleware (return value is a plain `dict` / `null` / `()`) MUST NOT be awaited; the manager MUST forward the value as-is.
+
+### Rationale
+
+```python
+import functools
+
+async def _audit(module_id, inputs, ctx, *, source):
+    print(f"[{source}] {module_id}")
+    return None
+
+# This is NOT a coroutine function — iscoroutinefunction returns False.
+# But calling it returns a coroutine. Old detection silently swallows it.
+audit = functools.partial(_audit, source="api")
+
+client.use_before(audit)
+```
+
+The same pattern occurs in TypeScript when a factory returns an arrow function whose body is `async` (the wrapper is sync, the body is async), or when a class method is wrapped in a decorator that re-binds `this`.
+
+=== "Python"
+    ```python
+    import asyncio
+    import functools
+    import inspect
+    from typing import Any, Callable
+
+    async def invoke_handler(handler: Callable[..., Any], *args: Any) -> Any:
+        # Fast path: known async function. Optimization, not the gate.
+        result = handler(*args)
+        # Authoritative check: did we get an awaitable back?
+        if inspect.isawaitable(result):
+            return await result
+        return result
+
+    # Works for: async def, functools.partial(async_fn, ...),
+    # decorated methods, lambda returning a coroutine, etc.
+    async def main():
+        async def audit(module_id, inputs, ctx, *, source):
+            return None
+
+        wrapped = functools.partial(audit, source="api")
+        await invoke_handler(wrapped, "math.add", {"a": 1}, None)
+    ```
+=== "TypeScript"
+    ```typescript
+    type Handler = (...args: unknown[]) => unknown;
+
+    function isThenable(v: unknown): v is PromiseLike<unknown> {
+        return (
+            typeof v === "object" &&
+            v !== null &&
+            typeof (v as { then?: unknown }).then === "function"
+        );
+    }
+
+    async function invokeHandler(handler: Handler, ...args: unknown[]): Promise<unknown> {
+        // Authoritative check: inspect the RETURN value, not handler.constructor.name.
+        const result = handler(...args);
+        if (isThenable(result)) {
+            return await result;
+        }
+        return result;
+    }
+
+    // Works for: async function, () => somePromise, partial(asyncFn, ...),
+    // decorated class methods rebound via .bind(this), etc.
+    const wrapped = (...args: unknown[]) => audit("api", ...args);
+    await invokeHandler(wrapped, "math.add", { a: 1 }, null);
+    ```
+=== "Rust"
+    ```rust
+    // Rust handles this statically: every Middleware trait method returns
+    // `impl Future` via #[async_trait]. The compiler ENFORCES that callers
+    // .await the result; there is no runtime "shape" detection and no way
+    // to silently drop a Future. The async-correctness bug class is impossible.
+    //
+    // Higher-order wrappers (closures, partials, decorators) preserve the
+    // Future signature through the trait bound, so they remain awaitable
+    // by construction.
+
+    use async_trait::async_trait;
+    use apcore::middleware::Middleware;
+    use apcore::context::Context;
+    use apcore::errors::ModuleError;
+    use serde_json::Value;
+
+    struct Audit;
+
+    #[async_trait]
+    impl Middleware for Audit {
+        async fn before(
+            &self,
+            module_id: &str,
+            _inputs: &Value,
+            _ctx: &Context<Value>,
+        ) -> Result<Option<Value>, ModuleError> {
+            println!("[audit] {module_id}");
+            Ok(None)
+        }
+    }
+    ```
+
+### Migration note
+
+Implementations that previously gated awaiting on `iscoroutinefunction` / `handler.constructor.name === 'AsyncFunction'` MUST switch to return-value inspection. The fix is backward-compatible: synchronous handlers that return non-awaitable values are unaffected; awaitable returns from non-async-declared functions are now correctly awaited instead of leaked.

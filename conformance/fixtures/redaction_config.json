@@ -1,0 +1,121 @@
+{
+  "description": "Redaction configuration via obs.redaction.regex_patterns and obs.redaction.sensitive_keys. Replaces the legacy hardcoded _secret_ key prefix. Matching MUST be case-insensitive substring for sensitive_keys, full regex match for regex_patterns. Default sensitive_keys list MUST cover common credential terms. trace_id, caller_id, target_id, module_id, and span_id MUST NEVER be redacted. See docs/features/observability.md#redaction-configuration.",
+  "test_cases": [
+    {
+      "id": "regex_pattern_value_match",
+      "redaction_config": {
+        "regex_patterns": ["^Bearer\\s+[A-Za-z0-9._\\-]+$", "^sk-[A-Za-z0-9]{20,}$"],
+        "sensitive_keys": [],
+        "replacement": "***REDACTED***"
+      },
+      "input": {
+        "auth_header": "Bearer abc.def.ghi-123",
+        "openai_key": "sk-1234567890abcdefghij1234567890",
+        "trace_id": "00000000000000000000000000000001",
+        "user_id": "alice",
+        "amount": 42
+      },
+      "expected": {
+        "auth_header": "***REDACTED***",
+        "openai_key": "***REDACTED***",
+        "trace_id": "00000000000000000000000000000001",
+        "user_id": "alice",
+        "amount": 42
+      }
+    },
+    {
+      "id": "sensitive_keys_substring_case_insensitive",
+      "redaction_config": {
+        "regex_patterns": [],
+        "sensitive_keys": ["password", "token", "api_key"],
+        "replacement": "***REDACTED***"
+      },
+      "input": {
+        "Password": "hunter2",
+        "X-API-KEY": "abc123",
+        "refresh_token": "rt_abc",
+        "session_token_id": "st_456",
+        "username": "alice",
+        "caller_id": "executor.test"
+      },
+      "expected": {
+        "Password": "***REDACTED***",
+        "X-API-KEY": "***REDACTED***",
+        "refresh_token": "***REDACTED***",
+        "session_token_id": "***REDACTED***",
+        "username": "alice",
+        "caller_id": "executor.test"
+      }
+    },
+    {
+      "id": "default_sensitive_keys_cover_common_terms",
+      "redaction_config": {
+        "use_defaults": true,
+        "regex_patterns": [],
+        "sensitive_keys": null,
+        "replacement": "***REDACTED***"
+      },
+      "input": {
+        "password": "p1",
+        "passwd": "p2",
+        "secret": "s1",
+        "token": "t1",
+        "api_key": "k1",
+        "apikey": "k2",
+        "access_key": "k3",
+        "private_key": "k4",
+        "authorization": "a1",
+        "auth": "a2",
+        "credential": "c1",
+        "cookie": "c2",
+        "session": "s2",
+        "bearer": "b1",
+        "username": "alice",
+        "email": "alice@example.com"
+      },
+      "expected": {
+        "password": "***REDACTED***",
+        "passwd": "***REDACTED***",
+        "secret": "***REDACTED***",
+        "token": "***REDACTED***",
+        "api_key": "***REDACTED***",
+        "apikey": "***REDACTED***",
+        "access_key": "***REDACTED***",
+        "private_key": "***REDACTED***",
+        "authorization": "***REDACTED***",
+        "auth": "***REDACTED***",
+        "credential": "***REDACTED***",
+        "cookie": "***REDACTED***",
+        "session": "***REDACTED***",
+        "bearer": "***REDACTED***",
+        "username": "alice",
+        "email": "alice@example.com"
+      }
+    },
+    {
+      "id": "correlation_fields_never_redacted",
+      "redaction_config": {
+        "regex_patterns": [".*"],
+        "sensitive_keys": ["trace_id", "caller_id", "target_id", "module_id", "span_id"],
+        "replacement": "***REDACTED***"
+      },
+      "input": {
+        "trace_id": "00000000000000000000000000000001",
+        "caller_id": "executor.test.caller",
+        "target_id": "executor.test.target",
+        "module_id": "executor.test.module",
+        "span_id": "0000000000000001",
+        "other_field": "redact_me"
+      },
+      "expected": {
+        "trace_id": "00000000000000000000000000000001",
+        "caller_id": "executor.test.caller",
+        "target_id": "executor.test.target",
+        "module_id": "executor.test.module",
+        "span_id": "0000000000000001",
+        "other_field": "***REDACTED***",
+        "_note": "Even when patterns/keys would match, correlation fields MUST appear unmodified."
+      }
+    }
+  ]
+}
