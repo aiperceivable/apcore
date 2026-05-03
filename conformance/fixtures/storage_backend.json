@@ -1,0 +1,80 @@
+{
+  "description": "StorageBackend cross-SDK conformance: pluggable storage primitive shared by ErrorHistory, UsageCollector, and MetricsCollector. Verifies the four-method contract (save, get, list, delete), namespace isolation, and idempotent delete (Issue #43, D-39).",
+  "test_cases": [
+    {
+      "id": "save_and_get_roundtrip",
+      "description": "A value written via save() under a (namespace, key) tuple is returned verbatim by a subsequent get() call against the same tuple.",
+      "input": {
+        "operations": [
+          {"op": "save", "namespace": "errors", "key": "executor.email.send", "value": "ENT-1"},
+          {"op": "get", "namespace": "errors", "key": "executor.email.send"}
+        ]
+      },
+      "expected": {
+        "final_get_value": "ENT-1"
+      }
+    },
+    {
+      "id": "list_with_prefix",
+      "description": "list() with a prefix returns only entries whose keys start with that prefix, in any order; without prefix it returns the full namespace.",
+      "input": {
+        "operations": [
+          {"op": "save", "namespace": "metrics", "key": "apcore_module_calls_total", "value": "1"},
+          {"op": "save", "namespace": "metrics", "key": "apcore_module_errors_total", "value": "2"},
+          {"op": "save", "namespace": "metrics", "key": "apcore_usage_calls_total", "value": "3"},
+          {"op": "list", "namespace": "metrics", "prefix": "apcore_module_"}
+        ]
+      },
+      "expected": {
+        "matched_keys_sorted": ["apcore_module_calls_total", "apcore_module_errors_total"]
+      }
+    },
+    {
+      "id": "delete_idempotent",
+      "description": "delete() against an absent key is a no-op (no error). After deletion, subsequent get() returns null/None.",
+      "input": {
+        "operations": [
+          {"op": "delete", "namespace": "errors", "key": "never_existed"},
+          {"op": "save", "namespace": "errors", "key": "tmp", "value": "x"},
+          {"op": "delete", "namespace": "errors", "key": "tmp"},
+          {"op": "delete", "namespace": "errors", "key": "tmp"},
+          {"op": "get", "namespace": "errors", "key": "tmp"}
+        ]
+      },
+      "expected": {
+        "raised_error": false,
+        "final_get_value": null
+      }
+    },
+    {
+      "id": "namespace_isolation",
+      "description": "Entries written under namespace 'errors' MUST NOT be visible from namespace 'metrics'. The same key string under different namespaces denotes distinct records.",
+      "input": {
+        "operations": [
+          {"op": "save", "namespace": "errors", "key": "alpha", "value": "from-errors"},
+          {"op": "save", "namespace": "metrics", "key": "alpha", "value": "from-metrics"},
+          {"op": "get", "namespace": "errors", "key": "alpha"},
+          {"op": "get", "namespace": "metrics", "key": "alpha"}
+        ]
+      },
+      "expected": {
+        "errors_namespace_value": "from-errors",
+        "metrics_namespace_value": "from-metrics"
+      }
+    },
+    {
+      "id": "save_overwrites_existing",
+      "description": "Calling save() on an existing (namespace, key) MUST overwrite the previous value; get() returns the most recent write.",
+      "input": {
+        "operations": [
+          {"op": "save", "namespace": "errors", "key": "k1", "value": "v1"},
+          {"op": "save", "namespace": "errors", "key": "k1", "value": "v2"},
+          {"op": "get", "namespace": "errors", "key": "k1"}
+        ]
+      },
+      "expected": {
+        "final_get_value": "v2"
+      }
+    }
+  ]
+}

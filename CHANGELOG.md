@@ -22,6 +22,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Pipeline `StepMiddleware` extension point in all 3 SDKs (#33). Lifecycle-shaped API (`before_step` / `after_step` / `on_step_error`) mirroring module-level `Middleware` — onion ordering, first-recovery-wins on errors, async support across Python/TypeScript/Rust. Documented in `docs/features/middleware-system.md` "Pipeline Step Middleware (Issue #33)" with three contract blocks. Conformance: `conformance/fixtures/pipeline_step_middleware.json` (6 cases).
 - Python `BatchSpanProcessor` for non-blocking span export (#43, parity with TS+Rust). Cross-SDK parity contract — identical default tunables (`max_queue_size=2048`, `max_export_batch_size=512`, `schedule_delay_ms=5000`, `export_timeout_ms=30000`), identical `on_end` / `force_flush` / `shutdown` lifecycle, identical drop-on-full-queue semantics. Documented in `docs/features/observability.md` "Batch span processing" section.
 - `docs/spec/2026-05-decision-log.md` — D-36 (Pipeline StepMiddleware), D-37 (Pipeline configuration fail-fast), D-38 (BatchSpanProcessor cross-SDK parity), all resolved.
+- `StorageBackend` trait/interface in all 3 SDKs with `InMemoryStorageBackend` default; `ErrorHistory`, `UsageCollector`, `MetricsCollector` accept injected backend (#43).
+- `OverridesStore` and `FileOverridesStore` in TypeScript SDK (parity with Python+Rust) (#45.1).
+- `Registry.discover_multi_class` / `Registry.discoverMultiClass` method in Python+TS (D-15).
+- **`docs/features/observability.md` — `## Pluggable storage backends` and `## ErrorHistory eviction performance` subsections** documenting the cross-SDK `StorageBackend` surface, `InMemoryStorageBackend` default, out-of-tree policy for Redis/Postgres/S3, and the lazy-deletion semantics of the O(log N) min-heap eviction.
+- **`docs/features/system-modules.md` — `## Persistent Overrides — pluggable OverridesStore`** subsection covering `OverridesStore` parity across all 3 SDKs, with cross-language `FileOverridesStore` wiring during APCore construction and the missing-path-on-first-run guarantee.
+- **`docs/features/multi-module-discovery.md`** — Updated `Registry.discover_multi_class` Contract block to explicitly document that all 3 SDKs expose the discovery routine as a method on `Registry`; added a per-SDK method/internal-helper mapping table and cross-language usage examples (D-15).
+- **`docs/features/async-tasks.md`** — Notes documenting the Python `TaskStore.put → save` rename + deprecation alias (D-10), the Python `TaskInfo.attempt_number → retry_count` rename + deprecation property (D-13), removal of Python's `TaskStatus.RETRYING` (D-12), and the Rust `RetryConfig::default().max_retries: 3 → 0` alignment (D-14).
+- **`docs/spec/2026-05-decision-log.md` — `## Resolution status — 2026-05-03 addendum`** marking D-10, D-12, D-13, D-14, D-15, D-19, D-25, D-27, and D-28 resolved; added new entries `## D-39 — StorageBackend cross-SDK abstraction` (resolved) and `## D-40 — TS overrides persistence parity` (resolved).
+- **`conformance/fixtures/storage_backend.json`** — 5 cross-language test cases covering `StorageBackend` save+get round-trip, list-with-prefix filtering, idempotent delete, namespace isolation, and save-overwrites semantics.
+- **`conformance/fixtures/overrides_store.json`** — 5 cross-language test cases covering `OverridesStore`: save persists across reopen, startup applies overrides after base config, in-memory store for tests, missing path on first run is OK, delete idempotency.
 
 ### Changed
 
@@ -32,6 +42,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Event names normalized to `apcore.<subsystem>.<event>` form (#36). Legacy names dual-emitted; removal target v0.22.0.
 - Control-plane modules (`update_config`, `toggle_feature`, `reload`) now include `caller_id` + `identity` in audit events (#45.2).
 - Pipeline configuration is now fail-fast: missing step references and unmet `requires`/`provides` raise errors instead of logging warnings (#33). `ConfigurationError` is raised at YAML parse time for unknown step names in `pipeline.configure[]` and `pipeline.step_middleware[]`. `PipelineDependencyError` is raised at strategy construction time for unsatisfied capability declarations. Documented in `docs/features/middleware-system.md` "Configuration safety" subsection. Conformance: `conformance/fixtures/pipeline_failfast_config.json` (4 cases).
+- `ErrorHistory` eviction is now O(log N) via a min-heap (#43).
+- Python `TaskStore.put` → `save` (deprecated alias retained); `TaskInfo.attempt_number` → `retry_count` (deprecated alias retained); `TaskStatus.RETRYING` removed (D-10, D-12, D-13).
+- Rust `RetryConfig::default().max_retries` is now `0` (was `3`) (D-14).
+- Rust streaming chunk merge raises `STREAM_CHUNK_NOT_OBJECT` for non-object chunks (D-19).
+- Rust `update_config` raises `CONFIG_KEY_RESTRICTED` for restricted keys (D-25).
+- Rust `UsageCollector` now computes trend from samples and supports period filter (D-27).
+- Rust `ContextLogger` output schema aligned with Python+TS (lowercase level, nested `extra`, `module_id`) (D-28).
 
 ### Fixed
 

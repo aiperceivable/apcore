@@ -717,3 +717,51 @@ the same fixture file.
    - Rust D-14, D-19, D-27, D-28 (RetryConfig default, chunk shape, UsageCollector parity, ContextLogger schema)
 3. Multi-SDK fixes (D-03 ApprovalRequest fields, D-15 discover_multi_class method, D-24 update_config rollback) batched into a v0.21.0 release.
 4. Epic D-21/D-22 (Extension Arc migration) — RFC scheduled for 2026-05-18 (routine `trig_01DCE8sCcBxm9qRxZiMvUgQo`), target v0.22.0.
+
+---
+
+## Resolution status — 2026-05-03 addendum
+
+Status updates landed since the original 2026-05-02 sync:
+
+- **D-10** — resolved. Python `TaskStore.put` renamed to `save`; deprecated `put` alias retained for one minor version. `list_expired(before_timestamp)` added to Python `TaskStore` and `InMemoryTaskStore`. TS+Rust were already aligned.
+- **D-12** — resolved. Python `TaskStatus.RETRYING` removed from the public enum; backoff-window tasks remain in `PENDING` with `retry_count > 0`, matching TypeScript and Rust.
+- **D-13** — resolved. Python `TaskInfo.attempt_number` renamed to `retry_count`; `attempt_number` retained as a deprecated read-only `@property` alias.
+- **D-14** — resolved. Rust `RetryConfig::default()` now returns `max_retries = 0`, matching Python+TS and the spec. Existing callers must opt in to retries explicitly.
+- **D-15** — resolved. Python and TypeScript both expose `Registry.discover_multi_class` / `Registry.discoverMultiClass` as methods. The free-function form is retained as an internal helper. Rust's split (`Registry::register_multi_class` + `derive_module_ids`) remains; the spec contract is satisfied by the method form in all 3 SDKs (Rust's `discover_multi_class` method wraps `register_multi_class`).
+- **D-19** — resolved. Rust streaming chunk merge raises `STREAM_CHUNK_NOT_OBJECT` for non-object chunks before invoking `deep_merge_value`, aligning with Python+TS shape requirements.
+- **D-25** — resolved. `update_config` raises `CONFIG_KEY_RESTRICTED` for restricted keys in Rust (and TS — TS half landed as part of the round). Python was already aligned.
+- **D-27** — resolved. Rust `UsageCollector` now computes trend from samples (replacing the hardcoded `"stable"`), accepts an optional `timestamp` on `record()`, and supports `period` filtering on `get_summary()`.
+- **D-28** — resolved. Rust `ContextLogger` output schema aligned with Python+TS: lowercase `level`, nested `extra` key wrapper, `module_id` field name (was `module`), `inputs` field in middleware extras (was `input`).
+
+The remaining open items (D-04 TS snake_case rename, D-21/D-22 ExtensionManager Arc migration, D-32 TS pipeline-stage refactor) retain the recommendations and ownership noted in the original entries.
+
+---
+
+## D-39 — StorageBackend cross-SDK abstraction
+
+**Status quo (resolved)**
+
+Prior to this round the persistence surface for `ErrorHistory`, `UsageCollector`, and `MetricsCollector` was per-collector and inconsistent across SDKs. Issue #43 §1.1 introduced the higher-level `ObservabilityStore`; this decision adds the shared lower-level primitive that all three collectors plug into.
+
+**Decision**
+
+All three SDKs ship a `StorageBackend` trait/interface/protocol (4 methods: `save`, `get`, `list`, `delete`) and an `InMemoryStorageBackend` default implementation. `ErrorHistory`, `UsageCollector`, and `MetricsCollector` accept an optional injected backend at construction time; when omitted, `InMemoryStorageBackend` is used.
+
+apcore SDKs do **not** ship Redis, Postgres, or S3 backends — those are explicitly out-of-tree. Users implement `StorageBackend` against their preferred client library.
+
+**Status**: **resolved**. See [`docs/features/observability.md` § Pluggable storage backends](../features/observability.md#pluggable-storage-backends) and `conformance/fixtures/storage_backend.json`.
+
+---
+
+## D-40 — TS overrides persistence parity
+
+**Status quo (resolved)**
+
+Issue #45 §1.1 introduced the `overrides_path` / `OverridesStore` mechanism for `system.control.update_config` and `system.control.toggle_feature`. Python and Rust shipped file-backed persistence in v0.20; TypeScript was the outlier with in-memory-only behavior, breaking cross-SDK parity for runtime control.
+
+**Decision**
+
+TypeScript SDK adds `OverridesStore` interface, `FileOverridesStore` (YAML-backed at the configured path), and `InMemoryOverridesStore` (for tests). The startup path applies `overrides_store.get_all()` on top of base config in all 3 SDKs. Missing override path on first run is treated as an empty store (no error) — the file is created lazily on the first save.
+
+**Status**: **resolved**. See [`docs/features/system-modules.md` § Persistent Overrides](../features/system-modules.md#persistent-overrides-pluggable-overridesstore) and `conformance/fixtures/overrides_store.json`.

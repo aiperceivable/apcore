@@ -19,15 +19,22 @@ The Async Task Management system provides background module execution with concu
 
 ### TaskStatus
 
+The lifecycle is exactly **5 states**, identical across all three SDKs:
+
 | Status | Terminal | Description |
 |--------|----------|-------------|
-| `pending` | No | Submitted, waiting for a concurrency slot |
-| `running` | No | Concurrency slot acquired, module executing |
-| `completed` | Yes | Module returned successfully |
-| `failed` | Yes | Module raised an error |
-| `cancelled` | Yes | Task was cancelled before or during execution |
+| `PENDING` | No | Submitted, waiting for a concurrency slot, or waiting in retry backoff |
+| `RUNNING` | No | Concurrency slot acquired, module executing |
+| `COMPLETED` | Yes | Module returned successfully |
+| `FAILED` | Yes | Module raised an error and retries are exhausted (or `max_retries=0`) |
+| `CANCELLED` | Yes | Task was cancelled before or during execution |
+
+!!! note "Retry backoff is `PENDING`, not a separate state"
+    Tasks awaiting their next retry attempt remain in `PENDING`. There is no `RETRYING` state. Earlier Python SDK builds (≤ v0.20) exposed a `TaskStatus.RETRYING` value; this has been removed in alignment with TypeScript and Rust. Observers that previously matched on `RETRYING` SHOULD treat `PENDING` with `retry_count > 0` as the equivalent signal.
 
 ### TaskInfo
+
+The retry-attempt count field is canonically named `retry_count` (Python, Rust) / `retryCount` (TypeScript) — value is 0-indexed and reflects the number of retries already taken. Earlier Python builds named the field `attempt_number`; that name is retained as a deprecated read-only alias that returns `retry_count`.
 
 === "Python"
     ```python
@@ -43,7 +50,14 @@ The Async Task Management system provides background module execution with concu
         started_at: float | None         # Set when status → running
         completed_at: float | None       # Set when status → terminal
         result: Any = None               # Output (completed only, type depends on module)
-        error: str | None                # Error message (failed only)
+        error: str | None = None         # Error message (failed only)
+        retry_count: int = 0             # Number of retries taken so far (0-indexed)
+        max_retries: int = 0             # Configured retry budget for this task
+
+        @property
+        def attempt_number(self) -> int:
+            # DEPRECATED — alias for retry_count, retained for one minor version
+            return self.retry_count
     ```
 === "TypeScript"
     ```typescript
@@ -56,6 +70,8 @@ The Async Task Management system provides background module execution with concu
         readonly completedAt: number | null;
         readonly result: Record<string, unknown> | null;
         readonly error: string | null;
+        readonly retryCount: number;     // 0-indexed
+        readonly maxRetries: number;
     }
     ```
 === "Rust"
@@ -69,6 +85,8 @@ The Async Task Management system provides background module execution with concu
         pub completed_at: Option<f64>,
         pub result: Option<serde_json::Value>,
         pub error: Option<String>,
+        pub retry_count: u32,            // 0-indexed
+        pub max_retries: u32,
     }
     ```
 
@@ -269,7 +287,7 @@ The `AsyncTaskManager` MUST support pluggable storage backends via a `TaskStore`
 
 **Normative rules:**
 
-- Implementations MUST define a `TaskStore` protocol/interface/trait with the following methods:
+- Implementations MUST define a `TaskStore` protocol/interface/trait with the following methods (canonical names — identical across all three SDKs):
     - `save(task_info)` — create or overwrite a task record
     - `get(task_id) → TaskInfo | None` — retrieve a task by ID
     - `list(status_filter?) → List[TaskInfo]` — list all tasks, optionally filtered by status
@@ -278,6 +296,9 @@ The `AsyncTaskManager` MUST support pluggable storage backends via a `TaskStore`
 - Implementations MUST provide `InMemoryTaskStore` as the default backend.
 - Implementations SHOULD provide `RedisTaskStore` and `SqlTaskStore` as optional backends.
 - The store MUST be injected at construction time: `AsyncTaskManager(store=InMemoryTaskStore())`.
+
+!!! note "Python `TaskStore.put` deprecation"
+    Earlier Python builds (≤ v0.20) named the create/overwrite method `put`. The canonical name across all three SDKs is now `save`. Python retains `put` as a deprecated thin wrapper that calls `save` and emits a `DeprecationWarning`. The wrapper will be removed in v0.22.
 
 **Using the default `InMemoryTaskStore` (no change from existing API):**
 
@@ -366,6 +387,9 @@ The `AsyncTaskManager` MUST support pluggable storage backends via a `TaskStore`
 - When a task fails and `max_retries > 0`, the manager MUST reschedule the task with delay calculated as: `min(retry_delay_ms * (backoff_multiplier ^ attempt), max_retry_delay_ms)`.
 - After exhausting all retries, the task status MUST be set to `FAILED` with the `error` field populated.
 - Retry count and attempt number MUST be stored in `TaskInfo` as `retry_count` (current attempt number, 0-indexed) and `max_retries`.
+
+!!! note "Rust `RetryConfig::default()` alignment"
+    Earlier Rust builds (≤ v0.20) defaulted `max_retries` to `3`, surprising callers using `..Default::default()`. The Rust default is now `max_retries = 0`, matching Python and TypeScript and the spec — retries are strictly opt-in across all three SDKs.
 
 **Default retry configuration (YAML):**
 

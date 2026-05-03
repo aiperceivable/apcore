@@ -775,6 +775,74 @@ sys_modules:
     ).await?;
     ```
 
+#### Persistent Overrides — pluggable `OverridesStore`
+
+All three SDKs ship a pluggable `OverridesStore` interface plus a `FileOverridesStore` implementation backed by `overrides_path`. This brings TypeScript to parity with the Python and Rust SDKs, which had file-backed override persistence prior to v0.20.
+
+The interface MUST expose:
+
+| Method | Behavior |
+|---|---|
+| `save(key, value)` | Persist a single override; subsequent reads MUST return the new value |
+| `get(key) → value \| None` | Return the persisted override or `None`/`null` if absent |
+| `get_all() → dict` | Snapshot of every persisted override (used at startup to apply on top of base config) |
+| `delete(key)` | Remove an override; deleting an absent key MUST be a no-op |
+
+Wiring during APCore construction:
+
+=== "Python"
+
+    ```python
+    from apcore import APCore
+    from apcore.config import Config
+    from apcore.sys_modules.overrides import FileOverridesStore, InMemoryOverridesStore
+
+    config = Config.load("apcore.yaml")
+
+    # Production: persist runtime overrides to disk
+    overrides_store = FileOverridesStore(path="/etc/apcore/overrides.yaml")
+    client = APCore(config=config, overrides_store=overrides_store)
+
+    # Tests: in-memory only, no disk side effects
+    test_client = APCore(config=config, overrides_store=InMemoryOverridesStore())
+    ```
+
+=== "TypeScript"
+
+    ```typescript
+    import { APCore, Config } from "apcore-js";
+    import { FileOverridesStore, InMemoryOverridesStore } from "apcore-js/sys-modules/overrides";
+
+    const config = Config.load("apcore.yaml");
+
+    // Production: persist runtime overrides to disk
+    const overridesStore = new FileOverridesStore({ path: "/etc/apcore/overrides.yaml" });
+    const client = new APCore({ config, overridesStore });
+
+    // Tests: in-memory only, no disk side effects
+    const testClient = new APCore({ config, overridesStore: new InMemoryOverridesStore() });
+    ```
+
+=== "Rust"
+
+    ```rust
+    use apcore::APCore;
+    use apcore::sys_modules::overrides::{FileOverridesStore, InMemoryOverridesStore, OverridesStore};
+    use std::sync::Arc;
+
+    // Production: persist runtime overrides to disk
+    let store: Arc<dyn OverridesStore> = Arc::new(FileOverridesStore::new("/etc/apcore/overrides.yaml"));
+    let client = APCore::from_path("apcore.yaml")?
+        .with_overrides_store(store);
+
+    // Tests: in-memory only, no disk side effects
+    let test_store: Arc<dyn OverridesStore> = Arc::new(InMemoryOverridesStore::new());
+    let test_client = APCore::from_path("apcore.yaml")?
+        .with_overrides_store(test_store);
+    ```
+
+`FileOverridesStore` MUST treat a missing `path` on first run as an empty store (no error) — the file is created lazily on the first `save()` call. This makes first-run, fresh-install, and ephemeral CI environments behave identically to long-lived installations.
+
 ---
 
 ### 1.2 Contextual Audit Trail
