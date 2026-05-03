@@ -777,9 +777,17 @@ sys_modules:
 
 #### Persistent Overrides — pluggable `OverridesStore`
 
-All three SDKs ship a pluggable `OverridesStore` interface plus a `FileOverridesStore` implementation backed by `overrides_path`. This brings TypeScript to parity with the Python and Rust SDKs, which had file-backed override persistence prior to v0.20.
+All three SDKs ship a pluggable `OverridesStore` abstraction plus a `FileOverridesStore` implementation backed by `overrides_path`. The abstraction is exposed in the form idiomatic to each language (decision **D-47**):
 
-The interface MUST expose:
+| SDK | Form | Public symbol |
+|-----|------|---------------|
+| Python | `typing.Protocol` (runtime-checkable) | `apcore.sys_modules.overrides.OverridesStore` |
+| TypeScript | `interface` | `OverridesStore` (exported from `apcore-js/sys-modules/overrides`) |
+| Rust | `pub trait OverridesStore: Send + Sync` | `apcore::sys_modules::overrides::OverridesStore` |
+
+`FileOverridesStore` and `InMemoryOverridesStore` are the bundled implementations; users MAY supply their own implementation (e.g. a Redis- or KMS-backed store) by satisfying the protocol/interface/trait directly.
+
+The abstraction MUST expose:
 
 | Method | Behavior |
 |---|---|
@@ -795,12 +803,16 @@ Wiring during APCore construction:
     ```python
     from apcore import APCore
     from apcore.config import Config
-    from apcore.sys_modules.overrides import FileOverridesStore, InMemoryOverridesStore
+    from apcore.sys_modules.overrides import (
+        OverridesStore,           # the Protocol — implement to plug in a custom backend
+        FileOverridesStore,       # default, YAML-backed
+        InMemoryOverridesStore,   # default, in-memory (for tests)
+    )
 
     config = Config.load("apcore.yaml")
 
     # Production: persist runtime overrides to disk
-    overrides_store = FileOverridesStore(path="/etc/apcore/overrides.yaml")
+    overrides_store: OverridesStore = FileOverridesStore(path="/etc/apcore/overrides.yaml")
     client = APCore(config=config, overrides_store=overrides_store)
 
     # Tests: in-memory only, no disk side effects
@@ -811,7 +823,11 @@ Wiring during APCore construction:
 
     ```typescript
     import { APCore, Config } from "apcore-js";
-    import { FileOverridesStore, InMemoryOverridesStore } from "apcore-js/sys-modules/overrides";
+    import {
+        OverridesStore,            // the interface — implement to plug in a custom backend
+        FileOverridesStore,        // default, YAML-backed
+        InMemoryOverridesStore,    // default, in-memory (for tests)
+    } from "apcore-js/sys-modules/overrides";
 
     const config = Config.load("apcore.yaml");
 
