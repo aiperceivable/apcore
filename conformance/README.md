@@ -58,6 +58,8 @@ SDK conformance runners **must** load `.json` files with a JSON parser. The `.ya
 | `error_fingerprinting.json` | Issue #43 §4 | Error fingerprint = (error_code, top-frame hash, sanitized message template). UUID/timestamp/numeric-ID dedup, distinct error codes never collapse, distinct call sites never collapse |
 | `redaction_config.json` | Issue #43 §5 | Configurable redaction via `obs.redaction.regex_patterns` and `obs.redaction.sensitive_keys`. Default sensitive_keys cover common credential terms; trace_id/caller_id/target_id/module_id/span_id MUST never be redacted |
 | `reload_path_filter.json` | Issue #45.4 | Granular reload — `path_filter` glob restricts re-discovery, no `path_filter` = single-`module_id` reload unchanged, zero-match filter is a no-op, both fields together raises `MODULE_RELOAD_CONFLICT` |
+| `usage_exporter.json` | Issue #45 §3, D-55 | `UsageExporter` push interface — `NoopUsageExporter` drops summaries (default), `PeriodicUsageExporter` polls `UsageCollector.summary()` at `interval_seconds` (default 3600) and calls `exporter.export(summary)`, `stop()` halts the loop, awaits `exporter.shutdown()`, and is idempotent |
+| `sensitive_keys_default.json` | Issue #43 §5, D-54 | Canonical default `obs.redaction.sensitive_keys` 16-entry list shipped by all 3 SDKs (`_secret_*` legacy glob + 15 credential terms), case-insensitive substring matching, override replaces (does not merge), and the never-redact correlation fields (`trace_id`/`caller_id`/`target_id`/`module_id`/`span_id`) |
 
 ## Coverage Gaps
 

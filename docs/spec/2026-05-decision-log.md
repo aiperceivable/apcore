@@ -788,9 +788,9 @@ the same fixture file.
 
 ## Resolution status
 
-- **Resolved** (no further action): D-02, D-05, D-23, D-29, D-34, D-35, D-36, D-37, D-38, D-41, D-42, D-43, D-44, D-45, D-46
-- **Doc-only fixes** (1-line each): D-01, D-07, D-09, D-16, D-17, D-18, D-26, D-30, D-31
-- **Code fix needed in 1 SDK**: D-04 (TS), D-08 (Python), D-10 (Python), D-11 (Python), D-12 (Python), D-13 (Python), D-14 (Rust), D-19 (Rust), D-25 (TS+Rust), D-27 (Rust), D-28 (Rust), D-32 (TS)
+- **Resolved** (no further action): D-02, D-05, D-23, D-29, D-30, D-31, D-32, D-34, D-35, D-36, D-37, D-38, D-41, D-42, D-43, D-44, D-45, D-46, D-54, D-55, D-56
+- **Doc-only fixes** (1-line each): D-01, D-07, D-09, D-16, D-17, D-18, D-26
+- **Code fix needed in 1 SDK**: D-04 (TS), D-08 (Python), D-10 (Python), D-11 (Python), D-12 (Python), D-13 (Python), D-14 (Rust), D-19 (Rust), D-25 (TS+Rust), D-27 (Rust), D-28 (Rust)
 - **Multi-SDK code fix**: D-03 (all 3), D-15 (Python+TS), D-24 (TS+Rust)
 - **Epic / RFC needed**: D-21, D-22 (extension Arc migration)
 
@@ -964,3 +964,48 @@ TypeScript SDK adds `OverridesStore` interface, `FileOverridesStore` (YAML-backe
 - TypeScript `RedactionConfig.fromConfig(config)` now reads `obs.redaction.regex_patterns`, `obs.redaction.sensitive_keys`, and `obs.redaction.replacement` as the canonical source. The legacy keys (`observability.redaction.field_patterns`, `observability.redaction.value_patterns`) are still honored for one minor cycle and emit a `console.warn` deprecation notice when found. Removal target: v0.22.0.
 
 **Status**: **resolved**. See `docs/features/observability.md` "Redaction configuration" → "TypeScript legacy keys" note.
+
+---
+
+## D-54 — `sensitive_keys` canonical default list
+
+**Status quo (pre-resolution)**
+- D-46 introduced `obs.redaction.sensitive_keys` and listed a 14-entry default in prose. SDKs shipped slightly different defaults: Python included the legacy `_secret_*` glob; TypeScript dropped `apiKey` (camelCase); Rust included `apiKey` but missed `bearer`. Conformance fixtures assumed a 14- or 15-entry list depending on the SDK under test.
+
+**Resolution**
+- All 3 SDKs **MUST** ship a 16-entry canonical default `obs.redaction.sensitive_keys` value: `["_secret_*", "password", "passwd", "secret", "token", "api_key", "apikey", "apiKey", "access_key", "private_key", "authorization", "auth", "credential", "cookie", "session", "bearer"]`.
+- The leading `_secret_*` preserves the legacy `_secret_`-prefix behavior under the canonical default; the redundant `apiKey`/`apikey` pair is intentional so cross-SDK fixtures byte-match.
+- Operators override by setting `obs.redaction.sensitive_keys` in `apcore.yaml` (override **replaces** the default; it does not merge).
+
+**Status**: **resolved**. See `docs/features/observability.md` "Canonical default `sensitive_keys`" subsection. Conformance fixture: `conformance/fixtures/sensitive_keys_default.json`.
+
+---
+
+## D-55 — `UsageExporter` push interface (#45 §3)
+
+**Status quo (pre-resolution)**
+- §1.3 ("Prometheus Exporter for UsageCollector") in `docs/features/system-modules.md` covers the **pull-style** path: Prometheus scrapes `/metrics`. There was no canonical surface for the **push-style** path (HTTP POST, Kafka publish, ClickHouse insert) other than ad-hoc user middleware.
+- TypeScript shipped a private `_pushUsageEvery` helper used internally by tests; Python+Rust had no equivalent. There was no shared protocol/trait/interface, so users wishing to ship periodic summaries had to subclass an internal class or rebuild the timer loop.
+
+**Resolution**
+- All 3 SDKs **MUST** ship a `UsageExporter` Protocol (Python) / interface (TypeScript) / trait (Rust) with two methods: `export(summary)` and `shutdown()`.
+- All 3 SDKs **MUST** ship `NoopUsageExporter` (default) and `PeriodicUsageExporter` (bundled timer wrapper, default `interval_seconds: 3600`).
+- Transport-bound exporters (HTTP, Kafka, etc.) are explicitly **out-of-tree**; users implement against their preferred client.
+- `stop()` **MUST** await `exporter.shutdown()`; in-flight `export()` calls **MUST** complete or be cancelled before `shutdown()` returns; `stop()` **MUST** be idempotent.
+
+**Status**: **resolved**. See `docs/features/observability.md` "## UsageExporter (push-style)" section. Conformance fixture: `conformance/fixtures/usage_exporter.json` (3 cases).
+
+---
+
+## D-56 — TS `_discoverDefault` 8-stage refactor (D-32 follow-through)
+
+**Status quo (pre-resolution)**
+- D-32 picked Option A: refactor TypeScript `_discoverDefault` to expose `_filterIdConflicts` and `_registerInOrder` as separate stages so the discovery pipeline matches the 8-stage shape Rust+Python (and the spec's Algorithm A04) ship.
+- TypeScript still inlined conflict batching into `_registerInOrder`, surfacing as 6 helpers instead of 8 — cross-language conformance fixtures had to special-case TS.
+
+**Resolution**
+- TypeScript SDK refactored: `_filterIdConflicts` is now a separate private helper invoked between candidate enumeration and registration. `_registerInOrder` is reduced to pure registration with no conflict logic.
+- Python+Rust unchanged (already 8-stage).
+- Algorithm A04 in `docs/spec/algorithms.md` describes one canonical 8-stage pipeline; cross-language conformance no longer special-cases TS.
+
+**Status**: **resolved**. See `docs/spec/algorithms.md` Algorithm A04 (8-stage pipeline) and the existing `conformance/fixtures/multi_module_discovery.json` (no fixture change required — TS now follows the canonical shape).
