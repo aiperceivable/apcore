@@ -1,0 +1,130 @@
+{
+  "description": "TraceContext W3C alignment (Issue #35): tracestate ordered propagation with 32-entry cap and malformed-entry tolerance, case-insensitive header lookup, dynamic trace_flags honoring on extract→inject roundtrip, and optional `parent_id` override on inject() validated against ^[0-9a-f]{16}$. See docs/features/observability.md §W3C Alignment Rules.",
+  "test_cases": [
+    {
+      "id": "tracestate_roundtrip",
+      "description": "Multi-entry tracestate parses to an ordered list of [key, value] pairs and serializes back losslessly.",
+      "input": {
+        "headers": {
+          "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+          "tracestate": "vendor1=opaque1,vendor2=opaque2,vendor3=opaque3"
+        }
+      },
+      "expected": {
+        "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736",
+        "parent_id": "00f067aa0ba902b7",
+        "trace_flags": "01",
+        "tracestate_entries": [
+          ["vendor1", "opaque1"],
+          ["vendor2", "opaque2"],
+          ["vendor3", "opaque3"]
+        ],
+        "reinjected_tracestate": "vendor1=opaque1,vendor2=opaque2,vendor3=opaque3"
+      }
+    },
+    {
+      "id": "tracestate_max_32_entries",
+      "description": "When tracestate carries 35 entries the parser MUST retain only the first 32 in on-the-wire order; entries beyond index 31 are dropped per W3C size limit.",
+      "input": {
+        "headers": {
+          "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+          "tracestate_entry_count": 35
+        }
+      },
+      "expected": {
+        "tracestate_retained_count": 32,
+        "tracestate_dropped_count": 3,
+        "tracestate_first_key": "vendor00",
+        "tracestate_last_key": "vendor31"
+      }
+    },
+    {
+      "id": "tracestate_malformed_dropped",
+      "description": "An entry without `=` is dropped silently; valid neighbors on either side are retained.",
+      "input": {
+        "headers": {
+          "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+          "tracestate": "vendor1=opaque1,bogus_no_equals,vendor2=opaque2"
+        }
+      },
+      "expected": {
+        "tracestate_entries": [
+          ["vendor1", "opaque1"],
+          ["vendor2", "opaque2"]
+        ],
+        "tracestate_dropped_count": 1
+      }
+    },
+    {
+      "id": "header_key_mixed_case_traceparent",
+      "description": "Header lookup is case-insensitive: `Traceparent` (mixed case) MUST match identically to `traceparent`.",
+      "input": {
+        "headers": {
+          "Traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+        }
+      },
+      "expected": {
+        "extract_succeeded": true,
+        "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736",
+        "parent_id": "00f067aa0ba902b7",
+        "trace_flags": "01"
+      }
+    },
+    {
+      "id": "header_key_uppercase_tracestate",
+      "description": "Header lookup is case-insensitive: `TRACESTATE` (uppercase) MUST be discovered alongside any-case `traceparent`.",
+      "input": {
+        "headers": {
+          "TRACEPARENT": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+          "TRACESTATE": "vendor1=opaque1"
+        }
+      },
+      "expected": {
+        "extract_succeeded": true,
+        "tracestate_entries": [["vendor1", "opaque1"]]
+      }
+    },
+    {
+      "id": "dynamic_flags_unsampled_propagated",
+      "description": "Incoming `traceparent` with flags `00` (unsampled) MUST round-trip to `00` on inject — sampling decision is NOT hardcoded.",
+      "input": {
+        "headers": {
+          "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-00"
+        }
+      },
+      "expected": {
+        "extracted_trace_flags": "00",
+        "injected_trace_flags": "00"
+      }
+    },
+    {
+      "id": "parent_id_override_accepted",
+      "description": "`inject(ctx, parent_id=\"aaaaaaaaaaaaaaaa\")` MUST place the override value in the third segment of the resulting traceparent.",
+      "input": {
+        "headers": {
+          "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+        },
+        "inject_parent_id": "aaaaaaaaaaaaaaaa"
+      },
+      "expected": {
+        "injected_traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-aaaaaaaaaaaaaaaa-01",
+        "parent_id_in_output": "aaaaaaaaaaaaaaaa"
+      }
+    },
+    {
+      "id": "parent_id_override_rejected_malformed",
+      "description": "A `parent_id` that does not match `^[0-9a-f]{16}$` MUST be rejected with error code `INVALID_PARENT_ID` (Python ValueError, TS Error, Rust TraceContextError::InvalidParentId).",
+      "input": {
+        "headers": {
+          "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+        },
+        "inject_parent_id": "ZZZZ"
+      },
+      "expected": {
+        "error": {
+          "code": "INVALID_PARENT_ID"
+        }
+      }
+    }
+  ]
+}

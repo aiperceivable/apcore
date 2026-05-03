@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Added
+
+- **`docs/features/async-tasks.md` — `Contract: ReaperHandle.stop` block** (audit N-001) — Normative cross-language declaration that `ReaperHandle.stop()` MUST be async in all three SDKs (`async def` in Python, `Promise<void>` in TypeScript, `async fn` in Rust) with drain semantics — cancel + await termination — and `idempotent: true`.
+- **`conformance/fixtures/trace_context.json`** (#35) — 8 cross-language test cases for the TraceContext W3C alignment: ordered `tracestate` roundtrip, 32-entry cap, malformed-entry tolerance, case-insensitive `Traceparent`/`TRACESTATE` header lookup, dynamic `trace_flags` honoring on extract→inject, accepted `parent_id` override (`^[0-9a-f]{16}$`), and `INVALID_PARENT_ID` rejection of malformed overrides.
+
+### Changed
+
+- **Trace context** (#35) — `docs/features/observability.md` W3C Trace Context section adds `tracestate` propagation (ordered, 32-entry cap, malformed-entry tolerance), case-insensitive header lookup (`Traceparent` / `TRACEPARENT` / `traceparent` all match), dynamic `trace_flags` honoring (sampling flag from incoming request, NOT hardcoded), and an optional `parent_id` argument on `inject()` validated against `^[0-9a-f]{16}$` with `INVALID_PARENT_ID` rejection. Cross-language Python/TypeScript/Rust examples added.
+- **`docs/features/async-tasks.md` Reaper example** (sync B-004 + audit N-001) — Python tab now uses the canonical sync `start_reaper(ttl_seconds=, sweep_interval_ms=)` signature returning `ReaperHandle`, and `await reaper_handle.stop()` for graceful shutdown (was previously sync `stop()`). TS and Rust tabs unchanged.
+- **`docs/features/observability.md` Prometheus example** (sync B-005) — All three tabs show wiring of `UsageCollector` into `PrometheusExporter` (Python `usage_collector=` parameter, TS options-object, Rust `with_usage_collector` builder), with an admonition explaining the cross-language constructor-vs-builder shape difference.
+- **`docs/features/multi-module-discovery.md` Python import path** (sync B-001 / B-002) — Corrected `from apcore.discovery import multi_class` to `from apcore import multi_class`, removing an internal contradiction with the rest of the document. The TS tab now references the existing `multiClass()` decorator.
+
+### Fixed
+
+- **Cross-language naming alignment for the `context_namespace` middleware module** (audit N-003) — Python and Rust shipped `ContextWriter` / `NamespaceCheck`; TypeScript shipped `ContextKeyWriter` / `ContextKeyValidation`. TypeScript renamed in `apcore-typescript` v0.20.x to match the Python+Rust majority; the prior TS names are retained as deprecated aliases for one release cycle. No spec text change needed — all three SDKs now agree on the canonical names.
+
+---
+
 ## [v0.20.0]
 
 ### Added

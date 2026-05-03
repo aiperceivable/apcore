@@ -159,6 +159,167 @@ Integration with `Context.create()`:
 
 The `traceparent` header follows the W3C format: `{version}-{trace_id}-{parent_id}-{trace_flags}`.
 
+#### W3C Alignment Rules (Issue #35)
+
+The following rules harden `TraceContext.extract` / `TraceContext.inject` for production
+W3C interoperability across Python, TypeScript, and Rust SDKs.
+
+##### Tracestate Propagation
+
+- Implementations MUST parse the `tracestate` header alongside `traceparent` during
+  `extract()`. Each entry is a `key=value` pair separated by `,`. Whitespace around the
+  separators MUST be tolerated (per W3C Trace Context §3.3.1.1).
+- The parsed result MUST be an ordered list of `(key, value)` pairs preserving the
+  on-the-wire order of the originating header. Order is significant — the W3C spec uses
+  position to identify the most recently mutating vendor.
+- Implementations MUST cap retained entries at **32**; entries beyond the 32nd MUST be
+  dropped from the head of the list per the W3C `tracestate` size limit.
+- Malformed entries (missing `=`, empty key, or non-printable characters) MUST be dropped
+  silently while leaving valid neighboring entries intact.
+- `inject()` MUST serialize the stored list back to a `tracestate` header preserving order
+  and entry count, so that an `extract → inject` round-trip is lossless for any input that
+  already satisfies the rules above.
+
+##### Case-Insensitive Header Lookup
+
+- `extract()` MUST treat header keys case-insensitively. Callers may pass any of
+  `traceparent`, `Traceparent`, `TRACEPARENT`, `tracestate`, `Tracestate`, or `TRACESTATE`
+  and the lookup MUST succeed. This matches RFC 7230 §3.2 (HTTP header field names are
+  case-insensitive) and the practical reality of WSGI/ASGI/Node/Actix header maps.
+- The injected output of `inject()` MUST always use the canonical lowercase header keys
+  `traceparent` and (when present) `tracestate`.
+
+##### Dynamic Sampling Flag Honoring
+
+- `extract()` MUST preserve the `trace_flags` byte from the incoming `traceparent` (`01`
+  sampled, `00` unsampled). Implementations MUST NOT hardcode a sampling flag.
+- `inject()` MUST emit the same `trace_flags` byte that was extracted, so that the upstream
+  caller's sampling decision propagates downstream untouched.
+- When no incoming `traceparent` exists and `inject()` is called against a fresh context,
+  the implementation MAY choose its own flag according to the local sampling strategy
+  (`full` → `01`, `off` → `00`, `proportional` / `error_first` → flag derived from the
+  middleware's sampling decision for the current span).
+
+##### Optional `parent_id` Override on `inject()`
+
+- `inject()` MUST accept an optional `parent_id` argument. When provided, the value MUST
+  match the regex `^[0-9a-f]{16}$` (16 lowercase hex characters). Non-matching values MUST
+  raise an error with code `INVALID_PARENT_ID` (Python `ValueError`, TypeScript `Error`,
+  Rust `Err(TraceContextError::InvalidParentId)`).
+- When `parent_id` is omitted, implementations MUST derive the parent id automatically
+  from the top-of-stack span (`context.data["_apcore.mw.tracing.spans"][-1].span_id` if
+  present, otherwise a freshly generated 16-hex value).
+- The override is intended for callers that wrap apcore with their own span manager and
+  need to anchor the outgoing `traceparent` to a span id apcore did not create.
+
+=== "Python"
+    ```python
+    from apcore import Context
+    from apcore.trace_context import TraceContext
+
+    # Case-insensitive extract preserves tracestate order and flags
+    incoming = {
+        "Traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-00",
+        "TRACESTATE": "vendor1=opaque1,vendor2=opaque2",
+    }
+    trace_parent = TraceContext.extract(incoming)
+    assert trace_parent is not None
+    assert trace_parent.trace_flags == "00"  # honored, not hardcoded
+
+    # Build a context that carries the propagated trace + state
+    context = Context.create(trace_parent=trace_parent)
+
+    # Inject with default (auto-derived) parent_id
+    headers = TraceContext.inject(context)
+    # headers == {
+    #   "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-<auto>-00",
+    #   "tracestate": "vendor1=opaque1,vendor2=opaque2",
+    # }
+
+    # Optional override: pin the outgoing parent_id to a caller-managed span
+    headers = TraceContext.inject(context, parent_id="aaaaaaaaaaaaaaaa")
+    assert headers["traceparent"].split("-")[2] == "aaaaaaaaaaaaaaaa"
+
+    # Malformed override raises immediately
+    try:
+        TraceContext.inject(context, parent_id="ZZZZ")
+    except ValueError as exc:
+        assert "INVALID_PARENT_ID" in str(exc)
+    ```
+=== "TypeScript"
+    ```typescript
+    import { Context } from "apcore-js/context";
+    import { TraceContext } from "apcore-js/trace-context";
+
+    // Case-insensitive extract preserves tracestate order and flags
+    const incoming: Record<string, string> = {
+        Traceparent: "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-00",
+        TRACESTATE: "vendor1=opaque1,vendor2=opaque2",
+    };
+    const traceParent = TraceContext.extract(incoming);
+    if (traceParent === null) throw new Error("expected parent");
+    console.assert(traceParent.traceFlags === "00"); // honored, not hardcoded
+
+    // Build a context that carries the propagated trace + state
+    const context = Context.create({ traceParent });
+
+    // Inject with default (auto-derived) parent_id
+    let headers = TraceContext.inject(context);
+    // headers == {
+    //   traceparent: "00-4bf92f3577b34da6a3ce929d0e0e4736-<auto>-00",
+    //   tracestate: "vendor1=opaque1,vendor2=opaque2",
+    // }
+
+    // Optional override: pin the outgoing parent_id
+    headers = TraceContext.inject(context, { parentId: "aaaaaaaaaaaaaaaa" });
+    console.assert(headers.traceparent.split("-")[2] === "aaaaaaaaaaaaaaaa");
+
+    // Malformed override raises immediately
+    try {
+        TraceContext.inject(context, { parentId: "ZZZZ" });
+    } catch (err) {
+        console.assert((err as Error).message.includes("INVALID_PARENT_ID"));
+    }
+    ```
+=== "Rust"
+    ```rust
+    use apcore::context::Context;
+    use apcore::trace_context::{TraceContext, TraceContextError};
+    use std::collections::HashMap;
+
+    // Case-insensitive extract preserves tracestate order and flags
+    let mut incoming: HashMap<String, String> = HashMap::new();
+    incoming.insert(
+        "Traceparent".to_string(),
+        "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-00".to_string(),
+    );
+    incoming.insert(
+        "TRACESTATE".to_string(),
+        "vendor1=opaque1,vendor2=opaque2".to_string(),
+    );
+
+    let trace_parent = TraceContext::extract(&incoming).expect("present");
+    assert_eq!(trace_parent.trace_flags, "00"); // honored, not hardcoded
+
+    // Build a context that carries the propagated trace + state
+    let context = Context::create(None, Some(trace_parent));
+
+    // Inject with default (auto-derived) parent_id
+    let headers = TraceContext::inject(&context, None);
+    // headers["traceparent"] -> "00-4bf92f3577b34da6a3ce929d0e0e4736-<auto>-00"
+    // headers["tracestate"]  -> "vendor1=opaque1,vendor2=opaque2"
+
+    // Optional override: pin the outgoing parent_id
+    let headers = TraceContext::inject(&context, Some("aaaaaaaaaaaaaaaa"));
+    assert_eq!(headers["traceparent"].split('-').nth(2).unwrap(), "aaaaaaaaaaaaaaaa");
+
+    // Malformed override returns an error
+    match TraceContext::try_inject(&context, Some("ZZZZ")) {
+        Err(TraceContextError::InvalidParentId) => {}
+        _ => panic!("expected INVALID_PARENT_ID"),
+    }
+    ```
+
 ### Error History
 
 `ErrorHistory` is a ring-buffer tracker for recent module errors, providing deduplication and per-module querying. It is automatically created and wired by `register_sys_modules()` when system modules are enabled.
@@ -906,13 +1067,21 @@ annotations:
   prometheus.io/path: "/metrics"
 ```
 
+!!! tip "Wire the UsageCollector for full /metrics coverage"
+    Attaching a `UsageCollector` to the `PrometheusExporter` is what makes
+    the `apcore_usage_calls_total`, `apcore_usage_error_rate`, and
+    `apcore_usage_p{50,95,99}_latency_ms` series appear on `/metrics`.
+    Omitting it limits `/metrics` to the module-level metrics from the
+    `MetricsCollector` only.
+
 === "Python"
     ```python
     from apcore import APCore
-    from apcore.observability import MetricsCollector, PrometheusExporter
+    from apcore.observability import MetricsCollector, PrometheusExporter, UsageCollector
 
     collector = MetricsCollector()
-    exporter = PrometheusExporter(collector=collector)
+    usage_collector = UsageCollector()
+    exporter = PrometheusExporter(collector=collector, usage_collector=usage_collector)
 
     # Start the metrics HTTP server (non-blocking, runs in background thread)
     exporter.start(port=9090, path="/metrics")
@@ -927,10 +1096,11 @@ annotations:
 === "TypeScript"
     ```typescript
     import { APCore } from "apcore-js";
-    import { MetricsCollector, PrometheusExporter } from "apcore-js/observability";
+    import { MetricsCollector, PrometheusExporter, UsageCollector } from "apcore-js/observability";
 
     const collector = new MetricsCollector();
-    const exporter = new PrometheusExporter({ collector });
+    const usageCollector = new UsageCollector();
+    const exporter = new PrometheusExporter({ collector, usageCollector });
 
     // Start the metrics HTTP server (non-blocking)
     await exporter.start({ port: 9090, path: "/metrics" });
@@ -945,11 +1115,13 @@ annotations:
 === "Rust"
     ```rust
     use apcore::APCore;
-    use apcore::observability::{MetricsCollector, PrometheusExporter};
+    use apcore::observability::{MetricsCollector, PrometheusExporter, UsageCollector};
     use std::sync::Arc;
 
     let collector = Arc::new(MetricsCollector::new());
-    let exporter = PrometheusExporter::new(collector.clone());
+    let usage_collector = Arc::new(UsageCollector::new());
+    let exporter = PrometheusExporter::new(collector.clone())
+        .with_usage_collector(usage_collector.clone());
 
     // Start the metrics HTTP server (non-blocking, spawns background task)
     exporter.start(9090, "/metrics").await?;

@@ -560,6 +560,36 @@ For backoff_multiplier=2.5 and retry_delay_ms=1000, attempt=2: Python/TS return 
 
 ---
 
+## D-33 — Trace context W3C alignment
+
+**Status**: resolved (Issue #35).
+
+**Status quo**
+- `TraceContext.extract` only looked up the lowercase `traceparent` key, so callers
+  passing `Traceparent` (Werkzeug/Express) silently produced a fresh trace_id.
+- `TraceContext.inject` hardcoded the sampling flag to `01`, breaking propagation of an
+  upstream `00` (unsampled) decision.
+- `tracestate` was not parsed or re-emitted at all, dropping vendor-specific routing
+  hints across service boundaries.
+- `inject()` had no escape hatch for callers that manage their own span ids and need to
+  pin the outgoing parent_id.
+
+**Decision**
+- `extract()` performs case-insensitive header lookup for both `traceparent` and
+  `tracestate`; the parsed `tracestate` is an ordered list of `(key, value)` pairs capped
+  at 32 entries with malformed entries dropped silently.
+- `extract→inject` is lossless for the `trace_flags` byte and for the `tracestate` list.
+- `inject(ctx, parent_id?)` accepts an optional `parent_id` validated against
+  `^[0-9a-f]{16}$`; non-matching values raise `INVALID_PARENT_ID`.
+- Spec lives in `docs/features/observability.md` §"W3C Alignment Rules"; conformance in
+  `conformance/fixtures/trace_context.json` (8 cases). PROTOCOL_SPEC §10.5 is unchanged
+  (the new rules are extract/inject implementation rules, not Context construction rules).
+
+**Action**: SDK changes ship in `apcore-python`, `apcore-typescript`, `apcore-rust` against
+the same fixture file.
+
+---
+
 ## D-32 — Discovery pipeline stage count alignment
 
 **Status quo**
