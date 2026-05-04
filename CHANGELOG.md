@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [Unreleased]
+## [0.20.0] - 2026-05-04
 
 ### Added
 
@@ -78,11 +78,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **D-30: clarified that `pre_approval_hook` is Python-only.** `docs/features/multi-module-discovery.md` adds a "Python-only `pre_approval_hook`" subsection explaining that Python imports the file at scan time so the hook protects against arbitrary code execution; TypeScript and Rust parse static AST/source and never import code from disk for discovery, so the hook is not present in those SDKs. Cross-language tabs show the call shape in each SDK.
 - **D-31: documented per-language file extension scanning defaults and skip patterns.** `docs/features/multi-module-discovery.md` adds a "File extensions and skip patterns" subsection with a per-SDK table: Python `.py` (skip `__pycache__/`, `*.pyc`, leading `_`), TypeScript `.ts`/`.js` (skip `*.d.ts`, `*.test.*`, `*.spec.*`), Rust `.rs` only (configurable via `with_extensions`).
 
----
-
-## [v0.20.0]
-
-### Added
+### Added — PROTOCOL_SPEC & feature spec hardening (Issues #32–#45)
 
 - **`docs/spec/design-durability-boundary.md` — Durability Boundary design document.** Vendor-neutral architectural document enumerating apcore's stable hooks for retry/replay/workflow layers built on top (Context JSON serialization, Approval Phase B `_approval_token` retry contract, the `TaskStore` interface, the six extension points, retry-safety annotations, `context.data` + §4.6 `x-` extension mechanism), explicit non-goals (mid-pipeline checkpointing, multi-call workflow orchestration, cost governance, first-class fields for application-level concerns apcore does not consume), five concrete integration patterns (transient retry, crash-durable single-call retry, long-running pause for external decisions, cross-process invocation, logical-call deduplication), and a gap watchlist of deliberately-deferred items. Establishes that apcore is the module standard, durable execution is a runtime concern; both can coexist without apcore absorbing workflow surface.
 
@@ -115,11 +111,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`docs/features/middleware-system.md` — Middleware Architecture Hardening section** — Context namespacing rules (`_apcore.*` vs `ext.*`), `CircuitBreakerMiddleware` spec (per-module error tracking, rolling window, OPEN/HALF_OPEN/CLOSED state machine, `CircuitBreakerOpenError`, `apcore.circuit.opened`/`closed` events), `TracingMiddleware` spec (OTLP-compatible span lifecycle, graceful no-op when OpenTelemetry is absent), YAML-driven declarative middleware configuration (`tracing`, `circuit_breaker`, `logging`, `custom` types), and async handler detection fix (`inspect.iscoroutinefunction` in Python, `handler.constructor.name` in TypeScript). Includes `Middleware.detect_async` contract block. Closes Issue #42.
 - **`conformance/fixtures/middleware_hardening.json`** — 10 test cases covering context namespace validation (valid `_apcore.*`, valid `ext.*`, violation), circuit breaker state transitions (opens at threshold, short-circuits in OPEN, probes in HALF_OPEN, closes on success), tracing span creation and no-op without OTel, and async coroutine detection correctness.
 
-### Changed
+### Changed — PROTOCOL_SPEC clarifications
 
 - **PROTOCOL_SPEC §7 — Approval Phase B Resume semantics clarified.** Added a normative paragraph after the Step 5 Algorithm formalizing existing reference behavior: when a caller retries an `APPROVAL_PENDING` call by injecting `_approval_token` into `arguments`, the executor MUST re-enter the pipeline from Step 1 with no preserved intermediate `PipelineContext` state. Pre-approval middleware side effects re-execute on resume; middleware needing at-most-once semantics across an approval gate SHOULD inspect `_approval_token` itself. No behavioral change — documents existing implementation. Cross-references `docs/spec/design-durability-boundary.md` §2.2.
 
-### Fixed
+### Fixed — Documentation polish
 
 - **`docs/features/async-tasks.md` — TypeScript `await` missing on async methods.** The TypeScript tab was calling `manager.submit()`, `manager.cancel()`, and `manager.shutdown()` without `await`, while the Python and Rust equivalents correctly used `await`/`.await`. All three calls are now correctly awaited.
 - **`docs/features/event-system.md` — "Via Direct EventEmitter" section missing TypeScript and Rust tabs.** The section contained only bare Python code with no tab wrapper. Added `=== "Python"` / `=== "TypeScript"` / `=== "Rust"` tabs consistent with every other behavioral section in the file.
