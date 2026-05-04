@@ -205,6 +205,53 @@ The framework defines error subclasses grouped by domain. Each subclass sets an 
 | `FuncMissingTypeHintError` | `FUNC_MISSING_TYPE_HINT` | — | Function parameter lacks type annotation |
 | `FuncMissingReturnTypeError` | `FUNC_MISSING_RETURN_TYPE` | — | Function lacks return type annotation |
 
+#### Pipeline & Step Configuration Errors
+
+| Error Class | Code | Retryable | Description |
+|---|---|---|---|
+| `PipelineConfigurationError` | `PIPELINE_CONFIGURATION_ERROR` | — | Pipeline YAML structure is invalid (parse-time fail-fast, see `pipeline_failfast_config` fixture) |
+| `PipelineConfigInvalidError` | `PIPELINE_CONFIG_INVALID` | — | Specific pipeline config field validation failure |
+| `PipelineDependencyError` | `PIPELINE_DEPENDENCY_ERROR` | — | Step `requires` not satisfied by preceding `provides` declarations |
+| `PipelineStepError` | `PIPELINE_STEP_ERROR` | — | Generic step-level execution failure raised by `StepMiddleware.on_step_error` |
+| `PipelineStepNotFoundError` | `PIPELINE_STEP_NOT_FOUND` | — | `pipeline.configure[]` references a step name that does not exist |
+| `StepNotFoundError` | `STEP_NOT_FOUND` | — | Internal pipeline lookup failed for a named step (lower-level alias of `PIPELINE_STEP_NOT_FOUND`) |
+| `StepNameDuplicateError` | `STEP_NAME_DUPLICATE` | — | Two steps registered under the same name |
+| `StrategyNotFoundError` | `STRATEGY_NOT_FOUND` | — | Pipeline strategy preset name (e.g. `standard`, `minimal`) does not exist |
+
+#### Schema Edge-Case Errors
+
+| Error Class | Code | Retryable | Description |
+|---|---|---|---|
+| `SchemaValidationFailedError` | `SCHEMA_VALIDATION_FAILED` | — | Validation outcome alias used by some SDK code paths; semantically equivalent to `SCHEMA_VALIDATION_ERROR` |
+| `SchemaMaxDepthExceededError` | `SCHEMA_MAX_DEPTH_EXCEEDED` | — | Recursive schema (`$ref` self-reference) expansion exceeded the depth cap (default 32) |
+
+#### Module Registration Conflict Errors
+
+| Error Class | Code | Retryable | Description |
+|---|---|---|---|
+| `ModuleIdConflictError` | `MODULE_ID_CONFLICT` | — | Two modules resolved to the same Canonical ID during discovery |
+| `ModuleReloadConflictError` | `MODULE_RELOAD_CONFLICT` | Yes | Hot-reload skipped because the module is in flight; safe to retry |
+| `SystemModuleRegistrationFailedError` | `SYS_MODULE_REGISTRATION_FAILED` | — | A `sys.*` module failed to register at framework startup |
+
+#### Binding Inference Errors
+
+| Error Class | Code | Retryable | Description |
+|---|---|---|---|
+| `BindingSchemaInferenceFailedError` | `BINDING_SCHEMA_INFERENCE_FAILED` | — | Auto-schema inference from type hints failed (missing/unsupported types) |
+| `BindingSchemaModeConflictError` | `BINDING_SCHEMA_MODE_CONFLICT` | — | Binding declares both an inline schema and an external schema reference |
+
+#### Async Task Errors
+
+| Error Class | Code | Retryable | Description |
+|---|---|---|---|
+| `TaskLimitExceededError` | `TASK_LIMIT_EXCEEDED` | Yes | `AsyncTaskManager` concurrent-task ceiling reached |
+
+#### Versioning Errors
+
+| Error Class | Code | Retryable | Description |
+|---|---|---|---|
+| `VersionConstraintInvalidError` | `VERSION_CONSTRAINT_INVALID` | — | Dependency version constraint string is malformed (semver/range parse failure) |
+
 ### ErrorCodes Constants
 
 All error codes are available as class-level constants on the `ErrorCodes` class:

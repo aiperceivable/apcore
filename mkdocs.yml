@@ -98,6 +98,7 @@ nav:
       - Middleware: guides/middleware.md
       - ACL Configuration: guides/acl-configuration.md
       - Testing Modules: guides/testing-modules.md
+      - Troubleshooting: guides/troubleshooting.md
       - Adapter Development: guides/adapter-development.md
       - Multi-Language Development: guides/multi-language.md
       - Integrating into Existing Projects: guides/integrating-existing-projects.md
@@ -106,6 +107,7 @@ nav:
       - Algorithm Reference: spec/algorithms.md
       - Type Mapping: spec/type-mapping.md
       - Conformance Definition: spec/conformance.md
+      - Security Considerations: spec/security-considerations.md
       - Declarative Config Spec: spec/DECLARATIVE_CONFIG_SPEC.md
       - Execution Pipeline Design: spec/design-execution-pipeline.md
       - Durability Boundary: spec/design-durability-boundary.md
