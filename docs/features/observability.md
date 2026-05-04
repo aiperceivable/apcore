@@ -737,83 +737,10 @@ The `UsageExporter` interface lets you **push** periodic `UsageCollector` summar
 
 ### 1.1 Pluggable Observability Storage
 
-`ErrorHistory` and `MetricsCollector` currently use in-memory storage only. Production deployments need persistence through pluggable storage backends.
+`ErrorHistory`, `UsageCollector`, and `MetricsCollector` MUST accept an optional pluggable storage backend at construction time so that production deployments can persist observability data outside the process.
 
-#### Normative Rules
-
-- Implementations MUST define an `ObservabilityStore` interface/protocol/trait with the following methods: `record_error(entry)`, `get_errors(module_id?, limit?) → List[ErrorEntry]`, `record_metric(metric)`, `get_metrics(module_id?, metric_name?) → List[MetricPoint]`, `flush()`, `clear()`.
-- Implementations MUST provide `InMemoryObservabilityStore` as the default backend.
-- Implementations SHOULD provide `RedisObservabilityStore` and `SqlObservabilityStore` as optional backends.
-- The store MUST be injected into `ErrorHistory` and `MetricsCollector` at construction time: `ErrorHistory(store=InMemoryObservabilityStore())`. It MUST NOT be set after construction.
-
-=== "Python"
-    ```python
-    from apcore.observability import (
-        ErrorHistory,
-        MetricsCollector,
-        InMemoryObservabilityStore,
-        RedisObservabilityStore,
-    )
-
-    # Default: in-memory store
-    history = ErrorHistory(store=InMemoryObservabilityStore())
-    collector = MetricsCollector(store=InMemoryObservabilityStore())
-
-    # Production: Redis-backed store
-    redis_store = RedisObservabilityStore(
-        host="redis.internal",
-        port=6379,
-        key_prefix="apcore:obs:",
-        ttl_seconds=86400,
-    )
-    history = ErrorHistory(store=redis_store)
-    collector = MetricsCollector(store=redis_store)
-    ```
-=== "TypeScript"
-    ```typescript
-    import {
-        ErrorHistory,
-        MetricsCollector,
-        InMemoryObservabilityStore,
-        RedisObservabilityStore,
-    } from "apcore-js/observability";
-
-    // Default: in-memory store
-    const history = new ErrorHistory({ store: new InMemoryObservabilityStore() });
-    const collector = new MetricsCollector({ store: new InMemoryObservabilityStore() });
-
-    // Production: Redis-backed store
-    const redisStore = new RedisObservabilityStore({
-        host: "redis.internal",
-        port: 6379,
-        keyPrefix: "apcore:obs:",
-        ttlSeconds: 86400,
-    });
-    const historyProd = new ErrorHistory({ store: redisStore });
-    const collectorProd = new MetricsCollector({ store: redisStore });
-    ```
-=== "Rust"
-    ```rust
-    use apcore::observability::{
-        ErrorHistory, MetricsCollector,
-        InMemoryObservabilityStore, RedisObservabilityStore,
-    };
-    use std::sync::Arc;
-
-    // Default: in-memory store
-    let store = Arc::new(InMemoryObservabilityStore::new());
-    let history = ErrorHistory::new(store.clone());
-    let collector = MetricsCollector::new(store.clone());
-
-    // Production: Redis-backed store
-    let redis_store = Arc::new(
-        RedisObservabilityStore::new("redis://redis.internal:6379")
-            .with_key_prefix("apcore:obs:")
-            .with_ttl_seconds(86400),
-    );
-    let history_prod = ErrorHistory::new(redis_store.clone());
-    let collector_prod = MetricsCollector::new(redis_store.clone());
-    ```
+!!! note "Renamed in v0.20.0 (D-39)"
+    Earlier drafts of this section described the abstraction under the names `ObservabilityStore` / `InMemoryObservabilityStore` / `RedisObservabilityStore` / `SqlObservabilityStore` with domain-specific `record_error` / `get_errors` / `record_metric` / `get_metrics` methods. As of v0.20.0 the canonical cross-SDK trait is the generic, namespaced key/value `StorageBackend` (`save` / `get` / `list` / `delete`). See the full normative contract in [§ Pluggable storage backends](#pluggable-storage-backends) below.
 
 ---
 

@@ -137,16 +137,18 @@ class Executor:
         context: Context | None = None,
     ) -> "PreflightResult":
         """
-        Non-destructive preflight check (7 validation checks including optional module-level preflight, no execution)
+        Non-destructive preflight check (6 pipeline checks plus optional module-level preflight, no execution)
 
-        Runs up to 7 pipeline steps including optional module-level preflight without executing module code or middleware:
+        Runs 6 pipeline checks (Steps 1–5 and Step 7 of the canonical 11-step pipeline,
+        skipping Step 6 Middleware Before Chain) plus an optional 7th module-level preflight,
+        without executing module code or middleware:
         1. Module ID format validation
         2. Module lookup
         3. Call chain safety (if context provided)
         4. ACL check
         5. Approval detection (reports requires_approval flag)
         6. Input schema validation
-        7. Module preflight (MAY) — invokes module.preflight() for advisory warnings
+        7. Module preflight (MAY, optional) — invokes module.preflight() for advisory warnings
 
         Check 7 is optional (MAY-level per spec §12.8.5.1). If the module
         implements preflight(), warnings are collected but never block validation.

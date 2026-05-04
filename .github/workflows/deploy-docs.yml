@@ -33,6 +33,7 @@ jobs:
           cp PROTOCOL_SPEC.md docs/
           cp SCOPE.md docs/
           cp ROADMAP.md docs/
+          cp MIGRATION-v0.18.md docs/migration-v0.18.md
           mkdir -p docs/assets
           cp apcore-logo.svg docs/assets/
 

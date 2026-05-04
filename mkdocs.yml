@@ -55,6 +55,8 @@ markdown_extensions:
 nav:
   - Home: README.md
   - Getting Started: getting-started.md
+  - Migration:
+      - v0.18 Breaking Changes: migration-v0.18.md
   - Core Documents:
       - Positioning: POSITIONING.md
   - Concepts & Architecture:
@@ -103,8 +105,10 @@ nav:
       - Algorithm Reference: spec/algorithms.md
       - Type Mapping: spec/type-mapping.md
       - Conformance Definition: spec/conformance.md
+      - Declarative Config Spec: spec/DECLARATIVE_CONFIG_SPEC.md
       - Execution Pipeline Design: spec/design-execution-pipeline.md
       - Durability Boundary: spec/design-durability-boundary.md
+      - Context-Annotations-ACL Design: spec/design-context-annotations-acl.md
       - Decision Log (2026-05): spec/2026-05-decision-log.md
 
 extra:

@@ -102,9 +102,27 @@ rules:
         - identity_types: ["service"]
       $not:
         max_call_depth: 1  # Deny if call depth is exactly 1
+    # Compound operators in callers/targets pattern arrays
+  - callers: ["$or", "admin.*", "moderator.*"]   # match if either pattern matches
+    targets: ["audit.*"]
+    effect: allow
+  - callers: ["$not", "banned.*"]                # match anything EXCEPT banned.*
+    targets: ["public.*"]
+    effect: allow
 ```
 
-Compound operators `$or` and `$not` can combine conditions. `$or` passes if any sub-condition passes. `$not` inverts its sub-condition.
+`$or` and `$not` are compound operators with **two distinct surface forms**:
+
+1. **Inside `conditions`** — combine condition sub-objects.
+   - `$or` (list of condition objects): passes if **any** sub-object's conditions all pass.
+   - `$not` (single condition object): passes if the wrapped condition **fails**.
+   - Within a single `conditions` block all keys are AND-ed; nest `$or` to express OR.
+
+2. **As the first element of `callers` or `targets` pattern arrays** — combine ID patterns.
+   - `["$or", p1, p2, ...]`: matches if **any** of `p1, p2, …` match the module ID. (This is observably equivalent to a flat list, which is already OR-ed; the explicit form documents intent.)
+   - `["$not", p]`: matches if `p` does **not** match the module ID. An empty `$not` array (`["$not"]`, no subsequent pattern) MUST evaluate to false (fail-closed). All current SDKs consult only `patterns[1]` and silently ignore any further elements; authors SHOULD therefore supply exactly one pattern after `$not` and treat additional patterns as undefined behavior.
+
+**Async sub-conditions:** `$or`/`$not` evaluate their children using the same evaluator mode (sync or async) as the outer call. Implementations register both sync and async compound handlers; mixing an async handler under a sync evaluator MUST fail closed with a warning. See `docs/spec/design-context-annotations-acl.md` §"Compound + async limitation" for the rationale.
 
 ## Contract: ACL.check
 

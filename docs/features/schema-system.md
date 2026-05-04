@@ -894,7 +894,15 @@ Implementations MUST deduplicate identical schema content. When two schema paths
 
 ### Conformance Fixtures
 
-The following fixture stubs MUST be added to `conformance/fixtures/schema_hardening.json` to provide cross-language behavioral verification for the hardening requirements above.
+Cross-language behavioral verification for the hardening requirements above is shipped across five fixtures in `conformance/fixtures/`:
+
+- `schema_hardening_union.json` — `anyOf`/`oneOf` branch evaluation
+- `schema_hardening_recursive.json` — `$ref` cycles up to `max_depth`
+- `schema_hardening_constraints.json` — numeric and string constraint paths
+- `schema_hardening_formats.json` — `format` keyword annotation semantics
+- `schema_hardening_cache.json` — `content_hash` canonical serialization
+
+The case excerpts below illustrate the canonical shape; refer to the JSON files for the full case lists.
 
 **`union_type_all_branches_evaluated`** — validates that `anyOf` accepts a matching branch and that `oneOf` rejects inputs where multiple branches match:
 
