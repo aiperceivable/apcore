@@ -2,10 +2,10 @@
 
 > **Canonical Specification** - This document is the authoritative specification for the apcore protocol
 
-> Version: 1.6.0-draft
+> Version: 1.7.0-draft
 > Status: Draft Specification (RFC 2119 Conformant)
 > Stability: Specification content is stable, pending reference implementation verification
-> Last Updated: 2026-04-15
+> Last Updated: 2026-05-04
 
 ---
 
@@ -3443,6 +3443,10 @@ audit:
 | `identity_types` | `list[string]` | Identity type must be in list |
 | `roles` | `list[string]` | At least one role must overlap |
 | `max_call_depth` | `integer` | Call chain length must not exceed threshold |
+| `$or` | `list[object]` | Compound: passes if **any** sub-condition object passes (each sub-object's keys are AND-ed internally). Sub-objects **MAY** contain further compound operators. |
+| `$not` | `object` | Compound: passes if the wrapped condition object **fails**. An empty object **MUST** evaluate to false (fail-closed). |
+
+**Compound operators and async sub-conditions.** Implementations **MUST** evaluate `$or` / `$not` sub-conditions using the same evaluator mode (sync or async) as the enclosing call. An async-only sub-condition under a sync evaluator **MUST** fail closed and **SHOULD** emit a warning. Handlers **SHOULD** therefore be registered for both sync and async paths.
 
 **Special patterns:**
 
@@ -3496,6 +3500,19 @@ rule_matching:
   # Evaluation order: first-match-wins
   order: "Rules are evaluated in definition order; the first matching rule determines the decision"
 ```
+
+### 6.2.1 Compound Operators in Pattern Arrays
+
+The `callers` and `targets` pattern arrays **MAY** use the compound operators `$or` and `$not` as the **first element** to alter the default OR-of-patterns semantics.
+
+| Form                          | Semantics                                                                                                  |
+|-------------------------------|------------------------------------------------------------------------------------------------------------|
+| `["$or", p1, p2, ...]`        | **MUST** match the module ID if any of `p1, p2, …` matches. Observably equivalent to a flat list (which is also OR-ed) but documents intent explicitly. |
+| `["$not", p]`                 | **MUST** match the module ID if `p` does **not** match.                                                    |
+| `["$not"]` (no pattern)       | **MUST** evaluate to false (fail-closed).                                                                  |
+| `["$not", p1, p2, ...]`       | Implementation-defined: SDKs **MUST** consult `p1` and **MAY** ignore subsequent patterns. Authors **SHOULD NOT** rely on this form. |
+
+When `$or` or `$not` appear at any position other than index 0 of a pattern array, implementations **MUST** treat them as literal pattern strings (no special semantics). Implementations **MUST NOT** match a literal module ID equal to `"$or"` or `"$not"` under default-deny semantics — these tokens are reserved for compound-operator use.
 
 ### 6.3 Rule Evaluation Algorithm
 
@@ -6459,12 +6476,15 @@ Interface: Executor
   call(module_id: String, inputs: Map, context: Context) → Map
 
   /**
-   * [SHOULD] Non-destructive preflight check through Steps 1–6 of the
-   * execution pipeline without invoking module code or middleware.
+   * [SHOULD] Non-destructive preflight check that runs Steps 1–5 and Step 7
+   * of the execution pipeline (skipping Step 6 Middleware Before Chain),
+   * plus an optional module-level preflight (Check 7), without invoking
+   * module code or middleware. See §12.8 for the language-specific guide.
    *
-   * Runs: context creation, safety checks, module lookup, ACL enforcement,
-   * approval detection (report only, MUST NOT invoke ApprovalHandler),
-   * and input schema validation.
+   * Runs: context creation (Step 1), call chain guard (Step 2), module
+   * lookup (Step 3), ACL enforcement (Step 4), approval detection (Step 5,
+   * report only — MUST NOT invoke ApprovalHandler), input schema validation
+   * (Step 7), and optionally module.preflight() for advisory warnings.
    *
    * MUST NOT: execute module code, run middleware, or modify external state.
    *
@@ -7437,3 +7457,4 @@ Each language SDK **SHOULD** provide idiomatic module definition syntax. The fol
 | 1.5.0-draft | 2026-03-20 | Added §5.13 Display Overlay — sparse binding.yaml `display` section for surface-facing presentation (CLI/MCP/A2A alias, description, documentation overrides); Defined resolve priority chain algorithm; Added `ResolvedModule` type; Added `SurfaceOverride` and `DisplayOverlay` to `binding.schema.json`; Added `suggested_alias` scanner metadata convention; Deprecated `simplify_ids` in favor of display overlay; Cross-language implementation guide for Python/TypeScript/Rust/Go/Java/Ruby/PHP; Renumbered §5.13 Edge Case Handling → §5.14 → §5.15 |
 | 1.6.0-draft | 2026-03-29 | Added §9.4–9.14 Config Bus Architecture — namespace registration, unified configuration file with legacy/namespace mode detection, mount mechanism for third-party integration, per-namespace environment variable overrides, namespace-aware access API (get/set/bind/namespace), extended validation algorithm A12-NS, hot-reload with namespace support, cross-language implementation requirements (Python/TypeScript/Rust/Go/Java), ecosystem integration patterns (apcore packages, third-party packages, framework auto-registration), optional config discovery; Added error codes CONFIG_NAMESPACE_DUPLICATE, CONFIG_NAMESPACE_RESERVED, CONFIG_ENV_PREFIX_CONFLICT, CONFIG_MOUNT_ERROR, CONFIG_BIND_ERROR; Added `_config` reserved namespace for strict/allow_unknown meta-configuration |
 | 1.6.0-draft | 2026-04-08 | §2.7 EBNF constraint #1 — `canonical_id` maximum length raised from 128 to 192 characters to accommodate deep-namespace languages (Java/.NET/Spring FQN-derived IDs). 192 is filesystem-safe (`192 + ".binding.yaml" = 205 bytes < 255-byte filename limit on ext4/xfs/NTFS/APFS/btrfs`) and remains within `VARCHAR(255)` for typical persistence. Schemas updated: `binding.schema.json`, `module-schema.schema.json`, `module-meta.schema.json`, `acl-config.schema.json` (callers/targets pattern strings, kept symmetric with module_id). Algorithm A01 (`directory_to_canonical_id`) Step 7 threshold updated. Conformance test T01-006 boundary updated. Forward-compatible relaxation: implementations conforming to this revision MUST accept IDs up to 192; older 128-only implementations cannot load IDs in the 129–192 range from newer SDKs. |
+| 1.7.0-draft | 2026-05-04 | **§6.1** — formalised compound operators `$or` (list[object]) and `$not` (object) as conditions sub-fields, with required cross-mode (sync/async) evaluator semantics and fail-closed rules for empty `$not` (resolves issue #46 / `planning/acl-compound-operators-spec-patch`). **§6.2.1** (new) — formalised compound operators `$or` and `$not` as the first element of `callers`/`targets` pattern arrays, with the four allowed forms tabulated and a reservation rule preventing literal-token matching (resolves issue #46). All four behaviour shapes are already implemented uniformly in apcore-python, apcore-typescript, and apcore-rust at v0.20.0 and verified by `conformance/fixtures/acl_evaluation.json`; no SDK behaviour change. **§5.1** — `Executor.validate()` description aligned with §12.8: "Steps 1–5 and Step 7" (skipping Step 6 Middleware Before Chain) plus optional module-level preflight, replacing the stale "Steps 1–6" wording that pre-dated the v0.18 step swap (resolves issue #47 / `planning/validate-step-count-spec-patch`). No SDK behaviour change. |
