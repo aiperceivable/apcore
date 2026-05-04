@@ -99,6 +99,10 @@ nav:
       - ACL Configuration: guides/acl-configuration.md
       - Testing Modules: guides/testing-modules.md
       - Troubleshooting: guides/troubleshooting.md
+      - "Cookbook — Streaming": guides/cookbook-streaming.md
+      - "Cookbook — Approval Flow": guides/cookbook-approval-flow.md
+      - "Cookbook — Observability": guides/cookbook-observability.md
+      - "Cookbook — Cancellation": guides/cookbook-cancellation.md
       - Adapter Development: guides/adapter-development.md
       - Multi-Language Development: guides/multi-language.md
       - Integrating into Existing Projects: guides/integrating-existing-projects.md
