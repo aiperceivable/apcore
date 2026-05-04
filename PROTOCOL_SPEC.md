@@ -2,7 +2,7 @@
 
 > **Canonical Specification** - This document is the authoritative specification for the apcore protocol
 
-> Version: 1.7.0-draft
+> Version: 1.8.0-draft
 > Status: Draft Specification (RFC 2119 Conformant)
 > Stability: Specification content is stable, pending reference implementation verification
 > Last Updated: 2026-05-04
@@ -3649,6 +3649,33 @@ Explorer-style UIs that display module listings **SHOULD**:
 
 This "backend-driven visibility" approach ensures the UI always matches the actual permission state without maintaining a parallel authorization model.
 
+### 6.7 Canonical System Module Catalogue
+
+This section documents the canonical `system.*` module catalogue. Conformant SDKs at the indicated level **MUST** ship modules with these exact Canonical IDs, equivalent semantics, and equivalent input/output schemas (verified by `conformance/fixtures/system_modules_hardening.json`). The full JSON Schema definitions live in each SDK's reference source — see `apcore-python/src/apcore/sys_modules/`, `apcore-typescript/src/sys_modules/`, `apcore-rust/src/sys_modules/`. This catalogue is the contract surface; the SDK source is the schema source of truth.
+
+| Canonical ID | Layer | Read/Write | Required at | Description |
+|---|---|---|---|---|
+| `system.health.summary`        | Observability  | Read  | Level 1 | Aggregated health overview (counts by status, per-module entries) |
+| `system.health.module`         | Observability  | Read  | Level 1 | Detailed health for a single module (latency p50/p99, error count, error rate) |
+| `system.manifest.module`       | Introspection  | Read  | Level 1 | Full manifest for one module (input_schema, output_schema, annotations, tags, dependencies, source path) |
+| `system.manifest.full`         | Introspection  | Read  | Level 1 | Full manifest for all registered modules |
+| `system.usage.summary`         | Observability  | Read  | Level 1 | Aggregated usage statistics (calls, errors, latency) |
+| `system.usage.module`          | Observability  | Read  | Level 1 | Per-module usage statistics |
+| `system.control.update_config` | Administration | Write | Level 2 | Update a runtime configuration value by dot-path key (audit-logged) |
+| `system.control.reload_module` | Administration | Write | Level 2 | Hot-reload a module by `module_id` or `path_filter` glob (mutually exclusive); MAY cascade to dependents |
+| `system.control.toggle_feature`| Administration | Write | Level 2 | Enable/disable a registered module via `ToggleState`; persists via `OverridesStore` if configured |
+
+**Cross-cutting requirements:**
+
+1. **Registration MUST use `register_internal()`** (or equivalent privileged API) per §6.6.1 — the public `register()` MUST reject any `module_id` starting with `system.`.
+2. **Read modules** (`system.health.*`, `system.usage.*`, `system.manifest.*`) **MUST NOT** mutate framework state. Calling them with any inputs MUST be safe to repeat.
+3. **Write modules** (`system.control.*`) **MUST** emit audit events through the framework `EventEmitter` and **SHOULD** declare `annotations.requires_approval = true` to surface the Approval Gate (§7) for destructive operations.
+4. **`system.control.reload_module`** input **MUST** accept exactly one of `module_id` (exact match) or `path_filter` (glob); supplying both or neither MUST raise a validation error.
+5. **`system.control.update_config`** **MUST** redact sensitive keys (per §10 `obs.redaction.sensitive_keys`) in both `old_value` and `new_value` fields of its output and audit event.
+6. **`system.control.toggle_feature`** state **MUST** persist via the configured `OverridesStore` so toggle state survives process restart; without persistence, toggle decisions revert to the registered defaults on reload.
+
+**Conformance note:** SDKs declaring Level 1 conformance (§ docs/spec/conformance.md §3) MUST register the 6 read modules. SDKs declaring Level 2 MUST additionally register the 3 control modules. Implementations MAY register additional modules under `system.<vendor>.*` namespaces — these are NOT covered by this canonical catalogue and MUST NOT collide with the names above.
+
 ---
 
 ## 7. Approval System
@@ -3775,6 +3802,14 @@ Executor Pipeline:
   Step 10: Middleware After Chain
   Step 11: Result Return
 ```
+
+**Step 11 Contract:**
+
+1. `Executor.call()` **MUST** return the module's output dict unchanged (no framework envelope). Output Validation (Step 9) **MUST** have already passed before Step 11 returns.
+2. `Executor.stream()` **MUST** complete the async iterator after the last chunk; the final accumulated dict (recursive deep-merge of all yielded chunks per §5 streaming semantics) is what Step 9 validates.
+3. `Executor.validate()` **MUST** return a `PreflightResult` (§12.2) carrying per-check status, a `requires_approval` flag, and the duck-type-compatible `valid` / `errors` properties.
+4. Trace metadata (`trace_id`, `caller_id`, `call_chain`, `executor`) **MUST** be carried on the `Context` object, **MUST NOT** be attached to the return value.
+5. Side-channel emissions (events, OTel spans, audit log entries) **MAY** continue after Step 11 returns; the return value **MUST NOT** depend on side-channel completion.
 
 **Step 5 Algorithm:**
 
@@ -6646,7 +6681,7 @@ stream(inputs, context) → AsyncIterable<Record>
 **Semantics:**
 
 - Each yielded record is a partial result chunk; the framework does not prescribe chunk structure.
-- The complete result is the shallow merge of all yielded chunks (left-to-right object spread).
+- The complete result is the **recursive deep merge** of all yielded chunks. Implementations **MUST** recurse into nested objects and **MUST** replace (not concatenate) arrays at matching keys. Recursion depth **MUST** be capped to prevent stack exhaustion via adversarial chunk shapes; the canonical default is 32. See `docs/spec/algorithms.md` §A24 `deep_merge_chunks` for pseudocode and `conformance/fixtures/stream_aggregation.json` for the 9 cross-language test cases.
 - `execute()` MUST remain implemented as the non-streaming fallback.
 - Module descriptors SHOULD declare `annotations.streaming = true` when `stream()` is provided.
 
@@ -7458,3 +7493,4 @@ Each language SDK **SHOULD** provide idiomatic module definition syntax. The fol
 | 1.6.0-draft | 2026-03-29 | Added §9.4–9.14 Config Bus Architecture — namespace registration, unified configuration file with legacy/namespace mode detection, mount mechanism for third-party integration, per-namespace environment variable overrides, namespace-aware access API (get/set/bind/namespace), extended validation algorithm A12-NS, hot-reload with namespace support, cross-language implementation requirements (Python/TypeScript/Rust/Go/Java), ecosystem integration patterns (apcore packages, third-party packages, framework auto-registration), optional config discovery; Added error codes CONFIG_NAMESPACE_DUPLICATE, CONFIG_NAMESPACE_RESERVED, CONFIG_ENV_PREFIX_CONFLICT, CONFIG_MOUNT_ERROR, CONFIG_BIND_ERROR; Added `_config` reserved namespace for strict/allow_unknown meta-configuration |
 | 1.6.0-draft | 2026-04-08 | §2.7 EBNF constraint #1 — `canonical_id` maximum length raised from 128 to 192 characters to accommodate deep-namespace languages (Java/.NET/Spring FQN-derived IDs). 192 is filesystem-safe (`192 + ".binding.yaml" = 205 bytes < 255-byte filename limit on ext4/xfs/NTFS/APFS/btrfs`) and remains within `VARCHAR(255)` for typical persistence. Schemas updated: `binding.schema.json`, `module-schema.schema.json`, `module-meta.schema.json`, `acl-config.schema.json` (callers/targets pattern strings, kept symmetric with module_id). Algorithm A01 (`directory_to_canonical_id`) Step 7 threshold updated. Conformance test T01-006 boundary updated. Forward-compatible relaxation: implementations conforming to this revision MUST accept IDs up to 192; older 128-only implementations cannot load IDs in the 129–192 range from newer SDKs. |
 | 1.7.0-draft | 2026-05-04 | **§6.1** — formalised compound operators `$or` (list[object]) and `$not` (object) as conditions sub-fields, with required cross-mode (sync/async) evaluator semantics and fail-closed rules for empty `$not` (resolves issue #46 / `planning/acl-compound-operators-spec-patch`). **§6.2.1** (new) — formalised compound operators `$or` and `$not` as the first element of `callers`/`targets` pattern arrays, with the four allowed forms tabulated and a reservation rule preventing literal-token matching (resolves issue #46). All four behaviour shapes are already implemented uniformly in apcore-python, apcore-typescript, and apcore-rust at v0.20.0 and verified by `conformance/fixtures/acl_evaluation.json`; no SDK behaviour change. **§5.1** — `Executor.validate()` description aligned with §12.8: "Steps 1–5 and Step 7" (skipping Step 6 Middleware Before Chain) plus optional module-level preflight, replacing the stale "Steps 1–6" wording that pre-dated the v0.18 step swap (resolves issue #47 / `planning/validate-step-count-spec-patch`). No SDK behaviour change. |
+| 1.8.0-draft | 2026-05-04 | **§5 streaming semantics** — corrected "shallow merge" to "**recursive deep merge** with depth cap" matching all three SDK implementations (`apcore-python/src/apcore/executor.py:_deep_merge`, `apcore-typescript/src/executor.ts:deepMergeChunk`, `apcore-rust/src/executor.rs:deep_merge_chunks`) and `conformance/fixtures/stream_aggregation.json` (9 cases). Added algorithm `A24 deep_merge_chunks` to `docs/spec/algorithms.md` formalising the merge with the canonical 32-depth cap (resolves issue #49). **§7.4 Step 11 Contract** (new block after the pipeline diagram) — five-point normative contract specifying: `call()` returns module output unchanged (no envelope), `stream()` final accumulated dict is what Step 9 validates, `validate()` returns `PreflightResult`, trace metadata lives on `Context` (not the return value), side-channel emissions are independent (resolves issue #50). **§6.7 Canonical System Module Catalogue** (new) — enumerates the 9 canonical `system.*` modules with read/write classification, conformance level (Level 1 for the 6 read modules; Level 2 for the 3 control modules), and 6 cross-cutting requirements (registration via `register_internal()`, audit events for write modules, `system.control.reload_module` mutually-exclusive `module_id`/`path_filter`, sensitive-key redaction in `update_config` output, persistence requirement for `toggle_feature`). Authoritative JSON Schemas remain in SDK source to avoid drift; this section is the contract surface (resolves issue #51). All three patches: zero SDK behaviour change. |
