@@ -36,6 +36,62 @@ The approval gate is inserted between ACL Enforcement (Step 4) and Middleware Be
 
 **Annotation access note:** Modules created via `@module(annotations={"requires_approval": True})` store annotations as a `dict`, not a `ModuleAnnotations` dataclass. Implementations **must** handle both forms when checking `requires_approval`.
 
+### Approval Lifecycle State Machine
+
+```
+                         ┌──────────────────────────────────────────────────┐
+                         │         caller_id invokes target module          │
+                         │            with requires_approval=true            │
+                         └──────────────────┬───────────────────────────────┘
+                                            ▼
+                                  ┌─────────────────────┐
+                  no _approval_token │   request_approval()│ _approval_token in args
+                          ┌────────│   (initial entry)   │────────┐
+                          │         └─────────────────────┘         │
+                          │                                          ▼
+                          │                             ┌─────────────────────┐
+                          │                             │   check_approval()  │
+                          │                             │   (Phase B resume)  │
+                          │                             └──────────┬──────────┘
+                          │                                        │
+                          ▼                                        ▼
+                   ┌────────────────────────────────────────────────────┐
+                   │                ApprovalResult.status               │
+                   └────┬──────────┬──────────┬──────────┬──────────────┘
+                        │          │          │          │
+                  approved      rejected    timeout    pending (Phase B only)
+                        │          │          │          │
+                        ▼          ▼          ▼          ▼
+                 ┌──────────┐ ┌─────────┐┌─────────┐┌──────────────────┐
+                 │ proceed  │ │  raise  ││  raise  ││  raise           │
+                 │ to Step 6│ │ Approval││ Approval││  ApprovalPending │
+                 │ (Middle  │ │ Denied  ││ Timeout ││  Error           │
+                 │ ware     │ │ Error   ││ Error   ││  (caller_id retries
+                 │ Before   │ │ APPROVAL││ APPROVAL││   later with     │
+                 │ Chain)   │ │ _DENIED ││ _TIMEOUT││   _approval_token)
+                 └──────────┘ └─────────┘└─────────┘└────────┬─────────┘
+                                                              │
+                                                              │ caller_id retries
+                                                              │ with _approval_token
+                                                              │ in arguments
+                                                              ▼
+                                                     (loop back to top —
+                                                      pipeline re-enters
+                                                      from Step 1; pre-approval
+                                                      middleware side effects
+                                                      re-execute on resume,
+                                                      see PROTOCOL_SPEC §7)
+```
+
+**Status legend:**
+
+| Status     | Result                                          | Phase     | Retryable                        |
+|------------|-------------------------------------------------|-----------|----------------------------------|
+| `approved` | Pipeline continues to Step 6                    | A and B   | n/a                              |
+| `rejected` | `ApprovalDeniedError` (`APPROVAL_DENIED`)       | A and B   | No                               |
+| `timeout`  | `ApprovalTimeoutError` (`APPROVAL_TIMEOUT`)     | A and B   | Yes (handler-defined)            |
+| `pending`  | `ApprovalPendingError` (`APPROVAL_PENDING`)     | B only    | Yes via `_approval_token` retry  |
+
 ### ApprovalHandler Protocol
 
 === "Python"

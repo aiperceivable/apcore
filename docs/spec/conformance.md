@@ -595,7 +595,124 @@ Implementations declaring conformance **MUST** list any of these deviations that
 
 ---
 
-## 8. References
+## 8. Conformance Test Fixtures
+
+The repository ships **43 cross-language fixture files** under `conformance/fixtures/` covering **370 test cases**. Each fixture is a JSON document of shape `{ "description": "...", "test_cases": [...] }` consumed by all three SDK test runners (apcore-python, apcore-typescript, apcore-rust). A SDK declaring a conformance level **MUST** pass every fixture whose tested feature is required at that level (see §2 Level 0, §3 Level 1, §4 Level 2 for the per-feature breakdown).
+
+### 8.1 Fixture Inventory
+
+| Fixture | Cases | Tested feature |
+|---------|------:|----------------|
+| [`acl_evaluation`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/acl_evaluation.json) | 21 | ACL rule evaluation, first-match-wins (spec §6) |
+| [`annotations_extra_round_trip`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/annotations_extra_round_trip.json) | 8 | `ModuleAnnotations.extra` wire-format round-trip (spec §4.4) |
+| [`approval_gate`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/approval_gate.json) | 5 | Approval gate enforcement at Executor Step 5 |
+| [`async_task_evolution`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/async_task_evolution.json) | 10 | Pluggable `TaskStore`, retry with backoff |
+| [`binding_errors`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/binding_errors.json) | 6 | Binding error message conformance (DECLARATIVE_CONFIG_SPEC §7.2) |
+| [`call_chain`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/call_chain.json) | 9 | Call-chain safety guard (Algorithm A20) |
+| [`config_defaults`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/config_defaults.json) | 18 | Config default values cross-SDK identity |
+| [`config_env`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/config_env.json) | 13 | Env-var → Config path mapping (Algorithm A12-NS, spec §9.8) |
+| [`context_serialization`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/context_serialization.json) | 8 | Context JSON round-trip (spec §5.7) |
+| [`context_trace_parent`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/context_trace_parent.json) | 10 | `Context.create` trace_parent input handling |
+| [`contextual_audit`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/contextual_audit.json) | 7 | Contextual audit trail for control-plane modules (#45.2) |
+| [`dependency_version_constraints`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/dependency_version_constraints.json) | 15 | Dependency version constraint enforcement (spec §5) |
+| [`error_codes`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/error_codes.json) | 6 | Error code collision detection (Algorithm A17, spec §8.4) |
+| [`error_fingerprinting`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/error_fingerprinting.json) | 5 | Error fingerprint composition for ErrorHistory dedup |
+| [`event_management_hardening`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/event_management_hardening.json) | 10 | SubscriberFactory parity, built-in subscribers |
+| [`event_naming`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/event_naming.json) | 8 | Event-name canonicalization (Issue #36 / D-34) |
+| [`identity_system`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/identity_system.json) | 8 | Identity construction, propagation (AC-014, AC-015) |
+| [`middleware_hardening`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/middleware_hardening.json) | 10 | Context namespacing, CircuitBreaker |
+| [`middleware_on_error_recovery`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/middleware_on_error_recovery.json) | 4 | Middleware after-chain error recovery |
+| [`multi_module_discovery`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/multi_module_discovery.json) | 8 | Multi-class discovery, snake_case conversion, conflict detection |
+| [`normalize_id`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/normalize_id.json) | 16 | ID normalization (Algorithm A02) |
+| [`observability_hardening`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/observability_hardening.json) | 10 | Pluggable storage, BatchSpan, OTel parity |
+| [`overrides_store`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/overrides_store.json) | 5 | OverridesStore pluggable persistence |
+| [`pattern_matching`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/pattern_matching.json) | 12 | ACL pattern matching (Algorithm A09) |
+| [`pipeline_failfast_config`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/pipeline_failfast_config.json) | 4 | Pipeline configuration fail-fast (Issue #33) |
+| [`pipeline_hardening`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/pipeline_hardening.json) | 5 | Pipeline execution hardening: fail-fast, replace-step, run_until |
+| [`pipeline_step_middleware`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/pipeline_step_middleware.json) | 6 | Pipeline StepMiddleware lifecycle (Issue #33) |
+| [`redaction_config`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/redaction_config.json) | 4 | Redaction config via `obs.redaction.regex_patterns` / `sensitive_keys` |
+| [`reload_path_filter`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/reload_path_filter.json) | 4 | Granular reload via `path_filter` glob (`system.control.reload_module`) |
+| [`schema_hardening_cache`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/schema_hardening_cache.json) | 5 | Content-addressable schema cache (SHA-256 of canonical JSON) |
+| [`schema_hardening_constraints`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/schema_hardening_constraints.json) | 12 | Numerical constraints (minimum/maximum/exclusive*, multipleOf) |
+| [`schema_hardening_formats`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/schema_hardening_formats.json) | 9 | Semantic format validation (date-time, date, email, uri, uuid, etc.) |
+| [`schema_hardening_recursive`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/schema_hardening_recursive.json) | 6 | Recursive schema support (`$ref` self-reference, depth 1–5) |
+| [`schema_hardening_union`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/schema_hardening_union.json) | 8 | Union type evaluation (anyOf / oneOf / allOf) |
+| [`schema_validation`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/schema_validation.json) | 16 | Schema validation edge cases (spec §4.15) |
+| [`sensitive_keys_default`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/sensitive_keys_default.json) | 4 | Canonical default `obs.redaction.sensitive_keys` list (D-54) |
+| [`specificity`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/specificity.json) | 10 | ACL pattern specificity scoring (Algorithm A10) |
+| [`storage_backend`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/storage_backend.json) | 5 | StorageBackend pluggable persistence (shared by ErrorHistory) |
+| [`stream_aggregation`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/stream_aggregation.json) | 9 | Stream chunk aggregation (recursive deep merge) |
+| [`system_modules_hardening`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/system_modules_hardening.json) | 10 | System modules hardening: persistence, audit, Prometheus |
+| [`trace_context`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/trace_context.json) | 8 | W3C TraceContext alignment (Issue #35) |
+| [`usage_exporter`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/usage_exporter.json) | 3 | `UsageExporter` push interface (#45 §3, D-55) |
+| [`version_negotiation`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/version_negotiation.json) | 10 | Version negotiation (Algorithm A14) |
+| **Total** | **370** | **43 fixtures** |
+
+### 8.2 Loading Fixtures from a Test Runner
+
+```python title="apcore-python — pytest example"
+import json, pathlib
+
+FIXTURES = pathlib.Path("conformance/fixtures")
+
+def load_fixture(name: str) -> dict:
+    return json.loads((FIXTURES / f"{name}.json").read_text())
+
+def test_acl_evaluation():
+    fixture = load_fixture("acl_evaluation")
+    for case in fixture["test_cases"]:
+        # ... evaluate `case` against your ACL implementation,
+        # asserting the case's `expected` outcome
+        ...
+```
+
+```typescript title="apcore-typescript — vitest example"
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+
+const FIXTURES = 'conformance/fixtures';
+
+function loadFixture(name: string) {
+  return JSON.parse(fs.readFileSync(path.join(FIXTURES, `${name}.json`), 'utf-8'));
+}
+
+test('acl_evaluation', () => {
+  const fixture = loadFixture('acl_evaluation');
+  for (const c of fixture.test_cases) {
+    // ...
+  }
+});
+```
+
+```rust title="apcore-rust — cargo test example"
+use std::fs;
+use serde_json::Value;
+
+fn load_fixture(name: &str) -> Value {
+    let path = format!("conformance/fixtures/{}.json", name);
+    serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap()
+}
+
+#[test]
+fn acl_evaluation() {
+    let fixture = load_fixture("acl_evaluation");
+    for case in fixture["test_cases"].as_array().unwrap() {
+        // ...
+    }
+}
+```
+
+### 8.3 Adding a New Fixture
+
+1. Create `conformance/fixtures/<name>.json` with `{ "description": "...", "test_cases": [...] }`.
+2. Each case **MUST** carry a stable `id`, the input fields, and the `expected` outcome (`{ "expected": ... }` or `{ "expected_error": "<CODE>" }`).
+3. Use canonical terminology: `caller_id` / `target_id` (never bare `caller` / `target`).
+4. Add a row to the table in §8.1 above; bump the total.
+5. Reference the fixture from the relevant spec section so the bidirectional traceability is maintained.
+
+---
+
+## 9. References
 
 - [PROTOCOL_SPEC §12 — SDK Implementation Guide](../../PROTOCOL_SPEC.md#12-sdk-implementation-guide)
 - [PROTOCOL_SPEC §12.4 — Conformance Testing Requirements](../../PROTOCOL_SPEC.md#124-conformance-testing-requirements)
