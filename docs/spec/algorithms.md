@@ -1914,6 +1914,61 @@ additionalProperties: false
 
 ---
 
+## A24. Stream Chunk Aggregation
+
+### A24.1 deep_merge_chunks (Recursive Deep Merge with Depth Cap)
+
+**Purpose.** Aggregate the chunks yielded by a streaming module's `stream()` generator into the final output dict that the executor validates against `output_schema`.
+
+**Source section.** PROTOCOL_SPEC §5 streaming semantics. Verified by `conformance/fixtures/stream_aggregation.json` (9 cases).
+
+```
+Algorithm: deep_merge_chunks(chunks, max_depth=32)
+
+Input:
+  chunks    — Ordered list of dict objects yielded by module.stream()
+  max_depth — Maximum recursion depth (canonical default 32)
+
+Output:
+  result — A single dict that is the recursive deep-merge of all chunks
+
+Steps:
+  1. result ← {}
+  2. For each chunk in chunks (in order):
+       deep_merge(result, chunk, depth=0, max_depth=max_depth)
+  3. Return result
+
+Helper: deep_merge(base, override, depth, max_depth)
+  1. If depth >= max_depth → Return  (do not recurse further; truncate)
+  2. For each (key, value) in override:
+       a. If key NOT in base:
+            base[key] ← value
+       b. Else if base[key] is dict AND value is dict:
+            deep_merge(base[key], value, depth+1, max_depth)
+       c. Else:
+            base[key] ← value   (overwrite — arrays REPLACE, primitives overwrite)
+
+Properties:
+  - Arrays are replaced (not concatenated) at matching keys.
+  - null overwrites (does not delete) the previous value.
+  - Recursion is depth-capped to prevent stack exhaustion via adversarial input.
+  - Beyond the depth cap, sub-objects are kept as-is from the override
+    (the truncation point loses no data, only stops further traversal).
+```
+
+**Reference implementations:**
+
+- `apcore-python/src/apcore/executor.py` — `_deep_merge()` (`_MAX_MERGE_DEPTH = 32`)
+- `apcore-typescript/src/executor.ts` — `deepMergeChunk()`
+- `apcore-rust/src/executor.rs` — `deep_merge_chunks()` and `deep_merge_value()`
+
+**Notes:**
+
+- Implementations **MAY** raise `STREAM_CHUNK_NOT_OBJECT` if a yielded chunk is not a dict; the canonical Python implementation matches this on `AttributeError` and the Rust mirror raises `STREAM_CHUNK_NOT_OBJECT` explicitly.
+- The merge is performed in-place on an accumulator dict; iteration over the chunk stream is single-pass.
+
+---
+
 ## 17. References
 
 - [PROTOCOL_SPEC §2 — Naming Specification](../../PROTOCOL_SPEC.md#2-naming-specification)
