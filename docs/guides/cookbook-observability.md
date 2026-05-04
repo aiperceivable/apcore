@@ -68,27 +68,31 @@ End-to-end example: emit OpenTelemetry traces and structured logs from your apco
 
 === "Rust"
     ```rust
-    use apcore::APCore;
-    use serde_json::json;
+    use apcore::{APCore, Context};
+    use serde_json::{json, Value};
 
     let mut client = APCore::new();
-    client.module()
-        .id("user.create")
-        .input_schema(json!({
+    client.module(
+        "user.create",
+        "Create a user account",
+        json!({
             "type":"object",
             "properties":{
-                "email":   {"type":"string","format":"email"},
-                "password":{"type":"string","x-sensitive":true},
-                "name":    {"type":"string"},
-                "api_key": {"type":"string","x-sensitive":true}
+                "email":    {"type":"string","format":"email"},
+                "password": {"type":"string","x-sensitive": true},
+                "name":     {"type":"string"},
+                "api_key":  {"type":"string","x-sensitive": true}
             },
             "required":["email","password"]
-        }))
-        .output_schema(json!({"type":"object","properties":{"user_id":{"type":"string"}}}))
-        .execute(|inputs, _ctx| async move {
-            Ok(json!({"user_id": db::insert(inputs).await?}))
-        })
-        .register();
+        }),
+        json!({"type":"object","properties":{"user_id":{"type":"string"}}}),
+        None, vec![], None, None, vec![], None,
+        |inputs: Value, _ctx: &Context<Value>| {
+            Box::pin(async move {
+                Ok(json!({"user_id": db::insert(inputs).await?}))
+            })
+        },
+    )?;
     ```
 
 ## 2. Configure redaction

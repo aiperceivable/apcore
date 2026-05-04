@@ -67,27 +67,40 @@ End-to-end example: cancel a long-running module mid-flight from the caller side
 === "Rust"
     ```rust
     use apcore::{APCore, Context};
-    use serde_json::json;
+    use serde_json::{json, Value};
+    use std::sync::Arc;
     use std::time::Duration;
     use tokio::time::sleep;
 
+    // client.module() takes positional arguments: the closure is the handler.
+    // Cancellation is exposed as the field `ctx.cancel_token: Option<CancelToken>`
+    // (NOT a method); call .check() on the inner token to raise on cancel.
     let mut client = APCore::new();
-    client.module()
-        .id("demo.slow_task")
-        .description("Simulates a long-running task")
-        .input_schema(json!({"type": "object", "properties": {"steps": {"type": "integer"}}, "required": ["steps"]}))
-        .output_schema(json!({"type": "object", "properties": {"completed": {"type": "integer"}}}))
-        .execute(|inputs, ctx: Context| async move {
-            let steps = inputs["steps"].as_i64().unwrap();
-            let mut completed = 0;
-            for _ in 0..steps {
-                if let Some(tok) = ctx.cancel_token() { tok.check()?; }
-                sleep(Duration::from_millis(50)).await;
-                completed += 1;
-            }
-            Ok(json!({"completed": completed}))
-        })
-        .register();
+    client.module(
+        "demo.slow_task",
+        "Simulates a long-running task",
+        json!({"type":"object","properties":{"steps":{"type":"integer"}},"required":["steps"]}),
+        json!({"type":"object","properties":{"completed":{"type":"integer"}}}),
+        None,             // documentation
+        vec![],           // tags
+        None,             // version
+        None,             // metadata
+        vec![],           // examples
+        None,             // display
+        |inputs: Value, ctx: &Context<Value>| {
+            let cancel_token = ctx.cancel_token.clone();
+            Box::pin(async move {
+                let steps = inputs["steps"].as_i64().unwrap();
+                let mut completed = 0;
+                for _ in 0..steps {
+                    if let Some(ref t) = cancel_token { t.check()?; }
+                    sleep(Duration::from_millis(50)).await;
+                    completed += 1;
+                }
+                Ok(json!({"completed": completed}))
+            })
+        },
+    )?;
     ```
 
 ## 2. The Caller (firing cancellation)
@@ -136,11 +149,18 @@ End-to-end example: cancel a long-running module mid-flight from the caller side
 
 === "Rust"
     ```rust
-    use apcore::{CancelToken, Context, ExecutionCancelledError};
-    use std::sync::Arc;
+    use apcore::cancel::CancelToken;
+    use apcore::context::{Context, Identity};
+    use apcore::errors::ErrorCode;
+    use serde_json::{json, Value};
+    use std::collections::HashMap;
+    use std::time::Duration;
 
-    let token = Arc::new(CancelToken::new());
-    let ctx = Context::create().with_cancel_token(token.clone());
+    let token = CancelToken::new();   // CancelToken: Clone — share by clone(), no Arc needed.
+
+    let identity = Identity::new("user".into(), "user".into(), vec![], HashMap::new());
+    let mut ctx: Context<Value> = Context::new(identity);
+    ctx.cancel_token = Some(token.clone());   // public field — no setter
 
     let token_for_timer = token.clone();
     tokio::spawn(async move {
@@ -149,9 +169,9 @@ End-to-end example: cancel a long-running module mid-flight from the caller side
     });
 
     match client.call("demo.slow_task", json!({"steps": 10}), Some(ctx)).await {
-        Err(e) if e.is::<ExecutionCancelledError>() => println!("Cancelled: {e}"),
+        Err(e) if e.code == ErrorCode::ExecutionCancelled => println!("Cancelled: {e}"),
         other => { other?; }
-    }
+    };
     ```
 
 ## 3. Pitfalls

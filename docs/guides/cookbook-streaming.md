@@ -30,41 +30,53 @@ If the module raises mid-stream, `on_error` middleware runs as usual.
 
 ## 1. The Module (chunk producer)
 
+> A streaming module is **a class (or struct) implementing both `execute()` and an async `stream()` method**, registered via `client.register(module_id, instance)`. The `@client.module` / `client.module({...})` decorator/factory APIs only register single-output modules — they do not have a streaming surface.
+
 === "Python"
     ```python
     from typing import AsyncIterator, Any
     from apcore import APCore
     from apcore.context import Context
 
-    client = APCore()
-
-    @client.module(
-        id="demo.search_stream",
-        description="Search a corpus and stream hits as they're found",
-        input_schema={"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]},
-        output_schema={
-            "type": "object",
-            "properties": {
-                "hits": {"type": "array", "items": {"type": "string"}},
-                "total": {"type": "integer"},
-            },
+    INPUT_SCHEMA = {
+        "type": "object",
+        "properties": {"query": {"type": "string"}},
+        "required": ["query"],
+    }
+    OUTPUT_SCHEMA = {
+        "type": "object",
+        "properties": {
+            "hits": {"type": "array", "items": {"type": "string"}},
+            "total": {"type": "integer"},
         },
-    )
-    async def search_stream(query: str, context: Context) -> AsyncIterator[dict[str, Any]]:
-        # First chunk: announce we started
-        yield {"hits": [], "total": 0}
+    }
 
-        for i, hit in enumerate(await fake_corpus_search(query)):
-            # Cooperative cancellation — see cookbook-cancellation
-            if context.cancel_token: context.cancel_token.check()
+    class SearchStream:
+        description = "Search a corpus and stream hits as they're found"
+        input_schema = INPUT_SCHEMA
+        output_schema = OUTPUT_SCHEMA
 
-            # Each chunk overlays onto the accumulator. Arrays REPLACE,
-            # so we re-emit the running total list each time.
-            running = getattr(context.data, "_demo_hits", [])
-            running.append(hit)
-            context.data["_demo_hits"] = running
+        # Required non-streaming fallback. The framework calls execute()
+        # when no stream() is requested or as the validation path.
+        def execute(self, inputs: dict[str, Any], context: Context) -> dict[str, Any]:
+            return {"hits": [], "total": 0}
 
-            yield {"hits": list(running), "total": len(running)}
+        async def stream(
+            self, inputs: dict[str, Any], context: Context
+        ) -> AsyncIterator[dict[str, Any]]:
+            yield {"hits": [], "total": 0}
+
+            running: list[str] = []
+            for hit in await fake_corpus_search(inputs["query"]):
+                # Cooperative cancellation — see cookbook-cancellation
+                if context.cancel_token:
+                    context.cancel_token.check()
+                running.append(hit)
+                # Arrays REPLACE on deep-merge; re-emit the full running list.
+                yield {"hits": list(running), "total": len(running)}
+
+    client = APCore()
+    client.register("demo.search_stream", SearchStream())
     ```
 
 === "TypeScript"
@@ -74,15 +86,24 @@ If the module raises mid-stream, `on_error` middleware runs as usual.
 
     const client = new APCore();
 
-    client.module({
-      id: 'demo.search_stream',
-      description: 'Search a corpus and stream hits as they\'re found',
+    const searchStream = {
+      description: "Search a corpus and stream hits as they're found",
       inputSchema: Type.Object({ query: Type.String() }),
       outputSchema: Type.Object({
         hits: Type.Array(Type.String()),
         total: Type.Integer(),
       }),
-      execute: async function* (inputs, context: Context) {
+
+      // Required non-streaming fallback.
+      async execute(inputs: Record<string, unknown>, _context: Context) {
+        return { hits: [], total: 0 };
+      },
+
+      // Streaming method: async generator yielding partial outputs.
+      async *stream(
+        inputs: Record<string, unknown>,
+        context: Context,
+      ): AsyncGenerator<Record<string, unknown>> {
         yield { hits: [], total: 0 };
 
         const running: string[] = [];
@@ -92,36 +113,63 @@ If the module raises mid-stream, `on_error` middleware runs as usual.
           yield { hits: [...running], total: running.length };
         }
       },
-    });
+    };
+
+    client.register('demo.search_stream', searchStream);
     ```
 
 === "Rust"
     ```rust
-    use apcore::{APCore, Context, StreamModule};
-    use async_stream::try_stream;
-    use serde_json::json;
+    use apcore::{APCore, ChunkStream, Context, Module};
+    use apcore::errors::ModuleError;
+    use async_stream::stream;
+    use async_trait::async_trait;
+    use serde_json::{json, Value};
 
-    let mut client = APCore::new();
-    client.module()
-        .id("demo.search_stream")
-        .description("Search a corpus and stream hits as they're found")
-        .input_schema(json!({"type":"object","properties":{"query":{"type":"string"}},"required":["query"]}))
-        .output_schema(json!({"type":"object","properties":{
-            "hits":{"type":"array","items":{"type":"string"}},
-            "total":{"type":"integer"}
-        }}))
-        .stream(|inputs, ctx: Context| {
-            try_stream! {
-                yield json!({"hits": [], "total": 0});
-                let mut running: Vec<String> = vec![];
-                for hit in fake_corpus_search(inputs["query"].as_str().unwrap()).await? {
-                    if let Some(t) = ctx.cancel_token() { t.check()?; }
+    struct SearchStream;
+
+    #[async_trait]
+    impl Module for SearchStream {
+        fn input_schema(&self) -> Value {
+            json!({"type":"object",
+                    "properties":{"query":{"type":"string"}},
+                    "required":["query"]})
+        }
+        fn output_schema(&self) -> Value {
+            json!({"type":"object","properties":{
+                "hits":{"type":"array","items":{"type":"string"}},
+                "total":{"type":"integer"}
+            }})
+        }
+        fn description(&self) -> &'static str {
+            "Search a corpus and stream hits as they're found"
+        }
+
+        async fn execute(&self, _inputs: Value, _ctx: &Context<Value>) -> Result<Value, ModuleError> {
+            Ok(json!({"hits": [], "total": 0}))
+        }
+
+        // Streaming method returning Option<ChunkStream>. Return None to fall
+        // back to execute(); return Some(...) to stream chunks.
+        fn stream(&self, inputs: Value, ctx: &Context<Value>) -> Option<ChunkStream> {
+            let query = inputs["query"].as_str().unwrap_or_default().to_string();
+            let cancel_token = ctx.cancel_token.clone();
+            Some(Box::pin(stream! {
+                yield Ok(json!({"hits": [], "total": 0}));
+                let mut running: Vec<String> = Vec::new();
+                for hit in fake_corpus_search(&query).await {
+                    if let Some(ref t) = cancel_token {
+                        if let Err(e) = t.check() { yield Err(e.into()); return; }
+                    }
                     running.push(hit);
-                    yield json!({"hits": running, "total": running.len()});
+                    yield Ok(json!({"hits": running, "total": running.len()}));
                 }
-            }
-        })
-        .register();
+            }))
+        }
+    }
+
+    let client = APCore::new();
+    client.register("demo.search_stream", Box::new(SearchStream))?;
     ```
 
 ## 2. The Caller (chunk consumer)

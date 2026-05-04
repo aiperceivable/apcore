@@ -147,7 +147,8 @@ use apcore::APCore;
 async fn main() {
     let c = APCore::new();
     c.discover().await.unwrap();
-    for m in c.list_modules().await { println!("{:?}", m); }
+    // list_modules takes optional tag-filter and prefix-filter; pass None for "all".
+    for m in c.list_modules(None, None) { println!("{:?}", m); }
 }
 ```
 
