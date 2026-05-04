@@ -1,5 +1,9 @@
 # Executor API
 
+<!-- preamble-tier-doc -->
+> **Type:** API reference. **Normative spec:** [PROTOCOL_SPEC](../../PROTOCOL_SPEC.md) §12.2 (Executor component) / §12.8 validate() guide.
+
+
 > **Canonical Definition** - This document is the authoritative definition of the Executor interface
 
 > Executor is responsible for module execution, Context management, middleware scheduling, and observability.

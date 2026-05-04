@@ -1,5 +1,9 @@
 # System Modules
 
+<!-- preamble-tier-doc -->
+> **Type:** Implementation guide. **Normative spec:** [PROTOCOL_SPEC](../../PROTOCOL_SPEC.md) §5 Module Specification (system module conventions).
+
+
 ## Overview
 
 Built-in `system.*` modules provide AI bidirectional introspection — allowing AI agents to query, monitor, and control the apcore runtime. System modules are registered automatically when `sys_modules.enabled: true` in config, and use the reserved `system.*` namespace (see PROTOCOL_SPEC §2.5, §6.6).

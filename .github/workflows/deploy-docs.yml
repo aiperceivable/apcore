@@ -60,7 +60,7 @@ jobs:
 
           # Fix top-level docs files (concepts.md, architecture.md):
           # ../PROTOCOL_SPEC.md → PROTOCOL_SPEC.md, ../api/ → api/
-          for f in docs/concepts.md docs/architecture.md; do
+          for f in docs/concepts.md docs/architecture.md docs/glossary.md; do
             sed -i 's|\.\./PROTOCOL_SPEC\.md|PROTOCOL_SPEC.md|g' "$f"
             sed -i 's|\.\./SCOPE\.md|SCOPE.md|g' "$f"
             sed -i 's|\.\./api/|api/|g' "$f"

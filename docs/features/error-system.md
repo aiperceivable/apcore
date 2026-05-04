@@ -1,5 +1,9 @@
 # Error System
 
+<!-- preamble-tier-doc -->
+> **Type:** Implementation guide. **Normative spec:** [PROTOCOL_SPEC](../../PROTOCOL_SPEC.md) §8 Error Handling Specification.
+
+
 ## Overview
 
 The Error System provides a structured, hierarchical error model designed for both human developers and AI agents. Every error carries a unique code, a human-readable message, and optional AI guidance fields that enable self-healing agents to diagnose and recover from failures without human intervention. The system also includes an extensible error code registry and a formatter registry for surface-specific error rendering.

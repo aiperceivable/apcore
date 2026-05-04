@@ -1,5 +1,9 @@
 # Streaming Support
 
+<!-- preamble-tier-doc -->
+> **Type:** Implementation guide. **Normative spec:** [PROTOCOL_SPEC](../../PROTOCOL_SPEC.md) §5 Module Specification (streaming hooks).
+
+
 ## Overview
 
 The Streaming System enables modules to produce output incrementally as a sequence of chunks rather than a single complete response. This is essential for modules that wrap LLM APIs, process large datasets, or perform real-time data transformations. The executor implements a three-phase streaming pipeline that separates chunk emission from post-execution validation and middleware processing, ensuring that consumers receive chunks in real-time while maintaining the integrity of the full pipeline.

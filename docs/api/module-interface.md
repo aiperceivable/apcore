@@ -1,5 +1,9 @@
 # Module Interface Definition
 
+<!-- preamble-tier-doc -->
+> **Type:** API reference. **Normative spec:** [PROTOCOL_SPEC](../../PROTOCOL_SPEC.md) §5.6 Module Interface Protocol.
+
+
 > **Canonical Definition** - This document is the authoritative definition of the Module interface
 
 > Module is the core interface of apcore, and all modules must implement this interface.

@@ -55,6 +55,7 @@ markdown_extensions:
 nav:
   - Home: README.md
   - Getting Started: getting-started.md
+  - Glossary: glossary.md
   - Migration:
       - v0.18 Breaking Changes: migration-v0.18.md
   - Core Documents:

@@ -1,5 +1,9 @@
 # Registry API
 
+<!-- preamble-tier-doc -->
+> **Type:** API reference. **Normative spec:** [PROTOCOL_SPEC](../../PROTOCOL_SPEC.md) §12.2 (Registry component).
+
+
 > **Canonical Definition** - This document is the authoritative definition of the Registry interface
 
 > Registry is responsible for module registration, discovery, and management.

@@ -1,5 +1,9 @@
 # Extension System
 
+<!-- preamble-tier-doc -->
+> **Type:** Implementation guide. **Normative spec:** [PROTOCOL_SPEC](../../PROTOCOL_SPEC.md) §11 Extension Mechanism.
+
+
 ## Overview
 
 The Extension System provides a pluggable architecture for customizing and extending the apcore framework without modifying core source code. It defines a set of named extension points — each accepting one or multiple implementations — and an `ExtensionManager` that wires registered extensions into the Registry and Executor at startup. This enables third-party libraries and application code to inject custom discoverers, middleware, ACL providers, span exporters, module validators, and approval handlers.

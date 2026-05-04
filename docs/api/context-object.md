@@ -1,5 +1,9 @@
 # Context Object
 
+<!-- preamble-tier-doc -->
+> **Type:** API reference. **Normative spec:** [PROTOCOL_SPEC](../../PROTOCOL_SPEC.md) §5.7 Context Object.
+
+
 > **Canonical Definition** - This document is the authoritative definition of Context and Identity
 
 > Context is the context object during module execution, carrying trace information, call chain, caller identity, and shared pipeline state.

@@ -1,5 +1,9 @@
 # Identity System
 
+<!-- preamble-tier-doc -->
+> **Type:** Implementation guide. **Normative spec:** [PROTOCOL_SPEC](../../PROTOCOL_SPEC.md) §5.7 Context Object (`identity` sub-schema).
+
+
 ## Overview
 
 The Identity System provides a structured representation of the caller's identity that flows through the execution pipeline. Every module call can carry an `Identity` describing who (or what) initiated the request — whether a human user, a service account, or an AI agent. The identity is immutable, attached to the `Context`, and consumed by the ACL System for access control decisions.

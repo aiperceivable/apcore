@@ -1,5 +1,9 @@
 # Multi-Module Discovery
 
+<!-- preamble-tier-doc -->
+> **Type:** Implementation guide. **Normative spec:** [PROTOCOL_SPEC](../../PROTOCOL_SPEC.md) §3 Directory Specification.
+
+
 ## Overview
 
 Multi-module discovery is an opt-in extension to the standard apcore module scanner that allows multiple module classes to coexist in a single file. By default, apcore enforces a one-file-one-module model: the canonical module ID is derived entirely from the file path (see [PROTOCOL_SPEC §2.1](../../PROTOCOL_SPEC.md#21-directory-as-id-core-rule)). Multi-class discovery relaxes that constraint by appending the snake_case-converted class name as an additional segment to the base file ID.

@@ -1,5 +1,9 @@
 # Schema System
 
+<!-- preamble-tier-doc -->
+> **Type:** Implementation guide. **Normative spec:** [PROTOCOL_SPEC](../../PROTOCOL_SPEC.md) §4 Schema Specification.
+
+
 ## Overview
 
 The Schema System provides complete schema loading, validation, `$ref` resolution, and export capabilities for structured module interfaces in apcore. It serves as the bridge between human-authored YAML schema definitions and the runtime model classes used by the executor for input/output validation. The system also supports exporting schemas to multiple LLM provider formats, enabling modules to describe their interfaces to external AI systems.

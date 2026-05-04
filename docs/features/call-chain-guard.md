@@ -1,5 +1,9 @@
 # Call Chain Guard
 
+<!-- preamble-tier-doc -->
+> **Type:** Implementation guide. **Normative spec:** [PROTOCOL_SPEC](../../PROTOCOL_SPEC.md) §5.7 Context Object (`call_chain` field).
+
+
 ## Overview
 
 The Call Chain Guard is a safety mechanism that prevents runaway, circular, and abusive module call patterns. It is invoked at Step 2 of the execution pipeline — before module lookup — and performs three sequential checks: call depth limiting, circular call detection, and frequency throttling. These checks protect the system from unbounded recursion, tight-loop abuse, and stack overflow scenarios.

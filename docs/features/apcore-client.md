@@ -1,5 +1,9 @@
 # APCore Unified Client
 
+<!-- preamble-tier-doc -->
+> **Type:** Implementation guide. **Normative spec:** [PROTOCOL_SPEC](../../PROTOCOL_SPEC.md) §12 SDK Implementation Guide.
+
+
 ## Overview
 
 The APCore class is the recommended high-level entry point for the apcore framework. It provides a single unified interface that manages the Registry, Executor, Config, and optional subsystems (system modules, events, metrics) so that users do not need to wire these components together manually. The client supports zero-config initialization for quick prototyping and full-config initialization for production deployments with system modules, observability, and event handling.

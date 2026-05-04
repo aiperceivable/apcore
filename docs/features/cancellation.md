@@ -1,5 +1,9 @@
 # Cancellation System
 
+<!-- preamble-tier-doc -->
+> **Type:** Implementation guide. **Normative spec:** [PROTOCOL_SPEC](../../PROTOCOL_SPEC.md) §5 Module Specification (no dedicated section yet).
+
+
 ## Overview
 
 The Cancellation System provides cooperative cancellation for long-running module executions. It is built around a lightweight `CancelToken` that is attached to the execution `Context` and can be checked periodically by module code. When the executor's timeout fires, it cancels the token and waits a grace period before forcibly raising `ModuleTimeoutError`, giving modules an opportunity to clean up resources gracefully.

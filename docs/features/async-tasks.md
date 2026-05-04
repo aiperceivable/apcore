@@ -1,5 +1,9 @@
 # Async Task Management
 
+<!-- preamble-tier-doc -->
+> **Type:** Implementation guide. **Normative spec:** [PROTOCOL_SPEC](../../PROTOCOL_SPEC.md) §5.8 Async Module Specification.
+
+
 ## Overview
 
 The Async Task Management system provides background module execution with concurrency limiting, task lifecycle tracking, and result retrieval. It wraps the Executor to submit module calls as background tasks, each progressing through a defined status lifecycle. This enables fire-and-forget execution patterns, long-running operations, and concurrent workload management without blocking the caller.

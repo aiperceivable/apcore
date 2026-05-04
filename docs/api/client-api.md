@@ -1,5 +1,9 @@
 # APCore Client API
 
+<!-- preamble-tier-doc -->
+> **Type:** API reference. **Normative spec:** [PROTOCOL_SPEC](../../PROTOCOL_SPEC.md) §12 SDK Implementation Guide.
+
+
 > **Canonical Definition** - This document is the authoritative definition of the APCore unified client interface
 
 > APCore is the recommended high-level entry point that manages Registry and Executor for you.

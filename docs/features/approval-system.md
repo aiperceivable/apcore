@@ -1,5 +1,9 @@
 # Approval System
 
+<!-- preamble-tier-doc -->
+> **Type:** Implementation guide. **Normative spec:** [PROTOCOL_SPEC](../../PROTOCOL_SPEC.md) §7 Approval System.
+
+
 ## Overview
 
 The Approval System provides runtime enforcement of the `requires_approval` annotation. When a module declares `requires_approval=true` and an `ApprovalHandler` is configured on the Executor, the handler is invoked at **Step 5** of the execution pipeline — after ACL checks pass and before the Middleware Before Chain begins. This allows human or automated review of sensitive operations before they execute.

@@ -137,3 +137,5 @@ Quickly find authoritative definitions for concepts:
 | ACL | [PROTOCOL_SPEC.md §6](../PROTOCOL_SPEC.md#6-acl-specification) | [README](../README.md#acl-access-control) |
 | ApprovalHandler | [approval-system.md](./features/approval-system.md) | [PROTOCOL_SPEC.md §7](../PROTOCOL_SPEC.md#7-approval-system) |
 | Middleware | [middleware.md](./guides/middleware.md) | [README](../README.md#middleware) |
+
+For a single-page reference of all terminology see the [Glossary](./glossary.md).
