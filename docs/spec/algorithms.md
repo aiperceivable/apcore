@@ -608,8 +608,7 @@ Rule {
   callers: List<String>,   // Pattern list
   targets: List<String>,   // Pattern list
   actions: List<String>,
-  effect: "allow" | "deny",
-  priority: Integer         // Default 0
+  effect: "allow" | "deny"
 }
 ```
 
@@ -634,9 +633,7 @@ Algorithm: evaluate_acl(caller_id, target_id, rules, default_effect)
 
 Steps:
   1. effective_caller ← caller_id ?? "@external"
-  2. Sort rules by priority descending (maintain definition order when priority equal)
-  3. For rules with same priority, deny comes before allow
-  4. For each rule ∈ sorted_rules:
+  2. For each rule ∈ rules (insertion order, first-match-wins):
      a. caller_matched ← false
         For each pattern ∈ rule.callers:
           If match_pattern(pattern, effective_caller) → caller_matched ← true; break
@@ -645,7 +642,7 @@ Steps:
           If match_pattern(pattern, target_id) → target_matched ← true; break
      c. If caller_matched and target_matched:
         → return { effect: rule.effect, matched_rule: rule }
-  5. Return { effect: default_effect, matched_rule: null }
+  3. Return { effect: default_effect, matched_rule: null }
 ```
 
 **Complexity Analysis:**
@@ -653,15 +650,16 @@ Steps:
 | Dimension | Complexity | Description |
 |------|--------|------|
 | Time | O(R * P * M) | R is number of rules, P is average patterns per rule, M is match_pattern complexity |
-| Space | O(R) | Extra space for sorting |
+| Space | O(1) | No sort buffer; rules iterated in stored order |
 
 **Implementation Notes:**
 
 - When `caller_id` is `null`, it **MUST** be replaced with `"@external"`
-- Sorting stability is important: within same priority, deny must come before allow
+- Rules are evaluated in **insertion order** (first-match-wins). Implementations that insert at the front of the list (e.g., `add_rule` prepending) thereby grant newer rules higher precedence — this is the intended convention; do not sort by priority.
 - Missing `actions` field is treated as `["*"]` (matches all operations)
 - Empty `callers` or `targets` array means the rule never matches
 - Modules calling themselves also need ACL checking
+- Rationale for dropping the `priority` field and deny-tiebreak: see `docs/spec/2026-05-decision-log.md` D-18. Insertion-order semantics match all 3 SDK implementations and produce the same results in the common case.
 
 ---
 

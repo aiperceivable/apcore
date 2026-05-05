@@ -207,7 +207,7 @@ Modules that perform nested calls (calling other modules within their execution)
 ### Errors
 - `CallDepthExceededError(code=CALL_DEPTH_EXCEEDED)` — call chain depth exceeds `max_depth`
 - `CircularCallError(code=CIRCULAR_CALL)` — `module_id` already appears in the current call chain (cycle detected)
-- `FrequencyExceededError(code=FREQUENCY_EXCEEDED)` — `module_id` has been invoked more than `max_repeat` times in this chain
+- `CallFrequencyExceededError(code=CALL_FREQUENCY_EXCEEDED)` — `module_id` has been invoked more than `max_repeat` times in this chain
 
 ### Returns
 - On success (guard passes): void/None/() — no return value; raises on violation

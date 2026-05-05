@@ -788,21 +788,38 @@ the same fixture file.
 
 ## Resolution status
 
-- **Resolved** (no further action): D-02, D-05, D-23, D-29, D-30, D-31, D-32, D-34, D-35, D-36, D-37, D-38, D-41, D-42, D-43, D-44, D-45, D-46, D-54, D-55, D-56, D-57
-- **Doc-only fixes** (1-line each): D-01, D-07, D-09, D-16, D-17, D-18, D-26
-- **Code fix needed in 1 SDK**: D-04 (TS), D-08 (Python), D-10 (Python), D-11 (Python), D-12 (Python), D-13 (Python), D-14 (Rust), D-19 (Rust), D-25 (TS+Rust), D-27 (Rust), D-28 (Rust)
-- **Multi-SDK code fix**: D-03 (all 3), D-15 (Python+TS), D-24 (TS+Rust)
-- **Epic / RFC needed**: D-21, D-22 (extension Arc migration)
+> **Authoritative current state** (updated 2026-05-05 after iter-9 doc-only follow-through round). Per-round narratives are preserved below in chronological addenda.
+
+- **Resolved** (50 items, no further action):
+  - D-01, D-02, D-05, D-07, D-08, D-09, D-10, D-11, D-12, D-13, D-14, D-15, D-16, D-17, D-18, D-19, D-23, D-25, D-26, D-27, D-28, D-29, D-30, D-31, D-32, D-33, D-34, D-35, D-36, D-37, D-38, D-39, D-40, D-41, D-42, D-43, D-44, D-45, D-46, D-47, D-48, D-49, D-50, D-51, D-52, D-53, D-54, D-55, D-56, D-57
+  - Notes on follow-through chains:
+    - **D-08** closed via **D-49** (TS + Rust renamed to canonical `compute_delay_ms`).
+    - **D-11** closed via **D-42** (Python `start_reaper` aliases + ms units).
+    - **D-32** closed via **D-56** (TS `_filterIdConflicts` extracted).
+  - **Doc-only follow-throughs landed in iter-9 (2026-05-05)**: D-01, D-07, D-09, D-16, D-17, D-18, D-26 — see addendum below.
+
+- **Open — multi-SDK code fix** (2 items, target v0.21.0):
+  - **D-03** — `ApprovalRequest` to add `caller_id` and `action` fields in all 3 SDKs.
+  - **D-24** — `update_config` constraints registry + rollback in TS + Rust (Python already aligned).
+
+- **Open — single-SDK code fix** (2 items, deferred):
+  - **D-04** — TS snake_case wire-format rename. Deferred per the entry's notes; needs a dedicated codemod PR (jscodeshift / sed) covering ~50 error subclasses + AuditEntry + ~30 test files. Estimated 1–2 hours focused work.
+  - **D-20** — Rust `RetryConfig::compute_delay_ms` doc-comment note about `u64` truncation. Local change in apcore-rust source only; does not require a spec edit.
+
+- **Open — minor spec cleanup** (1 item):
+  - **D-06** — Drop the unimplemented global `extensions.multi_class_discovery` config key from PROTOCOL_SPEC + `docs/features/multi-module-discovery.md`; TS drops the `multiClassEnabled` arg. Per-class decorator (Python's design) becomes the only opt-in path.
+
+- **Open — Epic / RFC** (2 items paired):
+  - **D-21** + **D-22** — ExtensionManager `Arc` migration. Multi-API breaking change cascading through Executor / Registry. Track as RFC + epic; target v0.22.0.
 
 ## Recommended sequence
 
-1. Apply doc-only fixes as a single PR in `apcore` (D-01, D-07, D-09, D-16, D-17, D-18, D-26, D-30, D-31). Low risk.
-2. Apply single-SDK code fixes per repo as separate PRs:
-   - TS D-04 (snake_case wire alignment) — needs codemod tooling, see action note
-   - Python D-10..D-13 (TaskStore + start_reaper alignment)
-   - Rust D-14, D-19, D-27, D-28 (RetryConfig default, chunk shape, UsageCollector parity, ContextLogger schema)
-3. Multi-SDK fixes (D-03 ApprovalRequest fields, D-15 discover_multi_class method, D-24 update_config rollback) batched into a v0.21.0 release.
-4. Epic D-21/D-22 (Extension Arc migration) — RFC scheduled for 2026-05-18 (routine `trig_01DCE8sCcBxm9qRxZiMvUgQo`), target v0.22.0.
+1. ✅ ~~Apply doc-only fixes as a single PR~~ — **completed in iter-9** (D-01, D-07, D-09, D-16, D-17, D-18, D-26).
+2. **D-06** spec cleanup — small follow-up PR; can ship with the next doc-cleanup round.
+3. **D-03** + **D-24** — batched into v0.21.0 multi-SDK release.
+4. **D-04** — schedule a dedicated TS codemod PR session (1–2 hrs focused).
+5. **D-20** — apcore-rust local doc comment (out of scope for this repo).
+6. **D-21** / **D-22** — RFC + epic, target v0.22.0.
 
 ---
 
@@ -1034,3 +1051,24 @@ TypeScript SDK adds `OverridesStore` interface, `FileOverridesStore` (YAML-backe
 **Cross-refs**:
 - Stage 1 of the apcore frontier-alignment plan (`/Users/tercelyi/.claude/plans/apcore-toolkit-cli-harmonic-starlight.md`).
 - Literature: RouteLLM (ICLR 2025); xRouter (arXiv 2510.08439); Cost-Aware Model Orchestration (Smirnova, arXiv 2512.01099); Budget-Aware Tool-Use (arXiv 2511.17006); ToolMaker (ACL 2025, arXiv 2502.11705) — see `docs/spec/rfc-ephemeral-modules.md` and `docs/spec/rfc-preview-method.md` for adjacent RFCs.
+
+---
+
+### Resolution status — iter-9 addendum (doc-only follow-through, 2026-05-05)
+
+The original 2026-05-02 Resolution status block listed seven entries as "Doc-only fixes" (D-01, D-07, D-09, D-16, D-17, D-18, D-26) but five of them were never executed. A re-audit in iter-9 found:
+
+- **D-09** and **D-17** had been silently closed in earlier rounds (`start()`/`stop()` already removed from PROTOCOL_SPEC §12; `caller_id_for_unknown` configurability text already removed from `acl-system.md`) but the Resolution status block was not updated to reflect this.
+- **D-01, D-07, D-16, D-18, D-26** had not been touched since the decision log was written 2 weeks earlier.
+
+Status updates landed 2026-05-05:
+
+- **D-01** — resolved. `PROTOCOL_SPEC.md` §5.7 changed `enum: [user, service, agent, api_key, system]` to `examples: [user, service, agent, api_key, system, ai]`; description clarifies the field is free-form. `docs/features/identity-system.md` admonition rewritten to reference the examples list rather than asserting "free-form" without context.
+- **D-07** — resolved. `docs/features/call-chain-guard.md:210` corrected from `FrequencyExceededError(code=FREQUENCY_EXCEEDED)` to `CallFrequencyExceededError(code=CALL_FREQUENCY_EXCEEDED)`, matching the implementation + Error Types table at line 100 of the same file.
+- **D-09** — resolved (verified). `start()` / `stop()` lifecycle mentions are absent from PROTOCOL_SPEC.md; the iter-9 audit confirmed the earlier removal.
+- **D-16** — resolved. `docs/features/streaming.md` Rust producer example rewritten to use the actual trait signature `fn stream(&self, ...) -> Option<ChunkStream>`, returning a pinned `async_stream::stream!` block that yields `Result<Value, ModuleError>` chunks. The earlier example incorrectly showed `async fn stream(...) -> Result<Vec<Value>, ModuleError>` (buffered).
+- **D-17** — resolved (verified). `docs/features/acl-system.md` no longer suggests configurability for `caller_id_for_unknown`; `@external` is treated as the canonical literal throughout the doc.
+- **D-18** — resolved. `docs/spec/algorithms.md` Algorithm A09 (`evaluate_acl`) revised: dropped the `priority: Integer` field from the `Rule` struct; dropped the sort + deny-before-allow tiebreak steps; documented insertion-order-first-match-wins as the canonical evaluation order with rationale cross-referenced to this entry. Implementation Notes also updated.
+- **D-26** — resolved. `docs/features/identity-system.md` gained a new "Equality and hashability" subsection: Identity is a value type with structural equality (`id` + `type` + `roles` + `attrs`); hashability is implementation-defined per language (Rust derives `Hash`; Python frozen dataclass with `dict` attrs is not hashable; TypeScript is caller's responsibility).
+
+No SDK behavior changes, no normative `MUST` / `MUST NOT` additions, no schema files touched.

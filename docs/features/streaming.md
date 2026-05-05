@@ -99,15 +99,17 @@ After all chunks have been emitted, the accumulated output is passed through Out
         fn input_schema(&self) -> Value { json!({"type": "object", "properties": {"prompt": {"type": "string"}}}) }
         fn output_schema(&self) -> Value { json!({"type": "object", "properties": {"content": {"type": "string"}}}) }
 
-        async fn stream(&self, inputs: Value, ctx: &Context<Value>) -> Result<Vec<Value>, ModuleError> {
-            let prompt = inputs["prompt"].as_str().unwrap();
-            let mut chunks = Vec::new();
-            // Produce chunks incrementally
-            for token in llm_client_stream(prompt).await? {
-                chunks.push(json!({"content": token, "done": false}));
-            }
-            chunks.push(json!({"content": "", "done": true}));
-            Ok(chunks)
+        // Module trait returns Option<ChunkStream> = Option<Pin<Box<dyn Stream<Item=Result<Value, ModuleError>> + Send>>>.
+        // None signals "no streaming support — fall back to execute() wrapped as a single chunk" (per spec).
+        fn stream(&self, inputs: Value, _ctx: &Context<Value>) -> Option<ChunkStream> {
+            let prompt = inputs["prompt"].as_str()?.to_string();
+            Some(Box::pin(async_stream::stream! {
+                // Produce chunks incrementally
+                for token in llm_client_stream(&prompt).await? {
+                    yield Ok(json!({"content": token, "done": false}));
+                }
+                yield Ok(json!({"content": "", "done": true}));
+            }))
         }
     }
     ```
