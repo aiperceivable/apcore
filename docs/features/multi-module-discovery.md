@@ -55,11 +55,11 @@ The scanner executes the following steps when multi-class discovery is enabled f
 
 ### Enabling Multi-Class Mode
 
-Multi-class discovery can be enabled at two granularities:
+Multi-class discovery is **opt-in per file** via a language-idiomatic marker:
 
-**Per-file opt-in (decorator):** Apply `@multi_class` (or the language-equivalent marker) to the file or each participating class. Only classes in annotated files are scanned for multi-class IDs.
+**Per-file opt-in:** Apply `@multi_class` (Python decorator), `@multiClass()` (TypeScript decorator), or `#[multi_class]` (Rust macro attribute) to the file or each participating class. Only classes in annotated files are scanned for multi-class IDs. Files that contain exactly one Module class are unaffected (backward compatibility guarantee applies).
 
-**Global opt-in (configuration):** Set `extensions.multi_class_discovery: true` in `apcore.yaml` to enable multi-class scanning for all files. Individual files that contain exactly one Module class are unaffected (backward compatibility guarantee applies).
+> **Note**: An earlier draft of the spec mentioned a global config key `extensions.multi_class_discovery`. That toggle was never implemented in any SDK and was removed per [decision-log D-06](../spec/2026-05-decision-log.md#d-06--multi_class_enabled-config-plumbing). Per-class markers are the only opt-in path.
 
 ### Conflict Detection
 

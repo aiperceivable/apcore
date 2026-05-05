@@ -790,8 +790,8 @@ the same fixture file.
 
 > **Authoritative current state** (updated 2026-05-05 after iter-9 doc-only follow-through round). Per-round narratives are preserved below in chronological addenda.
 
-- **Resolved** (50 items, no further action):
-  - D-01, D-02, D-05, D-07, D-08, D-09, D-10, D-11, D-12, D-13, D-14, D-15, D-16, D-17, D-18, D-19, D-23, D-25, D-26, D-27, D-28, D-29, D-30, D-31, D-32, D-33, D-34, D-35, D-36, D-37, D-38, D-39, D-40, D-41, D-42, D-43, D-44, D-45, D-46, D-47, D-48, D-49, D-50, D-51, D-52, D-53, D-54, D-55, D-56, D-57
+- **Resolved** (51 items, no further action):
+  - D-01, D-02, D-05, D-06 (doc-side; TS arg drop tracked separately — see Open below), D-07, D-08, D-09, D-10, D-11, D-12, D-13, D-14, D-15, D-16, D-17, D-18, D-19, D-23, D-25, D-26, D-27, D-28, D-29, D-30, D-31, D-32, D-33, D-34, D-35, D-36, D-37, D-38, D-39, D-40, D-41, D-42, D-43, D-44, D-45, D-46, D-47, D-48, D-49, D-50, D-51, D-52, D-53, D-54, D-55, D-56, D-57
   - Notes on follow-through chains:
     - **D-08** closed via **D-49** (TS + Rust renamed to canonical `compute_delay_ms`).
     - **D-11** closed via **D-42** (Python `start_reaper` aliases + ms units).
@@ -806,8 +806,8 @@ the same fixture file.
   - **D-04** — TS snake_case wire-format rename. Deferred per the entry's notes; needs a dedicated codemod PR (jscodeshift / sed) covering ~50 error subclasses + AuditEntry + ~30 test files. Estimated 1–2 hours focused work.
   - **D-20** — Rust `RetryConfig::compute_delay_ms` doc-comment note about `u64` truncation. Local change in apcore-rust source only; does not require a spec edit.
 
-- **Open — minor spec cleanup** (1 item):
-  - **D-06** — Drop the unimplemented global `extensions.multi_class_discovery` config key from PROTOCOL_SPEC + `docs/features/multi-module-discovery.md`; TS drops the `multiClassEnabled` arg. Per-class decorator (Python's design) becomes the only opt-in path.
+- **Open — single-SDK code fix** (D-06 follow-through):
+  - **D-06 (TS arg drop)** — `apcore-typescript` `Registry.discoverMultiClass(filePath, classes, extensionsRoot, multiClassEnabled)` should drop the `multiClassEnabled` argument; the per-class `@multiClass()` decorator becomes the only opt-in path. Tracked cross-repo. The doc-side cleanup (removing the unimplemented global `extensions.multi_class_discovery` config key from `docs/features/multi-module-discovery.md`) landed in iter-10 (2026-05-05).
 
 - **Open — Epic / RFC** (2 items paired):
   - **D-21** + **D-22** — ExtensionManager `Arc` migration. Multi-API breaking change cascading through Executor / Registry. Track as RFC + epic; target v0.22.0.
@@ -1072,3 +1072,13 @@ Status updates landed 2026-05-05:
 - **D-26** — resolved. `docs/features/identity-system.md` gained a new "Equality and hashability" subsection: Identity is a value type with structural equality (`id` + `type` + `roles` + `attrs`); hashability is implementation-defined per language (Rust derives `Hash`; Python frozen dataclass with `dict` attrs is not hashable; TypeScript is caller's responsibility).
 
 No SDK behavior changes, no normative `MUST` / `MUST NOT` additions, no schema files touched.
+
+---
+
+### Resolution status — iter-10 addendum (D-06 doc-side, 2026-05-05)
+
+- **D-06 (doc-side)** — resolved. `docs/features/multi-module-discovery.md` "Enabling Multi-Class Mode" section rewritten to drop the **Global opt-in (configuration)** paragraph that referenced the unimplemented `extensions.multi_class_discovery` config key. Per-class markers (`@multi_class` / `@multiClass()` / `#[multi_class]`) are now documented as the only opt-in path, with an inline backward-reference note pointing readers to this decision-log entry.
+
+  The TS-side follow-through (`apcore-typescript` `Registry.discoverMultiClass` dropping the `multiClassEnabled` argument) remains open and is tracked in the cross-repo issue list above. PROTOCOL_SPEC.md does not reference the global toggle and required no edit.
+
+  Direct commit to `main` (no PR) per maintainer authorization; doc-only, no SDK behavior change, no normative spec change.
