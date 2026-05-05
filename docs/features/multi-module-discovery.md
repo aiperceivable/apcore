@@ -214,16 +214,40 @@ The single-class guarantee ensures zero breaking changes for existing module fil
 
 All three SDKs expose `discover_multi_class` as a **method on `Registry`**, matching the spec contract. The free-function form remains available as an internal helper for SDK-internal use, but new application code SHOULD prefer the method form.
 
+> **Cross-language signature divergence (D11-004 — intentional, language-idiomatic).**
+> The method input set differs across SDKs because each language's
+> static-analysis story differs:
+>
+> - **Python** can `import` a file at runtime and reflect on its module
+>   members, so the method takes only `(file_path, extensions_root)` and
+>   does the reading internally.
+> - **TypeScript** cannot reliably introspect class declarations at
+>   runtime (ES module specifiers are immutable, AST traversal requires a
+>   heavyweight dev dependency like `ts-morph`), so the method takes
+>   pre-resolved `ClassDescriptor[]` from the caller's scanner output:
+>   `(filePath, classes, extensionsRoot, multiClassEnabled)`.
+> - **Rust** uses macro-driven registration (no runtime class reflection),
+>   so the multi-class entry point lives as `discover_multi_class` on a
+>   separate trait module helper rather than on `Registry` directly.
+>
+> This is **language-idiomatic divergence** rather than a parity bug.
+> Cross-language fixtures cannot 1:1-port a single `discover_multi_class`
+> call. Application code that needs to scan multi-class files SHOULD use
+> each SDK's idiomatic surface (file-path-in for Python; pre-parsed
+> classes for TypeScript; macro-driven trait-module helper for Rust).
+
 | SDK | Public method | Internal helper |
 |---|---|---|
-| Python | `Registry.discover_multi_class(file_path)` | `apcore.registry.multi_class._discover_multi_class(...)` |
-| TypeScript | `Registry.discoverMultiClass(filePath)` | `_discoverMultiClass(...)` (module-private) |
-| Rust | `Registry::discover_multi_class(&self, file_path)` | `derive_module_ids(...)` free function |
+| Python | `Registry.discover_multi_class(file_path, extensions_root="extensions")` | `apcore.registry.multi_class._discover_multi_class(...)` |
+| TypeScript | `Registry.discoverMultiClass(filePath, classes, extensionsRoot, multiClassEnabled)` | `_discoverMultiClass(filePath, classes, ...)` (module-private) |
+| Rust | `apcore::registry::multi_class::derive_module_ids(...)` (trait-module helper, not on `Registry`) | same |
 
 ### Inputs
 
 - `file_path` (str/string/&str, required) — path to the file to scan, relative to the project root
+- `classes` (`ClassDescriptor[]`, **TypeScript-only**, required) — pre-resolved class descriptors produced by the caller's scanner. Python derives this internally via `import`; Rust derives via macros at compile time.
 - `extensions_root` (str/string/&str, optional, default=`"extensions"`) — root directory name used by Algorithm A01
+- `multi_class_enabled` (`bool`, **TypeScript-only**, optional, default=`false`) — whether to apply the per-file opt-in described in [Enabling Multi-Class Mode](#enabling-multi-class-mode). Python infers from the `@multi_class` decorator; Rust infers from a macro attribute.
 - `pre_approval_hook` (callable, **Python-only**, optional) — pre-import safety check; see [Python-only `pre_approval_hook`](#python-only-pre_approval_hook) below
 
 ### Errors
@@ -256,20 +280,36 @@ All three SDKs expose `discover_multi_class` as a **method on `Registry`**, matc
     ```
 === "TypeScript"
     ```typescript
-    import { Registry } from "apcore-js";
+    import { Registry, type ClassDescriptor } from "apcore-js";
 
     const registry = new Registry();
-    const discovered = await registry.discoverMultiClass("extensions/math/math_ops.ts");
-    for (const [moduleId, cls] of discovered) {
-        console.log(moduleId, cls.name);
+    // TypeScript callers pre-resolve ClassDescriptors via their scanner;
+    // commonly produced by the build-time AST scan that wires extension
+    // modules into the bundle.
+    const classes: ClassDescriptor[] = await scanFile("extensions/math/math-ops.ts");
+    const discovered = registry.discoverMultiClass(
+        "extensions/math/math-ops.ts",
+        classes,
+        "extensions",
+        /* multiClassEnabled */ true,
+    );
+    for (const entry of discovered) {
+        console.log(entry.moduleId, entry.className);
     }
     ```
 === "Rust"
     ```rust
-    use apcore::Registry;
+    use apcore::registry::multi_class::derive_module_ids;
 
-    let registry = Registry::new();
-    let discovered = registry.discover_multi_class("extensions/math/math_ops.rs")?;
+    // Rust resolves classes at compile time via macros; the trait-module
+    // helper takes the pre-derived candidate list rather than reading
+    // a file at runtime.
+    let candidates = build_macro_class_list();  // from your #[apcore::multi_class] expansion
+    let discovered = derive_module_ids(
+        "extensions/math/math_ops.rs",
+        &candidates,
+        "extensions",
+    )?;
     for (module_id, class_ref) in discovered {
         println!("{} -> {:?}", module_id, class_ref);
     }
