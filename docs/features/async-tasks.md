@@ -268,16 +268,15 @@ When `cancel()` is called on a running task:
 - `task_id` (str/string/&str, required) — ID of the task to cancel
 
 ### Errors
-- `TaskNotFoundError(code=TASK_NOT_FOUND)` — no task with this ID exists
-- `TaskAlreadyCompletedError(code=TASK_ALREADY_COMPLETED)` — task has already finished (cannot cancel)
+- None raised under normal operation. Implementations report cancellation outcome via the boolean return value rather than raising.
 
 ### Returns
-- On success: void/None/()
+- On success: `bool` — `true` if cancellation was applied (the task was active and is now `Cancelled`), `false` if the task did not exist or had already reached a terminal state.
 
 ### Properties
-- async: false
+- async: true (D10-004 alignment — drain/cancel semantics require awaiting persisted state mutation; matches apcore-python `async def cancel`, apcore-typescript `async cancel`, and apcore-rust `pub async fn cancel`)
 - thread_safe: true
-- idempotent: false (cancelling an already-cancelled task is a `TaskNotFoundError` on some implementations)
+- idempotent: true (calling cancel on an already-cancelled task returns `false` rather than raising; subsequent calls are no-ops)
 
 ---
 
