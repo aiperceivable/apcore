@@ -1,0 +1,52 @@
+{
+  "feature": "ephemeral-modules",
+  "status": "pending",
+  "tasks": [
+    {
+      "id": "rfc-draft",
+      "title": "Draft RFC at docs/spec/rfc-ephemeral-modules.md",
+      "status": "completed",
+      "file": "docs/spec/rfc-ephemeral-modules.md"
+    },
+    {
+      "id": "namespace-reserve-patch",
+      "title": "Optional 1-line spec patch reserving `ephemeral.*` in §2.5 ahead of full RFC acceptance (prevents third-party collision)",
+      "status": "pending",
+      "file": "PROTOCOL_SPEC.md"
+    },
+    {
+      "id": "rfc-acceptance-review",
+      "title": "Maintainer review; resolve open questions (namespace name, TTL design, re-registration semantics)",
+      "status": "pending",
+      "file": "docs/spec/rfc-ephemeral-modules.md"
+    },
+    {
+      "id": "python-pilot",
+      "title": "Pilot implementation in apcore-python — leverage existing register_internal() precedent",
+      "status": "pending",
+      "file": "(cross-repo: apcore-python)"
+    },
+    {
+      "id": "spec-normative-text",
+      "title": "Promote to normative §2.5 + §4.4 amendments after pilot confirms ergonomics",
+      "status": "pending",
+      "files": ["PROTOCOL_SPEC.md"]
+    },
+    {
+      "id": "conformance-fixture",
+      "title": "Create conformance/fixtures/ephemeral_modules.json with cross-language test cases",
+      "status": "pending",
+      "file": "conformance/fixtures/ephemeral_modules.json"
+    },
+    {
+      "id": "sdk-replication",
+      "title": "Replicate Python pilot in apcore-typescript and apcore-rust",
+      "status": "pending",
+      "file": "(cross-repo: 2 SDK repos)"
+    }
+  ],
+  "metadata": {
+    "source_doc": "docs/spec/rfc-ephemeral-modules.md",
+    "created_by": "frontier-alignment-stage-3"
+  }
+}

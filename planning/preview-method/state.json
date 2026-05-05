@@ -1,0 +1,46 @@
+{
+  "feature": "preview-method",
+  "status": "pending",
+  "tasks": [
+    {
+      "id": "rfc-draft",
+      "title": "Draft RFC at docs/spec/rfc-preview-method.md",
+      "status": "completed",
+      "file": "docs/spec/rfc-preview-method.md"
+    },
+    {
+      "id": "rust-non-exhaustive-tracking",
+      "title": "File tracking issue against apcore-rust to mark PreflightResult / PreflightCheckResult #[non_exhaustive] before extending",
+      "status": "pending",
+      "file": "(cross-repo: apcore-rust)"
+    },
+    {
+      "id": "rfc-acceptance-review",
+      "title": "Maintainer review of RFC; resolve open questions; promote to normative spec",
+      "status": "pending",
+      "file": "docs/spec/rfc-preview-method.md"
+    },
+    {
+      "id": "spec-normative-text",
+      "title": "Add normative text to PROTOCOL_SPEC.md §5.6 (Module.preview()) + §12.8.4 (PreflightResult.predicted_changes)",
+      "status": "pending",
+      "files": ["PROTOCOL_SPEC.md"]
+    },
+    {
+      "id": "conformance-fixture",
+      "title": "Create conformance/fixtures/preview_method.json with cross-language test cases",
+      "status": "pending",
+      "file": "conformance/fixtures/preview_method.json"
+    },
+    {
+      "id": "sdk-implementations",
+      "title": "Implement preview() across apcore-python / apcore-typescript / apcore-rust (cross-repo, post-acceptance)",
+      "status": "pending",
+      "file": "(cross-repo: 3 SDK repos)"
+    }
+  ],
+  "metadata": {
+    "source_doc": "docs/spec/rfc-preview-method.md",
+    "created_by": "frontier-alignment-stage-2"
+  }
+}

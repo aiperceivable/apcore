@@ -1172,6 +1172,8 @@ Development guide: see [Adapter Development Guide](./docs/guides/adapter-develop
 |------|------|
 | [Type Mapping](./docs/spec/type-mapping.md) | Cross-language type mapping |
 | [Conformance Definition](./docs/spec/conformance.md) | Implementation conformance levels |
+| [RFC — `preview()` Method](./docs/spec/rfc-preview-method.md) | Draft RFC: optional `Module.preview()` for structured pre-execution diff (target v0.21.0) |
+| [RFC — Ephemeral Modules](./docs/spec/rfc-ephemeral-modules.md) | Draft RFC: `ephemeral.*` namespace + `discoverable` annotation for runtime-registered modules |
 | [Algorithm Reference](./docs/spec/algorithms.md) | Core algorithm summary (including namespace, redaction, etc.) |
 | [Durability Boundary](./docs/spec/design-durability-boundary.md) | Stable hooks and explicit non-goals for retry/replay/workflow layers built on apcore |
 
