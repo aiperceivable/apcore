@@ -2203,9 +2203,9 @@ context_schema:
           description: "Unique identifier"
         type:
           type: string
-          enum: [user, service, agent, api_key, system]
+          examples: [user, service, agent, api_key, system, ai]
           default: "user"
-          description: "Identity type"
+          description: "Identity type (free-form string; well-known values shown in examples)"
         roles:
           type: array
           items:

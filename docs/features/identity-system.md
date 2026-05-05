@@ -81,7 +81,17 @@ The Identity System provides a structured representation of the caller's identit
 | `anonymous` | No authenticated identity | Public endpoints, unauthenticated callers |
 
 !!! note
-    The `type` field is free-form — these are conventions, not exhaustive. Applications may define custom types.
+    The `type` field is a free-form string. The values above are the well-known conventions surfaced in the JSON Schema `examples` (PROTOCOL_SPEC.md §5.7). Applications **MAY** define custom types — implementations do not validate the value against the conventions list.
+
+### Equality and hashability
+
+`Identity` is a value type. Equality is **structural** — two identities are equal iff `id`, `type`, `roles`, and `attrs` are equal as deep value comparisons. Hashability is **implementation-defined per language**:
+
+- **Rust**: `Identity` derives `Hash` and `Eq`; safe to use as a `HashMap` key.
+- **Python**: `Identity` is a frozen dataclass, but the `attrs: dict` field makes it not hashable by default; cross-language code SHOULD NOT rely on `hash(identity)` portability.
+- **TypeScript**: object literal; equality and hashing are caller's responsibility (use a stable serialization or a structural-equality helper).
+
+Resolved per `docs/spec/2026-05-decision-log.md` D-26.
 
 ### Usage with Context
 
