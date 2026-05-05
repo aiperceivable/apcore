@@ -270,20 +270,32 @@ The `strict` module provides a strict validation mode that rejects any fields no
 All three SDKs return a result object rather than raising. Spec versions ≤ 0.20.0 incorrectly declared "void/None/() — raises on failure"; that text was implementation-incorrect across all SDKs and has been amended (D10-012). For the raise-on-failure semantic, use the dedicated `validate_input` / `validate_output` (or Rust `validate_or_error`) entry points which raise `SchemaValidationError(code=SCHEMA_VALIDATION_FAILED)` on a non-empty `errors` array.
 - idempotent: true
 
-## Contract: Schema.resolve_refs
+## Contract: RefResolver — `$ref` resolution
 
-### Inputs
-- `schema` (dict/object/Value, required) — JSON Schema containing `$ref` references
-- `base_uri` (str/string/&str, optional) — base URI for resolving relative references
+> **Spec amendment (D10-015).** Earlier drafts attributed `resolve_refs`
+> to the `Schema` class with a `(schema, base_uri)` signature. No SDK
+> exposes that surface. The actual `$ref` resolution lives on
+> `RefResolver` in each SDK with language-idiomatic shapes.
+
+### SDK surfaces
+
+| SDK | Class / location | Method | Inputs |
+|---|---|---|---|
+| Python | `apcore.schema.ref_resolver.RefResolver` (`apcore-python/src/apcore/schema/ref_resolver.py:46`) | `resolve_ref(ref, schema_root, ...)` | single `$ref` string + the schema document holding it |
+| TypeScript | `apcore-js/schema/ref-resolver.RefResolver` (`apcore-typescript/src/schema/ref-resolver.ts:39`) | `resolveRef(ref, schemaRoot, ...)` | same shape; camelCase |
+| Rust | `apcore::schema::ref_resolver::RefResolver` (`apcore-rust/src/schema/ref_resolver.rs:50`) | `resolve(schema)` | the full schema (no separate base_uri argument; bases are derived from `$id` claims encountered during traversal) |
 
 ### Errors
+
 - `SchemaCircularRefError(code=SCHEMA_CIRCULAR_REF)` — a `$ref` cycle was detected
 - `SchemaRefNotFoundError(code=SCHEMA_REF_NOT_FOUND)` — a referenced schema cannot be resolved
 
 ### Returns
-- On success: `dict`/`Record<string, unknown>`/`Value` — schema with all `$ref` entries resolved inline
+
+- On success: a schema with the requested `$ref` resolved inline. Python+TypeScript variants resolve a single `$ref` per call (caller iterates); Rust resolves all `$ref` entries in one traversal.
 
 ### Properties
+
 - async: false
 - thread_safe: true
 - pure: true

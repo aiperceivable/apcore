@@ -640,12 +640,19 @@ Normative behavioral contract. All SDK implementations MUST satisfy these guaran
 ### Inputs
 
 - `step_name` (str/string/String, required) — target step to configure or replace
-- `handler` (callable/function/fn, required) — replacement handler for the step
-- `options` (dict/object/HashMap, optional) — step options: `ignore_errors` (bool), `match_modules` (glob list), `timeout_ms` (int)
+- `new_step` (PipelineStep instance, required) — replacement step object that owns its own handler / options
+
+> **Spec amendment (D10-013).** Earlier spec drafts described separate
+> `handler` and `options` arguments; no SDK implements that shape.
+> Python (`pipeline.py:300`), TypeScript (`pipeline.ts:343`), and Rust
+> (`pipeline.rs:619`) all accept a single `(step_name, new_step)` pair
+> where the step instance carries its own handler and per-step options.
 
 ### Errors
 
 - `PipelineStepNotFoundError(code=PIPELINE_STEP_NOT_FOUND)` — `step_name` does not exist in the current strategy
+- `StepNotReplaceableError` — `step_name` resolves to a step marked non-replaceable by the strategy (raised by all three SDKs — `pipeline.py:310`, `pipeline.ts:351`, `pipeline.rs:601`)
+- `StepNameDuplicateError` — `new_step` declares a step name that conflicts with an existing step (raised by Python+TypeScript — `pipeline.ts:357`)
 
 ### Returns
 

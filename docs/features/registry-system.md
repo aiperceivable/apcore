@@ -137,6 +137,14 @@ Normative contract for the filesystem scanner used by step 1 of the discovery pi
 - `root`: string path, required. Directory to scan for module candidates.
 - `max_depth`: integer, optional (default `8`). Maximum directory depth.
 - `follow_symlinks`: boolean, optional (default `false`).
+- `extensions`: list of strings, optional (default language-specific — `[".py"]` for Python, `[".ts", ".js"]` for TypeScript, `[".rs"]` for Rust). File extensions accepted as candidate modules.
+
+> **Cross-language signature note (D10-014).** The Rust SDK exposes
+> `extensions` as an explicit `Option<&[&str]>` parameter
+> (`apcore-rust/src/registry/scanner.rs:26`), while Python and TypeScript
+> infer it from the language convention. The fourth parameter is therefore
+> language-idiomatic — Rust callers may override the default extension
+> set; Python/TypeScript callers do not.
 
 ### Errors
 
@@ -144,7 +152,7 @@ Normative contract for the filesystem scanner used by step 1 of the discovery pi
 
 ### Returns
 
-- On success: ordered sequence of `DiscoveredModule` records, in stable filesystem-traversal order.
+- On success: ordered sequence of file-path records, in stable filesystem-traversal order. Python and TypeScript return `DiscoveredModule` (path + derived module ID); Rust returns `DiscoveredFile` (path only — the module-ID derivation step is performed downstream by `derive_module_ids`). The structural payload is equivalent — only the type name differs (D10-014).
 - On failure: raises / returns `Err`.
 
 ### Properties

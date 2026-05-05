@@ -458,15 +458,22 @@ sys_modules:
 
 ## Contract: EventEmitter.subscribe
 
+> **Spec amendment (D10-016).** Earlier drafts described a handler-pattern
+> shape `subscribe(event_type, handler)` returning a subscription handle.
+> No SDK implements that. All three implementations adopt the
+> subscriber-pattern: callers construct a typed `EventSubscriber`
+> (carrying its own `event_pattern`, `subscriber_id`, and `on_event`
+> callback) and pass that single object to `subscribe`. The SDKs are
+> mutually consistent; the spec text was the outlier.
+
 ### Inputs
-- `event_type` (str/string/&str, required) — event type to subscribe to
-- `handler` (callable/function/fn, required) — called with `(event_type, payload)` on each emission
+- `subscriber` (`EventSubscriber` instance, required) — subscriber object owning its own `event_pattern`, `subscriber_id`, and `on_event` callback. Construct via the SDK's typed subscriber classes (e.g. `RecordingSubscriber`, `WebhookSubscriber`, `A2ASubscriber`) or implement the `EventSubscriber` protocol/trait directly.
 
 ### Errors
 - No errors raised
 
 ### Returns
-- On success: `EventSubscriber`/`EventSubscriber`/`String` — subscription handle (pass to `unsubscribe`/`off`)
+- On success: void/None/() — the SDKs do not return a separate handle. Removal uses `unsubscribe` / `unsubscribe_by_id` keyed on the subscriber object's identity (`apcore-python/src/apcore/events/emitter.py:55`, `apcore-typescript/src/events/emitter.ts:75`, `apcore-rust/src/events/emitter.rs:79`).
 
 ### Properties
 - async: false
