@@ -57,7 +57,7 @@ Modules in the `ephemeral.*` namespace:
 - **SHOULD** declare `requires_approval: true` to prevent agent-synthesized tools from running unattended.
 - **SHOULD** declare `discoverable: false` (a new annotation; see below).
 - **MUST** be subject to ACL `default_effect: deny`. ACL `target` patterns supporting `ephemeral.*` wildcards already work (per existing first-match-wins evaluation).
-- **MUST** emit audit events through the framework `EventEmitter`, mirroring `system.control.*` write modules' contextual-audit shape (D-35).
+- **MUST** emit audit events through the framework `EventEmitter`, mirroring `system.control.*` write modules' contextual-audit shape (D-35). See "Single-emit rule" below.
 - **SHOULD** declare a TTL (open question: convention key — see below).
 
 ## Proposed new `discoverable` annotation
@@ -75,6 +75,41 @@ Semantics:
 - `discoverable: false` — module is callable through `Registry.invoke()` / `Executor.execute()` but is hidden from enumeration surfaces. Caller must already know the module ID.
 
 This is independently useful: filesystem-rooted modules can also opt out of enumeration (e.g., for internal-only utilities), and existing `internal: true` patterns in some SDK ports converge on the same idea.
+
+## Audit-event single-emit rule — **clarification (post-pilot)**
+
+A four-round audit during the apcore-python pilot surfaced a dual-emit risk: all three SDKs already have a registry-event bridge (`apcore-python` `_bridge_registry_events`, `apcore-typescript` `sys-modules/registration.ts`, `apcore-rust` `RegistryEvents` callback) that fires `apcore.registry.module_registered` / `apcore.registry.module_unregistered` with an **empty payload** for every registration. Naïvely adding a second contextual emit for `ephemeral.*` registrations produces two events with the same `event_type` for the same registration — bad audit hygiene.
+
+**Rule**: For any single registration / unregistration of an `ephemeral.*` module, exactly **one** event MUST be emitted, carrying the full contextual payload:
+
+```yaml
+event_type: apcore.registry.module_registered  # or .module_unregistered
+payload:
+  module_id: ephemeral.<name>
+  caller_id: <string>          # defaults to "@external" when context.caller_id is None/null/""
+  identity: <object | null>    # redacted snapshot per D-35; null when no identity is set
+  namespace_class: ephemeral
+```
+
+For non-`ephemeral.*` registrations, the existing bridge's empty-payload behavior is preserved (backward compatibility for current subscribers).
+
+**Implementation choices** (per-SDK, not normative):
+- Short-circuit the bridge for `ephemeral.*` IDs and emit only the rich version, OR
+- Extend the bridge to be context-aware for all registrations (richer for everyone, opt-in by the SDK)
+
+Subscribers SHOULD treat additional payload fields as forward-compatible (existing empty-payload subscribers continue working without modification).
+
+## `register_internal()` interaction — **clarification (post-pilot)**
+
+`apcore-python` exposes `register_internal()` as a programmatic registration path historically reserved for `system.*` modules. The pilot surfaced an open question: should `register_internal()` accept `ephemeral.*` IDs?
+
+**Rule**: `register_internal()` (or its equivalent in any SDK) **MUST reject** `ephemeral.*` IDs with a clear error pointing the caller to use `Registry.register()`. Rationale:
+
+1. **Audit-trail provenance**: `system.*` events carry framework-emitted provenance; `ephemeral.*` events carry caller-emitted (Agent / user) provenance. Mixing the two backdoors blurs forensics.
+2. **ACL enforcement**: standard `register()` runs the full ACL + audit pipeline; `register_internal()` typically bypasses ACL because system modules are framework-owned. `ephemeral.*` modules are **not** framework-owned and MUST go through ACL.
+3. **Principle**: namespace prefix → registration mechanism is a 1:1 mapping. `system.*` only via `register_internal()`. `ephemeral.*` only via `register()`. No overlap.
+
+For SDKs that don't have a `register_internal()` distinction (`apcore-typescript`, `apcore-rust`), this rule is automatically satisfied.
 
 ## Lifecycle / GC contract — **open**
 
@@ -106,6 +141,17 @@ The spec's responsibility is bounded at registration → ACL → audit → lifec
 4. **TypeScript and Rust SDKs follow** — once Python pilot ships, replicate.
 
 ## Conformance plan (for post-acceptance)
+
+### Transitional fixture handling during multi-SDK rollout
+
+The `discoverable` annotation field is a normative addition to `ModuleAnnotations` once this RFC is accepted. During the rollout window where some SDKs have shipped `discoverable` and others have not, the canonical conformance fixture `conformance/fixtures/annotations_extra_round_trip.json` MUST NOT be updated to require the field — doing so would actively break the conformance tests of SDKs that have not yet shipped support. Instead:
+
+- SDKs that ship `discoverable` MAY make their conformance test runner pilot-tolerant: when comparing an `expected_serialized` block that lacks `discoverable`, strip the field from the actual serialized output before equality comparison.
+- Once **all three SDKs** have shipped `discoverable`, a follow-up apcore PR updates `annotations_extra_round_trip.json`: add `discoverable: true` (the default) to each test case's `input` and `expected_serialized`, and add a new test case `discoverable_false_round_trip` covering the explicit-false path. After that PR lands, the pilot-tolerant code paths in each SDK can be removed.
+
+`apcore-python` PR #26 (the pilot) implements the pilot-tolerant pattern. `apcore-typescript` and `apcore-rust` follow-up PRs SHOULD do the same until the synchronized fixture update.
+
+### Per-feature fixture (post-acceptance)
 
 `conformance/fixtures/ephemeral_modules.json` (not created in this RFC stage):
 

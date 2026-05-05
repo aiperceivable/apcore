@@ -95,6 +95,18 @@ Change:
 
 The required `summary` field is the floor: even a module that wraps an opaque external API can produce `{action: "send", target: "smtp:user@example.com", summary: "Send order confirmation email to user@example.com"}`.
 
+### `Change.x-*` extension fields — cross-SDK schema-encoding note
+
+The `Change` object MAY contain any number of `^x-`-prefixed keys with arbitrary values, mirroring the §4.6 metadata-extension convention. **This RFC does not prescribe a runtime-validation mechanism**; each SDK uses an idiomatic encoding:
+
+| SDK | Idiomatic encoding | Note |
+|-----|-------------------|------|
+| `apcore-python` | `pydantic.BaseModel` with `model_config = ConfigDict(extra='allow')`, plus a model-validator that asserts unknown keys match `^x-` | Native; round-trips through `model_dump()` |
+| `apcore-rust` | `#[serde(flatten)] extra: HashMap<String, Value>` + custom validator at construction time | Native; flatten preserves wire format |
+| `apcore-typescript` | TypeBox 0.34 has no native template-literal index keys for `Type.Object`; use `Type.Unsafe<Change>(...)` to inject raw JSON Schema `patternProperties: { "^x-": {} }` while preserving the TypeScript type. `Type.Intersect([Object, Record])` is **not** equivalent because it loses `additionalProperties: false`. | Escape-hatch; TypeBox idiom |
+
+Conformance fixtures MUST cover at least: (a) a `Change` with required fields only and no `x-*` keys; (b) a `Change` with one `x-foo: <value>` key that round-trips identically. This guards against an SDK silently dropping `x-*` keys during serialization.
+
 ## Proposed `PreflightResult` extension
 
 A new optional field on the existing `PreflightResult` (PROTOCOL_SPEC.md §12.8.4 type table):
@@ -201,9 +213,35 @@ PreflightResult:
 1. Open a tracking issue against `apcore-rust` titled "Mark spec-derived public structs `#[non_exhaustive]`".
 2. List `PreflightResult`, `PreflightCheckResult`, and any other spec-derived public struct that may be extended.
 3. Land the attribute change as a single commit in `apcore-rust` minor bump (v0.21.0 of the SDK is acceptable).
-4. Document in `apcore-rust` migration notes: downstream consumers must use struct-update syntax (`..Default::default()`) or builder methods.
 
-This concern does not arise in `apcore-python` (dataclasses tolerate added fields with defaults) or `apcore-typescript` (interfaces with optional `?` properties are forward-compatible).
+### Migration pattern for downstream Rust consumers — **important: not what you'd guess**
+
+A common misconception (this RFC's earlier text included) is that `..Default::default()` (functional record update / FRU) bypasses `#[non_exhaustive]`. **It does not.** Per Rust's `E0639`, `#[non_exhaustive]` blocks struct-literal construction from outside the defining crate **entirely**, including FRU syntax. Within the crate that defines the struct, FRU still works.
+
+**Correct downstream migration pattern**:
+
+```rust
+// ❌ NOT permitted from external crates (E0639):
+let r = PreflightResult { valid: true, checks: vec![], ..Default::default() };
+
+// ✅ Use Default + field assignment:
+let mut r = PreflightResult::default();
+r.valid = true;
+r.checks = vec![];
+// (or a future builder API the SDK may add)
+```
+
+The `apcore-rust` v0.21.0 CHANGELOG entry (commit landing alongside the `#[non_exhaustive]` attribute) is the canonical reference for the migration pattern. SDKs MAY ship a builder API in a follow-up minor; this RFC does not mandate one.
+
+### Cross-SDK forward-compat semantics
+
+| SDK | Adding a field is breaking? | Mechanism |
+|-----|----------------------------|-----------|
+| `apcore-python` | ❌ No | `dataclass` field with default; existing keyword-arg call sites unaffected |
+| `apcore-typescript` | ❌ No | `interface { foo?: T }` is forward-compatible by structural-typing |
+| `apcore-rust` | ⚠️ Yes — without `#[non_exhaustive]` declared upfront | Rust's only forward-compat declaration mechanism; cost is downstream construction-syntax tax (E0639) |
+
+This asymmetry is **why** the `#[non_exhaustive]` work is staged as a Rust-specific pre-condition; the other two SDKs need no preparation step.
 
 ## Conformance plan
 

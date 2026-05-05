@@ -1075,6 +1075,62 @@ No SDK behavior changes, no normative `MUST` / `MUST NOT` additions, no schema f
 
 ---
 
+### Resolution status — iter-11 addendum (RFC clarifications post pilot-implementation, 2026-05-05)
+
+A round of parallel sub-agent SDK pilot implementations against the two Stage-2/Stage-3 RFCs (`rfc-preview-method.md`, `rfc-ephemeral-modules.md`) surfaced concrete ambiguities and one factual error in the RFC text. Resolutions landed as same-day RFC edits on `main`. Pilot PRs:
+
+- `apcore-rust#25` — `#[non_exhaustive]` hygiene for spec-derived public structs (Stage 2 prereq)
+- `apcore-python#26` — `ephemeral.*` namespace + `discoverable` annotation pilot (Stage 3)
+- `apcore-typescript#29` — `Module.preview()` implementation (Stage 2)
+- `apcore-typescript#28` → PR `#30` — `multiClassEnabled` arg drop (D-06 follow-through)
+
+#### Clarification 1 — `rfc-preview-method.md` Pre-conditions: `#[non_exhaustive]` migration pattern
+
+**Surfaced by**: `apcore-rust#25` agent during implementation.
+
+**Issue**: The RFC's earlier text claimed downstream consumers should use `..Default::default()` (functional record update / FRU) syntax to construct extended structs. **This is factually wrong.** Per Rust's [E0639], `#[non_exhaustive]` blocks struct-literal construction from outside the defining crate **entirely**, including FRU. The `..Default::default()` pattern works only **within** the defining crate.
+
+**Resolution**: RFC Pre-conditions section rewritten with the correct migration pattern (`Default::default()` + field assignment) and a cross-SDK forward-compat-semantics table showing why this is a Rust-only concern. The `apcore-rust` v0.21.0 CHANGELOG (PR #25) is the canonical reference for the migration code example.
+
+#### Clarification 2 — `rfc-ephemeral-modules.md`: single-emit audit rule
+
+**Surfaced by**: `apcore-python#26` agent.
+
+**Issue**: All three SDKs have a pre-existing registry-event bridge (`_bridge_registry_events` in Python; equivalents in TypeScript and Rust) that emits `apcore.registry.module_registered` / `module_unregistered` with empty payload. Naively adding a second contextual emit for `ephemeral.*` produced dual-emit of the same `event_type` for the same registration.
+
+**Resolution**: RFC §"Audit-event single-emit rule" added. For `ephemeral.*` registrations, exactly **one** event MUST be emitted, carrying the contextual payload (`module_id`, `caller_id` defaulting to `"@external"`, redacted `identity` snapshot, `namespace_class: ephemeral`). For non-`ephemeral.*` registrations, the existing bridge's empty-payload behavior is preserved. Implementation detail (short-circuit bridge vs. extend bridge) is per-SDK.
+
+#### Clarification 3 — `rfc-ephemeral-modules.md`: `register_internal()` rejection
+
+**Surfaced by**: `apcore-python#26` agent.
+
+**Issue**: Python's `register_internal()` historically reserved for `system.*` modules. The RFC didn't explicitly state whether `ephemeral.*` IDs could be registered via this backdoor.
+
+**Resolution**: RFC §"`register_internal()` interaction" added. `register_internal()` (or equivalent) **MUST reject** `ephemeral.*` IDs and direct callers to `Registry.register()`. Rationale: namespace → registration-mechanism is a 1:1 mapping; mixing blurs the audit-trail distinction between framework-emitted (`system.*`) and caller-emitted (`ephemeral.*`) events.
+
+#### Clarification 4 — `rfc-preview-method.md`: `Change.x-*` schema encoding
+
+**Surfaced by**: `apcore-typescript#29` agent during TypeBox schema definition.
+
+**Issue**: TypeBox 0.34 doesn't natively express the TypeScript template-literal index signature `[key: \`x-${string}\`]: unknown` for `Change`. Naive `Type.Object()` rejects `x-*` keys; `Type.Intersect([Object, Record])` loses `additionalProperties: false` precision.
+
+**Resolution**: RFC §"`Change.x-*` extension fields — cross-SDK schema-encoding note" added. The spec does NOT prescribe a runtime-validation mechanism; per-SDK guidance:
+- Python: `pydantic` `extra='allow'` + `^x-` validator
+- Rust: `#[serde(flatten)] extra: HashMap` + custom validator
+- TypeScript: `Type.Unsafe<Change>(...)` injecting raw JSON Schema `patternProperties: { "^x-": {} }` (escape-hatch; preserves TS type)
+
+apcore-typescript PR #29 author noted this in JSDoc; follow-up to upgrade the TypeBox schema to `Type.Unsafe` is straightforward.
+
+#### Clarification 5 — `rfc-ephemeral-modules.md`: transitional conformance-fixture handling
+
+**Surfaced by**: `apcore-python#26` agent (made conformance test pilot-tolerant for missing `discoverable`).
+
+**Issue**: Updating `conformance/fixtures/annotations_extra_round_trip.json` to require the new `discoverable` field would actively break the conformance tests of SDKs that haven't shipped support yet (TypeScript and Rust during the rollout window).
+
+**Resolution**: RFC §"Transitional fixture handling during multi-SDK rollout" added. SDKs implementing `discoverable` MAY make their conformance test runner pilot-tolerant (strip the field from comparison when `expected_serialized` lacks it). Once **all three SDKs** ship support, a synchronized follow-up PR updates the fixture and removes pilot-tolerant code paths.
+
+---
+
 ### Resolution status — iter-10 addendum (D-06 doc-side, 2026-05-05)
 
 - **D-06 (doc-side)** — resolved. `docs/features/multi-module-discovery.md` "Enabling Multi-Class Mode" section rewritten to drop the **Global opt-in (configuration)** paragraph that referenced the unimplemented `extensions.multi_class_discovery` config key. Per-class markers (`@multi_class` / `@multiClass()` / `#[multi_class]`) are now documented as the only opt-in path, with an inline backward-reference note pointing readers to this decision-log entry.
