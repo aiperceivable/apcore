@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Added
+
+- **§4.6 conventions table — three new `x-*` AI-routing keys (D-57).** Documentation-only registration of three metadata conventions surfaced by the 2025–2026 LLM-agent / tool-use frontier-research alignment audit:
+  - `x-reasoning-demand` (`low` | `medium` | `high`) — hint of the minimum reasoning capability the calling agent needs; consumed by upstream model routers for tier selection. Aligns with RouteLLM (ICLR 2025), xRouter (arXiv 2510.08439), and Cost-Aware Model Orchestration (arXiv 2512.01099).
+  - `x-required-context-keys` — array of `context.data` key names the module reads, enabling orchestrators to inject required state ahead of the call. Does **not** include framework-owned Context fields (`trace_id`, `caller_id`, etc.).
+  - `x-supports-dry-run` (boolean) — module-level signal that `Executor.validate()` (§12.2) is meaningful for this module.
+- **`docs/spec/2026-05-decision-log.md` — D-57 (§4.6 reasoning/context/dry-run conventions)** — marked **resolved**. Resolution status block updated to include D-57.
+
+### Notes
+
+- **No SDK behavior change.** All three SDKs (`apcore-python`, `apcore-typescript`, `apcore-rust`) treat module `metadata` as a free-form dict / `Record<string, unknown>` / `serde_json::Value`; the framework explicitly does not validate metadata content (§4.6 "Metadata Design Principles"). New `x-*` keys are additive conventions only.
+- **Strict-mode export unaffected.** §4.16 mandates that `to_strict_schema()` strips all `x-*` extension fields, so the new keys do not surface in strict-mode output.
+- **No normative MUST/MUST NOT additions.** §4.6 is the open-extension registry per `.claude/rules/protocol-spec.md` ("Do not invent x- extension fields not already listed in §4.6"); this PR registers three new conventions in the canonical landing spot.
+
+---
+
 ## [0.20.0] - 2026-05-05
 
 ### Added

@@ -1078,6 +1078,23 @@ metadata:
   x-verification-hint: "Cross-check amounts with accounting.get_balance"
 ```
 
+**Routing & Verification Hints** — Help orchestrators choose the right model, inject required state, and preflight destructive calls:
+
+```yaml
+metadata:
+  # Reasoning demand: hint to upstream model routers for tier selection
+  x-reasoning-demand: medium     # one of: low | medium | high
+
+  # Context keys this module reads from context.data
+  # (does NOT include framework-owned Context fields like trace_id, caller_id)
+  x-required-context-keys:
+    - user_preferences
+    - billing_account_id
+
+  # Dry-run capability: module-level signal that Executor.validate() is meaningful
+  x-supports-dry-run: true
+```
+
 | Key | Category | Purpose |
 |-----|----------|---------|
 | `x-when-to-use` | Intent | Positive guidance: scenarios where this module is the right choice |
@@ -1093,6 +1110,9 @@ metadata:
 | `x-sla` | Performance | SLA targets (availability, latency percentiles) |
 | `x-output-source` | Trust | Data provenance: database, api, generated, cached, computed |
 | `x-verification-hint` | Trust | How to cross-check the output for correctness |
+| `x-reasoning-demand` | Routing | One of `low`/`medium`/`high`. Hint of the minimum reasoning capability the calling agent needs; consumed by upstream model routers for tier selection. |
+| `x-required-context-keys` | Planning | Array of `context.data` key names the module reads. Does **not** include framework-owned Context fields (`trace_id`, `caller_id`, etc.). |
+| `x-supports-dry-run` | Verification | Boolean. Module-level signal that `Executor.validate()` (see §12.2) is meaningful for this module — i.e., the module overrides `preflight()` and/or has no destructive side-effects pre-execute. |
 
 **Metadata Design Principles:**
 
