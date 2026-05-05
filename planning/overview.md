@@ -33,9 +33,9 @@ These do not have `state.json` files; they are pre-feature design notes.
 
 ## Upcoming
 
-In-flight RFC drafts live under `docs/spec/`:
+In-flight RFC drafts live under `docs/spec/`, with planning artifacts under `planning/`:
 
-- `docs/spec/rfc-preview-method.md` — optional `Module.preview()` method (Stage 2 of frontier-research alignment audit)
-- `docs/spec/rfc-ephemeral-modules.md` — reserved `ephemeral.*` namespace (Stage 3)
+- [`docs/spec/rfc-preview-method.md`](../docs/spec/rfc-preview-method.md) — optional `Module.preview()` method (Stage 2 of frontier-research alignment audit). Planning: [`preview-method`](./preview-method/overview.md). Cross-repo blocker: `apcore-rust` `#[non_exhaustive]` hygiene ([apcore-rust#24](https://github.com/aiperceivable/apcore-rust/issues/24)).
+- [`docs/spec/rfc-ephemeral-modules.md`](../docs/spec/rfc-ephemeral-modules.md) — reserved `ephemeral.*` namespace (Stage 3). Planning: [`ephemeral-modules`](./ephemeral-modules/overview.md). Pilot queued in `apcore-python` ([apcore-python#25](https://github.com/aiperceivable/apcore-python/issues/25)).
 
 When an RFC is accepted and promoted to a full implementation feature, its planning subdirectory will be added to the **Completed features** table above.
