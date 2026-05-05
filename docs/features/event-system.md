@@ -451,7 +451,7 @@ sys_modules:
 - On success: void/None/()
 
 ### Properties
-- async: false in Python (synchronous dispatch); async in TypeScript and Rust
+- async: false in Python and TypeScript (synchronous fire-and-forget dispatch — TypeScript pushes async subscriber promises into an internal pending list and returns synchronously); async in Rust (the Rust async runtime model requires `pub async fn emit`, but observable semantics still match Python/TS fire-and-forget — subscriber errors are caught and logged internally, never propagated to the caller). All three SDKs deliver the same observable contract: emit returns immediately, never raises, and never blocks the caller on subscriber execution.
 - thread_safe: true
 - pure: false (invokes subscriber callbacks)
 - idempotent: false

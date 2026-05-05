@@ -1000,6 +1000,29 @@ registry.watch()
 registry.unwatch()
 ```
 
+!!! warning "Hot-reload behaviour is language-defined (D11-005)"
+    The post-state of a `watch()`-triggered file change is **not normatively
+    specified** across SDKs:
+
+    - **apcore-python** re-imports the changed module file, calls
+      `on_suspend()` on the old instance, calls `on_unload()`, then calls
+      `on_resume(suspended_state)` on the new instance.
+    - **apcore-typescript** unregisters the module and emits the
+      `'file_changed'` event; consumers must trigger re-discovery
+      themselves. (ES module specifiers are immutable in Node, so
+      programmatic re-import is not portable.)
+    - **apcore-rust** triggers `discover_internal()` to re-run the
+      configured `Discoverer`; `on_suspend` / `on_resume` are **not**
+      invoked.
+
+    Code that relies on `on_suspend` / `on_resume` lifecycle hooks
+    firing on file change is **portable only on Python**. Cross-language
+    integration tests should subscribe to the `'file_changed'` /
+    `'change'` event and orchestrate state migration explicitly rather
+    than depending on the lifecycle hooks. The hooks themselves remain
+    a `MAY`-level optional Module API for explicit caller-driven
+    suspend/resume flows (see `module-interface.md` §4.2).
+
 ---
 
 ## 10. Complete Example

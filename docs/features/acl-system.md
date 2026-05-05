@@ -223,27 +223,26 @@ Normative behavioral contract. All SDK implementations MUST satisfy these guaran
 
 ### Inputs
 
-- `rule`: `ACLRule`, optional (default `None`). A pre-built rule to insert. If provided, all keyword arguments are ignored.
-- `callers`: `list[str] | str`, required if `rule` is `None`. Caller pattern(s). A bare string is coerced to a single-element list.
-  - validation: must not be `None` when `rule` is `None`
-  - reject_with: `ValueError("Must provide either 'rule' or both 'callers' and 'targets'")`
-- `targets`: `list[str] | str`, required if `rule` is `None`. Target pattern(s). A bare string is coerced to a single-element list.
-  - validation: must not be `None` when `rule` is `None`
-  - reject_with: `ValueError("Must provide either 'rule' or both 'callers' and 'targets'")`
-- `effect`: string, optional (default `"deny"`). Rule effect when `rule` is `None`.
-- `description`: string, optional (default `""`). Human-readable description when `rule` is `None`.
-- `conditions`: `dict[str, Any] | None`, optional (default `None`). Condition map when `rule` is `None`.
+- `rule`: pre-built `ACLRule` to insert at the front of the rule list (highest priority).
+
+> **Cross-language ergonomic note (D10-006).** Python additionally exposes a
+> kwargs-form overload `add_rule(*, callers, targets, effect="deny",
+> description="", conditions=None)` that constructs the rule on the caller's
+> behalf. This kwargs surface is **Python-only** — TypeScript and Rust callers
+> use struct/object literals to build `ACLRule` directly, which is already
+> idiomatic in those languages and offers equivalent ergonomics. The
+> kwargs path is therefore not normative for cross-language conformance;
+> only the prebuilt-rule form is required across SDKs.
 
 ### Preconditions
 
-- Either `rule` is provided, or both `callers` and `targets` are provided.
+- `rule` is a well-formed `ACLRule` (callers + targets non-empty, effect ∈ {"allow", "deny"}).
 
 ### Side Effects (ordered)
 
-1. If `rule` is `None`, construct a new `ACLRule` from keyword arguments.
-2. Acquire the ACL lock.
-3. Insert the rule at index 0 of the internal rule list (highest priority).
-4. Release the ACL lock.
+1. Acquire the ACL lock.
+2. Insert the rule at index 0 of the internal rule list (highest priority).
+3. Release the ACL lock.
 
 ### Postconditions
 
@@ -252,7 +251,7 @@ Normative behavioral contract. All SDK implementations MUST satisfy these guaran
 
 ### Errors
 
-- `ValueError` — `rule` is `None` and either `callers` or `targets` is also `None`.
+- `ValueError` (Python kwargs path only) — when `rule` is `None` and either `callers` or `targets` is also `None`. Not raised on the prebuilt-rule path used uniformly across SDKs.
 
 ### Returns
 

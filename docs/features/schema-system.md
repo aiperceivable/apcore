@@ -254,15 +254,20 @@ The `strict` module provides a strict validation mode that rejects any fields no
 - `schema` (dict/object/Value, required) — JSON Schema Draft 2020-12 schema object
 
 ### Errors
-- `SchemaValidationError(code=SCHEMA_VALIDATION_FAILED)` — `data` does not conform to `schema`
+- None — `Schema.validate` does not raise. Failure is reported via the returned result object (D10-012). For a raise-on-failure variant, use `Schema.validate_input` / `Schema.validate_output` (Python+TS+Rust) or `validate_or_error` (Rust).
 
 ### Returns
-- On success: void/None/() — validation passed (no return value; raises on failure)
+- On success: `SchemaValidationResult { valid: true, errors: [] }` (Python+TS) or `ValidationResult { valid: true, errors: [] }` (Rust)
+- On failure: same result-object shape with `valid: false` and an `errors` array carrying per-failure detail objects.
 
 ### Properties
 - async: false
 - thread_safe: true
 - pure: true (no side effects; deterministic given same data and schema)
+
+### Cross-language note
+
+All three SDKs return a result object rather than raising. Spec versions ≤ 0.20.0 incorrectly declared "void/None/() — raises on failure"; that text was implementation-incorrect across all SDKs and has been amended (D10-012). For the raise-on-failure semantic, use the dedicated `validate_input` / `validate_output` (or Rust `validate_or_error`) entry points which raise `SchemaValidationError(code=SCHEMA_VALIDATION_FAILED)` on a non-empty `errors` array.
 - idempotent: true
 
 ## Contract: Schema.resolve_refs
