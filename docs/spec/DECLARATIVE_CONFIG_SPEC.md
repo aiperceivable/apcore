@@ -438,7 +438,6 @@ All three SDKs expose these errors with name parity (allowing language-appropria
 | `BindingSchemaModeConflictError` | parse | Multiple schema modes specified (1.0 NEW) |
 | `BindingSchemaInferenceFailedError` | parse | Auto mode failed to infer (1.0 NEW) |
 | `BindingStrictSchemaIncompatibleError` | parse | `auto_schema: strict` and incompatible feature found (1.0 NEW) |
-| `BindingPolicyViolationError` | parse | Field exceeds configured policy limit (1.0 NEW; replaces hard schema limits) |
 
 **Pipeline config**:
 
@@ -487,9 +486,6 @@ BindingSchemaInferenceFailedError:
 
 BindingStrictSchemaIncompatibleError:
   template: "{file_path}:{line}: binding '{module_id}' uses auto_schema: strict but inferred schema contains incompatible features: {features_listed}. See DECLARATIVE_CONFIG_SPEC.md §6.2"
-
-BindingPolicyViolationError:
-  template: "{file_path}:{line}: binding '{module_id}' field '{field_name}' violates policy '{policy_path}': {reason} (configured limit: {limit_value}). Adjust the limit in apcore.yaml or shorten the value."
 
 PipelineHandlerNotSupportedError:
   template: "{file_path}:{line}: pipeline step '{step_name}' uses 'handler:' which is not supported in {sdk_name}. Use 'type:' with {register_function_name}(). See DECLARATIVE_CONFIG_SPEC.md §4.4"
@@ -617,7 +613,16 @@ The `validation` section is added to `apcore/schemas/apcore-config.schema.json` 
 
 ### 9.5 Violation behavior
 
-A field violating a configured policy raises `BindingPolicyViolationError` (or `PipelineConfigPolicyViolationError`) at parse time. The error message names the violated policy path so users know exactly where to relax it.
+> **Status (D9-001..003).** Configurable policy enforcement is **deferred**.
+> The `BindingPolicyViolationError` / `PipelineConfigPolicyViolationError`
+> classes were declared but never raised in any SDK; the corresponding
+> exports have been removed in 0.21.0. When policy enforcement lands, this
+> section will be updated together with re-introduced error classes,
+> normative parse-time enforcement steps, and conformance fixtures.
+>
+> Until then, fields are bounded only by the hard schema limits documented
+> in PROTOCOL_SPEC §2.7 and the JSON-Schema validation produced by each
+> binding's `auto_schema` / `manual_schema` mode.
 
 ---
 
