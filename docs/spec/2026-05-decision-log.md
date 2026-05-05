@@ -788,7 +788,7 @@ the same fixture file.
 
 ## Resolution status
 
-- **Resolved** (no further action): D-02, D-05, D-23, D-29, D-30, D-31, D-32, D-34, D-35, D-36, D-37, D-38, D-41, D-42, D-43, D-44, D-45, D-46, D-54, D-55, D-56
+- **Resolved** (no further action): D-02, D-05, D-23, D-29, D-30, D-31, D-32, D-34, D-35, D-36, D-37, D-38, D-41, D-42, D-43, D-44, D-45, D-46, D-54, D-55, D-56, D-57
 - **Doc-only fixes** (1-line each): D-01, D-07, D-09, D-16, D-17, D-18, D-26
 - **Code fix needed in 1 SDK**: D-04 (TS), D-08 (Python), D-10 (Python), D-11 (Python), D-12 (Python), D-13 (Python), D-14 (Rust), D-19 (Rust), D-25 (TS+Rust), D-27 (Rust), D-28 (Rust)
 - **Multi-SDK code fix**: D-03 (all 3), D-15 (Python+TS), D-24 (TS+Rust)
@@ -1009,3 +1009,28 @@ TypeScript SDK adds `OverridesStore` interface, `FileOverridesStore` (YAML-backe
 - Algorithm A04 in `docs/spec/algorithms.md` describes one canonical 8-stage pipeline; cross-language conformance no longer special-cases TS.
 
 **Status**: **resolved**. See `docs/spec/algorithms.md` Algorithm A04 (8-stage pipeline) and the existing `conformance/fixtures/multi_module_discovery.json` (no fixture change required — TS now follows the canonical shape).
+
+---
+
+## D-57 — §4.6 reasoning / context / dry-run conventions
+
+**Status quo (pre-resolution)**
+- The 2025–2026 LLM-agent / cognitive-architecture / tool-use frontier-research alignment audit identified three signals not covered by the 18 existing `x-*` conventions in §4.6:
+  - **Reasoning load** for upstream model routers (RouteLLM ICLR 2025, xRouter arXiv 2510.08439, Cost-Aware Model Orchestration arXiv 2512.01099 all consume per-tool reasoning hints; apcore had nothing to expose).
+  - **Required state** the module reads from `context.data` (orchestrators / `apcore-mcp` bridges currently have no standard way to pre-fetch and inject the right keys).
+  - **Module-level dry-run capability** (existing per-step `pure: bool` metadata governs the pipeline, but no module-level signal told the caller whether `Executor.validate()` would yield useful information for *this* module).
+- A four-round audit (PROTOCOL_SPEC text + features docs + Module-interface contract + 3 SDK source reads) confirmed that the metadata layer is fully free-form: `apcore-python` `metadata: dict[str, Any]`, `apcore-typescript` `metadata: Record<string, unknown>`, `apcore-rust` `serde_json::Value`. None of the SDKs hard-code an `x-*` allowlist; `.claude/rules/protocol-spec.md` further constrains the team from inventing new `x-*` keys outside §4.6.
+
+**Resolution**
+- Register three new `x-*` keys in the §4.6 conventions table and add a corresponding "Routing & Verification Hints" YAML example block:
+  - `x-reasoning-demand` — `low` | `medium` | `high` (Routing).
+  - `x-required-context-keys` — array of strings naming `context.data` keys the module reads (Planning). Framework-owned Context fields (`trace_id`, `caller_id`, etc.) are explicitly **not** included.
+  - `x-supports-dry-run` — boolean, module-level signal that `Executor.validate()` is meaningful (Verification).
+- **No SDK behavior change.** Framework continues to ignore unknown metadata content (§4.6 "Metadata Design Principles"); strict-mode export (§4.16) auto-strips all `x-*` keys including these.
+- **No normative MUST / MUST NOT.** Conventions only — consistent with the existing 18 `x-*` entries in §4.6.
+
+**Status**: **resolved**. See `PROTOCOL_SPEC.md` §4.6 ("Routing & Verification Hints" YAML block + table rows) and `CHANGELOG.md` `[Unreleased]` block.
+
+**Cross-refs**:
+- Stage 1 of the apcore frontier-alignment plan (`/Users/tercelyi/.claude/plans/apcore-toolkit-cli-harmonic-starlight.md`).
+- Literature: RouteLLM (ICLR 2025); xRouter (arXiv 2510.08439); Cost-Aware Model Orchestration (Smirnova, arXiv 2512.01099); Budget-Aware Tool-Use (arXiv 2511.17006); ToolMaker (ACL 2025, arXiv 2502.11705) — see `docs/spec/rfc-ephemeral-modules.md` and `docs/spec/rfc-preview-method.md` for adjacent RFCs.
