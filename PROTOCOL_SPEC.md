@@ -397,7 +397,7 @@ versioning:
 ```yaml
 reserved_words:
   # Framework reserved
-  framework: [system, internal, core, apcore, plugin, schema, acl]
+  framework: [system, internal, core, apcore, plugin, schema, acl, ephemeral]
 
   # Programming language keywords
   keywords: [class, def, import, return, if, else, for, while, true, false, null, none]
@@ -408,6 +408,16 @@ reserved_words:
     - "^[0-9].*"     # Starting with digit
     - ".*__.*"       # Double underscore
 ```
+
+**Reserved namespace semantics:**
+
+| Namespace | Purpose | Registration mechanism |
+|---|---|---|
+| `system.*` | Built-in framework modules (health, manifest, usage, control) | Framework-internal only (e.g., `Registry.register_internal()`); user code MUST NOT register `system.*` IDs |
+| `internal.*` | Reserved for SDK-private modules; not intended for user code | Implementation-defined |
+| `core.*` | Reserved for future spec promotion of metadata extension keys | Reserved — no current use |
+| `apcore.*`, `plugin.*`, `schema.*`, `acl.*` | Reserved for framework subsystem extensions | Reserved — no current use |
+| `ephemeral.*` | Programmatically-generated runtime modules (Agent-synthesized tools, on-the-fly composition) | Standard `Registry.register()` only; framework-internal `register_internal()` MUST reject `ephemeral.*` IDs. See `docs/spec/rfc-ephemeral-modules.md` for the full namespace contract. |
 
 ### 2.6 ID Conflict Detection
 
@@ -798,6 +808,11 @@ annotations:
       default: false
       description: "Whether requires human approval before execution. When an ApprovalHandler is configured, the Executor enforces this at runtime (see §7 Approval System)."
 
+    discoverable:
+      type: boolean
+      default: true
+      description: "Whether the module appears in enumeration surfaces (Registry.list(), Registry.find(), manifest export, MCP tools/list). false hides the module from discovery while keeping it callable by ID — caller must already know the module ID. Default true preserves backward compatibility. ephemeral.* modules SHOULD set discoverable: false."
+
     open_world:
       type: boolean
       default: true
@@ -859,6 +874,7 @@ readonly=true         → AI can call safely, no confirmation needed
 destructive=true      → AI should warn user before calling
 idempotent=true       → AI can safely retry failed calls
 requires_approval=true → AI must seek user consent; Executor enforces via ApprovalHandler (§7)
+discoverable=false    → AI / orchestrator hides the module from enumeration surfaces (still callable by exact ID)
 open_world=true       → AI knows this call involves external systems, may be slow
 streaming=true        → AI knows this module emits partial results progressively
 cacheable=true        → AI knows it can reuse previous results within cache_ttl
