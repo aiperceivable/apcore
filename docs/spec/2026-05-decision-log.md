@@ -1075,6 +1075,28 @@ No SDK behavior changes, no normative `MUST` / `MUST NOT` additions, no schema f
 
 ---
 
+### Resolution status — iter-12 addendum (RFC promotion to normative spec, 2026-05-06)
+
+After all four SDK pilot PRs merged (`apcore-rust#25`, `apcore-python#26`, `apcore-typescript#29`, `apcore-typescript#30`), the Stage-2 (`Module.preview()`) and Stage-3 (`ephemeral.*` namespace + `discoverable` annotation) RFCs were promoted from `Draft / RFC` to `Accepted` (target v0.21.0). The normative content folded into PROTOCOL_SPEC.md:
+
+- **§2.5 Reserved Words** — `ephemeral` appended to the framework reserved list. New "Reserved namespace semantics" table immediately below the YAML block enumerates the registration / discoverability / mandatory-annotation contract for `system.*`, `internal.*`, `core.*`, `apcore.*`, `plugin.*`, `schema.*`, `acl.*`, and `ephemeral.*`. The `register_internal()` MUST-reject rule for `ephemeral.*` is now normative.
+- **§4.4 ModuleAnnotations** — new `discoverable: boolean` field (default `true`) inserted between `requires_approval` and `open_world`. AI-usage decision examples block updated to include `discoverable=false → AI / orchestrator hides the module from enumeration surfaces`.
+- **§5.6 Module Interface Protocol** — optional `preview(inputs, context) -> PreviewResult | null` method added to both the language-agnostic pseudocode interface block and the YAML `optional_methods` block. Cross-references §12.8 for the schema. Preflight-style exception semantics documented (advisory warning, no-fail).
+- **§12.8 Executor.validate() type contracts** — new `Change` and `PreviewResult` type definitions added. `PreflightResult` extended with `predicted_changes: List<Change>` field. `PreflightCheckResult.check` enum extended with `module_preview`.
+
+Both RFC documents (`docs/spec/rfc-preview-method.md`, `docs/spec/rfc-ephemeral-modules.md`) updated their Status header from `Draft / RFC` to `Accepted` with target version `v0.21.0` and explicit cross-references to the normative PROTOCOL_SPEC.md sections. The RFCs are retained as design rationale + cross-SDK schema-encoding reference (`pydantic` / `serde-flatten` / TypeBox `Type.Unsafe`) — implementations should consult PROTOCOL_SPEC.md for the canonical contract.
+
+`CHANGELOG.md` v0.21.0 block records the version bump.
+
+**SDK rollout status (cross-repo follow-up tracked separately):**
+- `apcore-python`: ships full Stage 2 + Stage 3 surface (PR #26, post iter-11).
+- `apcore-typescript`: ships Stage 2 `Module.preview()` (PR #29). Ephemeral / discoverable implementation pending — same kind of pilot work as apcore-python#26.
+- `apcore-rust`: ships Stage 2 `#[non_exhaustive]` prerequisite (PR #25). `Module.preview()` SDK-side implementation + ephemeral / discoverable pending.
+
+**Conformance-fixture update deferred** per `rfc-ephemeral-modules.md` "Transitional fixture handling": `conformance/fixtures/annotations_extra_round_trip.json` will be updated only after all 3 SDKs ship `discoverable`. Until then, the SDKs that have shipped support (currently apcore-python) make their conformance test runner pilot-tolerant.
+
+---
+
 ### Resolution status — iter-11 addendum (RFC clarifications post pilot-implementation, 2026-05-05)
 
 A round of parallel sub-agent SDK pilot implementations against the two Stage-2/Stage-3 RFCs (`rfc-preview-method.md`, `rfc-ephemeral-modules.md`) surfaced concrete ambiguities and one factual error in the RFC text. Resolutions landed as same-day RFC edits on `main`. Pilot PRs:

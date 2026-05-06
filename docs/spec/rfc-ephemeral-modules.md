@@ -2,7 +2,14 @@
 
 ## Status
 
-**Draft / RFC.** No target acceptance version. This RFC is intentionally exploratory: a pilot implementation in one SDK (`apcore-python`, leveraging existing `register_internal()` precedent) is expected before any normative spec text lands.
+**Accepted** (2026-05-06). Promoted to PROTOCOL_SPEC.md normative sections in v0.21.0:
+
+- `§2.5 Reserved Words` — `ephemeral` added to framework reserved list; namespace semantics table now lists `ephemeral.*` with its registration / discoverability / annotation contract
+- `§4.4 ModuleAnnotations` — new `discoverable: boolean` annotation field (default `true`); RFC's "single-emit rule" and "register_internal() interaction" rules are normative
+
+The pilot in `apcore-python` (PR #26) shipped the full v1 surface: namespace reservation, `discoverable` annotation, audit-event single-emit, `register_internal()` rejection, soft-warning on missing `requires_approval`. `apcore-typescript` and `apcore-rust` follow-up implementations are tracked in their respective repos.
+
+This RFC document is retained as **design rationale + cross-SDK pilot reference**. Implementations should consult PROTOCOL_SPEC.md for the normative contract.
 
 ## Motivation
 

@@ -2,9 +2,12 @@
 
 ## Status
 
-**Draft / RFC.** Non-normative until accepted. Target acceptance version: **v0.21.0**.
+**Accepted** (2026-05-06). Promoted to PROTOCOL_SPEC.md normative sections in v0.21.0:
 
-This document explores adding a structured-diff surface to apcore's pre-execution validation pipeline. **No `MUST` / `MUST NOT` text is added until this RFC is accepted.**
+- `§5.6 Module Interface Protocol` — optional `preview()` method added to optional_methods + pseudocode interface
+- `§12.8 Executor.validate() type contracts` — new `Change` and `PreviewResult` types; `PreflightResult.predicted_changes` field added; `PreflightCheckResult.check` enum extended with `module_preview`
+
+This RFC document is retained as **design rationale + cross-SDK schema-encoding reference**. Implementations should consult PROTOCOL_SPEC.md for the normative contract; this document for the *why* and the cross-SDK encoding patterns (pydantic / serde-flatten / TypeBox `Type.Unsafe`).
 
 ## Motivation
 

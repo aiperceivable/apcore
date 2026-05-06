@@ -7,10 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [Unreleased]
+## [0.21.0] - 2026-05-06
 
 ### Added
 
+- **§2.5 Reserved Words — `ephemeral` added to framework reserved list (RFC `rfc-ephemeral-modules.md` accepted).** New reserved namespace `ephemeral.*` for programmatically-generated runtime modules synthesized by LLM agents (à la ToolMaker, ACL 2025). Standard `Registry.register()` only — `register_internal()` MUST reject `ephemeral.*` IDs. Reserved-namespace semantics table added below the YAML block. See `docs/spec/rfc-ephemeral-modules.md` for the full namespace contract (registration / lifecycle / audit / sandboxing).
+- **§4.4 ModuleAnnotations — new `discoverable: boolean` field (default `true`).** Controls visibility in enumeration surfaces (`Registry.list()`, `Registry.find()`, manifest export, MCP `tools/list`). `false` hides the module from discovery while keeping it callable by exact ID. `ephemeral.*` modules SHOULD set `discoverable: false`.
+- **§5.6 Module Interface Protocol — optional `preview()` method (RFC `rfc-preview-method.md` accepted).** Modules implement `preview(inputs, context) -> PreviewResult | null` to self-report structured-diff predictions of state changes the call would produce. Sits alongside `preflight()` (warnings) — they are orthogonal surfaces. Exception semantics mirror `preflight()` (advisory warning via `module_preview` check entry; does not fail validation). Pseudocode interface block + `optional_methods` YAML both updated.
+- **§12.8 PreflightResult schema — new `predicted_changes: List<Change>` field; `Change` and `PreviewResult` types defined.** `Change` has required `action` / `target` / `summary` (free-form strings) and optional `before` / `after` snapshots; `x-*` extension fields are permitted (cross-SDK encoding patterns documented in the RFC). `PreflightCheckResult.check` enum extended with `module_preview`.
 - **§4.6 conventions table — three new `x-*` AI-routing keys (D-57).** Documentation-only registration of three metadata conventions surfaced by the 2025–2026 LLM-agent / tool-use frontier-research alignment audit:
   - `x-reasoning-demand` (`low` | `medium` | `high`) — hint of the minimum reasoning capability the calling agent needs; consumed by upstream model routers for tier selection. Aligns with RouteLLM (ICLR 2025), xRouter (arXiv 2510.08439), and Cost-Aware Model Orchestration (arXiv 2512.01099).
   - `x-required-context-keys` — array of `context.data` key names the module reads, enabling orchestrators to inject required state ahead of the call. Does **not** include framework-owned Context fields (`trace_id`, `caller_id`, etc.).
@@ -19,9 +23,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Notes
 
-- **No SDK behavior change.** All three SDKs (`apcore-python`, `apcore-typescript`, `apcore-rust`) treat module `metadata` as a free-form dict / `Record<string, unknown>` / `serde_json::Value`; the framework explicitly does not validate metadata content (§4.6 "Metadata Design Principles"). New `x-*` keys are additive conventions only.
-- **Strict-mode export unaffected.** §4.16 mandates that `to_strict_schema()` strips all `x-*` extension fields, so the new keys do not surface in strict-mode output.
-- **No normative MUST/MUST NOT additions.** §4.6 is the open-extension registry per `.claude/rules/protocol-spec.md` ("Do not invent x- extension fields not already listed in §4.6"); this PR registers three new conventions in the canonical landing spot.
+- **No SDK behavior change** for §4.6 D-57 conventions. All three SDKs treat module `metadata` as a free-form dict / `Record<string, unknown>` / `serde_json::Value`; the framework explicitly does not validate metadata content (§4.6 "Metadata Design Principles"). New `x-*` keys are additive conventions only.
+- **Strict-mode export unaffected** by D-57. §4.16 mandates that `to_strict_schema()` strips all `x-*` extension fields, so the new keys do not surface in strict-mode output.
+- **SDK rollout for §2.5 / §4.4 / §5.6 / §12.8 spec promotions is staged.** `apcore-python` (PR #26 merged) ships the full Stage 3 surface (`ephemeral.*` namespace + `discoverable` annotation + single-emit + `register_internal()` rejection) and the Stage 2 SDK-side `Module.preview()` types. `apcore-typescript` (PR #29 merged) ships Stage 2 `Module.preview()` + TypeBox `Type.Unsafe` form for `Change.x-*`. `apcore-rust` (PR #25 merged) ships Stage 2 prerequisite (`#[non_exhaustive]` hygiene). TypeScript / Rust ephemeral / discoverable implementations remain as cross-repo follow-up issues.
+- **Conformance fixture `annotations_extra_round_trip.json` deferred.** Per `rfc-ephemeral-modules.md` "Transitional fixture handling during multi-SDK rollout", the fixture is NOT updated to require `discoverable` until all 3 SDKs have shipped support. SDKs implementing `discoverable` MAY make their conformance test runner pilot-tolerant in the interim. Synchronized fixture update will land in a follow-up PR after TypeScript and Rust ship `discoverable`.
 
 ---
 

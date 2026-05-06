@@ -2051,6 +2051,16 @@ Interface: Module
 
   Optional implementations:
     validate(inputs: Map<String, Any>) → ValidationResult
+    preflight(inputs: Map<String, Any>, context: Context) → List<String>
+      # Advisory pre-execution warnings. Returning warnings does NOT block execution.
+      # If preflight() raises, the exception is caught and reported as a warning.
+    preview(inputs: Map<String, Any>, context: Context) → PreviewResult?
+      # Structured prediction of state changes the call would produce.
+      # Returns null if prediction is unavailable (e.g., target not found).
+      # Called by Executor.validate() after preflight(); result is folded into
+      # PreflightResult.predicted_changes. If preview() raises, treated as
+      # advisory warning (mirrors preflight semantics).
+      # See §12.8 for PreviewResult / Change schema.
     on_load() → void
     on_unload() → void
     on_suspend() → Map<String, Any>?
@@ -2157,6 +2167,12 @@ module_interface:
       input: "(inputs: dict, context: Context)"
       output: "list[str] — warning messages, or empty list if no warnings"
       note: "Advisory only — returning warnings does NOT block execution. If preflight() raises, the exception is caught and reported as a warning."
+
+    - name: "preview"
+      description: "Structured prediction of state changes the call would produce (called by Executor.validate() after preflight)"
+      input: "(inputs: dict, context: Context)"
+      output: "PreviewResult | null — { changes: List<Change> } or null if prediction unavailable"
+      note: "Optional. Modules that don't implement it leave PreflightResult.predicted_changes empty. If preview() raises (sync throw or async reject), treated as advisory warning via a `module_preview` check entry — does NOT fail validation. See §12.8 for the PreviewResult / Change schema."
 
   # Lifecycle hooks
   lifecycle_hooks:
@@ -6577,15 +6593,28 @@ Interface: Executor
  * consumers of validate() continue to work after the enhancement.
  */
 Type: PreflightCheckResult
-  check: String              // "module_id" | "module_lookup" | "call_chain" | "acl" | "approval" | "schema" | "module_preflight"
+  check: String              // "module_id" | "module_lookup" | "call_chain" | "acl" | "approval" | "schema" | "module_preflight" | "module_preview"
   passed: Boolean
   error: Map?                // Error details when passed=false; null when passed=true
   warnings: List<String>     // Non-fatal advisory messages (default: empty list)
+
+Type: Change
+  action: String             // Free-form verb describing the kind of change (e.g. "write", "delete", "send", "charge")
+  target: String             // Free-form identifier of what is changed (e.g. "users.42", "stripe:charge:ch_abc")
+  summary: String            // Human-readable single-line summary (REQUIRED — floor for destructive modules)
+  before: Any?               // Optional snapshot of prior state; OMIT for unobservable side effects
+  after: Any?                // Optional predicted new state; OMIT when unknown (e.g. server-assigned IDs)
+  // x-* extension fields permitted (consistent with §4.6 conventions). See docs/spec/rfc-preview-method.md
+  // for cross-SDK schema-encoding guidance (pydantic / serde-flatten / TypeBox Type.Unsafe).
+
+Type: PreviewResult
+  changes: List<Change>      // Module's prediction of what would change if the call were executed
 
 Type: PreflightResult
   valid: Boolean             // True only if ALL checks passed
   checks: List<PreflightCheckResult>
   requires_approval: Boolean // True if module has requires_approval annotation
+  predicted_changes: List<Change>  // Populated when module implements preview() and Executor.validate() ran in dry_run mode (default: empty list)
 
 Interface: ACLChecker
   /**
