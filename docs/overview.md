@@ -57,7 +57,7 @@ apcore is an **AI-Perceivable module standard** that makes every interface natur
 - [Middleware](#middleware)
 - [Configuration](#configuration)
 - [Observability](#observability)
-- [Error Handling & AI Guidance](#error-handling--ai-guidance)
+- [Error Handling & AI Guidance](#error-handling-ai-guidance)
 - [Cross-Language Support](#cross-language-support)
 - [Relationship with Other Tools](#relationship-with-other-tools)
 - [Implementations](#implementations)
@@ -1107,9 +1107,9 @@ Development guide: see [Adapter Development Guide](./guides/adapter-development.
 | Document | Description |
 |------|------|
 | [Protocol Specification](./PROTOCOL_SPEC.md) | Complete standard specification (RFC 2119 Conformant) |
-| [Scope Definition](./SCOPE.md) | Responsibility boundaries (what's in/out of scope) |
+| [Scope Definition](https://github.com/aiperceivable/apcore/blob/main/SCOPE.md) | Responsibility boundaries (what's in/out of scope) |
 | [Positioning](./POSITIONING.md) | Where apcore sits in the stack — relationship to MCP, A2A, CLI, REST |
-| [Roadmap](./ROADMAP.md) | Project roadmap and milestones |
+| [Roadmap](https://github.com/aiperceivable/apcore/blob/main/ROADMAP.md) | Project roadmap and milestones |
 
 ### Concepts & Architecture
 

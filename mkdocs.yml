@@ -27,7 +27,8 @@ theme:
     - navigation.instant
     - navigation.tracking
     - navigation.sections
-    - navigation.expand
+    - navigation.tabs
+    - navigation.indexes
     - navigation.top
     - search.suggest
     - search.highlight
@@ -53,74 +54,82 @@ markdown_extensions:
   - md_in_html
 
 nav:
-  - Home: index.md
-  - Project Overview: overview.md
-  - Getting Started: getting-started.md
-  - Glossary: glossary.md
-  - Migration:
-      - v0.18 Breaking Changes: migration-v0.18.md
-  - Core Documents:
-      - Positioning: POSITIONING.md
+  - Start Here:
+      - index.md
+      - Project Overview: overview.md
+      - Getting Started: getting-started.md
+      - Glossary: glossary.md
   - Concepts & Architecture:
       - Core Concepts: concepts.md
       - Architecture Design: architecture.md
+      - Positioning: POSITIONING.md
+  - Guides:
+      - guides/index.md
+      - Foundations:
+          - Creating Modules: guides/creating-modules.md
+          - Schema Definition: guides/schema-definition.md
+          - Testing Modules: guides/testing-modules.md
+      - Advanced:
+          - Middleware: guides/middleware.md
+          - ACL Configuration: guides/acl-configuration.md
+          - Adapter Development: guides/adapter-development.md
+          - Multi-Language Development: guides/multi-language.md
+          - Integrating into Existing Projects: guides/integrating-existing-projects.md
+      - Cookbooks:
+          - "Streaming": guides/cookbook-streaming.md
+          - "Approval Flow": guides/cookbook-approval-flow.md
+          - "Observability": guides/cookbook-observability.md
+          - "Cancellation": guides/cookbook-cancellation.md
+      - Troubleshooting: guides/troubleshooting.md
+  - Features:
+      - features/index.md
+      - Core Execution:
+          - Core Executor: features/core-executor.md
+          - APCore Client: features/apcore-client.md
+          - Async Task Management: features/async-tasks.md
+          - Config Bus: features/config-bus.md
+          - Cancellation: features/cancellation.md
+          - Streaming: features/streaming.md
+      - Security & Control:
+          - ACL System: features/acl-system.md
+          - Identity System: features/identity-system.md
+          - Approval System: features/approval-system.md
+          - Call Chain Guard: features/call-chain-guard.md
+      - Extensibility:
+          - System Modules: features/system-modules.md
+          - Extension System: features/extension-system.md
+          - Middleware System: features/middleware-system.md
+          - Schema System: features/schema-system.md
+          - Registry System: features/registry-system.md
+          - Multi-Module Discovery: features/multi-module-discovery.md
+      - Observability & Bindings:
+          - Observability: features/observability.md
+          - Error System: features/error-system.md
+          - Event System: features/event-system.md
+          - Decorator & YAML Bindings: features/decorator-bindings.md
   - API Reference:
-      - Overview: api/index.md
+      - api/index.md
       - Client API: api/client-api.md
       - Module Interface: api/module-interface.md
       - Context Object: api/context-object.md
       - Registry API: api/registry-api.md
       - Executor API: api/executor-api.md
-  - Feature Specifications:
-      - Overview: features/index.md
-      - APCore Client: features/apcore-client.md
-      - ACL System: features/acl-system.md
-      - Approval System: features/approval-system.md
-      - Async Task Management: features/async-tasks.md
-      - Call Chain Guard: features/call-chain-guard.md
-      - Cancellation: features/cancellation.md
-      - Config Bus: features/config-bus.md
-      - Core Executor: features/core-executor.md
-      - Decorator & YAML Bindings: features/decorator-bindings.md
-      - Error System: features/error-system.md
-      - Event System: features/event-system.md
-      - Extension System: features/extension-system.md
-      - Identity System: features/identity-system.md
-      - Middleware System: features/middleware-system.md
-      - Multi-Module Discovery: features/multi-module-discovery.md
-      - Observability: features/observability.md
-      - Registry System: features/registry-system.md
-      - Schema System: features/schema-system.md
-      - Streaming: features/streaming.md
-      - System Modules: features/system-modules.md
-  - User Guides:
-      - Overview: guides/index.md
-      - Creating Modules: guides/creating-modules.md
-      - Schema Definition: guides/schema-definition.md
-      - Middleware: guides/middleware.md
-      - ACL Configuration: guides/acl-configuration.md
-      - Testing Modules: guides/testing-modules.md
-      - Troubleshooting: guides/troubleshooting.md
-      - "Cookbook — Streaming": guides/cookbook-streaming.md
-      - "Cookbook — Approval Flow": guides/cookbook-approval-flow.md
-      - "Cookbook — Observability": guides/cookbook-observability.md
-      - "Cookbook — Cancellation": guides/cookbook-cancellation.md
-      - Adapter Development: guides/adapter-development.md
-      - Multi-Language Development: guides/multi-language.md
-      - Integrating into Existing Projects: guides/integrating-existing-projects.md
-  - Framework Specifications:
-      - Overview: spec/index.md
-      - Algorithm Reference: spec/algorithms.md
-      - Type Mapping: spec/type-mapping.md
-      - Conformance Definition: spec/conformance.md
-      - Security Considerations: spec/security-considerations.md
-      - Declarative Config Spec: spec/DECLARATIVE_CONFIG_SPEC.md
-      - Execution Pipeline Design: spec/design-execution-pipeline.md
-      - Durability Boundary: spec/design-durability-boundary.md
-      - Context-Annotations-ACL Design: spec/design-context-annotations-acl.md
-      - Decision Log (2026-05): spec/2026-05-decision-log.md
-      - "RFC — preview() Method": spec/rfc-preview-method.md
-      - "RFC — Ephemeral Modules": spec/rfc-ephemeral-modules.md
+  - Framework Specs:
+      - spec/index.md
+      - Core Specs:
+          - Conformance Definition: spec/conformance.md
+          - Declarative Config Spec: spec/DECLARATIVE_CONFIG_SPEC.md
+          - Type Mapping: spec/type-mapping.md
+          - Algorithm Reference: spec/algorithms.md
+          - Security Considerations: spec/security-considerations.md
+      - Design Docs:
+          - Execution Pipeline Design: spec/design-execution-pipeline.md
+          - Durability Boundary: spec/design-durability-boundary.md
+          - Context-Annotations-ACL Design: spec/design-context-annotations-acl.md
+      - RFCs & Logs:
+          - Decision Log (2026-05): spec/2026-05-decision-log.md
+          - "RFC — preview() Method": spec/rfc-preview-method.md
+          - "RFC — Ephemeral Modules": spec/rfc-ephemeral-modules.md
 
 extra:
   social:
