@@ -29,7 +29,7 @@ jobs:
       - name: Prepare docs for MkDocs
         run: |
           # Copy root-level docs into docs/
-          cp README.md docs/index.md
+          cp README.md docs/overview.md
           cp PROTOCOL_SPEC.md docs/
           cp SCOPE.md docs/
           cp ROADMAP.md docs/
@@ -37,18 +37,18 @@ jobs:
           mkdir -p docs/assets
           cp apcore-logo.svg docs/assets/
 
-          # Fix links in index.md: ./docs/X → ./X and (docs/X → (X
-          sed -i 's|\./docs/|./|g' docs/index.md
-          sed -i 's|(docs/|(|g' docs/index.md
-          sed -i 's|\.\./README\.md|../index.md|g' docs/index.md
-          sed -i 's|\./apcore-logo\.svg|./assets/apcore-logo.svg|g' docs/index.md
+          # Fix links in overview.md (formerly index.md in the original workflow): ./docs/X → ./X and (docs/X → (X
+          sed -i 's|\./docs/|./|g' docs/overview.md
+          sed -i 's|(docs/|(|g' docs/overview.md
+          sed -i 's|\.\./README\.md|./overview.md|g' docs/overview.md
+          sed -i 's|\./apcore-logo\.svg|./assets/apcore-logo.svg|g' docs/overview.md
 
           # Fix links in subdirectories: ../../PROTOCOL_SPEC.md → ../PROTOCOL_SPEC.md
-          find docs -name '*.md' -not -name 'index.md' -exec sed -i 's|\.\./\.\./PROTOCOL_SPEC\.md|../PROTOCOL_SPEC.md|g' {} +
-          find docs -name '*.md' -not -name 'index.md' -exec sed -i 's|\.\./\.\./SCOPE\.md|../SCOPE.md|g' {} +
+          find docs -name '*.md' -not -name 'index.md' -not -name 'overview.md' -exec sed -i 's|\.\./\.\./PROTOCOL_SPEC\.md|../PROTOCOL_SPEC.md|g' {} +
+          find docs -name '*.md' -not -name 'index.md' -not -name 'overview.md' -exec sed -i 's|\.\./\.\./SCOPE\.md|../SCOPE.md|g' {} +
 
-          # Fix docs/README.md link to root README
-          sed -i 's|\.\./README\.md|index.md|g' docs/README.md
+          # Fix docs/index.md (formerly README.md) link to root README (now overview.md)
+          sed -i 's|\.\./README\.md|overview.md|g' docs/index.md
 
           # Fix copied ROADMAP.md: docs/X → X
           sed -i 's|docs/||g' docs/ROADMAP.md
@@ -66,6 +66,7 @@ jobs:
             sed -i 's|\.\./api/|api/|g' "$f"
             sed -i 's|\.\./guides/|guides/|g' "$f"
             sed -i 's|\.\./spec/|spec/|g' "$f"
+            sed -i 's|./README.md|./index.md|g' "$f"
           done
 
       - run: mkdocs build

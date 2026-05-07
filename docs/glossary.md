@@ -100,6 +100,6 @@ A single-page reference for terminology used across the apcore protocol, the thr
 
 ## See also
 
-- [Concept Index](./README.md#concept-index) — quick navigation table on the docs home.
+- [Concept Index](./index.md#concept-index) — quick navigation table on the docs home.
 - [PROTOCOL_SPEC §1.6](../PROTOCOL_SPEC.md#1-overview) — full normative terminology section.
 - [docs/spec/conformance.md](./spec/conformance.md) — fixture catalog cross-referenced by feature.

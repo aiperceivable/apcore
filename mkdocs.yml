@@ -53,7 +53,8 @@ markdown_extensions:
   - md_in_html
 
 nav:
-  - Home: README.md
+  - Home: index.md
+  - Project Overview: overview.md
   - Getting Started: getting-started.md
   - Glossary: glossary.md
   - Migration:
@@ -64,13 +65,14 @@ nav:
       - Core Concepts: concepts.md
       - Architecture Design: architecture.md
   - API Reference:
-      - Overview: api/README.md
+      - Overview: api/index.md
       - Client API: api/client-api.md
       - Module Interface: api/module-interface.md
       - Context Object: api/context-object.md
       - Registry API: api/registry-api.md
       - Executor API: api/executor-api.md
   - Feature Specifications:
+      - Overview: features/index.md
       - APCore Client: features/apcore-client.md
       - ACL System: features/acl-system.md
       - Approval System: features/approval-system.md
@@ -92,7 +94,7 @@ nav:
       - Streaming: features/streaming.md
       - System Modules: features/system-modules.md
   - User Guides:
-      - Overview: guides/README.md
+      - Overview: guides/index.md
       - Creating Modules: guides/creating-modules.md
       - Schema Definition: guides/schema-definition.md
       - Middleware: guides/middleware.md
@@ -107,7 +109,7 @@ nav:
       - Multi-Language Development: guides/multi-language.md
       - Integrating into Existing Projects: guides/integrating-existing-projects.md
   - Framework Specifications:
-      - Overview: spec/README.md
+      - Overview: spec/index.md
       - Algorithm Reference: spec/algorithms.md
       - Type Mapping: spec/type-mapping.md
       - Conformance Definition: spec/conformance.md
