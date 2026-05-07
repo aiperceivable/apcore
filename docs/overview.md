@@ -382,7 +382,7 @@ my-project/
 
 ## Module Development
 
-> Detailed definitions: [Module Interface](./api/module-interface.md) | [Creating Modules Guide](./guides/creating-modules.md)
+> Detailed definitions: [Module Interface](./features/module-interface.md) | [Creating Modules Guide](./guides/creating-modules.md)
 
 ### Two Integration Paths
 
@@ -544,7 +544,7 @@ bindings:
 
 ## Schema System
 
-> Detailed definitions: [Schema Definition Guide](./guides/schema-definition.md) | [ModuleAnnotations API](./api/module-interface.md#34-annotations)
+> Detailed definitions: [Schema Definition Guide](./guides/schema-definition.md) | [ModuleAnnotations](./features/module-interface.md#moduleannotations)
 
 ### Three-Layer Metadata Design
 
@@ -1118,20 +1118,12 @@ Development guide: see [Adapter Development Guide](./guides/adapter-development.
 | [Core Concepts](./concepts.md) | Design philosophy and core concepts explained |
 | [Architecture Design](./architecture.md) | Internal architecture, component interaction, memory model |
 
-### API Reference
-
-| Document | Description |
-|------|------|
-| [APCore Client](./api/client-api.md) | High-level client API (recommended entry point) |
-| [Module Interface](./api/module-interface.md) | Module interface definition |
-| [Context Object](./api/context-object.md) | Execution context |
-| [Registry API](./api/registry-api.md) | Registry API |
-| [Executor API](./api/executor-api.md) | Executor API |
-
 ### Feature Specifications
 
 | Document | Description |
 |------|------|
+| [Module Interface](./features/module-interface.md) | Module Protocol contract: required attributes, lifecycle hooks, function-based form |
+| [Context Object](./features/context-object.md) | Per-invocation execution context: trace, identity, call chain, redaction, shared `data` |
 | [APCore Client](./features/apcore-client.md) | Unified high-level client managing Registry, Executor, and subsystems |
 | [ACL System](./features/acl-system.md) | Pattern-based Access Control List with first-match-wins evaluation |
 | [Approval System](./features/approval-system.md) | Runtime enforcement of `requires_approval` via pluggable ApprovalHandler |

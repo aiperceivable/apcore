@@ -68,7 +68,7 @@ Default redaction applies to **logs and audit events**, not to `error.message`. 
 
 ### 1.9 My TypeScript SDK uses camelCase but my Python SDK uses snake_case in the same context — what's authoritative?
 
-Both. Wire-format identifiers (Canonical IDs, schema property names, fixture cases) are language-agnostic and `snake_case`. Each SDK's **method names** follow the host language convention: `useBefore()` in TS, `use_before()` in Python and Rust. See [api/client-api.md §10](../api/client-api.md) "Language-Specific Adaptations".
+Both. Wire-format identifiers (Canonical IDs, schema property names, fixture cases) are language-agnostic and `snake_case`. Each SDK's **method names** follow the host language convention: `useBefore()` in TS, `use_before()` in Python and Rust. See [APCore Client — Language-Specific Adaptations](../features/apcore-client.md#language-specific-adaptations).
 
 ### 1.10 Where do I look first when something breaks?
 

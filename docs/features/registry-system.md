@@ -278,6 +278,59 @@ Normative contract for the filesystem scanner used by step 1 of the discovery pi
     let executor = Executor::from_registry(registry);
     ```
 
+### Thread Safety Specifications
+
+| Operation | Thread Safe | Notes |
+|-----------|-------------|-------|
+| `get()` | MUST be safe | Read-only query |
+| `has()` | MUST be safe | Read-only query |
+| `list()` | MUST be safe | Read-only query |
+| `iter()` | SHOULD be safe | Snapshot iteration |
+| `discover()` | MUST NOT be concurrent | Called once at startup |
+| `register()` | SHOULD be safe | Synchronized write |
+| `unregister()` | SHOULD be safe | Synchronized write |
+
+### Error Condition Table
+
+| Condition | Error Code | Description |
+|-----------|------------|-------------|
+| `extensions_dir` does not exist | `CONFIG_NOT_FOUND` | Extensions directory MUST exist |
+| Module file syntax error | `MODULE_LOAD_ERROR` | Log warning and skip |
+| Module interface incomplete | `MODULE_LOAD_ERROR` | Missing required attributes |
+| Module ID conflict | `MODULE_LOAD_ERROR` | Same ID registered twice |
+| ID Map file format error | `CONFIG_INVALID` | ID Map YAML parsing failed |
+| Circular dependency | `CIRCULAR_DEPENDENCY` | Cycle detected between modules |
+
+### Hot Reload (Development Mode)
+
+Hot reload watches the extension directory for file changes and re-runs discovery. It is intended for development; production registries SHOULD NOT enable file watching.
+
+```python
+from apcore import Registry
+
+registry = Registry(extensions_dir="./extensions")
+registry.discover()
+
+registry.on("change", lambda module_id: print(f"Module changed: {module_id}"))
+registry.on("add",    lambda module_id: print(f"Module added: {module_id}"))
+registry.on("remove", lambda module_id: print(f"Module removed: {module_id}"))
+registry.watch()
+
+# Stop watching
+registry.unwatch()
+```
+
+> Available in apcore-python v0.5.1+ (requires the optional `watchdog` dependency) and apcore-typescript v0.3.0+.
+
+!!! warning "Hot-reload behaviour is language-defined (D11-005)"
+    The post-state of a `watch()`-triggered file change is **not normatively specified** across SDKs:
+
+    - **apcore-python** re-imports the changed module file, calls `on_suspend()` on the old instance, calls `on_unload()`, then calls `on_resume(suspended_state)` on the new instance.
+    - **apcore-typescript** unregisters the module and emits the `'file_changed'` event; consumers must trigger re-discovery themselves. (ES module specifiers are immutable in Node, so programmatic re-import is not portable.)
+    - **apcore-rust** triggers `discover_internal()` to re-run the configured `Discoverer`; `on_suspend` / `on_resume` are **not** invoked.
+
+    Code that relies on `on_suspend` / `on_resume` lifecycle hooks firing on file change is **portable only on Python**. Cross-language integration tests SHOULD subscribe to the `'file_changed'` / `'change'` event and orchestrate state migration explicitly. The hooks themselves remain a `MAY`-level optional Module API for explicit caller-driven suspend/resume flows (see [Module Interface §Lifecycle Hooks](./module-interface.md#lifecycle-hooks)).
+
 ## Dependencies
 
 - **Schema System** -- The registry uses the Schema System (step 6 of the discovery pipeline) to load and validate module schemas.

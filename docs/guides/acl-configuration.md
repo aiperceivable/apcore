@@ -618,6 +618,6 @@ for caller, target, expected in test_cases:
 
 ## Next Steps
 
-- [Executor API](../api/executor-api.md) - Learn how ACL integrates with Executor
+- [Core Executor](../features/core-executor.md) - Learn how ACL integrates with Executor
 - [Middleware Guide](./middleware.md) - Extend ACL functionality with middleware
 - [Architecture](../architecture.md) - System overall architecture

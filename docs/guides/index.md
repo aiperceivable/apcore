@@ -36,4 +36,4 @@ This directory contains 8 practical guides covering the complete module developm
 7. [Multi-Language Development](./multi-language.md) -- Cross-language collaboration
 8. [Integrating into Existing Projects](./integrating-existing-projects.md) -- Adopt apcore alongside an existing request-ID / correlation-ID system
 
-Before reading these guides, it is recommended to first understand the [Core Concepts](../concepts.md); for API details, please refer to the [API Reference](../api/).
+Before reading these guides, it is recommended to first understand the [Core Concepts](../concepts.md); for interface details, see the [Feature Specifications](../features/).

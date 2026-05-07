@@ -1396,5 +1396,5 @@ if __name__ == "__main__":
 
 - [Schema Definition Details](./schema-definition.md) - Deep dive into Schema
 - [ACL Configuration Guide](./acl-configuration.md) - ACL configuration details
-- [Executor API](../api/executor-api.md) - Executor interface reference
+- [Core Executor](../features/core-executor.md) - Executor feature spec
 - [Multi-Language Development Guide](./multi-language.md) - Cross-language testing strategies

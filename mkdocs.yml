@@ -83,9 +83,12 @@ nav:
       - Troubleshooting: guides/troubleshooting.md
   - Features:
       - features/index.md
+      - Core Interfaces:
+          - Module Interface: features/module-interface.md
+          - Context Object: features/context-object.md
+          - APCore Client: features/apcore-client.md
       - Core Execution:
           - Core Executor: features/core-executor.md
-          - APCore Client: features/apcore-client.md
           - Async Task Management: features/async-tasks.md
           - Config Bus: features/config-bus.md
           - Cancellation: features/cancellation.md
@@ -107,13 +110,6 @@ nav:
           - Error System: features/error-system.md
           - Event System: features/event-system.md
           - Decorator & YAML Bindings: features/decorator-bindings.md
-  - API Reference:
-      - api/index.md
-      - Client API: api/client-api.md
-      - Module Interface: api/module-interface.md
-      - Context Object: api/context-object.md
-      - Registry API: api/registry-api.md
-      - Executor API: api/executor-api.md
   - Framework Specs:
       - spec/index.md
       - Core Specs:

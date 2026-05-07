@@ -1053,5 +1053,5 @@ Each binding file is organized by business domain. The framework automatically s
 
 - [Schema Definition Details](./schema-definition.md) - Complete Schema usage
 - [ACL Configuration Guide](./acl-configuration.md) - Configure module access permissions
-- [Module Interface Definition](../api/module-interface.md) - API reference
+- [Module Interface](../features/module-interface.md) - Module Protocol contract
 - [Adapter Development Guide](./adapter-development.md) - Framework adapter development

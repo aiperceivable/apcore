@@ -928,7 +928,7 @@ AI protocols serialize Schema and inject it into the prompt, consuming context t
 |------|------|
 | Avoid repeating type info in description | `type: string` already declares type, description doesn't need to mention it |
 | Use x-llm-description when enum has more than 5 values | Avoid AI guessing enum meanings one by one |
-| Use first sentence description in compact mode | See [Registry API](../api/registry-api.md) compact export |
+| Use first sentence description in compact mode | See [Schema System](../features/schema-system.md) compact export |
 | Send simplified Schema during module discovery | Load full Schema after module is selected (progressive disclosure) |
 
 ```yaml
@@ -1047,5 +1047,5 @@ The following keywords are only available in Draft 2020-12, some AI protocols ma
 ## Next Steps
 
 - [Creating Modules Guide](./creating-modules.md) - Complete module creation tutorial
-- [Module Interface Definition](../api/module-interface.md) - API reference
+- [Module Interface](../features/module-interface.md) - Module Protocol contract
 - [ACL Configuration Guide](./acl-configuration.md) - Access control configuration

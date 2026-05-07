@@ -228,6 +228,6 @@ Adapters should include the following tests:
 ## Next Steps
 
 - [Creating Modules Guide](./creating-modules.md) - Learn about apcore module definition methods
-- [Module Interface Definition](../api/module-interface.md) - API reference
+- [Module Interface](../features/module-interface.md) - Module Protocol contract
 - [PROTOCOL_SPEC §5.11](../../PROTOCOL_SPEC.md) - Functional module definition specification
 - [PROTOCOL_SPEC §5.12](../../PROTOCOL_SPEC.md) - External Schema binding specification

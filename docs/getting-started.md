@@ -393,7 +393,7 @@ All `APCore` client methods are also available as module-level functions via a d
     let desc = client.describe("math.add");
     ```
 
-See [APCore Client API](api/client-api.md) for the full reference.
+See [APCore Client](features/apcore-client.md) for the full reference.
 
 ## 9. System Modules
 
@@ -468,7 +468,7 @@ See [System Modules](features/system-modules.md) for the full module reference.
 
 ## Next Steps
 
-- [APCore Client API](api/client-api.md) - Complete unified client reference.
+- [APCore Client](features/apcore-client.md) - Complete unified client reference.
 - [Creating Modules Guide](guides/creating-modules.md) - Deep dive into module definition.
 - [Schema Definition Guide](guides/schema-definition.md) - Learn about advanced validation.
 - [ACL Configuration](guides/acl-configuration.md) - Secure your modules.

@@ -382,7 +382,7 @@ my-project/
 
 ## Module Development
 
-> Detailed definitions: [Module Interface](./docs/api/module-interface.md) | [Creating Modules Guide](./docs/guides/creating-modules.md)
+> Detailed definitions: [Module Interface](./docs/features/module-interface.md) | [Creating Modules Guide](./docs/guides/creating-modules.md)
 
 ### Two Integration Paths
 
@@ -544,7 +544,7 @@ bindings:
 
 ## Schema System
 
-> Detailed definitions: [Schema Definition Guide](./docs/guides/schema-definition.md) | [ModuleAnnotations API](./docs/api/module-interface.md#34-annotations)
+> Detailed definitions: [Schema Definition Guide](./docs/guides/schema-definition.md) | [ModuleAnnotations](./docs/features/module-interface.md#moduleannotations)
 
 ### Three-Layer Metadata Design
 
@@ -1118,20 +1118,12 @@ Development guide: see [Adapter Development Guide](./docs/guides/adapter-develop
 | [Core Concepts](./docs/concepts.md) | Design philosophy and core concepts explained |
 | [Architecture Design](./docs/architecture.md) | Internal architecture, component interaction, memory model |
 
-### API Reference
-
-| Document | Description |
-|------|------|
-| [APCore Client](./docs/api/client-api.md) | High-level client API (recommended entry point) |
-| [Module Interface](./docs/api/module-interface.md) | Module interface definition |
-| [Context Object](./docs/api/context-object.md) | Execution context |
-| [Registry API](./docs/api/registry-api.md) | Registry API |
-| [Executor API](./docs/api/executor-api.md) | Executor API |
-
 ### Feature Specifications
 
 | Document | Description |
 |------|------|
+| [Module Interface](./docs/features/module-interface.md) | Module Protocol contract: required attributes, lifecycle hooks, function-based form |
+| [Context Object](./docs/features/context-object.md) | Per-invocation execution context: trace, identity, call chain, redaction, shared `data` |
 | [APCore Client](./docs/features/apcore-client.md) | Unified high-level client managing Registry, Executor, and subsystems |
 | [ACL System](./docs/features/acl-system.md) | Pattern-based Access Control List with first-match-wins evaluation |
 | [Approval System](./docs/features/approval-system.md) | Runtime enforcement of `requires_approval` via pluggable ApprovalHandler |

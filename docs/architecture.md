@@ -582,7 +582,7 @@ class RemoteDiscoverer(Discoverer):
         ]
 ```
 
-See [`registry-api.md §9.1`](./api/registry-api.md#91-custom-discoverer) for
+See [`extension-system.md` Custom Discoverer](./features/extension-system.md#custom-discoverer) for
 cross-language examples (Python / TypeScript / Rust) and a description of the
 Rust-specific descriptor-only discovery path.
 
@@ -826,6 +826,6 @@ See [PROTOCOL_SPEC §12.7.2 Context.data Sharing Semantics](../PROTOCOL_SPEC.md#
 
 ## Next Steps
 
-- [Module Interface Definition](./api/module-interface.md) - Module API
-- [Registry API](./api/registry-api.md) - Registry center API
-- [Executor API](./api/executor-api.md) - Executor API
+- [Module Interface](./features/module-interface.md) - Module Protocol contract
+- [Registry System](./features/registry-system.md) - Registry feature spec
+- [Core Executor](./features/core-executor.md) - Executor feature spec

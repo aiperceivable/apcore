@@ -978,6 +978,6 @@ Total errors: 0
 
 ## Next Steps
 
-- [Executor API](../api/executor-api.md) - Detailed executor API
+- [Core Executor](../features/core-executor.md) - Executor feature spec
 - [ACL Configuration Guide](./acl-configuration.md) - Access control configuration
 - [Architecture Design](../architecture.md) - Overall system architecture

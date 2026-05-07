@@ -20,8 +20,7 @@ apcore/
 ├── schemas/                   # Canonical JSON Schema files (*.schema.json)
 ├── conformance/fixtures/      # Cross-language test fixtures (*.json)
 ├── docs/
-│   ├── api/                   # API reference (module, context, executor, registry)
-│   ├── features/              # Feature-level specs (one file per feature)
+│   ├── features/              # Feature-level specs (one file per feature) — module interface, context object, executor, registry, ACL, etc.
 │   ├── guides/                # How-to tutorials for SDK users
 │   └── spec/                  # Cross-language algorithms, type mapping, conformance
 ├── planning/                  # Internal only — implementation task tracking
@@ -32,7 +31,6 @@ apcore/
 **Where to put new files:**
 - New feature spec → `docs/features/<feature-name>.md`
 - New user guide → `docs/guides/<topic>.md`
-- New API reference → `docs/api/<component>.md`
 - New conformance fixture → `conformance/fixtures/<feature>.json`
 - New JSON schema → `schemas/<name>.schema.json`
 

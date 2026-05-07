@@ -36,7 +36,7 @@ A single-page reference for terminology used across the apcore protocol, the thr
 
 **Conformance Level** — One of `Level 0 (Core)`, `Level 1 (Standard)`, `Level 2 (Full)` defined by [docs/spec/conformance.md](./spec/conformance.md). An SDK declares the level it satisfies and lists known deviations.
 
-**Context (`Context` object)** — Per-invocation state carrying `trace_id`, `caller_id`, `call_chain`, `executor`, `identity`, and a free-form `data` map. Spec'd in [PROTOCOL_SPEC §5.7](../PROTOCOL_SPEC.md#5-module-specification); reference in [api/context-object.md](./api/context-object.md). Must be JSON-serializable for cross-language transport.
+**Context (`Context` object)** — Per-invocation state carrying `trace_id`, `caller_id`, `call_chain`, `executor`, `identity`, and a free-form `data` map. Spec'd in [PROTOCOL_SPEC §5.7](../PROTOCOL_SPEC.md#5-module-specification); reference in [features/context-object.md](./features/context-object.md). Must be JSON-serializable for cross-language transport.
 
 ## D
 

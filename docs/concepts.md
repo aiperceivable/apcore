@@ -93,7 +93,7 @@ Schema is auto-generated from type annotations, existing code logic remains unch
 
 ### 2.1 Module
 
-> 📖 **Reference** - Complete definition in [Module Interface](./api/module-interface.md)
+> 📖 **Reference** - Complete definition in [Module Interface](./features/module-interface.md)
 
 **Module is the basic unit of apcore.** Each Module represents a callable functional unit.
 
@@ -196,7 +196,7 @@ input_schema:
 
 ### 2.3 Annotations (Behavior Annotations)
 
-> 📖 **Reference** - Complete definition in [ModuleAnnotations API](./api/module-interface.md#34-annotations)
+> 📖 **Reference** - Complete definition in [ModuleAnnotations API](./features/module-interface.md#moduleannotations)
 
 **Annotations are module-level behavior metadata**, helping AI understand module characteristics.
 
@@ -215,7 +215,7 @@ annotations = ModuleAnnotations(readonly=True)
 annotations = ModuleAnnotations(destructive=True, requires_approval=True)
 ```
 
-See [API documentation](./api/module-interface.md#34-annotations) for detailed field descriptions.
+See [API documentation](./features/module-interface.md#moduleannotations) for detailed field descriptions.
 
 **How AI uses Annotations:**
 
@@ -287,7 +287,7 @@ class GetUserInfoModule:
 
 ### 2.4 Examples (Usage Examples)
 
-> 📖 **Reference** - Complete definition in [ModuleExample API](./api/module-interface.md#35-examples)
+> 📖 **Reference** - Complete definition in [ModuleExample API](./features/module-interface.md#optional-attributes)
 
 **Examples provide concrete input/output examples**, helping AI more accurately understand complex modules.
 
@@ -510,7 +510,7 @@ id_map:
 
 ### 2.8 Registry
 
-> 📖 **Reference** - Complete definition in [Registry API](./api/registry-api.md)
+> 📖 **Reference** - Complete definition in [Registry API](./features/registry-system.md)
 
 **Registry is responsible for module discovery, registration, and management.**
 
@@ -611,7 +611,7 @@ Input → Lookup module → ACL check → Input validation → Middleware(before
 
 ### 2.10 Context
 
-> 📖 **Reference** - Complete definition in [Context Object](./api/context-object.md)
+> 📖 **Reference** - Complete definition in [Context Object](./features/context-object.md)
 
 **Context carries context information for each call.**
 
@@ -895,4 +895,4 @@ These invariants **must** always hold during system runtime:
 
 - [Creating Modules Guide](./guides/creating-modules.md) - Detailed module creation tutorial
 - [Schema Definition Deep Dive](./guides/schema-definition.md) - Complete Schema usage
-- [Module Interface Definition](./api/module-interface.md) - API reference
+- [Module Interface Definition](./features/module-interface.md) - API reference

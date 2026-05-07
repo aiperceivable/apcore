@@ -8,6 +8,8 @@ This directory contains detailed specifications for each subsystem of the apcore
 
 | Feature | Description |
 |---------|-------------|
+| [Module Interface](./module-interface.md) | Module Protocol contract: required schema attributes, lifecycle hooks, optional methods, and the function-based form |
+| [Context Object](./context-object.md) | Per-invocation state object: trace, identity, call chain, executor, redaction, shared `data` map |
 | [APCore Client](./apcore-client.md) | Unified high-level client managing Registry, Executor, and subsystems |
 | [ACL System](./acl-system.md) | Pattern-based Access Control List with first-match-wins evaluation |
 | [Approval System](./approval-system.md) | Runtime enforcement of `requires_approval` via pluggable ApprovalHandler |

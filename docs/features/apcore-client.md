@@ -132,9 +132,47 @@ This allows users to subscribe with both sync and async callbacks without implem
 | `on()`, `off()` without events enabled | `RuntimeError` |
 | `disable()`, `enable()` without sys_modules | `RuntimeError` |
 
-## Usage
+### Language-Specific Adaptations
 
-For complete usage examples with all three languages, see the [APCore Client API Reference](../api/client-api.md).
+The APCore interface follows each language's idioms while maintaining functional equivalence.
+
+**TypeScript:**
+
+| Spec method | TypeScript name | Notes |
+|-------------|-----------------|-------|
+| `call_async()` | `callAsync()` | camelCase |
+| `use_before()` | `useBefore()` | camelCase |
+| `use_after()` | `useAfter()` | camelCase |
+| `list_modules()` | `listModules()` | camelCase |
+| Constructor | `new APCore({ config })` | Options object pattern |
+
+**Rust:**
+
+| Spec method | Rust name | Notes |
+|-------------|-----------|-------|
+| `use()` | `use_middleware()` | `use` is a reserved keyword |
+| `use_before()` | `use_before()` | Accepts `Box<dyn BeforeMiddleware>`, returns `Result<&mut Self, ModuleError>` |
+| `use_after()` | `use_after()` | Accepts `Box<dyn AfterMiddleware>`, returns `Result<&mut Self, ModuleError>` |
+| `on()` | `on()` | Returns `String` (subscriber ID) instead of an `EventSubscriber` object |
+| `off()` | `off()` | Accepts `&str` (subscriber ID) instead of an `EventSubscriber` object |
+| `stream()` | `stream()` | Returns `Stream<Item = Result<Value, ModuleError>>` (true incremental streaming) |
+| `disable()` | `disable()` | Returns `Result<Value, ModuleError>`; `reason` is `Option<&str>` |
+| `enable()` | `enable()` | Returns `Result<Value, ModuleError>`; `reason` is `Option<&str>` |
+| Constructor | `APCore::new()`, `APCore::with_config(config)`, `APCore::from_path(path)` | Three construction forms |
+| `module()` | N/A | Rust has no decorators; use `impl Module` + `register()` |
+| `events` property | `events()` method | Accessor methods instead of properties |
+| `registry` property | `registry()` method | Accessor methods instead of properties |
+| `executor` property | `executor()` method | Accessor methods instead of properties |
+
+**Rust-only methods** (not in the cross-language spec):
+
+| Method | Purpose |
+|--------|---------|
+| `with_components(registry, config)` | Build client from a pre-configured Registry |
+| `with_options(registry, executor, config, metrics_collector)` | Full constructor with all optional parameters |
+| `reload()` | Reload config and re-discover modules |
+
+## Usage
 
 ### Quick Start
 

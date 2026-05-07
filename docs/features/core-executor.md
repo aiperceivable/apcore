@@ -100,7 +100,143 @@ Streaming chunk accumulation uses recursive deep merge (depth-capped at 32) inst
 
 ### Validation (Preflight)
 
-The `validate()` method provides a non-destructive preflight check: **6 pipeline checks plus an optional module-level preflight** (no execution, no middleware). It runs Steps 1–5 and Step 7 of the canonical 11-step pipeline (module ID format, module lookup, call chain safety, ACL, approval detection, input schema validation), explicitly skipping Step 6 Middleware Before Chain, and then optionally invokes `module.preflight()` for advisory warnings. It returns a `PreflightResult` with per-check results and a `requires_approval` flag. The result is duck-type compatible with the legacy `ValidationResult` — `.valid` and `.errors` properties work identically. See `docs/api/executor-api.md` §validate and PROTOCOL_SPEC §12.8 for the cross-language implementation guide.
+The `validate()` method provides a non-destructive preflight check: **6 pipeline checks plus an optional module-level preflight** (no execution, no middleware). It runs Steps 1–5 and Step 7 of the canonical 11-step pipeline (module ID format, module lookup, call chain safety, ACL, approval detection, input schema validation), explicitly skipping Step 6 Middleware Before Chain, and then optionally invokes `module.preflight()` for advisory warnings. It returns a `PreflightResult` with per-check results and a `requires_approval` flag. The result is duck-type compatible with the legacy `ValidationResult` — `.valid` and `.errors` properties work identically. See [PROTOCOL_SPEC §12.8](../../PROTOCOL_SPEC.md#128-preflight) for the cross-language implementation guide.
+
+### Execution State Machine
+
+The Executor processes each `call()` through a fixed state machine. Failures at any stage transition into either an immediate error or the `on_error` middleware chain.
+
+```text
+  ┌─────────┐
+  │  idle   │
+  └────┬────┘
+       │ call()
+       ▼
+  ┌──────────┐  depth/cycle/freq  ┌──────────────────────────┐
+  │call_chain│───────────────────▶│ error: DEPTH_EXCEEDED    │
+  │  guard   │                    │      / CIRCULAR_CALL     │
+  └────┬─────┘                    │      / FREQUENCY_EXCEEDED│
+       │ check passed             └──────────────────────────┘
+       ▼
+  ┌─────────┐    module not exist ┌──────────────────┐
+  │ resolve │────────────────────▶│ error: NOT_FOUND │
+  └────┬────┘                     └──────────────────┘
+       │ module found
+       ▼
+  ┌─────────┐    permission denied ┌──────────────────┐
+  │  acl    │─────────────────────▶│ error: ACL_DENIED│
+  └────┬────┘                      └──────────────────┘
+       │ permission passed
+       ▼
+  ┌──────────┐  rejected/timeout ┌──────────────────────────┐
+  │ approval │──────────────────▶│ error: APPROVAL_DENIED   │
+  │   gate   │                   │      / APPROVAL_TIMEOUT  │
+  └────┬─────┘                   │      / APPROVAL_PENDING  │
+       │                         └──────────────────────────┘
+       │ approved (or skipped)
+       ▼
+  ┌──────────┐
+  │ before   │──── middleware error ──▶ on_error chain
+  │middleware│
+  └────┬─────┘
+       │ transforms applied
+       ▼
+  ┌──────────┐   validation failed ┌──────────────────────┐
+  │ validate │────────────────────▶│ error: VALIDATION    │
+  │  input   │                     └──────────────────────┘
+  └────┬─────┘
+       │ validation passed
+       ▼
+  ┌──────────┐   execution error  ┌──────────────────────┐
+  │ execute  │───────────────────▶│ on_error middleware  │
+  │  module  │                    └──────────────────────┘
+  └────┬─────┘
+       │ success
+       ▼
+  ┌──────────┐   validation failed ┌──────────────────────┐
+  │ validate │────────────────────▶│ error: VALIDATION    │
+  │  output  │                     └──────────────────────┘
+  └────┬─────┘
+       │
+       ▼
+  ┌──────────┐
+  │  after   │
+  │middleware│
+  └────┬─────┘
+       │
+       ▼
+  ┌──────────┐
+  │ return   │
+  │ result   │
+  └──────────┘
+```
+
+### Timeout Specification (Dual-Timeout Model)
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| Module execution timeout | 30 000 ms | Override via `resources.timeout` |
+| Global timeout | 60 000 ms | Total budget including middleware and validation |
+| ACL check timeout | 1 000 ms | Maximum time for ACL rule evaluation |
+
+The Executor enforces a **dual-timeout model**: both the per-module timeout and a global deadline are tracked, and the shorter of the two applies. The global deadline is set on the root call and propagated to child contexts via `Context._global_deadline`, preventing nested call chains from exceeding the global budget.
+
+- After timeout the Executor MUST raise `MODULE_TIMEOUT`.
+- Timeout counting MUST start from the first `before()` middleware.
+- Middleware execution time SHOULD count toward the total.
+
+**Cooperative cancellation.** On timeout the Executor invokes `CancelToken.cancel()` and waits a 5-second grace window before raising `ModuleTimeoutError`. Modules that poll `cancel_token` can clean up gracefully:
+
+```python
+@client.module(id="long.task", description="Long-running task")
+async def long_task(inputs: dict, context: Context) -> dict:
+    for item in items:
+        if context.cancel_token.is_cancelled:
+            return {"partial": True, "processed": count}
+        await process(item)
+    return {"partial": False, "processed": len(items)}
+```
+
+### Concurrent Execution Semantics
+
+- A single Executor instance MUST tolerate concurrent calls from multiple threads/coroutines.
+- Each `call()` MUST receive its own Context (independent `call_chain` and `caller_id`).
+- `context.data` is shared by reference; concurrent calls SHOULD use distinct Context instances when isolation matters.
+- Batch `call_async()` MAY execute concurrently; ordering is not guaranteed.
+
+See [PROTOCOL_SPEC §12.7 Concurrency Model Specification](../../PROTOCOL_SPEC.md#127-concurrency-model-specification).
+
+### Edge Cases
+
+| Scenario | Behavior | Level |
+|----------|----------|-------|
+| `timeout = 0` | Disable timeout, log WARN | MUST |
+| `timeout` is negative | Raise `GENERAL_INVALID_INPUT` | MUST |
+| `module_id` is empty string `""` | Raise `MODULE_NOT_FOUND` | MUST |
+| `inputs = null` | Treat as empty dict `{}`, continue validation | MUST |
+| `context = null` | Create a new Context (empty `call_chain`) | MUST |
+| Concurrent calls sharing one Context instance | Race condition; SHOULD log WARN | SHOULD |
+| `call()` during module `unregister()` | If execution started, continue; otherwise raise `MODULE_NOT_FOUND` | MUST |
+| `call_chain` length reaches `max_call_depth` | Raise `CALL_DEPTH_EXCEEDED` | MUST |
+
+### Pipeline Strategy API
+
+The execution pipeline is driven by an `ExecutionStrategy` — a named, ordered sequence of steps. Strategies can be swapped at construction time or registered globally for selection by name.
+
+| Surface | Type | Description |
+|---------|------|-------------|
+| `Executor.register_strategy(name, strategy)` | class method | Register a named strategy resolvable at construction time |
+| `executor.list_strategies() -> list[StrategyInfo]` | instance method | Returns `StrategyInfo` for the current strategy and all registered strategies |
+
+```python
+Executor.register_strategy("audit", AuditStrategy())
+
+executor = Executor(registry, strategy="audit")
+for info in executor.list_strategies():
+    print(info.name, info.step_count)
+```
+
+Built-in strategies and authoring custom ones are described in [Pipeline Hardening](#pipeline-hardening-issue-33) below.
 
 ## Contract: Executor.call
 
