@@ -6,7 +6,7 @@
 
 > **AI-Perceivable**: When modules, interfaces, and tools are clearly perceived by AI, the model can understand their structure and purpose, and therefore know exactly how to invoke, orchestrate, and act on them. From perception → cognition → execution.
 
-**[📖 Full Documentation](https://aiperceivable.github.io/apcore/)** · [Getting Started](https://aiperceivable.github.io/apcore/getting-started/) · [Protocol Spec](./PROTOCOL_SPEC.md)
+**[📖 Full Documentation](https://aiperceivable.github.io/apcore/)** · [Getting Started](https://aiperceivable.github.io/apcore/getting-started/) · [Protocol Spec](./docs/spec/protocol-spec.md)
 
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/12294/badge)](https://www.bestpractices.dev/projects/12294)
@@ -584,13 +584,13 @@ Each module's metadata is divided into three layers, progressing from required t
 - **Module discovery phase**: AI reads all modules' `description`, quickly determines candidate modules
 - **Call decision phase**: AI loads `documentation` on-demand, learns detailed usage and constraints
 
-> Complete format rules and correspondence with Claude Skill / OpenAPI: see [Protocol Specification §4.8](./PROTOCOL_SPEC.md#48-description-and-documentation). Code examples: see [Class-based Modules](#1-class-based-modules) above.
+> Complete format rules and correspondence with Claude Skill / OpenAPI: see [Protocol Specification §4.8](./docs/spec/protocol-spec.md#48-description-and-documentation). Code examples: see [Class-based Modules](#1-class-based-modules) above.
 
 ### Schema Definition
 
 Schema is based on **JSON Schema Draft 2020-12**, supports YAML format definition (shared across languages). Schema files are placed in the `schemas/` directory, with paths corresponding to module IDs.
 
-> Complete Schema format and YAML examples: see [Schema Definition Guide](./docs/guides/schema-definition.md) | [Protocol Specification §4](./PROTOCOL_SPEC.md#4-schema-specification).
+> Complete Schema format and YAML examples: see [Schema Definition Guide](./docs/guides/schema-definition.md) | [Protocol Specification §4](./docs/spec/protocol-spec.md#4-schema-specification).
 
 ### Module Annotations
 
@@ -639,7 +639,7 @@ Fields with `x-` prefix in Schema are LLM-specific extensions, don't affect stan
 | `x-constraints` | Business constraints described in natural language | `"Must be a registered user"` |
 | `x-deprecated` | Deprecation information | `{"since": "2.0", "use": "new_field"}` |
 
-> Complete usage and examples: see [Schema Definition Guide](./docs/guides/schema-definition.md) | [Protocol Specification §4.3](./PROTOCOL_SPEC.md#43-llm-extension-fields).
+> Complete usage and examples: see [Schema Definition Guide](./docs/guides/schema-definition.md) | [Protocol Specification §4.3](./docs/spec/protocol-spec.md#43-llm-extension-fields).
 
 ### AI Metadata Conventions
 
@@ -668,7 +668,7 @@ In the extension layer (`metadata` dictionary), you can provide optional AI meta
 | `x-output-source` | Data provenance: `database`, `api`, `generated`, `cached`, `computed` |
 | `x-verification-hint` | How to cross-check the output for correctness |
 
-> Detailed usage: see [Protocol Specification §4.6](./PROTOCOL_SPEC.md#46-module-extension-metadata-metadata).
+> Detailed usage: see [Protocol Specification §4.6](./docs/spec/protocol-spec.md#46-module-extension-metadata-metadata).
 
 ---
 
@@ -715,7 +715,7 @@ result = context.executor.call("module_b", inputs, context)
 
 ## ACL Access Control
 
-> Detailed definitions: [ACL Configuration Guide](./docs/guides/acl-configuration.md) | [Protocol Specification §6](./PROTOCOL_SPEC.md#6-acl-specification)
+> Detailed definitions: [ACL Configuration Guide](./docs/guides/acl-configuration.md) | [Protocol Specification §6](./docs/spec/protocol-spec.md#6-acl-specification)
 
 ACL (Access Control List) controls which modules can call which modules, default deny:
 
@@ -855,7 +855,7 @@ observability:
 
 ### Config Bus — Unified Ecosystem Configuration
 
-When using multiple apcore ecosystem packages, a single `project.yaml` can configure everything through the **Config Bus** (see [PROTOCOL_SPEC §9.4–9.14](./PROTOCOL_SPEC.md#94-config-bus-architecture)):
+When using multiple apcore ecosystem packages, a single `project.yaml` can configure everything through the **Config Bus** (see [PROTOCOL_SPEC §9.4–9.14](./docs/spec/protocol-spec.md#94-config-bus-architecture)):
 
 ```yaml
 # project.yaml — one file, all packages
@@ -1028,7 +1028,7 @@ Language SDK implementations of the apcore protocol specification:
 | **Typescript** | [apcore-typescript](https://github.com/aiperceivable/apcore-typescript) | Schema validation, Registry, Executor, @module decorator, YAML bindings, ACL, Middleware, Observability, Async support | `npm install apcore-js` |
 | **Rust** | [apcore-rust](https://github.com/aiperceivable/apcore-rust) | Schema validation, Registry, Executor, #[module] macro, YAML bindings, ACL, Middleware, Observability, Async support | `cargo add apcore` |
 
-> Interested in implementing apcore for another language? See the [Protocol Specification](./PROTOCOL_SPEC.md) and [Conformance Definition](./docs/spec/conformance.md).
+> Interested in implementing apcore for another language? See the [Protocol Specification](./docs/spec/protocol-spec.md) and [Conformance Definition](./docs/spec/conformance.md).
 
 ---
 
@@ -1106,7 +1106,7 @@ Development guide: see [Adapter Development Guide](./docs/guides/adapter-develop
 
 | Document | Description |
 |------|------|
-| [Protocol Specification](./PROTOCOL_SPEC.md) | Complete standard specification (RFC 2119 Conformant) |
+| [Protocol Specification](./docs/spec/protocol-spec.md) | Complete standard specification (RFC 2119 Conformant) |
 | [Scope Definition](./SCOPE.md) | Responsibility boundaries (what's in/out of scope) |
 | [Positioning](./docs/POSITIONING.md) | Where apcore sits in the stack — relationship to MCP, A2A, CLI, REST |
 | [Roadmap](./ROADMAP.md) | Project roadmap and milestones |
@@ -1133,7 +1133,7 @@ Development guide: see [Adapter Development Guide](./docs/guides/adapter-develop
 | [Config Bus](./docs/features/config-bus.md) | Unified multi-package configuration with per-namespace env overrides |
 | [Core Executor](./docs/features/core-executor.md) | Central execution engine with a secured execution lifecycle |
 | [Decorator & YAML Bindings](./docs/features/decorator-bindings.md) | `@module` decorator and YAML-based module creation |
-| [Display Overlay](./PROTOCOL_SPEC.md#513-display-overlay-surface-facing-presentation) | §5.13 — sparse `display` section in binding entries for per-surface alias, description, guidance, and tags |
+| [Display Overlay](./docs/spec/protocol-spec.md#513-display-overlay-surface-facing-presentation) | §5.13 — sparse `display` section in binding entries for per-surface alias, description, guidance, and tags |
 | [Error System](./docs/features/error-system.md) | Structured error hierarchy with AI guidance fields and error code registry |
 | [Event System](./docs/features/event-system.md) | Event emission, subscription, delivery lifecycle |
 | [Extension System](./docs/features/extension-system.md) | Pluggable extension points for discoverers, middleware, ACL, exporters |
@@ -1176,7 +1176,7 @@ Development guide: see [Adapter Development Guide](./docs/guides/adapter-develop
 Contributions are welcome in the following forms:
 
 - **Specification Feedback**: Suggest improvements to the protocol specification in Issues
-- **SDK Implementation**: Implement SDKs for other languages based on [Protocol Specification](./PROTOCOL_SPEC.md)
+- **SDK Implementation**: Implement SDKs for other languages based on [Protocol Specification](./docs/spec/protocol-spec.md)
 - **Adapter Development**: Develop adapters for web frameworks or AI protocols
 - **Documentation Improvements**: Fix, translate, or supplement documentation
 

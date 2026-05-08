@@ -1,7 +1,7 @@
 # Core Execution Engine
 
 <!-- preamble-tier-doc -->
-> **Type:** Implementation guide. **Normative spec:** [PROTOCOL_SPEC](../../PROTOCOL_SPEC.md) §12 SDK Implementation Guide.
+> **Type:** Implementation guide. **Normative spec:** [PROTOCOL_SPEC](../spec/protocol-spec.md) §12 SDK Implementation Guide.
 
 
 ## Overview
@@ -100,7 +100,7 @@ Streaming chunk accumulation uses recursive deep merge (depth-capped at 32) inst
 
 ### Validation (Preflight)
 
-The `validate()` method provides a non-destructive preflight check: **6 pipeline checks plus an optional module-level preflight** (no execution, no middleware). It runs Steps 1–5 and Step 7 of the canonical 11-step pipeline (module ID format, module lookup, call chain safety, ACL, approval detection, input schema validation), explicitly skipping Step 6 Middleware Before Chain, and then optionally invokes `module.preflight()` for advisory warnings. It returns a `PreflightResult` with per-check results and a `requires_approval` flag. The result is duck-type compatible with the legacy `ValidationResult` — `.valid` and `.errors` properties work identically. See [PROTOCOL_SPEC §12.8](../../PROTOCOL_SPEC.md#128-preflight) for the cross-language implementation guide.
+The `validate()` method provides a non-destructive preflight check: **6 pipeline checks plus an optional module-level preflight** (no execution, no middleware). It runs Steps 1–5 and Step 7 of the canonical 11-step pipeline (module ID format, module lookup, call chain safety, ACL, approval detection, input schema validation), explicitly skipping Step 6 Middleware Before Chain, and then optionally invokes `module.preflight()` for advisory warnings. It returns a `PreflightResult` with per-check results and a `requires_approval` flag. The result is duck-type compatible with the legacy `ValidationResult` — `.valid` and `.errors` properties work identically. See [PROTOCOL_SPEC §12.8](../spec/protocol-spec.md#128-executorvalidate-cross-language-implementation-guide) for the cross-language implementation guide.
 
 ### Execution State Machine
 
@@ -204,7 +204,7 @@ async def long_task(inputs: dict, context: Context) -> dict:
 - `context.data` is shared by reference; concurrent calls SHOULD use distinct Context instances when isolation matters.
 - Batch `call_async()` MAY execute concurrently; ordering is not guaranteed.
 
-See [PROTOCOL_SPEC §12.7 Concurrency Model Specification](../../PROTOCOL_SPEC.md#127-concurrency-model-specification).
+See [PROTOCOL_SPEC §12.7 Concurrency Model Specification](../spec/protocol-spec.md#127-concurrency-model-specification).
 
 ### Edge Cases
 

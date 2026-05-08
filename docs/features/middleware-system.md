@@ -1,7 +1,7 @@
 # Middleware System
 
 <!-- preamble-tier-doc -->
-> **Type:** Implementation guide. **Normative spec:** [PROTOCOL_SPEC](../../PROTOCOL_SPEC.md) §11.1 Middleware/Interceptors.
+> **Type:** Implementation guide. **Normative spec:** [PROTOCOL_SPEC](../spec/protocol-spec.md) §11.1 Middleware/Interceptors.
 
 
 ## Overview
@@ -224,7 +224,7 @@ Tests are split across two files targeting different abstraction levels:
 ## Contract: Middleware.after
 
 ### Errors
-- Any error raised by the middleware: **behavior is SDK-defined**. Python and Rust propagate the first error immediately; TypeScript catches per-hook and rethrows the first error after all hooks have run. See PROTOCOL_SPEC.md §Middleware for the normative MUST once aligned.
+- Any error raised by the middleware: **behavior is SDK-defined**. Python and Rust propagate the first error immediately; TypeScript catches per-hook and rethrows the first error after all hooks have run. See protocol-spec.md §Middleware for the normative MUST once aligned.
 
 ### Inputs
 - `module_id` (str/string/&str, required)

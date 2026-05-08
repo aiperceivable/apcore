@@ -6,7 +6,7 @@
 
 ### 1.1 Purpose
 
-apcore adopts JSON Schema Draft 2020-12 as the standard description format for module `input_schema` / `output_schema` (see [PROTOCOL_SPEC §4](../../PROTOCOL_SPEC.md#4-schema-specification)). When implementing SDKs in various languages, implementations **MUST** accurately map JSON Schema types to corresponding language native types to ensure:
+apcore adopts JSON Schema Draft 2020-12 as the standard description format for module `input_schema` / `output_schema` (see [PROTOCOL_SPEC §4](./protocol-spec.md#4-schema-specification)). When implementing SDKs in various languages, implementations **MUST** accurately map JSON Schema types to corresponding language native types to ensure:
 
 - **Data Consistency**: The same JSON data has the same semantics when deserialized in different languages
 - **Type Safety**: Fully utilize each language's type system to detect errors as early as possible at compile-time or runtime
@@ -790,9 +790,9 @@ For modules whose schemas exercise the above limitations, implementers **SHOULD*
 
 ## 18. References
 
-- [PROTOCOL_SPEC §4 — Schema Specification](../../PROTOCOL_SPEC.md#4-schema-specification)
-- [PROTOCOL_SPEC §4.10 — Schema Implementations by Language](../../PROTOCOL_SPEC.md#410-schema-implementations-by-language)
-- [PROTOCOL_SPEC §4.11 — Schema References ($ref)](../../PROTOCOL_SPEC.md#411-schema-references-ref)
-- [PROTOCOL_SPEC §12.3 — Cross-language Implementation Requirements](../../PROTOCOL_SPEC.md#123-cross-language-implementation-requirements)
+- [PROTOCOL_SPEC §4 — Schema Specification](./protocol-spec.md#4-schema-specification)
+- [PROTOCOL_SPEC §4.10 — Language-specific Schema Implementations](./protocol-spec.md#410-language-specific-schema-implementations)
+- [PROTOCOL_SPEC §4.11 — Schema References ($ref)](./protocol-spec.md#411-schema-references-ref)
+- [PROTOCOL_SPEC §12.3 — Cross-language Implementation Requirements](./protocol-spec.md#123-cross-language-implementation-requirements)
 - [JSON Schema Draft 2020-12](https://json-schema.org/draft/2020-12/json-schema-core)
 - [RFC 8259 — The JavaScript Object Notation (JSON) Data Interchange Format](https://www.rfc-editor.org/rfc/rfc8259)

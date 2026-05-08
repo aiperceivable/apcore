@@ -1,3 +1,7 @@
+---
+description: Understanding apcore's design philosophy, the Cognitive Interface for AI Agents, and the AI Collaboration Lifecycle.
+---
+
 # apcore — AI-Perceivable Core Concepts
 
 > Understanding apcore's design philosophy, technical architecture, and the AI Collaboration Lifecycle.

@@ -24,7 +24,7 @@ Decision template per item:
 ## D-01 — IdentityType: closed enum vs free-form
 
 **Status quo**
-- `PROTOCOL_SPEC.md §5.7` declares `enum: [user, service, agent, api_key, system]`
+- `protocol-spec.md §5.7` declares `enum: [user, service, agent, api_key, system]`
 - `docs/features/identity-system.md:80` says "type field is free-form"
 - `docs/features/identity-system.md:10` and `core-executor.md` / `approval-system.md` examples reference `"ai"` as a value
 - All 3 SDKs accept any string at construction (no validation)
@@ -1046,7 +1046,7 @@ TypeScript SDK adds `OverridesStore` interface, `FileOverridesStore` (YAML-backe
 - **No SDK behavior change.** Framework continues to ignore unknown metadata content (§4.6 "Metadata Design Principles"); strict-mode export (§4.16) auto-strips all `x-*` keys including these.
 - **No normative MUST / MUST NOT.** Conventions only — consistent with the existing 18 `x-*` entries in §4.6.
 
-**Status**: **resolved**. See `PROTOCOL_SPEC.md` §4.6 ("Routing & Verification Hints" YAML block + table rows) and `CHANGELOG.md` `[Unreleased]` block.
+**Status**: **resolved**. See `protocol-spec.md` §4.6 ("Routing & Verification Hints" YAML block + table rows) and `CHANGELOG.md` `[Unreleased]` block.
 
 **Cross-refs**:
 - Stage 1 of the apcore frontier-alignment plan (`/Users/tercelyi/.claude/plans/apcore-toolkit-cli-harmonic-starlight.md`).
@@ -1063,9 +1063,9 @@ The original 2026-05-02 Resolution status block listed seven entries as "Doc-onl
 
 Status updates landed 2026-05-05:
 
-- **D-01** — resolved. `PROTOCOL_SPEC.md` §5.7 changed `enum: [user, service, agent, api_key, system]` to `examples: [user, service, agent, api_key, system, ai]`; description clarifies the field is free-form. `docs/features/identity-system.md` admonition rewritten to reference the examples list rather than asserting "free-form" without context.
+- **D-01** — resolved. `protocol-spec.md` §5.7 changed `enum: [user, service, agent, api_key, system]` to `examples: [user, service, agent, api_key, system, ai]`; description clarifies the field is free-form. `docs/features/identity-system.md` admonition rewritten to reference the examples list rather than asserting "free-form" without context.
 - **D-07** — resolved. `docs/features/call-chain-guard.md:210` corrected from `FrequencyExceededError(code=FREQUENCY_EXCEEDED)` to `CallFrequencyExceededError(code=CALL_FREQUENCY_EXCEEDED)`, matching the implementation + Error Types table at line 100 of the same file.
-- **D-09** — resolved (verified). `start()` / `stop()` lifecycle mentions are absent from PROTOCOL_SPEC.md; the iter-9 audit confirmed the earlier removal.
+- **D-09** — resolved (verified). `start()` / `stop()` lifecycle mentions are absent from protocol-spec.md; the iter-9 audit confirmed the earlier removal.
 - **D-16** — resolved. `docs/features/streaming.md` Rust producer example rewritten to use the actual trait signature `fn stream(&self, ...) -> Option<ChunkStream>`, returning a pinned `async_stream::stream!` block that yields `Result<Value, ModuleError>` chunks. The earlier example incorrectly showed `async fn stream(...) -> Result<Vec<Value>, ModuleError>` (buffered).
 - **D-17** — resolved (verified). `docs/features/acl-system.md` no longer suggests configurability for `caller_id_for_unknown`; `@external` is treated as the canonical literal throughout the doc.
 - **D-18** — resolved. `docs/spec/algorithms.md` Algorithm A09 (`evaluate_acl`) revised: dropped the `priority: Integer` field from the `Rule` struct; dropped the sort + deny-before-allow tiebreak steps; documented insertion-order-first-match-wins as the canonical evaluation order with rationale cross-referenced to this entry. Implementation Notes also updated.
@@ -1077,14 +1077,14 @@ No SDK behavior changes, no normative `MUST` / `MUST NOT` additions, no schema f
 
 ### Resolution status — iter-12 addendum (RFC promotion to normative spec, 2026-05-06)
 
-After all four SDK pilot PRs merged (`apcore-rust#25`, `apcore-python#26`, `apcore-typescript#29`, `apcore-typescript#30`), the Stage-2 (`Module.preview()`) and Stage-3 (`ephemeral.*` namespace + `discoverable` annotation) RFCs were promoted from `Draft / RFC` to `Accepted` (target v0.21.0). The normative content folded into PROTOCOL_SPEC.md:
+After all four SDK pilot PRs merged (`apcore-rust#25`, `apcore-python#26`, `apcore-typescript#29`, `apcore-typescript#30`), the Stage-2 (`Module.preview()`) and Stage-3 (`ephemeral.*` namespace + `discoverable` annotation) RFCs were promoted from `Draft / RFC` to `Accepted` (target v0.21.0). The normative content folded into protocol-spec.md:
 
 - **§2.5 Reserved Words** — `ephemeral` appended to the framework reserved list. New "Reserved namespace semantics" table immediately below the YAML block enumerates the registration / discoverability / mandatory-annotation contract for `system.*`, `internal.*`, `core.*`, `apcore.*`, `plugin.*`, `schema.*`, `acl.*`, and `ephemeral.*`. The `register_internal()` MUST-reject rule for `ephemeral.*` is now normative.
 - **§4.4 ModuleAnnotations** — new `discoverable: boolean` field (default `true`) inserted between `requires_approval` and `open_world`. AI-usage decision examples block updated to include `discoverable=false → AI / orchestrator hides the module from enumeration surfaces`.
 - **§5.6 Module Interface Protocol** — optional `preview(inputs, context) -> PreviewResult | null` method added to both the language-agnostic pseudocode interface block and the YAML `optional_methods` block. Cross-references §12.8 for the schema. Preflight-style exception semantics documented (advisory warning, no-fail).
 - **§12.8 Executor.validate() type contracts** — new `Change` and `PreviewResult` type definitions added. `PreflightResult` extended with `predicted_changes: List<Change>` field. `PreflightCheckResult.check` enum extended with `module_preview`.
 
-Both RFC documents (`docs/spec/rfc-preview-method.md`, `docs/spec/rfc-ephemeral-modules.md`) updated their Status header from `Draft / RFC` to `Accepted` with target version `v0.21.0` and explicit cross-references to the normative PROTOCOL_SPEC.md sections. The RFCs are retained as design rationale + cross-SDK schema-encoding reference (`pydantic` / `serde-flatten` / TypeBox `Type.Unsafe`) — implementations should consult PROTOCOL_SPEC.md for the canonical contract.
+Both RFC documents (`docs/spec/rfc-preview-method.md`, `docs/spec/rfc-ephemeral-modules.md`) updated their Status header from `Draft / RFC` to `Accepted` with target version `v0.21.0` and explicit cross-references to the normative protocol-spec.md sections. The RFCs are retained as design rationale + cross-SDK schema-encoding reference (`pydantic` / `serde-flatten` / TypeBox `Type.Unsafe`) — implementations should consult protocol-spec.md for the canonical contract.
 
 `CHANGELOG.md` v0.21.0 block records the version bump.
 
@@ -1157,6 +1157,6 @@ apcore-typescript PR #29 author noted this in JSDoc; follow-up to upgrade the Ty
 
 - **D-06 (doc-side)** — resolved. `docs/features/multi-module-discovery.md` "Enabling Multi-Class Mode" section rewritten to drop the **Global opt-in (configuration)** paragraph that referenced the unimplemented `extensions.multi_class_discovery` config key. Per-class markers (`@multi_class` / `@multiClass()` / `#[multi_class]`) are now documented as the only opt-in path, with an inline backward-reference note pointing readers to this decision-log entry.
 
-  The TS-side follow-through (`apcore-typescript` `Registry.discoverMultiClass` dropping the `multiClassEnabled` argument) remains open and is tracked in the cross-repo issue list above. PROTOCOL_SPEC.md does not reference the global toggle and required no edit.
+  The TS-side follow-through (`apcore-typescript` `Registry.discoverMultiClass` dropping the `multiClassEnabled` argument) remains open and is tracked in the cross-repo issue list above. protocol-spec.md does not reference the global toggle and required no edit.
 
   Direct commit to `main` (no PR) per maintainer authorization; doc-only, no SDK behavior change, no normative spec change.

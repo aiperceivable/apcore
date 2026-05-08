@@ -24,7 +24,7 @@ Tasks listed without a `done/total` ratio (e.g. `7`) lack a per-task array in th
 
 ## Spec patch drafts
 
-Lightweight `PROTOCOL_SPEC.md` patch drafts that haven't been picked up as full features yet:
+Lightweight `docs/spec/protocol-spec.md` patch drafts that haven't been picked up as full features yet:
 
 - [acl-compound-operators-spec-patch](./acl-compound-operators-spec-patch/overview.md) — proposed ACL compound-operators extension
 - [validate-step-count-spec-patch](./validate-step-count-spec-patch/overview.md) — proposed `validate()` step-count clarification

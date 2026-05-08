@@ -1,7 +1,7 @@
 # Streaming Support
 
 <!-- preamble-tier-doc -->
-> **Type:** Implementation guide. **Normative spec:** [PROTOCOL_SPEC](../../PROTOCOL_SPEC.md) §5 Module Specification (streaming hooks).
+> **Type:** Implementation guide. **Normative spec:** [PROTOCOL_SPEC](../spec/protocol-spec.md) §5 Module Specification (streaming hooks).
 
 
 ## Overview

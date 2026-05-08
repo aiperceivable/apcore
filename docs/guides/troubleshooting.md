@@ -1,6 +1,6 @@
 # Troubleshooting Guide
 
-> **Type:** User guide. **Normative spec:** [PROTOCOL_SPEC](../../PROTOCOL_SPEC.md) §8 Error Handling Specification.
+> **Type:** User guide. **Normative spec:** [PROTOCOL_SPEC](../spec/protocol-spec.md) §8 Error Handling Specification.
 
 A focused reference for the questions developers hit most often while building on apcore. The sections below assume you are using one of the three reference SDKs (apcore-python, apcore-typescript, apcore-rust) at version 0.20.0 or later.
 
@@ -15,7 +15,7 @@ For the full error class hierarchy see [features/error-system.md](../features/er
 Most common causes (in order of frequency):
 
 1. **The directory is not under one of the configured `extension_dirs`.** apcore only scans paths listed in `apcore.yaml` `extensions:` (or the explicit constructor argument). Verify with `client.discover()` returning >0 and check the configured paths.
-2. **The file starts with `_` or `.` or sits inside a hidden directory.** Hidden file filtering is mandatory at Level 0 ([PROTOCOL_SPEC §3.5](../../PROTOCOL_SPEC.md#3-directory-specification)).
+2. **The file starts with `_` or `.` or sits inside a hidden directory.** Hidden file filtering is mandatory at Level 0 ([PROTOCOL_SPEC §3.5](../spec/protocol-spec.md#3-directory-specification)).
 3. **The class did not subclass `Module` (Python) / implement the module interface (TS/Rust).** Discovery only registers classes/functions matching the contract.
 4. **Two modules share the same Canonical ID.** Look for `MODULE_ID_CONFLICT` in your logs — the second one is rejected.
 
@@ -45,7 +45,7 @@ The Executor uses **recursive deep-merge with depth cap 32** to combine chunks (
 
 ### 1.5 Why does `_approval_token` retry re-execute my logging middleware?
 
-By design. Resuming a `pending` approval re-enters the pipeline from Step 1 with no preserved intermediate state ([PROTOCOL_SPEC §7](../../PROTOCOL_SPEC.md#7-approval-system)). Pre-approval middleware side effects re-execute. If you need at-most-once semantics across an approval gate, **inspect `_approval_token` inside your middleware** and short-circuit when present.
+By design. Resuming a `pending` approval re-enters the pipeline from Step 1 with no preserved intermediate state ([PROTOCOL_SPEC §7](../spec/protocol-spec.md#7-approval-system)). Pre-approval middleware side effects re-execute. If you need at-most-once semantics across an approval gate, **inspect `_approval_token` inside your middleware** and short-circuit when present.
 
 ### 1.6 Hot reload says it succeeded but my module's behavior didn't change.
 
@@ -57,7 +57,7 @@ Three checks:
 
 ### 1.7 OTel traces show the spans but `caller_id` / `target_id` are missing.
 
-Confirm your tracing middleware is reading from `Context` (the apcore object), not from the OTel context alone. apcore propagates its trace context separately at the protocol level, then **bridges to W3C TraceContext** at the SDK boundary. See [PROTOCOL_SPEC §10.5](../../PROTOCOL_SPEC.md#10-observability-specification).
+Confirm your tracing middleware is reading from `Context` (the apcore object), not from the OTel context alone. apcore propagates its trace context separately at the protocol level, then **bridges to W3C TraceContext** at the SDK boundary. See [PROTOCOL_SPEC §10.5](../spec/protocol-spec.md#10-observability-specification).
 
 ### 1.8 `x-sensitive: true` field appears in plain text in my error message.
 
@@ -171,4 +171,4 @@ For SDK-specific bugs (a Python-only or TypeScript-only issue) file in the **res
 - [features/error-system.md](../features/error-system.md) — full error class hierarchy and code constants
 - [spec/conformance.md](../spec/conformance.md) — conformance levels and fixture catalog
 - [features/acl-system.md](../features/acl-system.md) — ACL rule evaluation, including `$or`/`$not` compound operators
-- [PROTOCOL_SPEC §8](../../PROTOCOL_SPEC.md#8-error-handling-specification) — normative error specification
+- [PROTOCOL_SPEC §8](../spec/protocol-spec.md#8-error-handling-specification) — normative error specification

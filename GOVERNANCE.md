@@ -9,7 +9,7 @@ and its sub-projects.
 ## Scope
 
 This governance covers:
-- **apcore** — Protocol specification (PROTOCOL_SPEC.md)
+- **apcore** — Protocol specification (docs/spec/protocol-spec.md)
 - **apcore-python**, **apcore-typescript**, **apcore-rust** — Language SDKs
 - **apcore-toolkit**, **apcore-toolkit-python/typescript/rust** — Schema transformation toolkit
 - **apcore-mcp**, **apcore-mcp-python/typescript/rust** — MCP protocol bridge
@@ -31,7 +31,7 @@ Maintainers have commit access and are responsible for:
 - **Consensus-based**: Decisions are made by consensus among maintainers
 - **Lazy consensus**: Proposals are accepted if no maintainer objects within 7 days
 - **Voting**: If consensus cannot be reached, a simple majority vote among maintainers decides
-- **Spec changes**: Changes to PROTOCOL_SPEC.md require review and approval by at least 2 maintainers (or all maintainers if fewer than 3 exist)
+- **Spec changes**: Changes to docs/spec/protocol-spec.md require review and approval by at least 2 maintainers (or all maintainers if fewer than 3 exist)
 
 ## Becoming a Maintainer
 

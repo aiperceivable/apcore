@@ -1295,6 +1295,6 @@ Sync steps simply return immediately without awaiting.
 | Document | Relationship |
 |----------|-------------|
 | `design-context-annotations-acl.md` | ACL condition handlers are used inside `BuiltinACLCheck`. `ContextKey` is used by steps to read Tier 2 data. Module Annotations `extra` is NOT step-specific. |
-| `PROTOCOL_SPEC.md` §7.4 | This design extends §7.4 (Executor Integration) with the configurable pipeline. |
+| `protocol-spec.md` §7.4 | This design extends §7.4 (Executor Integration) with the configurable pipeline. |
 | `docs/features/config-bus.md` | Strategy names can be loaded from Config Bus (`executor.strategies` in YAML). |
 | `docs/features/core-executor.md` | User-facing feature doc summarizing the pipeline. This document is the authoritative design reference. |

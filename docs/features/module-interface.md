@@ -1,7 +1,7 @@
 # Module Interface
 
 <!-- preamble-tier-doc -->
-> **Type:** Implementation guide. **Normative spec:** [PROTOCOL_SPEC](../../PROTOCOL_SPEC.md) §5.6 Module Interface Protocol.
+> **Type:** Implementation guide. **Normative spec:** [PROTOCOL_SPEC](../spec/protocol-spec.md) §5.6 Module Interface Protocol.
 
 ## Overview
 
@@ -122,7 +122,7 @@ The `@module(...)` decorator (or the call form `module(callable, ...)`) lets unm
 
 If a parameter is declared as `context: Context`, the framework auto-injects the Context object. The `context` parameter is excluded from the generated `input_schema`.
 
-For full grammar details and decorator semantics, see [PROTOCOL_SPEC §5.11](../../PROTOCOL_SPEC.md) and [Decorator & YAML Bindings](./decorator-bindings.md).
+For full grammar details and decorator semantics, see [PROTOCOL_SPEC §5.11](../spec/protocol-spec.md) and [Decorator & YAML Bindings](./decorator-bindings.md).
 
 ## Contract: Module conformance
 

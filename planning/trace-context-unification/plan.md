@@ -5,7 +5,7 @@
 ### Task 1: Draft spec patch + open maintainer issue
 - File: [spec-patch.md](./spec-patch.md)
 - Owner: core maintainer
-- Deliverable: GitHub issue with linked proposal; 2 maintainer approvals before merging patch into `PROTOCOL_SPEC.md`
+- Deliverable: GitHub issue with linked proposal; 2 maintainer approvals before merging patch into `docs/spec/protocol-spec.md`
 - Acceptance:
   - Issue references §5.7 and §10.5 line numbers
   - Proposed diff posted verbatim from `spec-patch.md`
@@ -111,7 +111,7 @@
 - All 3 SDKs pass `context_trace_parent.json` fixture (checked by `apcore-skills:tester`)
 - CHANGELOG entries in all affected repos
 - No remaining 36-char UUID format for `trace_id` anywhere in spec or SDKs
-- PROTOCOL_SPEC.md diff matches `spec-patch.md` exactly
+- docs/spec/protocol-spec.md diff matches `spec-patch.md` exactly
 
 ## Rollout order
 

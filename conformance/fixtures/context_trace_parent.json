@@ -1,5 +1,5 @@
 {
-  "description": "Context.create trace_parent input handling — strict 32-char lowercase hex, no auto-normalization at Context.create. See PROTOCOL_SPEC.md §10.5 external_trace_parent_handling.",
+  "description": "Context.create trace_parent input handling — strict 32-char lowercase hex, no auto-normalization at Context.create. See docs/spec/protocol-spec.md §10.5 external_trace_parent_handling.",
   "test_cases": [
     {
       "id": "valid_32_hex",

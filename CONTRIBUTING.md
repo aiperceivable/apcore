@@ -12,7 +12,7 @@ Thank you for your interest in contributing to apcore!
 
 ## Protocol Specification
 
-The specification lives in [PROTOCOL_SPEC.md](PROTOCOL_SPEC.md). Changes to
+The specification lives in [docs/spec/protocol-spec.md](docs/spec/protocol-spec.md). Changes to
 the spec require an issue discussing the change before a PR is opened.
 Spec changes must be reviewed by at least 2 maintainers.
 

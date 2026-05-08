@@ -2,7 +2,7 @@
 
 ## Overview
 
-Align `Context.create()` trace-id handling across Python, TypeScript, and Rust SDKs, resolve internal contradictions in `PROTOCOL_SPEC.md` §5.7 / §10.5, and establish a documented convention for integrating apcore into existing projects that already carry their own request/correlation IDs.
+Align `Context.create()` trace-id handling across Python, TypeScript, and Rust SDKs, resolve internal contradictions in `docs/spec/protocol-spec.md` §5.7 / §10.5, and establish a documented convention for integrating apcore into existing projects that already carry their own request/correlation IDs.
 
 ## Problem Statement
 
@@ -14,7 +14,7 @@ Align `Context.create()` trace-id handling across Python, TypeScript, and Rust S
 | trace_id format generated | 32-char lowercase hex | 32-char lowercase hex | 36-char UUID with dashes |
 | Invalid input handling | log.warn + regen | silent regen | N/A |
 
-### Spec contradictions (PROTOCOL_SPEC.md)
+### Spec contradictions (docs/spec/protocol-spec.md)
 
 - §5.7 (line 2130): `format: uuid` — implies canonical UUID string with dashes.
 - §10.5 (line 5890): `trace_id MUST use UUID v4 format`; example `550e8400-e29b-41d4-a716-446655440000` (with dashes).
@@ -50,7 +50,7 @@ A single non-normative Note in §10.5 acknowledges that the format is a versione
 ## Scope
 
 **Included:**
-- Proposed `PROTOCOL_SPEC.md` §5.7 / §10.5 amendments (see [spec-patch.md](./spec-patch.md))
+- Proposed `docs/spec/protocol-spec.md` §5.7 / §10.5 amendments (see [spec-patch.md](./spec-patch.md))
 - New user guide: `docs/guides/integrating-existing-projects.md`
 - Cross-language conformance fixture: `conformance/fixtures/context_trace_parent.json`
 - Rust SDK: add `trace_parent` capability to `Context::create()` (builder-style to avoid signature break), switch generated trace_id to 32-char hex
@@ -77,7 +77,7 @@ Per-task acceptance criteria live in [plan.md](./plan.md). Individual `tasks/*.m
 
 | # | Task ID | Description | Status |
 |---|---------|-------------|--------|
-| 1 | spec-patch | Draft PROTOCOL_SPEC.md §5.7 / §10.5 amendments + open maintainer issue | pending |
+| 1 | spec-patch | Draft docs/spec/protocol-spec.md §5.7 / §10.5 amendments + open maintainer issue | pending |
 | 2 | conformance-fixture | Cross-language `context_trace_parent.json` fixture | pending |
 | 3 | python-reject-invalid | Python SDK: explicit all-zero/all-f rejection | pending |
 | 4 | typescript-warn | TypeScript SDK: add WARN log + W3C invalid-value rejection | pending |
@@ -101,6 +101,6 @@ Per-task acceptance criteria live in [plan.md](./plan.md). Individual `tasks/*.m
 ## Reference Documents
 
 - Source discussion: internal design session 2026-04-17
-- Upstream spec: [PROTOCOL_SPEC.md §5.7](../../PROTOCOL_SPEC.md) and §10.5
+- Upstream spec: [docs/spec/protocol-spec.md §5.7](../spec/protocol-spec.md) and §10.5
 - Reference implementation: [apcore-python context.py](../../../apcore-python/src/apcore/context.py)
 - W3C Trace Context Level 2: https://www.w3.org/TR/trace-context/

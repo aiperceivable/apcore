@@ -1,7 +1,7 @@
 # Decorator and YAML Bindings
 
 <!-- preamble-tier-doc -->
-> **Type:** Implementation guide. **Normative spec:** [PROTOCOL_SPEC](../../PROTOCOL_SPEC.md) §5.11 Function-based Module Definition / §5.12 External Schema Binding.
+> **Type:** Implementation guide. **Normative spec:** [PROTOCOL_SPEC](../spec/protocol-spec.md) §5.11 Function-based Module Definition / §5.12 External Schema Binding.
 
 
 !!! info "Scope: Python SDK"

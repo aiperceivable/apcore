@@ -29,11 +29,11 @@ External retry/replay/workflow layers can and do build on apcore. This document 
 
 ## 2. Stable hooks (downstream layers MAY rely on these)
 
-The following primitives are part of apcore's normative surface. Behavior described here is guaranteed within the current major version per the compatibility matrix in `PROTOCOL_SPEC.md` §13.5.
+The following primitives are part of apcore's normative surface. Behavior described here is guaranteed within the current major version per the compatibility matrix in `protocol-spec.md` §13.5.
 
 ### 2.1 Context JSON serialization
 
-`Context` is JSON-serializable across process and network boundaries. The exact serialization rules are normative in `PROTOCOL_SPEC.md` §5.7. Key guarantees:
+`Context` is JSON-serializable across process and network boundaries. The exact serialization rules are normative in `protocol-spec.md` §5.7. Key guarantees:
 
 - `trace_id`, `caller_id`, `call_chain`, `identity` round-trip losslessly.
 - `data` round-trips for all serializable values; non-serializable values (functions, sockets, connections) are silently skipped with a logged warning.
@@ -43,7 +43,7 @@ This makes it possible to ship a Context across a queue, a job board, or a persi
 
 ### 2.2 The `_approval_token` pause/resume contract (Approval Phase B)
 
-The Approval System (`PROTOCOL_SPEC.md` §7) is currently the **only** suspension point built into apcore's pipeline. Its Phase B contract is:
+The Approval System (`protocol-spec.md` §7) is currently the **only** suspension point built into apcore's pipeline. Its Phase B contract is:
 
 1. A module annotated `requires_approval: true` calls into the configured `ApprovalHandler`.
 2. If the handler returns `pending`, the executor raises `ApprovalPendingError` carrying an `approval_id`.
@@ -52,7 +52,7 @@ The Approval System (`PROTOCOL_SPEC.md` §7) is currently the **only** suspensio
 
 This is a complete pause/resume cycle that already crosses arbitrary time gaps and process restarts, provided the application persists the `approval_id` and original inputs. Downstream layers wanting human-in-the-loop or external-decision-gated execution SHOULD model their suspension on this contract rather than introducing their own.
 
-The "Resume semantics" clarification in `PROTOCOL_SPEC.md` §7 is normative: the executor re-runs from step 1 — pre-approval middleware side effects (logging, tracing) re-execute. Middleware that needs at-most-once semantics across an approval gate SHOULD inspect `_approval_token` itself.
+The "Resume semantics" clarification in `protocol-spec.md` §7 is normative: the executor re-runs from step 1 — pre-approval middleware side effects (logging, tracing) re-execute. Middleware that needs at-most-once semantics across an approval gate SHOULD inspect `_approval_token` itself.
 
 ### 2.3 The `TaskStore` interface
 
@@ -64,7 +64,7 @@ This means a workflow runtime that wants persistent task tracking can implement 
 
 ### 2.4 The six extension points
 
-Via `ExtensionManager` (`PROTOCOL_SPEC.md` §11), apcore exposes six pluggable slots:
+Via `ExtensionManager` (`protocol-spec.md` §11), apcore exposes six pluggable slots:
 
 | Extension point | Multi | Typical use by retry/replay layers |
 |---|---|---|
@@ -90,11 +90,11 @@ Annotations are **declarative metadata**. apcore the SDK does not enforce retry 
 
 ### 2.6 `context.data` and the §4.6 `x-` extension mechanism
 
-`context.data` is the canonical carrier for application-level and runtime-private state that needs to thread through a call without becoming part of apcore's normative schema. Per `PROTOCOL_SPEC.md` §4.6, keys prefixed with `x-` are reserved for extension metadata.
+`context.data` is the canonical carrier for application-level and runtime-private state that needs to thread through a call without becoming part of apcore's normative schema. Per `protocol-spec.md` §4.6, keys prefixed with `x-` are reserved for extension metadata.
 
 Common patterns supported today:
 
-- `context.data["x-correlation-id"]` — caller-supplied correlation identifier (formalized in `PROTOCOL_SPEC.md` §5.7).
+- `context.data["x-correlation-id"]` — caller-supplied correlation identifier (formalized in `protocol-spec.md` §5.7).
 - Any other `x-*` key — reserved namespace for downstream layers.
 
 Strings, numbers, booleans, lists, and JSON-serializable objects placed in `context.data` round-trip through `Context.serialize` / `Context.deserialize` reliably. Non-serializable values are silently skipped with a logged warning. This makes `context.data` the appropriate place to carry idempotency keys, replay flags, attempt counters, deadlines, runtime correlation IDs, and any other non-normative per-call state.
@@ -119,7 +119,7 @@ apcore has no notion of a "workflow", "saga", "compensation chain", "fan-out/fan
 
 ### 3.3 Cost governance, budget limits, rate-shaping
 
-Modules carry `x-cost-per-call`, `x-rate-limit`, and similar extension annotations as informational hints for AI planners (see `PROTOCOL_SPEC.md` §4.6). apcore does **not** enforce them — no built-in budget tracker, no rate-limiter middleware in the standard surface, no centralized policy engine. Downstream layers own enforcement, typically as custom middleware or via an external policy engine that consumes the annotations.
+Modules carry `x-cost-per-call`, `x-rate-limit`, and similar extension annotations as informational hints for AI planners (see `protocol-spec.md` §4.6). apcore does **not** enforce them — no built-in budget tracker, no rate-limiter middleware in the standard surface, no centralized policy engine. Downstream layers own enforcement, typically as custom middleware or via an external policy engine that consumes the annotations.
 
 ### 3.4 Cross-call state machines
 
@@ -220,7 +220,7 @@ Each deferred item is a candidate for a future spec proposal once a concrete dow
 
 ## 6. Versioning
 
-This document is part of apcore's spec surface and is governed by `PROTOCOL_SPEC.md` §13.5 compatibility rules.
+This document is part of apcore's spec surface and is governed by `protocol-spec.md` §13.5 compatibility rules.
 
 - Stable hooks listed in §2 MAY evolve only in additive, backward-compatible ways within a major version.
 - Non-goals listed in §3 MAY become goals in a future major version with appropriate community discussion and evidence.
@@ -230,7 +230,7 @@ This document is part of apcore's spec surface and is governed by `PROTOCOL_SPEC
 
 ## 7. References
 
-- `PROTOCOL_SPEC.md` (repository root) — full normative specification
+- `protocol-spec.md` (repository root) — full normative specification
   - §4.6 — `x-` extension mechanism
   - §5.7 — Context structure and serialization
   - §7 — Approval System (including `_approval_token` Phase B)

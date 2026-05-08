@@ -16,7 +16,7 @@ Tech stack: **MkDocs Material** + GitHub Pages + JSON Schema Draft 2020-12.
 
 ```
 apcore/
-├── PROTOCOL_SPEC.md          # Single source of truth (RFC 2119)
+├── docs/spec/protocol-spec.md          # Single source of truth (RFC 2119)
 ├── schemas/                   # Canonical JSON Schema files (*.schema.json)
 ├── conformance/fixtures/      # Cross-language test fixtures (*.json)
 ├── docs/
@@ -24,7 +24,7 @@ apcore/
 │   ├── guides/                # How-to tutorials for SDK users
 │   └── spec/                  # Cross-language algorithms, type mapping, conformance
 ├── planning/                  # Internal only — implementation task tracking
-│   └── <feature>/             # overview.md + plan.md + state.json + tasks/NN-*.md
+│   └── <feature>/             # index.md + plan.md + state.json + tasks/NN-*.md
 └── mkdocs.yml                 # Doc site navigation and extensions
 ```
 
@@ -66,7 +66,7 @@ Deploy: push to `main` → GitHub Actions builds and deploys to GitHub Pages aut
 3. Every `property` must have a `description`
 4. Check all `$ref` references still resolve
 
-### Updating PROTOCOL_SPEC.md
+### Updating docs/spec/protocol-spec.md
 1. Requires a linked issue and 2 maintainer reviews
 2. Do NOT remove/weaken a `MUST`/`MUST NOT` without deprecation notice + version bump
 3. Do NOT delete or rename anchor IDs — external SDKs link to them
@@ -75,7 +75,7 @@ Deploy: push to `main` → GitHub Actions builds and deploys to GitHub Pages aut
 ## Writing Rules
 
 ### RFC 2119 Keywords
-In `PROTOCOL_SPEC.md` and `docs/spec/`: use uppercase `MUST`, `MUST NOT`, `SHOULD`, `SHOULD NOT`, `MAY` for normative statements. Never use lowercase "should"/"must" for normative intent.
+In `docs/spec/protocol-spec.md` and `docs/spec/`: use uppercase `MUST`, `MUST NOT`, `SHOULD`, `SHOULD NOT`, `MAY` for normative statements. Never use lowercase "should"/"must" for normative intent.
 
 ### Cross-Language Examples
 All feature docs must show Python, TypeScript, and Rust examples using MkDocs tabbed sections (`=== "Python"` / `=== "TypeScript"` / `=== "Rust"`). See `.claude/rules/documentation.md` for the full template.
@@ -100,7 +100,7 @@ Use standardized terms consistently:
 ## Critical Rules
 
 ### Specification Integrity
-- Do NOT modify `PROTOCOL_SPEC.md` without a linked issue and dual maintainer approval
+- Do NOT modify `docs/spec/protocol-spec.md` without a linked issue and dual maintainer approval
 - Do NOT add normative requirements without bumping the relevant version number
 - Do NOT contradict existing normative statements — search for conflicts first
 
@@ -144,7 +144,7 @@ Types: `feat`, `fix`, `docs`, `refactor`, `test`, `chore`. DCO sign-off is requi
 
 These are the five pillars — read the linked docs before modifying related content:
 
-1. **Module ID = Directory Path** — `executor.email.send_email` derived from file path. See `PROTOCOL_SPEC.md` §"Module ID Specification"
+1. **Module ID = Directory Path** — `executor.email.send_email` derived from file path. See `docs/spec/protocol-spec.md` §"Module ID Specification"
 2. **Three-Layer Metadata** — Core (required: `input_schema`/`output_schema`/`description`) → Annotation → Extension (`x-` prefix). See `docs/features/schema-system.md`
 3. **Execution Pipeline** — 11 ordered stages, strict invariants. See `docs/features/core-executor.md`
 4. **ACL Default-Deny** — All inter-module calls require explicit `allow`. See `docs/features/acl-system.md`

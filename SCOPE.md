@@ -33,7 +33,7 @@ But: A universal module standard that is naturally AI-Perceivable
 
 ## 2. Core Responsibilities
 
-> This section uses RFC 2119 keywords; see [PROTOCOL_SPEC.md §1.5](./PROTOCOL_SPEC.md#15-specification-keywords) for their meanings.
+> This section uses RFC 2119 keywords; see [docs/spec/protocol-spec.md §1.5](./docs/spec/protocol-spec.md#15-specification-keywords) for their meanings.
 
 ### 2.1 Module Standardization
 - [ ] **Definition (MUST)**: All modules **must** define ID, input_schema, output_schema, and description
@@ -231,7 +231,7 @@ Use these scenarios to validate whether our boundaries are correct:
 
 ```
 apcore/
-├── PROTOCOL_SPEC.md          # Core protocol specification (14 chapters)
+├── docs/spec/protocol-spec.md          # Core protocol specification (14 chapters)
 ├── SCOPE.md                  # Scope definition
 ├── README.md                 # Project introduction
 └── docs/                     # Detailed documentation

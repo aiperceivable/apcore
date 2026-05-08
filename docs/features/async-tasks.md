@@ -1,7 +1,7 @@
 # Async Task Management
 
 <!-- preamble-tier-doc -->
-> **Type:** Implementation guide. **Normative spec:** [PROTOCOL_SPEC](../../PROTOCOL_SPEC.md) §5.8 Async Module Specification.
+> **Type:** Implementation guide. **Normative spec:** [PROTOCOL_SPEC](../spec/protocol-spec.md) §5.8 Async Module Specification.
 
 
 ## Overview

@@ -1,7 +1,7 @@
 # Module Registry and Discovery System
 
 <!-- preamble-tier-doc -->
-> **Type:** Implementation guide. **Normative spec:** [PROTOCOL_SPEC](../../PROTOCOL_SPEC.md) §12.2 (Registry component).
+> **Type:** Implementation guide. **Normative spec:** [PROTOCOL_SPEC](../spec/protocol-spec.md) §12.2 (Registry component).
 
 
 ## Overview
@@ -83,7 +83,7 @@ Normative behavioral contract. All SDK implementations MUST satisfy these guaran
 - `module`: Module instance, required. Must implement the module protocol (`description`, `input_schema`, `output_schema`, `execute`).
 
 !!! info "Multi-version registration (optional, Phase B)"
-    SDKs MAY accept additional `version` and `metadata` parameters to support [§5.4 Multi-version Coexistence](../../PROTOCOL_SPEC.md#54-multi-version-coexistence). When supported, the same `module_id` MAY be registered with multiple distinct versions, and `Registry.get(module_id, version_hint=...)` resolves via semantic-version range matching.
+    SDKs MAY accept additional `version` and `metadata` parameters to support [§5.4 Multi-version Coexistence](../spec/protocol-spec.md#54-multi-version-coexistence). When supported, the same `module_id` MAY be registered with multiple distinct versions, and `Registry.get(module_id, version_hint=...)` resolves via semantic-version range matching.
 
     **SDK status (Phase B)**:
 

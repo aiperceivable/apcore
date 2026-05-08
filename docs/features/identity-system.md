@@ -1,7 +1,7 @@
 # Identity System
 
 <!-- preamble-tier-doc -->
-> **Type:** Implementation guide. **Normative spec:** [PROTOCOL_SPEC](../../PROTOCOL_SPEC.md) §5.7 Context Object (`identity` sub-schema).
+> **Type:** Implementation guide. **Normative spec:** [PROTOCOL_SPEC](../spec/protocol-spec.md) §5.7 Context Object (`identity` sub-schema).
 
 
 ## Overview
@@ -81,7 +81,7 @@ The Identity System provides a structured representation of the caller's identit
 | `anonymous` | No authenticated identity | Public endpoints, unauthenticated callers |
 
 !!! note
-    The `type` field is a free-form string. The values above are the well-known conventions surfaced in the JSON Schema `examples` (PROTOCOL_SPEC.md §5.7). Applications **MAY** define custom types — implementations do not validate the value against the conventions list.
+    The `type` field is a free-form string. The values above are the well-known conventions surfaced in the JSON Schema `examples` (protocol-spec.md §5.7). Applications **MAY** define custom types — implementations do not validate the value against the conventions list.
 
 ### Equality and hashability
 

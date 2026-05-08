@@ -2,14 +2,14 @@
 
 ## Status
 
-**Accepted** (2026-05-06). Promoted to PROTOCOL_SPEC.md normative sections in v0.21.0:
+**Accepted** (2026-05-06). Promoted to protocol-spec.md normative sections in v0.21.0:
 
 - `§2.5 Reserved Words` — `ephemeral` added to framework reserved list; namespace semantics table now lists `ephemeral.*` with its registration / discoverability / annotation contract
 - `§4.4 ModuleAnnotations` — new `discoverable: boolean` annotation field (default `true`); RFC's "single-emit rule" and "register_internal() interaction" rules are normative
 
 The pilot in `apcore-python` (PR #26) shipped the full v1 surface: namespace reservation, `discoverable` annotation, audit-event single-emit, `register_internal()` rejection, soft-warning on missing `requires_approval`. `apcore-typescript` and `apcore-rust` follow-up implementations are tracked in their respective repos.
 
-This RFC document is retained as **design rationale + cross-SDK pilot reference**. Implementations should consult PROTOCOL_SPEC.md for the normative contract.
+This RFC document is retained as **design rationale + cross-SDK pilot reference**. Implementations should consult protocol-spec.md for the normative contract.
 
 ## Motivation
 
@@ -19,7 +19,7 @@ A growing class of LLM-agent workflows synthesize callable units at runtime:
 - On-the-fly composition of existing modules into a new callable surface (LATM and follow-on work in the LLM-ToolMaker line).
 - Per-session "scratch tools" assembled by an orchestrator and discarded after the session ends.
 
-Today, the canonical apcore registration path is filesystem-based (PROTOCOL_SPEC.md §2.1 Algorithm A01: directory path → canonical Module ID). Authors of agents that synthesize tools at runtime have to either:
+Today, the canonical apcore registration path is filesystem-based (protocol-spec.md §2.1 Algorithm A01: directory path → canonical Module ID). Authors of agents that synthesize tools at runtime have to either:
 
 - Reuse `Registry.register(module_id, instance)` ad-hoc, but with no spec'd convention for naming, lifecycle, or audit; or
 - Manage a parallel registry outside apcore, losing ACL, audit, and observability.
@@ -50,7 +50,7 @@ So the implementation primitives **all exist**. What's missing is convention + a
 
 ## Proposed `ephemeral.*` namespace
 
-Add a new entry to PROTOCOL_SPEC.md §2.5 reserved namespaces, parallel to `system.*` and `core.*`:
+Add a new entry to protocol-spec.md §2.5 reserved namespaces, parallel to `system.*` and `core.*`:
 
 | Namespace | Purpose | Registration | Discoverable | Mandatory annotations |
 |---|---|---|---|---|

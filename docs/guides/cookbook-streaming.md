@@ -1,6 +1,6 @@
 # Cookbook — Streaming Modules
 
-> **Type:** User cookbook. **Normative spec:** [PROTOCOL_SPEC](../../PROTOCOL_SPEC.md) §5 Module Specification (streaming hooks). Feature reference: [features/streaming.md](../features/streaming.md).
+> **Type:** User cookbook. **Normative spec:** [PROTOCOL_SPEC](../spec/protocol-spec.md) §5 Module Specification (streaming hooks). Feature reference: [features/streaming.md](../features/streaming.md).
 
 End-to-end example: a module that emits **partial output chunks** as it works, with the executor performing recursive deep-merge to assemble the final result. Demonstrates both the producer side (`stream()` generator) and the consumer side (`client.stream()` async iterator).
 
@@ -246,4 +246,4 @@ obs:
 - [features/streaming.md](../features/streaming.md) — feature reference
 - [cookbook-cancellation.md](./cookbook-cancellation.md) — cooperative cancellation, especially relevant for early-exit consumers
 - [conformance fixture `stream_aggregation`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/stream_aggregation.json) — 9 deep-merge edge cases
-- [PROTOCOL_SPEC §5](../../PROTOCOL_SPEC.md#5-module-specification) — module specification including streaming
+- [PROTOCOL_SPEC §5](../spec/protocol-spec.md#5-module-specification) — module specification including streaming

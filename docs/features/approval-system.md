@@ -1,7 +1,7 @@
 # Approval System
 
 <!-- preamble-tier-doc -->
-> **Type:** Implementation guide. **Normative spec:** [PROTOCOL_SPEC](../../PROTOCOL_SPEC.md) §7 Approval System.
+> **Type:** Implementation guide. **Normative spec:** [PROTOCOL_SPEC](../spec/protocol-spec.md) §7 Approval System.
 
 
 ## Overview
@@ -10,7 +10,7 @@ The Approval System provides runtime enforcement of the `requires_approval` anno
 
 The Approval System is architecturally separate from the ACL System. ACL answers "who is allowed to call this module?" while Approval answers "does this particular invocation need sign-off before proceeding?"
 
-See [PROTOCOL_SPEC §7](../../PROTOCOL_SPEC.md#7-approval-system) for the full specification.
+See [PROTOCOL_SPEC §7](../spec/protocol-spec.md#7-approval-system) for the full specification.
 
 ## Requirements
 

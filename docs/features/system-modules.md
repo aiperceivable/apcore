@@ -1,7 +1,7 @@
 # System Modules
 
 <!-- preamble-tier-doc -->
-> **Type:** Implementation guide. **Normative spec:** [PROTOCOL_SPEC](../../PROTOCOL_SPEC.md) §5 Module Specification (system module conventions).
+> **Type:** Implementation guide. **Normative spec:** [PROTOCOL_SPEC](../spec/protocol-spec.md) §5 Module Specification (system module conventions).
 
 
 ## Overview
@@ -618,7 +618,7 @@ sys_modules:
 - `EventEmitter` — Event dispatch for control modules.
 
 ### Permissions
-System modules use the reserved `system.*` namespace. Registration bypasses reserved word checks via `registry.register_internal()`. See [PROTOCOL_SPEC §6.6](../../PROTOCOL_SPEC.md) for the defense-in-depth permission model.
+System modules use the reserved `system.*` namespace. Registration bypasses reserved word checks via `registry.register_internal()`. See [PROTOCOL_SPEC §6.6](../spec/protocol-spec.md) for the defense-in-depth permission model.
 
 ??? info "Python SDK reference"
     The following table is **not a protocol requirement** — it documents the Python SDK's source layout for implementers/users of `apcore-python`.

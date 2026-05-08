@@ -1,6 +1,6 @@
 # Security Considerations
 
-> **Type:** Informative specification (RFC 3552 §4 style). **Normative cross-references:** [PROTOCOL_SPEC](../../PROTOCOL_SPEC.md) §6 ACL, §7 Approval, §8 Errors, §10 Observability.
+> **Type:** Informative specification (RFC 3552 §4 style). **Normative cross-references:** [PROTOCOL_SPEC](./protocol-spec.md) §6 ACL, §7 Approval, §8 Errors, §10 Observability.
 
 This document enumerates the threats apcore is designed to mitigate, the threats it does not address (so callers know where defense-in-depth is required), and the audit recommendations for production deployments. It is organised in the IETF [RFC 3552](https://www.rfc-editor.org/rfc/rfc3552) "Guidelines for Writing RFC Text on Security Considerations" pattern: threat model first, mitigations second, residual risks and operational guidance last.
 
@@ -48,7 +48,7 @@ apcore is a **module standard**, not a sandbox. The host process trusts every lo
 
 **Mitigation.**
 
-1. **Reserved prefixes are enforced.** Algorithm A01 ([PROTOCOL_SPEC §2.1](../../PROTOCOL_SPEC.md#2-naming-specification)) rejects user-defined modules whose IDs begin with `sys.`, `system.`, or `apcore.`. This is verified by fixture `normalize_id`.
+1. **Reserved prefixes are enforced.** Algorithm A01 ([PROTOCOL_SPEC §2.1](./protocol-spec.md#2-naming-specification)) rejects user-defined modules whose IDs begin with `sys.`, `system.`, or `apcore.`. This is verified by fixture `normalize_id`.
 2. **Conflict detection.** If two modules resolve to the same Canonical ID, the second is rejected with `MODULE_ID_CONFLICT` rather than silently overriding (fixture: `multi_module_discovery`).
 3. **Path traversal is impossible.** Canonical IDs derive from the path *relative to* the configured `extension_dir`. Symlinks pointing outside the dir are followed at filesystem level — operators **MUST** ensure the extension directory does not contain attacker-controlled symlinks.
 
@@ -111,7 +111,7 @@ apcore is a **module standard**, not a sandbox. The host process trusts every lo
 
 **Threat.** An external caller supplying an attacker-chosen `trace_id` to poison logs, correlate unrelated traffic, or hide their activity.
 
-**Mitigation.** [PROTOCOL_SPEC §10.5](../../PROTOCOL_SPEC.md#10-observability-specification) defines a strict validation/normalisation pipeline: every input is either accepted verbatim **after** validation against the 32-char lowercase hex regex, or replaced with a fresh trace_id. There is no path that accepts unvalidated input. Verified by fixture `context_trace_parent`.
+**Mitigation.** [PROTOCOL_SPEC §10.5](./protocol-spec.md#10-observability-specification) defines a strict validation/normalisation pipeline: every input is either accepted verbatim **after** validation against the 32-char lowercase hex regex, or replaced with a fresh trace_id. There is no path that accepts unvalidated input. Verified by fixture `context_trace_parent`.
 
 ---
 
@@ -191,10 +191,10 @@ Do **not** open public GitHub issues for security bugs. See [SECURITY.md](https:
 ## 5. References
 
 - [RFC 3552 — Guidelines for Writing RFC Text on Security Considerations](https://www.rfc-editor.org/rfc/rfc3552)
-- [PROTOCOL_SPEC §6 ACL](../../PROTOCOL_SPEC.md#6-acl-specification)
-- [PROTOCOL_SPEC §7 Approval](../../PROTOCOL_SPEC.md#7-approval-system)
-- [PROTOCOL_SPEC §8 Errors](../../PROTOCOL_SPEC.md#8-error-handling-specification)
-- [PROTOCOL_SPEC §10 Observability](../../PROTOCOL_SPEC.md#10-observability-specification)
+- [PROTOCOL_SPEC §6 ACL](./protocol-spec.md#6-acl-specification)
+- [PROTOCOL_SPEC §7 Approval](./protocol-spec.md#7-approval-system)
+- [PROTOCOL_SPEC §8 Errors](./protocol-spec.md#8-error-handling-specification)
+- [PROTOCOL_SPEC §10 Observability](./protocol-spec.md#10-observability-specification)
 - [features/acl-system.md](../features/acl-system.md) — ACL implementation guide
 - [features/approval-system.md](../features/approval-system.md) — approval state machine
 - [guides/troubleshooting.md](../guides/troubleshooting.md) — error code reference

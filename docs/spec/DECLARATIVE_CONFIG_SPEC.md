@@ -5,7 +5,7 @@
 **Status**: Draft for review — not yet implemented
 **Canonical location**: `apcore/docs/spec/DECLARATIVE_CONFIG_SPEC.md`
 **Authoritative schemas**: `apcore/schemas/{binding,apcore-config,module-meta}.schema.json`
-**Related specs**: `apcore/PROTOCOL_SPEC.md` (module ID format, protocol wire format)
+**Related specs**: `apcore/protocol-spec.md` (module ID format, protocol wire format)
 **Last updated**: 2026-04-16
 
 ---

@@ -1,7 +1,7 @@
 # Extension System
 
 <!-- preamble-tier-doc -->
-> **Type:** Implementation guide. **Normative spec:** [PROTOCOL_SPEC](../../PROTOCOL_SPEC.md) §11 Extension Mechanism.
+> **Type:** Implementation guide. **Normative spec:** [PROTOCOL_SPEC](../spec/protocol-spec.md) §11 Extension Mechanism.
 
 
 ## Overview
@@ -275,7 +275,7 @@ class _CompositeExporter:
 
 ### Custom Discoverer
 
-A custom `Discoverer` replaces the default filesystem scan. `discover()` receives the configured extension roots and returns the discovered entries. The Registry then performs module-id validation (per [PROTOCOL_SPEC §2.7](../../PROTOCOL_SPEC.md)) → duplicate check → optional custom-validator call → registration. Malformed or rejected entries are skipped with a warning; a single bad entry MUST NOT abort the batch.
+A custom `Discoverer` replaces the default filesystem scan. `discover()` receives the configured extension roots and returns the discovered entries. The Registry then performs module-id validation (per [PROTOCOL_SPEC §2.7](../spec/protocol-spec.md)) → duplicate check → optional custom-validator call → registration. Malformed or rejected entries are skipped with a warning; a single bad entry MUST NOT abort the batch.
 
 === "Python"
 

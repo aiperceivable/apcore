@@ -1,6 +1,6 @@
 # Cookbook — Observability with OTel + Sensitive Data Redaction
 
-> **Type:** User cookbook. **Normative spec:** [PROTOCOL_SPEC §10](../../PROTOCOL_SPEC.md#10-observability-specification). Feature reference: [features/observability.md](../features/observability.md).
+> **Type:** User cookbook. **Normative spec:** [PROTOCOL_SPEC §10](../spec/protocol-spec.md#10-observability-specification). Feature reference: [features/observability.md](../features/observability.md).
 
 End-to-end example: emit OpenTelemetry traces and structured logs from your apcore modules **with PII automatically redacted** via `x-sensitive` schema annotations and `obs.redaction.sensitive_keys`.
 
@@ -182,7 +182,7 @@ module.call
 | Custom middleware writes raw inputs into spans | Redaction bypassed | Use `context.redacted_inputs` (populated by the framework) instead of the original `inputs` dict |
 | Regex patterns are too greedy | Performance hit on every log line | Anchor regexes with negative look-behinds (e.g. lookbehinds for non-digit boundaries) and prefer `sensitive_keys` whenever the data is keyed |
 | Production left at `sample_rate: 1.0` | OTel backend overload | Drop to 0.01–0.1 in steady state; sample at 1.0 only for incident windows |
-| Trace ID propagation broken across HTTP boundary | Calls appear as separate root spans | Adapter (FastAPI/Express/Axum) must extract `traceparent` from headers and pass into `Context` — see [PROTOCOL_SPEC §10.5](../../PROTOCOL_SPEC.md#10-observability-specification) |
+| Trace ID propagation broken across HTTP boundary | Calls appear as separate root spans | Adapter (FastAPI/Express/Axum) must extract `traceparent` from headers and pass into `Context` — see [PROTOCOL_SPEC §10.5](../spec/protocol-spec.md#10-observability-specification) |
 
 ## 6. Verifying redaction in tests
 
@@ -204,5 +204,5 @@ The conformance fixtures cover this cross-SDK:
 
 - [features/observability.md](../features/observability.md) — full feature reference (1814 lines, deep dive)
 - [spec/security-considerations.md §2.5](../spec/security-considerations.md#25-sensitive-data-in-logs-t6) — threat model
-- [PROTOCOL_SPEC §10](../../PROTOCOL_SPEC.md#10-observability-specification) — normative observability spec
+- [PROTOCOL_SPEC §10](../spec/protocol-spec.md#10-observability-specification) — normative observability spec
 - [troubleshooting §1.8](./troubleshooting.md#18-x-sensitive-true-field-appears-in-plain-text-in-my-error-message) — error-message redaction caveat

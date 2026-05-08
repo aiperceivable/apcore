@@ -2,16 +2,16 @@
 
 ## Status
 
-**Accepted** (2026-05-06). Promoted to PROTOCOL_SPEC.md normative sections in v0.21.0:
+**Accepted** (2026-05-06). Promoted to protocol-spec.md normative sections in v0.21.0:
 
 - `§5.6 Module Interface Protocol` — optional `preview()` method added to optional_methods + pseudocode interface
 - `§12.8 Executor.validate() type contracts` — new `Change` and `PreviewResult` types; `PreflightResult.predicted_changes` field added; `PreflightCheckResult.check` enum extended with `module_preview`
 
-This RFC document is retained as **design rationale + cross-SDK schema-encoding reference**. Implementations should consult PROTOCOL_SPEC.md for the normative contract; this document for the *why* and the cross-SDK encoding patterns (pydantic / serde-flatten / TypeBox `Type.Unsafe`).
+This RFC document is retained as **design rationale + cross-SDK schema-encoding reference**. Implementations should consult protocol-spec.md for the normative contract; this document for the *why* and the cross-SDK encoding patterns (pydantic / serde-flatten / TypeBox `Type.Unsafe`).
 
 ## Motivation
 
-`Executor.validate()` (PROTOCOL_SPEC.md §12.2) runs the pipeline in `dry_run=true` mode and skips non-`pure` steps; it returns a `PreflightResult` describing whether each pipeline check passed and whether the call would require approval. `Module.preflight()` (PROTOCOL_SPEC.md §5.6, contract at §12.8.5.1) lets a module emit advisory `list[str]` warnings.
+`Executor.validate()` (protocol-spec.md §12.2) runs the pipeline in `dry_run=true` mode and skips non-`pure` steps; it returns a `PreflightResult` describing whether each pipeline check passed and whether the call would require approval. `Module.preflight()` (protocol-spec.md §5.6, contract at §12.8.5.1) lets a module emit advisory `list[str]` warnings.
 
 Neither surface answers the question that AI orchestrators consuming destructive modules increasingly need to ask:
 
@@ -112,7 +112,7 @@ Conformance fixtures MUST cover at least: (a) a `Change` with required fields on
 
 ## Proposed `PreflightResult` extension
 
-A new optional field on the existing `PreflightResult` (PROTOCOL_SPEC.md §12.8.4 type table):
+A new optional field on the existing `PreflightResult` (protocol-spec.md §12.8.4 type table):
 
 ```yaml
 PreflightResult:

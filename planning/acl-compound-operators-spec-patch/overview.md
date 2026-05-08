@@ -10,10 +10,10 @@ The `$or` and `$not` compound operators are:
 - **Designed** in `docs/spec/design-context-annotations-acl.md` (handler protocol, sync/async semantics, fail-closed rules).
 - **User-documented** in `docs/features/acl-system.md` (now expanded — see commit alongside this draft).
 
-But **not specified** in `PROTOCOL_SPEC.md §6`. SDK authors (and audit tooling) currently rely on the design doc + reference implementation, which is fragile and contradicts CLAUDE.md "Spec Integrity" expectations.
+But **not specified** in `docs/spec/protocol-spec.md §6`. SDK authors (and audit tooling) currently rely on the design doc + reference implementation, which is fragile and contradicts CLAUDE.md "Spec Integrity" expectations.
 
 ## Patch summary
-Two surgical additions to `PROTOCOL_SPEC.md §6`:
+Two surgical additions to `docs/spec/protocol-spec.md §6`:
 
 ### Patch 1 — extend §6.1 "Conditions sub-fields" table
 
@@ -53,7 +53,7 @@ under default-deny semantics — these tokens are reserved for compound-operator
 
 ## Cross-references that must be updated together
 
-- `PROTOCOL_SPEC.md` version history table — bump minor version (e.g., 1.6.0-draft → 1.7.0-draft)
+- `docs/spec/protocol-spec.md` version history table — bump minor version (e.g., 1.6.0-draft → 1.7.0-draft)
 - `CHANGELOG.md` — add to next release's "Added" section: "PROTOCOL_SPEC §6.1 / §6.2.1 — formalise `$or`/`$not` compound operators (already implemented in all 3 SDKs since 0.18; spec was lagging)."
 - `schemas/apcore-config.schema.json` (if it constrains `conditions`) — extend to allow `$or` / `$not` keys. **Verify before patching** — current schema may already allow free-form objects.
 - `docs/spec/conformance.md` — link the 4 fixture cases to the new spec sections so conformance traceability is bidirectional.

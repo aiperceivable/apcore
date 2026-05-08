@@ -20,7 +20,7 @@ Implementers can choose their target conformance level based on their needs and 
 
 ### 1.3 Terminology and Keywords
 
-The keywords used in this document follow [RFC 2119](https://www.rfc-editor.org/rfc/rfc2119) definitions, consistent with [PROTOCOL_SPEC §1.5](../../PROTOCOL_SPEC.md).
+The keywords used in this document follow [RFC 2119](https://www.rfc-editor.org/rfc/rfc2119) definitions, consistent with [PROTOCOL_SPEC §1.5](./protocol-spec.md).
 
 ---
 
@@ -714,8 +714,8 @@ fn acl_evaluation() {
 
 ## 9. References
 
-- [PROTOCOL_SPEC §12 — SDK Implementation Guide](../../PROTOCOL_SPEC.md#12-sdk-implementation-guide)
-- [PROTOCOL_SPEC §12.4 — Conformance Testing Requirements](../../PROTOCOL_SPEC.md#124-conformance-testing-requirements)
-- [PROTOCOL_SPEC §12.5 — Implementation Roadmap](../../PROTOCOL_SPEC.md#125-implementation-roadmap)
-- [PROTOCOL_SPEC §1.5 — Normative Keywords](../../PROTOCOL_SPEC.md#15-normative-keywords)
+- [PROTOCOL_SPEC §12 — SDK Implementation Guide](./protocol-spec.md#12-sdk-implementation-guide)
+- [PROTOCOL_SPEC §12.4 — Consistency Testing Requirements](./protocol-spec.md#124-consistency-testing-requirements)
+- [PROTOCOL_SPEC §12.5 — Implementation Roadmap](./protocol-spec.md#125-implementation-roadmap)
+- [PROTOCOL_SPEC §1.5 — Specification Keywords](./protocol-spec.md#15-specification-keywords)
 - [RFC 2119 — Key words for use in RFCs to Indicate Requirement Levels](https://www.rfc-editor.org/rfc/rfc2119)

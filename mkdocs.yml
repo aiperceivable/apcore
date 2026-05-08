@@ -55,64 +55,66 @@ markdown_extensions:
 
 nav:
   - Start Here:
-      - index.md
-      - Project Overview: overview.md
+      - Project Overview: index.md
+      - Core Concepts: concepts.md
       - Getting Started: getting-started.md
       - Glossary: glossary.md
   - Concepts & Architecture:
-      - Core Concepts: concepts.md
+      - Project Positioning: POSITIONING.md
       - Architecture Design: architecture.md
-      - Positioning: POSITIONING.md
+      - Documentation Map: site-map.md
   - Guides:
-      - guides/index.md
+      - Overview: guides/index.md
       - Foundations:
           - Creating Modules: guides/creating-modules.md
           - Schema Definition: guides/schema-definition.md
           - Testing Modules: guides/testing-modules.md
-      - Advanced:
-          - Middleware: guides/middleware.md
+      - Governance & Extension:
           - ACL Configuration: guides/acl-configuration.md
+          - Middleware System: guides/middleware.md
+      - Professional Integration:
+          - Multi-Language: guides/multi-language.md
           - Adapter Development: guides/adapter-development.md
-          - Multi-Language Development: guides/multi-language.md
-          - Integrating into Existing Projects: guides/integrating-existing-projects.md
+          - Legacy Integration: guides/integrating-existing-projects.md
       - Cookbooks:
-          - "Streaming": guides/cookbook-streaming.md
-          - "Approval Flow": guides/cookbook-approval-flow.md
-          - "Observability": guides/cookbook-observability.md
-          - "Cancellation": guides/cookbook-cancellation.md
+          - Approval Flow: guides/cookbook-approval-flow.md
+          - Cancellation: guides/cookbook-cancellation.md
+          - Streaming: guides/cookbook-streaming.md
+          - Observability: guides/cookbook-observability.md
       - Troubleshooting: guides/troubleshooting.md
   - Features:
-      - features/index.md
-      - Core Interfaces:
+      - Overview: features/index.md
+      - Foundational Protocols:
           - Module Interface: features/module-interface.md
           - Context Object: features/context-object.md
           - APCore Client: features/apcore-client.md
-      - Core Execution:
+          - Bindings (Decorator/YAML): features/decorator-bindings.md
+      - Execution & Workflow:
           - Core Executor: features/core-executor.md
+          - Streaming Pipeline: features/streaming.md
           - Async Task Management: features/async-tasks.md
+          - Cancellation Mechanism: features/cancellation.md
           - Config Bus: features/config-bus.md
-          - Cancellation: features/cancellation.md
-          - Streaming: features/streaming.md
-      - Security & Control:
+      - Security & Governance:
           - ACL System: features/acl-system.md
           - Identity System: features/identity-system.md
           - Approval System: features/approval-system.md
           - Call Chain Guard: features/call-chain-guard.md
-      - Extensibility:
-          - System Modules: features/system-modules.md
-          - Extension System: features/extension-system.md
-          - Middleware System: features/middleware-system.md
-          - Schema System: features/schema-system.md
-          - Registry System: features/registry-system.md
-          - Multi-Module Discovery: features/multi-module-discovery.md
-      - Observability & Bindings:
+      - Reliability & Ops:
           - Observability: features/observability.md
-          - Error System: features/error-system.md
+          - Error & AI Guidance: features/error-system.md
           - Event System: features/event-system.md
-          - Decorator & YAML Bindings: features/decorator-bindings.md
+          - System Modules (sys.*): features/system-modules.md
+      - Framework Internals:
+          - Registry System: features/registry-system.md
+          - Schema System: features/schema-system.md
+          - Extension Points: features/extension-system.md
+          - Middleware System: features/middleware-system.md
+          - Multi-Module Discovery: features/multi-module-discovery.md
   - Framework Specs:
       - spec/index.md
       - Core Specs:
+          - Canonical Protocol Spec: spec/protocol-spec.md
           - Conformance Definition: spec/conformance.md
           - Declarative Config Spec: spec/DECLARATIVE_CONFIG_SPEC.md
           - Type Mapping: spec/type-mapping.md

@@ -5,7 +5,7 @@
 > This document captures the original problem statement and design proposals
 > for the Annotations / Context / ACL redesign that shipped in apcore v0.17.
 > The normative wire format for `ModuleAnnotations.extra` is now defined in
-> [PROTOCOL_SPEC §4.4.1](../../PROTOCOL_SPEC.md#441-annotations-extension-field-extra--wire-format).
+> [PROTOCOL_SPEC §4.4.1](./protocol-spec.md#441-annotations-extension-field-extra-wire-format).
 >
 > Specifically, the following parts of this document are no longer accurate
 > as of v0.18.0:
@@ -902,7 +902,7 @@ ACL.register_condition("external_permission", ExternalAuthHandler())
 
 ### Phase 1: Protocol Spec Update (apcore)
 
-Update PROTOCOL_SPEC.md:
+Update protocol-spec.md:
 - §5 Context: canonical field list, ContextKey, data naming convention, serialization rules, `_context_version`
 - §4 Module: ModuleAnnotations with `extra`, `pagination_style` as string, wire format
 - §6 ACL: condition handler protocol (sync+async), registration API, compound operators ($or, $not), fail-closed behavior

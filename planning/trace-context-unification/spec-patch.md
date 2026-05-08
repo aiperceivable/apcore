@@ -1,6 +1,6 @@
-# Proposed PROTOCOL_SPEC.md Amendments
+# Proposed docs/spec/protocol-spec.md Amendments
 
-> **Status:** Proposal — requires linked issue and 2 maintainer reviews before merging into `PROTOCOL_SPEC.md`.
+> **Status:** Proposal — requires linked issue and 2 maintainer reviews before merging into `docs/spec/protocol-spec.md`.
 > **Version bump:** PATCH (clarifies existing normative intent; no new user-facing fields or behaviors added, only internal contradictions resolved).
 
 ## Design principle

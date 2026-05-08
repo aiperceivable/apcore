@@ -1,6 +1,6 @@
 # Cookbook — Approval-Gated Modules
 
-> **Type:** User cookbook. **Normative spec:** [PROTOCOL_SPEC §7](../../PROTOCOL_SPEC.md#7-approval-system). Feature reference: [features/approval-system.md](../features/approval-system.md).
+> **Type:** User cookbook. **Normative spec:** [PROTOCOL_SPEC §7](../spec/protocol-spec.md#7-approval-system). Feature reference: [features/approval-system.md](../features/approval-system.md).
 
 End-to-end example: a module that requires sign-off before executing, served by a custom `ApprovalHandler`. Covers Phase A (sync block-until-decided) and Phase B (async `pending` → resume via `_approval_token`).
 
@@ -351,4 +351,4 @@ The handler class must satisfy the `ApprovalHandler` protocol (see [features/app
 - [features/approval-system.md](../features/approval-system.md) — full state machine and protocol
 - [spec/security-considerations.md §2.3](../spec/security-considerations.md#23-approval-gate-replay-t2) — token security
 - [conformance fixture `approval_gate`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/approval_gate.json) — 5 behavioural cases
-- [PROTOCOL_SPEC §7](../../PROTOCOL_SPEC.md#7-approval-system) — normative spec
+- [PROTOCOL_SPEC §7](../spec/protocol-spec.md#7-approval-system) — normative spec

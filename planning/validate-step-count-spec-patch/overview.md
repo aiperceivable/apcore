@@ -1,7 +1,7 @@
 # `validate()` Step Count — PROTOCOL_SPEC Patch Draft
 
 ## Status
-DRAFT — needs linked issue + 2 maintainer reviews per CLAUDE.md "Specification Integrity" before merging into PROTOCOL_SPEC.md.
+DRAFT — needs linked issue + 2 maintainer reviews per CLAUDE.md "Specification Integrity" before merging into docs/spec/protocol-spec.md.
 
 ## Problem
 PROTOCOL_SPEC §5.1 (line ~6462) describes `Executor.validate()` as running "**Steps 1–6** of the execution pipeline" with the enumerated steps being:
@@ -10,7 +10,7 @@ PROTOCOL_SPEC §5.1 (line ~6462) describes `Executor.validate()` as running "**S
 
 This was correct **before** the v0.18 step swap (CHANGELOG.md line 259, 0.20.0 release):
 
-> **PROTOCOL_SPEC.md pipeline order — Steps 6/7 swapped to match all SDK implementations (`middleware_before` → `input_validation`).**
+> **docs/spec/protocol-spec.md pipeline order — Steps 6/7 swapped to match all SDK implementations (`middleware_before` → `input_validation`).**
 
 After the swap, the canonical 11-step pipeline is:
 
@@ -81,7 +81,7 @@ The trailing "..." block (`@param`, `@return`, etc.) is unchanged.
 
 ## Cross-references that must be updated together
 
-- `PROTOCOL_SPEC.md` version history table at the bottom — bump minor version (e.g., 1.6.0-draft → 1.7.0-draft) and add a row noting this clarification.
+- `docs/spec/protocol-spec.md` version history table at the bottom — bump minor version (e.g., 1.6.0-draft → 1.7.0-draft) and add a row noting this clarification.
 - No `CHANGELOG.md` entry needed — this is a clarification of already-correct behavior, not a behavior change.
 - Already-aligned docs (no further action required after the patch):
   - `docs/api/executor-api.md` — already says "6 pipeline checks plus optional module-level preflight" (lines 140-152).
@@ -100,6 +100,6 @@ The trailing "..." block (`@param`, `@return`, etc.) is unchanged.
 
 CLAUDE.md "Specification Integrity":
 
-> Do NOT modify `PROTOCOL_SPEC.md` without a linked issue and dual maintainer approval
+> Do NOT modify `docs/spec/protocol-spec.md` without a linked issue and dual maintainer approval
 
 This patch is staged here for the maintainers to review and apply through the proper governance channel.

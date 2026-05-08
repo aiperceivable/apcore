@@ -1,3 +1,7 @@
+---
+description: Explore apcore's technical architecture, including the 11-step execution pipeline, core components, and system invariants.
+---
+
 # Architecture Design
 
 > apcore internal architecture and component interactions.
@@ -83,61 +87,41 @@ extensions/
 
 ---
 
-## 2. Core Components
+## 2. Core Components & Invariants
 
-### 2.1 Module
+apcore is built on a set of **System Invariants** that provide the "deterministic floor" for non-deterministic AI agents. Regardless of the language implementation, these rules MUST hold.
 
-Modules are the smallest execution unit in apcore. Modules can be defined via the `@module` decorator (primary approach) or by providing a class with an `execute()` method and required schema attributes. No abstract base class inheritance is required.
+### 2.1 The apcore Invariants
 
-**Decorator approach (recommended):**
-
-```python
-from apcore import module
-
-@module(id="executor.greet", tags=["greeting"])
-def greet(name: str) -> dict:
-    """Generate greeting message"""
-    return {"message": f"Hello, {name}!"}
-```
-
-**Class-based approach (no ABC required):**
-
-```python
-class SendEmailModule:
-    """Send email module"""
-
-    # ====== Core Layer (Required) ======
-    input_schema = SendEmailInput       # Type[BaseModel] or JSON Schema dict
-    output_schema = SendEmailOutput     # Type[BaseModel] or JSON Schema dict
-    description = "Send email to specified recipient"
-
-    # ====== Annotation Layer (Optional) ======
-    name = None                         # Human-readable name
-    tags = ["email"]                    # Tag list
-    version = "1.0.0"                   # Semantic version
-    annotations = None                  # ModuleAnnotations instance
-    examples = []                       # Usage examples
-
-    # ====== Extension Layer (Optional) ======
-    metadata = {}                       # Free metadata
-
-    # Core methods (def or async def both supported, framework auto-detects)
-    def execute(self, inputs: dict, context: Context) -> dict: ...
-    def validate(self, inputs: dict) -> ValidationResult: ...
-
-    # Lifecycle
-    def on_load(self) -> None: ...
-    def on_unload(self) -> None: ...
-```
-
-**Responsibilities:**
-- Define input/output Schema
-- Implement concrete business logic
-- Manage its own resources (connection pools, etc.)
+| Invariant | Description | Guarantee |
+|-----------|-------------|-----------|
+| **ID Persistence** | `Module ID = Relative Path` | The same directory structure yields the same ID across Python, TS, and Rust. |
+| **Schema Mandate** | `No Schema, No Module` | Every execution has an enforced input/output contract. AI never "guesses" parameters. |
+| **Trace Continuity** | `Unified trace_id` | A single `trace_id` flows through the entire recursive call chain, no matter how deep. |
+| **ACL-by-Default** | `Default Deny` | If no explicit rule allows a call, it is blocked. Security is not an afterthought. |
+| **Context Sharing** | `data` Reference | Pipeline state is shared via the `context.data` map, enabling cooperative orchestration. |
 
 ---
 
-### 2.2 Registry
+### 2.2 The 11-Step Execution Pipeline
+
+The heart of apcore is the **Execution Pipeline**. Every call, whether from a REST API, an MCP server, or another module, must pass through these 11 gates:
+
+1.  **Context Creation**: Initialize `trace_id`, `caller_id`, and `call_chain`.
+2.  **Call Chain Guard**: Detect circular calls and enforce maximum depth (default 32).
+3.  **Module Lookup**: Retrieve the module from the Registry.
+4.  **ACL Enforcement**: Verify that the caller is authorized to invoke the target.
+5.  **Approval Gate**: If `requires_approval` is set, pause for human-in-the-loop consent.
+6.  **Input Validation**: Strict validation against the `input_schema`.
+7.  **Middleware (Before)**: Execute global and per-module pre-hooks.
+8.  **Execution**: The actual business logic (Module code).
+9.  **Output Validation**: Strict validation against the `output_schema`.
+10. **Middleware (After)**: Execute post-hooks (observability, cleanup, etc.).
+11. **Result Return**: Return the validated output to the caller.
+
+---
+
+### 2.3 Module (The Logic Unit)
 
 Registry is responsible for module discovery, registration, and management.
 
@@ -700,7 +684,7 @@ Shared resources:
 - During `unregister()`, module may be executing in other threads
 - Implementation must maintain reference count, wait for execution completion before unload
 - After timeout (default 5 seconds), force unload and log error
-- See [PROTOCOL_SPEC §12.7.4 Hot Reload Race Conditions](../PROTOCOL_SPEC.md#1274-hot-reload-race-conditions)
+- See [PROTOCOL_SPEC §12.7.4 Hot Reload Race Conditions](./spec/protocol-spec.md#1274-hot-reload-race-conditions)
 
 **Middleware Chain Atomicity:**
 
@@ -753,7 +737,7 @@ def sync_caller():
    - After cooperative cancellation fails, wait grace period (default 5 seconds)
    - If still not exited, force terminate thread/coroutine (may cause resource leaks)
 
-See [PROTOCOL_SPEC §12.7.5 Timeout Enforcement](../PROTOCOL_SPEC.md#1275-timeout-enforcement)
+See [PROTOCOL_SPEC §12.7.5 Timeout Enforcement](./spec/protocol-spec.md#1275-timeout-enforcement)
 
 ## 8. Memory Model
 
@@ -803,7 +787,7 @@ executor.call("module_c", {}, context2)
 - If `context.data` may be accessed by multiple threads, use thread-safe Map implementation
 - Python's `dict` is partially thread-safe in CPython (GIL), but shouldn't rely on it
 
-See [PROTOCOL_SPEC §12.7.2 Context.data Sharing Semantics](../PROTOCOL_SPEC.md#1272-contextdata-sharing-semantics)
+See [PROTOCOL_SPEC §12.7.2 Context.data Sharing Semantics](./spec/protocol-spec.md#1272-contextdata-sharing-semantics)
 
 ### 8.3 Memory Considerations
 

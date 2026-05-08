@@ -8,6 +8,7 @@ This directory contains the official specification documents for the apcore stan
 
 | Document | Description |
 |----------|-------------|
+| [protocol-spec.md](./protocol-spec.md) | Canonical Protocol Specification (RFC 2119 conformant), the single source of truth for all SDKs |
 | [algorithms.md](./algorithms.md) | Core algorithm reference, a unified index summarizing 17+ pseudocode algorithms |
 | [type-mapping.md](./type-mapping.md) | Cross-language type mapping, defining the standard mapping from JSON Schema types to native types in each language |
 | [conformance.md](./conformance.md) | Conformance definitions, specifying implementation conformance levels, test suite requirements, and declaration specifications |
@@ -15,8 +16,9 @@ This directory contains the official specification documents for the apcore stan
 
 ## Recommended Reading Order
 
-1. **Conformance Definitions** -- First understand the conformance levels and clarify implementation goals
-2. **Type Mapping** -- Master the type correspondences for the target language
-3. **Algorithm Reference** -- Implement core algorithms one by one
+1. **Canonical Protocol Spec** -- Read the full standard to understand the core concepts and requirements
+2. **Conformance Definitions** -- Understand the conformance levels and clarify implementation goals
+3. **Type Mapping** -- Master the type correspondences for the target language
+4. **Algorithm Reference** -- Implement core algorithms one by one
 
 If you are a module developer rather than an SDK implementer, these documents are for reference only. For day-to-day development, please refer to the [Usage Guides](../guides/).

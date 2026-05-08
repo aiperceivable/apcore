@@ -849,7 +849,7 @@ class TestSendEmailModule:
 
 ## module() Registration
 
-> For existing functions or methods, wrap them as standard apcore modules using the `@module` decorator or `module()` function call. See [PROTOCOL_SPEC §5.11](../../PROTOCOL_SPEC.md) for detailed specification.
+> For existing functions or methods, wrap them as standard apcore modules using the `@module` decorator or `module()` function call. See [PROTOCOL_SPEC §5.11](../spec/protocol-spec.md) for detailed specification.
 
 ### @module Decorator (Simple Example)
 
@@ -953,7 +953,7 @@ async def send_email(
 
 ## External Schema Binding (YAML)
 
-> For scenarios where you cannot modify existing source code at all, use YAML binding files to map functions to apcore modules. See [PROTOCOL_SPEC §5.12](../../PROTOCOL_SPEC.md) for detailed specification.
+> For scenarios where you cannot modify existing source code at all, use YAML binding files to map functions to apcore modules. See [PROTOCOL_SPEC §5.12](../spec/protocol-spec.md) for detailed specification.
 
 ### Complete Binding File Example
 

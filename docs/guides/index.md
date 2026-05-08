@@ -6,34 +6,42 @@ This directory contains 8 practical guides covering the complete module developm
 
 ## Document List
 
-| Document | Description |
-|----------|-------------|
-| [creating-modules.md](./creating-modules.md) | Create modules from scratch, introducing multiple module definition approaches |
-| [schema-definition.md](./schema-definition.md) | Detailed Schema definition, mastering how to declare module input/output structures |
-| [middleware.md](./middleware.md) | Middleware development, using middleware to extend pre/post module execution logic |
-| [acl-configuration.md](./acl-configuration.md) | ACL permission configuration, setting up access control rules between modules |
-| [testing-modules.md](./testing-modules.md) | Module testing strategies, covering unit tests, Schema tests, integration tests, and Mock techniques |
-| [adapter-development.md](./adapter-development.md) | Adapter development, developing apcore adapters for third-party Web frameworks |
-| [multi-language.md](./multi-language.md) | Cross-language development, using YAML Schema to develop modules in multiple languages |
-| [integrating-existing-projects.md](./integrating-existing-projects.md) | Adopt apcore in applications that already have their own request-ID / correlation-ID system |
+### Foundations
+- [Creating Modules](./creating-modules.md) — Create modules from scratch, multiple definition approaches
+- [Schema Definition](./schema-definition.md) — Mastering input/output structure declaration
+- [Testing Modules](./testing-modules.md) — Unit tests, Schema tests, and Mock techniques
+
+### Governance & Extension
+- [ACL Configuration](./acl-configuration.md) — Access control rules and security
+- [Middleware System](./middleware.md) — Extending execution logic with pre/post hooks
+
+### Professional Integration
+- [Multi-Language](./multi-language.md) — Cross-language development using YAML Schema
+- [Adapter Development](./adapter-development.md) — Building adapters for Web frameworks
+- [Legacy Integration](./integrating-existing-projects.md) — Adopting apcore in existing applications
+
+### Cookbooks & Troubleshooting
+- [Cookbooks Overview](#cookbooks) — Scenario-based recipes (Approval, Cancellation, Streaming, etc.)
+- [Troubleshooting](./troubleshooting.md) — Common issues and solutions
 
 ## Learning Path
 
-**Beginner (Required Reading):**
+1. **Foundations**: Start with [Creating Modules](./creating-modules.md) and [Schema Definition](./schema-definition.md).
+2. **Quality**: Read [Testing Modules](./testing-modules.md) before moving to production.
+3. **Control**: Master [ACL Configuration](./acl-configuration.md) and [Middleware](./middleware.md) for governance.
+4. **Integration**: Explore [Professional Integration](#professional-integration) topics based on your tech stack.
+5. **Real-world**: Visit the [Cookbooks](#cookbooks) for specific recipes.
 
-1. [Creating Modules](./creating-modules.md) -- Quick start
-2. [Schema Definition](./schema-definition.md) -- Understand the core mechanism
+## Cookbooks
 
-**Intermediate:**
+Practical "recipes" for common real-world scenarios:
 
-3. [Middleware](./middleware.md) -- Extend the execution flow
-4. [ACL Configuration](./acl-configuration.md) -- Security control
-5. [Testing Modules](./testing-modules.md) -- Quality assurance
+| Recipe | Description |
+|--------|-------------|
+| [Approval Flow](./cookbook-approval-flow.md) | How to implement human-in-the-loop approval gates |
+| [Cancellation](./cookbook-cancellation.md) | Handling long-running task cancellation gracefully |
+| [Streaming](./cookbook-streaming.md) | Implementing and consuming incremental module outputs |
+| [Observability](./cookbook-observability.md) | Custom tracing, metrics, and structured logging patterns |
 
-**Specialized:**
-
-6. [Adapter Development](./adapter-development.md) -- Framework integration
-7. [Multi-Language Development](./multi-language.md) -- Cross-language collaboration
-8. [Integrating into Existing Projects](./integrating-existing-projects.md) -- Adopt apcore alongside an existing request-ID / correlation-ID system
 
 Before reading these guides, it is recommended to first understand the [Core Concepts](../concepts.md); for interface details, see the [Feature Specifications](../features/).

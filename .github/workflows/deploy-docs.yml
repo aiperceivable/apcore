@@ -30,7 +30,6 @@ jobs:
         run: |
           # Copy root-level docs into docs/
           cp README.md docs/overview.md
-          cp PROTOCOL_SPEC.md docs/
           cp SCOPE.md docs/
           cp ROADMAP.md docs/
           cp MIGRATION-v0.18.md docs/migration-v0.18.md
@@ -43,9 +42,9 @@ jobs:
           sed -i 's|\.\./README\.md|./overview.md|g' docs/overview.md
           sed -i 's|\./apcore-logo\.svg|./assets/apcore-logo.svg|g' docs/overview.md
 
-          # Fix links in subdirectories: ../../PROTOCOL_SPEC.md → ../PROTOCOL_SPEC.md
-          find docs -name '*.md' -not -name 'index.md' -not -name 'overview.md' -exec sed -i 's|\.\./\.\./PROTOCOL_SPEC\.md|../PROTOCOL_SPEC.md|g' {} +
-          find docs -name '*.md' -not -name 'index.md' -not -name 'overview.md' -exec sed -i 's|\.\./\.\./SCOPE\.md|../SCOPE.md|g' {} +
+          # Fix links in subdirectories to point to the new spec location
+          find docs -name '*.md' -not -name 'index.md' -not -name 'overview.md' -exec sed -i 's|\.\./\.\./PROTOCOL_SPEC\.md|../spec/protocol-spec.md|g' {} +
+          find docs -name '*.md' -not -name 'index.md' -not -name 'overview.md' -exec sed -i 's|\.\./SCOPE\.md|./SCOPE.md|g' {} +
 
           # Fix docs/index.md (formerly README.md) link to root README (now overview.md)
           sed -i 's|\.\./README\.md|overview.md|g' docs/index.md
@@ -53,15 +52,13 @@ jobs:
           # Fix copied ROADMAP.md: docs/X → X
           sed -i 's|docs/||g' docs/ROADMAP.md
 
-          # Fix copied PROTOCOL_SPEC.md and SCOPE.md: docs/X → X
-          sed -i 's|docs/||g' docs/PROTOCOL_SPEC.md
+          # Fix copied SCOPE.md: docs/X → X
           sed -i 's|\./docs/|./|g' docs/SCOPE.md
           sed -i 's|(docs/|(|g' docs/SCOPE.md
 
           # Fix top-level docs files (concepts.md, architecture.md):
-          # ../PROTOCOL_SPEC.md → PROTOCOL_SPEC.md, ../api/ → api/
           for f in docs/concepts.md docs/architecture.md docs/glossary.md; do
-            sed -i 's|\.\./PROTOCOL_SPEC\.md|PROTOCOL_SPEC.md|g' "$f"
+            sed -i 's|\.\./PROTOCOL_SPEC\.md|spec/protocol-spec.md|g' "$f"
             sed -i 's|\.\./SCOPE\.md|SCOPE.md|g' "$f"
             sed -i 's|\.\./api/|api/|g' "$f"
             sed -i 's|\.\./guides/|guides/|g' "$f"

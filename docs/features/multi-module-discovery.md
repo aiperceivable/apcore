@@ -1,12 +1,12 @@
 # Multi-Module Discovery
 
 <!-- preamble-tier-doc -->
-> **Type:** Implementation guide. **Normative spec:** [PROTOCOL_SPEC](../../PROTOCOL_SPEC.md) §3 Directory Specification.
+> **Type:** Implementation guide. **Normative spec:** [PROTOCOL_SPEC](../spec/protocol-spec.md) §3 Directory Specification.
 
 
 ## Overview
 
-Multi-module discovery is an opt-in extension to the standard apcore module scanner that allows multiple module classes to coexist in a single file. By default, apcore enforces a one-file-one-module model: the canonical module ID is derived entirely from the file path (see [PROTOCOL_SPEC §2.1](../../PROTOCOL_SPEC.md#21-directory-as-id-core-rule)). Multi-class discovery relaxes that constraint by appending the snake_case-converted class name as an additional segment to the base file ID.
+Multi-module discovery is an opt-in extension to the standard apcore module scanner that allows multiple module classes to coexist in a single file. By default, apcore enforces a one-file-one-module model: the canonical module ID is derived entirely from the file path (see [PROTOCOL_SPEC §2.1](../spec/protocol-spec.md#21-directory-as-id-core-rule)). Multi-class discovery relaxes that constraint by appending the snake_case-converted class name as an additional segment to the base file ID.
 
 This feature exists to serve two practical needs:
 
@@ -21,7 +21,7 @@ Multi-class mode is always opt-in. Existing single-class files are unaffected an
 - Multi-class discovery **MUST** be explicitly enabled per file (via decorator) or globally (via configuration); it **MUST NOT** activate automatically.
 - When enabled for a file, the scanner **MUST** enumerate all exported classes that implement the Module interface.
 - Each qualifying class **MUST** receive a module ID of the form `base_id.class_segment`, where `base_id` is the standard file-derived ID and `class_segment` is the snake_case conversion of the class name.
-- The full derived `module_id` **MUST** conform to the canonical ID grammar defined in [PROTOCOL_SPEC §2.7](../../PROTOCOL_SPEC.md#27-id-formal-grammar).
+- The full derived `module_id` **MUST** conform to the canonical ID grammar defined in [PROTOCOL_SPEC §2.7](../spec/protocol-spec.md#27-id-formal-grammar).
 - If two classes in the same file produce the same `class_segment`, implementations **MUST** raise `MODULE_ID_CONFLICT` and **MUST NOT** register any module from that file.
 - A file containing exactly one Module class **MUST** produce the same ID in both single-class and multi-class modes (backward compatibility guarantee).
 - The `snake_case` conversion algorithm **MUST** be applied consistently across all SDKs (see [Discovery Algorithm](#discovery-algorithm) below).
@@ -59,7 +59,7 @@ Multi-class discovery is **opt-in per file** via a language-idiomatic marker:
 
 **Per-file opt-in:** Apply `@multi_class` (Python decorator), `@multiClass()` (TypeScript decorator), or `#[multi_class]` (Rust macro attribute) to the file or each participating class. Only classes in annotated files are scanned for multi-class IDs. Files that contain exactly one Module class are unaffected (backward compatibility guarantee applies).
 
-> **Note**: An earlier draft of the spec mentioned a global config key `extensions.multi_class_discovery`. That toggle was never implemented in any SDK and was removed per [decision-log D-06](../spec/2026-05-decision-log.md#d-06--multi_class_enabled-config-plumbing). Per-class markers are the only opt-in path.
+> **Note**: An earlier draft of the spec mentioned a global config key `extensions.multi_class_discovery`. That toggle was never implemented in any SDK and was removed per [decision-log D-06](../spec/2026-05-decision-log.md#d-06-multi_class_enabled-config-plumbing). Per-class markers are the only opt-in path.
 
 ### Conflict Detection
 

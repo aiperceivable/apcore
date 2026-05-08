@@ -1,6 +1,6 @@
 # Cookbook — Cooperative Cancellation
 
-> **Type:** User cookbook. **Normative spec:** [PROTOCOL_SPEC](../../PROTOCOL_SPEC.md) §5 Module Specification (cancellation hooks). Feature reference: [features/cancellation.md](../features/cancellation.md).
+> **Type:** User cookbook. **Normative spec:** [PROTOCOL_SPEC](../spec/protocol-spec.md) §5 Module Specification (cancellation hooks). Feature reference: [features/cancellation.md](../features/cancellation.md).
 
 End-to-end example: cancel a long-running module mid-flight from the caller side, with proper cleanup. The example uses the same `demo.slow_task` module across all three SDKs (Python / TypeScript / Rust) so behaviour is directly comparable. All snippets are derived from the SDK example files (`examples/cancel_token.{py,ts,rs}`) — they run as-is.
 
@@ -205,4 +205,4 @@ All three should print `completed: 3` for Run 1 and a `Cancelled` message after 
 
 - [features/cancellation.md](../features/cancellation.md) — the feature reference
 - [features/middleware-system.md](../features/middleware-system.md) — how `on_error` interacts with cancellation
-- [PROTOCOL_SPEC §8.7](../../PROTOCOL_SPEC.md#8-error-handling-specification) — `EXECUTION_CANCELLED` error code
+- [PROTOCOL_SPEC §8.7](../spec/protocol-spec.md#8-error-handling-specification) — `EXECUTION_CANCELLED` error code

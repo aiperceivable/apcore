@@ -1,7 +1,7 @@
 # Context Object
 
 <!-- preamble-tier-doc -->
-> **Type:** Implementation guide. **Normative spec:** [PROTOCOL_SPEC](../../PROTOCOL_SPEC.md) §5.7 Context Object.
+> **Type:** Implementation guide. **Normative spec:** [PROTOCOL_SPEC](../spec/protocol-spec.md) §5.7 Context Object.
 
 ## Overview
 
@@ -72,7 +72,7 @@ Executor.call(module_id, inputs, context)
 - `data` is shared by reference. In concurrent scenarios callers SHOULD synchronize externally.
 - `executor` references MUST be thread-safe.
 
-See [PROTOCOL_SPEC §12.7.2 Context.data Sharing Semantics](../../PROTOCOL_SPEC.md#1272-contextdata-sharing-semantics) for the full concurrency model.
+See [PROTOCOL_SPEC §12.7.2 Context.data Sharing Semantics](../spec/protocol-spec.md#1272-contextdata-sharing-semantics) for the full concurrency model.
 
 ### `data` Key Convention
 

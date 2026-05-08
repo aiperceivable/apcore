@@ -1,7 +1,7 @@
 # Config Bus
 
 <!-- preamble-tier-doc -->
-> **Type:** Implementation guide. **Normative spec:** [PROTOCOL_SPEC](../../PROTOCOL_SPEC.md) §9.4 Config Bus Architecture.
+> **Type:** Implementation guide. **Normative spec:** [PROTOCOL_SPEC](../spec/protocol-spec.md) §9.4 Config Bus Architecture.
 
 
 ## Overview
