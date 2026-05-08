@@ -171,40 +171,65 @@ The single-class guarantee ensures zero breaking changes for existing module fil
 
 === "Rust"
     ```rust
-    use apcore::{Module, Context, MultiClass};
+    use apcore::{Context, Module};
+    use apcore::errors::ModuleError;
+    use apcore::registry::{MultiClassEntry, DiscoveryConfig};
+    use async_trait::async_trait;
     use serde_json::{json, Value};
+    use std::path::Path;
 
-    #[derive(MultiClass)]
     pub struct Addition;
 
+    #[async_trait]
     impl Module for Addition {
-        fn description(&self) -> &str {
-            "Add two numbers and return their sum."
-        }
+        fn description(&self) -> &str { "Add two numbers and return their sum." }
+        fn input_schema(&self) -> Value { json!({ "type": "object" }) }
+        fn output_schema(&self) -> Value { json!({ "type": "object" }) }
 
-        fn execute(&self, inputs: Value, _context: &Context) -> Result<Value, apcore::Error> {
+        async fn execute(
+            &self,
+            inputs: Value,
+            _ctx: &Context<Value>,
+        ) -> Result<Value, ModuleError> {
             let a = inputs["a"].as_f64().unwrap_or(0.0);
             let b = inputs["b"].as_f64().unwrap_or(0.0);
             Ok(json!({ "result": a + b }))
         }
     }
 
-    #[derive(MultiClass)]
     pub struct Subtraction;
 
+    #[async_trait]
     impl Module for Subtraction {
-        fn description(&self) -> &str {
-            "Subtract b from a and return the difference."
-        }
+        fn description(&self) -> &str { "Subtract b from a and return the difference." }
+        fn input_schema(&self) -> Value { json!({ "type": "object" }) }
+        fn output_schema(&self) -> Value { json!({ "type": "object" }) }
 
-        fn execute(&self, inputs: Value, _context: &Context) -> Result<Value, apcore::Error> {
+        async fn execute(
+            &self,
+            inputs: Value,
+            _ctx: &Context<Value>,
+        ) -> Result<Value, ModuleError> {
             let a = inputs["a"].as_f64().unwrap_or(0.0);
             let b = inputs["b"].as_f64().unwrap_or(0.0);
             Ok(json!({ "result": a - b }))
         }
     }
 
-    // File: extensions/math/math_ops.rs
+    // Rust has no proc-macro auto-discovery; pass instances explicitly to
+    // Registry::register_multi_class:
+    //
+    // let entries = vec![
+    //     MultiClassEntry::new("Addition", Box::new(Addition)),
+    //     MultiClassEntry::new("Subtraction", Box::new(Subtraction)),
+    // ];
+    // registry.register_multi_class(
+    //     Path::new("extensions/math/math_ops.rs"),
+    //     "extensions",
+    //     entries,
+    //     &DiscoveryConfig::with_multi_class(),
+    // )?;
+    //
     // Registered IDs:
     //   math.math_ops.addition
     //   math.math_ops.subtraction

@@ -650,57 +650,81 @@ The repository ships **43 cross-language fixture files** under `conformance/fixt
 
 ### 8.2 Loading Fixtures from a Test Runner
 
-```python title="apcore-python — pytest example"
-import json, pathlib
+=== "Python"
 
-FIXTURES = pathlib.Path("conformance/fixtures")
+    ```python title="apcore-python — pytest example"
+    import json
+    import pathlib
 
-def load_fixture(name: str) -> dict:
-    return json.loads((FIXTURES / f"{name}.json").read_text())
+    FIXTURES = pathlib.Path("conformance/fixtures")
 
-def test_acl_evaluation():
-    fixture = load_fixture("acl_evaluation")
-    for case in fixture["test_cases"]:
-        # ... evaluate `case` against your ACL implementation,
-        # asserting the case's `expected` outcome
-        ...
-```
 
-```typescript title="apcore-typescript — vitest example"
-import * as fs from 'node:fs';
-import * as path from 'node:path';
+    def load_fixture(name: str) -> dict:
+        return json.loads((FIXTURES / f"{name}.json").read_text())
 
-const FIXTURES = 'conformance/fixtures';
 
-function loadFixture(name: string) {
-  return JSON.parse(fs.readFileSync(path.join(FIXTURES, `${name}.json`), 'utf-8'));
-}
+    def test_acl_evaluation():
+        fixture = load_fixture("acl_evaluation")
+        for case in fixture["test_cases"]:
+            # ... evaluate `case` against your ACL implementation,
+            # asserting the case's `expected` outcome
+            ...
+    ```
 
-test('acl_evaluation', () => {
-  const fixture = loadFixture('acl_evaluation');
-  for (const c of fixture.test_cases) {
-    // ...
-  }
-});
-```
+=== "TypeScript"
 
-```rust title="apcore-rust — cargo test example"
-use std::fs;
-use serde_json::Value;
+    ```typescript title="apcore-js — vitest example"
+    import * as fs from 'node:fs';
+    import * as path from 'node:path';
+    import { test } from 'vitest';
 
-fn load_fixture(name: &str) -> Value {
-    let path = format!("conformance/fixtures/{}.json", name);
-    serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap()
-}
+    const FIXTURES = 'conformance/fixtures';
 
-#[test]
-fn acl_evaluation() {
-    let fixture = load_fixture("acl_evaluation");
-    for case in fixture["test_cases"].as_array().unwrap() {
-        // ...
+    interface Fixture {
+      description: string;
+      test_cases: Array<Record<string, unknown>>;
     }
-}
-```
+
+    function loadFixture(name: string): Fixture {
+      return JSON.parse(
+        fs.readFileSync(path.join(FIXTURES, `${name}.json`), 'utf-8'),
+      );
+    }
+
+    test('acl_evaluation', () => {
+      const fixture = loadFixture('acl_evaluation');
+      for (const c of fixture.test_cases) {
+        // ... evaluate `c` against your ACL implementation,
+        // asserting the case's `expected` outcome
+      }
+    });
+    ```
+
+=== "Rust"
+
+    ```rust title="apcore-rust — cargo test example"
+    use std::fs;
+    use std::path::PathBuf;
+
+    use serde_json::Value;
+
+    fn load_fixture(name: &str) -> Value {
+        let path: PathBuf = ["conformance", "fixtures", &format!("{}.json", name)]
+            .iter()
+            .collect();
+        serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn acl_evaluation() {
+        let fixture = load_fixture("acl_evaluation");
+        for case in fixture["test_cases"].as_array().unwrap() {
+            // ... evaluate `case` against your ACL implementation,
+            // asserting the case's `expected` outcome
+            let _ = case;
+        }
+    }
+    ```
 
 ### 8.3 Adding a New Fixture
 

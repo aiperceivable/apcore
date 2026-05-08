@@ -230,15 +230,40 @@ Once the factory is wired up, both IDs are available everywhere:
 === "Rust"
 
     ```rust
-    #[module(id = "order.create")]
-    async fn create_order(ctx: &Context, payload: Payload) -> Result<Response> {
-        tracing::info!(
-            trace_id = %ctx.trace_id(),
-            correlation_id = ?ctx.data().get("x-correlation-id"),
-            "creating order"
-        );
-        // ...
-    }
+    use apcore::{APCore, Context};
+    use apcore::errors::ModuleError;
+    use serde_json::{json, Value};
+
+    let mut client = APCore::new();
+    client.module(
+        "order.create",
+        "Create a new order",
+        json!({ "type": "object" }),
+        json!({ "type": "object" }),
+        None,                // documentation
+        vec![],              // tags
+        None,                // version
+        None,                // metadata
+        vec![],              // examples
+        None,                // display
+        |inputs: Value, ctx: &Context<Value>| {
+            Box::pin(async move {
+                let correlation_id = ctx
+                    .data
+                    .read()
+                    .get("x-correlation-id")
+                    .cloned()
+                    .unwrap_or(Value::Null);
+                tracing::info!(
+                    trace_id = %ctx.trace_id,
+                    ?correlation_id,
+                    "creating order"
+                );
+                let _ = inputs;
+                Ok::<Value, ModuleError>(json!({ "ok": true }))
+            })
+        },
+    )?;
     ```
 
 Response headers should echo both:

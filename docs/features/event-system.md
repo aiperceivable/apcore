@@ -29,43 +29,143 @@ The event system provides a global event bus for framework-level lifecycle event
 
 ### ApCoreEvent
 
-```python
-from dataclasses import dataclass
-from typing import Any
+=== "Python"
+
+    ```python
+    from dataclasses import dataclass
+    from typing import Any
 
 
-@dataclass(frozen=True)
-class ApCoreEvent:
-    event_type: str               # Event identifier
-    module_id: str | None         # Associated module (None for global events)
-    timestamp: str                # ISO 8601 UTC timestamp
-    severity: str                 # "info" | "warn" | "error" | "fatal"
-    data: dict[str, Any]          # Event-specific payload
-```
+    @dataclass(frozen=True)
+    class ApCoreEvent:
+        event_type: str               # Event identifier
+        module_id: str | None         # Associated module (None for global events)
+        timestamp: str                # ISO 8601 UTC timestamp
+        severity: str                 # "info" | "warn" | "error" | "fatal"
+        data: dict[str, Any]          # Event-specific payload
+    ```
 
-Immutable by design (`frozen=True`) — prevents accidental mutation after emission.
+=== "TypeScript"
+
+    ```typescript
+    // From apcore-js/events
+    export interface ApCoreEvent {
+        readonly eventType: string;            // Event identifier
+        readonly moduleId: string | null;      // Associated module (null for global events)
+        readonly timestamp: string;            // ISO 8601 UTC timestamp
+        readonly severity: string;             // "info" | "warn" | "error" | "fatal"
+        readonly data: Record<string, unknown>; // Event-specific payload
+    }
+    ```
+
+=== "Rust"
+
+    ```rust
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct ApCoreEvent {
+        pub event_type: String,
+        pub timestamp: String,                  // ISO 8601 UTC timestamp
+        pub data: serde_json::Value,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub module_id: Option<String>,
+        pub severity: String,                   // "info" | "warn" | "error" | "fatal"
+    }
+    ```
+
+Immutable by design (Python uses `frozen=True`; TypeScript uses `readonly`; Rust passes events as `&ApCoreEvent` references) — prevents accidental mutation after emission.
 
 ### EventSubscriber Protocol
 
-```python
-from typing import Protocol, runtime_checkable
+=== "Python"
+
+    ```python
+    from typing import Protocol, runtime_checkable
+
+    from apcore.events import ApCoreEvent
 
 
-@runtime_checkable
-class EventSubscriber(Protocol):
-    async def on_event(self, event: ApCoreEvent) -> None: ...
-```
+    @runtime_checkable
+    class EventSubscriber(Protocol):
+        async def on_event(self, event: ApCoreEvent) -> None: ...
+    ```
+
+=== "TypeScript"
+
+    ```typescript
+    import type { ApCoreEvent } from "apcore-js";
+
+    export interface EventSubscriber {
+        onEvent(event: ApCoreEvent): void | Promise<void>;
+    }
+    ```
+
+=== "Rust"
+
+    ```rust
+    use async_trait::async_trait;
+    use apcore::errors::ModuleError;
+    use apcore::events::ApCoreEvent;
+
+    #[async_trait]
+    pub trait EventSubscriber: Send + Sync + std::fmt::Debug {
+        fn subscriber_id(&self) -> &str { "default" }
+        fn event_pattern(&self) -> &str { "*" }
+        async fn on_event(&self, event: &ApCoreEvent) -> Result<(), ModuleError>;
+    }
+    ```
 
 ### EventEmitter
 
-```python
-class EventEmitter:
-    def __init__(self, max_workers: int = 4) -> None: ...
-    def subscribe(self, subscriber: EventSubscriber) -> None: ...
-    def unsubscribe(self, subscriber: EventSubscriber) -> None: ...
-    def emit(self, event: ApCoreEvent) -> None: ...
-    def flush(self, timeout: float = 5.0) -> None: ...
-```
+=== "Python"
+
+    ```python
+    from apcore.events import ApCoreEvent, EventSubscriber
+
+
+    class EventEmitter:
+        def __init__(self, max_workers: int = 4) -> None: ...
+        def subscribe(self, subscriber: EventSubscriber) -> None: ...
+        def unsubscribe(self, subscriber: EventSubscriber) -> None: ...
+        def emit(self, event: ApCoreEvent) -> None: ...
+        def flush(self, timeout: float = 5.0) -> None: ...
+    ```
+
+=== "TypeScript"
+
+    ```typescript
+    import type { ApCoreEvent, EventSubscriber } from "apcore-js";
+
+    export class EventEmitter {
+        constructor(maxPending?: number);
+        subscribe(subscriber: EventSubscriber): void;
+        unsubscribe(subscriber: EventSubscriber): void;
+        emit(event: ApCoreEvent): void;
+        // timeoutMs in ms (default 5000); pass 0 to wait indefinitely.
+        flush(timeoutMs?: number): Promise<void>;
+    }
+    ```
+
+=== "Rust"
+
+    ```rust
+    use apcore::errors::ModuleError;
+    use apcore::events::{ApCoreEvent, EventSubscriber};
+
+    pub struct EventEmitter { /* ... */ }
+
+    impl EventEmitter {
+        pub fn new() -> Self;
+        pub fn subscribe(&mut self, subscriber: Box<dyn EventSubscriber>);
+        pub fn unsubscribe(&mut self, subscriber: &dyn EventSubscriber) -> bool;
+        pub fn unsubscribe_by_id(&mut self, subscriber_id: &str) -> bool;
+        pub async fn emit(&self, event: &ApCoreEvent);
+        pub fn emit_spawn(&self, event: ApCoreEvent);
+        pub fn flush(&self, timeout_ms: u64) -> Result<(), ModuleError>;
+        pub async fn shutdown(&mut self, timeout_ms: u64) -> Result<(), ModuleError>;
+    }
+    ```
 
 **Dispatch model:**
 - `emit()` returns immediately. Delivery is handled asynchronously by a bounded background worker pool (e.g., a thread pool in Python with a persistent async event loop).
@@ -75,16 +175,59 @@ class EventEmitter:
 
 ### WebhookSubscriber
 
-```python
-class WebhookSubscriber:
-    def __init__(
-        self,
-        url: str,
-        headers: dict[str, str] | None = None,
-        retry_count: int = 3,
-        timeout_ms: int = 5000,
-    ) -> None: ...
-```
+=== "Python"
+
+    ```python
+    from apcore.events import WebhookSubscriber
+
+
+    class WebhookSubscriber:
+        def __init__(
+            self,
+            url: str,
+            headers: dict[str, str] | None = None,
+            retry_count: int = 3,
+            timeout_ms: int = 5000,
+        ) -> None: ...
+    ```
+
+=== "TypeScript"
+
+    ```typescript
+    import { WebhookSubscriber } from "apcore-js";
+
+    // Constructor signature
+    new WebhookSubscriber(
+        url: string,
+        headers?: Record<string, string>,
+        retryCount?: number,   // default 3
+        timeoutMs?: number,    // default 5000
+    );
+    ```
+
+=== "Rust"
+
+    ```rust
+    use apcore::events::WebhookSubscriber;
+    use std::collections::HashMap;
+
+    pub struct WebhookSubscriber {
+        pub id: String,
+        pub url: String,
+        pub event_pattern: String,
+        pub headers: HashMap<String, String>,
+        pub retry_count: u32,   // default 3
+        pub timeout_ms: u64,    // default 5000
+    }
+
+    impl WebhookSubscriber {
+        pub fn new(
+            id: impl Into<String>,
+            url: impl Into<String>,
+            event_pattern: impl Into<String>,
+        ) -> Self;
+    }
+    ```
 
 **Delivery:**
 - Sends `POST` with `Content-Type: application/json` body containing the serialized event as a JSON object.
@@ -101,15 +244,62 @@ class WebhookSubscriber:
 
 ### A2ASubscriber
 
-```python
-class A2ASubscriber:
-    def __init__(
-        self,
-        platform_url: str,
-        auth: str | dict[str, str] | None = None,
-        timeout_ms: int = 5000,
-    ) -> None: ...
-```
+=== "Python"
+
+    ```python
+    from apcore.events import A2ASubscriber
+
+
+    class A2ASubscriber:
+        def __init__(
+            self,
+            platform_url: str,
+            auth: str | dict[str, str] | None = None,
+            timeout_ms: int = 5000,
+        ) -> None: ...
+    ```
+
+=== "TypeScript"
+
+    ```typescript
+    import { A2ASubscriber } from "apcore-js";
+
+    // Constructor signature — `auth` may be a Bearer token string or a
+    // record of headers to merge into the request.
+    new A2ASubscriber(
+        platformUrl: string,
+        auth?: string | Record<string, string>,
+        timeoutMs?: number,    // default 5000
+    );
+    ```
+
+=== "Rust"
+
+    ```rust
+    use apcore::events::{A2AAuth, A2ASubscriber};
+    use std::collections::HashMap;
+
+    pub enum A2AAuth {
+        Bearer(String),                   // → Authorization: Bearer <token>
+        Headers(HashMap<String, String>), // → merged into request headers
+    }
+
+    pub struct A2ASubscriber {
+        pub id: String,
+        pub platform_url: String,
+        pub auth: Option<A2AAuth>,
+        pub event_pattern: String,
+        pub timeout_ms: u64,              // default 5000
+    }
+
+    impl A2ASubscriber {
+        pub fn new(
+            id: impl Into<String>,
+            platform_url: impl Into<String>,
+            event_pattern: impl Into<String>,
+        ) -> Self;
+    }
+    ```
 
 **Authentication:**
 
@@ -139,15 +329,43 @@ Single attempt (no retries). Errors logged but not raised.
 
 Extensible factory system for config-driven subscriber instantiation:
 
-```python
-from apcore.sys_modules.registration import register_subscriber_type
+=== "Python"
 
-# Register a custom subscriber type
-def my_factory(config: dict) -> EventSubscriber:
-    return MyCustomSubscriber(**config)
+    ```python
+    from apcore.events import EventSubscriber
+    from apcore.sys_modules.registration import register_subscriber_type
 
-register_subscriber_type("my_type", my_factory)
-```
+
+    # Register a custom subscriber type
+    def my_factory(config: dict) -> EventSubscriber:
+        return MyCustomSubscriber(**config)
+
+    register_subscriber_type("my_type", my_factory)
+    ```
+
+=== "TypeScript"
+
+    ```typescript
+    import { registerSubscriberType } from "apcore-js/events";
+    import type { EventSubscriber } from "apcore-js";
+
+    // Register a custom subscriber type
+    registerSubscriberType("my_type", (config): EventSubscriber => {
+        return new MyCustomSubscriber(config);
+    });
+    ```
+
+=== "Rust"
+
+    ```rust
+    use apcore::events::{register_subscriber_type, EventSubscriber};
+
+    // Factory closure receives a config Value, returns a boxed EventSubscriber
+    register_subscriber_type(
+        "my_type",
+        |config| Box::new(MyCustomSubscriber::from_config(config)),
+    );
+    ```
 
 **Built-in types:**
 

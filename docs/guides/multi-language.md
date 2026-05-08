@@ -128,30 +128,35 @@ Examples:
 
 Each language uses the same Canonical ID to reference modules:
 
-```python
-# Python
-result = executor.call("executor.email.send_email", inputs, context)
-```
+=== "Python"
 
-```rust
-// Rust
-let result = executor.call("executor.email.send_email", &inputs, &context)?;
-```
+    ```python
+    result = executor.call("executor.email.send_email", inputs, context)
+    ```
 
-```go
-// Go
-result, err := executor.Call("executor.email.send_email", inputs, ctx)
-```
+=== "TypeScript"
 
-```java
-// Java
-Map<String, Object> result = executor.call("executor.email.send_email", inputs, context);
-```
+    ```typescript
+    const result = await executor.call("executor.email.send_email", inputs, context);
+    ```
 
-```typescript
-// TypeScript
-const result = await executor.call("executor.email.send_email", inputs, context);
-```
+=== "Rust"
+
+    ```rust
+    let result = executor.call("executor.email.send_email", &inputs, &context)?;
+    ```
+
+=== "Go"
+
+    ```go
+    result, err := executor.Call("executor.email.send_email", inputs, ctx)
+    ```
+
+=== "Java"
+
+    ```java
+    Map<String, Object> result = executor.call("executor.email.send_email", inputs, context);
+    ```
 
 ---
 

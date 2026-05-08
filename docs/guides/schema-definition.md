@@ -32,61 +32,179 @@ apcore Module:
 
 ## 2. Schema Definition Methods
 
-### 2.1 Pydantic Model (Recommended)
+### 2.1 Native Schema Construction (Recommended)
 
-**The preferred method for Python development.**
+**The preferred method when defining schemas directly in code.** Each SDK uses the idiomatic schema construction approach for its language: Pydantic for Python, TypeBox for TypeScript, and `serde_json::json!` for Rust.
 
-```python
-from pydantic import BaseModel, Field
-from typing import Literal
-from datetime import datetime
+=== "Python"
 
-class OrderInput(BaseModel):
-    """Order creation input"""
-
-    # Required fields
-    product_id: str = Field(
-        ...,                          # ... means required
-        description="Product ID",
-        min_length=1,
-        max_length=50
-    )
-
-    quantity: int = Field(
-        ...,
-        description="Purchase quantity",
-        ge=1,                         # >= 1
-        le=100                        # <= 100
-    )
-
-    # Optional fields (must have default value)
-    note: str | None = Field(
-        None,                         # Default value
-        description="Order note",
-        max_length=500
-    )
-
-    # Enum type
-    payment_method: Literal["alipay", "wechat", "card"] = Field(
-        "alipay",
-        description="Payment method"
-    )
-
-    # Nested object
-    shipping_address: "Address" = Field(
-        ...,
-        description="Shipping address"
-    )
+    ```python
+    from pydantic import BaseModel, Field
+    from typing import Literal
 
 
-class Address(BaseModel):
-    """Address information"""
-    province: str = Field(..., description="Province")
-    city: str = Field(..., description="City")
-    district: str = Field(..., description="District")
-    detail: str = Field(..., description="Detailed address")
-    postal_code: str = Field(..., description="Postal code", pattern=r"^\d{6}$")
-```
+    class Address(BaseModel):
+        """Address information"""
+        province: str = Field(..., description="Province")
+        city: str = Field(..., description="City")
+        district: str = Field(..., description="District")
+        detail: str = Field(..., description="Detailed address")
+        postal_code: str = Field(..., description="Postal code", pattern=r"^\d{6}$")
+
+
+    class OrderInput(BaseModel):
+        """Order creation input"""
+
+        # Required fields
+        product_id: str = Field(
+            ...,                          # ... means required
+            description="Product ID",
+            min_length=1,
+            max_length=50,
+        )
+
+        quantity: int = Field(
+            ...,
+            description="Purchase quantity",
+            ge=1,                         # >= 1
+            le=100,                       # <= 100
+        )
+
+        # Optional fields (must have default value)
+        note: str | None = Field(
+            None,                         # Default value
+            description="Order note",
+            max_length=500,
+        )
+
+        # Enum type
+        payment_method: Literal["alipay", "wechat", "card"] = Field(
+            "alipay",
+            description="Payment method",
+        )
+
+        # Nested object
+        shipping_address: Address = Field(
+            ...,
+            description="Shipping address",
+        )
+    ```
+
+=== "TypeScript"
+
+    ```typescript
+    import { Type } from '@sinclair/typebox';
+
+    // Address sub-schema
+    const Address = Type.Object({
+      province: Type.String({ description: 'Province' }),
+      city: Type.String({ description: 'City' }),
+      district: Type.String({ description: 'District' }),
+      detail: Type.String({ description: 'Detailed address' }),
+      postal_code: Type.String({
+        description: 'Postal code',
+        pattern: '^\\d{6}$',
+      }),
+    });
+
+    // Order creation input
+    const OrderInput = Type.Object({
+      // Required fields
+      product_id: Type.String({
+        description: 'Product ID',
+        minLength: 1,
+        maxLength: 50,
+      }),
+      quantity: Type.Integer({
+        description: 'Purchase quantity',
+        minimum: 1,
+        maximum: 100,
+      }),
+
+      // Optional fields (must have default value)
+      note: Type.Optional(
+        Type.Union([Type.String({ maxLength: 500 }), Type.Null()], {
+          description: 'Order note',
+          default: null,
+        }),
+      ),
+
+      // Enum type
+      payment_method: Type.Union(
+        [Type.Literal('alipay'), Type.Literal('wechat'), Type.Literal('card')],
+        { description: 'Payment method', default: 'alipay' },
+      ),
+
+      // Nested object
+      shipping_address: Type.Composite([Address], {
+        description: 'Shipping address',
+      }),
+    });
+    ```
+
+=== "Rust"
+
+    ```rust
+    use serde_json::{json, Value};
+
+    // Address sub-schema
+    fn address_schema() -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "province":    {"type": "string", "description": "Province"},
+                "city":        {"type": "string", "description": "City"},
+                "district":    {"type": "string", "description": "District"},
+                "detail":      {"type": "string", "description": "Detailed address"},
+                "postal_code": {
+                    "type": "string",
+                    "description": "Postal code",
+                    "pattern": "^\\d{6}$"
+                }
+            },
+            "required": ["province", "city", "district", "detail", "postal_code"]
+        })
+    }
+
+    // Order creation input
+    fn order_input_schema() -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                // Required fields
+                "product_id": {
+                    "type": "string",
+                    "description": "Product ID",
+                    "minLength": 1,
+                    "maxLength": 50
+                },
+                "quantity": {
+                    "type": "integer",
+                    "description": "Purchase quantity",
+                    "minimum": 1,
+                    "maximum": 100
+                },
+                // Optional fields (with default)
+                "note": {
+                    "type": ["string", "null"],
+                    "description": "Order note",
+                    "maxLength": 500,
+                    "default": null
+                },
+                // Enum type
+                "payment_method": {
+                    "type": "string",
+                    "description": "Payment method",
+                    "enum": ["alipay", "wechat", "card"],
+                    "default": "alipay"
+                },
+                // Nested object
+                "shipping_address": address_schema()
+            },
+            "required": ["product_id", "quantity", "shipping_address"]
+        })
+    }
+    ```
 
 ### 2.2 YAML Schema (Cross-Language)
 
@@ -188,26 +306,76 @@ definitions:
 
 ### 3.1 Basic Types
 
-```python
-from pydantic import BaseModel, Field
-from typing import Any
+=== "Python"
 
-class BasicTypes(BaseModel):
-    # String
-    name: str = Field(..., description="Name")
+    ```python
+    from pydantic import BaseModel, Field
+    from typing import Any
 
-    # Integer
-    age: int = Field(..., description="Age")
+    class BasicTypes(BaseModel):
+        # String
+        name: str = Field(..., description="Name")
 
-    # Float
-    price: float = Field(..., description="Price")
+        # Integer
+        age: int = Field(..., description="Age")
 
-    # Boolean
-    active: bool = Field(..., description="Is active")
+        # Float
+        price: float = Field(..., description="Price")
 
-    # Any type (avoid when possible)
-    data: Any = Field(..., description="Any data")
-```
+        # Boolean
+        active: bool = Field(..., description="Is active")
+
+        # Any type (avoid when possible)
+        data: Any = Field(..., description="Any data")
+    ```
+
+=== "TypeScript"
+
+    ```typescript
+    import { Type } from '@sinclair/typebox';
+
+    const BasicTypes = Type.Object({
+      // String
+      name: Type.String({ description: 'Name' }),
+
+      // Integer
+      age: Type.Integer({ description: 'Age' }),
+
+      // Float
+      price: Type.Number({ description: 'Price' }),
+
+      // Boolean
+      active: Type.Boolean({ description: 'Is active' }),
+
+      // Any type (avoid when possible)
+      data: Type.Unknown({ description: 'Any data' }),
+    });
+    ```
+
+=== "Rust"
+
+    ```rust
+    use serde_json::{json, Value};
+
+    fn basic_types_schema() -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                // String
+                "name":   {"type": "string",  "description": "Name"},
+                // Integer
+                "age":    {"type": "integer", "description": "Age"},
+                // Float
+                "price":  {"type": "number",  "description": "Price"},
+                // Boolean
+                "active": {"type": "boolean", "description": "Is active"},
+                // Any type (avoid when possible)
+                "data":   {"description": "Any data"}
+            },
+            "required": ["name", "age", "price", "active", "data"]
+        })
+    }
+    ```
 
 **Corresponding JSON Schema:**
 
@@ -226,44 +394,179 @@ properties:
 
 ### 3.2 Optional Types
 
-```python
-from typing import Optional
+=== "Python"
 
-class OptionalTypes(BaseModel):
-    # Method 1: | None
-    email: str | None = Field(None, description="Email")
+    ```python
+    from pydantic import BaseModel, Field
+    from typing import Optional
 
-    # Method 2: Optional (equivalent to above)
-    phone: Optional[str] = Field(None, description="Phone")
+    class OptionalTypes(BaseModel):
+        # Method 1: | None
+        email: str | None = Field(None, description="Email")
 
-    # Non-None field with default value
-    count: int = Field(default=0, description="Count")
-```
+        # Method 2: Optional (equivalent to above)
+        phone: Optional[str] = Field(None, description="Phone")
+
+        # Non-None field with default value
+        count: int = Field(default=0, description="Count")
+    ```
+
+=== "TypeScript"
+
+    ```typescript
+    import { Type } from '@sinclair/typebox';
+
+    const OptionalTypes = Type.Object({
+      // Nullable optional
+      email: Type.Optional(
+        Type.Union([Type.String(), Type.Null()], { description: 'Email', default: null }),
+      ),
+
+      // Same shape, alternate spelling
+      phone: Type.Optional(
+        Type.Union([Type.String(), Type.Null()], { description: 'Phone', default: null }),
+      ),
+
+      // Non-null field with default value
+      count: Type.Integer({ description: 'Count', default: 0 }),
+    });
+    ```
+
+=== "Rust"
+
+    ```rust
+    use serde_json::{json, Value};
+
+    fn optional_types_schema() -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                // Nullable optional
+                "email": {"type": ["string", "null"], "description": "Email", "default": null},
+                // Same shape, alternate spelling
+                "phone": {"type": ["string", "null"], "description": "Phone", "default": null},
+                // Non-null field with default value
+                "count": {"type": "integer", "description": "Count", "default": 0}
+            }
+            // No "required" array — all fields are optional
+        })
+    }
+    ```
 
 ### 3.3 Lists and Dictionaries
 
-```python
-from typing import List, Dict
+=== "Python"
 
-class CollectionTypes(BaseModel):
-    # String list
-    tags: list[str] = Field(default=[], description="Tag list")
-
-    # Object list
-    items: list["OrderItem"] = Field(..., description="Order items")
-
-    # Dictionary
-    metadata: dict[str, Any] = Field(default={}, description="Metadata")
-
-    # Dictionary with specified value type
-    scores: dict[str, int] = Field(default={}, description="Score mapping")
+    ```python
+    from pydantic import BaseModel, Field
+    from typing import Any
 
 
-class OrderItem(BaseModel):
-    product_id: str = Field(..., description="Product ID")
-    quantity: int = Field(..., description="Quantity")
-    price: float = Field(..., description="Unit price")
-```
+    class OrderItem(BaseModel):
+        product_id: str = Field(..., description="Product ID")
+        quantity: int = Field(..., description="Quantity")
+        price: float = Field(..., description="Unit price")
+
+
+    class CollectionTypes(BaseModel):
+        # String list
+        tags: list[str] = Field(default=[], description="Tag list")
+
+        # Object list
+        items: list[OrderItem] = Field(..., description="Order items")
+
+        # Dictionary
+        metadata: dict[str, Any] = Field(default={}, description="Metadata")
+
+        # Dictionary with specified value type
+        scores: dict[str, int] = Field(default={}, description="Score mapping")
+    ```
+
+=== "TypeScript"
+
+    ```typescript
+    import { Type } from '@sinclair/typebox';
+
+    const OrderItem = Type.Object({
+      product_id: Type.String({ description: 'Product ID' }),
+      quantity: Type.Integer({ description: 'Quantity' }),
+      price: Type.Number({ description: 'Unit price' }),
+    });
+
+    const CollectionTypes = Type.Object({
+      // String list
+      tags: Type.Array(Type.String(), { description: 'Tag list', default: [] }),
+
+      // Object list
+      items: Type.Array(OrderItem, { description: 'Order items' }),
+
+      // Dictionary
+      metadata: Type.Record(Type.String(), Type.Unknown(), {
+        description: 'Metadata',
+        default: {},
+      }),
+
+      // Dictionary with specified value type
+      scores: Type.Record(Type.String(), Type.Integer(), {
+        description: 'Score mapping',
+        default: {},
+      }),
+    });
+    ```
+
+=== "Rust"
+
+    ```rust
+    use serde_json::{json, Value};
+
+    fn order_item_schema() -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "product_id": {"type": "string",  "description": "Product ID"},
+                "quantity":   {"type": "integer", "description": "Quantity"},
+                "price":      {"type": "number",  "description": "Unit price"}
+            },
+            "required": ["product_id", "quantity", "price"]
+        })
+    }
+
+    fn collection_types_schema() -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                // String list
+                "tags": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Tag list",
+                    "default": []
+                },
+                // Object list
+                "items": {
+                    "type": "array",
+                    "items": order_item_schema(),
+                    "description": "Order items"
+                },
+                // Dictionary
+                "metadata": {
+                    "type": "object",
+                    "additionalProperties": true,
+                    "description": "Metadata",
+                    "default": {}
+                },
+                // Dictionary with specified value type
+                "scores": {
+                    "type": "object",
+                    "additionalProperties": {"type": "integer"},
+                    "description": "Score mapping",
+                    "default": {}
+                }
+            },
+            "required": ["items"]
+        })
+    }
+    ```
 
 **Corresponding JSON Schema:**
 
@@ -294,56 +597,216 @@ properties:
 
 ### 3.4 Enum Types
 
-```python
-from typing import Literal
-from enum import Enum
+=== "Python"
 
-# Method 1: Literal (recommended)
-class Order1(BaseModel):
-    status: Literal["pending", "paid", "shipped", "done"] = Field(
-        ...,
-        description="Order status"
-    )
+    ```python
+    from pydantic import BaseModel, Field
+    from typing import Literal
+    from enum import Enum
 
-    priority: Literal[1, 2, 3] = Field(
-        default=2,
-        description="Priority: 1-high 2-medium 3-low"
-    )
+    # Method 1: Literal (recommended)
+    class Order1(BaseModel):
+        status: Literal["pending", "paid", "shipped", "done"] = Field(
+            ...,
+            description="Order status",
+        )
 
-# Method 2: Enum
-class OrderStatus(str, Enum):
-    PENDING = "pending"
-    PAID = "paid"
-    SHIPPED = "shipped"
-    DONE = "done"
+        priority: Literal[1, 2, 3] = Field(
+            default=2,
+            description="Priority: 1-high 2-medium 3-low",
+        )
 
-class Order2(BaseModel):
-    status: OrderStatus = Field(..., description="Order status")
-```
+    # Method 2: Enum
+    class OrderStatus(str, Enum):
+        PENDING = "pending"
+        PAID = "paid"
+        SHIPPED = "shipped"
+        DONE = "done"
+
+    class Order2(BaseModel):
+        status: OrderStatus = Field(..., description="Order status")
+    ```
+
+=== "TypeScript"
+
+    ```typescript
+    import { Type } from '@sinclair/typebox';
+
+    // Method 1: Union of literal values (recommended)
+    const Order1 = Type.Object({
+      status: Type.Union(
+        [
+          Type.Literal('pending'),
+          Type.Literal('paid'),
+          Type.Literal('shipped'),
+          Type.Literal('done'),
+        ],
+        { description: 'Order status' },
+      ),
+
+      priority: Type.Union(
+        [Type.Literal(1), Type.Literal(2), Type.Literal(3)],
+        { description: 'Priority: 1-high 2-medium 3-low', default: 2 },
+      ),
+    });
+
+    // Method 2: Reused enum constant
+    const OrderStatus = Type.Union(
+      [
+        Type.Literal('pending'),
+        Type.Literal('paid'),
+        Type.Literal('shipped'),
+        Type.Literal('done'),
+      ],
+      { $id: 'OrderStatus' },
+    );
+
+    const Order2 = Type.Object({
+      status: Type.Composite([OrderStatus], { description: 'Order status' }),
+    });
+    ```
+
+=== "Rust"
+
+    ```rust
+    use serde_json::{json, Value};
+
+    // Method 1: enum keyword on a string field (recommended)
+    fn order1_schema() -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "status": {
+                    "type": "string",
+                    "description": "Order status",
+                    "enum": ["pending", "paid", "shipped", "done"]
+                },
+                "priority": {
+                    "type": "integer",
+                    "description": "Priority: 1-high 2-medium 3-low",
+                    "enum": [1, 2, 3],
+                    "default": 2
+                }
+            },
+            "required": ["status"]
+        })
+    }
+
+    // Method 2: reused enum sub-schema
+    fn order_status_schema() -> Value {
+        json!({
+            "type": "string",
+            "enum": ["pending", "paid", "shipped", "done"]
+        })
+    }
+
+    fn order2_schema() -> Value {
+        let mut status = order_status_schema();
+        status["description"] = json!("Order status");
+        json!({
+            "type": "object",
+            "properties": { "status": status },
+            "required": ["status"]
+        })
+    }
+    ```
 
 ### 3.5 Date and Time
 
-```python
-from datetime import datetime, date, time
-from pydantic import BaseModel, Field
+=== "Python"
 
-class DateTimeTypes(BaseModel):
-    # Datetime
-    created_at: datetime = Field(..., description="Creation time")
+    ```python
+    from datetime import datetime, date, time
+    from pydantic import BaseModel, Field
 
-    # Date only
-    birth_date: date = Field(..., description="Birth date")
+    class DateTimeTypes(BaseModel):
+        # Datetime
+        created_at: datetime = Field(..., description="Creation time")
 
-    # Time only
-    alarm_time: time = Field(..., description="Alarm time")
+        # Date only
+        birth_date: date = Field(..., description="Birth date")
 
-    # Date string format (needs to be parsed manually)
-    date_str: str = Field(
-        ...,
-        description="Date string",
-        pattern=r"^\d{4}-\d{2}-\d{2}$"  # YYYY-MM-DD
-    )
-```
+        # Time only
+        alarm_time: time = Field(..., description="Alarm time")
+
+        # Date string format (needs to be parsed manually)
+        date_str: str = Field(
+            ...,
+            description="Date string",
+            pattern=r"^\d{4}-\d{2}-\d{2}$",  # YYYY-MM-DD
+        )
+    ```
+
+=== "TypeScript"
+
+    ```typescript
+    import { Type } from '@sinclair/typebox';
+
+    const DateTimeTypes = Type.Object({
+      // Datetime (ISO 8601)
+      created_at: Type.String({
+        description: 'Creation time',
+        format: 'date-time',
+      }),
+
+      // Date only
+      birth_date: Type.String({
+        description: 'Birth date',
+        format: 'date',
+      }),
+
+      // Time only
+      alarm_time: Type.String({
+        description: 'Alarm time',
+        format: 'time',
+      }),
+
+      // Date string format (custom pattern)
+      date_str: Type.String({
+        description: 'Date string',
+        pattern: '^\\d{4}-\\d{2}-\\d{2}$', // YYYY-MM-DD
+      }),
+    });
+    ```
+
+=== "Rust"
+
+    ```rust
+    use serde_json::{json, Value};
+
+    fn datetime_types_schema() -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                // Datetime (ISO 8601)
+                "created_at": {
+                    "type": "string",
+                    "description": "Creation time",
+                    "format": "date-time"
+                },
+                // Date only
+                "birth_date": {
+                    "type": "string",
+                    "description": "Birth date",
+                    "format": "date"
+                },
+                // Time only
+                "alarm_time": {
+                    "type": "string",
+                    "description": "Alarm time",
+                    "format": "time"
+                },
+                // Date string format (custom pattern)
+                "date_str": {
+                    "type": "string",
+                    "description": "Date string",
+                    "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+                }
+            },
+            "required": ["created_at", "birth_date", "alarm_time", "date_str"]
+        })
+    }
+    ```
 
 ### 3.6 Cross-Language Type Mapping Quick Reference
 
@@ -377,91 +840,289 @@ class DateTimeTypes(BaseModel):
 
 ### 4.1 String Constraints
 
-```python
-class StringConstraints(BaseModel):
-    # Length constraints
-    username: str = Field(
-        ...,
-        description="Username",
-        min_length=3,          # Minimum length
-        max_length=20          # Maximum length
-    )
+=== "Python"
 
-    # Regular expression
-    email: str = Field(
-        ...,
-        description="Email",
-        pattern=r"^[\w\.-]+@[\w\.-]+\.\w+$"
-    )
+    ```python
+    from pydantic import BaseModel, Field
 
-    phone: str = Field(
-        ...,
-        description="Phone number",
-        pattern=r"^1[3-9]\d{9}$"
-    )
+    class StringConstraints(BaseModel):
+        # Length constraints
+        username: str = Field(
+            ...,
+            description="Username",
+            min_length=3,          # Minimum length
+            max_length=20,         # Maximum length
+        )
 
-    # Format (JSON Schema standard format)
-    website: str = Field(
-        ...,
-        description="Website",
-        # Common formats: email, uri, date, time, date-time, uuid
-    )
-```
+        # Regular expression
+        email: str = Field(
+            ...,
+            description="Email",
+            pattern=r"^[\w\.-]+@[\w\.-]+\.\w+$",
+        )
+
+        phone: str = Field(
+            ...,
+            description="Phone number",
+            pattern=r"^1[3-9]\d{9}$",
+        )
+
+        # Format (JSON Schema standard format)
+        website: str = Field(
+            ...,
+            description="Website",
+            json_schema_extra={"format": "uri"},
+            # Common formats: email, uri, date, time, date-time, uuid
+        )
+    ```
+
+=== "TypeScript"
+
+    ```typescript
+    import { Type } from '@sinclair/typebox';
+
+    const StringConstraints = Type.Object({
+      // Length constraints
+      username: Type.String({
+        description: 'Username',
+        minLength: 3,
+        maxLength: 20,
+      }),
+
+      // Regular expression
+      email: Type.String({
+        description: 'Email',
+        pattern: '^[\\w\\.-]+@[\\w\\.-]+\\.\\w+$',
+      }),
+
+      phone: Type.String({
+        description: 'Phone number',
+        pattern: '^1[3-9]\\d{9}$',
+      }),
+
+      // Format (JSON Schema standard format)
+      website: Type.String({
+        description: 'Website',
+        format: 'uri',
+        // Common formats: email, uri, date, time, date-time, uuid
+      }),
+    });
+    ```
+
+=== "Rust"
+
+    ```rust
+    use serde_json::{json, Value};
+
+    fn string_constraints_schema() -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                // Length constraints
+                "username": {
+                    "type": "string",
+                    "description": "Username",
+                    "minLength": 3,
+                    "maxLength": 20
+                },
+                // Regular expression
+                "email": {
+                    "type": "string",
+                    "description": "Email",
+                    "pattern": "^[\\w\\.-]+@[\\w\\.-]+\\.\\w+$"
+                },
+                "phone": {
+                    "type": "string",
+                    "description": "Phone number",
+                    "pattern": "^1[3-9]\\d{9}$"
+                },
+                // Format (JSON Schema standard format)
+                "website": {
+                    "type": "string",
+                    "description": "Website",
+                    "format": "uri"
+                    // Common formats: email, uri, date, time, date-time, uuid
+                }
+            },
+            "required": ["username", "email", "phone", "website"]
+        })
+    }
+    ```
 
 ### 4.2 Numeric Constraints
 
-```python
-class NumberConstraints(BaseModel):
-    # Range constraints
-    age: int = Field(
-        ...,
-        description="Age",
-        ge=0,       # >= 0
-        le=150      # <= 150
-    )
+=== "Python"
 
-    price: float = Field(
-        ...,
-        description="Price",
-        gt=0,       # > 0
-        lt=1000000  # < 1000000
-    )
+    ```python
+    from pydantic import BaseModel, Field
 
-    # Multiple constraint
-    quantity: int = Field(
-        ...,
-        description="Quantity (must be multiple of 10)",
-        multiple_of=10
-    )
-```
+    class NumberConstraints(BaseModel):
+        # Range constraints
+        age: int = Field(
+            ...,
+            description="Age",
+            ge=0,       # >= 0
+            le=150,     # <= 150
+        )
+
+        price: float = Field(
+            ...,
+            description="Price",
+            gt=0,           # > 0
+            lt=1_000_000,   # < 1000000
+        )
+
+        # Multiple constraint
+        quantity: int = Field(
+            ...,
+            description="Quantity (must be multiple of 10)",
+            multiple_of=10,
+        )
+    ```
+
+=== "TypeScript"
+
+    ```typescript
+    import { Type } from '@sinclair/typebox';
+
+    const NumberConstraints = Type.Object({
+      // Range constraints (inclusive)
+      age: Type.Integer({
+        description: 'Age',
+        minimum: 0,    // >= 0
+        maximum: 150,  // <= 150
+      }),
+
+      // Range constraints (exclusive)
+      price: Type.Number({
+        description: 'Price',
+        exclusiveMinimum: 0,        // > 0
+        exclusiveMaximum: 1000000,  // < 1000000
+      }),
+
+      // Multiple constraint
+      quantity: Type.Integer({
+        description: 'Quantity (must be multiple of 10)',
+        multipleOf: 10,
+      }),
+    });
+    ```
+
+=== "Rust"
+
+    ```rust
+    use serde_json::{json, Value};
+
+    fn number_constraints_schema() -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                // Range constraints (inclusive)
+                "age": {
+                    "type": "integer",
+                    "description": "Age",
+                    "minimum": 0,
+                    "maximum": 150
+                },
+                // Range constraints (exclusive)
+                "price": {
+                    "type": "number",
+                    "description": "Price",
+                    "exclusiveMinimum": 0,
+                    "exclusiveMaximum": 1000000
+                },
+                // Multiple constraint
+                "quantity": {
+                    "type": "integer",
+                    "description": "Quantity (must be multiple of 10)",
+                    "multipleOf": 10
+                }
+            },
+            "required": ["age", "price", "quantity"]
+        })
+    }
+    ```
 
 ### 4.3 List Constraints
 
-```python
-from pydantic import BaseModel, Field, field_validator
+=== "Python"
 
-class ListConstraints(BaseModel):
-    # Length constraints
-    tags: list[str] = Field(
-        ...,
-        description="Tags",
-        min_length=1,    # At least 1
-        max_length=10    # At most 10
-    )
+    ```python
+    from pydantic import BaseModel, Field, field_validator
 
-    # Unique elements (requires custom validation)
-    unique_ids: list[str] = Field(
-        ...,
-        description="Unique ID list"
-    )
+    class ListConstraints(BaseModel):
+        # Length constraints
+        tags: list[str] = Field(
+            ...,
+            description="Tags",
+            min_length=1,    # At least 1
+            max_length=10,   # At most 10
+        )
 
-    @field_validator("unique_ids")
-    @classmethod
-    def check_unique(cls, v):
-        if len(v) != len(set(v)):
-            raise ValueError('List elements must be unique')
-        return v
-```
+        # Unique elements (requires custom validation in Pydantic)
+        unique_ids: list[str] = Field(
+            ...,
+            description="Unique ID list",
+        )
+
+        @field_validator("unique_ids")
+        @classmethod
+        def check_unique(cls, v):
+            if len(v) != len(set(v)):
+                raise ValueError('List elements must be unique')
+            return v
+    ```
+
+=== "TypeScript"
+
+    ```typescript
+    import { Type } from '@sinclair/typebox';
+
+    const ListConstraints = Type.Object({
+      // Length constraints
+      tags: Type.Array(Type.String(), {
+        description: 'Tags',
+        minItems: 1,    // At least 1
+        maxItems: 10,   // At most 10
+      }),
+
+      // Unique elements — JSON Schema `uniqueItems` keyword
+      unique_ids: Type.Array(Type.String(), {
+        description: 'Unique ID list',
+        uniqueItems: true,
+      }),
+    });
+    ```
+
+=== "Rust"
+
+    ```rust
+    use serde_json::{json, Value};
+
+    fn list_constraints_schema() -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                // Length constraints
+                "tags": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Tags",
+                    "minItems": 1,
+                    "maxItems": 10
+                },
+                // Unique elements — JSON Schema `uniqueItems` keyword
+                "unique_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Unique ID list",
+                    "uniqueItems": true
+                }
+            },
+            "required": ["tags", "unique_ids"]
+        })
+    }
+    ```
 
 ---
 
@@ -471,21 +1132,68 @@ class ListConstraints(BaseModel):
 
 ### 5.1 x-llm-description
 
-```python
-class LLMFriendlyInput(BaseModel):
-    sql: str = Field(
-        ...,
-        description="SQL statement",
-        json_schema_extra={
-            "x-llm-description": """
-            SQL query statement to execute.
-            - Only SELECT statements allowed
-            - DROP, DELETE, UPDATE and other modification operations are not allowed
-            - Table names must use schema.table format
-            """
-        }
-    )
-```
+=== "Python"
+
+    ```python
+    from pydantic import BaseModel, Field
+
+    class LLMFriendlyInput(BaseModel):
+        sql: str = Field(
+            ...,
+            description="SQL statement",
+            json_schema_extra={
+                "x-llm-description": (
+                    "SQL query statement to execute.\n"
+                    "- Only SELECT statements allowed\n"
+                    "- DROP, DELETE, UPDATE and other modification operations are not allowed\n"
+                    "- Table names must use schema.table format"
+                ),
+            },
+        )
+    ```
+
+=== "TypeScript"
+
+    ```typescript
+    import { Type } from '@sinclair/typebox';
+
+    const LLMFriendlyInput = Type.Object({
+      sql: Type.String({
+        description: 'SQL statement',
+        'x-llm-description': [
+          'SQL query statement to execute.',
+          '- Only SELECT statements allowed',
+          '- DROP, DELETE, UPDATE and other modification operations are not allowed',
+          '- Table names must use schema.table format',
+        ].join('\n'),
+      }),
+    });
+    ```
+
+=== "Rust"
+
+    ```rust
+    use serde_json::{json, Value};
+
+    fn llm_friendly_input_schema() -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "sql": {
+                    "type": "string",
+                    "description": "SQL statement",
+                    "x-llm-description": concat!(
+                        "SQL query statement to execute.\n",
+                        "- Only SELECT statements allowed\n",
+                        "- DROP, DELETE, UPDATE and other modification operations are not allowed\n",
+                        "- Table names must use schema.table format"
+                    )
+                }
+            },
+            "required": ["sql"]
+        })
+    }
+    ```
 
 **Corresponding YAML:**
 
@@ -502,52 +1210,159 @@ sql:
 
 ### 5.2 x-examples
 
-```python
-class WithExamples(BaseModel):
-    email: str = Field(
-        ...,
-        description="Email address",
-        json_schema_extra={
-            "x-examples": [
-                "user@example.com",
-                "admin@company.org",
-                "test.user@domain.co.jp"
-            ]
-        }
-    )
+=== "Python"
 
-    phone: str = Field(
-        ...,
-        description="China mainland mobile number",
-        pattern=r"^1[3-9]\d{9}$",
-        json_schema_extra={
-            "x-examples": ["13800138000", "15912345678"]
-        }
-    )
-```
+    ```python
+    from pydantic import BaseModel, Field
+
+    class WithExamples(BaseModel):
+        email: str = Field(
+            ...,
+            description="Email address",
+            json_schema_extra={
+                "x-examples": [
+                    "user@example.com",
+                    "admin@company.org",
+                    "test.user@domain.co.jp",
+                ],
+            },
+        )
+
+        phone: str = Field(
+            ...,
+            description="China mainland mobile number",
+            pattern=r"^1[3-9]\d{9}$",
+            json_schema_extra={
+                "x-examples": ["13800138000", "15912345678"],
+            },
+        )
+    ```
+
+=== "TypeScript"
+
+    ```typescript
+    import { Type } from '@sinclair/typebox';
+
+    const WithExamples = Type.Object({
+      email: Type.String({
+        description: 'Email address',
+        'x-examples': [
+          'user@example.com',
+          'admin@company.org',
+          'test.user@domain.co.jp',
+        ],
+      }),
+
+      phone: Type.String({
+        description: 'China mainland mobile number',
+        pattern: '^1[3-9]\\d{9}$',
+        'x-examples': ['13800138000', '15912345678'],
+      }),
+    });
+    ```
+
+=== "Rust"
+
+    ```rust
+    use serde_json::{json, Value};
+
+    fn with_examples_schema() -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "email": {
+                    "type": "string",
+                    "description": "Email address",
+                    "x-examples": [
+                        "user@example.com",
+                        "admin@company.org",
+                        "test.user@domain.co.jp"
+                    ]
+                },
+                "phone": {
+                    "type": "string",
+                    "description": "China mainland mobile number",
+                    "pattern": "^1[3-9]\\d{9}$",
+                    "x-examples": ["13800138000", "15912345678"]
+                }
+            },
+            "required": ["email", "phone"]
+        })
+    }
+    ```
 
 ### 5.3 x-sensitive
 
-```python
-class WithSensitive(BaseModel):
-    username: str = Field(..., description="Username")
+=== "Python"
 
-    password: str = Field(
-        ...,
-        description="Password",
-        json_schema_extra={
-            "x-sensitive": True  # Mark as sensitive field
-        }
-    )
+    ```python
+    from pydantic import BaseModel, Field
 
-    api_key: str = Field(
-        ...,
-        description="API key",
-        json_schema_extra={
-            "x-sensitive": True
-        }
-    )
-```
+    class WithSensitive(BaseModel):
+        username: str = Field(..., description="Username")
+
+        password: str = Field(
+            ...,
+            description="Password",
+            json_schema_extra={
+                "x-sensitive": True,  # Mark as sensitive field
+            },
+        )
+
+        api_key: str = Field(
+            ...,
+            description="API key",
+            json_schema_extra={
+                "x-sensitive": True,
+            },
+        )
+    ```
+
+=== "TypeScript"
+
+    ```typescript
+    import { Type } from '@sinclair/typebox';
+
+    const WithSensitive = Type.Object({
+      username: Type.String({ description: 'Username' }),
+
+      password: Type.String({
+        description: 'Password',
+        'x-sensitive': true, // Mark as sensitive field
+      }),
+
+      api_key: Type.String({
+        description: 'API key',
+        'x-sensitive': true,
+      }),
+    });
+    ```
+
+=== "Rust"
+
+    ```rust
+    use serde_json::{json, Value};
+
+    fn with_sensitive_schema() -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "username": {"type": "string", "description": "Username"},
+                "password": {
+                    "type": "string",
+                    "description": "Password",
+                    "x-sensitive": true
+                },
+                "api_key": {
+                    "type": "string",
+                    "description": "API key",
+                    "x-sensitive": true
+                }
+            },
+            "required": ["username", "password", "api_key"]
+        })
+    }
+    ```
 
 **Handling of sensitive fields:**
 - Automatically masked in logs
@@ -560,26 +1375,106 @@ class WithSensitive(BaseModel):
 
 ### 6.1 Nested Objects
 
-```python
-class Address(BaseModel):
-    """Address information"""
-    city: str = Field(..., description="City")
-    street: str = Field(..., description="Street")
-    postal_code: str = Field(..., description="Postal code")
+=== "Python"
+
+    ```python
+    from pydantic import BaseModel, Field
+
+    class Address(BaseModel):
+        """Address information"""
+        city: str = Field(..., description="City")
+        street: str = Field(..., description="Street")
+        postal_code: str = Field(..., description="Postal code")
 
 
-class Company(BaseModel):
-    """Company information"""
-    name: str = Field(..., description="Company name")
-    address: Address = Field(..., description="Company address")  # Nested
+    class Company(BaseModel):
+        """Company information"""
+        name: str = Field(..., description="Company name")
+        address: Address = Field(..., description="Company address")  # Nested
 
 
-class Employee(BaseModel):
-    """Employee information"""
-    name: str = Field(..., description="Name")
-    company: Company = Field(..., description="Company")  # Multi-level nesting
-    home_address: Address = Field(..., description="Home address")  # Reuse
-```
+    class Employee(BaseModel):
+        """Employee information"""
+        name: str = Field(..., description="Name")
+        company: Company = Field(..., description="Company")  # Multi-level nesting
+        home_address: Address = Field(..., description="Home address")  # Reuse
+    ```
+
+=== "TypeScript"
+
+    ```typescript
+    import { Type } from '@sinclair/typebox';
+
+    // Address information — reusable
+    const Address = Type.Object({
+      city: Type.String({ description: 'City' }),
+      street: Type.String({ description: 'Street' }),
+      postal_code: Type.String({ description: 'Postal code' }),
+    });
+
+    // Company information
+    const Company = Type.Object({
+      name: Type.String({ description: 'Company name' }),
+      address: Type.Composite([Address], { description: 'Company address' }), // Nested
+    });
+
+    // Employee information
+    const Employee = Type.Object({
+      name: Type.String({ description: 'Name' }),
+      company: Type.Composite([Company], { description: 'Company' }),       // Multi-level nesting
+      home_address: Type.Composite([Address], { description: 'Home address' }), // Reuse
+    });
+    ```
+
+=== "Rust"
+
+    ```rust
+    use serde_json::{json, Value};
+
+    // Address information — reusable
+    fn address_schema() -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "city":        {"type": "string", "description": "City"},
+                "street":      {"type": "string", "description": "Street"},
+                "postal_code": {"type": "string", "description": "Postal code"}
+            },
+            "required": ["city", "street", "postal_code"]
+        })
+    }
+
+    // Company information
+    fn company_schema() -> Value {
+        let mut address = address_schema();
+        address["description"] = json!("Company address");
+        json!({
+            "type": "object",
+            "properties": {
+                "name":    {"type": "string", "description": "Company name"},
+                "address": address
+            },
+            "required": ["name", "address"]
+        })
+    }
+
+    // Employee information
+    fn employee_schema() -> Value {
+        let mut company = company_schema();
+        company["description"] = json!("Company");
+        let mut home = address_schema();
+        home["description"] = json!("Home address");
+        json!({
+            "type": "object",
+            "properties": {
+                "name":         {"type": "string", "description": "Name"},
+                "company":      company,
+                "home_address": home
+            },
+            "required": ["name", "company", "home_address"]
+        })
+    }
+    ```
 
 ### 6.2 References in YAML
 
@@ -624,73 +1519,320 @@ input_schema:
 
 ### 7.1 Field Validators
 
-```python
-from pydantic import BaseModel, Field, field_validator
+For validation rules that go beyond what JSON Schema can express (cross-field checks, normalization, business rules), use the language's native validation hooks. In Python this is Pydantic's `field_validator`; in TypeScript and Rust the convention is to run validation inside `execute()` and raise/return a structured error before processing.
 
-class UserInput(BaseModel):
-    username: str = Field(..., description="Username")
-    email: str = Field(..., description="Email")
-    password: str = Field(..., description="Password")
-    confirm_password: str = Field(..., description="Confirm password")
+=== "Python"
 
-    @field_validator('username')
-    @classmethod
-    def username_alphanumeric(cls, v: str) -> str:
-        if not v.isalnum():
-            raise ValueError('Username can only contain letters and numbers')
-        return v
+    ```python
+    from pydantic import BaseModel, Field, field_validator
 
-    @field_validator('email')
-    @classmethod
-    def email_valid(cls, v: str) -> str:
-        if '@' not in v:
-            raise ValueError('Email format is incorrect')
-        return v.lower()  # Convert to lowercase
-```
+    class UserInput(BaseModel):
+        username: str = Field(..., description="Username")
+        email: str = Field(..., description="Email")
+        password: str = Field(..., description="Password")
+        confirm_password: str = Field(..., description="Confirm password")
+
+        @field_validator('username')
+        @classmethod
+        def username_alphanumeric(cls, v: str) -> str:
+            if not v.isalnum():
+                raise ValueError('Username can only contain letters and numbers')
+            return v
+
+        @field_validator('email')
+        @classmethod
+        def email_valid(cls, v: str) -> str:
+            if '@' not in v:
+                raise ValueError('Email format is incorrect')
+            return v.lower()  # Convert to lowercase
+    ```
+
+=== "TypeScript"
+
+    ```typescript
+    import { Type } from '@sinclair/typebox';
+
+    // Schema declares structure and basic constraints (alphanumeric via pattern,
+    // email via format). Cross-field rules go in execute().
+    const UserInput = Type.Object({
+      username: Type.String({
+        description: 'Username',
+        pattern: '^[A-Za-z0-9]+$', // alphanumeric only
+      }),
+      email: Type.String({ description: 'Email', format: 'email' }),
+      password: Type.String({ description: 'Password' }),
+      confirm_password: Type.String({ description: 'Confirm password' }),
+    });
+
+    // Custom normalization / cross-field validation runs in execute().
+    function normalizeUserInput(inputs: {
+      username: string;
+      email: string;
+      password: string;
+      confirm_password: string;
+    }) {
+      if (!/^[A-Za-z0-9]+$/.test(inputs.username)) {
+        throw new Error('Username can only contain letters and numbers');
+      }
+      if (!inputs.email.includes('@')) {
+        throw new Error('Email format is incorrect');
+      }
+      return { ...inputs, email: inputs.email.toLowerCase() };
+    }
+    ```
+
+=== "Rust"
+
+    ```rust
+    use serde_json::{json, Value};
+
+    // Schema declares structure and basic constraints. Cross-field rules
+    // run inside execute().
+    fn user_input_schema() -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "username": {
+                    "type": "string",
+                    "description": "Username",
+                    "pattern": "^[A-Za-z0-9]+$"
+                },
+                "email": {
+                    "type": "string",
+                    "description": "Email",
+                    "format": "email"
+                },
+                "password":         {"type": "string", "description": "Password"},
+                "confirm_password": {"type": "string", "description": "Confirm password"}
+            },
+            "required": ["username", "email", "password", "confirm_password"]
+        })
+    }
+
+    fn normalize_user_input(mut inputs: Value) -> Result<Value, String> {
+        let username = inputs["username"].as_str().unwrap_or("");
+        if !username.chars().all(|c| c.is_ascii_alphanumeric()) {
+            return Err("Username can only contain letters and numbers".into());
+        }
+        let email = inputs["email"].as_str().unwrap_or("");
+        if !email.contains('@') {
+            return Err("Email format is incorrect".into());
+        }
+        inputs["email"] = json!(email.to_lowercase());
+        Ok(inputs)
+    }
+    ```
 
 ### 7.2 Model Validators
 
-```python
-from pydantic import BaseModel, model_validator
+Model-level validation enforces rules that span multiple fields. Python uses Pydantic's `model_validator`; TypeScript and Rust express the same logic as a plain function invoked from `execute()`.
 
-class PasswordInput(BaseModel):
-    password: str = Field(..., description="Password")
-    confirm_password: str = Field(..., description="Confirm password")
+=== "Python"
 
-    @model_validator(mode='after')
-    def passwords_match(self) -> 'PasswordInput':
-        if self.password != self.confirm_password:
-            raise ValueError('Password entries do not match')
-        return self
-```
+    ```python
+    from pydantic import BaseModel, Field, model_validator
+
+    class PasswordInput(BaseModel):
+        password: str = Field(..., description="Password")
+        confirm_password: str = Field(..., description="Confirm password")
+
+        @model_validator(mode='after')
+        def passwords_match(self) -> 'PasswordInput':
+            if self.password != self.confirm_password:
+                raise ValueError('Password entries do not match')
+            return self
+    ```
+
+=== "TypeScript"
+
+    ```typescript
+    import { Type } from '@sinclair/typebox';
+
+    const PasswordInput = Type.Object({
+      password: Type.String({ description: 'Password' }),
+      confirm_password: Type.String({ description: 'Confirm password' }),
+    });
+
+    function validatePasswordInput(
+      inputs: { password: string; confirm_password: string },
+    ): void {
+      if (inputs.password !== inputs.confirm_password) {
+        throw new Error('Password entries do not match');
+      }
+    }
+    ```
+
+=== "Rust"
+
+    ```rust
+    use serde_json::{json, Value};
+
+    fn password_input_schema() -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "password":         {"type": "string", "description": "Password"},
+                "confirm_password": {"type": "string", "description": "Confirm password"}
+            },
+            "required": ["password", "confirm_password"]
+        })
+    }
+
+    fn validate_password_input(inputs: &Value) -> Result<(), String> {
+        if inputs["password"] != inputs["confirm_password"] {
+            return Err("Password entries do not match".into());
+        }
+        Ok(())
+    }
+    ```
 
 ### 7.3 Complex Business Validation
 
-```python
-class OrderInput(BaseModel):
-    items: list["OrderItem"] = Field(..., description="Order items")
-    coupon_code: str | None = Field(None, description="Coupon")
-    total_amount: float = Field(..., description="Total amount")
+=== "Python"
 
-    @model_validator(mode='after')
-    def validate_order(self) -> 'OrderInput':
-        # Calculate total product price
-        calculated_total = sum(item.price * item.quantity for item in self.items)
+    ```python
+    from pydantic import BaseModel, Field, model_validator
 
-        # Validate total amount
-        if abs(self.total_amount - calculated_total) > 0.01:
-            raise ValueError(f'Total amount is incorrect, should be {calculated_total}')
 
-        # Validate coupon
-        if self.coupon_code and not self._is_valid_coupon(self.coupon_code):
-            raise ValueError('Coupon is invalid or expired')
+    class OrderItem(BaseModel):
+        product_id: str = Field(..., description="Product ID")
+        quantity: int = Field(..., description="Quantity")
+        price: float = Field(..., description="Unit price")
 
-        return self
 
-    def _is_valid_coupon(self, code: str) -> bool:
-        # Coupon validation logic
-        return True
-```
+    class OrderInput(BaseModel):
+        items: list[OrderItem] = Field(..., description="Order items")
+        coupon_code: str | None = Field(None, description="Coupon")
+        total_amount: float = Field(..., description="Total amount")
+
+        @model_validator(mode='after')
+        def validate_order(self) -> 'OrderInput':
+            # Calculate total product price
+            calculated_total = sum(item.price * item.quantity for item in self.items)
+
+            # Validate total amount
+            if abs(self.total_amount - calculated_total) > 0.01:
+                raise ValueError(f'Total amount is incorrect, should be {calculated_total}')
+
+            # Validate coupon
+            if self.coupon_code and not self._is_valid_coupon(self.coupon_code):
+                raise ValueError('Coupon is invalid or expired')
+
+            return self
+
+        def _is_valid_coupon(self, code: str) -> bool:
+            # Coupon validation logic
+            return True
+    ```
+
+=== "TypeScript"
+
+    ```typescript
+    import { Type, type Static } from '@sinclair/typebox';
+
+    const OrderItem = Type.Object({
+      product_id: Type.String({ description: 'Product ID' }),
+      quantity: Type.Integer({ description: 'Quantity' }),
+      price: Type.Number({ description: 'Unit price' }),
+    });
+
+    const OrderInput = Type.Object({
+      items: Type.Array(OrderItem, { description: 'Order items' }),
+      coupon_code: Type.Optional(
+        Type.Union([Type.String(), Type.Null()], {
+          description: 'Coupon',
+          default: null,
+        }),
+      ),
+      total_amount: Type.Number({ description: 'Total amount' }),
+    });
+
+    type OrderInputT = Static<typeof OrderInput>;
+
+    function isValidCoupon(_code: string): boolean {
+      // Coupon validation logic
+      return true;
+    }
+
+    function validateOrder(input: OrderInputT): void {
+      const calculatedTotal = input.items.reduce(
+        (sum, it) => sum + it.price * it.quantity,
+        0,
+      );
+      if (Math.abs(input.total_amount - calculatedTotal) > 0.01) {
+        throw new Error(`Total amount is incorrect, should be ${calculatedTotal}`);
+      }
+      if (input.coupon_code && !isValidCoupon(input.coupon_code)) {
+        throw new Error('Coupon is invalid or expired');
+      }
+    }
+    ```
+
+=== "Rust"
+
+    ```rust
+    use serde_json::{json, Value};
+
+    fn order_item_schema() -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "product_id": {"type": "string",  "description": "Product ID"},
+                "quantity":   {"type": "integer", "description": "Quantity"},
+                "price":      {"type": "number",  "description": "Unit price"}
+            },
+            "required": ["product_id", "quantity", "price"]
+        })
+    }
+
+    fn order_input_schema() -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "items": {
+                    "type": "array",
+                    "items": order_item_schema(),
+                    "description": "Order items"
+                },
+                "coupon_code": {
+                    "type": ["string", "null"],
+                    "description": "Coupon",
+                    "default": null
+                },
+                "total_amount": {"type": "number", "description": "Total amount"}
+            },
+            "required": ["items", "total_amount"]
+        })
+    }
+
+    fn is_valid_coupon(_code: &str) -> bool {
+        // Coupon validation logic
+        true
+    }
+
+    fn validate_order(input: &Value) -> Result<(), String> {
+        let items = input["items"].as_array().ok_or("items must be an array")?;
+        let calculated: f64 = items
+            .iter()
+            .map(|it| {
+                it["price"].as_f64().unwrap_or(0.0)
+                    * it["quantity"].as_f64().unwrap_or(0.0)
+            })
+            .sum();
+
+        let total = input["total_amount"].as_f64().unwrap_or(0.0);
+        if (total - calculated).abs() > 0.01 {
+            return Err(format!("Total amount is incorrect, should be {}", calculated));
+        }
+
+        if let Some(code) = input["coupon_code"].as_str() {
+            if !is_valid_coupon(code) {
+                return Err("Coupon is invalid or expired".into());
+            }
+        }
+        Ok(())
+    }
+    ```
 
 ---
 
@@ -722,70 +1864,311 @@ schema:
 
 ### 9.1 Every Field Should Have a Description
 
-```python
-# ✅ Good
-class GoodSchema(BaseModel):
-    name: str = Field(..., description="User name, 2-50 characters")
-    age: int = Field(..., description="User age, 0-150 years")
+=== "Python"
 
-# ❌ Bad
-class BadSchema(BaseModel):
-    name: str
-    age: int
-```
+    ```python
+    from pydantic import BaseModel, Field
+
+    # ✅ Good
+    class GoodSchema(BaseModel):
+        name: str = Field(..., description="User name, 2-50 characters")
+        age: int = Field(..., description="User age, 0-150 years")
+
+    # ❌ Bad
+    class BadSchema(BaseModel):
+        name: str
+        age: int
+    ```
+
+=== "TypeScript"
+
+    ```typescript
+    import { Type } from '@sinclair/typebox';
+
+    // ✅ Good
+    const GoodSchema = Type.Object({
+      name: Type.String({ description: 'User name, 2-50 characters' }),
+      age: Type.Integer({ description: 'User age, 0-150 years' }),
+    });
+
+    // ❌ Bad — no descriptions
+    const BadSchema = Type.Object({
+      name: Type.String(),
+      age: Type.Integer(),
+    });
+    ```
+
+=== "Rust"
+
+    ```rust
+    use serde_json::{json, Value};
+
+    // ✅ Good
+    fn good_schema() -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "name": {"type": "string",  "description": "User name, 2-50 characters"},
+                "age":  {"type": "integer", "description": "User age, 0-150 years"}
+            },
+            "required": ["name", "age"]
+        })
+    }
+
+    // ❌ Bad — no descriptions
+    fn bad_schema() -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "age":  {"type": "integer"}
+            },
+            "required": ["name", "age"]
+        })
+    }
+    ```
 
 ### 9.2 Use Explicit Types
 
-```python
-# ✅ Good: Clear types
-class GoodSchema(BaseModel):
-    status: Literal["active", "inactive", "pending"]
-    count: int
-    price: float
+=== "Python"
 
-# ❌ Bad: Vague types
-class BadSchema(BaseModel):
-    status: str  # Can be any string
-    count: Any   # Unknown type
-    price: Any
-```
+    ```python
+    from pydantic import BaseModel
+    from typing import Any, Literal
+
+    # ✅ Good: Clear types
+    class GoodSchema(BaseModel):
+        status: Literal["active", "inactive", "pending"]
+        count: int
+        price: float
+
+    # ❌ Bad: Vague types
+    class BadSchema(BaseModel):
+        status: str  # Can be any string
+        count: Any   # Unknown type
+        price: Any
+    ```
+
+=== "TypeScript"
+
+    ```typescript
+    import { Type } from '@sinclair/typebox';
+
+    // ✅ Good: Clear types
+    const GoodSchema = Type.Object({
+      status: Type.Union([
+        Type.Literal('active'),
+        Type.Literal('inactive'),
+        Type.Literal('pending'),
+      ]),
+      count: Type.Integer(),
+      price: Type.Number(),
+    });
+
+    // ❌ Bad: Vague types
+    const BadSchema = Type.Object({
+      status: Type.String(),  // Can be any string
+      count: Type.Unknown(),  // Unknown type
+      price: Type.Unknown(),
+    });
+    ```
+
+=== "Rust"
+
+    ```rust
+    use serde_json::{json, Value};
+
+    // ✅ Good: Clear types
+    fn good_schema() -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "status": {"type": "string", "enum": ["active", "inactive", "pending"]},
+                "count":  {"type": "integer"},
+                "price":  {"type": "number"}
+            },
+            "required": ["status", "count", "price"]
+        })
+    }
+
+    // ❌ Bad: Vague types
+    fn bad_schema() -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "status": {"type": "string"}, // Can be any string
+                "count":  {},                  // Unknown type
+                "price":  {}
+            },
+            "required": ["status", "count", "price"]
+        })
+    }
+    ```
 
 ### 9.3 Set Reasonable Constraints
 
-```python
-# ✅ Good: Has reasonable constraints
-class GoodSchema(BaseModel):
-    username: str = Field(..., min_length=3, max_length=20)
-    age: int = Field(..., ge=0, le=150)
-    email: str = Field(..., pattern=r"^[\w\.-]+@[\w\.-]+\.\w+$")
+=== "Python"
 
-# ❌ Bad: No constraints
-class BadSchema(BaseModel):
-    username: str  # Can be empty string or very long
-    age: int       # Can be negative or absurd number
-    email: str     # Can be any string
-```
+    ```python
+    from pydantic import BaseModel, Field
+
+    # ✅ Good: Has reasonable constraints
+    class GoodSchema(BaseModel):
+        username: str = Field(..., min_length=3, max_length=20)
+        age: int = Field(..., ge=0, le=150)
+        email: str = Field(..., pattern=r"^[\w\.-]+@[\w\.-]+\.\w+$")
+
+    # ❌ Bad: No constraints
+    class BadSchema(BaseModel):
+        username: str  # Can be empty string or very long
+        age: int       # Can be negative or absurd number
+        email: str     # Can be any string
+    ```
+
+=== "TypeScript"
+
+    ```typescript
+    import { Type } from '@sinclair/typebox';
+
+    // ✅ Good: Has reasonable constraints
+    const GoodSchema = Type.Object({
+      username: Type.String({ minLength: 3, maxLength: 20 }),
+      age: Type.Integer({ minimum: 0, maximum: 150 }),
+      email: Type.String({ pattern: '^[\\w\\.-]+@[\\w\\.-]+\\.\\w+$' }),
+    });
+
+    // ❌ Bad: No constraints
+    const BadSchema = Type.Object({
+      username: Type.String(), // Can be empty string or very long
+      age: Type.Integer(),     // Can be negative or absurd number
+      email: Type.String(),    // Can be any string
+    });
+    ```
+
+=== "Rust"
+
+    ```rust
+    use serde_json::{json, Value};
+
+    // ✅ Good: Has reasonable constraints
+    fn good_schema() -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "username": {"type": "string",  "minLength": 3, "maxLength": 20},
+                "age":      {"type": "integer", "minimum": 0,    "maximum": 150},
+                "email":    {"type": "string",  "pattern": "^[\\w\\.-]+@[\\w\\.-]+\\.\\w+$"}
+            },
+            "required": ["username", "age", "email"]
+        })
+    }
+
+    // ❌ Bad: No constraints
+    fn bad_schema() -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "username": {"type": "string"},
+                "age":      {"type": "integer"},
+                "email":    {"type": "string"}
+            },
+            "required": ["username", "age", "email"]
+        })
+    }
+    ```
 
 ### 9.4 Separate Complex Schemas
 
-```python
-# ✅ Good: Reusable and clear
-class Address(BaseModel):
-    """Address - reusable"""
-    city: str = Field(..., description="City")
-    street: str = Field(..., description="Street")
+=== "Python"
 
-class OrderInput(BaseModel):
-    shipping_address: Address
-    billing_address: Address
+    ```python
+    from pydantic import BaseModel, Field
 
-# ❌ Bad: Duplicate definitions
-class OrderInput(BaseModel):
-    shipping_city: str
-    shipping_street: str
-    billing_city: str
-    billing_street: str
-```
+    # ✅ Good: Reusable and clear
+    class Address(BaseModel):
+        """Address - reusable"""
+        city: str = Field(..., description="City")
+        street: str = Field(..., description="Street")
+
+    class OrderInputGood(BaseModel):
+        shipping_address: Address
+        billing_address: Address
+
+    # ❌ Bad: Duplicate definitions
+    class OrderInputBad(BaseModel):
+        shipping_city: str
+        shipping_street: str
+        billing_city: str
+        billing_street: str
+    ```
+
+=== "TypeScript"
+
+    ```typescript
+    import { Type } from '@sinclair/typebox';
+
+    // ✅ Good: Reusable and clear
+    const Address = Type.Object({
+      city: Type.String({ description: 'City' }),
+      street: Type.String({ description: 'Street' }),
+    });
+
+    const OrderInputGood = Type.Object({
+      shipping_address: Type.Composite([Address]),
+      billing_address: Type.Composite([Address]),
+    });
+
+    // ❌ Bad: Duplicate definitions
+    const OrderInputBad = Type.Object({
+      shipping_city: Type.String(),
+      shipping_street: Type.String(),
+      billing_city: Type.String(),
+      billing_street: Type.String(),
+    });
+    ```
+
+=== "Rust"
+
+    ```rust
+    use serde_json::{json, Value};
+
+    // ✅ Good: Reusable and clear
+    fn address_schema() -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "city":   {"type": "string", "description": "City"},
+                "street": {"type": "string", "description": "Street"}
+            },
+            "required": ["city", "street"]
+        })
+    }
+
+    fn order_input_good_schema() -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "shipping_address": address_schema(),
+                "billing_address":  address_schema()
+            },
+            "required": ["shipping_address", "billing_address"]
+        })
+    }
+
+    // ❌ Bad: Duplicate definitions
+    fn order_input_bad_schema() -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "shipping_city":   {"type": "string"},
+                "shipping_street": {"type": "string"},
+                "billing_city":    {"type": "string"},
+                "billing_street":  {"type": "string"}
+            },
+            "required": ["shipping_city", "shipping_street", "billing_city", "billing_street"]
+        })
+    }
+    ```
 
 ---
 
@@ -812,29 +2195,91 @@ apcore specifies **2^53 - 1** (`9007199254740991`) as the cross-language integer
 | Arbitrary precision integer | `type: string` + `format: bigint` | Like blockchain nonce |
 | High precision decimal | `type: string` + `format: decimal` | Like currency, exchange rate |
 
-```python
-from pydantic import BaseModel, Field
+=== "Python"
 
-class PaymentInput(BaseModel):
-    # Within safe range — use int directly
-    user_id: int = Field(..., description="User ID", ge=0)
+    ```python
+    from pydantic import BaseModel, Field
 
-    # Beyond safe range — use string + format
-    order_no: str = Field(
-        ...,
-        description="Snowflake order number",
-        pattern=r"^\d+$",
-        json_schema_extra={"format": "int64"}
-    )
+    class PaymentInput(BaseModel):
+        # Within safe range — use int directly
+        user_id: int = Field(..., description="User ID", ge=0)
 
-    # High precision amount
-    amount: str = Field(
-        ...,
-        description="Payment amount (accurate to cent)",
-        pattern=r"^-?\d+\.\d{2}$",
-        json_schema_extra={"format": "decimal"}
-    )
-```
+        # Beyond safe range — use string + format
+        order_no: str = Field(
+            ...,
+            description="Snowflake order number",
+            pattern=r"^\d+$",
+            json_schema_extra={"format": "int64"},
+        )
+
+        # High precision amount
+        amount: str = Field(
+            ...,
+            description="Payment amount (accurate to cent)",
+            pattern=r"^-?\d+\.\d{2}$",
+            json_schema_extra={"format": "decimal"},
+        )
+    ```
+
+=== "TypeScript"
+
+    ```typescript
+    import { Type } from '@sinclair/typebox';
+
+    const PaymentInput = Type.Object({
+      // Within safe range — use integer directly
+      user_id: Type.Integer({ description: 'User ID', minimum: 0 }),
+
+      // Beyond safe range — use string + format
+      order_no: Type.String({
+        description: 'Snowflake order number',
+        pattern: '^\\d+$',
+        format: 'int64',
+      }),
+
+      // High precision amount
+      amount: Type.String({
+        description: 'Payment amount (accurate to cent)',
+        pattern: '^-?\\d+\\.\\d{2}$',
+        format: 'decimal',
+      }),
+    });
+    ```
+
+=== "Rust"
+
+    ```rust
+    use serde_json::{json, Value};
+
+    fn payment_input_schema() -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                // Within safe range — use integer directly
+                "user_id": {
+                    "type": "integer",
+                    "description": "User ID",
+                    "minimum": 0
+                },
+                // Beyond safe range — use string + format
+                "order_no": {
+                    "type": "string",
+                    "description": "Snowflake order number",
+                    "pattern": "^\\d+$",
+                    "format": "int64"
+                },
+                // High precision amount
+                "amount": {
+                    "type": "string",
+                    "description": "Payment amount (accurate to cent)",
+                    "pattern": "^-?\\d+\\.\\d{2}$",
+                    "format": "decimal"
+                }
+            },
+            "required": ["user_id", "order_no", "amount"]
+        })
+    }
+    ```
 
 > For complete large number type mapping specifications, see [docs/spec/type-mapping.md §14.1](../spec/type-mapping.md#141-large-integer-precision-loss).
 
@@ -906,19 +2351,59 @@ Each field's `description` should answer "**What does the AI need to know to cor
 | Explain default behavior | Like "If not filled, send to all subscribers" |
 | Explain related constraints | Like "When format is html, template_id must be provided" |
 
-```python
-# ❌ Bad: Repeats type information, no actual guidance
-body: str = Field(
-    ...,
-    description="Email body, string type"
-)
+=== "Python"
 
-# ✅ Good: Explains semantics and usage
-body: str = Field(
-    ...,
-    description="Email body content, supports plain text or HTML. HTML format requires html=true"
-)
-```
+    ```python
+    from pydantic import Field
+
+    # ❌ Bad: Repeats type information, no actual guidance
+    body_bad = Field(
+        ...,
+        description="Email body, string type",
+    )
+
+    # ✅ Good: Explains semantics and usage
+    body_good = Field(
+        ...,
+        description="Email body content, supports plain text or HTML. HTML format requires html=true",
+    )
+    ```
+
+=== "TypeScript"
+
+    ```typescript
+    import { Type } from '@sinclair/typebox';
+
+    // ❌ Bad: Repeats type information, no actual guidance
+    const bodyBad = Type.String({
+      description: 'Email body, string type',
+    });
+
+    // ✅ Good: Explains semantics and usage
+    const bodyGood = Type.String({
+      description:
+        'Email body content, supports plain text or HTML. HTML format requires html=true',
+    });
+    ```
+
+=== "Rust"
+
+    ```rust
+    use serde_json::{json, Value};
+
+    // ❌ Bad: Repeats type information, no actual guidance
+    fn body_bad() -> Value {
+        json!({"type": "string", "description": "Email body, string type"})
+    }
+
+    // ✅ Good: Explains semantics and usage
+    fn body_good() -> Value {
+        json!({
+            "type": "string",
+            "description": "Email body content, supports plain text or HTML. HTML format requires html=true"
+        })
+    }
+    ```
 
 ### 11.3 Token Awareness
 

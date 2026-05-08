@@ -3,7 +3,7 @@
 > Configure access control rules between modules.
 
 !!! note "Cross-language applicability"
-    Code examples in this guide use Python syntax. The ACL configuration format (YAML) is identical across all SDKs. For TypeScript and Rust API equivalents, see the [ACL System feature spec](../features/acl-system.md).
+    The ACL configuration format (YAML) is identical across all SDKs and is shown as bare YAML blocks. SDK code examples are shown side-by-side for Python, TypeScript, and Rust. See the [ACL System feature spec](../features/acl-system.md) for the full API reference.
 
 ## 1. Overview
 
@@ -40,25 +40,86 @@ rules:
 
 ### 2.2 Load and Use
 
-```python
-from apcore import Registry, Executor, ACL
+=== "Python"
 
-registry = Registry(extensions_dir="./extensions")
-registry.discover()
+    ```python
+    from apcore import Registry, Executor
+    from apcore.acl import ACL
 
-# Load ACL
-acl = ACL.load("./acl/global_acl.yaml")
+    registry = Registry(extensions_dir="./extensions")
+    registry.discover()
 
-# Create Executor
-executor = Executor(registry=registry, acl=acl)
+    # Load ACL from YAML
+    acl = ACL.load("./acl/global_acl.yaml")
 
-# Permissions are automatically checked on invocation
-result = executor.call(
-    module_id="executor.email.send_email",
-    inputs={...},
-    context=context
-)
-```
+    # Create Executor with ACL wired in
+    executor = Executor(registry=registry, acl=acl)
+
+    # Permissions are automatically checked on invocation
+    result = executor.call(
+        module_id="executor.email.send_email",
+        inputs={"to": "alice@example.com", "subject": "Hello", "body": "Hi"},
+        context=None,  # caller_id defaults to @external
+    )
+    ```
+
+=== "TypeScript"
+
+    ```typescript
+    import { Registry, Executor } from 'apcore-js';
+    import { ACL } from 'apcore-js';
+
+    const registry = new Registry({ extensionsDir: './extensions' });
+    await registry.discover();
+
+    // Load ACL from YAML
+    const acl = ACL.load('./acl/global_acl.yaml');
+
+    // Create Executor with ACL wired in
+    const executor = new Executor({ registry, acl });
+
+    // Permissions are automatically checked on invocation
+    const result = await executor.call(
+      'executor.email.send_email',
+      { to: 'alice@example.com', subject: 'Hello', body: 'Hi' },
+      null, // caller_id defaults to @external
+    );
+    ```
+
+=== "Rust"
+
+    ```rust
+    use apcore::acl::ACL;
+    use apcore::config::Config;
+    use apcore::executor::Executor;
+    use apcore::registry::Registry;
+    use serde_json::json;
+    use std::sync::Arc;
+
+    # async fn run() -> Result<(), Box<dyn std::error::Error>> {
+    let registry = Arc::new(Registry::new());
+    // discover() takes a Discoverer; see registry docs for FsDiscoverer setup
+    let config = Arc::new(Config::default());
+
+    // Load ACL from YAML
+    let acl = ACL::load("./acl/global_acl.yaml")?;
+
+    // Create Executor with ACL wired in
+    let mut executor = Executor::new(registry, config);
+    executor.set_acl(acl);
+
+    // Permissions are automatically checked on invocation
+    let inputs = json!({
+        "to": "alice@example.com",
+        "subject": "Hello",
+        "body": "Hi"
+    });
+    let result = executor
+        .call("executor.email.send_email", inputs, None, None)
+        .await?;
+    # Ok(())
+    # }
+    ```
 
 ---
 
@@ -363,36 +424,140 @@ executor.call(module_id, inputs, context)
 
 ### 7.2 Error Handling
 
-```python
-from apcore import ACLDeniedError
+=== "Python"
 
-try:
-    result = executor.call(
-        module_id="internal.secret",
-        inputs={...},
-        context=context
-    )
-except ACLDeniedError as e:
-    print(f"Access denied!")
-    print(f"Caller: {e.caller_id}")
-    print(f"Target: {e.target_id}")
-    print(f"Matched rule: {e.matched_rule}")
-```
+    ```python
+    from apcore.errors import ACLDeniedError
+
+    try:
+        result = executor.call(
+            module_id="internal.secret",
+            inputs={"key": "value"},
+            context=context,
+        )
+    except ACLDeniedError as e:
+        print("Access denied!")
+        print(f"Caller: {e.caller_id}")
+        print(f"Target: {e.target_id}")
+        print(f"Code:   {e.code}")
+    ```
+
+=== "TypeScript"
+
+    ```typescript
+    import { ACLDeniedError } from 'apcore-js';
+
+    try {
+      const result = await executor.call(
+        'internal.secret',
+        { key: 'value' },
+        context,
+      );
+    } catch (e) {
+      if (e instanceof ACLDeniedError) {
+        console.log('Access denied!');
+        console.log(`Caller: ${e.callerId}`);
+        console.log(`Target: ${e.targetId}`);
+        console.log(`Code:   ${e.code}`);
+      } else {
+        throw e;
+      }
+    }
+    ```
+
+=== "Rust"
+
+    ```rust
+    use apcore::errors::{ErrorCode, ModuleError};
+    use serde_json::json;
+
+    # async fn run(executor: &apcore::executor::Executor) -> Result<(), ModuleError> {
+    match executor
+        .call("internal.secret", json!({"key": "value"}), None, None)
+        .await
+    {
+        Ok(result) => { /* use result */ }
+        Err(e) if e.code == ErrorCode::ACLDenied => {
+            println!("Access denied!");
+            // caller_id / target_id are surfaced via ModuleError.details
+            if let Some(caller) = e.details.get("caller_id") {
+                println!("Caller: {caller}");
+            }
+            if let Some(target) = e.details.get("target_id") {
+                println!("Target: {target}");
+            }
+        }
+        Err(e) => return Err(e),
+    }
+    # Ok(())
+    # }
+    ```
 
 ### 7.3 Debug Mode
 
-```python
-from apcore import ACL
+For deeper visibility, install an `audit_logger` that receives a structured `AuditEntry` for every ACL decision (matched rule index, decision, identity, trace ID, handler errors). Audit logging MUST stay enabled in production: it is the canonical record of every allow/deny outcome.
 
-acl = ACL.load("./acl/global_acl.yaml")
+=== "Python"
 
-# Enable debug mode
-acl.debug = True
+    ```python
+    import logging
+    from apcore.acl import ACL, AuditEntry
 
-# All checks will output logs
-# [ACL] Check: orchestrator.user.register → executor.email.send_email
-# [ACL] Matched rule #1: allow
-```
+    def log_audit(entry: AuditEntry) -> None:
+        logging.info(
+            "ACL %s: %s -> %s rule=%s reason=%s",
+            entry.decision,
+            entry.caller_id,
+            entry.target_id,
+            entry.matched_rule,
+            entry.reason,
+        )
+
+    acl = ACL.load("./acl/global_acl.yaml")
+    acl._audit_logger = log_audit  # supply via constructor in production
+    acl.debug = True  # enables verbose check() debug logging
+    ```
+
+=== "TypeScript"
+
+    ```typescript
+    import { ACL, AuditEntry } from 'apcore-js';
+
+    const auditLogger = (entry: AuditEntry): void => {
+      console.info(
+        `ACL ${entry.decision}: ${entry.callerId} -> ${entry.targetId} ` +
+          `rule=${entry.matchedRule} reason=${entry.reason}`,
+      );
+    };
+
+    const rules = ACL.load('./acl/global_acl.yaml').rules ?? [];
+    const acl = new ACL(rules, 'deny', auditLogger);
+    acl.debug = true; // enables verbose check() debug logging
+    ```
+
+=== "Rust"
+
+    ```rust
+    use apcore::acl::ACL;
+
+    # fn run() -> Result<(), apcore::errors::ModuleError> {
+    let mut acl = ACL::load("./acl/global_acl.yaml")?;
+    acl.set_audit_logger(|entry| {
+        tracing::info!(
+            decision = %entry.decision,
+            caller   = %entry.caller_id,
+            target   = %entry.target_id,
+            rule     = ?entry.matched_rule,
+            reason   = %entry.reason,
+            "ACL check"
+        );
+    });
+    # Ok(())
+    # }
+    ```
+
+!!! warning "Always keep an audit logger in production"
+    Audit entries are the only durable trail of access decisions — security review and incident response depend on them. Do not strip the audit block from your wiring just because checks are passing.
 
 ---
 
@@ -400,49 +565,179 @@ acl.debug = True
 
 ### 8.1 Runtime Modification
 
-```python
-from apcore import ACL, ACLRule
+=== "Python"
 
-acl = ACL.load("./acl/global_acl.yaml")
+    ```python
+    from apcore.acl import ACL, ACLRule
 
-# Add rule
-acl.add_rule(ACLRule(
-    callers=["temp.module"],
-    targets=["executor.*"],
-    effect="allow"
-))
+    acl = ACL.load("./acl/global_acl.yaml")
 
-# Remove rule
-acl.remove_rule(callers=["temp.module"], targets=["executor.*"])
+    # Add rule (inserted at position 0 — highest priority)
+    acl.add_rule(ACLRule(
+        callers=["temp.module"],
+        targets=["executor.*"],
+        effect="allow",
+        description="Temporary debug rule",
+    ))
 
-# Reload
-acl.reload()
-```
+    # Remove the matching rule
+    removed = acl.remove_rule(
+        callers=["temp.module"],
+        targets=["executor.*"],
+    )
+
+    # Reload from the original YAML (re-reads file from disk)
+    acl.reload()
+    ```
+
+=== "TypeScript"
+
+    ```typescript
+    import { ACL } from 'apcore-js';
+
+    const acl = ACL.load('./acl/global_acl.yaml');
+
+    // Add rule (inserted at position 0 — highest priority)
+    acl.addRule({
+      callers: ['temp.module'],
+      targets: ['executor.*'],
+      effect: 'allow',
+      description: 'Temporary debug rule',
+    });
+
+    // Remove the matching rule
+    const removed: boolean = acl.removeRule(
+      ['temp.module'],
+      ['executor.*'],
+    );
+
+    // Reload from the original YAML (re-reads file from disk)
+    acl.reload();
+    ```
+
+=== "Rust"
+
+    ```rust
+    use apcore::acl::{ACL, ACLRule};
+
+    # fn run() -> Result<(), apcore::errors::ModuleError> {
+    let mut acl = ACL::load("./acl/global_acl.yaml")?;
+
+    // Add rule (inserted at position 0 — highest priority)
+    acl.add_rule(ACLRule {
+        callers: vec!["temp.module".to_string()],
+        targets: vec!["executor.*".to_string()],
+        effect: "allow".to_string(),
+        description: Some("Temporary debug rule".to_string()),
+        conditions: None,
+    });
+
+    // Remove the matching rule
+    let removed: bool = acl.remove_rule(
+        &["temp.module".to_string()],
+        &["executor.*".to_string()],
+    );
+
+    // Reload from the original YAML (re-reads file from disk)
+    acl.reload()?;
+    # Ok(())
+    # }
+    ```
 
 ### 8.2 Dynamic Check Based on Context
 
-```python
-class DynamicACL(ACL):
-    """ACL with dynamic permission checking support"""
+For dynamic decisions (time windows, identity attributes, external lookups) prefer **registering a custom condition handler** over subclassing `ACL`. Custom handlers are first-class in every SDK and can be referenced from YAML rules. The example below adds a `time_window` condition that gates `maintenance.*` modules to a nightly window.
 
-    def check(self, caller_id: str, target_id: str, context: Context) -> bool:
-        # Check static rules first
-        if not super().check(caller_id, target_id, context):
-            return False
+=== "Python"
 
-        # Dynamic check: based on identity roles
-        if context.identity:
-            if "admin" in context.identity.roles:
-                return True  # Admins can call any module
+    ```python
+    from datetime import datetime
+    from typing import Any
 
-        # Dynamic check: based on time
-        from datetime import datetime
-        hour = datetime.now().hour
-        if target_id.startswith("maintenance.") and not (2 <= hour <= 6):
-            return False  # Maintenance modules only available at night
+    from apcore.acl import ACL
+    from apcore.context import Context
 
-        return True
-```
+    class TimeWindowHandler:
+        """Allow only when current hour is within [start, end]."""
+
+        def evaluate(self, value: Any, context: Context) -> bool:
+            if not isinstance(value, dict):
+                return False
+            start = int(value.get("start_hour", 0))
+            end = int(value.get("end_hour", 23))
+            hour = datetime.now().hour
+            return start <= hour <= end
+
+    ACL.register_condition("time_window", TimeWindowHandler())
+
+    # YAML can now reference the new condition:
+    #   - callers: ["*"]
+    #     targets: ["maintenance.*"]
+    #     effect: allow
+    #     conditions:
+    #       time_window: { start_hour: 2, end_hour: 6 }
+    ```
+
+=== "TypeScript"
+
+    ```typescript
+    import { ACL, Context } from 'apcore-js';
+
+    // Structural shape matches the package's internal ACLConditionHandler.
+    class TimeWindowHandler {
+      evaluate(value: unknown, _context: Context): boolean {
+        if (typeof value !== 'object' || value === null) return false;
+        const v = value as { start_hour?: number; end_hour?: number };
+        const start = v.start_hour ?? 0;
+        const end = v.end_hour ?? 23;
+        const hour = new Date().getHours();
+        return hour >= start && hour <= end;
+      }
+    }
+
+    ACL.registerCondition('time_window', new TimeWindowHandler());
+
+    // YAML can now reference the new condition:
+    //   - callers: ["*"]
+    //     targets: ["maintenance.*"]
+    //     effect: allow
+    //     conditions:
+    //       time_window: { start_hour: 2, end_hour: 6 }
+    ```
+
+=== "Rust"
+
+    ```rust
+    use apcore::acl::ACL;
+    use apcore::acl_handlers::ACLConditionHandler;
+    use apcore::context::Context;
+    use async_trait::async_trait;
+    use chrono::{Local, Timelike};
+    use serde_json::Value;
+    use std::sync::Arc;
+
+    pub struct TimeWindowHandler;
+
+    #[async_trait]
+    impl ACLConditionHandler for TimeWindowHandler {
+        async fn evaluate(&self, value: &Value, _ctx: &Context<Value>) -> bool {
+            let Some(obj) = value.as_object() else { return false };
+            let start = obj.get("start_hour").and_then(|v| v.as_u64()).unwrap_or(0);
+            let end = obj.get("end_hour").and_then(|v| v.as_u64()).unwrap_or(23);
+            let hour = Local::now().hour() as u64;
+            hour >= start && hour <= end
+        }
+    }
+
+    ACL::register_condition("time_window", Arc::new(TimeWindowHandler));
+
+    // YAML can now reference the new condition:
+    //   - callers: ["*"]
+    //     targets: ["maintenance.*"]
+    //     effect: allow
+    //     conditions:
+    //       time_window: { start_hour: 2, end_hour: 6 }
+    ```
 
 ---
 
@@ -596,23 +891,67 @@ rules:
 
 ### 10.2 Testing ACL
 
-```python
-from apcore import ACL
+=== "Python"
 
-acl = ACL.load("./acl/global_acl.yaml")
+    ```python
+    from apcore.acl import ACL
 
-# Test specific calls
-test_cases = [
-    ("orchestrator.user.register", "executor.email.send_email", True),
-    ("api.handler.test", "internal.secret", False),
-    ("admin.panel", "internal.secret", True),
-]
+    acl = ACL.load("./acl/global_acl.yaml")
 
-for caller, target, expected in test_cases:
-    result = acl.check(caller, target)
-    status = "✓" if result == expected else "✗"
-    print(f"{status} {caller} → {target}: {result}")
-```
+    test_cases = [
+        ("orchestrator.user.register", "executor.email.send_email", True),
+        ("api.handler.test", "internal.secret", False),
+        ("admin.panel", "internal.secret", True),
+    ]
+
+    for caller, target, expected in test_cases:
+        result = acl.check(caller, target)
+        status = "OK" if result == expected else "FAIL"
+        print(f"[{status}] {caller} -> {target}: {result}")
+    ```
+
+=== "TypeScript"
+
+    ```typescript
+    import { ACL } from 'apcore-js';
+
+    const acl = ACL.load('./acl/global_acl.yaml');
+
+    const testCases: Array<[string, string, boolean]> = [
+      ['orchestrator.user.register', 'executor.email.send_email', true],
+      ['api.handler.test', 'internal.secret', false],
+      ['admin.panel', 'internal.secret', true],
+    ];
+
+    for (const [caller, target, expected] of testCases) {
+      const result = acl.check(caller, target);
+      const status = result === expected ? 'OK' : 'FAIL';
+      console.log(`[${status}] ${caller} -> ${target}: ${result}`);
+    }
+    ```
+
+=== "Rust"
+
+    ```rust
+    use apcore::acl::ACL;
+
+    # fn run() -> Result<(), apcore::errors::ModuleError> {
+    let acl = ACL::load("./acl/global_acl.yaml")?;
+
+    let test_cases: &[(&str, &str, bool)] = &[
+        ("orchestrator.user.register", "executor.email.send_email", true),
+        ("api.handler.test", "internal.secret", false),
+        ("admin.panel", "internal.secret", true),
+    ];
+
+    for (caller, target, expected) in test_cases {
+        let result = acl.check(Some(caller), target, None);
+        let status = if result == *expected { "OK" } else { "FAIL" };
+        println!("[{status}] {caller} -> {target}: {result}");
+    }
+    # Ok(())
+    # }
+    ```
 
 ---
 

@@ -209,82 +209,493 @@ After deserialization, the `executor` reference MUST be re-injected before the C
 === "Rust"
 
     ```rust
+    use apcore::{Context, Module};
+    use apcore::errors::{ErrorCode, ModuleError};
+    use async_trait::async_trait;
+    use serde_json::{json, Value};
+
+    pub struct DeleteUserModule;
+
+    #[async_trait]
     impl Module for DeleteUserModule {
-        fn execute(&self, input: DeleteUserInput, ctx: &Context) -> ModuleResult<DeleteUserOutput> {
-            let identity = ctx.identity().ok_or(ModuleError::Unauthenticated)?;
+        fn description(&self) -> &str { "Delete a user (admin only)" }
+        fn input_schema(&self) -> Value { json!({ "type": "object" }) }
+        fn output_schema(&self) -> Value { json!({ "type": "object" }) }
+
+        async fn execute(
+            &self,
+            inputs: Value,
+            ctx: &Context<Value>,
+        ) -> Result<Value, ModuleError> {
+            let identity = ctx.identity.as_ref().ok_or_else(|| {
+                ModuleError::new(ErrorCode::ACLDenied, "Authentication required")
+            })?;
             if !identity.roles().iter().any(|r| r == "admin") {
-                return Err(ModuleError::Forbidden);
+                return Err(ModuleError::new(ErrorCode::ACLDenied, "Admin permission required"));
             }
-            self.delete_user(&input.user_id)?;
-            Ok(DeleteUserOutput { success: true, operated_by: Some(identity.id().into()) })
+            let user_id = inputs.get("user_id").and_then(|v| v.as_str()).unwrap_or_default();
+            // self.delete_user(user_id).await?;
+            let _ = user_id;
+            Ok(json!({ "success": true, "operated_by": identity.id() }))
         }
     }
     ```
 
 ### Calling another module
 
-```python
-class UserRegisterModule(Module):
-    def execute(self, inputs: dict, context: Context) -> dict:
-        user_id = self._create_user(inputs)
+=== "Python"
 
-        # context is propagated automatically; framework updates caller_id and call_chain
-        result = context.executor.call(
-            module_id="executor.email.send_email",
-            inputs={"to": inputs["email"], "subject": "Welcome", "body": "..."},
-            context=context,
-        )
-        return {"user_id": user_id, "email_sent": result["success"]}
-```
+    ```python
+    from apcore import Context, Module
+
+    class UserRegisterModule(Module):
+        def execute(self, inputs: dict, context: Context) -> dict:
+            user_id = self._create_user(inputs)
+
+            # context is propagated automatically;
+            # framework updates caller_id and call_chain
+            result = context.executor.call(
+                module_id="executor.email.send_email",
+                inputs={"to": inputs["email"], "subject": "Welcome", "body": "..."},
+                context=context,
+            )
+            return {"user_id": user_id, "email_sent": result["success"]}
+    ```
+
+=== "TypeScript"
+
+    ```typescript
+    import type { Context, Executor } from 'apcore-js';
+
+    interface RegisterInput { email: string; name: string }
+    interface RegisterOutput { userId: string; emailSent: boolean }
+
+    export class UserRegisterModule {
+        async execute(inputs: RegisterInput, context: Context): Promise<RegisterOutput> {
+            const userId = await this.createUser(inputs);
+
+            // context is propagated automatically;
+            // framework updates callerId and callChain
+            const executor = context.executor as Executor;
+            const result = await executor.call(
+                'executor.email.send_email',
+                { to: inputs.email, subject: 'Welcome', body: '...' },
+                context,
+            );
+            return { userId, emailSent: Boolean(result.success) };
+        }
+
+        private async createUser(_inputs: RegisterInput): Promise<string> {
+            return 'u-123';
+        }
+    }
+    ```
+
+=== "Rust"
+
+    ```rust
+    use apcore::{Context, Executor, Module, ModuleError};
+    use serde_json::{json, Value};
+    use std::sync::Arc;
+
+    #[derive(Debug)]
+    pub struct UserRegisterModule {
+        executor: Arc<Executor>,
+    }
+
+    #[async_trait::async_trait]
+    impl Module for UserRegisterModule {
+        fn id(&self) -> &str { "orchestrator.user_register" }
+        fn description(&self) -> &str { "Register a new user and send welcome email" }
+
+        async fn execute(
+            &self,
+            inputs: Value,
+            ctx: &Context<Value>,
+        ) -> Result<Value, ModuleError> {
+            let email = inputs["email"].as_str().unwrap_or_default();
+            let user_id = self.create_user(&inputs).await?;
+
+            // context is propagated automatically;
+            // framework updates caller_id and call_chain
+            let result = self.executor.call(
+                "executor.email.send_email",
+                json!({ "to": email, "subject": "Welcome", "body": "..." }),
+                Some(ctx),
+                None,
+            ).await?;
+
+            Ok(json!({
+                "user_id": user_id,
+                "email_sent": result["success"].as_bool().unwrap_or(false),
+            }))
+        }
+    }
+
+    impl UserRegisterModule {
+        async fn create_user(&self, _inputs: &Value) -> Result<String, ModuleError> {
+            Ok("u-123".to_string())
+        }
+    }
+    ```
 
 ### AI orchestration via `data`
 
-```python
-context = Context.create(executor=executor, identity=user_identity)
-context.data["task_info"] = {"type": "report", "date": "2024-01"}
+=== "Python"
 
-executor.call("module_fetch",   inputs={...}, context=context)
-# module_fetch writes context.data["raw_records"] = [...]
+    ```python
+    from apcore import APCore, Context, Identity
 
-executor.call("module_analyze", inputs={...}, context=context)
-# module_analyze reads context.data["raw_records"] and writes context.data["analysis"]
+    client = APCore()
+    user_identity = Identity(id="user-42", type="user", roles=["analyst"])
 
-executor.call("module_report",  inputs={...}, context=context)
-# module_report reads both prior outputs from context.data
-```
+    context = Context.create(executor=client.executor, identity=user_identity)
+    context.data["task_info"] = {"type": "report", "date": "2024-01"}
+
+    client.executor.call("module_fetch",   inputs={}, context=context)
+    # module_fetch writes context.data["raw_records"] = [...]
+
+    client.executor.call("module_analyze", inputs={}, context=context)
+    # module_analyze reads context.data["raw_records"]
+    # and writes context.data["analysis"]
+
+    client.executor.call("module_report",  inputs={}, context=context)
+    # module_report reads both prior outputs from context.data
+    ```
+
+=== "TypeScript"
+
+    ```typescript
+    import { APCore, Context, createIdentity } from 'apcore-js';
+
+    const client = new APCore();
+    const userIdentity = createIdentity('user-42', 'user', ['analyst']);
+
+    const context = Context.create(client.executor, userIdentity);
+    context.data['task_info'] = { type: 'report', date: '2024-01' };
+
+    await client.executor.call('module_fetch',   {}, context);
+    // module_fetch writes context.data['raw_records'] = [...]
+
+    await client.executor.call('module_analyze', {}, context);
+    // module_analyze reads context.data['raw_records']
+    // and writes context.data['analysis']
+
+    await client.executor.call('module_report',  {}, context);
+    // module_report reads both prior outputs from context.data
+    ```
+
+=== "Rust"
+
+    ```rust
+    use apcore::{APCore, Context, Identity};
+    use serde_json::{json, Value};
+    use std::collections::HashMap;
+
+    # async fn run(client: APCore) -> Result<(), Box<dyn std::error::Error>> {
+    let user_identity = Identity::new(
+        "user-42".into(),
+        "user".into(),
+        vec!["analyst".into()],
+        HashMap::new(),
+    );
+
+    let context: Context<Value> = Context::create(
+        Some(user_identity),
+        Value::Null,
+        None,
+        None,
+    );
+    context.data.write().insert(
+        "task_info".into(),
+        json!({ "type": "report", "date": "2024-01" }),
+    );
+
+    client.executor.call("module_fetch",   json!({}), Some(&context), None).await?;
+    // module_fetch writes context.data["raw_records"] = [...]
+
+    client.executor.call("module_analyze", json!({}), Some(&context), None).await?;
+    // module_analyze reads context.data["raw_records"]
+    // and writes context.data["analysis"]
+
+    client.executor.call("module_report",  json!({}), Some(&context), None).await?;
+    // module_report reads both prior outputs from context.data
+    # Ok(()) }
+    ```
 
 ### Logging via `context.logger`
 
-```python
-class SendEmailModule(Module):
-    def execute(self, inputs: dict, context: Context) -> dict:
-        context.logger.info(f"Sending email to {inputs['to']}")
-        # Output: [abc-123] [executor.email.send_email] Sending email to user@example.com
-        ...
-```
+=== "Python"
+
+    ```python
+    from apcore import Context, Module
+
+    class SendEmailModule(Module):
+        def execute(self, inputs: dict, context: Context) -> dict:
+            context.logger.info(f"Sending email to {inputs['to']}")
+            # Output: [abc-123] [executor.email.send_email] Sending email to user@example.com
+            return {"success": True}
+    ```
+
+=== "TypeScript"
+
+    ```typescript
+    import type { Context } from 'apcore-js';
+
+    interface SendEmailInput { to: string; subject: string; body: string }
+
+    export class SendEmailModule {
+        async execute(inputs: SendEmailInput, context: Context) {
+            context.logger.info(`Sending email to ${inputs.to}`);
+            // Output: [abc-123] [executor.email.send_email] Sending email to user@example.com
+            return { success: true };
+        }
+    }
+    ```
+
+=== "Rust"
+
+    ```rust
+    use apcore::{Context, Module, ModuleError};
+    use serde_json::{json, Value};
+
+    #[derive(Debug)]
+    pub struct SendEmailModule;
+
+    #[async_trait::async_trait]
+    impl Module for SendEmailModule {
+        fn id(&self) -> &str { "executor.email.send_email" }
+        fn description(&self) -> &str { "Send a transactional email" }
+
+        async fn execute(
+            &self,
+            inputs: Value,
+            ctx: &Context<Value>,
+        ) -> Result<Value, ModuleError> {
+            let to = inputs["to"].as_str().unwrap_or_default();
+            ctx.logger().info(&format!("Sending email to {to}"));
+            // Output: [abc-123] [executor.email.send_email] Sending email to user@example.com
+            Ok(json!({ "success": true }))
+        }
+    }
+    ```
 
 ### Middleware redaction
 
-```python
-class LoggingMiddleware:
-    def before(self, module_id: str, inputs: dict, context: Context) -> dict:
-        # ✅ Safe: use redacted data
-        log.info(f"Calling {module_id}", extra={"inputs": context.redacted_inputs})
-        return inputs
-```
+=== "Python"
+
+    ```python
+    import logging
+    from apcore import Context
+    from apcore.middleware import Middleware
+
+    log = logging.getLogger(__name__)
+
+    class SafeLoggingMiddleware(Middleware):
+        def before(self, module_id: str, inputs: dict, context: Context) -> dict | None:
+            # Safe: use redacted data instead of raw inputs
+            log.info("Calling %s", module_id, extra={"inputs": context.redacted_inputs})
+            return None  # pass inputs through unchanged
+    ```
+
+=== "TypeScript"
+
+    ```typescript
+    import { Middleware, type Context } from 'apcore-js';
+
+    export class SafeLoggingMiddleware extends Middleware {
+        before(
+            moduleId: string,
+            inputs: Record<string, unknown>,
+            context: Context,
+        ): Record<string, unknown> | null {
+            // Safe: use redacted data instead of raw inputs
+            console.info(`Calling ${moduleId}`, { inputs: context.redactedInputs });
+            return null; // pass inputs through unchanged
+        }
+    }
+    ```
+
+=== "Rust"
+
+    ```rust
+    use apcore::middleware::Middleware;
+    use apcore::{Context, ModuleError};
+    use async_trait::async_trait;
+    use serde_json::Value;
+
+    #[derive(Debug)]
+    pub struct SafeLoggingMiddleware;
+
+    #[async_trait]
+    impl Middleware for SafeLoggingMiddleware {
+        fn name(&self) -> &str { "safe_logging" }
+
+        async fn before(
+            &self,
+            module_id: &str,
+            _inputs: Value,
+            ctx: &Context<Value>,
+        ) -> Result<Option<Value>, ModuleError> {
+            // Safe: use redacted data instead of raw inputs
+            tracing::info!(
+                module_id = module_id,
+                inputs = ?ctx.redacted_inputs,
+                "Calling module",
+            );
+            Ok(None) // pass inputs through unchanged
+        }
+
+        async fn after(
+            &self,
+            _module_id: &str,
+            _inputs: Value,
+            _output: Value,
+            _ctx: &Context<Value>,
+        ) -> Result<Option<Value>, ModuleError> {
+            Ok(None)
+        }
+
+        async fn on_error(
+            &self,
+            _module_id: &str,
+            _inputs: Value,
+            _error: &ModuleError,
+            _ctx: &Context<Value>,
+        ) -> Result<Option<Value>, ModuleError> {
+            Ok(None)
+        }
+    }
+    ```
 
 ### Tracing middleware writing to `data`
 
-```python
-class TracingMiddleware:
-    def before(self, module_id: str, inputs: dict, context: Context) -> None:
-        context.data["_apcore.mw.tracing.span_id"] = str(uuid.uuid4())[:16]
-        context.data["_apcore.mw.tracing.span_start"] = time.time()
+=== "Python"
 
-    def after(self, module_id: str, inputs: dict, output: dict, context: Context) -> None:
-        start = context.data.get("_apcore.mw.tracing.span_start", 0)
-        context.data["_apcore.mw.tracing.span_duration_ms"] = round((time.time() - start) * 1000)
-```
+    ```python
+    import time
+    import uuid
+    from apcore import Context
+    from apcore.middleware import Middleware
+
+    class TracingMiddleware(Middleware):
+        def before(self, module_id: str, inputs: dict, context: Context) -> None:
+            context.data["_apcore.mw.tracing.span_id"] = str(uuid.uuid4())[:16]
+            context.data["_apcore.mw.tracing.span_start"] = time.time()
+            return None
+
+        def after(
+            self,
+            module_id: str,
+            inputs: dict,
+            output: dict,
+            context: Context,
+        ) -> None:
+            start = context.data.get("_apcore.mw.tracing.span_start", 0)
+            context.data["_apcore.mw.tracing.span_duration_ms"] = round(
+                (time.time() - start) * 1000
+            )
+            return None
+    ```
+
+=== "TypeScript"
+
+    ```typescript
+    import { Middleware, type Context } from 'apcore-js';
+    import { randomUUID } from 'node:crypto';
+
+    export class TracingMiddleware extends Middleware {
+        before(
+            _moduleId: string,
+            _inputs: Record<string, unknown>,
+            context: Context,
+        ): null {
+            context.data['_apcore.mw.tracing.span_id'] = randomUUID().slice(0, 16);
+            context.data['_apcore.mw.tracing.span_start'] = Date.now();
+            return null;
+        }
+
+        after(
+            _moduleId: string,
+            _inputs: Record<string, unknown>,
+            _output: Record<string, unknown>,
+            context: Context,
+        ): null {
+            const start = (context.data['_apcore.mw.tracing.span_start'] as number) ?? 0;
+            context.data['_apcore.mw.tracing.span_duration_ms'] = Date.now() - start;
+            return null;
+        }
+    }
+    ```
+
+=== "Rust"
+
+    ```rust
+    use apcore::middleware::Middleware;
+    use apcore::{Context, ModuleError};
+    use async_trait::async_trait;
+    use serde_json::{json, Value};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn now_ms() -> u128 {
+        SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis()
+    }
+
+    #[derive(Debug)]
+    pub struct TracingMiddleware;
+
+    #[async_trait]
+    impl Middleware for TracingMiddleware {
+        fn name(&self) -> &str { "tracing" }
+
+        async fn before(
+            &self,
+            _module_id: &str,
+            _inputs: Value,
+            ctx: &Context<Value>,
+        ) -> Result<Option<Value>, ModuleError> {
+            let span_id: String = uuid::Uuid::new_v4()
+                .simple()
+                .to_string()
+                .chars()
+                .take(16)
+                .collect();
+            let mut data = ctx.data.write();
+            data.insert("_apcore.mw.tracing.span_id".into(), json!(span_id));
+            data.insert("_apcore.mw.tracing.span_start".into(), json!(now_ms() as u64));
+            Ok(None)
+        }
+
+        async fn after(
+            &self,
+            _module_id: &str,
+            _inputs: Value,
+            _output: Value,
+            ctx: &Context<Value>,
+        ) -> Result<Option<Value>, ModuleError> {
+            let mut data = ctx.data.write();
+            let start = data
+                .get("_apcore.mw.tracing.span_start")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as u128;
+            data.insert(
+                "_apcore.mw.tracing.span_duration_ms".into(),
+                json!((now_ms().saturating_sub(start)) as u64),
+            );
+            Ok(None)
+        }
+
+        async fn on_error(
+            &self,
+            _module_id: &str,
+            _inputs: Value,
+            _error: &ModuleError,
+            _ctx: &Context<Value>,
+        ) -> Result<Option<Value>, ModuleError> {
+            Ok(None)
+        }
+    }
+    ```
 
 ## Common `data` Uses
 

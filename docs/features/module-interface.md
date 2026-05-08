@@ -239,70 +239,63 @@ Normative behavioral contract. All SDK implementations MUST satisfy these guaran
 === "TypeScript"
 
     ```typescript
-    import { z } from "zod";
-    import { Module, Context, ModuleAnnotations } from "apcore";
+    import { Type } from '@sinclair/typebox';
+    import { APCore, createAnnotations, type Context } from 'apcore-js';
 
-    const SendEmailInput = z.object({
-      to: z.string().email().describe("Recipient email address"),
-      subject: z.string().max(200).describe("Email subject"),
-      body: z.string().describe("Email body"),
-      cc: z.array(z.string()).default([]).describe("CC list"),
+    const SendEmailInput = Type.Object({
+      to: Type.String({ format: 'email', description: 'Recipient email address' }),
+      subject: Type.String({ maxLength: 200, description: 'Email subject' }),
+      body: Type.String({ description: 'Email body' }),
+      cc: Type.Array(Type.String(), { default: [], description: 'CC list' }),
     });
 
-    const SendEmailOutput = z.object({
-      success: z.boolean().describe("Whether sending was successful"),
-      messageId: z.string().nullable().describe("Message ID"),
-      error: z.string().nullable().describe("Error message"),
+    const SendEmailOutput = Type.Object({
+      success: Type.Boolean({ description: 'Whether sending was successful' }),
+      messageId: Type.Union([Type.String(), Type.Null()], { description: 'Message ID' }),
+      error: Type.Union([Type.String(), Type.Null()], { description: 'Error message' }),
     });
 
-    export class SendEmailModule implements Module {
-      static description = "Send email to specified recipient. Uses SMTP protocol.";
-      static inputSchema = SendEmailInput;
-      static outputSchema = SendEmailOutput;
-      static tags = ["email", "notification"];
-      static annotations: ModuleAnnotations = { openWorld: true };
-
-      onLoad() { this.smtp = this.connect(); }
-      onUnload() { this.smtp.close(); }
-
-      async execute(inputs: z.infer<typeof SendEmailInput>, ctx: Context) {
+    const client = new APCore();
+    client.module({
+      id: 'email.send_email',
+      description: 'Send email to specified recipient. Uses SMTP protocol.',
+      tags: ['email', 'notification'],
+      inputSchema: SendEmailInput,
+      outputSchema: SendEmailOutput,
+      annotations: createAnnotations({ openWorld: true }),
+      async execute(inputs: { to: string; subject: string; body: string }, _ctx: Context) {
         try {
-          const messageId = await this.smtp.send(inputs.to, inputs.subject, inputs.body);
+          const messageId = await sendEmail(inputs.to, inputs.subject, inputs.body);
           return { success: true, messageId, error: null };
         } catch (e) {
           return { success: false, messageId: null, error: String(e) };
         }
-      }
-    }
+      },
+    });
     ```
 
 === "Rust"
 
     ```rust
-    use apcore::{Module, Context, ModuleAnnotations, ModuleResult};
+    use apcore::{Context, Module};
+    use apcore::errors::{ErrorCode, ModuleError};
+    use async_trait::async_trait;
     use serde::{Deserialize, Serialize};
-    use schemars::JsonSchema;
+    use serde_json::{json, Value};
 
-    #[derive(Debug, Deserialize, JsonSchema)]
+    #[derive(Debug, Deserialize)]
     pub struct SendEmailInput {
-        /// Recipient email address
         pub to: String,
-        /// Email subject
         pub subject: String,
-        /// Email body
         pub body: String,
-        /// CC list
         #[serde(default)]
         pub cc: Vec<String>,
     }
 
-    #[derive(Debug, Serialize, JsonSchema)]
+    #[derive(Debug, Serialize)]
     pub struct SendEmailOutput {
-        /// Whether sending was successful
         pub success: bool,
-        /// Message ID
         pub message_id: Option<String>,
-        /// Error message
         pub error: Option<String>,
     }
 
@@ -311,18 +304,57 @@ Normative behavioral contract. All SDK implementations MUST satisfy these guaran
         smtp: SmtpClient,
     }
 
+    #[async_trait]
     impl Module for SendEmailModule {
-        type Input = SendEmailInput;
-        type Output = SendEmailOutput;
-
-        fn annotations() -> ModuleAnnotations {
-            ModuleAnnotations { open_world: true, ..Default::default() }
+        fn description(&self) -> &str {
+            "Send email to specified recipient. Uses SMTP protocol."
         }
 
-        fn execute(&self, input: SendEmailInput, _ctx: &Context) -> ModuleResult<SendEmailOutput> {
+        fn input_schema(&self) -> Value {
+            json!({
+                "type": "object",
+                "properties": {
+                    "to":      { "type": "string", "format": "email", "description": "Recipient email address" },
+                    "subject": { "type": "string", "maxLength": 200, "description": "Email subject" },
+                    "body":    { "type": "string", "description": "Email body" },
+                    "cc":      { "type": "array", "items": { "type": "string" }, "default": [], "description": "CC list" }
+                },
+                "required": ["to", "subject", "body"],
+                "additionalProperties": false
+            })
+        }
+
+        fn output_schema(&self) -> Value {
+            json!({
+                "type": "object",
+                "properties": {
+                    "success":    { "type": "boolean", "description": "Whether sending was successful" },
+                    "message_id": { "type": ["string", "null"], "description": "Message ID" },
+                    "error":      { "type": ["string", "null"], "description": "Error message" }
+                },
+                "required": ["success"],
+                "additionalProperties": false
+            })
+        }
+
+        fn tags(&self) -> Vec<String> {
+            vec!["email".into(), "notification".into()]
+        }
+
+        async fn execute(
+            &self,
+            inputs: Value,
+            _ctx: &Context<Value>,
+        ) -> Result<Value, ModuleError> {
+            let input: SendEmailInput = serde_json::from_value(inputs)
+                .map_err(|e| ModuleError::new(ErrorCode::GeneralInvalidInput, e.to_string()))?;
             match self.smtp.send(&input.to, &input.subject, &input.body) {
-                Ok(message_id) => Ok(SendEmailOutput { success: true, message_id: Some(message_id), error: None }),
-                Err(e) => Ok(SendEmailOutput { success: false, message_id: None, error: Some(e.to_string()) }),
+                Ok(message_id) => Ok(json!({
+                    "success": true, "message_id": message_id, "error": null
+                })),
+                Err(e) => Ok(json!({
+                    "success": false, "message_id": null, "error": e.to_string()
+                })),
             }
         }
     }
@@ -345,30 +377,66 @@ Normative behavioral contract. All SDK implementations MUST satisfy these guaran
 === "TypeScript"
 
     ```typescript
-    import { module } from "apcore";
+    import { Type } from '@sinclair/typebox';
+    import { APCore } from 'apcore-js';
 
-    export const sendEmail = module(
-      {
-        id: "email.send",
-        description: "Send email to specified recipient",
-        tags: ["email"],
-      },
-      async (input: { to: string; subject: string; body: string }, ctx) => {
-        return { success: true, messageId: "msg_123", error: null };
-      }
-    );
+    const client = new APCore();
+    client.module({
+      id: 'email.send',
+      description: 'Send email to specified recipient',
+      tags: ['email'],
+      inputSchema: Type.Object({
+        to: Type.String(),
+        subject: Type.String(),
+        body: Type.String(),
+      }),
+      outputSchema: Type.Object({
+        success: Type.Boolean(),
+        messageId: Type.Union([Type.String(), Type.Null()]),
+        error: Type.Union([Type.String(), Type.Null()]),
+      }),
+      execute: async (_inputs, _ctx) => ({
+        success: true,
+        messageId: 'msg_123',
+        error: null,
+      }),
+    });
     ```
 
 === "Rust"
 
     ```rust
-    use apcore::module;
+    // Rust has no #[module] proc macro; register the function via APCore::module().
+    use apcore::{APCore, Context};
+    use apcore::errors::ModuleError;
+    use serde_json::{json, Value};
 
-    #[module(id = "email.send", tags = ["email"])]
-    /// Send email to specified recipient.
-    pub fn send_email(input: SendEmailInput, ctx: &Context) -> ModuleResult<SendEmailOutput> {
-        Ok(SendEmailOutput { success: true, message_id: Some("msg_123".into()), error: None })
-    }
+    let mut client = APCore::new();
+    client.module(
+        "email.send",
+        "Send email to specified recipient",
+        json!({ "type": "object", "properties": {
+            "to": { "type": "string" }, "subject": { "type": "string" }, "body": { "type": "string" }
+        }, "required": ["to", "subject", "body"] }),
+        json!({ "type": "object", "properties": {
+            "success": { "type": "boolean" },
+            "message_id": { "type": ["string", "null"] },
+            "error": { "type": ["string", "null"] }
+        }, "required": ["success"] }),
+        None,
+        vec!["email".into()],
+        None,
+        None,
+        vec![],
+        None,
+        |_inputs: Value, _ctx: &Context<Value>| {
+            Box::pin(async move {
+                Ok::<Value, ModuleError>(json!({
+                    "success": true, "message_id": "msg_123", "error": null
+                }))
+            })
+        },
+    )?;
     ```
 
 For YAML-based bindings and decorator details, see [Decorator & YAML Bindings](./decorator-bindings.md).

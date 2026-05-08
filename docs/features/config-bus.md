@@ -101,33 +101,133 @@ There are three ways environment variables can feed into config:
 
 ### 1. Global env_map — bare env vars to top-level config keys
 
-```python
-Config.env_map({"PORT": "port", "DATABASE_URL": "db_url"})
+=== "Python"
 
-# PORT=3000 → config.get("port") = 3000
-# DATABASE_URL=pg:// → config.get("db_url") = "pg://"
-```
+    ```python
+    from apcore import Config
+
+    Config.env_map({"PORT": "port", "DATABASE_URL": "db_url"})
+
+    # PORT=3000 → config.get("port") = 3000
+    # DATABASE_URL=pg:// → config.get("db_url") = "pg://"
+    ```
+
+=== "TypeScript"
+
+    ```typescript
+    import { Config } from 'apcore-js';
+
+    Config.envMap({ PORT: 'port', DATABASE_URL: 'db_url' });
+
+    // PORT=3000 → config.get("port") = 3000
+    // DATABASE_URL=pg:// → config.get("db_url") = "pg://"
+    ```
+
+=== "Rust"
+
+    ```rust
+    use apcore::Config;
+    use std::collections::HashMap;
+
+    Config::env_map(HashMap::from([
+        ("PORT".to_string(), "port".to_string()),
+        ("DATABASE_URL".to_string(), "db_url".to_string()),
+    ]))?;
+
+    // PORT=3000 → config.get("port") = 3000
+    // DATABASE_URL=pg:// → config.get("db_url") = "pg://"
+    ```
 
 Global env_map maps to the **config root level**, not inside any namespace. This is for well-known env vars (`PORT`, `DATABASE_URL`, `HOST`) that don't conceptually belong to a namespace.
 
 ### 2. Namespace env_map — bare env vars to namespace keys
 
-```python
-Config.register_namespace("myapp", env_map={"REDIS_URL": "cache_url"})
+=== "Python"
 
-# REDIS_URL=redis://... → config.get("myapp.cache_url") = "redis://..."
-```
+    ```python
+    from apcore import Config
+
+    Config.register_namespace("myapp", env_map={"REDIS_URL": "cache_url"})
+
+    # REDIS_URL=redis://... → config.get("myapp.cache_url") = "redis://..."
+    ```
+
+=== "TypeScript"
+
+    ```typescript
+    import { Config } from 'apcore-js';
+
+    Config.registerNamespace({
+      name: 'myapp',
+      envMap: { REDIS_URL: 'cache_url' },
+    });
+
+    // REDIS_URL=redis://... → config.get("myapp.cache_url") = "redis://..."
+    ```
+
+=== "Rust"
+
+    ```rust
+    use apcore::{Config, NamespaceRegistration, EnvStyle, DEFAULT_MAX_DEPTH};
+    use std::collections::HashMap;
+
+    Config::register_namespace(NamespaceRegistration {
+        name: "myapp".into(),
+        env_prefix: None,
+        defaults: None,
+        schema: None,
+        env_style: EnvStyle::Auto,
+        max_depth: DEFAULT_MAX_DEPTH,
+        env_map: Some(HashMap::from([("REDIS_URL".into(), "cache_url".into())])),
+    })?;
+
+    // REDIS_URL=redis://... → config.get("myapp.cache_url") = "redis://..."
+    ```
 
 Namespace env_map maps into the specified namespace. Use for env vars with well-known names that belong to a specific namespace.
 
 ### 3. Prefix-based routing — env vars with namespace prefix
 
-```python
-Config.register_namespace("myapp")  # env_prefix auto-derived as "MYAPP"
+=== "Python"
 
-# MYAPP_DEBUG=true → config.get("myapp.debug") = True
-# MYAPP_API_TIMEOUT=60 → depends on env_style (see below)
-```
+    ```python
+    from apcore import Config
+
+    Config.register_namespace("myapp")  # env_prefix auto-derived as "MYAPP"
+
+    # MYAPP_DEBUG=true → config.get("myapp.debug") = True
+    # MYAPP_API_TIMEOUT=60 → depends on env_style (see below)
+    ```
+
+=== "TypeScript"
+
+    ```typescript
+    import { Config } from 'apcore-js';
+
+    Config.registerNamespace({ name: 'myapp' });  // envPrefix auto-derived as "MYAPP"
+
+    // MYAPP_DEBUG=true → config.get("myapp.debug") = true
+    // MYAPP_API_TIMEOUT=60 → depends on envStyle (see below)
+    ```
+
+=== "Rust"
+
+    ```rust
+    use apcore::{Config, NamespaceRegistration, EnvStyle, DEFAULT_MAX_DEPTH};
+
+    Config::register_namespace(NamespaceRegistration {
+        name: "myapp".into(),
+        env_prefix: None,  // auto-derived as "MYAPP"
+        defaults: None,
+        schema: None,
+        env_style: EnvStyle::Auto,
+        max_depth: DEFAULT_MAX_DEPTH,
+        env_map: None,
+    })?;
+
+    // MYAPP_DEBUG=true → config.get("myapp.debug") = true
+    // MYAPP_API_TIMEOUT=60 → depends on env_style (see below)
+    ```
 
 **env_map is exact-match. It does not go through env_style conversion.** Only prefix-based routing uses env_style.
 
@@ -145,11 +245,47 @@ First match wins. An env var is processed by at most one source.
 
 The same bare env var name cannot appear in more than one env_map (global or namespace). Attempting to register a duplicate raises `CONFIG_ENV_MAP_CONFLICT`:
 
-```python
-Config.env_map({"PORT": "port"})
-Config.register_namespace("myapp", env_map={"PORT": "server_port"})
-# → ConfigEnvMapConflictError: "PORT" already mapped by "__global__"
-```
+=== "Python"
+
+    ```python
+    from apcore import Config
+
+    Config.env_map({"PORT": "port"})
+    Config.register_namespace("myapp", env_map={"PORT": "server_port"})
+    # → ConfigEnvMapConflictError: "PORT" already mapped by "__global__"
+    ```
+
+=== "TypeScript"
+
+    ```typescript
+    import { Config } from 'apcore-js';
+
+    Config.envMap({ PORT: 'port' });
+    Config.registerNamespace({
+      name: 'myapp',
+      envMap: { PORT: 'server_port' },
+    });
+    // → ConfigEnvMapConflictError: "PORT" already mapped by "__global__"
+    ```
+
+=== "Rust"
+
+    ```rust
+    use apcore::{Config, NamespaceRegistration, EnvStyle, DEFAULT_MAX_DEPTH};
+    use std::collections::HashMap;
+
+    Config::env_map(HashMap::from([("PORT".into(), "port".into())]))?;
+    Config::register_namespace(NamespaceRegistration {
+        name: "myapp".into(),
+        env_prefix: None,
+        defaults: None,
+        schema: None,
+        env_style: EnvStyle::Auto,
+        max_depth: DEFAULT_MAX_DEPTH,
+        env_map: Some(HashMap::from([("PORT".into(), "server_port".into())])),
+    })?;
+    // → Err(ConfigEnvMapConflictError) — "PORT" already mapped by "__global__"
+    ```
 
 ## Environment Variable Styles (env_style)
 
@@ -159,16 +295,58 @@ Config.register_namespace("myapp", env_map={"PORT": "server_port"})
 
 Matches the env var suffix against the `defaults` tree structure. Flat keys match flat, nested paths match nested:
 
-```python
-Config.register_namespace(
-    "myapp",
-    defaults={"devto_api_key": "", "publish": {"delay": 5, "retry": 3}},
-)
+=== "Python"
 
-# MYAPP_DEVTO_API_KEY=abc → myapp.devto_api_key  (flat key found in defaults)
-# MYAPP_PUBLISH_DELAY=10  → myapp.publish.delay   (nested path found in defaults)
-# MYAPP_UNKNOWN_KEY=x     → myapp.unknown.key     (not in defaults → fallback to nested)
-```
+    ```python
+    from apcore import Config
+
+    Config.register_namespace(
+        "myapp",
+        defaults={"devto_api_key": "", "publish": {"delay": 5, "retry": 3}},
+    )
+
+    # MYAPP_DEVTO_API_KEY=abc → myapp.devto_api_key  (flat key found in defaults)
+    # MYAPP_PUBLISH_DELAY=10  → myapp.publish.delay   (nested path found in defaults)
+    # MYAPP_UNKNOWN_KEY=x     → myapp.unknown.key     (not in defaults → fallback to nested)
+    ```
+
+=== "TypeScript"
+
+    ```typescript
+    import { Config } from 'apcore-js';
+
+    Config.registerNamespace({
+      name: 'myapp',
+      defaults: { devto_api_key: '', publish: { delay: 5, retry: 3 } },
+    });
+
+    // MYAPP_DEVTO_API_KEY=abc → myapp.devto_api_key  (flat key found in defaults)
+    // MYAPP_PUBLISH_DELAY=10  → myapp.publish.delay   (nested path found in defaults)
+    // MYAPP_UNKNOWN_KEY=x     → myapp.unknown.key     (not in defaults → fallback to nested)
+    ```
+
+=== "Rust"
+
+    ```rust
+    use apcore::{Config, NamespaceRegistration, EnvStyle, DEFAULT_MAX_DEPTH};
+
+    Config::register_namespace(NamespaceRegistration {
+        name: "myapp".into(),
+        env_prefix: None,
+        defaults: Some(serde_json::json!({
+            "devto_api_key": "",
+            "publish": { "delay": 5, "retry": 3 },
+        })),
+        schema: None,
+        env_style: EnvStyle::Auto,
+        max_depth: DEFAULT_MAX_DEPTH,
+        env_map: None,
+    })?;
+
+    // MYAPP_DEVTO_API_KEY=abc → myapp.devto_api_key  (flat key found in defaults)
+    // MYAPP_PUBLISH_DELAY=10  → myapp.publish.delay   (nested path found in defaults)
+    // MYAPP_UNKNOWN_KEY=x     → myapp.unknown.key     (not in defaults → fallback to nested)
+    ```
 
 When `defaults` is not provided, auto falls back entirely to nested behavior.
 
@@ -370,11 +548,38 @@ Falls back to `Config.from_defaults()` if nothing is found.
 
 **Any YAML filename works** when loaded explicitly:
 
-```python
-Config.load("my-custom-config.yaml")           # explicit path
-os.environ["APCORE_CONFIG_FILE"] = "custom.yaml"  # via env var
-Config.discover()                                # auto-discovery
-```
+=== "Python"
+
+    ```python
+    import os
+    from apcore import Config
+
+    Config.load("my-custom-config.yaml")              # explicit path
+    os.environ["APCORE_CONFIG_FILE"] = "custom.yaml"  # via env var
+    Config.discover()                                  # auto-discovery
+    ```
+
+=== "TypeScript"
+
+    ```typescript
+    import process from 'node:process';
+    import { Config } from 'apcore-js';
+
+    Config.load('my-custom-config.yaml');               // explicit path
+    process.env.APCORE_CONFIG_FILE = 'custom.yaml';     // via env var
+    Config.discover();                                   // auto-discovery
+    ```
+
+=== "Rust"
+
+    ```rust
+    use std::path::Path;
+    use apcore::Config;
+
+    Config::load(Path::new("my-custom-config.yaml"))?;          // explicit path
+    std::env::set_var("APCORE_CONFIG_FILE", "custom.yaml");     // via env var
+    Config::discover()?;                                          // auto-discovery
+    ```
 
 ## YAML File Format
 
@@ -446,48 +651,196 @@ The `_config` reserved namespace controls validation behavior. `strict: true` ca
 
 ### Simplest usage
 
-```python
-Config.register_namespace("myapp")
-cfg = Config.load("apcore.yaml")
-cfg.get("myapp.debug")  # reads from MYAPP_DEBUG env var or YAML
-```
+=== "Python"
+
+    ```python
+    from apcore import Config
+
+    Config.register_namespace("myapp")
+    cfg = Config.load("apcore.yaml")
+    cfg.get("myapp.debug")  # reads from MYAPP_DEBUG env var or YAML
+    ```
+
+=== "TypeScript"
+
+    ```typescript
+    import { Config } from 'apcore-js';
+
+    Config.registerNamespace({ name: 'myapp' });
+    const cfg = Config.load('apcore.yaml');
+    cfg.get('myapp.debug');  // reads from MYAPP_DEBUG env var or YAML
+    ```
+
+=== "Rust"
+
+    ```rust
+    use std::path::Path;
+    use apcore::{Config, NamespaceRegistration, EnvStyle, DEFAULT_MAX_DEPTH};
+
+    Config::register_namespace(NamespaceRegistration {
+        name: "myapp".into(),
+        env_prefix: None,
+        defaults: None,
+        schema: None,
+        env_style: EnvStyle::Auto,
+        max_depth: DEFAULT_MAX_DEPTH,
+        env_map: None,
+    })?;
+    let cfg = Config::load(Path::new("apcore.yaml"))?;
+    let _debug = cfg.get("myapp.debug");  // reads from MYAPP_DEBUG env var or YAML
+    ```
 
 ### With bare env vars
 
-```python
-Config.env_map({"PORT": "port"})
-Config.register_namespace("myapp", env_map={"REDIS_URL": "cache_url"})
+=== "Python"
 
-cfg = Config.load("apcore.yaml")
-cfg.get("port")              # from PORT env var (top-level)
-cfg.get("myapp.cache_url")   # from REDIS_URL env var (namespace)
-cfg.get("myapp.debug")       # from MYAPP_DEBUG env var (prefix)
-```
+    ```python
+    from apcore import Config
+
+    Config.env_map({"PORT": "port"})
+    Config.register_namespace("myapp", env_map={"REDIS_URL": "cache_url"})
+
+    cfg = Config.load("apcore.yaml")
+    cfg.get("port")              # from PORT env var (top-level)
+    cfg.get("myapp.cache_url")   # from REDIS_URL env var (namespace)
+    cfg.get("myapp.debug")       # from MYAPP_DEBUG env var (prefix)
+    ```
+
+=== "TypeScript"
+
+    ```typescript
+    import { Config } from 'apcore-js';
+
+    Config.envMap({ PORT: 'port' });
+    Config.registerNamespace({
+      name: 'myapp',
+      envMap: { REDIS_URL: 'cache_url' },
+    });
+
+    const cfg = Config.load('apcore.yaml');
+    cfg.get('port');             // from PORT env var (top-level)
+    cfg.get('myapp.cache_url');  // from REDIS_URL env var (namespace)
+    cfg.get('myapp.debug');      // from MYAPP_DEBUG env var (prefix)
+    ```
+
+=== "Rust"
+
+    ```rust
+    use std::collections::HashMap;
+    use std::path::Path;
+    use apcore::{Config, NamespaceRegistration, EnvStyle, DEFAULT_MAX_DEPTH};
+
+    Config::env_map(HashMap::from([("PORT".into(), "port".into())]))?;
+    Config::register_namespace(NamespaceRegistration {
+        name: "myapp".into(),
+        env_prefix: None,
+        defaults: None,
+        schema: None,
+        env_style: EnvStyle::Auto,
+        max_depth: DEFAULT_MAX_DEPTH,
+        env_map: Some(HashMap::from([("REDIS_URL".into(), "cache_url".into())])),
+    })?;
+
+    let cfg = Config::load(Path::new("apcore.yaml"))?;
+    cfg.get("port");              // from PORT env var (top-level)
+    cfg.get("myapp.cache_url");   // from REDIS_URL env var (namespace)
+    cfg.get("myapp.debug");       // from MYAPP_DEBUG env var (prefix)
+    ```
 
 ### Full example with mixed config
 
-```python
-Config.env_map({"PORT": "port", "DATABASE_URL": "db_url"})
-Config.register_namespace(
-    "myapp",
-    defaults={"devto_api_key": "", "publish": {"delay": 5}},
-    env_map={"REDIS_URL": "cache_url"},
-)
+=== "Python"
 
-# Environment:
-#   PORT=3000
-#   DATABASE_URL=postgres://prod
-#   REDIS_URL=redis://localhost
-#   MYAPP_DEVTO_API_KEY=abc123
-#   MYAPP_PUBLISH_DELAY=10
+    ```python
+    from apcore import Config
 
-cfg = Config.load("apcore.yaml")
-cfg.get("port")                    # → 3000 (global env_map)
-cfg.get("db_url")                  # → "postgres://prod" (global env_map)
-cfg.get("myapp.cache_url")         # → "redis://localhost" (namespace env_map)
-cfg.get("myapp.devto_api_key")     # → "abc123" (auto: flat key in defaults)
-cfg.get("myapp.publish.delay")     # → 10 (auto: nested key in defaults)
-```
+    Config.env_map({"PORT": "port", "DATABASE_URL": "db_url"})
+    Config.register_namespace(
+        "myapp",
+        defaults={"devto_api_key": "", "publish": {"delay": 5}},
+        env_map={"REDIS_URL": "cache_url"},
+    )
+
+    # Environment:
+    #   PORT=3000
+    #   DATABASE_URL=postgres://prod
+    #   REDIS_URL=redis://localhost
+    #   MYAPP_DEVTO_API_KEY=abc123
+    #   MYAPP_PUBLISH_DELAY=10
+
+    cfg = Config.load("apcore.yaml")
+    cfg.get("port")                    # → 3000 (global env_map)
+    cfg.get("db_url")                  # → "postgres://prod" (global env_map)
+    cfg.get("myapp.cache_url")         # → "redis://localhost" (namespace env_map)
+    cfg.get("myapp.devto_api_key")     # → "abc123" (auto: flat key in defaults)
+    cfg.get("myapp.publish.delay")     # → 10 (auto: nested key in defaults)
+    ```
+
+=== "TypeScript"
+
+    ```typescript
+    import { Config } from 'apcore-js';
+
+    Config.envMap({ PORT: 'port', DATABASE_URL: 'db_url' });
+    Config.registerNamespace({
+      name: 'myapp',
+      defaults: { devto_api_key: '', publish: { delay: 5 } },
+      envMap: { REDIS_URL: 'cache_url' },
+    });
+
+    // Environment:
+    //   PORT=3000
+    //   DATABASE_URL=postgres://prod
+    //   REDIS_URL=redis://localhost
+    //   MYAPP_DEVTO_API_KEY=abc123
+    //   MYAPP_PUBLISH_DELAY=10
+
+    const cfg = Config.load('apcore.yaml');
+    cfg.get('port');                    // → 3000 (global env_map)
+    cfg.get('db_url');                  // → "postgres://prod" (global env_map)
+    cfg.get('myapp.cache_url');         // → "redis://localhost" (namespace env_map)
+    cfg.get('myapp.devto_api_key');     // → "abc123" (auto: flat key in defaults)
+    cfg.get('myapp.publish.delay');     // → 10 (auto: nested key in defaults)
+    ```
+
+=== "Rust"
+
+    ```rust
+    use std::collections::HashMap;
+    use std::path::Path;
+    use apcore::{Config, NamespaceRegistration, EnvStyle, DEFAULT_MAX_DEPTH};
+
+    Config::env_map(HashMap::from([
+        ("PORT".into(), "port".into()),
+        ("DATABASE_URL".into(), "db_url".into()),
+    ]))?;
+    Config::register_namespace(NamespaceRegistration {
+        name: "myapp".into(),
+        env_prefix: None,
+        defaults: Some(serde_json::json!({
+            "devto_api_key": "",
+            "publish": { "delay": 5 },
+        })),
+        schema: None,
+        env_style: EnvStyle::Auto,
+        max_depth: DEFAULT_MAX_DEPTH,
+        env_map: Some(HashMap::from([("REDIS_URL".into(), "cache_url".into())])),
+    })?;
+
+    // Environment:
+    //   PORT=3000
+    //   DATABASE_URL=postgres://prod
+    //   REDIS_URL=redis://localhost
+    //   MYAPP_DEVTO_API_KEY=abc123
+    //   MYAPP_PUBLISH_DELAY=10
+
+    let cfg = Config::load(Path::new("apcore.yaml"))?;
+    cfg.get("port");                    // → 3000 (global env_map)
+    cfg.get("db_url");                  // → "postgres://prod" (global env_map)
+    cfg.get("myapp.cache_url");         // → "redis://localhost" (namespace env_map)
+    cfg.get("myapp.devto_api_key");     // → "abc123" (auto: flat key in defaults)
+    cfg.get("myapp.publish.delay");     // → 10 (auto: nested key in defaults)
+    ```
 
 ## Contract: Config.register_namespace
 

@@ -921,7 +921,7 @@ AuditEntry:
 
     ```typescript
     import { APCore, Config } from 'apcore-js';
-    import { InMemoryAuditStore } from 'apcore-js/sys-modules/audit';
+    import { InMemoryAuditStore } from 'apcore-js';
 
     const config = Config.load('apcore.yaml');
     const auditStore = new InMemoryAuditStore();
@@ -1337,7 +1337,7 @@ config.reload_from_disk()?;
 === "TypeScript"
 
     ```typescript
-    import { registerSysModules, SysModuleRegistrationError } from 'apcore-js/sys-modules';
+    import { registerSysModules, SysModuleRegistrationError } from 'apcore-js';
 
     // Default: log errors and continue
     const context = await registerSysModules({
