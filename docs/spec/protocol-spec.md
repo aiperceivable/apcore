@@ -5515,6 +5515,101 @@ Config.registered_namespaces()
 
 This is useful for diagnostic tools, CLI introspection, and IDE plugins.
 
+#### 9.9.5 Reserved Namespace Query
+
+> **Added in v1.9.0-draft**
+
+§9.5.1 (rules 3 and 4) defines a set of namespace names that are reserved by the framework and **MUST NOT** be registered by external callers (`apcore` is owned by the framework itself; `_config` is used for Config Bus meta-configuration per §9.6.3).
+
+Implementations **MUST** expose a public, read-only query API returning the set of reserved top-level namespace names.
+
+**Canonical signature (pseudocode):**
+
+```
+Config.reserved_namespaces()
+→ frozen_set<string>   # MUST be immutable from the caller's perspective
+```
+
+**Requirements:**
+
+1. The returned set **MUST** include at minimum `apcore` and `_config`.
+2. The returned set **MUST** be the same set used by `register_namespace` to enforce `CONFIG_NAMESPACE_RESERVED` (single source of truth — implementations **MUST NOT** maintain two separate lists).
+3. The returned set **MUST** be immutable from the caller's perspective. Languages without immutable set types **MUST** return a defensive copy or a read-only view.
+4. The API **MUST** be callable without instantiating `Config` (class-level or module-level access) — diagnostic tools may query reserved names before any config file is loaded.
+5. The method name follows language idiom (snake_case for Python/Rust, camelCase getter or method for TypeScript). Concrete names are non-normative; semantics are normative.
+
+**Cross-language examples:**
+
+=== "Python"
+    ```python
+    from apcore import Config
+
+    # Class-level query — no Config instance needed
+    reserved = Config.reserved_namespaces()
+    assert "apcore" in reserved
+    assert "_config" in reserved
+
+    # Pre-validate user input before register_namespace
+    def register_user_namespace(name: str) -> None:
+        if name in Config.reserved_namespaces():
+            raise ValueError(
+                f"Namespace '{name}' is reserved by the apcore framework. "
+                f"Pick a different name (e.g., 'my-{name}')."
+            )
+        Config.register_namespace(name)
+    ```
+
+=== "TypeScript"
+    ```typescript
+    import { Config } from 'apcore';
+
+    // Static getter — no Config instance needed
+    const reserved: ReadonlySet<string> = Config.reservedNamespaces;
+    console.assert(reserved.has('apcore'));
+    console.assert(reserved.has('_config'));
+
+    // Pre-validate user input before registerNamespace
+    function registerUserNamespace(name: string): void {
+      if (Config.reservedNamespaces.has(name)) {
+        throw new Error(
+          `Namespace '${name}' is reserved by the apcore framework. ` +
+          `Pick a different name (e.g., 'my-${name}').`,
+        );
+      }
+      Config.registerNamespace(name);
+    }
+    ```
+
+=== "Rust"
+    ```rust
+    use apcore::Config;
+
+    // Module-level query — no Config instance needed.
+    // Returned as `&'static [&'static str]` (idiomatic Rust for a small,
+    // compile-time-known reserved set; inherently immutable, zero runtime
+    // initialisation cost).
+    let reserved: &'static [&'static str] = Config::reserved_namespaces();
+    assert!(reserved.contains(&"apcore"));
+    assert!(reserved.contains(&"_config"));
+
+    // Pre-validate user input before register_namespace.
+    fn register_user_namespace(name: &str) -> Result<(), String> {
+        if Config::reserved_namespaces().iter().any(|&s| s == name) {
+            return Err(format!(
+                "Namespace '{}' is reserved by the apcore framework. \
+                 Pick a different name (e.g., 'my-{}').",
+                name, name,
+            ));
+        }
+        // Real call site: Config::register_namespace takes a NamespaceRegistration
+        // struct and returns Result<(), ModuleError>. Omitted here for brevity;
+        // see §9.5.1.
+        Ok(())
+    }
+    ```
+
+**Intended audience:** This API is for third-party consumers (custom CLIs, framework integrations, application code) that accept user-supplied namespace names. Official downstream packages in the apcore ecosystem (`apcore-cli-*`, `apcore-mcp-*`, `apcore-toolkit-*`) do not call `Config.set()` or `register_namespace()` with user input and therefore do not need to consume this API.
+
 ### 9.10 Validation Algorithm (Namespace-Aware A12-NS)
 
 The original Algorithm A12 (§9.3) is extended for namespace mode:
@@ -7559,3 +7654,4 @@ Each language SDK **SHOULD** provide idiomatic module definition syntax. The fol
 | 1.6.0-draft | 2026-04-08 | §2.7 EBNF constraint #1 — `canonical_id` maximum length raised from 128 to 192 characters to accommodate deep-namespace languages (Java/.NET/Spring FQN-derived IDs). 192 is filesystem-safe (`192 + ".binding.yaml" = 205 bytes < 255-byte filename limit on ext4/xfs/NTFS/APFS/btrfs`) and remains within `VARCHAR(255)` for typical persistence. Schemas updated: `binding.schema.json`, `module-schema.schema.json`, `module-meta.schema.json`, `acl-config.schema.json` (callers/targets pattern strings, kept symmetric with module_id). Algorithm A01 (`directory_to_canonical_id`) Step 7 threshold updated. Conformance test T01-006 boundary updated. Forward-compatible relaxation: implementations conforming to this revision MUST accept IDs up to 192; older 128-only implementations cannot load IDs in the 129–192 range from newer SDKs. |
 | 1.7.0-draft | 2026-05-04 | **§6.1** — formalised compound operators `$or` (list[object]) and `$not` (object) as conditions sub-fields, with required cross-mode (sync/async) evaluator semantics and fail-closed rules for empty `$not` (resolves issue #46 / `planning/acl-compound-operators-spec-patch`). **§6.2.1** (new) — formalised compound operators `$or` and `$not` as the first element of `callers`/`targets` pattern arrays, with the four allowed forms tabulated and a reservation rule preventing literal-token matching (resolves issue #46). All four behaviour shapes are already implemented uniformly in apcore-python, apcore-typescript, and apcore-rust at v0.20.0 and verified by `../../conformance/fixtures/acl_evaluation.json`; no SDK behaviour change. **§5.1** — `Executor.validate()` description aligned with §12.8: "Steps 1–5 and Step 7" (skipping Step 6 Middleware Before Chain) plus optional module-level preflight, replacing the stale "Steps 1–6" wording that pre-dated the v0.18 step swap (resolves issue #47 / `planning/validate-step-count-spec-patch`). No SDK behaviour change. |
 | 1.8.0-draft | 2026-05-04 | **§5 streaming semantics** — corrected "shallow merge" to "**recursive deep merge** with depth cap" matching all three SDK implementations (`apcore-python/src/apcore/executor.py:_deep_merge`, `apcore-typescript/src/executor.ts:deepMergeChunk`, `apcore-rust/src/executor.rs:deep_merge_chunks`) and `../../conformance/fixtures/stream_aggregation.json` (9 cases). Added algorithm `A24 deep_merge_chunks` to `./algorithms.md` formalising the merge with the canonical 32-depth cap (resolves issue #49). **§7.4 Step 11 Contract** (new block after the pipeline diagram) — five-point normative contract specifying: `call()` returns module output unchanged (no envelope), `stream()` final accumulated dict is what Step 9 validates, `validate()` returns `PreflightResult`, trace metadata lives on `Context` (not the return value), side-channel emissions are independent (resolves issue #50). **§6.7 Canonical System Module Catalogue** (new) — enumerates the 9 canonical `system.*` modules with read/write classification, conformance level (Level 1 for the 6 read modules; Level 2 for the 3 control modules), and 6 cross-cutting requirements (registration via `register_internal()`, audit events for write modules, `system.control.reload_module` mutually-exclusive `module_id`/`path_filter`, sensitive-key redaction in `update_config` output, persistence requirement for `toggle_feature`). Authoritative JSON Schemas remain in SDK source to avoid drift; this section is the contract surface (resolves issue #51). All three patches: zero SDK behaviour change. |
+| 1.9.0-draft | 2026-05-18 | **§9.9.5 Reserved Namespace Query** (new) — formalised public API requirement that all SDKs MUST expose a read-only query API returning the set of reserved top-level namespace names (`apcore`, `_config` at minimum). Returned set MUST be the single source of truth used by `register_namespace` to enforce `CONFIG_NAMESPACE_RESERVED` (single source of truth invariant). Class-level / module-level access (callable without instantiating Config). Cross-language examples for Python (`Config.reserved_namespaces()`), TypeScript (`Config.reservedNamespaces`), Rust (`Config::reserved_namespaces()`). Intended for third-party consumers (custom CLIs, framework integrations) needing fail-fast pre-validation of user-supplied namespace names. Resolves issue #60. |

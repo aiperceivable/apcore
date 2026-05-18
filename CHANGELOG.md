@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.22.0] - 2026-05-18
+
+### Added
+
+- **§9.9.5 Reserved Namespace Query — new normative API requirement (#60).** All SDKs **MUST** expose a public, read-only query API returning the set of reserved top-level namespace names (`apcore`, `_config` at minimum). The query API is the single source of truth used by `register_namespace` to enforce `CONFIG_NAMESPACE_RESERVED` (§9.5.1 rules 3 and 4). Intended for third-party consumers (custom CLIs, framework integrations) that accept user-supplied namespace names and want fail-fast pre-validation. Class-level / module-level access (no `Config` instance required). Cross-language examples added for Python (`Config.reserved_namespaces()`), TypeScript (`Config.reservedNamespaces`), and Rust (`Config::reserved_namespaces()`).
+
+---
+
 ## [0.21.0] - 2026-05-06
 
 ### Added
