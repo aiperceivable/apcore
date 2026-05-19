@@ -100,7 +100,8 @@ new.on_resume(state)              ← restore state (only if state is not None)
 | `validate(inputs) -> ValidationResult` | Custom input validation without execution. Should be side-effect free. |
 | `preflight(inputs, context) -> list[str]` | Advisory warnings emitted during `Executor.validate()`. Does NOT block execution. |
 | `describe() -> dict` | Module metadata for introspection. Used by `system.manifest`. Default returns `{description, input_schema, output_schema, annotations}`. |
-| `stream(inputs, context) -> AsyncIterator[dict]` | Streaming output. When defined, `Executor.stream()` calls this instead of `execute()`. Modules implementing `stream()` SHOULD set `annotations.streaming = True`. |
+| `stream(inputs, context) -> AsyncIterator[dict]` | Streaming output. When defined, `Executor.stream()` calls this instead of `execute()`. Modules implementing `stream()` MUST satisfy the [`StreamingModule` interface](./streaming.md#streaming-module-interface-issue-62) for their target language (Python Protocol with `@runtime_checkable`; TypeScript interface + `Symbol.for("apcore.streaming")` marker; Rust `trait StreamingModule: Module`). Modules implementing `stream()` SHOULD set `annotations.streaming = True`. |
+| `as_streaming() -> Optional[StreamingModule]` (Rust only) | Trait-object accessor on the base `Module` trait for adapter / bridge code that needs a typed `&dyn StreamingModule` handle. Default returns `None`; streaming modules override to return `Some(self)`. MUST stay consistent with `Module::stream()` — both return `Some(_)` or both return `None` per module. See [Streaming Module Interface](./streaming.md#streaming-module-interface-issue-62). |
 
 ### Sync / Async Execution
 

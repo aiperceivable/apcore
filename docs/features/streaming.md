@@ -8,9 +8,181 @@
 
 The Streaming System enables modules to produce output incrementally as a sequence of chunks rather than a single complete response. This is essential for modules that wrap LLM APIs, process large datasets, or perform real-time data transformations. The executor implements a three-phase streaming pipeline that separates chunk emission from post-execution validation and middleware processing, ensuring that consumers receive chunks in real-time while maintaining the integrity of the full pipeline.
 
+## Streaming Module Interface (Issue #62)
+
+Earlier versions of this document described streaming support in prose: a module "should implement a `stream()` method". SDKs detected support via duck-typing (`hasattr(module, 'stream')`). This section defines an explicit, language-idiomatic interface that streaming modules **MUST** satisfy and that adapter / bridge code (e.g., `apcore-a2a`, `apcore-mcp`) can detect statically.
+
+!!! warning "Discovered during apcore-a2a upgrade"
+    Bridge layers could not distinguish streaming-capable modules from plain ones — all looked alike under the base `Module` type. A module that implemented `stream()` with a wrong signature only failed at the first call, producing cryptic errors far from the source. The contract below replaces duck-typing with a stable, statically-detectable interface.
+
+### The `StreamingModule` Interface
+
+=== "Python"
+    ```python
+    from typing import AsyncIterator, Protocol, runtime_checkable
+    from apcore.context import Context
+
+    @runtime_checkable
+    class StreamingModule(Protocol):
+        """Modules that produce output incrementally MUST implement this Protocol.
+
+        SDKs MUST export `StreamingModule` from the top-level package so
+        bridge / adapter code can call `isinstance(module, StreamingModule)`.
+        """
+
+        async def stream(
+            self,
+            inputs: dict,
+            context: Context,
+        ) -> AsyncIterator[dict]:
+            ...
+    ```
+
+    Detection:
+
+    ```python
+    from apcore import StreamingModule
+
+    if isinstance(module, StreamingModule):
+        async for chunk in module.stream(inputs, context):
+            ...
+    ```
+
+=== "TypeScript"
+    TypeScript interfaces are structural, so a Symbol-based marker provides reliable runtime detection. SDKs **MUST** export the interface, the marker, and a type-narrowing helper.
+
+    ```typescript
+    import type { Module, Context } from "apcore-js";
+
+    export const STREAMING_MARKER = Symbol.for("apcore.streaming");
+
+    export interface StreamingModule extends Module {
+        readonly [STREAMING_MARKER]: true;
+        stream(
+            inputs: Record<string, unknown>,
+            context: Context,
+        ): AsyncIterable<Record<string, unknown>>;
+    }
+
+    // Transitional detection: prefers the marker; falls back to method presence.
+    // The fallback branch is deprecated and emits a one-shot warning per module
+    // (see Migration from Duck-Typing below).
+    export function isStreamingModule(m: Module): m is StreamingModule {
+        if ((m as Record<symbol, unknown>)[STREAMING_MARKER] === true &&
+            typeof (m as { stream?: unknown }).stream === "function") {
+            return true;
+        }
+        if (typeof (m as { stream?: unknown }).stream === "function") {
+            warnLegacyStreamingOnce(m);
+            return true;
+        }
+        return false;
+    }
+    ```
+
+    Detection:
+
+    ```typescript
+    import { isStreamingModule } from "apcore-js";
+
+    if (isStreamingModule(module)) {
+        for await (const chunk of module.stream(inputs, context)) {
+            // ...
+        }
+    }
+    ```
+
+=== "Rust"
+    The base `Module` trait already declares `fn stream(&self, ...) -> Option<ChunkStream>` (where `None` means "no streaming, fall back to `execute()`"). The new `StreamingModule` trait is **additive**: it gives a stable type-level handle for adapter / bridge code that needs to interact with the chunk stream directly (e.g., to attach per-chunk middleware) instead of going through the type-erased `Option<ChunkStream>` return.
+
+    Two detection paths coexist:
+
+    - **`module.stream(inputs, ctx)`** — the existing call-site detection. Returns `Some(stream)` if streaming is supported, `None` otherwise. This remains the canonical path for executor / pipeline code.
+    - **`module.as_streaming()`** — a new trait-object accessor on `Module` (default returns `None`; streaming modules override). Returns `Option<&dyn StreamingModule>`, letting adapter code obtain a typed reference for static dispatch when needed.
+
+    ```rust
+    use apcore::context::Context;
+    use apcore::module::{ChunkStream, Module};
+    use serde_json::Value;
+
+    pub trait StreamingModule: Module {
+        fn stream(&self, inputs: Value, context: &Context<Value>) -> ChunkStream;
+    }
+
+    // Default in the base Module trait (already present):
+    //
+    // pub trait Module: Send + Sync {
+    //     // ... existing methods ...
+    //     fn stream(&self, _inputs: Value, _ctx: &Context<Value>) -> Option<ChunkStream> { None }
+    //     fn as_streaming(&self) -> Option<&dyn StreamingModule> { None }
+    // }
+
+    pub struct ChatModule;
+
+    impl Module for ChatModule {
+        // ... existing methods ...
+        fn stream(&self, inputs: Value, ctx: &Context<Value>) -> Option<ChunkStream> {
+            Some(<Self as StreamingModule>::stream(self, inputs, ctx))
+        }
+        fn as_streaming(&self) -> Option<&dyn StreamingModule> { Some(self) }
+    }
+
+    impl StreamingModule for ChatModule {
+        fn stream(&self, _inputs: Value, _ctx: &Context<Value>) -> ChunkStream {
+            Box::pin(async_stream::stream! {
+                // yield chunks
+            })
+        }
+    }
+    ```
+
+    Detection by adapter code that needs the typed handle:
+
+    ```rust
+    if let Some(streaming) = module.as_streaming() {
+        let stream = streaming.stream(inputs, &context);
+        // consume chunks with full StreamingModule context
+    }
+    ```
+
+    Detection by executor / pipeline code that only needs the chunk stream:
+
+    ```rust
+    match module.stream(inputs, &context) {
+        Some(stream) => /* drive chunk loop */,
+        None => /* fall back to execute() */,
+    }
+    ```
+
+    Implementations **MUST** keep the two paths consistent: a module that returns `Some(_)` from `as_streaming()` MUST return `Some(_)` from `Module::stream()`, and vice versa.
+
+### Normative Rules
+
+- **MUST** — SDKs MUST export the streaming interface (`StreamingModule` / `isStreamingModule` / `Module::as_streaming`) as part of their public API so third-party adapter and bridge code can rely on stable detection.
+- **MUST** — Adapter and bridge code MUST detect streaming support via the language's standard mechanism above (`isinstance` / `isStreamingModule` / `Module::as_streaming`), not via direct `hasattr` / `typeof` checks on the literal method name.
+- **SHOULD (transitional)** — In TypeScript, new streaming modules SHOULD declare the `[STREAMING_MARKER]: true` property. SDKs MUST accept method-presence-only modules during one minor-version deprecation window (`isStreamingModule` falls back to method-presence detection and emits a one-shot `DeprecationWarning`-equivalent log naming the module ID and class name). The marker becomes a **MUST** at the next major SDK version. This window gives existing TS code a non-breaking migration path.
+- **SHOULD** — When a module declares streaming support (via decorator, annotation, or marker) but its `stream()` method does not satisfy the interface (wrong arity, wrong return type, missing `async`, etc.), SDKs SHOULD raise a structured error at **module-load time**, not at first call. Error type: `StreamingInterfaceError` with the following fields:
+
+    | Field | Type | Meaning |
+    |-------|------|---------|
+    | `module_id` | string | The module ID under which registration was attempted. |
+    | `expected_signature` | string | Human-readable expected signature (language-specific). |
+    | `actual_signature` | string | Human-readable observed signature. |
+    | `mismatch_reason` | string | Short tag: `wrong_arity` / `not_async` / `wrong_return_type` / `missing_marker`. |
+
+- **MAY** — Non-streaming modules MAY define a method literally named `stream` for unrelated purposes (e.g., wrapping a third-party API). SDKs **MUST NOT** treat such modules as streaming unless they satisfy the full interface contract above (Protocol/marker/trait).
+
+### Migration from Duck-Typing
+
+Existing modules that previously relied on a bare `stream()` method should migrate as follows:
+
+- **Python** — Their class already satisfies `StreamingModule` (Protocol) structurally if the signature matches. `@runtime_checkable` is on the Protocol declaration in the SDK, not on the module. **No code change is required** for correctly-signed modules.
+- **TypeScript** — During the deprecation window, existing modules continue to work via method-presence fallback in `isStreamingModule`; new modules SHOULD add `[STREAMING_MARKER]: true`. At the next major SDK version the marker becomes mandatory. Module authors are encouraged to add the marker now to silence the one-shot deprecation log.
+- **Rust** — Existing modules that implement `Module::stream() -> Option<ChunkStream>` continue to work. Modules that want adapter / bridge code to obtain a typed `&dyn StreamingModule` handle SHOULD additionally override `Module::as_streaming` and implement the `StreamingModule` trait. SDKs MAY ship a default-method consistency check that warns when only one of the two is overridden.
+
 ## Requirements
 
-- Modules that support streaming **MUST** implement a `stream()` method (in addition to or instead of `execute()`) that returns an async iterator/generator of output chunks.
+- Modules that support streaming **MUST** satisfy the [`StreamingModule` interface](#streaming-module-interface-issue-62) for their target language (Python Protocol, TypeScript interface + marker, Rust trait). The interface includes a `stream()` method returning an async iterator/generator of output chunks.
 - The executor **MUST** support a `stream()` method that returns an async iterator yielding chunks as they are produced.
 - Chunks **MUST** be accumulated using a deep merge algorithm to produce a final combined output for validation.
 - Output validation and after-middleware **MUST** run on the accumulated output after all chunks are emitted, not on individual chunks.
@@ -52,7 +224,7 @@ After all chunks have been emitted, the accumulated output is passed through Out
         yield {"content": "", "done": True}
     ```
 === "TypeScript"
-    Streaming modules in TypeScript must implement the `Module` interface with a `stream()` method.
+    Streaming modules in TypeScript MUST satisfy the [`StreamingModule` interface](#streaming-module-interface-issue-62) (including the `STREAMING_MARKER` Symbol property).
     The `client.module()` shorthand creates a `FunctionModule` which only supports `execute()`.
 
     ```typescript

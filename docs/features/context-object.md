@@ -173,6 +173,144 @@ After deserialization, the `executor` reference MUST be re-injected before the C
 - Avoid storing large objects (>1 MB) in `context.data`; use an external cache.
 - Namespace keys to avoid collisions (e.g. `my_module:result`).
 
+## Typed Access via `ContextKey[T]`
+
+!!! note "Issue #63"
+    Background: `context.data` is a free-form dict. Third-party middleware and adapter code that stash state via raw string keys collide silently with each other and with framework internals. The framework already exposes a typed-key API (`ContextKey[T]`) for its own slots; this section promotes it as the recommended approach for stable, schema-bearing state.
+
+### Motivation
+
+Two unrelated middlewares both stashing retry state via the same string key:
+
+```python
+# In framework retry middleware
+context.data["retry_count"] = 3            # int
+
+# In a user-written middleware imported later
+context.data["retry_count"] = "three"      # str, silently overwrites
+```
+
+There is no warning. The last writer wins. The reader downstream gets a value of the wrong type and either crashes or behaves unexpectedly.
+
+`ContextKey[T]` solves this by combining:
+
+1. A unique, namespaced string identifier (so accidental collisions surface during code review).
+2. A type parameter (so the compiler / type-checker catches misuse).
+3. Key-anchored helpers (`KEY.set(ctx, value)`, `KEY.get(ctx, default)`, `KEY.delete(ctx)`, `KEY.exists(ctx)`) that work in terms of the key rather than the raw string. The methods live on the `ContextKey` instance, **not** on `Context` — this lets a key carry both its name and its type parameter without mutating the `Context` class.
+
+### The `ContextKey[T]` API
+
+The accessor methods are defined on the **key**, not on the context (see [PROTOCOL_SPEC design — Context Annotations](../spec/design-context-annotations-acl.md), §1.4 *ContextKey\<T\> — Typed Data Accessor*). This lets a key carry both its name and its type parameter without mutating the `Context` class.
+
+=== "Python"
+
+    ```python
+    from apcore.context import Context, ContextKey
+
+    # Define keys once, near where the state's schema is defined.
+    RETRY_COUNT: ContextKey[int] = ContextKey("ext.myapp.retry.count")
+    RETRY_DEADLINE_MS: ContextKey[int] = ContextKey("ext.myapp.retry.deadline_ms")
+
+    def use(ctx: Context) -> None:
+        RETRY_COUNT.set(ctx, 3)
+        RETRY_DEADLINE_MS.set(ctx, 5000)
+
+        # Type-checker knows this is int | None
+        attempts: int | None = RETRY_COUNT.get(ctx)
+
+        # With a default
+        attempts = RETRY_COUNT.get(ctx, default=0)
+
+        # Existence check
+        if RETRY_COUNT.exists(ctx):
+            RETRY_COUNT.delete(ctx)
+    ```
+
+=== "TypeScript"
+
+    ```typescript
+    import { Context, ContextKey } from "apcore-js";
+
+    export const RETRY_COUNT = new ContextKey<number>("ext.myapp.retry.count");
+    export const RETRY_DEADLINE_MS = new ContextKey<number>("ext.myapp.retry.deadline_ms");
+
+    export function use(ctx: Context): void {
+        RETRY_COUNT.set(ctx, 3);
+        RETRY_DEADLINE_MS.set(ctx, 5000);
+
+        const attempts: number | undefined = RETRY_COUNT.get(ctx);
+
+        if (RETRY_COUNT.exists(ctx)) {
+            RETRY_COUNT.delete(ctx);
+        }
+    }
+    ```
+
+=== "Rust"
+
+    ```rust
+    use apcore::context::{Context, ContextKey};
+    use serde_json::Value;
+
+    pub static RETRY_COUNT: ContextKey<u32> = ContextKey::new("ext.myapp.retry.count");
+    pub static RETRY_DEADLINE_MS: ContextKey<u64> = ContextKey::new("ext.myapp.retry.deadline_ms");
+
+    pub fn use_keys(ctx: &Context<Value>) {
+        RETRY_COUNT.set(ctx, 3u32);
+        RETRY_DEADLINE_MS.set(ctx, 5000u64);
+
+        let attempts: Option<u32> = RETRY_COUNT.get(ctx);
+
+        // `exists` / `delete` follow the same key-anchored pattern; see SDK reference.
+    }
+    ```
+
+For per-module sub-keys (e.g., one retry counter per target module), use `.scoped(suffix)`:
+
+```python
+# RETRY_COUNT_BASE = ContextKey[int]("_apcore.mw.retry.count")
+# Framework code derives a per-module key:
+key = RETRY_COUNT_BASE.scoped(module_id)
+key.set(ctx, attempts)
+```
+
+### Namespace Convention (Normative)
+
+`ContextKey` identifiers share the same namespace as raw string keys in `context.data` — they are two views of one dictionary. The naming rules from [Middleware System §1.1 Context Namespacing](./middleware-system.md#11-context-namespacing) therefore apply unchanged:
+
+- **MUST** — Identifiers starting with `_apcore.` are reserved for framework internals. Third-party code MUST NOT define `ContextKey`s with that prefix.
+- **MUST** — Third-party `ContextKey` identifiers MUST use the `ext.*` prefix (e.g., `ext.my_company.retry.count`). This matches the user-extension prefix already mandated for raw `context.data` keys.
+- **SHOULD** — Third-party `ContextKey` identifiers SHOULD include a vendor segment after `ext.` (e.g., `ext.my_company.feature.field`) to avoid collisions across unrelated third parties.
+- **SHOULD** — For any data with a stable schema, third-party code SHOULD use `ContextKey[T]` rather than raw string-keyed `context.data[...]`. Raw access SHOULD be reserved for genuinely ad-hoc, one-off payloads.
+
+### Framework-Reserved `ContextKey` Slots (Informative)
+
+The framework defines `ContextKey` constants for its own internal state. Third-party code MUST NOT redefine these. The canonical list — sourced from [PROTOCOL_SPEC design — Context Annotations](../spec/design-context-annotations-acl.md), §1.5 *Built-in Context Keys* — is:
+
+| Constant | Identifier string | Type | Purpose |
+|----------|-------------------|------|---------|
+| `TRACING_SPANS` | `_apcore.mw.tracing.spans` | list | Accumulated spans for the current call chain |
+| `TRACING_SAMPLED` | `_apcore.mw.tracing.sampled` | bool | Whether this trace is sampled for export |
+| `METRICS_STARTS` | `_apcore.mw.metrics.starts` | list | Metric start markers (used by metrics middleware) |
+| `LOGGING_START` | `_apcore.mw.logging.start_time` | float (epoch s) | Start time recorded by `LoggingMiddleware.before()` |
+| `REDACTED_OUTPUT` | `_apcore.executor.redacted_output` | dict | Executor-redacted snapshot of the call output |
+| `RETRY_COUNT_BASE` | `_apcore.mw.retry.count` | int | Base key for retry middleware; use `.scoped(module_id)` per target |
+
+Framework subsystems also use additional raw-string `_apcore.*` keys (e.g., the middleware-hardening canonical table lists `_apcore.mw.logging.start_time`, `_apcore.mw.tracing.span_id`, `_apcore.mw.circuit.state` — some of which are written directly via raw dict access). Both raw-string and `ContextKey`-typed access into the `_apcore.*` namespace are reserved for the framework.
+
+!!! info "Where SDK constants live"
+    Each SDK exports these as named module-level constants (`SCREAMING_SNAKE_CASE` in Python and Rust statics, exported `const` in TypeScript). The identifier string is identical across languages. Consult the respective SDK reference for the exact import path.
+
+### Migration
+
+- Code that writes raw string keys (`ctx.data["foo"] = bar`) continues to work unchanged. The `ContextKey[T]` API is an additive layer.
+- For **new** middleware or adapter code, prefer `ContextKey`.
+- For **existing** code, migrate when the surrounding area is being modified — there is no scheduled deprecation of raw string access.
+
+### Interaction with `data` Key Convention
+
+The reserved `_apcore.` prefix described in [`data` Key Convention](#data-key-convention) applies equally to `ContextKey` identifiers and to raw string keys — they are two views of the same underlying namespace. A `ContextKey("_apcore.foo")` and `context.data["_apcore.foo"]` collide; framework code uses both views interchangeably, so third parties MUST avoid the prefix in both.
+
 ## Usage
 
 ### Read-only access in modules

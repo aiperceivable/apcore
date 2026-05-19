@@ -181,6 +181,12 @@ The framework defines error subclasses grouped by domain. Each subclass sets an 
 |---|---|---|---|
 | `MiddlewareChainError` | `MIDDLEWARE_CHAIN_ERROR` | — | Middleware chain failure (carries original exception and middleware list) |
 
+#### Streaming Errors
+
+| Error Class | Code | Retryable | Description |
+|---|---|---|---|
+| `StreamingInterfaceError` | `STREAMING_INTERFACE_MISMATCH` | — | A module declared streaming support but its `stream()` method does not satisfy the [`StreamingModule` interface](./streaming.md#streaming-module-interface-issue-62). Carries `module_id`, `expected_signature`, `actual_signature`, and `mismatch_reason` (enum: `wrong_arity` / `not_async` / `wrong_return_type` / `missing_marker`). Raised at module-load time, not at first call. |
+
 #### Dependency & Internal Errors
 
 | Error Class | Code | Retryable | Description |

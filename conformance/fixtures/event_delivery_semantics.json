@@ -1,0 +1,144 @@
+{
+  "description": "Event delivery semantics — retry policy, dead-letter event, and on_failure callback (Issue #61). Verifies that all subscriber types honor the unified retry config, that permanent failure emits apcore.event.delivery_failed with the normative payload schema, and that the DLQ event itself is not retried.",
+  "test_cases": [
+    {
+      "id": "retry_succeeds_before_exhaustion",
+      "description": "A subscriber that fails twice then succeeds MUST receive 3 total delivery attempts (initial + 2 retries) and MUST NOT emit a DLQ event when the third attempt succeeds.",
+      "setup": {
+        "subscriber": {
+          "type": "file",
+          "id": "transient-subscriber-1",
+          "path": "/tmp/apcore-test-events.jsonl",
+          "retry": {
+            "max_attempts": 3,
+            "initial_backoff_ms": 10,
+            "max_backoff_ms": 100,
+            "backoff_multiplier": 2.0
+          },
+          "fail_attempts": [1, 2]
+        }
+      },
+      "trigger": {
+        "action": "emit",
+        "event": {
+          "name": "apcore.test.transient",
+          "payload": {"value": 42}
+        }
+      },
+      "expected": {
+        "attempt_count": 3,
+        "dlq_event_emitted": false,
+        "backoff_delays_ms": [10, 20]
+      }
+    },
+    {
+      "id": "permanent_failure_emits_dlq_event",
+      "description": "A subscriber that fails on every attempt MUST trigger emission of apcore.event.delivery_failed after max_attempts is reached. The DLQ event payload MUST conform to the normative schema.",
+      "setup": {
+        "subscriber": {
+          "type": "a2a",
+          "id": "remote-monitor-1",
+          "platform_url": "https://platform.example.invalid",
+          "skill_id": "myapp.event_receiver",
+          "retry": {
+            "max_attempts": 3,
+            "initial_backoff_ms": 10
+          },
+          "fail_attempts": "all"
+        }
+      },
+      "trigger": {
+        "action": "emit",
+        "event": {
+          "name": "apcore.health.error_threshold_exceeded",
+          "payload": {"service": "billing", "error_rate": 0.42}
+        }
+      },
+      "expected": {
+        "attempt_count": 3,
+        "dlq_event_emitted": true,
+        "dlq_event": {
+          "event_type": "apcore.event.delivery_failed",
+          "data_contains": {
+            "subscriber_type": "a2a",
+            "subscriber_id": "remote-monitor-1",
+            "attempt_count": 3,
+            "original_event": {
+              "name": "apcore.health.error_threshold_exceeded"
+            }
+          },
+          "data_required_keys": [
+            "subscriber_type",
+            "subscriber_id",
+            "original_event",
+            "error",
+            "attempt_count",
+            "timestamp"
+          ]
+        }
+      }
+    },
+    {
+      "id": "dlq_event_subscriber_failure_is_not_retried",
+      "description": "If a subscriber registered for apcore.event.delivery_failed itself raises, the SDK MUST log at ERROR and discard. The DLQ event MUST NOT be retried (no infinite loop).",
+      "setup": {
+        "primary_subscriber": {
+          "type": "a2a",
+          "id": "broken-primary",
+          "platform_url": "https://platform.example.invalid",
+          "retry": {"max_attempts": 2, "initial_backoff_ms": 10},
+          "fail_attempts": "all"
+        },
+        "dlq_subscriber": {
+          "type": "file",
+          "id": "broken-dlq",
+          "path": "/dev/null/invalid",
+          "event_pattern": "apcore.event.delivery_failed",
+          "retry": {"max_attempts": 5, "initial_backoff_ms": 1000},
+          "fail_attempts": "all"
+        }
+      },
+      "trigger": {
+        "action": "emit",
+        "event": {
+          "name": "apcore.test.broken",
+          "payload": {}
+        }
+      },
+      "expected": {
+        "primary_attempt_count": 2,
+        "dlq_event_emitted": true,
+        "dlq_subscriber_attempt_count": 1,
+        "error_log_count": 1,
+        "second_order_dlq_event_emitted": false
+      }
+    },
+    {
+      "id": "subscriber_id_sdk_generated_when_omitted",
+      "description": "When a subscriber config omits the optional id field, the SDK MUST generate a stable identifier and use it consistently across all DLQ events emitted by that subscriber.",
+      "setup": {
+        "subscribers": [
+          {
+            "type": "stdout",
+            "retry": {"max_attempts": 1},
+            "fail_attempts": "all"
+          },
+          {
+            "type": "stdout",
+            "retry": {"max_attempts": 1},
+            "fail_attempts": "all"
+          }
+        ]
+      },
+      "trigger": {
+        "action": "emit",
+        "event": {"name": "apcore.test.unidentified", "payload": {}}
+      },
+      "expected": {
+        "dlq_events_emitted": 2,
+        "subscriber_ids_distinct": true,
+        "subscriber_ids_pattern": "^stdout-[0-9]+$"
+      }
+    }
+  ]
+}

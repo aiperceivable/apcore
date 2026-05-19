@@ -1,0 +1,118 @@
+{
+  "description": "Registry on_load ordering invariants (Issue #65). Verifies the strong-guarantee: a module MUST NOT become visible to discovery APIs until all on_load callbacks have completed successfully. On callback failure the module MUST NOT become visible and the registry MUST emit apcore.registry.module_load_failed.",
+  "test_cases": [
+    {
+      "id": "visibility_after_successful_on_load",
+      "description": "After register() returns successfully, the module MUST be observable via list(), get(), and get_definition(). on_load MUST have completed before any discovery API can return the module.",
+      "setup": {
+        "module": {
+          "id": "executor.test.warmup",
+          "on_load_side_effect": "set_data:_test.warmed=true",
+          "on_load_delay_ms": 50
+        }
+      },
+      "trigger": {
+        "action": "registry.register",
+        "concurrent_check": {
+          "after_ms": 25,
+          "calls": ["registry.list", "registry.get:executor.test.warmup"]
+        }
+      },
+      "expected": {
+        "registration_succeeds": true,
+        "post_register_visible": true,
+        "concurrent_check_visible": false,
+        "concurrent_check_get_raises": "ModuleNotFoundError",
+        "on_load_observed_data": {"_test.warmed": true}
+      }
+    },
+    {
+      "id": "callback_failure_blocks_visibility",
+      "description": "If on_load raises, the module MUST NOT become visible via any discovery API. The registry MUST emit apcore.registry.module_load_failed with the full normative payload, and register() MUST re-raise the original exception unchanged.",
+      "setup": {
+        "module": {
+          "id": "executor.test.failing",
+          "on_load_raises": {
+            "type": "ConnectionError",
+            "message": "Failed to reach upstream during initialization"
+          }
+        }
+      },
+      "trigger": {
+        "action": "registry.register"
+      },
+      "expected": {
+        "registration_raises": "ConnectionError",
+        "registration_error_message": "Failed to reach upstream during initialization",
+        "post_register_visible": false,
+        "post_register_list_contains": false,
+        "post_register_get_raises": "ModuleNotFoundError",
+        "load_failed_event_emitted": true,
+        "load_failed_event": {
+          "event_type": "apcore.registry.module_load_failed",
+          "data_contains": {
+            "module_id": "executor.test.failing",
+            "error_type": "ConnectionError",
+            "error_message": "Failed to reach upstream during initialization"
+          },
+          "data_required_keys": [
+            "module_id",
+            "callback_name",
+            "error_type",
+            "error_message",
+            "timestamp"
+          ]
+        }
+      }
+    },
+    {
+      "id": "concurrent_same_id_rejects_duplicate",
+      "description": "Two concurrent register() calls for the same module_id MUST result in DUPLICATE_MODULE_ID for one of them (the in-flight loading set rejects the second). The successful one MUST complete normally; the rejected one MUST NOT side-effect the registry.",
+      "setup": {
+        "module_a": {
+          "id": "executor.test.concurrent",
+          "on_load_delay_ms": 30
+        },
+        "module_b": {
+          "id": "executor.test.concurrent",
+          "on_load_delay_ms": 30
+        }
+      },
+      "trigger": {
+        "action": "registry.register_concurrent",
+        "modules": ["module_a", "module_b"]
+      },
+      "expected": {
+        "one_succeeds": true,
+        "one_raises": "InvalidInputError",
+        "raised_error_code": "DUPLICATE_MODULE_ID",
+        "post_register_visible": true,
+        "post_register_count": 1
+      }
+    },
+    {
+      "id": "concurrent_distinct_ids_run_in_parallel",
+      "description": "Callbacks for distinct modules MAY run concurrently. The strong-guarantee invariant is per-module. Two registrations of different IDs with overlapping on_load delays MUST both complete and become visible.",
+      "setup": {
+        "module_x": {
+          "id": "executor.test.parallel_x",
+          "on_load_delay_ms": 50
+        },
+        "module_y": {
+          "id": "executor.test.parallel_y",
+          "on_load_delay_ms": 50
+        }
+      },
+      "trigger": {
+        "action": "registry.register_concurrent",
+        "modules": ["module_x", "module_y"]
+      },
+      "expected": {
+        "both_succeed": true,
+        "post_register_count": 2,
+        "wall_clock_ms_less_than": 90,
+        "_note": "If callbacks were globally serialized the wall clock would be >= 100ms; the assertion confirms per-module parallelism."
+      }
+    }
+  ]
+}

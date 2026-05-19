@@ -767,11 +767,13 @@ Implementations MUST provide `file`, `stdout`, and `filter` as built-in subscrib
 
 | Type | Factory Config | Description |
 |------|---------------|-------------|
-| `webhook` | `url`, `headers`, `retry_count`, `timeout_ms` | HTTP POST delivery with configurable retry. |
-| `a2a` | `platform_url`, `auth`, `timeout_ms` | Agent-to-Agent protocol bridge with bearer/dict auth. |
-| `file` | `path`, `append` (bool, default `true`), `format` (`json`/`text`), `rotate_bytes` | Writes events to a local file. |
-| `stdout` | `format` (`json`/`text`, default `text`), `level_filter` | Writes events to stdout/stderr. |
-| `filter` | `delegate_type`, `delegate_config`, `include_events` (list), `exclude_events` (list) | Wraps another subscriber with event-name filtering. |
+| `webhook` | `id` (optional), `url`, `headers`, `retry_count`, `timeout_ms`, `retry` | HTTP POST delivery with configurable retry. |
+| `a2a` | `id` (optional), `platform_url`, `skill_id` (default `"apevo.event_receiver"`), `auth`, `timeout_ms`, `retry` | Agent-to-Agent protocol bridge with bearer/dict auth. |
+| `file` | `id` (optional), `path`, `append` (bool, default `true`), `format` (`json`/`text`), `rotate_bytes`, `retry` | Writes events to a local file. |
+| `stdout` | `id` (optional), `format` (`json`/`text`, default `text`), `level_filter`, `retry` | Writes events to stdout/stderr. |
+| `filter` | `id` (optional), `delegate_type`, `delegate_config`, `include_events` (list), `exclude_events` (list), `retry` | Wraps another subscriber with event-name filtering. |
+
+The `id` field (string, optional; SDK-generates a stable identifier when omitted) and the `retry` block (see [§Event Delivery Semantics](#event-delivery-semantics-issue-61)) apply uniformly to every subscriber type. The `skill_id` field on `a2a` was promoted from a hardcoded constant to a normative config field by issue #61.
 
 **Normative rules for `filter`:** A `filter` subscriber MUST forward matching events to its delegate and MUST silently discard non-matching events. Matching is evaluated against `include_events` first (if present); if the event name matches any pattern in `include_events`, it is forwarded. Events matching any pattern in `exclude_events` are discarded even when `include_events` is absent.
 
@@ -1009,16 +1011,258 @@ The `Content-Type` header is always `application/json`. If `auth` is a plain str
 
 ### Behavior on 4xx / 5xx Responses
 
-Unlike `WebhookSubscriber`, `A2ASubscriber` logs an `ERROR`-level message on any `>= 400` response and returns without raising. There is no retry loop.
+Both `WebhookSubscriber` and `A2ASubscriber` apply the [generic delivery retry policy](#per-subscriber-retry-policy-normative) defined below. The HTTP-status policy is the same for both: 4xx responses are client errors and MUST NOT be retried; 5xx responses, connection errors, and timeouts MUST be retried according to the subscriber's `retry` config. On retry exhaustion the SDK MUST emit [`apcore.event.delivery_failed`](#dead-letter-event-on-permanent-failure-normative); it MUST NOT raise into the emitter.
 
 ### Comparison with WebhookSubscriber.deliver
 
 | Property | WebhookSubscriber | A2ASubscriber |
 |----------|-------------------|---------------|
-| Retry on 5xx | Yes (up to `retry_count`, default 3) | No |
+| Retry on 5xx | Yes (per [`retry` config](#per-subscriber-retry-policy-normative); default `max_attempts: 3`) | Yes (per [`retry` config](#per-subscriber-retry-policy-normative); default `max_attempts: 3`) |
 | Retry on 4xx | No | No |
-| On exhaustion | Logs `ERROR`, returns silently | N/A (single attempt) |
+| On exhaustion | Emit [`apcore.event.delivery_failed`](#dead-letter-event-on-permanent-failure-normative) | Emit [`apcore.event.delivery_failed`](#dead-letter-event-on-permanent-failure-normative) |
 | Auth mechanism | Custom headers only | Bearer string or header dict |
 | Payload format | Serialized `ApCoreEvent` fields | `{skillId, event: <fields>}` wrapper |
 | Raises on HTTP error | No | No |
 | Raises on missing dep | `ImportError` | `ImportError` |
+
+## Event Delivery Semantics (Issue #61)
+
+Earlier sections specify how individual subscriber types (notably [`WebhookSubscriber`](#webhooksubscriber)) handle delivery failure. The rules in this section extend those guarantees to **every** subscriber type — built-in (`webhook`, `a2a`, `file`, `stdout`, `filter`) and any third-party subscriber registered via [`register_subscriber_type`](#cross-language-subscriberfactory-parity).
+
+The motivating defect: in-process delivery to non-`webhook` subscribers has historically been *fire-and-forget*. A transient exception causes the event to be logged once and discarded. There is no retry, no dead-letter signal, and the emitter has no observability handle on the failure. In production this silently drops audit records, monitoring alerts, and cross-service notifications.
+
+!!! warning "Discovered during apcore-a2a upgrade"
+    `A2ASubscriber` previously hardcoded `skillId="apevo.event_receiver"`. When the receiving agent was restarting or unreachable, the event was lost with no fallback. The `skill_id` configuration field defined below resolves that specific case, and the generic delivery contract resolves the broader class.
+
+### Per-Subscriber Retry Policy (Normative)
+
+Every subscriber type — built-in **and** user-registered — **MUST** accept a `retry` config block. SDKs **MUST** honor the same field names, defaults, and backoff formula across languages.
+
+| Field | Type | Default | Meaning |
+|-------|------|---------|---------|
+| `max_attempts` | int ≥ 1 | `3` | Total attempts, including the first. `1` disables retry. |
+| `initial_backoff_ms` | int ≥ 0 | `100` | Delay before attempt 1 (the first retry). |
+| `max_backoff_ms` | int ≥ `initial_backoff_ms` | `30000` | Upper bound on per-attempt delay. |
+| `backoff_multiplier` | float ≥ 1.0 | `2.0` | Multiplicative growth factor. |
+
+**Backoff formula** (`attempt` is zero-based; `attempt = 0` is the first retry after the initial try):
+
+```
+delay_ms(attempt) = min(max_backoff_ms, initial_backoff_ms * backoff_multiplier ** attempt)
+```
+
+Worked example with defaults (`max_attempts=3`, `initial_backoff_ms=100`, `max_backoff_ms=30000`, `backoff_multiplier=2.0`):
+
+| Step | Action | Delay before action |
+|------|--------|---------------------|
+| Initial try | `subscriber.on_event(event)` | 0 ms |
+| Retry 1 (`attempt=0`) | re-delivery | 100 ms |
+| Retry 2 (`attempt=1`) | re-delivery | 200 ms |
+| (give up — `max_attempts=3` reached) | emit DLQ event | — |
+
+**Interaction with the legacy `webhook.retry_count` field.** The pre-existing `retry_count` config on `webhook` (see [WebhookSubscriber](#webhooksubscriber)) is an alias for `retry.max_attempts`. If both are present in a single `webhook` config block, **`retry.max_attempts` wins** and the SDK **SHOULD** emit a `WARNING` log naming the subscriber and the conflicting fields. The 4xx-no-retry / 5xx-retry policy still governs *which* webhook responses trigger a retry — the `retry` block governs *how many* and *how long*.
+
+**YAML example** showing the policy on multiple subscriber types:
+
+```yaml
+subscribers:
+  - type: "a2a"
+    platform_url: "https://platform.example.com"
+    skill_id: "myapp.event_receiver"
+    auth: "Bearer XXXX"
+    retry:
+      max_attempts: 5
+      initial_backoff_ms: 250
+      max_backoff_ms: 10000
+      backoff_multiplier: 2.0
+
+  - type: "file"
+    path: "/var/log/apcore/events.jsonl"
+    retry:
+      max_attempts: 2      # one retry on transient I/O error
+      initial_backoff_ms: 50
+
+  - type: "stdout"
+    retry:
+      max_attempts: 1      # no retry; stdout is local
+```
+
+### Dead-Letter Event on Permanent Failure (Normative)
+
+When the configured retries are exhausted, the SDK **MUST** emit a built-in event named `apcore.event.delivery_failed`. The payload schema **MUST** be:
+
+```json
+{
+  "subscriber_type": "a2a",
+  "subscriber_id": "remote-monitor-1",
+  "original_event": {
+    "name": "apcore.health.error_threshold_exceeded",
+    "payload": { "service": "billing", "error_rate": 0.42 },
+    "metadata": { "emitted_at": "2026-05-19T10:14:22.301Z" }
+  },
+  "error": {
+    "type": "ConnectionError",
+    "message": "Failed to connect to https://platform.example.com after 5 attempts"
+  },
+  "attempt_count": 5,
+  "timestamp": "2026-05-19T10:14:28.812Z"
+}
+```
+
+Normative rules:
+
+- The DLQ event itself **MUST NOT** be retried, regardless of subscriber configuration. If a subscriber registered for `apcore.event.delivery_failed` itself raises, the SDK logs at `ERROR` level and discards. This prevents an unbounded loop when the DLQ destination is also broken.
+- The DLQ event **MUST** be emitted via the same `EventEmitter` as the original event, so any subscriber (including persistent storage, on-call paging, etc.) can opt in by name.
+- `subscriber_id` is taken from an optional `id` field in the subscriber's configuration (newly added — see table below). If the config omits `id`, the SDK MUST generate a stable identifier for that subscriber instance (e.g., `"{type}-{N}"` where `N` is the registration order). The same `subscriber_id` MUST be used across all DLQ events emitted by that subscriber instance.
+
+The optional `id` field is added to every subscriber type's config schema:
+
+| Field | Type | Default | Meaning |
+|-------|------|---------|---------|
+| `id` | string | SDK-generated | Stable identifier surfaced in `apcore.event.delivery_failed` and other observability hooks. Recommended for production deployments so operators can correlate DLQ events with config entries. |
+
+**Example — persistent DLQ via a dedicated subscriber:**
+
+The example below routes only `apcore.event.delivery_failed` to a file by composing a `filter` around a delegate `file` subscriber. Note that the **delegate's config is inline** under `delegate_config`; the outer `filter` is the only top-level subscriber, so no other events leak to disk.
+
+```yaml
+subscribers:
+  - type: "filter"
+    id: "dlq-recorder"
+    delegate_type: "file"
+    delegate_config:
+      path: "/var/log/apcore/dlq.jsonl"
+      format: "json"
+      rotate_bytes: 10485760
+    include_events:
+      - "apcore.event.delivery_failed"
+```
+
+### `on_failure` Callback (SHOULD)
+
+As an ergonomic alternative to subscribing to `apcore.event.delivery_failed`, SDKs **SHOULD** extend the [`EventSubscriber` Protocol](#eventsubscriber-protocol) with an optional `on_failure(event, error, attempt_count)` method. When present, it **MUST** be invoked exactly once per permanent delivery failure, with the same information that populates the DLQ event payload. The retry policy is carried on the subscriber instance itself (as a `retry` attribute / getter / method) so the subscriber remains the single argument to the canonical `EventEmitter.subscribe(subscriber)` call.
+
+=== "Python"
+    ```python
+    from apcore.events import ApCoreEvent, EventEmitter, EventSubscriber
+
+    class HealthAlertSubscriber:
+        """Implements EventSubscriber and the optional on_failure / retry hooks."""
+
+        event_pattern = "apcore.health.*"
+        retry = {"max_attempts": 5, "initial_backoff_ms": 250}
+
+        async def on_event(self, event: ApCoreEvent) -> None:
+            await deliver_to_external_system(event)
+
+        async def on_failure(
+            self,
+            event: ApCoreEvent,
+            error: Exception,
+            attempt_count: int,
+        ) -> None:
+            await pager.alert(
+                f"Permanent delivery failure: {event.name} "
+                f"after {attempt_count} attempts: {error}"
+            )
+
+    emitter = EventEmitter()
+    emitter.subscribe(HealthAlertSubscriber())
+    ```
+=== "TypeScript"
+    ```typescript
+    import { ApCoreEvent, EventEmitter, EventSubscriber } from "apcore-js";
+
+    class HealthAlertSubscriber implements EventSubscriber {
+        readonly eventPattern = "apcore.health.*";
+        readonly retry = { maxAttempts: 5, initialBackoffMs: 250 };
+
+        async onEvent(event: ApCoreEvent): Promise<void> {
+            await deliverToExternalSystem(event);
+        }
+
+        async onFailure(
+            event: ApCoreEvent,
+            error: Error,
+            attemptCount: number,
+        ): Promise<void> {
+            await pager.alert(
+                `Permanent delivery failure: ${event.name} ` +
+                `after ${attemptCount} attempts: ${error.message}`
+            );
+        }
+    }
+
+    const emitter = new EventEmitter();
+    emitter.subscribe(new HealthAlertSubscriber());
+    ```
+=== "Rust"
+    ```rust
+    use apcore::errors::ModuleError;
+    use apcore::events::{ApCoreEvent, EventEmitter, EventSubscriber, RetryConfig};
+    use async_trait::async_trait;
+
+    #[derive(Debug)]
+    struct HealthAlertSubscriber;
+
+    #[async_trait]
+    impl EventSubscriber for HealthAlertSubscriber {
+        fn subscriber_id(&self) -> &str { "health-alert" }
+        fn event_pattern(&self) -> &str { "apcore.health.*" }
+
+        fn retry(&self) -> RetryConfig {
+            RetryConfig { max_attempts: 5, initial_backoff_ms: 250, ..Default::default() }
+        }
+
+        async fn on_event(&self, event: &ApCoreEvent) -> Result<(), ModuleError> {
+            deliver_to_external_system(event).await
+        }
+
+        async fn on_failure(
+            &self,
+            event: &ApCoreEvent,
+            error: &ModuleError,
+            attempt_count: u32,
+        ) {
+            pager::alert(&format!(
+                "Permanent delivery failure: {} after {} attempts: {}",
+                event.name, attempt_count, error,
+            ));
+        }
+    }
+
+    let mut emitter = EventEmitter::new();
+    emitter.subscribe(Box::new(HealthAlertSubscriber));
+    ```
+
+The `retry` config and the `on_failure` method are **additive optional members** on the existing `EventSubscriber` Protocol. SDKs **MUST NOT** introduce a parallel `subscribe(pattern, callback, options)` signature — the canonical `subscribe(subscriber)` form remains the single registration entry point.
+
+If both an `on_failure` method on the subscriber and a separate subscriber registered for `apcore.event.delivery_failed` are configured, **both MUST fire** — they are independent observability channels.
+
+### `a2a` Subscriber: Configurable `skill_id` (Normative)
+
+The `a2a` subscriber configuration **MUST** accept an optional `skill_id` field. The default value remains `"apevo.event_receiver"` for backward compatibility.
+
+| Field | Type | Default | Meaning |
+|-------|------|---------|---------|
+| `skill_id` | string | `"apevo.event_receiver"` | The receiving agent's skill ID. The outgoing payload's `skillId` field is set from this. |
+
+When configured, the JSON payload (see [Payload Format](#payload-format)) carries the configured value:
+
+```json
+{
+  "skillId": "myapp.event_receiver",
+  "event": { "<serialized ApCoreEvent fields>" }
+}
+```
+
+This unblocks deployments where the receiving agent registers under an application-specific skill ID rather than the framework default. The hardcoded value is no longer normative — only the default is.
+
+### Implementation Notes (Informative)
+
+The following notes are guidance for SDK implementers and are **not normative**:
+
+- **Per-subscriber retry isolation.** SDKs should run each subscriber's delivery + retry loop in its own task / coroutine / future so that one slow or hanging subscriber does not delay delivery to others. A bounded worker pool with per-subscriber concurrency limits is one viable pattern.
+- **Jitter.** SDKs MAY add small random jitter (`±10%`) to the computed backoff delay to avoid thundering-herd retries against a recovering downstream. If applied, the resulting delay MUST still fall within `[0, max_backoff_ms]`.
+- **Cancellation.** If the host process is shutting down, in-flight retry timers SHOULD be cancelled and the corresponding events SHOULD emit DLQ events with `error.type = "ShutdownInterrupted"` so persistent DLQ subscribers can record them before exit.
+- **Memory bound.** The DLQ event mechanism is in-process and best-effort. Deployments that need durable failure records should subscribe a persistent storage subscriber (file, S3, database) to `apcore.event.delivery_failed`.

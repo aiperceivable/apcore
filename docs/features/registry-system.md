@@ -97,21 +97,26 @@ Normative behavioral contract. All SDK implementations MUST satisfy these guaran
 
 - The registry's internal lock MUST be acquired before the duplicate-ID check.
 - `module.on_load()` MUST NOT be invoked until the registry has confirmed the module is uniquely registered.
+- The module MUST NOT become visible to discovery APIs (`get`, `list`, `get_definition`) until `module.on_load()` has completed successfully. See [Registration Ordering Invariants](#registration-ordering-invariants-issue-65).
 
 ### Side Effects (ordered)
 
 1. Acquire registry lock.
 2. Validate `module_id` and module structure.
-3. Check for duplicate `module_id`; reject with `InvalidInputError(code=DUPLICATE_MODULE_ID)` if already registered (unless overwrite semantics are explicitly opted in).
-4. Insert the module into the internal store.
+3. Check for duplicate `module_id` against both the visible store **and** the in-flight loading set; reject with `InvalidInputError(code=DUPLICATE_MODULE_ID)` if already registered (unless overwrite semantics are explicitly opted in).
+4. Reserve `module_id` in an in-flight loading set so concurrent registrations for the same ID are rejected with `DUPLICATE_MODULE_ID`.
 5. Release the registry lock.
-6. Invoke `module.on_load()` if defined. If it raises, remove the module from the store (rollback) and re-raise.
-7. Emit a `register` event to subscribers.
+6. Invoke `module.on_load()` if defined, **outside** the registry lock but **before** the module becomes visible. If it raises:
+   - Remove `module_id` from the in-flight loading set.
+   - Emit `apcore.registry.module_load_failed` carrying `{module_id, callback_name, error_type, error_message}`.
+   - Re-raise the original exception.
+7. Atomically publish the module into the visible discovery store (briefly re-acquiring the registry lock) and remove `module_id` from the in-flight loading set. After this step the module is observable via `get`, `list`, and `get_definition`.
+8. Emit a `register` event to subscribers.
 
 ### Errors
 
 - `InvalidInputError(code=INVALID_MODULE_ID)` -- `module_id` fails validation.
-- `InvalidInputError(code=DUPLICATE_MODULE_ID)` -- `module_id` is already registered.
+- `InvalidInputError(code=DUPLICATE_MODULE_ID)` -- `module_id` is already registered, or a concurrent registration is currently loading the same ID.
 
 ### Returns
 
@@ -330,6 +335,53 @@ registry.unwatch()
     - **apcore-rust** triggers `discover_internal()` to re-run the configured `Discoverer`; `on_suspend` / `on_resume` are **not** invoked.
 
     Code that relies on `on_suspend` / `on_resume` lifecycle hooks firing on file change is **portable only on Python**. Cross-language integration tests SHOULD subscribe to the `'file_changed'` / `'change'` event and orchestrate state migration explicitly. The hooks themselves remain a `MAY`-level optional Module API for explicit caller-driven suspend/resume flows (see [Module Interface §Lifecycle Hooks](./module-interface.md#lifecycle-hooks)).
+
+## Registration Ordering Invariants (Issue #65)
+
+Earlier versions of the apcore-python implementation intentionally ran `on_load` callbacks **outside** the registry lock and **after** the module had been inserted into the visible discovery store. The rationale recorded in the source was "running callbacks under the RLock would make lock scenarios complex." The side effect is a small but reliably-reproducible window in which a module is observable via `get` / `list` but its `on_load`-installed state (warmed pools, primed caches, wired dependencies) is incomplete.
+
+!!! warning "Discovered during apcore-a2a upgrade"
+    Adapter code publishes synthetic modules into the registry during application start. Under parallel registration, downstream components doing `registry.get(\"executor.email.send_email\")` were occasionally receiving a `Module` reference whose `on_load` callback was still mid-flight. The defensive fix in adapter code was to busy-wait — fragile, and not portable to TS/Rust. The invariant below closes this window at the protocol level.
+
+This section defines the canonical visibility/initialization ordering. All SDKs MUST conform.
+
+### Strong-Guarantee Visibility (Normative)
+
+- **MUST** — A module MUST NOT appear in `registry.list()`, `registry.get()`, `registry.get_definition()`, or any other discovery API until **all** `on_load` callbacks registered for that module have completed successfully.
+- **MUST** — If any `on_load` callback raises, the module MUST NOT become visible. The registration call MUST surface the original exception unchanged (no wrapping).
+- **MUST** — On callback failure the registry MUST emit `apcore.registry.module_load_failed` carrying:
+
+  | Field | Type | Meaning |
+  |-------|------|---------|
+  | `module_id` | string | The module ID under which registration was attempted. |
+  | `callback_name` | string | Identifier of the failing callback (e.g., `module.on_load`, or a third-party hook name). |
+  | `error_type` | string | The exception class name. |
+  | `error_message` | string | The exception message. |
+  | `timestamp` | string (ISO 8601 UTC) | Time of failure. |
+
+- The registry MUST NOT roll back side effects performed inside `on_load` (network connections opened, files written, etc.). Cleanup of partial state is the callback's responsibility. The DLQ-style event above gives subscribers a hook to react.
+
+### Per-Module Init Locks (Informative)
+
+SDKs SHOULD implement the strong-guarantee invariant via a **deferred-publish** pattern that avoids the lock-ordering problem the original apcore-python implementation cited:
+
+1. Acquire the registry lock briefly to reserve `module_id` in an in-flight loading set (rejecting concurrent registrations of the same ID with `DUPLICATE_MODULE_ID`).
+2. Release the registry lock.
+3. Run `on_load` callbacks while holding a **per-module** initialization lock (not the global registry lock). This avoids serializing all module registrations through one mutex.
+4. On success, briefly re-acquire the registry lock and atomically publish into the visible discovery map.
+5. On failure, re-acquire the registry lock long enough to remove `module_id` from the in-flight set, then emit `apcore.registry.module_load_failed` and re-raise.
+
+This is consistent with the updated [Side Effects ordering](#side-effects-ordered) under [Contract: Registry.register](#contract-registryregister).
+
+### Concurrency Across Distinct Modules (Permissive)
+
+- **MAY** — Callbacks for **different** modules MAY run concurrently. The strong-guarantee invariant is **per-module**, not global. SDKs are free to register modules in parallel and run their `on_load` hooks concurrently; visibility serialization happens at publish time.
+- **SHOULD** — When `on_load` performs expensive work (network connection warmup, JIT compilation, large memory allocations), SDKs SHOULD document the per-module locking behavior so operators know that long-running callbacks block only callers waiting on **that specific** module via `get`/`list` (they do not block registration of unrelated modules).
+
+### Out of Scope
+
+- `on_unload` ordering during deregistration is **not** covered here; it follows the existing reverse-order semantics applied during module unregistration (see [Module Interface §Lifecycle Hooks](./module-interface.md#lifecycle-hooks)) and the language-specific hot-reload behavior described in [Hot Reload (Development Mode)](#hot-reload-development-mode).
+- Re-registration of an already-loaded module ID (hot-swap) follows the existing language-defined semantics; the strong-guarantee invariant applies to the **new** instance's `on_load` independently.
 
 ## Dependencies
 

@@ -812,3 +812,130 @@ The same pattern occurs in TypeScript when a factory returns an arrow function w
 ### Migration note
 
 Implementations that previously gated awaiting on `iscoroutinefunction` / `handler.constructor.name === 'AsyncFunction'` MUST switch to return-value inspection. The fix is backward-compatible: synchronous handlers that return non-awaitable values are unaffected; awaitable returns from non-async-declared functions are now correctly awaited instead of leaked.
+
+## Duplicate Middleware Detection (Issue #64)
+
+The middleware registration API accepts duplicate registrations silently. Two instances of the same middleware class — for example, two `RetryMiddleware` instances registered by different components — both fire in sequence, producing surprising compound behavior. A user expecting "retry up to 3 times" can end up with "retry up to 9 times" because two layers each multiply the attempts.
+
+The most common collision pattern:
+
+- An application uses a framework integration (e.g., `django-apcore`) that auto-registers resilience middleware at startup.
+- The application also explicitly registers its own resilience middleware.
+- Neither side knows about the other; both fire on every call.
+
+Diagnosing this today requires runtime tracing. There is no startup-time signal that something is doubled up.
+
+### Normative Rules
+
+**Detection (SHOULD).** When a middleware is registered, SDKs SHOULD detect prior registrations that share the same identity and emit a warning. Identity is computed as follows:
+
+| Language | Default identity |
+|----------|------------------|
+| Python | `f"{type(mw).__module__}.{type(mw).__qualname__}"` |
+| TypeScript | `` `${moduleSpecifier}:${ClassName}` `` when the module specifier is statically recoverable, falling back to the constructor name only |
+| Rust | `std::any::type_name::<T>()` |
+
+A middleware MAY override the default identity by providing an explicit `identity_key` (string) at registration time. This is useful when the same class is intentionally used with different configurations (e.g., one `RetryMiddleware` for HTTP modules and another for database modules — both legitimate, but they share a class).
+
+**Warning content (MUST).** When a duplicate is detected and no opt-out is set, the SDK MUST emit a `WARNING`-level log entry that includes:
+
+- The identity string of the duplicate.
+- The registration site of the first instance (caller frame, file:line, or stack info if available at acceptable cost).
+- The registration site of the duplicate.
+
+The warning MUST be non-blocking: the registration itself MUST succeed. Detection is observability, not enforcement.
+
+**Order preservation (MUST).** Registration order MUST be preserved. SDKs MUST NOT dedup, reorder, or otherwise mutate the middleware chain in response to a duplicate detection. The actual chain runs both instances in registration order.
+
+**Opt-out (SHOULD).** SDKs SHOULD provide a per-registration flag to suppress the warning when stacking is intentional:
+
+| Language | Flag |
+|----------|------|
+| Python | `register_middleware(mw, allow_duplicate=True)` (or equivalent on `client.use`) |
+| TypeScript | `client.use(mw, { allowDuplicate: true })` |
+| Rust | builder: `.allow_duplicate(true)` |
+
+**Identity-key namespace (SHOULD).** When using `identity_key`, third parties SHOULD prefix with their vendor namespace (`myapp.retry.http`, `my-vendor.observability.tracing`, etc.). Keys starting with `apcore.` are reserved for framework-provided middleware.
+
+### Examples
+
+=== "Python"
+
+    ```python
+    from apcore import APCore
+    from apcore.middleware import RetryMiddleware
+
+    client = APCore()
+
+    # First registration — no warning.
+    client.use(RetryMiddleware(max_attempts=3))
+
+    # Second registration — emits WARNING naming both call sites.
+    client.use(RetryMiddleware(max_attempts=2))
+
+    # Intentional stacking — pass allow_duplicate=True to silence.
+    client.use(RetryMiddleware(max_attempts=5), allow_duplicate=True)
+
+    # Two instances of the same class with distinct identity_key — NOT a duplicate.
+    client.use(RetryMiddleware(max_attempts=3), identity_key="myapp.retry.http")
+    client.use(RetryMiddleware(max_attempts=2), identity_key="myapp.retry.db")
+    ```
+
+=== "TypeScript"
+
+    ```typescript
+    import { APCore, RetryMiddleware } from "apcore-js";
+
+    const client = new APCore();
+
+    // First registration — no warning.
+    client.use(new RetryMiddleware({ maxAttempts: 3 }));
+
+    // Second registration — emits WARNING naming both call sites.
+    client.use(new RetryMiddleware({ maxAttempts: 2 }));
+
+    // Intentional stacking — pass allowDuplicate.
+    client.use(new RetryMiddleware({ maxAttempts: 5 }), { allowDuplicate: true });
+
+    // Distinct identity_key — NOT a duplicate.
+    client.use(new RetryMiddleware({ maxAttempts: 3 }), { identityKey: "myapp.retry.http" });
+    client.use(new RetryMiddleware({ maxAttempts: 2 }), { identityKey: "myapp.retry.db" });
+    ```
+
+=== "Rust"
+
+    ```rust
+    use apcore::middleware::{RetryMiddleware, MiddlewareRegistration};
+    use apcore::APCore;
+
+    let client = APCore::new();
+
+    // First registration — no warning.
+    client.use_middleware(RetryMiddleware::new(3));
+
+    // Second registration — emits WARNING naming both call sites.
+    client.use_middleware(RetryMiddleware::new(2));
+
+    // Intentional stacking.
+    client.use_middleware(
+        MiddlewareRegistration::new(RetryMiddleware::new(5))
+            .allow_duplicate(true),
+    );
+
+    // Distinct identity_key — NOT a duplicate.
+    client.use_middleware(
+        MiddlewareRegistration::new(RetryMiddleware::new(3))
+            .identity_key("myapp.retry.http"),
+    );
+    client.use_middleware(
+        MiddlewareRegistration::new(RetryMiddleware::new(2))
+            .identity_key("myapp.retry.db"),
+    );
+    ```
+
+### Out of Scope
+
+!!! info "What this rule does NOT catch"
+    Detection of *behaviorally* overlapping middleware that do not share class identity (e.g., two independently-implemented retry libraries with different class names but equivalent intent) is not a problem the framework can solve generically. Reviewers and integration tests remain the safety net for that class of collision.
+
+A stricter "reject duplicates outright" mode is not part of this requirement. SDKs MAY add an optional mode in a future release; this section reserves the design space without mandating it.
