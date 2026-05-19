@@ -443,6 +443,49 @@ class SendEmailModule(Module):
 # Features
 Send emails via SMTP protocol, supporting plain text and HTML formats.
 
+## Version Compatibility
+
+The apcore ecosystem ships in coordinated version lines — packages sharing
+the same minor version are tested to work together. Snapshot below is the
+**currently tested combination** (2026-05-18). Mirror tables live in
+[`apcore-cli` README](https://github.com/aiperceivable/apcore-cli#version-compatibility)
+and [`apcore-toolkit` README](https://github.com/aiperceivable/apcore-toolkit#version-compatibility).
+
+| Component | Version | Notes |
+|---|---|---|
+| **apcore** (spec) | 0.22.0 | this repo — `docs/spec/protocol-spec.md` v1.9.0-draft |
+| apcore-python | 0.22.0 | |
+| apcore-typescript (`apcore-js` on npm) | 0.22.0 | |
+| apcore-rust | 0.22.0 | |
+| **apcore-toolkit** (spec) | 0.7.0 | |
+| apcore-toolkit-python | 0.7.0 | |
+| apcore-toolkit-typescript | 0.7.0 | |
+| apcore-toolkit-rust | 0.7.0 | |
+| **apcore-cli** (spec) | 0.9.0 | |
+| apcore-cli-python | 0.10.0 | bumped for 6.1 / 6.2 fixes |
+| apcore-cli-typescript | 0.10.0 | bumped for 6.1 / 6.2 fixes |
+| apcore-cli-rust | 0.10.0 | bumped for 6.2 fix (removed `toolkit` Cargo feature; ADR-07 landed) |
+| **apcore-mcp** (spec) | 0.15.0 | |
+| apcore-mcp-python | 0.15.0 | |
+| apcore-mcp-typescript | 0.15.0 | |
+| apcore-mcp-rust | 0.15.0 | |
+
+### Known dependency-pin divergence (tracked as issue 6.8)
+
+All three apcore-cli packages declare `apcore-toolkit` as a **required**
+runtime dependency, but their version-pin strategies currently differ:
+
+| Language | Declared pin | Effective range |
+|---|---|---|
+| Python | `apcore-toolkit>=0.7.0` | open upper bound — accepts future toolkit minors |
+| TypeScript | `"apcore-toolkit": ">=0.7.0"` | open upper bound — accepts future toolkit minors |
+| Rust | `apcore-toolkit = "=0.7.0"` | **exact pin** — blocks future toolkit minors until manually bumped |
+
+The divergence is acknowledged and will be reconciled by adopting consistent
+caret semantics (`^0.7` / `>=0.7,<0.8` etc.) across all three packages in a
+follow-up coordinated release. Until then, ecosystem-wide upgrades to
+`apcore-toolkit 0.8+` require a synchronized re-release of the Rust pin.
+
 ## Configuration Requirements
 - SMTP server information must be configured in apcore.yaml
 - Valid SMTP authentication credentials required
