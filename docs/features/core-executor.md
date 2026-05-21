@@ -275,6 +275,36 @@ Normative behavioral contract. All SDK implementations MUST satisfy these guaran
 - `thread_safe`: `true`.
 - `pure`: `false` -- pipeline stages may emit events, mutate observability state, and transitively invoke other modules.
 
+### Trace Variants (`call_with_trace` / `callWithTrace`)
+
+SDKs MAY expose a trace-returning variant — `call_with_trace` in Python and Rust, `callWithTrace` in TypeScript — that returns the call result paired with a `PipelineTrace` value describing per-step timings and middleware events. This variant is OPTIONAL; SDKs MAY omit it.
+
+When implemented, the trace variant MUST share **identical error-recovery semantics** with the underlying `call()`:
+
+- **MUST** run the same 11-step pipeline, including the `on_error` middleware chain. A middleware that recovers from a `PipelineStepError` in `call()` MUST also recover in the trace variant; conversely, an error that propagates in `call()` MUST also propagate in the trace variant.
+- **MUST** apply the `ExecutionCancelledError` short-circuit (cancellation bypasses `on_error` in both surfaces — see [Cancellation Short-Circuit](#cancellation-short-circuit) below).
+- **MUST** apply the `MiddlewareChainError` unwrap rule (the original typed cause MUST be surfaced; the wrapper MUST NOT replace the cause with a generic `ModuleExecuteError` — see [Error Unwrap Rule](#error-unwrap-rule) below).
+- **MUST** populate the returned `PipelineTrace` with every middleware event observed during execution, including any `on_error` recovery — the trace is the observable record of what happened, not a sanitized projection.
+
+The trace variant differs from `call()` only in its return shape: a tuple/object pairing the result (or error) with the trace. All side-effect semantics — events emitted, metrics recorded, ACL audits written — MUST be identical. (Decision **D-19**.)
+
+### Cancellation Short-Circuit
+
+When an execution is cancelled (via `CancelToken` triggering `ExecutionCancelledError`), the executor MUST short-circuit before invoking the `on_error` middleware chain. Rationale: cancellation is a caller-driven request to stop, not a recoverable failure; allowing `on_error` middleware to observe cancellation as an error opens the door to logging middleware swallowing it or to retry middleware reissuing a `RetrySignal` that restarts the loop. SDKs MUST detect `ExecutionCancelledError` after pipeline-error unwrap and propagate it directly, bypassing `on_error`. (Decision **D-20**.)
+
+### Cancel Token Mid-Pipeline Check
+
+The pipeline MUST observe `cancel_token` cancellation at **two** points, in addition to honoring it inside `module.execute()` itself:
+
+1. **Step 2 (Call-Chain Guard)** — before any expensive validation or middleware work. If the token is already cancelled here, the pipeline short-circuits with `ExecutionCancelledError`.
+2. **Step 8 (Execute)** — immediately before invoking the module. Acts as a defensive backstop for tokens that became cancelled while earlier steps were running.
+
+SDKs MUST implement both check points. Single-check implementations leak compute (the pipeline runs through ACL/middleware/validation even though the caller has already cancelled) and are non-conforming. (Decision **D-21**.)
+
+### Error Unwrap Rule
+
+When a middleware (`before` / `after` / `on_error`) raises a domain-typed error such as `ApprovalDeniedError`, the underlying chain machinery may wrap it in a `MiddlewareChainError` for diagnostic purposes. The executor MUST unwrap this wrapper before propagating to the caller, surfacing the **original typed cause** unchanged. SDKs MUST NOT replace the cause with a generic `ModuleExecuteError`; doing so collapses callers' ability to dispatch on the typed error (e.g., MCP/A2A bridges keying off `APPROVAL_DENIED` vs `MODULE_EXECUTE_ERROR`). (Decision **D-22**.)
+
 ## Contract: Context.create
 
 Normative behavioral contract for the constructor entry point used by callers producing a new call context.

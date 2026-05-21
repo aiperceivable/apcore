@@ -345,6 +345,9 @@ Earlier versions of the apcore-python implementation intentionally ran `on_load`
 
 This section defines the canonical visibility/initialization ordering. All SDKs MUST conform.
 
+!!! warning "Applies to every registration path"
+    The invariants below apply uniformly to **every** path that registers a module — the public `register()` API, internal helpers (e.g., `register_internal` used by sys-modules), and discovery-driven paths (`discover()`, `register_discovered`, hot-reload, etc.). SDKs MUST NOT create per-path exceptions; if a discover-time `on_load` callback needs to enumerate sibling modules, the callback MUST be re-shaped as a post-discover hook rather than as grounds for an early-visibility carveout.
+
 ### Strong-Guarantee Visibility (Normative)
 
 - **MUST** — A module MUST NOT appear in `registry.list()`, `registry.get()`, `registry.get_definition()`, or any other discovery API until **all** `on_load` callbacks registered for that module have completed successfully.

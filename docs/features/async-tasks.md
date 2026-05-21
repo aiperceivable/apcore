@@ -214,8 +214,10 @@ The manager uses a semaphore-based concurrency limiter:
 When `cancel()` is called on a running task:
 
 1. If the task's context has a `CancelToken`, `token.cancel()` is called for cooperative cancellation.
-2. If no `CancelToken` is available, the underlying async task is cancelled directly (e.g., `asyncio.Task.cancel()` in Python).
+2. If no `CancelToken` is available, the underlying async task is cancelled directly (e.g., `asyncio.Task.cancel()` in Python, `tokio::task::JoinHandle::abort()` in Rust).
 3. The task transitions to `cancelled` state and its result is discarded.
+
+**Normative — real interrupt across SDKs (D-18):** `cancel()` MUST interrupt the in-flight executor invocation, not merely set a cooperative flag. In every SDK the running future/promise/coroutine MUST be interrupted at the next suspension point such that further module-level statements do not execute. In TypeScript specifically, `CancelToken` MUST be backed by an `AbortController` and MUST expose its `signal: AbortSignal` on `Context` so that modules performing standard Web-API I/O (`fetch`, `setTimeout`, streams) participate in real abort. SDKs MAY document residual cooperative behavior at non-Web-API await points, but the contract is "cancel means cancel" across all three languages — a flag-only implementation is non-conforming.
 
 ## Dependencies
 
@@ -296,6 +298,7 @@ The `AsyncTaskManager` MUST support pluggable storage backends via a `TaskStore`
     - `list(status_filter?) → List[TaskInfo]` — list all tasks, optionally filtered by status
     - `delete(task_id)` — remove a task record
     - `list_expired(before_timestamp) → List[TaskInfo]` — return tasks whose `completed_at` is before the given timestamp
+- All `TaskStore` methods MUST be asynchronous in every SDK (Python `async def`, TypeScript returning `Promise<T>`, Rust `async fn` on the trait via `#[async_trait]`). This is required so that Redis-, SQL-, and other I/O-backed stores can be plugged in without blocking the runtime's event loop. The `InMemoryTaskStore` MUST still expose async signatures even though its operations are CPU-only — uniform shape lets callers and middleware compose stores generically. (Decision **D-17**, supersedes the partially-sync contract that existed in Python+TS through v0.21.x.)
 - Implementations MUST provide `InMemoryTaskStore` as the default backend.
 - Implementations SHOULD provide `RedisTaskStore` and `SqlTaskStore` as optional backends.
 - The store MUST be injected at construction time: `AsyncTaskManager(store=InMemoryTaskStore())`.
