@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Fixed
+
+- **§9.16.2 Canonical Core Event Types table aligned with v0.22.0 #36 rename.** `docs/spec/protocol-spec.md` §9.16 still listed the pre-v0.22.0 canonical names `apcore.module.registered` / `apcore.module.unregistered` (subsystem `module`) and `apcore.error.threshold_exceeded` / `apcore.latency.threshold_exceeded` (categories `error` / `latency` as the subsystem segment, which violates the `apcore.<subsystem>.<event>` convention). The v0.22.0 rename had shipped only in `docs/features/event-system.md` (legacy-aliases table + canonical-events table), leaving the normative spec table contradicting the feature spec, the conformance fixture `event_naming.json`, the registry-system / rfc-ephemeral-modules / system-modules docs, and all three SDKs' v0.22.0 behavior. Updated rows 6035-6036 to `apcore.registry.module_registered` / `apcore.registry.module_unregistered` and rows 6040-6041 to `apcore.health.error_threshold_exceeded` / `apcore.health.latency_threshold_exceeded`; updated the §9.16.1 example row; rewrote the §9.16.2 preamble + collision-resolution note to distinguish the v0.18.0 short-form removals (Cohort A) from the v0.22.0 subsystem-segment renames (Cohort B).
+- **User-facing examples no longer subscribe to v0.22.0-removed legacy event names.** `docs/features/apcore-client.md` (Python / TypeScript / Rust Production Setup tabs and the `event_type` parameter example), `docs/features/event-system.md` (three Subscriber examples), `docs/features/observability.md` ("Events emitted" table), and `docs/features/system-modules.md` (Configuration YAML comments) all referenced `apcore.error.threshold_exceeded` / `apcore.latency.threshold_exceeded`. Replaced with the v0.22.0 canonical `apcore.health.error_threshold_exceeded` / `apcore.health.latency_threshold_exceeded`. The legacy names remain documented in the `event-system.md` rename table for historical reference; no other doc still teaches users to subscribe to the removed names. Found via `/apcore-skills:sync --scope core` (findings B-001 through B-004).
+
+---
+
 ## [0.22.0] - 2026-05-18
 
 ### Added

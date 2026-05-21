@@ -6014,7 +6014,7 @@ Event type names **MUST** use dot-namespaced format. The prefix identifies owner
 
 | Prefix | Owner | Examples |
 |--------|-------|---------|
-| `apcore.*` | Core framework | `apcore.module.registered`, `apcore.config.updated` |
+| `apcore.*` | Core framework | `apcore.registry.module_registered`, `apcore.config.updated` |
 | `apcore-mcp.*` | apcore-mcp | `apcore-mcp.tool_called` |
 | `apcore-a2a.*` | apcore-a2a | `apcore-a2a.task_submitted` |
 | `apcore-cli.*` | apcore-cli | `apcore-cli.command_invoked` |
@@ -6025,20 +6025,25 @@ The `apcore.*` prefix is reserved. Ecosystem packages **MUST NOT** emit events w
 
 #### 9.16.2 Canonical Core Event Types
 
-The following are the canonical event type names, payload keys, and severity for all events emitted by apcore-python. Implementations **MUST** use these names. The previous short-form names (`module_registered`, `config_changed`, `module_health_changed`, etc.) were emitted as transitional aliases up to v0.17.x and were **REMOVED in v0.18.0**. The legacy column below is retained for historical reference only — implementations **MUST NOT** emit those names.
+The following are the canonical event type names, payload keys, and severity for all events emitted by apcore SDKs. Implementations **MUST** use these names. Two distinct rename cohorts are reflected in the legacy column:
+
+- **Cohort A (removed in v0.18.0):** the unprefixed short-form names `module_health_changed` and `config_changed` were emitted as transitional aliases up to v0.17.x and were **REMOVED in v0.18.0**.
+- **Cohort B (renamed in v0.22.0, see [event-system.md](../features/event-system.md#deprecation-legacy-event-names)):** four early names that violated the `apcore.<subsystem>.<event>` convention (`module_registered`, `module_unregistered`, `apcore.error.threshold_exceeded`, `apcore.latency.threshold_exceeded` — the latter two used `error`/`latency` as the subsystem segment, which are categories, not subsystems) were **renamed in v0.22.0**. Dual-emission through v0.21.x has ended; implementations **MUST** emit only the canonical names below.
 
 | Canonical Name | Alias (legacy) | Severity | Emitted by | Payload Keys |
 |----------------|---------------|----------|------------|--------------|
-| `apcore.module.registered` | `module_registered` | `info` | Registry bridge | `module_id` |
-| `apcore.module.unregistered` | `module_unregistered` | `info` | Registry bridge | `module_id` |
+| `apcore.registry.module_registered` | `module_registered` (v0.22.0 rename), `apcore.module.registered` (early draft) | `info` | Registry bridge | `module_id` |
+| `apcore.registry.module_unregistered` | `module_unregistered` (v0.22.0 rename), `apcore.module.unregistered` (early draft) | `info` | Registry bridge | `module_id` |
 | `apcore.module.toggled` | *(new — was collision)* | `info`/`warn` | `system.control.toggle_feature` | `module_id`, `enabled` |
-| `apcore.module.reloaded` | `config_changed` (partial) | `info` | `system.control.reload_module` | `module_id`, `previous_version`, `new_version` |
-| `apcore.config.updated` | `config_changed` (partial) | `info` | `system.control.update_config` | `key`, `old_value`, `new_value` |
-| `apcore.error.threshold_exceeded` | `error_threshold_exceeded` | `error` | `PlatformNotifyMiddleware` | `module_id`, `error_rate`, `threshold` |
-| `apcore.latency.threshold_exceeded` | `latency_threshold_exceeded` | `warn` | `PlatformNotifyMiddleware` | `module_id`, `p99_latency_ms`, `threshold` |
+| `apcore.module.reloaded` | `config_changed` (partial, v0.18.0 removal) | `info` | `system.control.reload_module` | `module_id`, `previous_version`, `new_version` |
+| `apcore.config.updated` | `config_changed` (partial, v0.18.0 removal) | `info` | `system.control.update_config` | `key`, `old_value`, `new_value` |
+| `apcore.health.error_threshold_exceeded` | `apcore.error.threshold_exceeded` (v0.22.0 rename) | `error` | `PlatformNotifyMiddleware` | `module_id`, `error_rate`, `threshold` |
+| `apcore.health.latency_threshold_exceeded` | `apcore.latency.threshold_exceeded` (v0.22.0 rename) | `warn` | `PlatformNotifyMiddleware` | `module_id`, `p99_latency_ms`, `threshold` |
 | `apcore.health.recovered` | *(new — was collision)* | `info` | `PlatformNotifyMiddleware` | `module_id`, `error_rate` |
 
-> **Collision resolution:** `"module_health_changed"` was retired. Its two usages are replaced by `apcore.module.toggled` (enable/disable) and `apcore.health.recovered` (error rate recovery). `"config_changed"` was retired and split into `apcore.module.reloaded` and `apcore.config.updated`. The four legacy names were emitted as transitional aliases up to v0.17.x and were **REMOVED in v0.18.0**; implementations **MUST NOT** emit them.
+> **Collision resolution (v0.18.0):** `"module_health_changed"` was retired. Its two usages are replaced by `apcore.module.toggled` (enable/disable) and `apcore.health.recovered` (error rate recovery). `"config_changed"` was retired and split into `apcore.module.reloaded` and `apcore.config.updated`. These two legacy names were emitted as transitional aliases up to v0.17.x and were **REMOVED in v0.18.0**; implementations **MUST NOT** emit them.
+>
+> **Subsystem-segment correction (v0.22.0):** the registry events moved from `apcore.module.*` to `apcore.registry.*` (subsystem is the emitting module, not the affected entity), and the threshold events moved from `apcore.error.*` / `apcore.latency.*` to `apcore.health.*` (`error` and `latency` are categories, not subsystems; the emitting subsystem is the health-monitoring `PlatformNotifyMiddleware`). See [event-system.md §Legacy Aliases](../features/event-system.md#deprecation-legacy-event-names) for the full rename table.
 
 ---
 

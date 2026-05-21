@@ -249,7 +249,7 @@ The APCore interface follows each language's idioms while maintaining functional
     client = APCore(config=config)
 
     # System modules, metrics, and events are auto-configured
-    sub = client.on("apcore.error.threshold_exceeded", lambda e: alert(e.data))
+    sub = client.on("apcore.health.error_threshold_exceeded", lambda e: alert(e.data))
 
     # Runtime control
     client.disable("risky.module", reason="Investigating issue")
@@ -262,7 +262,7 @@ The APCore interface follows each language's idioms while maintaining functional
     const client = new APCore({ config });
 
     // System modules, metrics, and events are auto-configured
-    const sub = client.on("apcore.error.threshold_exceeded", (e) => alert(e.data));
+    const sub = client.on("apcore.health.error_threshold_exceeded", (e) => alert(e.data));
 
     // Runtime control
     await client.disable("risky.module", "Investigating issue");
@@ -274,7 +274,7 @@ The APCore interface follows each language's idioms while maintaining functional
     let client = APCore::from_path("apcore.yaml")?;
 
     // System modules, metrics, and events are auto-configured
-    let sub = client.on("apcore.error.threshold_exceeded", Box::new(AlertSubscriber));
+    let sub = client.on("apcore.health.error_threshold_exceeded", Box::new(AlertSubscriber));
 
     // Runtime control
     client.disable("risky.module", Some("Investigating issue"))?;
@@ -368,7 +368,7 @@ The APCore interface follows each language's idioms while maintaining functional
 ## Contract: APCoreClient.on
 
 ### Inputs
-- `event_type` (str/string, required) — canonical event type string (e.g. `"module_registered"`); MUST be a non-empty string; filtered by exact equality match inside the subscriber
+- `event_type` (str/string, required) — canonical event type string (e.g. `"apcore.registry.module_registered"`); MUST be a non-empty string; filtered by exact equality match inside the subscriber
 - `handler` (callable/Function, required) — sync or async callback receiving an `ApCoreEvent`; MUST NOT be null/None; Python accepts both sync and async callables (detected via `asyncio.iscoroutinefunction`); TypeScript accepts `(event: ApCoreEvent) => void | Promise<void>`
 
 ### Errors
