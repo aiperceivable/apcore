@@ -605,7 +605,7 @@ handle = await manager.start_reaper(ttl_seconds=7200.0, sweep_interval_ms=600_00
 
 ### Returns
 - On success: `TaskInfo | None` — the current snapshot of the task record, or `None`/`null` if no task with that ID exists
-- The returned object is a **copy** (TypeScript) or the live dataclass reference (Python); callers MUST NOT rely on mutation of the returned value to reflect state changes
+- The returned object MUST be a shallow copy in every SDK — Python returns `dataclasses.replace(info)`, TypeScript returns `{ ...info }`, Rust returns a clone. Callers MUST NOT rely on mutation of the returned value to propagate back to the store; conversely, store-side mutations MUST NOT be observable through a previously-returned snapshot. (Decision **D-23**, supersedes the pre-v0.22 Python behavior of returning a live reference.)
 
 ### Properties
 - async: false
@@ -645,7 +645,7 @@ handle = await manager.start_reaper(ttl_seconds=7200.0, sweep_interval_ms=600_00
 - None
 
 ### Returns
-- On success: `list[TaskInfo]` / `TaskInfo[]` — a snapshot list of matching task records; Python returns references to live dataclass objects; TypeScript returns shallow copies (`{ ...info }`)
+- On success: `list[TaskInfo]` / `TaskInfo[]` — a snapshot list of matching task records. Each entry MUST be a shallow copy in every SDK (Python `dataclasses.replace(info)`, TypeScript `{ ...info }`, Rust `clone()`). See `get_status` and Decision **D-23** for the mutation-safety contract.
 - The list order is insertion order (Python dict / JavaScript Map)
 - An empty list is returned if no tasks match the filter
 
