@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [Unreleased]
+## [0.22.0] - 2026-05-22
 
 ### Changed
 
@@ -43,8 +43,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **User-facing examples no longer subscribe to v0.22.0-removed legacy event names.** `docs/features/apcore-client.md` (Python / TypeScript / Rust Production Setup tabs and the `event_type` parameter example), `docs/features/event-system.md` (three Subscriber examples), `docs/features/observability.md` ("Events emitted" table), and `docs/features/system-modules.md` (Configuration YAML comments) all referenced `apcore.error.threshold_exceeded` / `apcore.latency.threshold_exceeded`. Replaced with the v0.22.0 canonical `apcore.health.error_threshold_exceeded` / `apcore.health.latency_threshold_exceeded`. The legacy names remain documented in the `event-system.md` rename table for historical reference; no other doc still teaches users to subscribe to the removed names. Found via `/apcore-skills:sync --scope core` (findings B-001 through B-004).
 
 ---
-
-## [0.22.0] - 2026-05-18
 
 ### Added
 

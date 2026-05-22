@@ -448,7 +448,7 @@ Normative behavioral contract. All SDK implementations MUST satisfy these guaran
 - On success (not found): `None` (Python), `null` (TypeScript), `None` (Rust `Option`).
 
 !!! note "Version resolution"
-    In Python, `version_hint` routes through the `VersionedStore`; if no versioned entry exists, it falls back to the primary `_modules` map. TypeScript does not expose `version_hint` on `get()` — the TypeScript `get(moduleId)` always returns the single registered instance, with no version-hint parameter. Implement accordingly when porting.
+    In Python, `version_hint` routes through the `VersionedStore`; if no versioned entry exists, it falls back to the primary `_modules` map. TypeScript accepts but does NOT route `versionHint` on `get()` — the parameter `get(moduleId, _versionHint?)` exists in the signature for source-compat with Python's `version_hint`, but the TS runtime always returns the single registered instance regardless of the hint. Rust mirrors the TS shape via `Option<&str>`. Cross-language portable code SHOULD register a single version per ID until [Phase B multi-version](#contract-registryregister) is implemented in all SDKs.
 
 ### Properties
 
