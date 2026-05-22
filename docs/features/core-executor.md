@@ -307,35 +307,89 @@ When a middleware (`before` / `after` / `on_error`) raises a domain-typed error 
 
 ## Contract: Context.create
 
-Normative behavioral contract for the constructor entry point used by callers producing a new call context.
+Normative behavioral contract for the canonical factory entry point used by callers producing a new top-level call context. See [Issue #66](https://github.com/aiperceivable/apcore/issues/66) for the unified-signature decision rationale.
 
 ### Inputs
 
-- `identity`: Identity, optional (default `None` / `null`). When omitted, the constructor synthesizes an `@external` identity.
-- `trace_parent`: string, optional. W3C trace-parent value. When present, it SHOULD be a 32-character hex trace ID that is neither all zeros (`0000…0000`) nor all `f`s (`ffff…ffff`); invalid values are ignored with a WARN log and a fresh trace_id is generated.
-- `services`: object, optional. Ambient service registry (logger, metrics, cancel token).
-- `data`: object, optional. User-propagated state carried through the call chain.
-- `caller_id`: string, optional. Derived from `identity` when omitted.
-- `global_deadline`: absolute timestamp, optional. When present, bounds the total execution time for the call tree rooted at this context.
+The canonical input list — across all SDKs, the public factory MUST accept **exactly** these six caller-supplied fields, named as listed (snake_case in Python/Rust, camelCase in TypeScript). Order is significant for positional languages and MUST be followed.
+
+| # | Name | Type | Default | Notes |
+|---|------|------|---------|-------|
+| 1 | `identity` | Identity \| null | null | When null, the constructor synthesizes an `@external` identity. |
+| 2 | `trace_parent` | TraceParent \| null | null | W3C Trace Context entry. The TraceParent type itself carries `tracestate` (vendor state) — SDKs MUST embed `tracestate` in the `TraceParent` type, not expose it as a separate factory parameter. Invalid values (non-32-hex, all-zero, all-f) MUST log WARN and be replaced with a fresh `trace_id`. |
+| 3 | `cancel_token` | CancelToken \| null | null | External cooperative-cancellation source. When omitted, the Executor synthesizes a fresh token at pipeline entry. Adopting this parameter eliminates the post-hoc `ctx.cancel_token = token` anti-pattern that proliferated across the ecosystem. |
+| 4 | `data` | Mapping<string, Any> \| null | empty | User-propagated state carried through the call chain by reference. |
+| 5 | `services` | T \| null | null | Caller-supplied DI container. MUST NOT be used to smuggle framework-owned fields (e.g., a `cancel_token` sub-key); the `cancel_token` parameter above is now first-class. |
+| 6 | `global_deadline` | absolute timestamp \| null | null | Bounds total execution time for the call tree rooted at this context. Local-only; see §Contract: `global_deadline` distributed semantics. |
+
+The following Context fields are **NOT** caller inputs to `Context.create()`:
+
+- `trace_id` — generated internally (derived from `trace_parent` when present and valid; otherwise a fresh 32-char lowercase hex value).
+- `caller_id` — top-level Contexts always have `caller_id = null`. Managed exclusively by `Context.child()`. Reserved name; future revisions MAY surface it if a use case emerges. Current SDKs MUST NOT accept it as a `Context.create()` parameter.
+- `call_chain` — empty `[]` at top-level; managed exclusively by the Executor.
+- `executor` — bound by the Executor at pipeline entry. See §Contract: Executor binding to Context.
+- `logger` — derived property; computed from `trace_id` and `caller_id`.
+- `redacted_inputs`, `redacted_output` — set by Executor pipeline steps 5 and 9 respectively. Never a caller input.
 
 ### Preconditions
 
-- `trace_parent` (if present) is validated; invalid values trigger regeneration (not rejection).
+- `trace_parent` (if present) is validated; invalid values trigger regeneration with a WARN log, not rejection.
 
 ### Errors
 
-No errors raised under normal operation. Invalid `trace_parent` values are silently ignored — the implementation logs a WARN and generates a fresh trace ID instead of raising.
+None under normal operation. Invalid `trace_parent` values log a WARN and a fresh `trace_id` is generated instead of raising.
 
 ### Returns
 
-- A fresh `Context` instance with a freshly generated 32-character hex `trace_id` (either derived from `trace_parent` when valid, or newly generated when absent or invalid). Invalid `trace_parent` values log a WARN and never raise an error (per PROTOCOL_SPEC §10.5).
+A fresh `Context` instance with:
+
+- A 32-character lowercase hex `trace_id` (derived from a valid `trace_parent`, or newly generated otherwise).
+- `executor`, `call_chain`, `caller_id` all unset (`null` / `None` / empty list).
+- All caller-supplied fields populated as provided.
+- `redacted_inputs` / `redacted_output` unset (populated later by the Executor pipeline).
 
 ### Properties
 
 - `async`: `false`.
-- `thread_safe`: `true` -- constructor only; no shared state is mutated.
-- `pure`: `false` -- a new `trace_id` is generated for each call.
-- `idempotent`: `false` -- each call yields a new Context with a unique `trace_id`.
+- `thread_safe`: `true` — constructor only; no shared state is mutated.
+- `pure`: `false` — a new `trace_id` is generated for each call.
+- `idempotent`: `false` — each call yields a new Context with a unique `trace_id`.
+
+## Contract: Executor binding to Context
+
+A Context whose `executor` field is null MAY originate from three distinct sources:
+
+1. **Local construction** via `Context.create()` (executor is intentionally not an input).
+2. **Cross-process deserialization** via `Context.deserialize()` (the `executor` field MUST NOT serialize, per PROTOCOL_SPEC §5.7).
+3. **Hot-reload survivor**, restored from persistence (async task store, task queue, etc.) after a process restart.
+
+The Executor MUST treat all three sources identically. The following normative rules apply at the Executor level (not at Context.create itself):
+
+1. **Bind** — When the Executor receives a Context whose `executor` field is null, it MUST bind itself to `context.executor` **before** pipeline step 1.
+2. **Stability** — Once bound, `context.executor` MUST NOT change for the remainder of the call chain.
+3. **Same-executor idempotency** — If `context.executor` is non-null and refers to **the same** Executor instance (identity comparison), the rebind is a noop. The Executor MUST NOT raise. This case covers the common pattern of reusing a single Context across multiple top-level `Executor.call()` invocations.
+4. **Cross-executor conflict** — If `context.executor` is non-null and refers to a **different** Executor instance, the Executor SHOULD raise a `ContextBindingError`. SDKs that choose to accept silently instead MUST document the deviation prominently.
+5. **Propagation** — `Context.child()` MUST propagate the bound `executor` reference to the child Context unchanged.
+
+This section unifies the previously separate "re-inject after deserialize" requirement — see [Context Object §Serialization](./context-object.md#serialization) for the cross-reference — with the construction-time binding model. Implementation mechanism is language-idiomatic: mutable field assignment for Python/Rust dataclasses; copy-on-write returning a new instance for TypeScript's `readonly` fields.
+
+## Contract: Distributed cancellation
+
+`cancel_token` is runtime-only and MUST NOT serialize (per PROTOCOL_SPEC §5.7). On the receiving node of a deserialized Context:
+
+- The Executor MUST synthesize a fresh local `CancelToken` at pipeline entry. The remote node never observes the originating node's `CancelToken` object.
+- Distributed cancellation MUST go through **out-of-band channels** (e.g., `AsyncTaskStore` task_id lookup, a `RemoteCancelSignal` subscription, or a control plane RPC). It MUST NOT attempt to ride the in-context `cancel_token` field across process boundaries.
+
+The `cancel_token` parameter on `Context.create()` exists solely for **in-process cooperation** — a request handler binding the HTTP/RPC request's abort signal to the call tree it spawns locally.
+
+## Contract: `global_deadline` distributed semantics
+
+`global_deadline` is runtime-only and MUST NOT serialize. When a deserialized Context arrives at a remote node:
+
+- The receiving Executor MUST recompute its own `global_deadline` from local `executor.global_timeout` config (per the dual-timeout model documented earlier in this spec).
+- The originating node's deadline intent is intentionally not propagated through the `global_deadline` field.
+
+Callers that need a wall-clock deadline to traverse process boundaries SHOULD store the absolute timestamp in `context.data` (a serializable field) under an extension key — e.g., `context.data["x-deadline"]`. The receiving SDK or middleware can read that key and translate it back into a local deadline if desired. `global_deadline` itself remains local-only by design, mirroring the same separation as `cancel_token` and `services`.
 
 ## Usage
 

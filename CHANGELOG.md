@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Decision D-24 — `Context.create()` signature unified across all SDKs (#66).** Reduced to the six caller-supplied fields only: `identity`, `trace_parent`, `cancel_token`, `data`, `services`, `global_deadline`. Two prior inputs are removed from the public factory surface:
+  - `executor` — Executor self-binds at pipeline entry under the new normative §"Contract: Executor binding to Context" (`docs/features/core-executor.md`). This unifies three previously distinct binding scenarios under one rule: local construction via `Context.create()`, cross-process deserialize, and hot-reload survivor restore.
+  - `caller_id` — zero production / test / doc callers across the 25-repo ecosystem. Top-level Contexts always have `caller_id = null`; the value is managed exclusively by `Context.child()`. Reserved name for future revisions.
+
+  Added `cancel_token` as a first-class parameter, eliminating the post-hoc `ctx.cancel_token = token` anti-pattern documented in 9 production sites across `apcore-mcp-{python,typescript}`, `apcore-typescript/async-task.ts` (which had to cast away `readonly`), `axum-apcore`, `django-apcore`, `fastapi-apcore`.
+
+  Rust `TraceParent` struct gains a `tracestate: Vec<(String, String)>` field to align with Python/TS shape; the redundant `ContextBuilder::tracestate()` setter is removed.
+
+  Two new normative sections clarify distributed semantics:
+  - §"Contract: Distributed cancellation" — `cancel_token` is local-only; cross-process cancellation MUST go through out-of-band channels (e.g., AsyncTaskStore task_id lookup).
+  - §"Contract: `global_deadline` distributed semantics" — `global_deadline` does not propagate across process boundaries; callers needing wall-clock deadline propagation SHOULD store it in `context.data` under an extension key.
+
+  Conformance fixture `context_create.json` validates cross-SDK parameter parity, removal of `executor`/`caller_id`, idempotent same-executor rebinding, and cross-executor conflict behavior.
+
 ### Added
 
 - **Decision D-17 — `TaskStore` is async across all SDKs** (`docs/features/async-tasks.md` §1.1). Pluggable backends like Redis or SQL cannot satisfy a sync `TaskStore` contract without blocking the runtime's event loop. New normative: every `TaskStore` method MUST be asynchronous in Python (`async def`), TypeScript (returns `Promise<T>`), and Rust (`async fn` via `#[async_trait]`). `InMemoryTaskStore` MUST still expose async signatures even though its operations are CPU-only — uniform shape lets stores compose generically. Supersedes the partially-sync contract present in apcore-python and apcore-typescript through v0.21.x. Found via `/apcore-skills:sync` (finding A-D-AT-04).

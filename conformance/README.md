@@ -38,6 +38,7 @@ SDK conformance runners **must** load `.json` files with a JSON parser. The `.ya
 | `middleware_on_error_recovery.json` | A11 | After-middleware error recovery: first-dict-wins, null passthrough, success non-override |
 | `identity_system.json` | — | Identity construction, field access, and context propagation (AC-014, AC-015) |
 | `context_trace_parent.json` | §10.5 | Context.create trace_parent strict validation: 32-hex only, W3C-invalid rejection, no auto-normalization |
+| `context_create.json` | Issue #66 | Context.create unified-signature contract: 6-param input list, executor/caller_id NOT inputs, Executor binding (local + deserialize + hot-reload), idempotent same-executor rebind, cross-executor conflict, child() propagation of executor + cancel_token, distributed cancel_token/global_deadline semantics, TraceParent embeds tracestate |
 | `dependency_version_constraints.json` | §5.3, §5.15.2 | Dependency `version` constraint enforcement: exact, `>=`, `<=`, `^`, `~`, ranges, optional skip |
 | `binding_errors.json` | — | 6 canonical cross-SDK error message parity test cases (`BindingFileInvalidError`, `BindingSchemaModeConflictError`, `BindingSchemaInferenceFailedError`, `PipelineHandlerNotSupportedError`, `BindingInvalidTargetError`, `BindingModuleNotFoundError`) |
 | `binding_yaml_canonical.yaml` | — | Cross-SDK binding YAML canonical fixture (`.yaml` format): permissive auto_schema, explicit schemas with display overlay, strict auto_schema mode |

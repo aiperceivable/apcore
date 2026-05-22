@@ -1,0 +1,217 @@
+{
+  "description": "Context.create unified-signature contract across all SDKs. Validates the v0.22.0 normative input list (identity, trace_parent, cancel_token, data, services, global_deadline), the removal of executor and caller_id as inputs, the Executor binding rules (local create, cross-process deserialize, hot-reload restore), and child() propagation. See docs/features/core-executor.md §Contract: Context.create + §Contract: Executor binding to Context, and Issue #66.",
+  "test_cases": [
+    {
+      "id": "create_minimal_all_defaults",
+      "description": "Context.create() with no arguments yields a fresh top-level Context — null executor, null identity, null cancel_token, empty data, empty call_chain, null caller_id, 32-char hex trace_id.",
+      "input": {},
+      "expected": {
+        "trace_id_pattern": "^[0-9a-f]{32}$",
+        "identity": null,
+        "executor": null,
+        "cancel_token": null,
+        "services": null,
+        "global_deadline": null,
+        "caller_id": null,
+        "call_chain": [],
+        "data_empty": true
+      }
+    },
+    {
+      "id": "create_with_identity_only",
+      "description": "Most common adapter pattern: only identity supplied. trace_id auto-generated, all other caller-inputs null.",
+      "input": {
+        "identity": {
+          "id": "user-42",
+          "type": "user",
+          "roles": ["analyst"]
+        }
+      },
+      "expected": {
+        "trace_id_pattern": "^[0-9a-f]{32}$",
+        "identity_id": "user-42",
+        "executor": null,
+        "cancel_token": null
+      }
+    },
+    {
+      "id": "create_with_cancel_token",
+      "description": "cancel_token is a first-class parameter (v0.22.0+). Verifies the token is carried on the returned Context without post-hoc assignment.",
+      "input": {
+        "cancel_token_handle": "TOKEN_FIXTURE_A"
+      },
+      "expected": {
+        "cancel_token_bound": true,
+        "cancel_token_matches_input": true,
+        "executor_at_create_time": null
+      }
+    },
+    {
+      "id": "create_with_global_deadline",
+      "description": "global_deadline is an accepted caller input. Local-only — does not affect serialize round-trip (see context_create_distributed).",
+      "input": {
+        "global_deadline": 1234567890.5
+      },
+      "expected": {
+        "global_deadline": 1234567890.5,
+        "executor": null
+      }
+    },
+    {
+      "id": "create_rejects_executor_input",
+      "description": "executor MUST NOT be a public Context.create() parameter. SDKs MAY enforce by signature (no such parameter exists) or by runtime check. Either is conforming as long as 'pass executor at construction' is not possible through the public API.",
+      "input": {
+        "attempt_pass_executor": true
+      },
+      "expected": {
+        "executor_is_not_a_parameter": true
+      }
+    },
+    {
+      "id": "create_rejects_caller_id_input",
+      "description": "caller_id MUST NOT be a public Context.create() parameter. Top-level Contexts always have caller_id = null; the field is managed exclusively by Context.child().",
+      "input": {
+        "attempt_pass_caller_id": "fake.caller"
+      },
+      "expected": {
+        "caller_id_is_not_a_parameter": true,
+        "caller_id_after_create": null
+      }
+    },
+    {
+      "id": "executor_binds_on_first_call_local",
+      "description": "Local construction → first Executor.call() binds the Executor to ctx.executor. After the call returns, ctx.executor MUST equal the Executor instance.",
+      "input": {
+        "construction": "Context.create()",
+        "call_module": "test.echo"
+      },
+      "expected": {
+        "executor_at_create_time": null,
+        "executor_after_first_call_bound": true,
+        "binding_pre_step_1": true
+      }
+    },
+    {
+      "id": "executor_binds_idempotent_same_instance",
+      "description": "Reusing the same Context across multiple top-level Executor.call() invocations on the same Executor instance is a noop on subsequent calls — MUST NOT raise.",
+      "input": {
+        "construction": "Context.create()",
+        "calls": ["test.echo", "test.echo", "test.echo"],
+        "same_executor": true
+      },
+      "expected": {
+        "rebind_noop": true,
+        "raised_error": false,
+        "executor_identity_stable": true
+      }
+    },
+    {
+      "id": "executor_rejects_cross_executor_rebind",
+      "description": "If ctx.executor is already bound to Executor A and Executor B receives the same Context, B SHOULD raise ContextBindingError. SDKs that accept silently MUST document this deviation prominently.",
+      "input": {
+        "executor_a_first": true,
+        "executor_b_second": true,
+        "same_executor": false
+      },
+      "expected_one_of": [
+        {
+          "behavior": "raise",
+          "error_type": "ContextBindingError"
+        },
+        {
+          "behavior": "silent_accept",
+          "documented_deviation_required": true
+        }
+      ]
+    },
+    {
+      "id": "child_propagates_executor",
+      "description": "Context.child() MUST propagate the bound executor to the child Context.",
+      "input": {
+        "bind_executor": true,
+        "create_child_module_id": "test.target"
+      },
+      "expected": {
+        "child_executor_matches_parent": true,
+        "child_caller_id_from_parent_chain_tip": true,
+        "child_call_chain_appends_target": true
+      }
+    },
+    {
+      "id": "child_propagates_cancel_token",
+      "description": "Context.child() MUST propagate the cancel_token to the child Context. Same reference (or equivalent linked instance) — modules deep in the call chain MUST observe cancellation.",
+      "input": {
+        "create_with_cancel_token": "TOKEN_FIXTURE_B",
+        "create_child_module_id": "test.target"
+      },
+      "expected": {
+        "child_cancel_token_bound": true,
+        "child_cancel_token_matches_parent": true
+      }
+    },
+    {
+      "id": "deserialize_then_call_binds_local_executor",
+      "description": "Cross-process scenario: deserialize a serialized Context (executor / cancel_token / services / global_deadline all stripped per §5.7), then call() on the receiving node. The local Executor MUST bind itself per the same rule as local Context.create().",
+      "input": {
+        "serialized_context": {
+          "_context_version": 1,
+          "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736",
+          "caller_id": "remote.caller",
+          "call_chain": ["remote.caller", "remote.target"],
+          "identity": {"id": "user-remote", "type": "user", "roles": [], "attrs": {}},
+          "data": {}
+        },
+        "call_module": "local.target"
+      },
+      "expected": {
+        "executor_after_deserialize": null,
+        "cancel_token_after_deserialize": null,
+        "services_after_deserialize": null,
+        "global_deadline_after_deserialize": null,
+        "caller_id_preserved": "remote.caller",
+        "executor_bound_on_first_call": true
+      }
+    },
+    {
+      "id": "distributed_cancel_token_synthesized_locally",
+      "description": "When a deserialized Context arrives on a remote node, the receiving Executor MUST synthesize a fresh local CancelToken at pipeline entry. Distributed cancellation does NOT ride the in-context cancel_token field.",
+      "input": {
+        "deserialized_context_has_no_cancel_token": true,
+        "execute_module": "local.slow"
+      },
+      "expected": {
+        "fresh_cancel_token_synthesized": true,
+        "cancel_token_is_local_instance": true
+      }
+    },
+    {
+      "id": "distributed_global_deadline_recomputed_locally",
+      "description": "When a deserialized Context arrives on a remote node, the receiving Executor MUST recompute global_deadline from local executor.global_timeout config. The originating node's deadline intent does not propagate via global_deadline.",
+      "input": {
+        "deserialized_context_has_no_global_deadline": true,
+        "local_executor_global_timeout_ms": 60000
+      },
+      "expected": {
+        "global_deadline_recomputed_locally": true,
+        "global_deadline_derived_from_config": true
+      }
+    },
+    {
+      "id": "tracestate_carried_inside_traceparent",
+      "description": "TraceParent type MUST carry tracestate as a field (no separate Context.create() parameter). Verifies cross-SDK shape: Python/TS/Rust all embed tracestate in TraceParent.",
+      "input": {
+        "trace_parent": {
+          "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736",
+          "parent_id": "00f067aa0ba902b7",
+          "trace_flags": "01",
+          "tracestate": [["vendor1", "value1"], ["vendor2", "value2"]]
+        }
+      },
+      "expected": {
+        "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736",
+        "tracestate_preserved": true,
+        "no_separate_tracestate_parameter": true
+      }
+    }
+  ]
+}

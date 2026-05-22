@@ -14,7 +14,7 @@ For caller-identity semantics, type values, and ACL integration see [Identity Sy
 - Context MUST carry a `trace_id` that uniquely identifies the call chain and is preserved across all child invocations.
 - Context MUST carry the `caller_id` of the module that initiated the current call, or `None` for top-level calls.
 - Context MUST carry the `call_chain` (ordered list of module IDs from root to current invocation), maintained automatically by the Executor.
-- Context MUST carry an `executor` reference so modules can dispatch inter-module calls.
+- Context MUST carry an `executor` reference so modules can dispatch inter-module calls. The reference is **bound by the Executor** at pipeline entry (not by `Context.create()`); see [Executor binding to Context](./core-executor.md#contract-executor-binding-to-context).
 - Context SHOULD carry an `identity` describing the caller (used by ACL).
 - Context SHOULD expose a `logger` that auto-injects `trace_id`, `module_id`, and `caller_id`.
 - Context SHOULD expose `redacted_inputs` — the input dict with `x-sensitive` fields replaced by `"***REDACTED***"` — so middleware can log safely.
@@ -37,18 +37,19 @@ For caller-identity semantics, type values, and ACL integration see [Identity Sy
 
 ### Field Constraints
 
-| Field | Type | Level | Limit | Thread Safety | Serializable |
-|-------|------|-------|-------|---------------|--------------|
-| `trace_id` | string (32-char hex) | MUST | 32 chars | Read-only, safe | MUST |
-| `caller_id` | string \| null | MUST | 128 chars | Read-only, safe | MUST |
-| `call_chain` | list[string] | MUST | Max depth 32 | Read-only, safe | MUST |
-| `executor` | Executor | MUST | — | Thread-safe | MUST NOT |
-| `identity` | Identity \| null | SHOULD | — | Read-only, safe | MUST |
-| `logger` | ContextLogger | SHOULD | — | Thread-safe | MUST NOT |
-| `redacted_inputs` | dict \| null | SHOULD | — | Read-only, safe | MAY |
-| `cancel_token` | CancelToken \| null | MAY | — | Thread-safe | MUST NOT |
-| `services` | T \| null | MAY | — | Read-only, safe | MUST NOT |
-| `data` | dict[str, Any] | MUST | — | Not thread-safe | SHOULD |
+| Field | Type | Level | Limit | Thread Safety | Serializable | Notes |
+|-------|------|-------|-------|---------------|--------------|-------|
+| `trace_id` | string (32-char hex) | MUST | 32 chars | Read-only, safe | MUST | Auto-generated. Not a `Context.create()` input. |
+| `caller_id` | string \| null | MUST | 128 chars | Read-only, safe | MUST | Top-level: null. Managed exclusively by `Context.child()`. Not a `Context.create()` input. |
+| `call_chain` | list[string] | MUST | Max depth 32 | Read-only, safe | MUST | Managed exclusively by the Executor. |
+| `executor` | Executor \| null | MUST (after binding) | — | Thread-safe | MUST NOT | **Bound by the Executor** at pipeline entry, not by `Context.create()`. See [Executor binding to Context](./core-executor.md#contract-executor-binding-to-context). |
+| `identity` | Identity \| null | SHOULD | — | Read-only, safe | MUST | |
+| `logger` | ContextLogger | SHOULD | — | Thread-safe | MUST NOT | Derived property from `trace_id` + `caller_id`. Not a `Context.create()` input. |
+| `redacted_inputs` | dict \| null | SHOULD | — | Read-only, safe | MAY | Populated by Executor pipeline step 5. |
+| `redacted_output` | dict \| null | SHOULD | — | Read-only, safe | MAY | Populated by Executor pipeline step 9. |
+| `cancel_token` | CancelToken \| null | MAY | — | Thread-safe | MUST NOT | First-class `Context.create()` parameter since v0.22.0. |
+| `services` | T \| null | MAY | — | Read-only, safe | MUST NOT | Caller-supplied DI container only — MUST NOT carry framework-owned fields. |
+| `data` | dict[str, Any] | MUST | — | Not thread-safe | SHOULD | |
 
 ### Call-Chain Safety
 
@@ -154,7 +155,7 @@ For cross-process transfer (distributed execution, task queues) Context supports
 - Skipped (runtime-only) fields: `executor`, `cancel_token`, `services`.
 - A `_context_version: 1` field is included for forward compatibility.
 
-After deserialization, the `executor` reference MUST be re-injected before the Context can be used for inter-module calls.
+After deserialization the `executor` field is null. The receiving Executor MUST bind itself on first `Executor.call()` per the unified rule in [Core Executor §Contract: Executor binding to Context](./core-executor.md#contract-executor-binding-to-context) — this covers local construction, cross-process deserialize, and hot-reload restore under a single mechanism. `cancel_token` and `services` are similarly runtime-only: the receiving Executor synthesizes a fresh local `CancelToken`; `services` is re-injected by the application boundary.
 
 ## Edge Cases
 
@@ -487,7 +488,8 @@ The reserved `_apcore.` prefix described in [`data` Key Convention](#data-key-co
     client = APCore()
     user_identity = Identity(id="user-42", type="user", roles=["analyst"])
 
-    context = Context.create(executor=client.executor, identity=user_identity)
+    # Executor self-binds on first call() — no need to pass executor= here.
+    context = Context.create(identity=user_identity)
     context.data["task_info"] = {"type": "report", "date": "2024-01"}
 
     client.executor.call("module_fetch",   inputs={}, context=context)
@@ -509,7 +511,8 @@ The reserved `_apcore.` prefix described in [`data` Key Convention](#data-key-co
     const client = new APCore();
     const userIdentity = createIdentity('user-42', 'user', ['analyst']);
 
-    const context = Context.create(client.executor, userIdentity);
+    // Executor self-binds on first call() — no need to pass it here.
+    const context = Context.create(userIdentity);
     context.data['task_info'] = { type: 'report', date: '2024-01' };
 
     await client.executor.call('module_fetch',   {}, context);
