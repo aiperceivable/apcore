@@ -80,15 +80,18 @@
     },
     {
       "id": "executor_binds_on_first_call_local",
-      "description": "Local construction → first Executor.call() binds the Executor to ctx.executor. After the call returns, ctx.executor MUST equal the Executor instance.",
+      "description": "Local construction → first Executor.call() succeeds (i.e. binding does not raise). The exact post-call observability of ctx.executor varies by SDK: some SDKs clone the Context into the pipeline (Rust) or treat it as immutable per call (TypeScript's copy-on-write), so the caller-held reference may still report `executor = null` after the call returns. Conforming behavior is that the binding succeeded and the call ran — not that the original reference observed the mutation. SDKs MAY additionally expose an SDK-private hook to verify pre-step-1 binding for internal testing.",
       "input": {
         "construction": "Context.create()",
         "call_module": "test.echo"
       },
       "expected": {
         "executor_at_create_time": null,
-        "executor_after_first_call_bound": true,
-        "binding_pre_step_1": true
+        "call_succeeded": true,
+        "raised_binding_error": false
+      },
+      "notes": {
+        "non_normative": "Pre-step-1 binding and post-call executor visibility on the caller's reference are implementation-detail concerns. The normative contract is that the call runs without ContextBindingError when ctx.executor is null at entry."
       }
     },
     {
@@ -173,27 +176,31 @@
       }
     },
     {
-      "id": "distributed_cancel_token_synthesized_locally",
-      "description": "When a deserialized Context arrives on a remote node, the receiving Executor MUST synthesize a fresh local CancelToken at pipeline entry. Distributed cancellation does NOT ride the in-context cancel_token field.",
+      "id": "distributed_cancel_token_post_deserialize_null",
+      "description": "Negative invariant: cancel_token MUST NOT serialize (per PROTOCOL_SPEC §5.7). A deserialized Context arriving on a remote node has cancel_token = null. The normative requirement that the receiving Executor synthesizes a fresh local CancelToken at pipeline entry is an SDK-internal implementation detail — not directly observable through the public Context API, so this fixture asserts only the externally visible invariant (`cancel_token` field is null after deserialize). SDKs SHOULD additionally verify the synthesis behavior through SDK-private tests.",
       "input": {
-        "deserialized_context_has_no_cancel_token": true,
-        "execute_module": "local.slow"
+        "serialized_context_includes_cancel_token_field": false
       },
       "expected": {
-        "fresh_cancel_token_synthesized": true,
-        "cancel_token_is_local_instance": true
+        "cancel_token_after_deserialize": null,
+        "no_in_context_token_rides_across_processes": true
+      },
+      "notes": {
+        "implementation_detail": "Pipeline-entry CancelToken synthesis is normative (MUST) but not asserted here because the synthesized token is internal to pipeline Step 2 and not exposed on the post-call caller-held Context reference."
       }
     },
     {
-      "id": "distributed_global_deadline_recomputed_locally",
-      "description": "When a deserialized Context arrives on a remote node, the receiving Executor MUST recompute global_deadline from local executor.global_timeout config. The originating node's deadline intent does not propagate via global_deadline.",
+      "id": "distributed_global_deadline_post_deserialize_null",
+      "description": "Negative invariant: global_deadline MUST NOT serialize. A deserialized Context arriving on a remote node has global_deadline = null. The receiving Executor recomputes global_deadline from local executor.global_timeout config (implementation detail tested SDK-internally). This fixture asserts only the serialization-level invariant.",
       "input": {
-        "deserialized_context_has_no_global_deadline": true,
-        "local_executor_global_timeout_ms": 60000
+        "serialized_context_includes_global_deadline_field": false
       },
       "expected": {
-        "global_deadline_recomputed_locally": true,
-        "global_deadline_derived_from_config": true
+        "global_deadline_after_deserialize": null,
+        "no_remote_deadline_rides_via_global_deadline_field": true
+      },
+      "notes": {
+        "implementation_detail": "Local recomputation from executor.global_timeout config is normative (MUST) but tested via the existing dual-timeout fixtures rather than re-asserted here. Callers needing a wall-clock deadline across process boundaries SHOULD store the absolute timestamp in context.data under an extension key."
       }
     },
     {
