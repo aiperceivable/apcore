@@ -403,7 +403,8 @@ This annotation enables:
 - Any error raised mid-stream is surfaced as the final item in the async iterator (iterator terminates after the error item)
 
 ### Returns
-- On success: `AsyncIterator[dict]`/`AsyncIterable<Record<string,unknown>>`/`Stream<Value>` — lazy sequence of partial output dicts; the iterator MUST be exhausted or explicitly closed to release resources
+- On success: `AsyncIterator[dict]`/`AsyncIterable<Record<string,unknown>>`/`Stream<Value>` — lazy sequence of partial output objects.
+- **Normative rule (D-19):** Every yielded chunk MUST be an object (JSON object / Python dict / TS Record). SDKs MUST validate chunk shape and raise `InvalidInputError(code=STREAM_CHUNK_NOT_OBJECT)` if a non-object chunk is yielded.
 
 ### Properties
 - async: true (streaming MUST be async in all SDK languages)

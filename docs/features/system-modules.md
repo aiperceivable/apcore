@@ -154,7 +154,8 @@ Full manifest for a single registered module.
     "readonly": true,
     "idempotent": true,
     "requires_approval": false,
-    "destructive": false
+    "destructive": false,
+    "discoverable": true
   },
   "tags": ["math", "utility"],
   "dependencies": [],

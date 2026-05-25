@@ -56,6 +56,20 @@ The pipeline-specific components (`Scanner`, `Metadata`, `Dependencies`, `EntryP
 
 All public methods on the Registry acquire a reentrant lock before accessing the internal module store. This ensures safe concurrent access from multiple threads, including during discovery (which may be triggered from a background thread) and query (which may be called from request-handling threads). The reentrant nature of the lock allows lifecycle hooks and event callbacks to safely call back into the registry (e.g., to query other modules during `on_load`). Single-threaded language runtimes (e.g., JavaScript) MAY treat the lock as a no-op.
 
+### Reserved Namespaces
+
+The following module ID prefixes are reserved for framework use and specific runtime behaviors. Standard discovery paths and manual `register()` calls MUST respect these reservations.
+
+| Namespace | Purpose | Registration Rule |
+|-----------|---------|-------------------|
+| `system.*` | Built-in introspection & control | Only via `register_internal()` |
+| `internal.*` | Framework-private modules | Only via `register_internal()` |
+| `core.*` | Core protocol primitives | Only via `register_internal()` |
+| `apcore.*` | Protocol-defined extensions | Only via `register_internal()` |
+| `ephemeral.*` | Runtime-synthesized modules | Only via `register()`; MUST NOT be discovered from disk |
+
+Modules in the `ephemeral.*` namespace are permitted to bypass filesystem validation and are intended for agent-synthesized tools or on-the-fly composition. See [RFC: Ephemeral Modules](../spec/rfc-ephemeral-modules.md).
+
 ### Event System
 
 The registry supports registering callback functions for two event types:

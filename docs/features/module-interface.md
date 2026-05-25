@@ -63,6 +63,7 @@ Behavior annotations help AI/LLM callers make invocation decisions. All fields a
 | `idempotent` | `False` | Repeated calls have no additional side effects |
 | `requires_approval` | `False` | Requires human confirmation before execution. Enforced at runtime by [Approval System](./approval-system.md). |
 | `open_world` | `True` | Connects to external systems |
+| `discoverable` | `True` | Whether the module appears in manifests and tool discovery. When `false`, it remains callable by ID but is hidden from discovery. |
 | `streaming` | `False` | Supports chunk-by-chunk output via `stream()` |
 | `cacheable` | `False` | Output can be cached for identical inputs |
 | `cache_ttl` | `0` | Cache duration in seconds (0 = no cache) |
@@ -70,6 +71,16 @@ Behavior annotations help AI/LLM callers make invocation decisions. All fields a
 | `paginated` | `False` | Returns paginated results |
 | `pagination_style` | `"cursor"` | `"cursor"`, `"offset"`, or `"page"` |
 | `extra` | `{}` | Ecosystem extension metadata not covered by standard fields |
+
+### Metadata Conventions
+
+The `metadata` dict MAY carry ecosystem-standard keys to aid AI orchestration. SDKs SHOULD pass these keys through to discovery manifests.
+
+| Key | Type | Meaning |
+|-----|------|---------|
+| `x-reasoning-demand` | `int` (1–5) | Indicates the expected reasoning complexity (1 = simple tool, 5 = high-agency task). |
+| `x-required-context-keys` | `list[str]` | Keys that MUST be present in `context.data` for the module to function. |
+| `x-supports-dry-run` | `bool` | Indicates the module supports a non-destructive dry-run mode via an input flag. |
 
 ### Lifecycle Hooks
 
@@ -98,6 +109,7 @@ new.on_resume(state)              ← restore state (only if state is not None)
 | Method | Purpose |
 |--------|---------|
 | `validate(inputs) -> ValidationResult` | Custom input validation without execution. Should be side-effect free. |
+| `preview(inputs, context) -> dict` | Returns a "low-fidelity" result without performing side effects. Used by AI agents to verify their plan before execution. |
 | `preflight(inputs, context) -> list[str]` | Advisory warnings emitted during `Executor.validate()`. Does NOT block execution. |
 | `describe() -> dict` | Module metadata for introspection. Used by `system.manifest`. Default returns `{description, input_schema, output_schema, annotations}`. |
 | `stream(inputs, context) -> AsyncIterator[dict]` | Streaming output. When defined, `Executor.stream()` calls this instead of `execute()`. Modules implementing `stream()` MUST satisfy the [`StreamingModule` interface](./streaming.md#streaming-module-interface-issue-62) for their target language (Python Protocol with `@runtime_checkable`; TypeScript interface + `Symbol.for("apcore.streaming")` marker; Rust `trait StreamingModule: Module`). Modules implementing `stream()` SHOULD set `annotations.streaming = True`. |

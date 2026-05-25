@@ -255,6 +255,7 @@ Immutable by design (Python uses `frozen=True`; TypeScript uses `readonly`; Rust
             self,
             platform_url: str,
             auth: str | dict[str, str] | None = None,
+            skill_id: str = "apevo.event_receiver",
             timeout_ms: int = 5000,
         ) -> None: ...
     ```
@@ -269,6 +270,7 @@ Immutable by design (Python uses `frozen=True`; TypeScript uses `readonly`; Rust
     new A2ASubscriber(
         platformUrl: string,
         auth?: string | Record<string, string>,
+        skillId?: string,      // default "apevo.event_receiver"
         timeoutMs?: number,    // default 5000
     );
     ```
@@ -288,6 +290,7 @@ Immutable by design (Python uses `frozen=True`; TypeScript uses `readonly`; Rust
         pub id: String,
         pub platform_url: String,
         pub auth: Option<A2AAuth>,
+        pub skill_id: String,
         pub event_pattern: String,
         pub timeout_ms: u64,              // default 5000
     }
@@ -323,7 +326,7 @@ Immutable by design (Python uses `frozen=True`; TypeScript uses `readonly`; Rust
 }
 ```
 
-Single attempt (no retries). Errors logged but not raised.
+**Delivery:** Retries on 5xx, connection errors, and timeouts according to the unified `retry` policy. Errors are logged and a dead-letter event is emitted on exhaustion. (See [§Event Delivery Semantics](#event-delivery-semantics-issue-61)).
 
 ### Subscriber Type Registry
 
@@ -994,7 +997,7 @@ Normative behavioral contract. All SDK implementations MUST satisfy these guaran
 - async: true (MUST be awaited; uses an async HTTP client internally)
 - thread_safe: true (no mutable shared state between concurrent calls)
 - pure: false (outbound HTTP POST to the platform URL)
-- retry: none — A2ASubscriber does NOT retry on failure (unlike WebhookSubscriber which retries on 5xx up to `retry_count` times)
+- retry: yes — retries on 5xx, connection errors, and timeouts according to the unified `retry` policy. On retry exhaustion it emits `apcore.event.delivery_failed` and does not raise.
 
 ### Payload Format
 
