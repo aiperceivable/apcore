@@ -691,7 +691,7 @@ sys_modules:
 - `subscriber` (`EventSubscriber` instance, required) — subscriber object owning its own `event_pattern`, `subscriber_id`, and `on_event` callback. Construct via the SDK's typed subscriber classes (e.g. `RecordingSubscriber`, `WebhookSubscriber`, `A2ASubscriber`) or implement the `EventSubscriber` protocol/trait directly.
 
 ### Errors
-- No errors raised
+- No errors raised by the cross-language contract. **Language-idiom exception (D10-002):** the Python SDK MAY raise `TypeError` at subscribe time if the subscriber's `on_event` is not a coroutine function. This is a dynamic-language precondition guard — the runtime equivalent of the compile-time type constraint that TypeScript (the `EventSubscriber` interface) and Rust (`Box<dyn EventSubscriber>`) enforce statically. A correctly-typed `EventSubscriber` never triggers it, so the guard is not an observable cross-SDK divergence.
 
 ### Returns
 - On success: void/None/() — the SDKs do not return a separate handle. Removal uses `unsubscribe` / `unsubscribe_by_id` keyed on the subscriber object's identity (`apcore-python/src/apcore/events/emitter.py:55`, `apcore-typescript/src/events/emitter.ts:75`, `apcore-rust/src/events/emitter.rs:79`).

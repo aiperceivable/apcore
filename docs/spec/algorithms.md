@@ -1958,11 +1958,11 @@ Properties:
 
 - `apcore-python/src/apcore/executor.py` — `_deep_merge()` (`_MAX_MERGE_DEPTH = 32`)
 - `apcore-typescript/src/executor.ts` — `deepMergeChunk()`
-- `apcore-rust/src/executor.rs` — `deep_merge_chunks()` and `deep_merge_value()`
+- `apcore-rust/src/executor.rs` — `deep_merge_chunks_checked()` and `deep_merge_value()`
 
 **Notes:**
 
-- Implementations **MAY** raise `STREAM_CHUNK_NOT_OBJECT` if a yielded chunk is not a dict; the canonical Python implementation matches this on `AttributeError` and the Rust mirror raises `STREAM_CHUNK_NOT_OBJECT` explicitly.
+- Implementations **MUST** reject a non-object chunk (array, string, number, boolean, null) *before* delivering it to the consumer, raising `InvalidInputError` with `code=GENERAL_INVALID_INPUT` and `details.code = STREAM_CHUNK_NOT_OBJECT`. Python, TypeScript, and Rust all enforce this with a per-chunk shape check in the streaming loop, so the invalid chunk is never yielded. See `../features/streaming.md` §Returns (D-19).
 - The merge is performed in-place on an accumulator dict; iteration over the chunk stream is single-pass.
 
 ---

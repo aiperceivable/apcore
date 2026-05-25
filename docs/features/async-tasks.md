@@ -608,7 +608,7 @@ handle = await manager.start_reaper(ttl_seconds=7200.0, sweep_interval_ms=600_00
 - The returned object MUST be a shallow copy in every SDK — Python returns `dataclasses.replace(info)`, TypeScript returns `{ ...info }`, Rust returns a clone. Callers MUST NOT rely on mutation of the returned value to propagate back to the store; conversely, store-side mutations MUST NOT be observable through a previously-returned snapshot. (Decision **D-23**, supersedes the pre-v0.22 Python behavior of returning a live reference.)
 
 ### Properties
-- async: false
+- async: false (Python, Rust). **Cross-SDK note (D10-003):** TypeScript's `getStatus` is `async` (returns a `Promise`) because the TS `TaskStore` is a fully-asynchronous interface (Decision **D-17**) with no sync read path — the manager awaits the store. The return-value contract (shallow copy, **D-23**) is identical across all SDKs.
 - thread_safe: true
 - pure: false (reads mutable task state)
 - idempotent: true
@@ -629,7 +629,7 @@ handle = await manager.start_reaper(ttl_seconds=7200.0, sweep_interval_ms=600_00
 - Result is only populated when `status == COMPLETED`; in all other terminal states (`FAILED`, `CANCELLED`) the result field is `None`/`null`
 
 ### Properties
-- async: false
+- async: false (Python, Rust). **Cross-SDK note (D10-003):** TypeScript's `getResult` is `async` (returns a `Promise`) because the TS `TaskStore` is a fully-asynchronous interface (Decision **D-17**) with no sync read path — the manager awaits the store.
 - thread_safe: true
 - pure: false (reads mutable task state)
 - idempotent: true
@@ -650,7 +650,7 @@ handle = await manager.start_reaper(ttl_seconds=7200.0, sweep_interval_ms=600_00
 - An empty list is returned if no tasks match the filter
 
 ### Properties
-- async: false
+- async: false (Python, Rust). **Cross-SDK note (D10-003):** TypeScript's `listTasks` is `async` (returns a `Promise`) because the TS `TaskStore` is a fully-asynchronous interface (Decision **D-17**) with no sync read path — the manager awaits the store.
 - thread_safe: true
 - pure: false (reads mutable task state)
 - idempotent: true
