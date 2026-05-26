@@ -222,8 +222,11 @@ Context is the runtime context for module execution. Each SDK already ships a re
         roles: Optional[list[str]] = None,
     ) -> Context:
         """Factory function for creating a real Context for tests."""
+        # Context.create() does NOT take an executor — the Executor self-binds
+        # to the context at pipeline entry (see core-executor.md §Contract:
+        # Executor binding to Context). Pass a pre-bound executor only via the
+        # raw Context(...) constructor below.
         ctx = Context.create(
-            executor=executor,
             identity=identity or Identity(
                 id="test-user",
                 type="user",
@@ -270,7 +273,9 @@ Context is the runtime context for module execution. Each SDK already ships a re
         createIdentity('test-user', 'user', opts.roles ?? ['admin']);
 
       // Top-level context — Context.create() generates a fresh trace_id.
-      const top = Context.create(opts.executor ?? null, identity, opts.data ?? {});
+      // create() signature is (identity, traceParent?, cancelToken?, data?, ...);
+      // the executor self-binds at pipeline entry and is NOT a create() argument.
+      const top = Context.create(identity, undefined, undefined, opts.data ?? {});
 
       if (opts.callerId == null && (opts.callChain ?? []).length === 0) {
         return top;

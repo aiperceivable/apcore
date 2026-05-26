@@ -450,9 +450,9 @@ Subscribers **MAY** filter by glob patterns: `apcore.registry.*`, `apcore.health
 
 Some early SDK builds emitted unprefixed names (`module_registered`, `module_unregistered`) and `apcore.error.threshold_exceeded` / `apcore.latency.threshold_exceeded` (with `error` / `latency` as the subsystem segment). These names do not conform to the `apcore.<subsystem>.<event>` convention above.
 
-**Normative rule:** Implementations **MUST** emit the canonical form. During the v0.21.x cycle, implementations **MUST** also dual-emit the legacy name with `data.deprecated: true` so existing subscribers continue to receive events. Legacy names will be removed in v0.22.0.
+**Normative rule:** Implementations **MUST** emit the canonical form. Through the v0.21.x cycle, implementations also dual-emitted the legacy name with `data.deprecated: true` so existing subscribers kept receiving events. **As of v0.22.0 dual-emission has ended and the legacy names are removed — implementations MUST emit only the canonical names** (see [protocol-spec.md §9.16](../spec/protocol-spec.md)).
 
-| Legacy name | Canonical name | Removal target |
+| Legacy name | Canonical name | Removed in |
 |-------------|----------------|----------------|
 | `module_registered` | `apcore.registry.module_registered` | v0.22.0 |
 | `module_unregistered` | `apcore.registry.module_unregistered` | v0.22.0 |

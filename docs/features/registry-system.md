@@ -227,7 +227,7 @@ Normative contract for the filesystem scanner used by step 1 of the discovery pi
     // Create registry and register a module manually
     const registry = new Registry();
 
-    registry.register("math.add", {
+    await registry.register("math.add", {
         description: "Add two integers",
         inputSchema: { type: "object", properties: { a: { type: "number" }, b: { type: "number" } } },
         outputSchema: { type: "object", properties: { sum: { type: "number" } } },
