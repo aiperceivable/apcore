@@ -159,7 +159,7 @@
         ]
       },
       "input": { "name": "Bob" },
-      "expected": { "valid": false, "error_code": "SCHEMA_VALIDATION_FAILED" }
+      "expected": { "valid": false, "error_code": "SCHEMA_VALIDATION_ERROR" }
     }
   ]
 }
