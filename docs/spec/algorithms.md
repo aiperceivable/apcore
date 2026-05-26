@@ -659,7 +659,7 @@ Steps:
 - Missing `actions` field is treated as `["*"]` (matches all operations)
 - Empty `callers` or `targets` array means the rule never matches
 - Modules calling themselves also need ACL checking
-- Rationale for dropping the `priority` field and deny-tiebreak: see `docs/spec/2026-05-decision-log.md` D-18. Insertion-order semantics match all 3 SDK implementations and produce the same results in the common case.
+- Rationale for dropping the `priority` field and deny-tiebreak: see `docs/spec/2026-05-decision-log.md` D-60. Insertion-order semantics match all 3 SDK implementations and produce the same results in the common case.
 
 ---
 
@@ -1962,7 +1962,7 @@ Properties:
 
 **Notes:**
 
-- Implementations **MUST** reject a non-object chunk (array, string, number, boolean, null) *before* delivering it to the consumer, raising `InvalidInputError` with `code=GENERAL_INVALID_INPUT` and `details.code = STREAM_CHUNK_NOT_OBJECT`. Python, TypeScript, and Rust all enforce this with a per-chunk shape check in the streaming loop, so the invalid chunk is never yielded. See `../features/streaming.md` §Returns (D-19).
+- Implementations **MUST** reject a non-object chunk (array, string, number, boolean, null) *before* delivering it to the consumer, raising `InvalidInputError` with `code=GENERAL_INVALID_INPUT` and `details.code = STREAM_CHUNK_NOT_OBJECT`. Python, TypeScript, and Rust all enforce this with a per-chunk shape check in the streaming loop, so the invalid chunk is never yielded. See `../features/streaming.md` §Returns (D-58).
 - The merge is performed in-place on an accumulator dict; iteration over the chunk stream is single-pass.
 
 ---

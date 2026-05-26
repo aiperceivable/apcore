@@ -21,6 +21,11 @@ Decision template per item:
 
 ---
 
+### Decision-ID renumber (2026-05-26)
+Entries formerly numbered **D-17–D-22** in this log were renumbered to **D-58–D-63** to resolve a duplicate-assignment collision: the v0.22.0 executor/async hardening decisions independently took D-17–D-22 (recorded in `CHANGELOG.md`, `docs/features/core-executor.md`, `docs/features/async-tasks.md`, and the SDK repos), and those hardening decisions retain D-17–D-22. Mapping: D-17→D-59 (`caller_id_for_unknown`), D-18→D-60 (ACL priority field), D-19→D-58 (stream chunk shape), D-20→D-61 (`compute_delay` rounding), D-21→D-62 (ExtensionManager `apply()` idempotency), D-22→D-63 (ExtensionManager get/get_all/unregister API).
+
+---
+
 ## D-01 — IdentityType: closed enum vs free-form
 
 **Status quo**
@@ -334,7 +339,7 @@ Python sets RETRYING during backoff; TS+Rust set it back to PENDING.
 
 ---
 
-## D-17 — `caller_id_for_unknown` configurable?
+## D-59 — `caller_id_for_unknown` configurable?
 
 **Status quo**
 - All 3 SDKs hardcode `"@external"` for missing caller_id
@@ -350,7 +355,7 @@ Python sets RETRYING during backoff; TS+Rust set it back to PENDING.
 
 ---
 
-## D-18 — ACL priority field: implement deny-wins-at-equal-priority?
+## D-60 — ACL priority field: implement deny-wins-at-equal-priority?
 
 **Status quo**
 - Spec Algorithm A09: sort rules by priority, deny-before-allow at equal priority
@@ -367,7 +372,7 @@ Python sets RETRYING during backoff; TS+Rust set it back to PENDING.
 
 ---
 
-## D-19 — Stream chunk shape: dict-only vs any JSON?
+## D-58 — Stream chunk shape: dict-only vs any JSON?
 
 **Status quo**
 - Python `_deep_merge` requires dict (TypeError on non-dict)
@@ -385,7 +390,7 @@ Python sets RETRYING during backoff; TS+Rust set it back to PENDING.
 
 ---
 
-## D-20 — `compute_delay` rounding for fractional values
+## D-61 — `compute_delay` rounding for fractional values
 
 **Status quo**
 - Python returns `float` ms
@@ -400,7 +405,7 @@ For backoff_multiplier=2.5 and retry_delay_ms=1000, attempt=2: Python/TS return 
 
 ---
 
-## D-21 — `apply()` idempotency for ExtensionManager
+## D-62 — `apply()` idempotency for ExtensionManager
 
 **Status quo**
 - Python+TS: `apply()` preserves registered extensions; second call re-stacks
@@ -415,16 +420,16 @@ For backoff_multiplier=2.5 and retry_delay_ms=1000, attempt=2: Python/TS return 
 
 ---
 
-## D-22 — `ExtensionManager.get/get_all/unregister` API
+## D-63 — `ExtensionManager.get/get_all/unregister` API
 
 **Status quo**
 - Python+TS: present
 - Rust: missing (replaced with `count`/`has`/`clear`/`clear_all`)
 
 **Options**
-- **A** Bundle with D-21 Arc migration. Add the spec API alongside.
+- **A** Bundle with D-62 Arc migration. Add the spec API alongside.
 
-**Recommendation**: **A** (paired with D-21).
+**Recommendation**: **A** (paired with D-62).
 
 ---
 
@@ -791,12 +796,12 @@ the same fixture file.
 > **Authoritative current state** (updated 2026-05-05 after iter-9 doc-only follow-through round). Per-round narratives are preserved below in chronological addenda.
 
 - **Resolved** (51 items, no further action):
-  - D-01, D-02, D-05, D-06 (doc-side; TS arg drop tracked separately — see Open below), D-07, D-08, D-09, D-10, D-11, D-12, D-13, D-14, D-15, D-16, D-17, D-18, D-19, D-23, D-25, D-26, D-27, D-28, D-29, D-30, D-31, D-32, D-33, D-34, D-35, D-36, D-37, D-38, D-39, D-40, D-41, D-42, D-43, D-44, D-45, D-46, D-47, D-48, D-49, D-50, D-51, D-52, D-53, D-54, D-55, D-56, D-57
+  - D-01, D-02, D-05, D-06 (doc-side; TS arg drop tracked separately — see Open below), D-07, D-08, D-09, D-10, D-11, D-12, D-13, D-14, D-15, D-16, D-59, D-60, D-58, D-23, D-25, D-26, D-27, D-28, D-29, D-30, D-31, D-32, D-33, D-34, D-35, D-36, D-37, D-38, D-39, D-40, D-41, D-42, D-43, D-44, D-45, D-46, D-47, D-48, D-49, D-50, D-51, D-52, D-53, D-54, D-55, D-56, D-57
   - Notes on follow-through chains:
     - **D-08** closed via **D-49** (TS + Rust renamed to canonical `compute_delay_ms`).
     - **D-11** closed via **D-42** (Python `start_reaper` aliases + ms units).
     - **D-32** closed via **D-56** (TS `_filterIdConflicts` extracted).
-  - **Doc-only follow-throughs landed in iter-9 (2026-05-05)**: D-01, D-07, D-09, D-16, D-17, D-18, D-26 — see addendum below.
+  - **Doc-only follow-throughs landed in iter-9 (2026-05-05)**: D-01, D-07, D-09, D-16, D-59, D-60, D-26 — see addendum below.
 
 - **Open — multi-SDK code fix** (2 items, target v0.21.0):
   - **D-03** — `ApprovalRequest` to add `caller_id` and `action` fields in all 3 SDKs.
@@ -804,22 +809,22 @@ the same fixture file.
 
 - **Open — single-SDK code fix** (2 items, deferred):
   - **D-04** — TS snake_case wire-format rename. Deferred per the entry's notes; needs a dedicated codemod PR (jscodeshift / sed) covering ~50 error subclasses + AuditEntry + ~30 test files. Estimated 1–2 hours focused work.
-  - **D-20** — Rust `RetryConfig::compute_delay_ms` doc-comment note about `u64` truncation. Local change in apcore-rust source only; does not require a spec edit.
+  - **D-61** — Rust `RetryConfig::compute_delay_ms` doc-comment note about `u64` truncation. Local change in apcore-rust source only; does not require a spec edit.
 
 - **Open — single-SDK code fix** (D-06 follow-through):
   - **D-06 (TS arg drop)** — `apcore-typescript` `Registry.discoverMultiClass(filePath, classes, extensionsRoot, multiClassEnabled)` should drop the `multiClassEnabled` argument; the per-class `@multiClass()` decorator becomes the only opt-in path. Tracked cross-repo. The doc-side cleanup (removing the unimplemented global `extensions.multi_class_discovery` config key from `docs/features/multi-module-discovery.md`) landed in iter-10 (2026-05-05).
 
 - **Open — Epic / RFC** (2 items paired):
-  - **D-21** + **D-22** — ExtensionManager `Arc` migration. Multi-API breaking change cascading through Executor / Registry. Track as RFC + epic; target v0.22.0.
+  - **D-62** + **D-63** — ExtensionManager `Arc` migration. Multi-API breaking change cascading through Executor / Registry. Track as RFC + epic; target v0.22.0.
 
 ## Recommended sequence
 
-1. ✅ ~~Apply doc-only fixes as a single PR~~ — **completed in iter-9** (D-01, D-07, D-09, D-16, D-17, D-18, D-26).
+1. ✅ ~~Apply doc-only fixes as a single PR~~ — **completed in iter-9** (D-01, D-07, D-09, D-16, D-59, D-60, D-26).
 2. **D-06** spec cleanup — small follow-up PR; can ship with the next doc-cleanup round.
 3. **D-03** + **D-24** — batched into v0.21.0 multi-SDK release.
 4. **D-04** — schedule a dedicated TS codemod PR session (1–2 hrs focused).
-5. **D-20** — apcore-rust local doc comment (out of scope for this repo).
-6. **D-21** / **D-22** — RFC + epic, target v0.22.0.
+5. **D-61** — apcore-rust local doc comment (out of scope for this repo).
+6. **D-62** / **D-63** — RFC + epic, target v0.22.0.
 
 ---
 
@@ -832,12 +837,12 @@ Status updates landed since the original 2026-05-02 sync:
 - **D-13** — resolved. Python `TaskInfo.attempt_number` renamed to `retry_count`; `attempt_number` retained as a deprecated read-only `@property` alias.
 - **D-14** — resolved. Rust `RetryConfig::default()` now returns `max_retries = 0`, matching Python+TS and the spec. Existing callers must opt in to retries explicitly.
 - **D-15** — resolved. Python and TypeScript both expose `Registry.discover_multi_class` / `Registry.discoverMultiClass` as methods. The free-function form is retained as an internal helper. Rust's split (`Registry::register_multi_class` + `derive_module_ids`) remains; the spec contract is satisfied by the method form in all 3 SDKs (Rust's `discover_multi_class` method wraps `register_multi_class`).
-- **D-19** — resolved. Rust streaming chunk merge raises `STREAM_CHUNK_NOT_OBJECT` for non-object chunks before invoking `deep_merge_value`, aligning with Python+TS shape requirements.
+- **D-58** — resolved. Rust streaming chunk merge raises `STREAM_CHUNK_NOT_OBJECT` for non-object chunks before invoking `deep_merge_value`, aligning with Python+TS shape requirements.
 - **D-25** — resolved. `update_config` raises `CONFIG_KEY_RESTRICTED` for restricted keys in Rust (and TS — TS half landed as part of the round). Python was already aligned.
 - **D-27** — resolved. Rust `UsageCollector` now computes trend from samples (replacing the hardcoded `"stable"`), accepts an optional `timestamp` on `record()`, and supports `period` filtering on `get_summary()`.
 - **D-28** — resolved. Rust `ContextLogger` output schema aligned with Python+TS: lowercase `level`, nested `extra` key wrapper, `module_id` field name (was `module`), `inputs` field in middleware extras (was `input`).
 
-The remaining open items (D-04 TS snake_case rename, D-21/D-22 ExtensionManager Arc migration, D-32 TS pipeline-stage refactor) retain the recommendations and ownership noted in the original entries.
+The remaining open items (D-04 TS snake_case rename, D-62/D-63 ExtensionManager Arc migration, D-32 TS pipeline-stage refactor) retain the recommendations and ownership noted in the original entries.
 
 ### Resolution status — iter-8 addendum (D-47..D-53)
 
@@ -1056,10 +1061,10 @@ TypeScript SDK adds `OverridesStore` interface, `FileOverridesStore` (YAML-backe
 
 ### Resolution status — iter-9 addendum (doc-only follow-through, 2026-05-05)
 
-The original 2026-05-02 Resolution status block listed seven entries as "Doc-only fixes" (D-01, D-07, D-09, D-16, D-17, D-18, D-26) but five of them were never executed. A re-audit in iter-9 found:
+The original 2026-05-02 Resolution status block listed seven entries as "Doc-only fixes" (D-01, D-07, D-09, D-16, D-59, D-60, D-26) but five of them were never executed. A re-audit in iter-9 found:
 
-- **D-09** and **D-17** had been silently closed in earlier rounds (`start()`/`stop()` already removed from PROTOCOL_SPEC §12; `caller_id_for_unknown` configurability text already removed from `acl-system.md`) but the Resolution status block was not updated to reflect this.
-- **D-01, D-07, D-16, D-18, D-26** had not been touched since the decision log was written 2 weeks earlier.
+- **D-09** and **D-59** had been silently closed in earlier rounds (`start()`/`stop()` already removed from PROTOCOL_SPEC §12; `caller_id_for_unknown` configurability text already removed from `acl-system.md`) but the Resolution status block was not updated to reflect this.
+- **D-01, D-07, D-16, D-60, D-26** had not been touched since the decision log was written 2 weeks earlier.
 
 Status updates landed 2026-05-05:
 
@@ -1067,8 +1072,8 @@ Status updates landed 2026-05-05:
 - **D-07** — resolved. `docs/features/call-chain-guard.md:210` corrected from `FrequencyExceededError(code=FREQUENCY_EXCEEDED)` to `CallFrequencyExceededError(code=CALL_FREQUENCY_EXCEEDED)`, matching the implementation + Error Types table at line 100 of the same file.
 - **D-09** — resolved (verified). `start()` / `stop()` lifecycle mentions are absent from protocol-spec.md; the iter-9 audit confirmed the earlier removal.
 - **D-16** — resolved. `docs/features/streaming.md` Rust producer example rewritten to use the actual trait signature `fn stream(&self, ...) -> Option<ChunkStream>`, returning a pinned `async_stream::stream!` block that yields `Result<Value, ModuleError>` chunks. The earlier example incorrectly showed `async fn stream(...) -> Result<Vec<Value>, ModuleError>` (buffered).
-- **D-17** — resolved (verified). `docs/features/acl-system.md` no longer suggests configurability for `caller_id_for_unknown`; `@external` is treated as the canonical literal throughout the doc.
-- **D-18** — resolved. `docs/spec/algorithms.md` Algorithm A09 (`evaluate_acl`) revised: dropped the `priority: Integer` field from the `Rule` struct; dropped the sort + deny-before-allow tiebreak steps; documented insertion-order-first-match-wins as the canonical evaluation order with rationale cross-referenced to this entry. Implementation Notes also updated.
+- **D-59** — resolved (verified). `docs/features/acl-system.md` no longer suggests configurability for `caller_id_for_unknown`; `@external` is treated as the canonical literal throughout the doc.
+- **D-60** — resolved. `docs/spec/algorithms.md` Algorithm A09 (`evaluate_acl`) revised: dropped the `priority: Integer` field from the `Rule` struct; dropped the sort + deny-before-allow tiebreak steps; documented insertion-order-first-match-wins as the canonical evaluation order with rationale cross-referenced to this entry. Implementation Notes also updated.
 - **D-26** — resolved. `docs/features/identity-system.md` gained a new "Equality and hashability" subsection: Identity is a value type with structural equality (`id` + `type` + `roles` + `attrs`); hashability is implementation-defined per language (Rust derives `Hash`; Python frozen dataclass with `dict` attrs is not hashable; TypeScript is caller's responsibility).
 
 No SDK behavior changes, no normative `MUST` / `MUST NOT` additions, no schema files touched.

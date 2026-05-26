@@ -405,7 +405,7 @@ The `AsyncTaskManager` MUST support pluggable storage backends via a `TaskStore`
 | TypeScript | `RetryConfig.computeDelayMs(attempt: number) -> number` | number ms | `computeDelay(attempt)` (one-shot deprecation warning; removal in v0.22.0) |
 | Rust | `RetryConfig::compute_delay_ms(&self, attempt: u32) -> u64` | u64 ms (truncated) | `delay_for_attempt(&self, attempt)` (`#[deprecated]`; removal in v0.22.0) |
 
-All three implementations MUST produce numerically equivalent values for the same inputs (subject to Rust's `u64` truncation of fractional milliseconds — see decision D-20).
+All three implementations MUST produce numerically equivalent values for the same inputs (subject to Rust's `u64` truncation of fractional milliseconds — see decision D-61).
 
 **Default retry configuration (YAML):**
 

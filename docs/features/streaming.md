@@ -404,7 +404,7 @@ This annotation enables:
 
 ### Returns
 - On success: `AsyncIterator[dict]`/`AsyncIterable<Record<string,unknown>>`/`Stream<Value>` — lazy sequence of partial output objects.
-- **Normative rule (D-19):** Every chunk MUST be an object (JSON object / Python dict / TS Record). SDKs MUST validate each chunk's shape *before delivering it* and, on a non-object chunk (array, string, number, boolean, null), MUST reject it — the invalid chunk MUST NOT be yielded to the consumer. The error raised is `InvalidInputError` with `code=GENERAL_INVALID_INPUT` and `details.code = STREAM_CHUNK_NOT_OBJECT` (plus `details.chunk_index` and `details.actual_type`, the latter being the JSON type name of the offending chunk).
+- **Normative rule (D-58):** Every chunk MUST be an object (JSON object / Python dict / TS Record). SDKs MUST validate each chunk's shape *before delivering it* and, on a non-object chunk (array, string, number, boolean, null), MUST reject it — the invalid chunk MUST NOT be yielded to the consumer. The error raised is `InvalidInputError` with `code=GENERAL_INVALID_INPUT` and `details.code = STREAM_CHUNK_NOT_OBJECT` (plus `details.chunk_index` and `details.actual_type`, the latter being the JSON type name of the offending chunk).
 
 ### Properties
 - async: true (streaming MUST be async in all SDK languages)
