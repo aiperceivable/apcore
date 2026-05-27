@@ -321,7 +321,7 @@ The APCore interface follows each language's idioms while maintaining functional
 ### Errors
 - `InvalidInputError(code=INVALID_MODULE_ID)` — `module_id` is empty or malformed
 - `ModuleNotFoundError(code=MODULE_NOT_FOUND)` — no module registered under `module_id`
-- `SchemaValidationError(code=SCHEMA_VALIDATION_FAILED)` — `inputs` fails the module's `input_schema`
+- `SchemaValidationError(code=SCHEMA_VALIDATION_ERROR)` — `inputs` fails the module's `input_schema`
 - Any error raised by the module's `execute` handler propagates unchanged
 
 ### Returns
@@ -411,7 +411,7 @@ The APCore interface follows each language's idioms while maintaining functional
 ### Errors
 - `InvalidInputError(code=INVALID_MODULE_ID)` — `module_id` is empty or malformed (raised before pipeline starts)
 - `ModuleNotFoundError(code=MODULE_NOT_FOUND)` — no module registered under `module_id`
-- `SchemaValidationError(code=SCHEMA_VALIDATION_FAILED)` — `inputs` fails the module's `input_schema`
+- `SchemaValidationError(code=SCHEMA_VALIDATION_ERROR)` — `inputs` fails the module's `input_schema`
 - `ExecutionCancelledError` — propagated unchanged if the execution context is cancelled mid-stream
 - Any error raised by the module's `execute`/`stream` handler: in Python, a recovery dict chunk is yielded and the generator returns cleanly; retry signals during streaming are ignored and the original error is re-raised
 

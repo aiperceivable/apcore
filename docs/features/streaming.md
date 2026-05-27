@@ -399,7 +399,7 @@ This annotation enables:
 - `context` (Context, required) — execution context
 
 ### Errors
-- `SchemaValidationError(code=SCHEMA_VALIDATION_FAILED)` — `inputs` fails validation
+- `SchemaValidationError(code=SCHEMA_VALIDATION_ERROR)` — `inputs` fails validation
 - Any error raised mid-stream is surfaced as the final item in the async iterator (iterator terminates after the error item)
 
 ### Returns

@@ -267,7 +267,7 @@ The `strict` module provides a strict validation mode that rejects any fields no
 
 ### Cross-language note
 
-All three SDKs return a result object rather than raising. Spec versions ≤ 0.20.0 incorrectly declared "void/None/() — raises on failure"; that text was implementation-incorrect across all SDKs and has been amended (D10-012). For the raise-on-failure semantic, use the dedicated `validate_input` / `validate_output` (or Rust `validate_or_error`) entry points which raise `SchemaValidationError(code=SCHEMA_VALIDATION_FAILED)` on a non-empty `errors` array.
+All three SDKs return a result object rather than raising. Spec versions ≤ 0.20.0 incorrectly declared "void/None/() — raises on failure"; that text was implementation-incorrect across all SDKs and has been amended (D10-012). For the raise-on-failure semantic, use the dedicated `validate_input` / `validate_output` (or Rust `validate_or_error`) entry points which raise `SchemaValidationError(code=SCHEMA_VALIDATION_ERROR)` on a non-empty `errors` array.
 - idempotent: true
 
 ## Contract: RefResolver — `$ref` resolution
@@ -1025,7 +1025,7 @@ The case excerpts below illustrate the canonical shape; refer to the JSON files 
 - `max_depth` (int/number/usize, optional, default=32) — maximum recursion depth before raising a depth-limit error
 
 ### Errors
-- `SchemaValidationError(code=SCHEMA_VALIDATION_FAILED)` — data does not conform to schema at any nesting level
+- `SchemaValidationError(code=SCHEMA_VALIDATION_ERROR)` — data does not conform to schema at any nesting level
 - `SchemaCircularRefError(code=SCHEMA_MAX_DEPTH_EXCEEDED)` — recursion depth exceeded `max_depth`
 
 ### Returns

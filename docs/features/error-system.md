@@ -228,7 +228,7 @@ The framework defines error subclasses grouped by domain. Each subclass sets an 
 
 | Error Class | Code | Retryable | Description |
 |---|---|---|---|
-| `SchemaValidationFailedError` | `SCHEMA_VALIDATION_FAILED` | — | Validation outcome alias used by some SDK code paths; semantically equivalent to `SCHEMA_VALIDATION_ERROR` |
+| `SchemaValidationFailedError` | `SCHEMA_VALIDATION_FAILED` | — | **Deprecated, retired alias — no longer emitted by any SDK.** All schema validation failures (raised errors and validate-result `error_code`) now use `SCHEMA_VALIDATION_ERROR`. Retained only for backward-compatible imports. |
 | `SchemaMaxDepthExceededError` | `SCHEMA_MAX_DEPTH_EXCEEDED` | — | Recursive schema (`$ref` self-reference) expansion exceeded the depth cap (default 32) |
 
 #### Module Registration Conflict Errors

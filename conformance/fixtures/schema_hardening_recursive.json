@@ -70,7 +70,7 @@
           { "value": 42 }
         ]
       },
-      "expected": { "valid": false, "error_code": "SCHEMA_VALIDATION_FAILED" }
+      "expected": { "valid": false, "error_code": "SCHEMA_VALIDATION_ERROR" }
     },
     {
       "id": "tree_node_empty_children_array",

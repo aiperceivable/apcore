@@ -21,7 +21,7 @@
         "required": ["count"]
       },
       "input": { "count": 0 },
-      "expected": { "valid": false, "error_code": "SCHEMA_VALIDATION_FAILED" }
+      "expected": { "valid": false, "error_code": "SCHEMA_VALIDATION_ERROR" }
     },
     {
       "id": "maximum_satisfied",
@@ -43,7 +43,7 @@
         "required": ["count"]
       },
       "input": { "count": 101 },
-      "expected": { "valid": false, "error_code": "SCHEMA_VALIDATION_FAILED" }
+      "expected": { "valid": false, "error_code": "SCHEMA_VALIDATION_ERROR" }
     },
     {
       "id": "exclusive_minimum_boundary",
@@ -54,7 +54,7 @@
         "required": ["score"]
       },
       "input": { "score": 0 },
-      "expected": { "valid": false, "error_code": "SCHEMA_VALIDATION_FAILED" }
+      "expected": { "valid": false, "error_code": "SCHEMA_VALIDATION_ERROR" }
     },
     {
       "id": "min_length_satisfied",
@@ -76,7 +76,7 @@
         "required": ["label"]
       },
       "input": { "label": "" },
-      "expected": { "valid": false, "error_code": "SCHEMA_VALIDATION_FAILED" }
+      "expected": { "valid": false, "error_code": "SCHEMA_VALIDATION_ERROR" }
     },
     {
       "id": "max_length_satisfied",
@@ -98,7 +98,7 @@
         "required": ["label"]
       },
       "input": { "label": "helloworldx" },
-      "expected": { "valid": false, "error_code": "SCHEMA_VALIDATION_FAILED" }
+      "expected": { "valid": false, "error_code": "SCHEMA_VALIDATION_ERROR" }
     },
     {
       "id": "pattern_match",
@@ -120,7 +120,7 @@
         "required": ["slug"]
       },
       "input": { "slug": "UPPER_CASE" },
-      "expected": { "valid": false, "error_code": "SCHEMA_VALIDATION_FAILED" }
+      "expected": { "valid": false, "error_code": "SCHEMA_VALIDATION_ERROR" }
     },
     {
       "id": "not_keyword",
@@ -135,7 +135,7 @@
         "required": ["status"]
       },
       "input": { "status": "deleted" },
-      "expected": { "valid": false, "error_code": "SCHEMA_VALIDATION_FAILED" }
+      "expected": { "valid": false, "error_code": "SCHEMA_VALIDATION_ERROR" }
     }
   ]
 }

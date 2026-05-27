@@ -31,6 +31,7 @@ SDK conformance runners **must** load `.json` files with a JSON parser. The `.ya
 | `schema_hardening_constraints.json` | §4.15 Hardening | Rust validator parity: min/max/minLength/maxLength/pattern/not constraints |
 | `schema_hardening_formats.json` | §4.15 Hardening | Semantic format mapping: date-time/date/email/uri/uuid/ipv4/ipv6 |
 | `schema_hardening_cache.json` | §4.15 Hardening | Content-addressable schema cache: deduplication by content hash |
+| `schema_content_hash.json` | A-D-037 | Cross-language content-hash canonicalization parity: float rendering (1.0), non-ASCII Unicode keys/values, large integers, unsorted nested keys, baseline; SDKs compute and hashes are compared cross-repo (no `expected` recorded) |
 | `annotations_extra_round_trip.json` | §4.4 | ModuleAnnotations.extra wire-format (nested form, legacy flattened tolerance, precedence) |
 | `config_defaults.json` | — | Canonical default values conformance across all SDKs |
 | `stream_aggregation.json` | — | Stream chunk deep-merge aggregation algorithm |
