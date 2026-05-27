@@ -1,0 +1,32 @@
+{
+  "description": "ModuleError serialization wire format — cross-language golden test. The serialized form (Python to_dict, TypeScript toJSON, Rust to_dict/serde) MUST use snake_case keys (trace_id, ai_guidance, user_fixable) and MUST snake_case the keys inside `details`, matching the serialization example in docs/features/error-system.md. Null/None optional fields are omitted (sparse output). Locks sync finding A-D-008. Driver contract: construct a ModuleError from `input` (code + message + optional fields), serialize via the SDK's canonical error serializer, then assert each key in `expected_keys_present` is present, each in `expected_keys_absent` is absent, and likewise for the nested `details` object via `expected_detail_keys_present` / `expected_detail_keys_absent`.",
+  "test_cases": [
+    {
+      "id": "error_serialization_snake_case_keys",
+      "input": {
+        "code": "MODULE_TIMEOUT",
+        "message": "module timed out",
+        "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736",
+        "ai_guidance": "retry the call after a short delay",
+        "user_fixable": true,
+        "retryable": true,
+        "details": {"module_id": "executor.email.send_email", "timeout_ms": 5000}
+      },
+      "expected_keys_present": ["code", "message", "trace_id", "ai_guidance", "user_fixable", "retryable", "details", "timestamp"],
+      "expected_keys_absent": ["traceId", "aiGuidance", "userFixable"],
+      "expected_detail_keys_present": ["module_id", "timeout_ms"],
+      "expected_detail_keys_absent": ["moduleId", "timeoutMs"]
+    },
+    {
+      "id": "error_serialization_omits_null_optionals",
+      "input": {
+        "code": "GENERAL_INVALID_INPUT",
+        "message": "bad input"
+      },
+      "expected_keys_present": ["code", "message", "timestamp"],
+      "expected_keys_absent": ["trace_id", "traceId", "ai_guidance", "aiGuidance", "user_fixable", "userFixable", "cause"],
+      "expected_detail_keys_present": [],
+      "expected_detail_keys_absent": []
+    }
+  ]
+}

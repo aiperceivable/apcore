@@ -1,0 +1,12 @@
+{
+  "description": "call_with_trace / callWithTrace cancellation semantics — cross-language golden test. When the pipeline raises ExecutionCancelledError mid-execution, the trace variant MUST propagate it directly (final error code EXECUTION_CANCELLED) and MUST NOT route it through the on_error middleware chain — i.e. an on_error middleware that would normally swallow/recover errors MUST NOT be able to suppress a cancellation. This mirrors call()/call_async (D-19 trace parity, D-20 cancellation short-circuit). Locks sync finding A-D-001 (Python trace variant previously let PipelineStepError-wrapped cancellation reach on_error). Driver contract per case action below.",
+  "test_cases": [
+    {
+      "id": "trace_cancellation_propagates_bypassing_on_error",
+      "action": "call_with_trace_cancelling_module_with_swallowing_on_error",
+      "expected_error": "EXECUTION_CANCELLED",
+      "expected_on_error_invoked": false,
+      "notes": "Driver: register a module whose execute() raises ExecutionCancelledError (or cancels its context token then checks). Install an on_error middleware that records whether it was invoked and that would otherwise recover (return a result) for any error. Invoke executor.call_with_trace(module_id, ...). Assert: (1) it raises/returns-Err with code EXECUTION_CANCELLED (the cancellation is NOT swallowed into a recovered success); (2) the recording on_error middleware was NOT invoked for the cancellation (it was bypassed). Both call() and call_with_trace() must behave identically here."
+    }
+  ]
+}

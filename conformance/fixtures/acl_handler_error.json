@@ -1,0 +1,28 @@
+{
+  "description": "ACL condition-handler error handling — cross-language SECURITY golden test. A custom condition handler that raises/throws/panics during evaluation MUST fail CLOSED (the rule does not match → the call is denied, never silently allowed) AND the emitted AuditEntry MUST carry a non-null `handler_error`. Locks sync findings A-D-011 (fail-closed) and A-D-012 (handler_error surfaced in audit). Driver contract: before evaluation, register a built-in test condition handler under the key named by `throwing_condition_key` whose evaluate() raises/throws/panics. Build an ACL from `rules` (a rule references that key in its `conditions`) with the given `default_effect`, wire an audit sink, call check(caller_id, target_id). Assert the decision equals `expected` and that the captured AuditEntry's handler_error is non-null when `expected_audit_handler_error_present` is true.",
+  "throwing_condition_key": "__test_throwing_condition__",
+  "test_cases": [
+    {
+      "id": "throwing_handler_fails_closed_deny",
+      "rules": [
+        {"callers": ["*"], "targets": ["*"], "effect": "allow", "conditions": {"__test_throwing_condition__": true}}
+      ],
+      "default_effect": "deny",
+      "caller_id": "user",
+      "target_id": "service.operation",
+      "expected": false,
+      "expected_audit_handler_error_present": true
+    },
+    {
+      "id": "throwing_handler_does_not_flip_default_allow_to_deny_unsafely",
+      "rules": [
+        {"callers": ["*"], "targets": ["*"], "effect": "deny", "conditions": {"__test_throwing_condition__": true}}
+      ],
+      "default_effect": "allow",
+      "caller_id": "user",
+      "target_id": "service.operation",
+      "expected": true,
+      "expected_audit_handler_error_present": true
+    }
+  ]
+}

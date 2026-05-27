@@ -23,6 +23,10 @@ SDK conformance runners **must** load `.json` files with a JSON parser. The `.ya
 | `error_codes.json` | A17 | Error code registry collision detection; canonical 14 reserved prefixes + exact-framework-code rejection for one-off codes (sync A-D-006/A-D-007) |
 | `version_negotiation.json` | A14 | SDK/module version compatibility |
 | `acl_evaluation.json` | — | ACL rule evaluation with first-match-wins |
+| `acl_handler_error.json` | — | ACL condition-handler error fails closed + surfaces handler_error in audit (sync A-D-011/A-D-012) |
+| `error_serialization.json` | — | ModuleError serialization uses snake_case wire keys (sync A-D-008) |
+| `async_task_cancellation.json` | Issue #34 | Over-capacity submit raises TASK_LIMIT_EXCEEDED; cancel during backoff stops further retries (sync A-D-003/A-D-004) |
+| `executor_trace_cancellation.json` | — | call_with_trace cancellation bypasses on_error chain (sync A-D-001, D-19/D-20) |
 | `config_env.json` | — | Configuration environment variable override |
 | `context_serialization.json` | — | Cross-language Context serialize/deserialize round-trip |
 | `schema_validation.json` | §4.15 | Schema validation edge cases and type coercion |

@@ -1,0 +1,24 @@
+{
+  "description": "AsyncTaskManager capacity and cancellation — cross-language golden test. Locks sync findings A-D-003 (submitting beyond max_tasks MUST raise the typed TASK_LIMIT_EXCEEDED error, not a generic error) and A-D-004 (cancelling a task while it is in retry backoff MUST stop further retry attempts and end in CANCELLED — expressed as a deterministic invariant on attempt count + final status, NOT a latency/timing assertion). Driver contract per case action below.",
+  "test_cases": [
+    {
+      "id": "submit_over_capacity_raises_task_limit_exceeded",
+      "action": "submit_over_capacity",
+      "max_tasks": 1,
+      "max_concurrent": 1,
+      "submit_count": 2,
+      "expected_error": "TASK_LIMIT_EXCEEDED",
+      "notes": "Driver: build AsyncTaskManager(max_tasks=1). Submit a first long-running task to occupy the slot, then submit a second; the second submit MUST raise the typed error whose code == TASK_LIMIT_EXCEEDED (catchable by type, not a bare Error/RuntimeError)."
+    },
+    {
+      "id": "cancel_during_backoff_stops_further_retries",
+      "action": "cancel_during_backoff",
+      "max_retries": 3,
+      "retry_delay_ms": 1000,
+      "backoff_multiplier": 2.0,
+      "expected_final_status": "cancelled",
+      "expected_no_attempt_after_cancel": true,
+      "notes": "Driver: submit a module that always fails (to trigger retry) with a per-attempt counter observable to the test. After the first failure, while the task is in its backoff wait, call cancel(taskId). Assert: (1) final task status == cancelled; (2) the module body's attempt counter does NOT increase after the cancel (no further retry attempt was started). This is the deterministic, non-timing form of the A-D-004 fix (TS previously waited out the full backoff before honoring cancel)."
+    }
+  ]
+}
