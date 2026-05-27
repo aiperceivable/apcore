@@ -539,7 +539,8 @@ The reserved `_apcore.` prefix described in [`data` Key Convention](#data-key-co
         "user".into(),
         vec!["analyst".into()],
         HashMap::new(),
-    ```rust
+    );
+
     let context: Context<Value> = Context::create(
         Some(user_identity), // identity
         None,                // trace_parent
@@ -548,7 +549,7 @@ The reserved `_apcore.` prefix described in [`data` Key Convention](#data-key-co
         None,                // services
         None,                // global_deadline
     );
-    ```
+
     context.data.write().insert(
         "task_info".into(),
         json!({ "type": "report", "date": "2024-01" }),

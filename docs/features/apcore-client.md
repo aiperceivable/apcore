@@ -38,8 +38,8 @@ The APCore class is the recommended high-level entry point for the apcore framew
 - These methods **MUST** delegate to `system.control.toggle_feature` internally.
 
 ### Global Singleton
-- Python and TypeScript SDKs **SHOULD** provide module-level functions (e.g., `apcore.call()`, `apcore.module()`) backed by a default singleton client.
-- Rust does **not** provide a global singleton — explicit instances only.
+- The Python SDK **SHOULD** provide module-level functions (e.g., `apcore.call()`, `apcore.module()`) backed by a default singleton client. This is a Python-only convenience layer.
+- TypeScript and Rust do **not** provide a global singleton — explicit instances only.
 
 ## Technical Design
 

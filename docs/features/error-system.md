@@ -24,7 +24,8 @@ The Error System provides a structured, hierarchical error model designed for bo
 
 ### Error Code Registry
 - Provide an `ErrorCodeRegistry` for registering custom module-specific error codes at runtime.
-- Framework error code prefixes are reserved and **MUST NOT** be used by user modules. Reserved prefixes: `ACL_`, `APPROVAL_`, `BINDING_`, `CALL_`, `CIRCULAR_`, `CONFIG_`, `DEPENDENCY_`, `ERROR_CODE_`, `ERROR_FORMATTER_`, `EXECUTION_`, `FUNC_`, `GENERAL_`, `MIDDLEWARE_`, `MODULE_`, `RELOAD_`, `SCHEMA_`, `TASK_`, `VERSION_`.
+- Framework error code prefixes are reserved and **MUST NOT** be used by user modules. Reserved prefixes: `ACL_`, `APPROVAL_`, `BINDING_`, `CALL_`, `CIRCULAR_`, `CONFIG_`, `DEPENDENCY_`, `ERROR_CODE_`, `FUNC_`, `GENERAL_`, `MIDDLEWARE_`, `MODULE_`, `SCHEMA_`, `VERSION_`.
+- Individual framework codes that do not fall under a reserved prefix (for example `CIRCUIT_BREAKER_OPEN`, `CONTEXT_BINDING_ERROR`, `STREAMING_INTERFACE_MISMATCH`, `STRATEGY_NOT_FOUND`, `PIPELINE_STEP_ERROR`, `STEP_NOT_FOUND`, `RELOAD_FAILED`, `EXECUTION_CANCELLED`, `TASK_LIMIT_EXCEEDED`) are protected by exact-code collision detection — `register()` **MUST** reject a custom code equal to any registered framework code, regardless of prefix.
 - Duplicate code registration **MUST** raise `ErrorCodeCollisionError`.
 
 ### Error Formatters
@@ -342,7 +343,9 @@ The `ErrorCodeRegistry` enables modules to register custom error codes at runtim
 
 **Reserved framework error code prefixes:**
 
-`MODULE_`, `SCHEMA_`, `ACL_`, `GENERAL_`, `CONFIG_`, `CIRCULAR_`, `DEPENDENCY_`, `CALL_`, `FUNC_`, `BINDING_`, `MIDDLEWARE_`, `APPROVAL_`, `VERSION_`, `ERROR_CODE_`
+`ACL_`, `APPROVAL_`, `BINDING_`, `CALL_`, `CIRCULAR_`, `CONFIG_`, `DEPENDENCY_`, `ERROR_CODE_`, `FUNC_`, `GENERAL_`, `MIDDLEWARE_`, `MODULE_`, `SCHEMA_`, `VERSION_`
+
+This is the single canonical set (identical to the reserved-prefix list in the Error Code Registry requirements above). One-off framework codes outside these prefixes (e.g. `CIRCUIT_BREAKER_OPEN`, `CONTEXT_BINDING_ERROR`, `STREAMING_INTERFACE_MISMATCH`, `STRATEGY_NOT_FOUND`, `PIPELINE_*`, `STEP_*`, `RELOAD_FAILED`, `EXECUTION_CANCELLED`, `TASK_LIMIT_EXCEEDED`) are not prefix-reserved; they are protected by exact-code collision detection in `register()`.
 
 ### ErrorFormatterRegistry
 
