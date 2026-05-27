@@ -20,7 +20,7 @@ SDK conformance runners **must** load `.json` files with a JSON parser. The `.ya
 | `specificity.json` | A10 | ACL rule specificity scoring |
 | `normalize_id.json` | A02 | Cross-language module ID normalization |
 | `call_chain.json` | A20 | Call chain safety (depth, frequency, circularity) |
-| `error_codes.json` | — | Error code registry collision detection |
+| `error_codes.json` | A17 | Error code registry collision detection; canonical 14 reserved prefixes + exact-framework-code rejection for one-off codes (sync A-D-006/A-D-007) |
 | `version_negotiation.json` | A14 | SDK/module version compatibility |
 | `acl_evaluation.json` | — | ACL rule evaluation with first-match-wins |
 | `config_env.json` | — | Configuration environment variable override |

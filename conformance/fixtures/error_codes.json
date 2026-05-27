@@ -1,5 +1,5 @@
 {
-  "description": "Error code collision detection (Algorithm A17, spec §8.4)",
+  "description": "Error code collision detection (Algorithm A17, spec §8.4). Locks the canonical reserved-prefix set of 14 (sync findings A-D-006) and the exact-framework-code rejection that protects one-off codes outside those prefixes (A-D-007). A custom code under a dropped/non-reserved prefix registers OK unless it exactly equals a framework code.",
   "test_cases": [
     {
       "id": "register_custom_code",
@@ -49,6 +49,92 @@
         {"action": "register", "module_id": "mod_b", "error_code": "TEMP_CODE"}
       ],
       "expected": "ok"
+    },
+
+    {
+      "id": "dropped_prefix_circuit_custom_ok",
+      "action": "register",
+      "module_id": "my_module",
+      "error_code": "CIRCUIT_CUSTOM",
+      "expected": "ok"
+    },
+    {
+      "id": "dropped_prefix_pipeline_custom_ok",
+      "action": "register",
+      "module_id": "my_module",
+      "error_code": "PIPELINE_CUSTOM",
+      "expected": "ok"
+    },
+    {
+      "id": "dropped_prefix_streaming_custom_ok",
+      "action": "register",
+      "module_id": "my_module",
+      "error_code": "STREAMING_CUSTOM",
+      "expected": "ok"
+    },
+    {
+      "id": "dropped_prefix_context_custom_ok",
+      "action": "register",
+      "module_id": "my_module",
+      "error_code": "CONTEXT_CUSTOM",
+      "expected": "ok"
+    },
+    {
+      "id": "dropped_prefix_step_custom_ok",
+      "action": "register",
+      "module_id": "my_module",
+      "error_code": "STEP_CUSTOM",
+      "expected": "ok"
+    },
+    {
+      "id": "dropped_prefix_strategy_custom_ok",
+      "action": "register",
+      "module_id": "my_module",
+      "error_code": "STRATEGY_CUSTOM",
+      "expected": "ok"
+    },
+
+    {
+      "id": "exact_framework_code_circuit_breaker_open_collision",
+      "action": "register",
+      "module_id": "my_module",
+      "error_code": "CIRCUIT_BREAKER_OPEN",
+      "expected_error": "ERROR_CODE_COLLISION"
+    },
+    {
+      "id": "exact_framework_code_context_binding_error_collision",
+      "action": "register",
+      "module_id": "my_module",
+      "error_code": "CONTEXT_BINDING_ERROR",
+      "expected_error": "ERROR_CODE_COLLISION"
+    },
+    {
+      "id": "exact_framework_code_streaming_interface_mismatch_collision",
+      "action": "register",
+      "module_id": "my_module",
+      "error_code": "STREAMING_INTERFACE_MISMATCH",
+      "expected_error": "ERROR_CODE_COLLISION"
+    },
+    {
+      "id": "exact_framework_code_reload_failed_collision",
+      "action": "register",
+      "module_id": "my_module",
+      "error_code": "RELOAD_FAILED",
+      "expected_error": "ERROR_CODE_COLLISION"
+    },
+    {
+      "id": "exact_framework_code_task_limit_exceeded_collision",
+      "action": "register",
+      "module_id": "my_module",
+      "error_code": "TASK_LIMIT_EXCEEDED",
+      "expected_error": "ERROR_CODE_COLLISION"
+    },
+    {
+      "id": "exact_framework_code_duplicate_module_id_collision",
+      "action": "register",
+      "module_id": "my_module",
+      "error_code": "DUPLICATE_MODULE_ID",
+      "expected_error": "ERROR_CODE_COLLISION"
     }
   ],
   "framework_prefixes": [
@@ -60,15 +146,11 @@
     "CONFIG_",
     "DEPENDENCY_",
     "ERROR_CODE_",
-    "ERROR_FORMATTER_",
-    "EXECUTION_",
     "FUNC_",
     "GENERAL_",
     "MIDDLEWARE_",
     "MODULE_",
-    "RELOAD_",
     "SCHEMA_",
-    "TASK_",
     "VERSION_"
   ]
 }
