@@ -1,14 +1,21 @@
 {
-  "description": "Cross-language schema content-hash canonicalization parity. Each test case provides a schema whose canonical serialization is sensitive to a known divergence source: float rendering (1.0 vs 1), non-ASCII Unicode in strings/keys, large-integer precision, key ordering, and a plain baseline. SDKs MUST canonicalize each schema and compute its content hash; the hashes are compared CROSS-REPO for byte-for-byte agreement. No `expected` hash is recorded here — each SDK computes it and the harness asserts all three implementations agree. Supports finding A-D-037. See `docs/features/schema-system.md` content-addressable cache and §4.15.",
+  "description": "Cross-language schema content-hash canonicalization parity. Each test case provides a schema whose canonical serialization is sensitive to a known divergence source: float rendering (1.0 vs 1), non-ASCII Unicode in strings/keys, large-integer precision, key ordering, and a plain baseline. SDKs MUST canonicalize each schema and compute its content hash; the hashes are compared CROSS-REPO for byte-for-byte agreement. No `expected` hash is recorded here \u2014 each SDK computes it and the harness asserts all three implementations agree. Supports finding A-D-037. See `docs/features/schema-system.md` content-addressable cache and \u00a74.15.",
   "test_cases": [
     {
       "id": "float_one_point_zero",
       "schema": {
         "type": "object",
         "properties": {
-          "ratio": { "type": "number", "default": 1.0, "minimum": 0.0, "maximum": 1.0 }
+          "ratio": {
+            "type": "number",
+            "default": 1.0,
+            "minimum": 0.0,
+            "maximum": 1.0
+          }
         },
-        "required": ["ratio"]
+        "required": [
+          "ratio"
+        ]
       },
       "note": "Exposes float-vs-int rendering divergence: 1.0 must canonicalize identically across SDKs (e.g. JSON `1.0` vs Python `1.0` vs Rust serde `1.0`), not collapse to integer `1`. Trailing-zero and decimal-point handling must agree."
     },
@@ -17,10 +24,19 @@
       "schema": {
         "type": "object",
         "properties": {
-          "名前": { "type": "string", "default": "café—naïve—🦀", "description": "Unicode key with combining/emoji value" },
-          "δ": { "type": "string", "default": "Ω≈ç√∫" }
+          "\u540d\u524d": {
+            "type": "string",
+            "default": "caf\u00e9\u2014na\u00efve\u2014\ud83e\udd80",
+            "description": "Unicode key with combining/emoji value"
+          },
+          "\u03b4": {
+            "type": "string",
+            "default": "\u03a9\u2248\u00e7\u221a\u222b"
+          }
         },
-        "required": ["名前"]
+        "required": [
+          "\u540d\u524d"
+        ]
       },
       "note": "Exposes Unicode normalization and escape-policy divergence: non-ASCII keys/values must serialize byte-identically (UTF-8, no \\uXXXX escaping by some SDKs and raw bytes by others). Combining marks, surrogate pairs (emoji), and non-Latin scripts must hash the same."
     },
@@ -29,9 +45,15 @@
       "schema": {
         "type": "object",
         "properties": {
-          "max_id": { "type": "integer", "default": 9007199254740993, "maximum": 18446744073709551615 }
+          "max_id": {
+            "type": "integer",
+            "default": 9007199254740993,
+            "maximum": 18446744073709551615
+          }
         },
-        "required": ["max_id"]
+        "required": [
+          "max_id"
+        ]
       },
       "note": "Exposes large-integer precision divergence: values beyond IEEE-754 double exact range (> 2^53) and u64::MAX must not be coerced to float during canonicalization. 9007199254740993 must stay an exact integer literal across SDKs, not round to 9007199254740992."
     },
@@ -40,18 +62,34 @@
       "schema": {
         "type": "object",
         "properties": {
-          "zeta": { "type": "string" },
+          "zeta": {
+            "type": "string"
+          },
           "alpha": {
             "type": "object",
             "properties": {
-              "yankee": { "type": "boolean" },
-              "bravo": { "type": "integer" },
-              "mike": { "type": "string" }
+              "yankee": {
+                "type": "boolean"
+              },
+              "bravo": {
+                "type": "integer"
+              },
+              "mike": {
+                "type": "string"
+              }
             }
           },
-          "delta": { "type": "array", "items": { "type": "number" } }
+          "delta": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            }
+          }
         },
-        "required": ["zeta", "alpha"]
+        "required": [
+          "zeta",
+          "alpha"
+        ]
       },
       "note": "Exposes key-ordering divergence: keys are declared in non-lexicographic order at both the top level (zeta/alpha/delta) and nested level (yankee/bravo/mike). Canonicalization MUST sort object keys deterministically (recursively) before hashing, while preserving `required` array order semantics."
     },
@@ -60,10 +98,16 @@
       "schema": {
         "type": "object",
         "properties": {
-          "name": { "type": "string" },
-          "count": { "type": "integer" }
+          "name": {
+            "type": "string"
+          },
+          "count": {
+            "type": "integer"
+          }
         },
-        "required": ["name"]
+        "required": [
+          "name"
+        ]
       },
       "note": "Baseline control: a trivially canonical schema with ASCII keys in sorted order and no edge-case values. All SDKs must agree on its hash; a divergence here indicates a fundamental canonicalization-format mismatch rather than an edge-case bug."
     }
