@@ -1,3 +1,7 @@
+---
+description: "Quick-start for apcore: install the Python, TypeScript, or Rust SDK and build your first AI-perceivable module via the APCore client and module registration."
+---
+
 # Getting Started
 
 apcore defines the **Cognitive Interface** for your application. It ensures your logic is naturally perceivable by AI Agents through enforced schemas, behavioral guardrails, and self-healing error guidance — enabling AI Self-Repair and Self-Evolution.

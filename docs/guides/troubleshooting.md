@@ -1,3 +1,7 @@
+---
+description: "FAQ-style troubleshooting for common apcore issues — modules not discovered, unexpected ACL_DENIED, validation failures — keyed to PROTOCOL_SPEC error handling and conformance fixtures."
+---
+
 # Troubleshooting Guide
 
 > **Type:** User guide. **Normative spec:** [PROTOCOL_SPEC](../spec/protocol-spec.md) §8 Error Handling Specification.

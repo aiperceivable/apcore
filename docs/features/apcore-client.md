@@ -1,3 +1,7 @@
+---
+description: "APCore facade over Registry, Executor, Config: zero- or full-config init, module registration/discovery, sync/async/streaming calls, middleware, events, runtime module toggling."
+---
+
 # APCore Unified Client
 
 <!-- preamble-tier-doc -->

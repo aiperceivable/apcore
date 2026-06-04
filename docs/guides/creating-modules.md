@@ -1,3 +1,7 @@
+---
+description: "Four ways to create apcore modules — class-based, @module decorator, module() function call, and external YAML binding — spanning native SDK and zero-intrusion legacy integration paths."
+---
+
 # Creating Modules Guide
 
 > Build or upgrade modules to be AI-perceivable.

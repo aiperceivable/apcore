@@ -1,3 +1,7 @@
+---
+description: "Module Registry with an 8-step discovery pipeline: directory scan, entry-point resolution, YAML metadata merge, dependency topo-sort, validation, schema load, ID-map override, register."
+---
+
 # Module Registry and Discovery System
 
 <!-- preamble-tier-doc -->

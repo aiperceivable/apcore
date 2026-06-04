@@ -1,3 +1,7 @@
+---
+description: "Middleware-based observability: distributed tracing with Span/sampling and OTLP/stdout/in-memory exporters, thread-safe Prometheus-export metrics, ContextLogger with trace/redaction."
+---
+
 # Observability System
 
 <!-- preamble-tier-doc -->

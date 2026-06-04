@@ -1,3 +1,7 @@
+---
+description: "Landing page for the apcore specification set for SDK implementers — protocol spec, algorithms, type mapping, conformance, and declarative config — with a recommended reading order."
+---
+
 # Framework Specification
 
 > The official technical specification of apcore, intended for SDK implementers.

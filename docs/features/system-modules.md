@@ -1,3 +1,7 @@
+---
+description: "Built-in system.* control-plane modules for AI introspection: health summary/module, manifest discovery, usage analytics, approval-gated update_config, reload_module, toggle_feature."
+---
+
 # System Modules
 
 <!-- preamble-tier-doc -->

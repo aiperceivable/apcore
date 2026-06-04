@@ -1,3 +1,7 @@
+---
+description: "How to write apcore middleware with before/after hooks for logging, metrics, error handling, data transformation, caching, and rate limiting around module execution."
+---
+
 # Middleware Guide
 
 > Use middleware to extend logic before and after module execution.

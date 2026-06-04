@@ -1,3 +1,7 @@
+---
+description: "The canonical, normative apcore protocol specification (RFC 2119, v1.8.0-draft): module, schema, naming, ACL, approval, error, config, and observability requirements for all conforming SDKs."
+---
+
 # apcore — AI-Perceivable Core Standard Specification
 
 > **Canonical Specification** - This document is the authoritative specification for the apcore protocol

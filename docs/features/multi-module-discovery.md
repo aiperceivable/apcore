@@ -1,3 +1,7 @@
+---
+description: "Opt-in scanner mode letting multiple module classes share one file: derives IDs as base_id.snake_case_class_segment, validates grammar, raises MODULE_ID_CONFLICT on duplicate segments."
+---
+
 # Multi-Module Discovery
 
 <!-- preamble-tier-doc -->

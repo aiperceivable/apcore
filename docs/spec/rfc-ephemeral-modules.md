@@ -1,3 +1,7 @@
+---
+description: "Accepted RFC for ephemeral runtime-registered modules: the ephemeral.* reserved namespace, discoverable annotation, single-emit audit rule, and register_internal interaction."
+---
+
 # RFC — Ephemeral / Programmatically-Registered Modules
 
 ## Status

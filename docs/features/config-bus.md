@@ -1,3 +1,7 @@
+---
+description: "Config Bus turns Config into a namespace registry: per-package namespaces with JSON Schema validation, env-var routing, defaults, multi-source merge, hot-reload; enabled by apcore key."
+---
+
 # Config Bus
 
 <!-- preamble-tier-doc -->

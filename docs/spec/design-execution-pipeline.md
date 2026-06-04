@@ -1,3 +1,7 @@
+---
+description: "Design of apcore's configurable execution pipeline as a flat ordered list of steps with declarative metadata, AI decision support, and YAML configuration."
+---
+
 # Design: Execution Pipeline Strategy & AI Decision Support
 
 > **Status:** Implemented (v0.17.0 – v0.18.0) | Authors: apcore maintainers | Updated: 2026-04-14

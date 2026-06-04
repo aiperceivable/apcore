@@ -1,3 +1,7 @@
+---
+description: "Developing apcore modules across Python, Rust, Go, Java, and TypeScript using YAML Schema as a shared cross-language contract for consistent, interoperable module interfaces."
+---
+
 # apcore — Multi-Language Development Guide
 
 > Use YAML Schema as a shared contract to develop apcore modules in Python, Rust, Go, Java, TypeScript, and other languages.

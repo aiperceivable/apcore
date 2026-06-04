@@ -1,3 +1,7 @@
+---
+description: "Schema loading, validation, $ref resolution bridging YAML to runtime model classes; strategies yaml_first/native_first/yaml_only, x-* extensions, export to MCP/OpenAI/Anthropic formats."
+---
+
 # Schema System
 
 <!-- preamble-tier-doc -->

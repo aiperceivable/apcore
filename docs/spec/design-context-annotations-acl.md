@@ -1,3 +1,7 @@
+---
+description: "Historical design document (superseded by PROTOCOL_SPEC 4.4.1) for the v0.17 Context, Annotations, and ACL redesign, retained for design rationale on the ModuleAnnotations.extra wire format."
+---
+
 # Design: Context, Annotations & ACL Interface Redesign
 
 > **⚠️ Status: Historical Design Document — Superseded by PROTOCOL_SPEC §4.4.1 (v0.18.0)**

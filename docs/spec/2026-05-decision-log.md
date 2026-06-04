@@ -1,4 +1,5 @@
 ---
+description: "Maintainer decision log of open cross-language alignment issues from the 2026-05 apcore-skills:sync run covering 20 modules, tracking spec/SDK discrepancies awaiting resolution."
 title: Cross-language alignment decision log (2026-05)
 date: 2026-05-02
 status: draft

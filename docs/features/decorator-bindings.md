@@ -1,3 +1,7 @@
+---
+description: "Two module-creation paths producing FunctionModule: the Python @module decorator with auto-generated models from signatures, and language-neutral YAML BindingLoader with four schema-resolution modes."
+---
+
 # Decorator and YAML Bindings
 
 <!-- preamble-tier-doc -->

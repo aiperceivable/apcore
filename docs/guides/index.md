@@ -1,3 +1,7 @@
+---
+description: "Landing page for the eight apcore user guides, organized as a learning path across foundations, governance and extension, and professional integration topics."
+---
+
 # User Guides
 
 > Practical guides for apcore, from beginner to advanced.

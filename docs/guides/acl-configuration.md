@@ -1,3 +1,7 @@
+---
+description: "How to write apcore ACL rules in YAML: callers, targets, allow/deny effects, wildcard ID patterns, and default-deny configuration, shared identically across all SDKs."
+---
+
 # ACL Configuration Guide
 
 > Configure access control rules between modules.

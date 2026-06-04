@@ -1,3 +1,7 @@
+---
+description: "Immutable Identity (id, type, roles, attrs) for the caller, attached to Context and propagated to children; consumed by ACL for type/role decisions; ContextFactory extracts from HTTP."
+---
+
 # Identity System
 
 <!-- preamble-tier-doc -->

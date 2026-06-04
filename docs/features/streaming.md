@@ -1,3 +1,7 @@
+---
+description: "Incremental chunk-based output via the statically-detectable StreamingModule interface (stream() returns an async iterator); executor's three-phase pipeline splits emit from validation."
+---
+
 # Streaming Support
 
 <!-- preamble-tier-doc -->

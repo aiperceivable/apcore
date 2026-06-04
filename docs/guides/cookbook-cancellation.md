@@ -1,3 +1,7 @@
+---
+description: "End-to-end cookbook for cooperative cancellation of long-running modules via context.cancel_token, with cleanup through middleware on_error, in Python, TypeScript, and Rust."
+---
+
 # Cookbook — Cooperative Cancellation
 
 > **Type:** User cookbook. **Normative spec:** [PROTOCOL_SPEC](../spec/protocol-spec.md) §5 Module Specification (cancellation hooks). Feature reference: [features/cancellation.md](../features/cancellation.md).

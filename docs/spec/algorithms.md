@@ -1,3 +1,7 @@
+---
+description: "Consolidated reference index of all PROTOCOL_SPEC pseudocode algorithms (A01 canonical-ID derivation, A05 $ref resolution, etc.) with I/O types, pre/post-conditions, complexity, and notes."
+---
+
 # apcore — Core Algorithm Reference
 
 > This document summarizes all pseudocode algorithms defined in the PROTOCOL_SPEC, providing a unified reference index.

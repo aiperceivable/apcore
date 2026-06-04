@@ -1,3 +1,7 @@
+---
+description: "Structural duck-typed module contract: required input_schema/output_schema/description and execute(); optional validate/preflight/describe/stream, lifecycle hooks; class/function forms."
+---
+
 # Module Interface
 
 <!-- preamble-tier-doc -->

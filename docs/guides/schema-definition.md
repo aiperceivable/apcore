@@ -1,3 +1,7 @@
+---
+description: "Defining apcore module input/output schemas — Pydantic models, YAML JSON Schema Draft 2020-12, x-* LLM extension fields, runtime validation, and cross-language schema sharing."
+---
+
 # Schema Definition Explained
 
 > Schema is the core of apcore, defining the input and output structure of modules.

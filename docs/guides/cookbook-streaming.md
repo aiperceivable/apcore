@@ -1,3 +1,7 @@
+---
+description: "End-to-end cookbook for streaming modules that emit partial output chunks, with the executor deep-merging chunks into the final result; covers stream() producer and client.stream() consumer."
+---
+
 # Cookbook — Streaming Modules
 
 > **Type:** User cookbook. **Normative spec:** [PROTOCOL_SPEC](../spec/protocol-spec.md) §5 Module Specification (streaming hooks). Feature reference: [features/streaming.md](../features/streaming.md).

@@ -1,3 +1,7 @@
+---
+description: "Single-page glossary of apcore terminology (ACL, annotations, canonical ID, context, approval, conformance levels) cross-referenced to authoritative PROTOCOL_SPEC sections."
+---
+
 # Glossary
 
 > **Type:** Reference. **Normative spec:** [PROTOCOL_SPEC](./spec/protocol-spec.md) (terms appear in their respective normative sections).

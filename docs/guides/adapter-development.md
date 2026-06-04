@@ -1,3 +1,7 @@
+---
+description: "How to build apcore adapters for web frameworks (Flask, FastAPI, Django, Express, Axum) by implementing ContextFactory and mapping framework routes to module calls."
+---
+
 # Adapter Development Guide
 
 > Develop apcore adapters for third-party web frameworks.

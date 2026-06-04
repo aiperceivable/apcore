@@ -1,3 +1,7 @@
+---
+description: "AsyncTaskManager for background module execution: pending/running/completed/failed/cancelled lifecycle, semaphore concurrency limit, task cap, UUID IDs, cancellation, graceful shutdown."
+---
+
 # Async Task Management
 
 <!-- preamble-tier-doc -->

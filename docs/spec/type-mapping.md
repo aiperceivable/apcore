@@ -1,3 +1,7 @@
+---
+description: "Specifies mapping rules from JSON Schema Draft 2020-12 types to native Python, Rust, and TypeScript types (with Go and Java reference) to ensure cross-language data consistency and type safety."
+---
+
 # apcore — Cross-language Type Mapping Specification
 
 > This document defines standard mapping rules from JSON Schema types to native types in various languages for the apcore framework, ensuring behavioral consistency across language implementations.

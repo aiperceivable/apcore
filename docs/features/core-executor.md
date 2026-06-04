@@ -1,3 +1,7 @@
+---
+description: "Core Executor running the 11-step call pipeline: context creation, call-chain guard, registry lookup, ACL, approval, before/after middleware, schema validation+redaction, timeout."
+---
+
 # Core Execution Engine
 
 <!-- preamble-tier-doc -->

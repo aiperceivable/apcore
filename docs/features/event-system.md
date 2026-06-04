@@ -1,3 +1,7 @@
+---
+description: "Global EventEmitter bus for framework lifecycle events: thread-safe subscribers, non-blocking thread-pool dispatch, ApCoreEvent envelope, EventSubscriber protocol, built-in Webhook/A2A."
+---
+
 # Event System
 
 <!-- preamble-tier-doc -->

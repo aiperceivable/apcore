@@ -1,5 +1,5 @@
 ---
-description: apcore (AI-Perceivable Core) is a schema-enforced module standard that makes every interface naturally perceivable and understandable by AI through enforced Schema definitions and behavioral annotations.
+description: "apcore (AI-Perceivable Core) is a schema-enforced module standard that makes every interface perceivable and understandable by AI through enforced schemas and behavioral annotations."
 ---
 
 <div align="center">

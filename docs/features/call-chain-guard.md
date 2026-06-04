@@ -1,3 +1,7 @@
+---
+description: "Executor Step 2 guard with three ordered checks on the Context call_chain: max call depth, circular call detection (length >= 2), per-module frequency throttling vs runaway recursion."
+---
+
 # Call Chain Guard
 
 <!-- preamble-tier-doc -->

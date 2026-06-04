@@ -1,3 +1,7 @@
+---
+description: "Specification for apcore's three declarative YAML surfaces — binding files, the apcore.yaml pipeline section, and entry-point config — with cross-SDK syntax and per-SDK resolution semantics."
+---
+
 # APCore Declarative Configuration Specification
 
 **Spec version**: `1.0`

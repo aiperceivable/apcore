@@ -1,3 +1,7 @@
+---
+description: "Cooperative cancellation via a thread-safe CancelToken on Context: check()/cancel()/reset(), child propagation, executor timeout-triggered cancel with grace before ModuleTimeoutError."
+---
+
 # Cancellation System
 
 <!-- preamble-tier-doc -->

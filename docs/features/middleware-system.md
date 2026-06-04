@@ -1,3 +1,7 @@
+---
+description: "Onion-model middleware: before/after/on_error phases, priority ordering, input/output mutation, error-recovery short-circuit, function adapters, thread-safe snapshot, logging/retry."
+---
+
 # Middleware System
 
 <!-- preamble-tier-doc -->

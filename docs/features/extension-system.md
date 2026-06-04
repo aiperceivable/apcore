@@ -1,3 +1,7 @@
+---
+description: "ExtensionManager wiring named extension points (discoverer, middleware, acl, span_exporter, module_validator, approval_handler) into Registry and Executor, with cardinality/type checks."
+---
+
 # Extension System
 
 <!-- preamble-tier-doc -->

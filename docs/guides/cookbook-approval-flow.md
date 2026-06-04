@@ -1,3 +1,7 @@
+---
+description: "End-to-end cookbook for approval-gated modules with a custom ApprovalHandler, covering Phase A sync block-until-decided and Phase B async pending resume via _approval_token."
+---
+
 # Cookbook — Approval-Gated Modules
 
 > **Type:** User cookbook. **Normative spec:** [PROTOCOL_SPEC §7](../spec/protocol-spec.md#7-approval-system). Feature reference: [features/approval-system.md](../features/approval-system.md).

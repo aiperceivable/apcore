@@ -1,3 +1,7 @@
+---
+description: "Defines apcore's three conformance levels (Level 0 Core, Level 1 Standard, Level 2 Full) with per-level MUST/SHOULD/MAY components, test suite requirements, and conformance declaration rules."
+---
+
 # apcore — Conformance Definitions
 
 > This document defines conformance levels for apcore framework implementations, test suite requirements, and conformance declaration specifications.

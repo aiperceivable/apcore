@@ -1,3 +1,7 @@
+---
+description: "End-to-end cookbook for emitting OpenTelemetry traces and structured logs from apcore modules with PII auto-redacted via x-sensitive schema annotations and obs.redaction.sensitive_keys."
+---
+
 # Cookbook — Observability with OTel + Sensitive Data Redaction
 
 > **Type:** User cookbook. **Normative spec:** [PROTOCOL_SPEC §10](../spec/protocol-spec.md#10-observability-specification). Feature reference: [features/observability.md](../features/observability.md).

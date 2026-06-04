@@ -1,3 +1,7 @@
+---
+description: "RFC 3552-style security considerations for apcore: threat model, in-scope mitigations (ACL, approval, call-chain guard, input validation), residual risks, and production audit guidance."
+---
+
 # Security Considerations
 
 > **Type:** Informative specification (RFC 3552 §4 style). **Normative cross-references:** [PROTOCOL_SPEC](./protocol-spec.md) §6 ACL, §7 Approval, §8 Errors, §10 Observability.

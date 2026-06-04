@@ -1,3 +1,7 @@
+---
+description: "Accepted RFC adding the optional module preview() method and PreflightResult.predicted_changes so AI orchestrators can see what a destructive call would change before executing."
+---
+
 # RFC — Module-level `preview()` Method and `PreflightResult.predicted_changes`
 
 ## Status

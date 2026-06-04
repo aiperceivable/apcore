@@ -1,3 +1,7 @@
+---
+description: "ModuleError hierarchy with code/message/timestamp and AI-guidance fields (retryable, ai_guidance, user_fixable, suggestion); reserved-prefix protection, code/formatter registry."
+---
+
 # Error System
 
 <!-- preamble-tier-doc -->

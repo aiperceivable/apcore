@@ -1,3 +1,7 @@
+---
+description: "Pattern-based ACL with first-match-wins rule evaluation for inter-module access control: wildcard and @external/@system patterns, identity/role/depth conditions, default-deny, YAML hot-reload."
+---
+
 # Access Control System
 
 <!-- preamble-tier-doc -->

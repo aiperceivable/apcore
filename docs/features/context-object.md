@@ -1,3 +1,7 @@
+---
+description: "Per-invocation Context with trace_id, caller_id, call_chain, executor ref, identity, redacting logger, optional cancel_token/services, and a shared data bag; serializable cross-process."
+---
+
 # Context Object
 
 <!-- preamble-tier-doc -->

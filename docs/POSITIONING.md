@@ -1,3 +1,7 @@
+---
+description: "Positions apcore as a protocol-agnostic module standard complementary to MCP, A2A, CLI, and REST, where surface adapters bridge one module definition onto each delivery protocol."
+---
+
 # apcore: The Module Standard Every AI Interface Builds On
 
 > **TL;DR**: apcore is **complementary to MCP, A2A, and other protocols — not a replacement for them.** It is a foundational module standard, not tied to any single protocol: you define a module once with enforced schemas, behavioral annotations, and access control, and surface adapters bridge that one definition onto each protocol (MCP via `apcore-mcp`, CLI via `apcore-cli`, REST via framework adapters, …). apcore solves **how to build AI-perceivable modules**; protocols solve **how to deliver** them — the two layers work together.

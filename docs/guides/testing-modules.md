@@ -1,3 +1,7 @@
+---
+description: "apcore module testing strategies across the testing pyramid — unit, schema, integration, and ACL tests with mocks — shown in pytest, Vitest, and Rust test frameworks."
+---
+
 # apcore — Module Testing Guide
 
 > Comprehensive coverage of apcore module testing strategies: unit testing, Schema testing, integration testing, ACL testing and Mock techniques.

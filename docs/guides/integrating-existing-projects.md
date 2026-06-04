@@ -1,3 +1,7 @@
+---
+description: "Incrementally adopt apcore in apps with existing request/correlation IDs using the dual-ID model: W3C trace_id plus preserved x-correlation-id, wired via ContextFactory at the HTTP boundary."
+---
+
 # Integrating apcore into Existing Projects
 
 > **Audience:** Teams adopting apcore incrementally in an application that already has its own request-ID, correlation-ID, or tracing system.

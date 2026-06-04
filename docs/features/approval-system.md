@@ -1,3 +1,7 @@
+---
+description: "Approval gate at Executor Step 5 for requires_approval modules: pluggable ApprovalHandler, sync and async pending/resume-token flows, built-in deny/auto/callback handlers."
+---
+
 # Approval System
 
 <!-- preamble-tier-doc -->

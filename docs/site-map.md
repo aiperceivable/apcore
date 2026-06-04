@@ -1,3 +1,7 @@
+---
+description: "Navigable map of the apcore documentation tree, listing the index, concepts, architecture, features, guides, and spec directories with one-line descriptions of each file."
+---
+
 # apcore Documentation
 
 > Complete technical documentation for the apcore (AI-Perceivable Core) standard.

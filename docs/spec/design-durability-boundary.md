@@ -1,3 +1,7 @@
+---
+description: "Defines apcore's boundary with durable execution: what hooks it guarantees for retry/replay/workflow layers, what it deliberately omits as single-call-scoped, and how downstream runtimes integrate."
+---
+
 # Durability Boundary Design
 
 This document defines apcore's boundary with respect to **durable execution** — the family of concerns that includes retry across crashes, replay after restart, deduplication of logically-equivalent invocations, long-running pause/resume, and persistent task queues. These concerns are routinely required by AI Agent runtimes and workflow systems built on top of module standards like apcore, but they are **not** part of apcore itself.

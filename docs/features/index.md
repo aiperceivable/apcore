@@ -1,3 +1,7 @@
+---
+description: "Index of apcore feature specs by category: foundational protocols, execution and workflow, security and governance, reliability and ops, and framework internals; links each subsystem."
+---
+
 # Feature Specifications
 
 > Implementation-ready feature specifications for apcore subsystems.
