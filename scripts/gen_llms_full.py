@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Generate docs/llms-full.txt: the full apcore documentation concatenated for
-LLM ingestion, in mkdocs.yml nav order.
+"""Generate docs/llms-full.txt: the full documentation concatenated for LLM
+ingestion, in mkdocs.yml nav order.
 
 Run from the repo root (CI calls it in the "Prepare docs for MkDocs" step, but it
 also works standalone for local preview):
@@ -9,10 +9,15 @@ also works standalone for local preview):
 
 The concise index lives at the repo-root llms.txt (hand-curated). This file is the
 full-content companion and is GENERATED — never hand-edit it.
+
+The canonical site is derived as https://<repo-dir-name>.aiperceivable.com, which
+matches the apcore ecosystem subdomain scheme. Override with the LLMS_BASE_URL
+environment variable if the checkout dir name differs from the public subdomain.
 """
 
 from __future__ import annotations
 
+import os
 import pathlib
 import sys
 
@@ -20,8 +25,9 @@ import yaml
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 DOCS = ROOT / "docs"
-# Canonical public site (matches llms.txt), not the mkdocs.yml github.io site_url.
-CANONICAL = "https://apcore.aiperceivable.com"
+CANONICAL = os.environ.get(
+    "LLMS_BASE_URL", f"https://{ROOT.name}.aiperceivable.com"
+).rstrip("/")
 
 
 def page_url(rel: str) -> str:
@@ -59,15 +65,15 @@ def strip_frontmatter(text: str) -> str:
 def main() -> int:
     mkdocs = yaml.safe_load((ROOT / "mkdocs.yml").read_text(encoding="utf-8"))
     pages: list[tuple[str | None, str]] = []
-    walk(mkdocs.get("nav", []), pages)
+    walk(mkdocs.get("nav", []) or [], pages)
 
-    site = mkdocs.get("site_name", "apcore")
+    site = mkdocs.get("site_name", ROOT.name)
     desc = mkdocs.get("site_description", "")
     parts = [
         f"# {site}\n\n> {desc}\n\n"
-        "This file concatenates the full apcore documentation for LLM ingestion, "
-        "in nav order. It is generated from mkdocs.yml by scripts/gen_llms_full.py "
-        "— do not edit by hand. The concise index is at /llms.txt.\n"
+        "This file concatenates the full documentation for LLM ingestion, in nav "
+        "order. It is generated from mkdocs.yml by scripts/gen_llms_full.py — do "
+        "not edit by hand. The concise index is at /llms.txt.\n"
     ]
 
     seen: set[str] = set()
@@ -91,7 +97,7 @@ def main() -> int:
     out.write_text("".join(parts), encoding="utf-8")
     print(
         f"wrote {out.relative_to(ROOT)} "
-        f"({len(seen) - missing} pages, {out.stat().st_size} bytes)"
+        f"({len(seen) - missing} pages, {out.stat().st_size} bytes, base {CANONICAL})"
     )
     return 0
 
