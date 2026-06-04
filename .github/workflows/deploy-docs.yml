@@ -36,6 +36,12 @@ jobs:
           mkdir -p docs/assets
           cp apcore-logo.svg docs/assets/
 
+          # LLM discovery files served at the site root:
+          #  - llms.txt: concise hand-curated index (canonical source at repo root, like README.md)
+          #  - llms-full.txt: full concatenated docs, generated from nav order (never hand-edited)
+          cp llms.txt docs/llms.txt
+          python scripts/gen_llms_full.py
+
           # Fix links in overview.md (formerly index.md in the original workflow): ./docs/X → ./X and (docs/X → (X
           sed -i 's|\./docs/|./|g' docs/overview.md
           sed -i 's|(docs/|(|g' docs/overview.md

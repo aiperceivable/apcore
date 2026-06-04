@@ -1,6 +1,6 @@
-# apcore: The Module Standard Beneath Every AI Interface
+# apcore: The Module Standard Every AI Interface Builds On
 
-> **TL;DR**: apcore is a foundational module standard — not tied to any single protocol. You define a module once with enforced schemas, behavioral annotations, and access control. That module is then exposed through any surface: MCP, A2A, CLI, REST, gRPC, or future protocols. apcore solves **how to build AI-perceivable modules**; protocols solve how to deliver them.
+> **TL;DR**: apcore is **complementary to MCP, A2A, and other protocols — not a replacement for them.** It is a foundational module standard, not tied to any single protocol: you define a module once with enforced schemas, behavioral annotations, and access control, and surface adapters bridge that one definition onto each protocol (MCP via `apcore-mcp`, CLI via `apcore-cli`, REST via framework adapters, …). apcore solves **how to build AI-perceivable modules**; protocols solve **how to deliver** them — the two layers work together.
 
 ---
 
@@ -54,7 +54,7 @@ Traditional software has **UI** for humans and **API** for programs. apcore adds
 └───────────────────────────────────────────────────-──────┘
 ```
 
-**apcore is not at the same layer as MCP, A2A, or CLI.** It is the foundation beneath all of them.
+**apcore is not at the same layer as MCP, A2A, or CLI — it is complementary to them.** It is the definition layer each of these protocols projects from: you write the module once, and every protocol builds its own surface on top of that single definition.
 
 ---
 
@@ -327,7 +327,7 @@ apcore supports progressive adoption for existing codebases:
 | **Cross-language?** | Python, TypeScript, Rust — identical behavior guaranteed |
 | **Extensible?** | Any future protocol can be supported by writing an adapter |
 
-**apcore is the module layer beneath every AI interface. Protocols come and go — the module standard endures.**
+**Protocols deliver; the module standard defines — apcore is the definition layer every protocol projects from.**
 
 ---
 
