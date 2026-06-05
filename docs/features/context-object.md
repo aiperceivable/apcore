@@ -279,6 +279,42 @@ key = RETRY_COUNT_BASE.scoped(module_id)
 key.set(ctx, attempts)
 ```
 
+## Contract: ContextKey[T]
+
+Normative behavioral contract for the typed accessor. All SDK implementations MUST satisfy these guarantees. The methods are defined on the **key** instance (`ContextKey`), not on `Context`. A key is immutable — Python uses a frozen dataclass, Rust a value type, and the TypeScript `name` is `readonly`.
+
+A key wraps a single `name` string. `ContextKey` and `ContextKey.scoped()` are the only constructors; `scoped(suffix)` returns a new key named `{name}.{suffix}` and never mutates the receiver.
+
+### Inputs
+
+- `ContextKey(name)` — `name` (string, required) is the identifier into `context.data`. It shares the same namespace as raw string keys (see *Namespace Convention* below).
+- `set(ctx, value)` — `ctx` (context-like object exposing a `data` map, required); `value` (`T`, required) — the value stored under `name`.
+- `get(ctx, default=None)` — `ctx` (context-like, required); `default` (`T`, optional) — value returned when the key is absent.
+- `exists(ctx)` — `ctx` (context-like, required).
+- `delete(ctx)` — `ctx` (context-like, required).
+- `scoped(suffix)` — `suffix` (string, required).
+
+### Errors
+
+- None. `set`, `get`, `exists`, `delete`, and `scoped` do not raise. `get` reports a missing key by returning the default (or `None` / `undefined` when no default is given) rather than raising; `delete` is a no-op on an absent key.
+- Rust note: because values round-trip through `serde_json`, `get` returns `None` if the stored value cannot be deserialized into `T`, and `set` silently drops a value that cannot be serialized — neither raises.
+
+### Returns
+
+- `set(ctx, value)` — no return value (`None` / `void` / `()`).
+- `get(ctx)` — `T | None` (Python `T | None`, TypeScript `T | undefined`, Rust `Option<T>`). `get(ctx, default)` narrows to `T` in Python/TypeScript when the key is present, otherwise returns `default`.
+- `exists(ctx)` — `bool`: `true` if `name` is present in `context.data`, else `false`.
+- `delete(ctx)` — no return value; removes `name` from `context.data` if present.
+- `scoped(suffix)` — a new `ContextKey[T]` named `{name}.{suffix}`.
+
+### Properties
+
+- async: false — all methods are synchronous.
+- thread_safe: operations are single map reads/writes; the Rust implementation guards `context.data` with a read/write lock. Cross-key atomicity is not provided — a read-modify-write across multiple keys is the caller's responsibility.
+- pure: `get` and `exists` are side-effect-free (read-only); `set` and `delete` mutate `context.data` in place. `scoped` is pure and allocates a new key.
+- idempotent: `set` (same value), `delete`, `exists`, and `get` are idempotent — repeating a call yields the same resulting state.
+- immutable key: the key carries `name` and its type parameter `T`; methods never mutate the key itself.
+
 ### Namespace Convention (Normative)
 
 `ContextKey` identifiers share the same namespace as raw string keys in `context.data` — they are two views of one dictionary. The naming rules from [Middleware System §1.1 Context Namespacing](./middleware-system.md#11-context-namespacing) therefore apply unchanged:

@@ -145,6 +145,13 @@ For full grammar details and decorator semantics, see [PROTOCOL_SPEC §5.11](../
 
 Normative behavioral contract. All SDK implementations MUST satisfy these guarantees.
 
+### Inputs
+
+A module is supplied to the framework either as a class implementing the module surface or, in function form, as a decorated callable from which the surface is derived (see the function-based equivalence table above). The behavioral contract is exercised through `execute()`, which receives:
+
+- `inputs` (dict / object / map, required) — the call arguments. MUST validate against `input_schema` at execution time; a validation failure is surfaced as a schema error before the module body runs.
+- `context` (`Context`, required) — the per-call context carrying identity, `data`, cancellation signal, and deadline. In function form, a parameter declared as `context: Context` is auto-injected and excluded from the generated `input_schema`.
+
 ### Required surface
 
 - `input_schema` — schema type. MUST exist; MUST validate inputs at execution time.
@@ -196,6 +203,24 @@ Normative behavioral contract. All SDK implementations MUST satisfy these guaran
 - `DocumentationTooLong` — `documentation` exceeds 5000 chars.
 - `InvalidAnnotations` — `annotations` not of type `ModuleAnnotations`.
 - `InvalidExample` — entry in `examples` missing `title` or `inputs`.
+
+### Returns
+
+`execute()` MUST return a dict (or language-equivalent map) that validates against `output_schema`, subject to the constraints in *Return-value constraints* above (JSON-serializable; no functions or open connections). The optional surface methods return as follows:
+
+- `validate()` — no return value; raises on a conformance violation (see *Errors*).
+- `preflight()` — advisory warnings; MUST NOT block execution.
+- `describe()` — an introspection dict.
+- `stream()` — an async iterator yielding partial dicts that the framework deep-merges into the final output.
+
+### Properties
+
+- async: `execute()` MAY be synchronous or asynchronous (`def` or `async def`); the framework supports both.
+- thread_safe: required — instances MUST tolerate concurrent `execute()` invocations and MUST NOT mutate class-level (`ClassVar`) attributes during execution (see *Thread safety* above).
+- pure: not required — modules MAY perform side effects; lifecycle hooks (`on_load`, `on_unload`, `on_suspend`, `on_resume`) exist precisely to manage external state.
+- timeout-bound: execution SHOULD complete within `resources.timeout` (default 30 000 ms) / `executor.global_timeout` (default 60 000 ms); on expiry the framework MUST raise `MODULE_TIMEOUT`. Modules SHOULD support cooperative cancellation by polling the signal exposed via `context`.
+
+The full required and optional method/attribute surface — including conformance levels (MUST / MAY) and per-member constraints — is enumerated in the *Required surface* and *Optional surface* tables above.
 
 ## Usage
 

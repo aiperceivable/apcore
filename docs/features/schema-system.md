@@ -289,6 +289,27 @@ All three SDKs return a result object rather than raising. Spec versions ≤ 0.2
 | TypeScript | `apcore-js/schema/ref-resolver.RefResolver` (`apcore-typescript/src/schema/ref-resolver.ts:39`) | `resolveRef(ref, schemaRoot, ...)` | same shape; camelCase |
 | Rust | `apcore::schema::ref_resolver::RefResolver` (`apcore-rust/src/schema/ref_resolver.rs:50`) | `resolve(schema)` | the full schema (no separate base_uri argument; bases are derived from `$id` claims encountered during traversal) |
 
+### Inputs
+
+The resolver is constructed with a schema search root and a recursion cap, then invoked per-reference (Python/TypeScript) or per-document (Rust).
+
+**Construction:**
+
+- `schemas_dir` / `schemasDir` (path, required — Python/TypeScript only) — root directory used to resolve relative-file and canonical (`apcore://...`) references. Resolved to an absolute path on construction. (Rust derives bases from `$id` claims encountered during traversal and takes no search-root argument.)
+- `max_depth` / `maxDepth` (integer, optional, default `32`) — maximum `$ref` recursion depth before `SCHEMA_MAX_DEPTH_EXCEEDED` is raised.
+
+**`resolve_ref(ref_string, current_file, ...)` / `resolveRef(refString, currentFile, ...)` (Python+TypeScript):**
+
+- `ref_string` / `refString` (string, required) — the single `$ref` to resolve. Supports local (`#/definitions/...`), relative-file, and canonical (`apcore://...`) reference forms.
+- `current_file` / `currentFile` (path or null, required) — the file the `$ref` was found in, used as the base for resolving relative references. `null` when resolving against an inline (in-memory) schema.
+- `visited_refs` / `visitedRefs` (set of strings, optional) — accumulated reference path used for cycle detection across recursive calls; callers normally omit it.
+- `depth` (integer, optional, default `0`) — current recursion depth, compared against `max_depth`; callers normally omit it.
+- `sibling_keys` / `siblingKeys` (object/map or null, optional) — keys that sat alongside the `$ref` and are merged onto the resolved target; callers normally omit it.
+
+**`resolve(schema)` (Rust, and the convenience whole-document method in Python+TypeScript):**
+
+- `schema` (object/map/`Value`, required) — the full schema document; every `$ref` it contains is resolved in a single traversal. The input document is never mutated (a resolved copy is returned).
+
 ### Errors
 
 - `SchemaCircularRefError(code=SCHEMA_CIRCULAR_REF)` — a `$ref` cycle was detected
