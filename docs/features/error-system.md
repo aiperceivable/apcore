@@ -26,6 +26,70 @@ The Error System provides a structured, hierarchical error model designed for bo
 - `user_fixable`: Whether the error can be resolved by the end-user without developer intervention.
 - `suggestion`: A concrete next-step recommendation.
 
+### Default `user_fixable` Policy (Resolved by Error Code)
+
+Framework-deterministic errors **MUST** carry a default `user_fixable` resolved from the
+error `code` at construction time, so the recovery contract is defined once at the source and
+projected to every surface (MCP / CLI / A2A) without per-adapter backfilling. The value is part
+of the cross-language contract and **MUST** be identical across SDKs — it is locked by the
+conformance fixture `conformance/fixtures/error_recovery_metadata.json`.
+
+- **`true`** — the caller can resolve it by changing the input or configuration they sent:
+  `SCHEMA_VALIDATION_ERROR`, `GENERAL_INVALID_INPUT`, `MODULE_NOT_FOUND`,
+  `VERSION_CONSTRAINT_INVALID`, `BINDING_SCHEMA_INFERENCE_FAILED`,
+  `BINDING_SCHEMA_MODE_CONFLICT`, `BINDING_STRICT_SCHEMA_INCOMPATIBLE`,
+  `DEPENDENCY_NOT_FOUND`, `DEPENDENCY_VERSION_MISMATCH`.
+- **`false`** — governance / system / structural / transient, not resolvable by changing input:
+  `ACL_DENIED`, `APPROVAL_DENIED`, `APPROVAL_TIMEOUT`, `MODULE_TIMEOUT`, `MODULE_DISABLED`,
+  `CALL_DEPTH_EXCEEDED`, `CIRCULAR_CALL`, `CALL_FREQUENCY_EXCEEDED`, `GENERAL_INTERNAL_ERROR`.
+- **unset (`null`)** — any code not listed above, including `MODULE_EXECUTE_ERROR`
+  (business-logic failures): the module author supplies `user_fixable` when raising.
+
+An explicitly supplied `user_fixable` (including an explicit `null`) **MUST** override the
+per-code default. `suggestion` is intentionally left to the module author (it overlaps with
+`ai_guidance`); `x-*` metadata is likewise author-owned and not defaulted by the framework.
+
+The policy table is the single source of truth for the value. Each SDK stores it as an
+**internal** symbol (not part of the public API): Python's module-private `_USER_FIXABLE_BY_CODE`,
+TypeScript's `@internal` `USER_FIXABLE_BY_CODE`, and Rust's `#[doc(hidden)]`
+`user_fixable_for_code`.
+
+=== "Python"
+    ```python
+    from apcore.errors import ModuleError
+
+    err = ModuleError(code="SCHEMA_VALIDATION_ERROR", message="invalid email")
+    assert err.user_fixable is True                 # default resolved from the code
+
+    override = ModuleError(code="SCHEMA_VALIDATION_ERROR", message="...", user_fixable=None)
+    assert override.user_fixable is None            # explicit value (incl. None) wins
+    ```
+=== "TypeScript"
+    ```typescript
+    import { ModuleError } from "apcore-js";
+
+    const err = new ModuleError("SCHEMA_VALIDATION_ERROR", "invalid email");
+    console.assert(err.userFixable === true);        // default resolved from the code
+
+    // An explicit value via a subclass option (incl. null) wins over the per-code default.
+    ```
+=== "Rust"
+    ```rust
+    use apcore::errors::{ErrorCode, ModuleError};
+
+    let err = ModuleError::new(ErrorCode::SchemaValidationError, "invalid email");
+    assert_eq!(err.user_fixable, Some(true));        // default resolved from the code
+
+    let override_ = err.with_user_fixable(false);    // explicit override
+    assert_eq!(override_.user_fixable, Some(false));
+    ```
+
+> **Note (spec alignment, pending).** `docs/spec/protocol-spec.md` §8 currently states that
+> `user_fixable` "defaults to `null` (omitted)". That remains true for unlisted codes, but is
+> now incomplete for the framework-deterministic codes above — the protocol spec needs the
+> matching qualification (tracked separately; protocol-spec edits require a linked issue + dual
+> review).
+
 ### Error Code Registry
 - Provide an `ErrorCodeRegistry` for registering custom module-specific error codes at runtime.
 - Framework error code prefixes are reserved and **MUST NOT** be used by user modules. Reserved prefixes: `ACL_`, `APPROVAL_`, `BINDING_`, `CALL_`, `CIRCULAR_`, `CONFIG_`, `DEPENDENCY_`, `ERROR_CODE_`, `FUNC_`, `GENERAL_`, `MIDDLEWARE_`, `MODULE_`, `SCHEMA_`, `VERSION_`.
@@ -243,6 +307,28 @@ The framework defines error subclasses grouped by domain. Each subclass sets an 
 | `ModuleIdConflictError` | `MODULE_ID_CONFLICT` | — | Two modules resolved to the same Canonical ID during discovery |
 | `ModuleReloadConflictError` | `MODULE_RELOAD_CONFLICT` | Yes | Hot-reload skipped because the module is in flight; safe to retry |
 | `SystemModuleRegistrationFailedError` | `SYS_MODULE_REGISTRATION_FAILED` | — | A `sys.*` module failed to register at framework startup |
+
+> **Cross-language ergonomic note (D1-002 — intentional, language-idiomatic).**
+> Re-registering an already-registered module ID raises the error **code**
+> `DUPLICATE_MODULE_ID` (with `details.module_id` populated, `retryable=false`)
+> in all three SDKs — that wire-observable contract is identical. Only the
+> *typed wrapper* differs by language idiom, and a dedicated class is **not**
+> required by the protocol (`protocol-spec.md` §8.7 does not list one; this
+> section mandates only the code):
+>
+> - **TypeScript** ships a dedicated `DuplicateModuleIdError extends ModuleError`.
+>   TS's idiom is one subclass per code, so a class here is consistent with its
+>   own surface.
+> - **Rust** raises `ModuleError::duplicate_module_id()` — a named builder on the
+>   single `ModuleError` struct keyed by `ErrorCode::DuplicateModuleId`. Rust has
+>   no per-code structs; the builder is its idiomatic equivalent.
+> - **Python** raises the generic `InvalidInputError(code=DUPLICATE_MODULE_ID)`.
+>   A dedicated subclass MAY be added for symmetry with Python's other typed
+>   classes, but is not required.
+>
+> Because every SDK exposes the same `code` + `details`, cross-language fixtures
+> and the MCP/A2A error mappers behave identically. This is a **language-surface
+> divergence**, not a parity bug.
 
 #### Binding Inference Errors
 
