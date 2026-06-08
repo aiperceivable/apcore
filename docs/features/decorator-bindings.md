@@ -130,7 +130,7 @@ All binding-related errors inherit from `ModuleError`:
 - `BindingModuleNotFoundError` -- Python module cannot be imported (code: `BINDING_MODULE_NOT_FOUND`).
 - `BindingCallableNotFoundError` -- Callable not found in module (code: `BINDING_CALLABLE_NOT_FOUND`).
 - `BindingNotCallableError` -- Resolved attribute is not callable (code: `BINDING_NOT_CALLABLE`).
-- `BindingSchemaMissingError` -- Auto-schema failed on untyped callable (code: `BINDING_SCHEMA_MISSING`).
+- `BindingSchemaInferenceFailedError` -- Auto-schema failed on untyped callable (code: `BINDING_SCHEMA_INFERENCE_FAILED`; deprecated alias `BindingSchemaMissingError`/`BINDING_SCHEMA_MISSING`).
 - `BindingFileInvalidError` -- YAML file issues (missing, empty, parse error, structural) (code: `BINDING_FILE_INVALID`).
 
 ## Language Equivalents
@@ -279,7 +279,7 @@ The `@module` decorator and `BindingLoader` are Python SDK idioms. TypeScript an
 - `BindingModuleNotFoundError(code=BINDING_MODULE_NOT_FOUND)` — Python module in target path cannot be imported
 - `BindingCallableNotFoundError(code=BINDING_CALLABLE_NOT_FOUND)` — callable not found in the imported module
 - `BindingNotCallableError(code=BINDING_NOT_CALLABLE)` — resolved attribute is not callable
-- `BindingSchemaMissingError(code=BINDING_SCHEMA_MISSING)` — auto-schema inference failed because callable lacks type hints
+- `BindingSchemaInferenceFailedError(code=BINDING_SCHEMA_INFERENCE_FAILED)` — auto-schema inference failed because callable lacks type hints (deprecated alias: `BindingSchemaMissingError`/`BINDING_SCHEMA_MISSING`)
 - `FuncMissingTypeHintError(code=FUNC_MISSING_TYPE_HINT)` — parameter lacks annotation during auto-schema
 - `FuncMissingReturnTypeError(code=FUNC_MISSING_RETURN_TYPE)` — return type absent during auto-schema
 

@@ -2846,7 +2846,7 @@ bindings:
 
 When `auto_schema: true`, implementations **MUST** reuse the `generate_schema_from_function` algorithm from §5.11.4 to auto-generate Schema from target_id callable's type annotations.
 
-If target_id callable lacks sufficient type information, **MUST** throw `BINDING_SCHEMA_MISSING` error.
+If target_id callable lacks sufficient type information, **MUST** throw `BINDING_SCHEMA_INFERENCE_FAILED` error. (`BINDING_SCHEMA_MISSING` is the deprecated 0.19.0 alias, retained only for decoding older serialized payloads.)
 
 #### 5.12.6 Discovery Mechanism
 
@@ -2884,7 +2884,7 @@ Implementations **MUST** perform the following validations when loading binding 
 | `BINDING_MODULE_NOT_FOUND` | Module path can't be imported | import module_path fails |
 | `BINDING_CALLABLE_NOT_FOUND` | Can't find target_id callable | Can't find specified function/method in module |
 | `BINDING_NOT_CALLABLE` | Target not callable | Resolved object is not callable |
-| `BINDING_SCHEMA_MISSING` | Schema missing | No explicit Schema and auto_schema can't generate |
+| `BINDING_SCHEMA_INFERENCE_FAILED` | Schema inference failed | No explicit Schema and auto_schema can't generate (deprecated alias: `BINDING_SCHEMA_MISSING`) |
 
 ### 5.13 Display Overlay (Surface-Facing Presentation)
 
@@ -4150,9 +4150,10 @@ error_codes:
   BINDING_NOT_CALLABLE:
     description: "Binding target_id not callable"
     http_status: 500
-  BINDING_SCHEMA_MISSING:
-    description: "Binding Schema missing"
+  BINDING_SCHEMA_INFERENCE_FAILED:
+    description: "Auto-schema inference failed: callable lacks usable type hints"
     http_status: 500
+    # Deprecated alias (renamed in 0.19.0): BINDING_SCHEMA_MISSING — old serialized payloads remain decodable.
   BINDING_FILE_INVALID:
     description: "Binding file parse error"
     http_status: 500

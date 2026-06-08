@@ -4,7 +4,11 @@
     {
       "id": "valid_chain",
       "module_id": "c",
-      "call_chain": ["a", "b", "c"],
+      "call_chain": [
+        "a",
+        "b",
+        "c"
+      ],
       "expected": "ok"
     },
     {
@@ -16,48 +20,131 @@
     {
       "id": "single_element",
       "module_id": "a",
-      "call_chain": ["a"],
+      "call_chain": [
+        "a"
+      ],
       "expected": "ok"
     },
     {
       "id": "depth_exceeded",
       "module_id": "mod.9",
-      "call_chain": ["mod.0", "mod.1", "mod.2", "mod.3", "mod.4", "mod.5", "mod.6", "mod.7", "mod.8", "mod.9"],
+      "call_chain": [
+        "mod.0",
+        "mod.1",
+        "mod.2",
+        "mod.3",
+        "mod.4",
+        "mod.5",
+        "mod.6",
+        "mod.7",
+        "mod.8",
+        "mod.9"
+      ],
       "max_call_depth": 5,
       "expected_error": "CALL_DEPTH_EXCEEDED"
     },
     {
       "id": "circular_detection",
       "module_id": "a",
-      "call_chain": ["a", "b", "a"],
+      "call_chain": [
+        "a",
+        "b",
+        "a"
+      ],
       "expected_error": "CIRCULAR_CALL"
     },
     {
       "id": "frequency_exceeded",
       "module_id": "a",
-      "call_chain": ["a", "a", "a"],
+      "call_chain": [
+        "a",
+        "a",
+        "a"
+      ],
       "max_module_repeat": 2,
       "expected_error": "CALL_FREQUENCY_EXCEEDED"
     },
     {
       "id": "frequency_within_limit",
       "module_id": "a",
-      "call_chain": ["a", "a"],
+      "call_chain": [
+        "a",
+        "a"
+      ],
       "max_module_repeat": 3,
       "expected": "ok"
     },
     {
       "id": "self_call_not_circular",
       "module_id": "a",
-      "call_chain": ["a", "a"],
+      "call_chain": [
+        "a",
+        "a"
+      ],
       "max_module_repeat": 10,
       "expected": "ok"
     },
     {
       "id": "default_depth_32_ok",
       "module_id": "mod.31",
-      "call_chain": ["mod.0", "mod.1", "mod.2", "mod.3", "mod.4", "mod.5", "mod.6", "mod.7", "mod.8", "mod.9", "mod.10", "mod.11", "mod.12", "mod.13", "mod.14", "mod.15", "mod.16", "mod.17", "mod.18", "mod.19", "mod.20", "mod.21", "mod.22", "mod.23", "mod.24", "mod.25", "mod.26", "mod.27", "mod.28", "mod.29", "mod.30", "mod.31"],
+      "call_chain": [
+        "mod.0",
+        "mod.1",
+        "mod.2",
+        "mod.3",
+        "mod.4",
+        "mod.5",
+        "mod.6",
+        "mod.7",
+        "mod.8",
+        "mod.9",
+        "mod.10",
+        "mod.11",
+        "mod.12",
+        "mod.13",
+        "mod.14",
+        "mod.15",
+        "mod.16",
+        "mod.17",
+        "mod.18",
+        "mod.19",
+        "mod.20",
+        "mod.21",
+        "mod.22",
+        "mod.23",
+        "mod.24",
+        "mod.25",
+        "mod.26",
+        "mod.27",
+        "mod.28",
+        "mod.29",
+        "mod.30",
+        "mod.31"
+      ],
       "expected": "ok"
+    },
+    {
+      "id": "floor_max_call_depth_below_one_rejected",
+      "module_id": "a",
+      "call_chain": [
+        "a"
+      ],
+      "max_call_depth": 0,
+      "expected_error": "INVALID_LIMIT",
+      "divergence_ref": "T-B-005",
+      "note": "max_call_depth < 1 is invalid input and MUST be rejected before any chain inspection (Python ValueError / TS Error / Rust ModuleError GENERAL_INVALID_INPUT)."
+    },
+    {
+      "id": "floor_max_module_repeat_below_one_rejected",
+      "module_id": "a",
+      "call_chain": [
+        "a"
+      ],
+      "max_call_depth": 32,
+      "max_module_repeat": 0,
+      "expected_error": "INVALID_LIMIT",
+      "divergence_ref": "T-B-005",
+      "note": "max_module_repeat < 1 is invalid input and MUST be rejected before the frequency check."
     }
   ]
 }

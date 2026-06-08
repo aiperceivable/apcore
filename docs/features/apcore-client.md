@@ -443,7 +443,7 @@ The APCore interface follows each language's idioms while maintaining functional
 ### Returns
 - On success: `PreflightResult` — an object with:
   - `valid: bool` — `True` only if all checks passed
-  - `checks: list[PreflightCheckResult]` — per-step results covering: `module_id`, `module_lookup`, `call_chain`, `acl`, `approval`, `schema`, `module_preflight` (7 checks total)
+  - `checks: list[PreflightCheckResult]` — per-step results covering: `module_id`, `executor_binding`, `module_lookup`, `call_chain`, `acl`, `approval`, `schema`, `module_preflight` (8 checks), plus an optional `module_preview` check appended only when the target module implements a preview hook (all three SDKs emit this set)
   - `requires_approval: bool` — `True` if the module carries a `requires_approval` annotation (informational only; not enforced by validate)
   - `errors: list[dict]` — convenience property; aggregates `error` fields from failed checks
 
@@ -616,7 +616,7 @@ The APCore interface follows each language's idioms while maintaining functional
 - `middleware` (Middleware instance, required) — a class-based middleware object implementing the `Middleware` protocol; MUST NOT be null/None; `priority` attribute (int, 0–1000) controls insertion order — higher priority runs first; equal priorities preserve registration order
 
 ### Errors
-- `ValueError` — if `middleware.priority` exceeds 1000
+- `ValueError` (Python) / `RangeError` (TypeScript) / `Err(ModuleError)` with `GENERAL_INVALID_INPUT` (Rust) — if `middleware.priority` exceeds 1000. Each SDK uses its idiomatic invalid-argument signal for this caller-side misconfiguration (A-D-017); the rejection itself is enforced in all three.
 
 ### Returns
 - On success: `self`/`APCore` — returns the client instance for method chaining (e.g. `client.use(a).use(b).use(c)`)

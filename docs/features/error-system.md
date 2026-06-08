@@ -233,6 +233,8 @@ The framework defines error subclasses grouped by domain. Each subclass sets an 
 | `CircularCallError` | `CIRCULAR_CALL` | — | Circular call detected (carries `module_id`, `call_chain`) |
 | `CallFrequencyExceededError` | `CALL_FREQUENCY_EXCEEDED` | — | Module called too many times (carries `module_id`, `count`, `max_repeat`) |
 
+> **Cross-language note (idiomatic).** The "carries …" fields above always travel in the serialized `details` map (the normative wire contract). Python and TypeScript additionally expose them as typed convenience accessors on the error subclass (e.g. `err.current_depth` / `err.currentDepth`); Rust keeps the error struct flat and reads the same values from `err.details` (e.g. `err.details.get("current_depth")`). The data and wire form are identical — only the ergonomic accessor layer differs by language.
+
 #### Binding Errors
 
 | Error Class | Code | Retryable | Description |

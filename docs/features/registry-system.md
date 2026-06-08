@@ -78,8 +78,8 @@ Modules in the `ephemeral.*` namespace are permitted to bypass filesystem valida
 
 The registry supports registering callback functions for two event types:
 
-- **register** -- Fired after a module is successfully added to the registry. Callbacks receive the module's ID and metadata.
-- **unregister** -- Fired after a module is successfully removed from the registry. Callbacks receive the module's ID and metadata.
+- **register** -- Fired after a module is successfully added to the registry. Callbacks receive the module's ID and the module instance (`(module_id, module)`).
+- **unregister** -- Fired after a module is successfully removed from the registry. Callbacks receive the module's ID and the module instance (`(module_id, module)`).
 
 Callbacks are invoked synchronously within the registry lock, ensuring consistent state visibility.
 
@@ -88,7 +88,7 @@ Callbacks are invoked synchronously within the registry lock, ensuring consisten
 The registry provides several query methods:
 
 - `get(module_id)` -- Direct lookup by ID.
-- `list(tags=None, prefix=None)` -- Returns all registered modules, optionally filtered by tags and/or ID prefix. When `tags` is provided, only modules whose metadata includes the specified tag(s) are returned. When `prefix` is provided, only modules whose IDs start with the given prefix are returned. Both filters can be combined.
+- `list(tags=None, prefix=None, visibility=None)` -- Returns all registered modules, optionally filtered by tags, ID prefix, and/or visibility. When `tags` is provided, only modules whose metadata includes the specified tag(s) are returned. When `prefix` is provided, only modules whose IDs start with the given prefix are returned. When `visibility` is provided (a subset of `["public", "hidden"]`, per D-24), only modules with a matching discoverable status are returned. All filters can be combined. (Python/TypeScript also accept a deprecated `include_hidden`/`includeHidden` boolean superseded by `visibility`.)
 - `get_definition(module_id)` -- Returns a `ModuleDescriptor` for the specified module, including exported schemas.
 
 ## Contract: Registry.register
