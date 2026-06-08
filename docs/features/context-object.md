@@ -61,12 +61,12 @@ The Executor enforces three protection checks before dispatching any module call
 
 ```text
 Executor.call(module_id, inputs, context)
-    ├─ Depth check:     len(call_chain) >= max_call_depth         → CALL_DEPTH_EXCEEDED
+    ├─ Depth check:     len(call_chain) > max_call_depth          → CALL_DEPTH_EXCEEDED
     ├─ Cycle detection: module_id in call_chain                   → CIRCULAR_CALL
-    └─ Frequency check: call_chain.count(module_id) >= max_repeat → CALL_FREQUENCY_EXCEEDED
+    └─ Frequency check: call_chain.count(module_id) > max_module_repeat → CALL_FREQUENCY_EXCEEDED
 ```
 
-- `max_call_depth` defaults to 32. Reaching it MUST raise `CALL_DEPTH_EXCEEDED`.
+- `max_call_depth` defaults to 32. Exceeding it MUST raise `CALL_DEPTH_EXCEEDED`.
 - Strict cycles (target ID already in `call_chain`) MUST raise `CIRCULAR_CALL`.
 - Frequency limit (`executor.max_module_repeat`, default 3) catches repeated patterns like `A→B→C→B→C…` before the depth bound triggers and MUST raise `CALL_FREQUENCY_EXCEEDED`.
 
