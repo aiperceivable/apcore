@@ -257,7 +257,7 @@ All module IDs **MUST** conform to the following regular expression:
 - Uppercase letters
 - Spaces, special characters
 
-All SDK implementations **MUST** validate module IDs against this pattern during `register()`. Invalid IDs **MUST** be rejected with `GENERAL_INVALID_INPUT` error.
+All SDK implementations **MUST** validate module IDs against this pattern during `register()`. Invalid IDs **MUST** be rejected with `INVALID_MODULE_ID` error (the dedicated module-ID validation code defined in the error registry below and mandated by `docs/features/error-system.md` §Error Code Constants; see also the `register()` and `Executor.call` contracts in `docs/features/registry-system.md` and `docs/features/core-executor.md`).
 
 ### 2.2 ID Map (Cross-language Conversion)
 
@@ -4093,6 +4093,9 @@ error_codes:
   MODULE_DISABLED:
     description: "Module is disabled via system.control.toggle_feature"
     http_status: 403
+  INVALID_MODULE_ID:
+    description: "module_id is empty or fails the Module ID Format Constraint (§2.1)"
+    http_status: 400
 
   # Execution-related (EXECUTION_*)
   EXECUTION_CANCELLED:
