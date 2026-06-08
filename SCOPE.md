@@ -91,7 +91,7 @@ Things explicitly **not within the project scope**:
 |------|------|--------|
 | **Workflow Engine** | Application-layer orchestration logic, not framework core | apflow and other upstream projects |
 | **MCP/A2A/CLI Adapters** | Protocol and surface adaptation, not core standard | [apcore-mcp](https://github.com/aiperceivable/apcore-mcp), [apcore-a2a](https://github.com/aiperceivable/apcore-a2a), [apcore-cli](https://github.com/aiperceivable/apcore-cli) |
-| **Rate Limiting / Circuit Breaker** | Runtime resilience middleware, not module definition | apcore-toolkit (middleware implementations) |
+| **Rate Limiting** | Runtime resilience middleware, not module definition | apcore-toolkit (middleware implementations) |
 | **Secret Injection / Vault Integration** | Runtime infrastructure, not module standard | apcore-toolkit |
 | **Testing Framework** | Developer tooling, not protocol | [apcore-testing](https://github.com/aiperceivable/apcore-testing) |
 | **SLA Monitoring / Alerting** | Runtime enforcement (SLA _declaration_ is Core metadata) | apcore-toolkit |
@@ -175,7 +175,8 @@ Use these scenarios to validate whether our boundaries are correct:
 | **MCP Adapter** | ⚡ Ecosystem ([apcore-mcp](https://github.com/aiperceivable/apcore-mcp)) | Protocol adaptation |
 | **A2A Adapter** | ⚡ Ecosystem ([apcore-a2a](https://github.com/aiperceivable/apcore-a2a)) | Protocol adaptation |
 | **CLI Adapter** | ⚡ Ecosystem ([apcore-cli](https://github.com/aiperceivable/apcore-cli)) | Surface adaptation |
-| **Rate Limiting / Circuit Breaker** | ⚡ Ecosystem (apcore-toolkit) | Runtime resilience; implemented as middleware |
+| **Rate Limiting** | ⚡ Ecosystem (apcore-toolkit) | Runtime resilience; implemented as middleware |
+| **Circuit Breaker** | ✅ Core (`CircuitBreakerMiddleware`) | Resilience middleware shipped in core across all three SDKs since v0.20.0; SCOPE reconciled with shipped code in v0.22.0 |
 | **Secret Injection** | ⚡ Ecosystem (apcore-toolkit) | Runtime infrastructure; `x-sensitive` marking is Core |
 | **Testing Framework** | ⚡ Ecosystem ([apcore-testing](https://github.com/aiperceivable/apcore-testing)) | Developer tooling: MockModule, ContractTest, fixtures |
 | **OpenAPI / AsyncAPI Export** | ⚡ Ecosystem (apcore-toolkit) | Additional export formats beyond built-in SchemaExporter |
@@ -222,7 +223,8 @@ Use these scenarios to validate whether our boundaries are correct:
 - [x] API naming: **No prefix** (rely on language namespaces; languages without namespace mechanisms use `apcore_` prefix)
 - [x] Behavior annotations (cacheable, paginated): **Core** (AI-Perceivable behavior hints for agent decision-making)
 - [x] AI metadata conventions (x-preconditions, x-cost-per-call, etc.): **Core** (recommended metadata keys, not enforced)
-- [x] Rate limiting / circuit breaker: **Ecosystem** (runtime middleware, not module definition)
+- [x] Rate limiting: **Ecosystem** (runtime middleware, not module definition)
+- [x] Circuit breaker: **Core** (shipped as `CircuitBreakerMiddleware` in all three SDKs since v0.20.0; SCOPE reconciled with code reality in v0.22.0)
 - [x] Secret injection: **Ecosystem** (runtime infrastructure; `x-sensitive` marking remains Core)
 - [x] Testing framework: **Ecosystem** (apcore-testing — MockModule, ContractTest, fixtures)
 - [x] Token counting / context window: **Won't Do** (LLM-specific, apcore stays AI-neutral)

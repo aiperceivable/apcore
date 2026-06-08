@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.23.0] - 2026-06-08
+
+### Added
+
+- **Conformance fixture `error_recovery_metadata.json` — default AI error-recovery metadata per error code (#70).** Defines the cross-language contract for `retryable` + `user_fixable` defaults: `user_fixable` is resolved from the error code (caller-fixable-by-input = `true`; governance/system/structural/transient = `false`); codes whose `user_fixable` is `null` are left for the module author (e.g. `MODULE_EXECUTE_ERROR`). All SDKs MUST produce these defaults when an error is constructed without overrides. `ai_guidance` text is not pinned (human-readable, may carry runtime context). Registered in `conformance/README.md`. Implemented in `apcore-python` 0.23.0; `apcore-typescript` / `apcore-rust` pending.
+
+### Changed
+
+- **`error_serialization.json` `omits_null_optionals` case now uses a real policy-free code (`CONTEXT_BINDING_ERROR`) (#70).** Real codes such as `GENERAL_INVALID_INPUT` now carry a default `user_fixable`, so the null-optional-omission case must use a code absent from the user_fixable policy — and a real `ErrorCode` variant, since Rust models codes as a closed enum — to keep exercising sparse-output omission across all SDKs.
+
+---
+
 ## [0.22.0] - 2026-05-27
 
 ### Changed

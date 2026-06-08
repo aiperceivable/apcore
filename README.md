@@ -140,7 +140,7 @@ AI has become an important caller in software systems, but most modules lack AI-
 |-------|---------|-----------------|
 | **Perceived** | AI can discover and read the module | Schema-enforced `description`, `input_schema`, `output_schema` |
 | **Understood** | AI knows *when* and *how* to use it | Behavioral annotations (`x-when-to-use`, `x-common-mistakes`) |
-| **Executed** | AI invokes it correctly and recovers from errors | `ai_guidance`, `requires_approval`, self-healing |
+| **Executed** | AI invokes it correctly and recovers from errors | `ai_guidance`, `user_fixable`, `requires_approval`, self-healing |
 
 ### The AI Collaboration Lifecycle
 

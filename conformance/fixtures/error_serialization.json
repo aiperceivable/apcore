@@ -19,8 +19,9 @@
     },
     {
       "id": "error_serialization_omits_null_optionals",
+      "note": "Uses a real error code that carries no default user_fixable policy, so this case purely exercises null-optional omission across all SDKs. A synthetic code is not portable: Rust models `code` as a closed ErrorCode enum and rejects unknown variants. Codes in the user_fixable policy (e.g. GENERAL_INVALID_INPUT) now emit user_fixable and cannot be used here.",
       "input": {
-        "code": "GENERAL_INVALID_INPUT",
+        "code": "CONTEXT_BINDING_ERROR",
         "message": "bad input"
       },
       "expected_keys_present": ["code", "message", "timestamp"],

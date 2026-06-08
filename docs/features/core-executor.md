@@ -875,7 +875,7 @@ Normative behavioral contract. All SDK implementations MUST satisfy these guaran
 ### Errors
 
 - `PipelineStepNotFoundError(code=PIPELINE_STEP_NOT_FOUND)` — `step_name` does not exist in the current strategy
-- `StepNotReplaceableError` — `step_name` resolves to a step marked non-replaceable by the strategy (raised by all three SDKs — `pipeline.py:310`, `pipeline.ts:351`, `pipeline.rs:601`)
+- `StepNotReplaceableError` — `step_name` resolves to a step marked non-replaceable by the strategy (raised by all three SDKs — `pipeline.py:310`, `pipeline.ts:349`, `pipeline.rs:635`). Cross-language note: Python and TypeScript carry the dedicated `STEP_NOT_REPLACEABLE` code; Rust reports this through `ErrorCode::GeneralInvalidInput` (`GENERAL_INVALID_INPUT`).
 - `StepNameDuplicateError` — `new_step` declares a step name that conflicts with an existing step (raised by Python+TypeScript — `pipeline.ts:357`)
 
 ### Returns

@@ -313,7 +313,7 @@ The resolver is constructed with a schema search root and a recursion cap, then 
 ### Errors
 
 - `SchemaCircularRefError(code=SCHEMA_CIRCULAR_REF)` — a `$ref` cycle was detected
-- `SchemaRefNotFoundError(code=SCHEMA_REF_NOT_FOUND)` — a referenced schema cannot be resolved
+- `SchemaNotFoundError(code=SCHEMA_NOT_FOUND)` — a referenced schema cannot be resolved
 
 ### Returns
 

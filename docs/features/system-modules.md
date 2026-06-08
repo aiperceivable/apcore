@@ -669,7 +669,10 @@ System modules use the reserved `system.*` namespace. Registration bypasses rese
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `module_id` | `str` | Yes | Fully-qualified module ID to inspect. |
-| `registry` | `Registry` | Yes | Registry that holds toggle state. |
+
+The toggle state is read from process-global storage; all three SDKs take
+`module_id` as the sole argument (`is_module_disabled(module_id)` /
+`isModuleDisabled(moduleId)`) — there is no `registry` parameter.
 
 ### Errors
 

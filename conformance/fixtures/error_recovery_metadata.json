@@ -1,0 +1,24 @@
+{
+  "description": "Default AI error-recovery metadata per framework error code. When a framework error is constructed without an explicit override, every language SDK MUST produce these defaults: user_fixable is resolved from the error code (caller can fix by changing input/config = true; governance/system/structural/transient = false); retryable is the error class default. Codes whose user_fixable is null are intentionally left unset for the module author to supply (business errors). ai_guidance text is intentionally NOT pinned here (it is human-readable and may carry runtime context) — only retryable and user_fixable are part of the cross-language contract.",
+  "test_cases": [
+    {"id": "schema_validation_error", "code": "SCHEMA_VALIDATION_ERROR", "expected": {"retryable": false, "user_fixable": true}},
+    {"id": "general_invalid_input", "code": "GENERAL_INVALID_INPUT", "expected": {"retryable": false, "user_fixable": true}},
+    {"id": "module_not_found", "code": "MODULE_NOT_FOUND", "expected": {"retryable": false, "user_fixable": true}},
+    {"id": "version_constraint_invalid", "code": "VERSION_CONSTRAINT_INVALID", "expected": {"retryable": false, "user_fixable": true}},
+    {"id": "binding_schema_inference_failed", "code": "BINDING_SCHEMA_INFERENCE_FAILED", "expected": {"retryable": false, "user_fixable": true}},
+    {"id": "binding_schema_mode_conflict", "code": "BINDING_SCHEMA_MODE_CONFLICT", "expected": {"retryable": false, "user_fixable": true}},
+    {"id": "binding_strict_schema_incompatible", "code": "BINDING_STRICT_SCHEMA_INCOMPATIBLE", "expected": {"retryable": false, "user_fixable": true}},
+    {"id": "dependency_not_found", "code": "DEPENDENCY_NOT_FOUND", "expected": {"retryable": false, "user_fixable": true}},
+    {"id": "dependency_version_mismatch", "code": "DEPENDENCY_VERSION_MISMATCH", "expected": {"retryable": false, "user_fixable": true}},
+    {"id": "acl_denied", "code": "ACL_DENIED", "expected": {"retryable": false, "user_fixable": false}},
+    {"id": "approval_denied", "code": "APPROVAL_DENIED", "expected": {"retryable": false, "user_fixable": false}},
+    {"id": "approval_timeout", "code": "APPROVAL_TIMEOUT", "expected": {"retryable": true, "user_fixable": false}},
+    {"id": "module_timeout", "code": "MODULE_TIMEOUT", "expected": {"retryable": true, "user_fixable": false}},
+    {"id": "module_disabled", "code": "MODULE_DISABLED", "expected": {"retryable": false, "user_fixable": false}},
+    {"id": "call_depth_exceeded", "code": "CALL_DEPTH_EXCEEDED", "expected": {"retryable": false, "user_fixable": false}},
+    {"id": "circular_call", "code": "CIRCULAR_CALL", "expected": {"retryable": false, "user_fixable": false}},
+    {"id": "call_frequency_exceeded", "code": "CALL_FREQUENCY_EXCEEDED", "expected": {"retryable": false, "user_fixable": false}},
+    {"id": "general_internal_error", "code": "GENERAL_INTERNAL_ERROR", "expected": {"retryable": true, "user_fixable": false}},
+    {"id": "module_execute_error_unset", "code": "MODULE_EXECUTE_ERROR", "expected": {"retryable": null, "user_fixable": null}}
+  ]
+}
