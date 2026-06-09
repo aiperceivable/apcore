@@ -643,7 +643,7 @@ Out-of-range values MUST be rejected with `CONFIG_INVALID`:
 |-----|------------|
 | `acl.default_effect` | one of `allow`, `deny` |
 | `observability.tracing.sampling_rate` | `0.0 ≤ x ≤ 1.0` |
-| `extensions.max_depth` | integer `≥ 1` |
+| `extensions.max_depth` | integer in `[1, 16]` (discovery-recursion safety cap) |
 | `executor.default_timeout`, `executor.global_timeout` | `≥ 0` |
 | `executor.max_call_depth`, `executor.max_module_repeat` | integer `≥ 1` |
 | `middleware.circuit_breaker.open_threshold` | integer `≥ 1` |
