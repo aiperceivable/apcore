@@ -86,7 +86,7 @@
     },
     {
       "id": "full_id_grammar_valid",
-      "description": "The full derived multi-class ID must conform to the canonical_id grammar ^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)*$",
+      "description": "A single Module class in a deeply nested file yields the bare base_id (single-class identity guarantee), which must conform to the canonical_id grammar ^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)*$",
       "input": {
         "file_path": "extensions/executor/math/arithmetic.py",
         "extensions_root": "extensions",
@@ -96,7 +96,7 @@
         ]
       },
       "expected": {
-        "module_ids": ["executor.math.arithmetic.addition"],
+        "module_ids": ["executor.math.arithmetic"],
         "grammar_valid": true,
         "error": null
       }
