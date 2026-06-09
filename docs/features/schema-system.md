@@ -1051,7 +1051,7 @@ The case excerpts below illustrate the canonical shape; refer to the JSON files 
 
 ### Errors
 - `SchemaValidationError(code=SCHEMA_VALIDATION_ERROR)` — data does not conform to schema at any nesting level
-- `SchemaCircularRefError(code=SCHEMA_MAX_DEPTH_EXCEEDED)` — recursion depth exceeded `max_depth`
+- `SchemaMaxDepthExceededError(code=SCHEMA_MAX_DEPTH_EXCEEDED)` — recursion depth exceeded `max_depth`
 
 ### Returns
 - On success: void/None/() — validation passed at all nesting levels

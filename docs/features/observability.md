@@ -1506,121 +1506,30 @@ This is a performance note, not a normative requirement: the public API of `Erro
 
 `ErrorHistory` deduplicates structurally similar errors using a content-addressable fingerprint. The fingerprint replaces the legacy `(code, message)` tuple key (which over-counted any message containing a UUID, timestamp, or numeric ID) and is shared across all three SDKs.
 
-**Fingerprint composition:**
+**Fingerprint composition (canonical — identical to [§1.4](#14-error-fingerprinting-for-deduplication)):**
 
 ```
 fingerprint = SHA-256(
     error_code + ":" +
-    top_frame_hash + ":" +
-    sanitized_message_template
+    module_id + ":" +
+    normalized_message
 )
 ```
 
 | Component | Source | Purpose |
 |-----------|--------|---------|
 | `error_code` | `ModuleError.code` (e.g., `DB_TIMEOUT`) | Primary discriminator |
-| `top_frame_hash` | SHA-1 of the top non-framework frame `(file, function, line)` from the traceback | Distinguishes same-code-different-call-site errors |
-| `sanitized_message_template` | Output of the message normalizer (UUIDs → `<UUID>`, ISO timestamps → `<TIMESTAMP>`, integers ≥ 4 digits → `<ID>`, lowercase, trimmed) | Collapses ephemeral values so repeated errors hash identically |
+| `module_id` | the module the error is recorded against | Scopes deduplication to the originating module |
+| `normalized_message` | Output of the §1.4 normalizer (UUIDs → `<UUID>`, ISO timestamps → `<TIMESTAMP>`, integer runs ≥ 4 digits → `<ID>`, trimmed, lowercased) | Collapses ephemeral values so repeated errors hash identically |
 
 **Behavior:**
 
 - Two errors that differ only in UUID values, timestamps, or numeric IDs collapse into a single entry (count is incremented, `last_seen_at` is updated).
-- Two errors with the same `error_code` raised from different call sites produce **distinct** fingerprints because `top_frame_hash` differs.
 - Two errors with **different** `error_code` values never collapse, even if message text is identical after normalization.
 
-The full normalization algorithm and per-SDK reference implementation is documented in [§1.4 Error Fingerprinting for Deduplication](#14-error-fingerprinting-for-deduplication). The `top_frame_hash` field is an implementation refinement layered on top of the §1.4 contract — it is the second positional component in the SHA-256 input. SDKs that cannot cheaply extract a top-frame (e.g., environments without traceback support) MUST substitute `module_id` and document the substitution; see PROTOCOL_SPEC §10 for the interop note.
+**Call-site disambiguation is NOT part of the fingerprint.** A `top_frame_hash` (file/function/line from a stack trace) is **not portable across languages** — Python tracebacks, V8 stacks, and Rust backtraces produce different frame identities for the same logical error — so including it would make the fingerprint differ per SDK and defeat the shared cross-language dedup contract. An SDK **MAY** expose a top-frame hash as a **separate, language-local** `ErrorEntry` field for diagnostics, but it **MUST NOT** be an input to the cross-language `fingerprint`. Likewise the normalization MUST be exactly the five-step §1.4 algorithm (no additional steps such as hex-run collapsing) so that every SDK hashes identically.
 
-=== "Python"
-    ```python
-    import hashlib
-    import re
-    import traceback
-
-    def top_frame_hash(exc: BaseException) -> str:
-        tb = traceback.extract_tb(exc.__traceback__)
-        # Walk from innermost frame; skip apcore framework frames.
-        for frame in reversed(tb):
-            if "/apcore/" not in frame.filename and "site-packages/apcore" not in frame.filename:
-                key = f"{frame.filename}:{frame.name}:{frame.lineno}"
-                return hashlib.sha1(key.encode("utf-8")).hexdigest()[:16]
-        return "unknown"
-
-    def sanitized_template(msg: str) -> str:
-        msg = re.sub(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", "<UUID>", msg, flags=re.IGNORECASE)
-        msg = re.sub(r"\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})?)?", "<TIMESTAMP>", msg)
-        msg = re.sub(r"\b\d{4,}\b", "<ID>", msg)
-        return msg.strip().lower()
-
-    def fingerprint(error_code: str, exc: BaseException, msg: str) -> str:
-        raw = f"{error_code}:{top_frame_hash(exc)}:{sanitized_template(msg)}"
-        return hashlib.sha256(raw.encode("utf-8")).hexdigest()
-    ```
-=== "TypeScript"
-    ```typescript
-    import { createHash } from "crypto";
-
-    function topFrameHash(stack: string | undefined): string {
-        if (!stack) return "unknown";
-        for (const line of stack.split("\n")) {
-            if (line.includes("/apcore/") || line.includes("node_modules/apcore-js")) continue;
-            const m = line.match(/at\s+(.+?)\s+\((.+?):(\d+):\d+\)/);
-            if (m) {
-                const key = `${m[2]}:${m[1]}:${m[3]}`;
-                return createHash("sha1").update(key, "utf8").digest("hex").slice(0, 16);
-            }
-        }
-        return "unknown";
-    }
-
-    function sanitizedTemplate(msg: string): string {
-        msg = msg.replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi, "<UUID>");
-        msg = msg.replace(/\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})?)?/g, "<TIMESTAMP>");
-        msg = msg.replace(/\b\d{4,}\b/g, "<ID>");
-        return msg.trim().toLowerCase();
-    }
-
-    export function fingerprint(errorCode: string, err: Error, msg: string): string {
-        const raw = `${errorCode}:${topFrameHash(err.stack)}:${sanitizedTemplate(msg)}`;
-        return createHash("sha256").update(raw, "utf8").digest("hex");
-    }
-    ```
-=== "Rust"
-    ```rust
-    use sha1::{Sha1, Digest as Sha1Digest};
-    use sha2::Sha256;
-    use regex::Regex;
-
-    fn top_frame_hash(bt: &std::backtrace::Backtrace) -> String {
-        // Walk frames; skip apcore::* crates, return SHA-1 of (file:fn:line) for first
-        // user frame. Falls back to "unknown" if the runtime omits backtraces.
-        let s = format!("{bt}");
-        for line in s.lines() {
-            if line.contains("apcore::") || line.contains("apcore_") { continue; }
-            let mut h = Sha1::new();
-            h.update(line.as_bytes());
-            return format!("{:x}", h.finalize())[..16].to_string();
-        }
-        "unknown".into()
-    }
-
-    fn sanitized_template(msg: &str) -> String {
-        let uuid = Regex::new(r"(?i)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}").unwrap();
-        let ts = Regex::new(r"\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})?)?").unwrap();
-        let id = Regex::new(r"\b\d{4,}\b").unwrap();
-        let msg = uuid.replace_all(msg, "<UUID>");
-        let msg = ts.replace_all(&msg, "<TIMESTAMP>");
-        let msg = id.replace_all(&msg, "<ID>");
-        msg.trim().to_lowercase()
-    }
-
-    pub fn fingerprint(error_code: &str, bt: &std::backtrace::Backtrace, msg: &str) -> String {
-        use sha2::Digest;
-        let raw = format!("{}:{}:{}", error_code, top_frame_hash(bt), sanitized_template(msg));
-        let mut h = Sha256::new();
-        h.update(raw.as_bytes());
-        format!("{:x}", h.finalize())
-    }
-    ```
+The full normalization algorithm and the single per-SDK reference implementation are defined in [§1.4 Error Fingerprinting for Deduplication](#14-error-fingerprinting-for-deduplication) and are authoritative; they are not duplicated here to avoid drift.
 
 ---
 

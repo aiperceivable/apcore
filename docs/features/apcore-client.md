@@ -314,7 +314,7 @@ The APCore interface follows each language's idioms while maintaining functional
 - **Event tests** verify that `on()` / `off()` work correctly and raise `RuntimeError` when events are not configured.
 - **Control tests** verify that `disable()` / `enable()` delegate to system.control.toggle_feature and raise `RuntimeError` when sys_modules are not enabled.
 
-## Contract: ApCoreClient.call
+## Contract: APCore.call
 
 ### Inputs
 - `module_id` (str/string/&str, required) — target module ID; validated against `MODULE_ID_PATTERN`; reject empty or malformed with `InvalidInputError(code=INVALID_MODULE_ID)`
@@ -337,7 +337,7 @@ The APCore interface follows each language's idioms while maintaining functional
 - pure: false (side-effects: span created, metrics emitted, middleware hooks invoked)
 - idempotent: false (module `execute` is not guaranteed idempotent)
 
-## Contract: ApCoreClient.start
+## Contract: APCore.start
 
 ### Inputs
 - No required inputs (uses configuration from constructor)
@@ -353,7 +353,7 @@ The APCore interface follows each language's idioms while maintaining functional
 - thread_safe: false (call once before any concurrent usage)
 - idempotent: false
 
-## Contract: ApCoreClient.stop
+## Contract: APCore.stop
 
 ### Inputs
 - No required inputs
@@ -369,7 +369,7 @@ The APCore interface follows each language's idioms while maintaining functional
 - thread_safe: false (do not call concurrently with active requests)
 - idempotent: true (multiple stops are safe)
 
-## Contract: APCoreClient.on
+## Contract: APCore.on
 
 ### Inputs
 - `event_type` (str/string, required) — canonical event type string (e.g. `"apcore.registry.module_registered"`); MUST be a non-empty string; filtered by exact equality match inside the subscriber
@@ -387,7 +387,7 @@ The APCore interface follows each language's idioms while maintaining functional
 - pure: false (registers handler into the emitter's internal subscriber list)
 - idempotent: false (registering the same handler twice creates two independent subscriptions that each fire)
 
-## Contract: APCoreClient.off
+## Contract: APCore.off
 
 ### Inputs
 - `subscriber` (EventSubscriber, required) — the handle returned by a prior call to `on()`; MUST NOT be null/None
@@ -404,7 +404,7 @@ The APCore interface follows each language's idioms while maintaining functional
 - pure: false (mutates the emitter's internal subscriber list)
 - idempotent: true (unsubscribing a subscriber that is not present is a no-op; Python implementation uses `list.remove` under a guard that tolerates absence)
 
-## Contract: APCoreClient.stream
+## Contract: APCore.stream
 
 ### Inputs
 - `module_id` (str/string, required) — target module ID; validated via `_validate_module_id`; MUST be a non-empty string matching the module ID pattern
@@ -429,7 +429,7 @@ The APCore interface follows each language's idioms while maintaining functional
 - pure: false (side-effects: span created, metrics emitted, middleware hooks invoked)
 - idempotent: false (module execution is not guaranteed idempotent)
 
-## Contract: APCoreClient.validate
+## Contract: APCore.validate
 
 ### Inputs
 - `module_id` (str/string, required) — target module ID; MUST be a non-empty string matching the module ID pattern
@@ -453,7 +453,7 @@ The APCore interface follows each language's idioms while maintaining functional
 - pure: false (pipeline dry-run creates a span and invokes middleware up to the execute step)
 - idempotent: true (no state mutation; repeated calls with the same arguments return equivalent results)
 
-## Contract: APCoreClient.disable
+## Contract: APCore.disable
 
 ### Inputs
 - `module_id` (str/string, required) — ID of the module to disable; passed directly to `system.control.toggle_feature`
@@ -472,7 +472,7 @@ The APCore interface follows each language's idioms while maintaining functional
 - pure: false (mutates the runtime disabled-modules registry)
 - idempotent: true (disabling an already-disabled module SHOULD succeed without error)
 
-## Contract: APCoreClient.enable
+## Contract: APCore.enable
 
 ### Inputs
 - `module_id` (str/string, required) — ID of the module to re-enable; passed directly to `system.control.toggle_feature`
@@ -526,7 +526,7 @@ The APCore interface follows each language's idioms while maintaining functional
 
 ### Errors
 - `InvalidInputError(code=INVALID_MODULE_ID)` — `id` is provided but empty, malformed, exceeds `MAX_MODULE_ID_LENGTH`, or contains a reserved first-segment word
-- `InvalidInputError` — `id` is already registered (duplicate registration)
+- `InvalidInputError(code=DUPLICATE_MODULE_ID)` — `id` is already registered (duplicate registration)
 
 ### Returns
 - On success: the decorated function, unchanged (the function is registered as a `FunctionModule` as a side effect; the original callable is returned so it remains directly callable in Python)

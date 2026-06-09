@@ -17,6 +17,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`error_serialization.json` `omits_null_optionals` case now uses a real policy-free code (`CONTEXT_BINDING_ERROR`) (#70).** Real codes such as `GENERAL_INVALID_INPUT` now carry a default `user_fixable`, so the null-optional-omission case must use a code absent from the user_fixable policy — and a real `ErrorCode` variant, since Rust models codes as a closed enum — to keep exercising sparse-output omission across all SDKs.
 
+### Fixed
+
+These are spec-consistency clarifications surfaced by a cross-language sync audit. They resolve internal contradictions/gaps in the feature specs so the three SDKs have a single source of truth to converge on; no public surface changes, version stays `0.23.0`.
+
+- **Error fingerprint definition de-duplicated (`docs/features/observability.md`).** The "Error fingerprinting" section defined the digest as `SHA-256(error_code:top_frame_hash:sanitized_message)` while §1.4 defined it as `SHA-256(error_code:module_id:normalized_message)`. A `top_frame_hash` (stack frame file/function/line) is not portable across Python/TypeScript/Rust, so it can never produce an equal cross-language fingerprint. §1.4 (the 3-part, `module_id`-based form) is now the single authoritative definition; `top_frame_hash` is demoted to an optional language-local diagnostic field that MUST NOT influence the shared fingerprint, and the normalization is pinned to the exact five-step §1.4 algorithm (no extra hex-collapsing step). *Code follow-up: `apcore-python` must drop the top-frame component and the extra normalization step to match TS/Rust.*
+- **Event-emitter overflow behavior is now normative (`docs/features/event-system.md`).** The `emit()` contract previously left buffer-overflow behavior undefined, allowing a bounded `maxPending` queue to silently drop deliveries (bypassing the dead-letter path). `emit()` now MUST NOT silently discard an accepted event: a bounded buffer's overflow MUST either apply backpressure or fail through the dead-letter path (`apcore.event.delivery_failed`, `reason: "pending_overflow"`). *Code follow-up: `apcore-typescript` must route `maxPending` overflow through the DLQ instead of `console.warn`.*
+- **`Config.validate()` contract added (`docs/features/config-bus.md`).** The spec previously defined no required-field set or value constraints, so each SDK enforced a different subset (same config, three verdicts). Added a normative `Contract: Config.validate` with the canonical required fields, value constraints, and namespace-mode schema/strict rules, anchored to the reference SDK. *Code follow-up: `apcore-rust` and `apcore-typescript` align up to the full set.*
+- **Conformance fixture `multi_module_discovery.json::full_id_grammar_valid` corrected.** A single-class input expected the appended id `executor.math.arithmetic.addition`, contradicting the single-class identity guarantee (and the `single_class_id_unchanged` case in the same fixture). Now expects the bare `executor.math.arithmetic`; verified green in all three SDKs.
+
 ---
 
 ## [0.22.0] - 2026-05-27
