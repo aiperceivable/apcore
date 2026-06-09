@@ -622,6 +622,41 @@ my-plugin:
 
 The `_config` reserved namespace controls validation behavior. `strict: true` causes `validate()` to reject unknown top-level keys.
 
+## Contract: Config.validate
+
+`validate()` enforces the same required-field set and value constraints in **all three SDKs**, in both legacy and namespace mode. Any violation is reported as `ConfigError(code=CONFIG_INVALID)`. (Prior to this contract each SDK enforced a different subset, so the same config could pass in one SDK and fail in another — implementations MUST converge on the set below.)
+
+### Required fields
+Absence of any of these MUST be rejected with `CONFIG_INVALID`:
+
+- `version`
+- `project.name`
+- `extensions.root`
+- `schema.root`
+- `acl.root`
+- `acl.default_effect`
+
+### Value constraints
+Out-of-range values MUST be rejected with `CONFIG_INVALID`:
+
+| Key | Constraint |
+|-----|------------|
+| `acl.default_effect` | one of `allow`, `deny` |
+| `observability.tracing.sampling_rate` | `0.0 ≤ x ≤ 1.0` |
+| `extensions.max_depth` | integer `≥ 1` |
+| `executor.default_timeout`, `executor.global_timeout` | `≥ 0` |
+| `executor.max_call_depth`, `executor.max_module_repeat` | integer `≥ 1` |
+| `middleware.circuit_breaker.open_threshold` | integer `≥ 1` |
+| `middleware.circuit_breaker.recovery_window_ms` | `≥ 0` |
+| `sys_modules.events.thresholds.error_rate` | `0.0 ≤ x ≤ 1.0` |
+| `sys_modules.events.thresholds.latency_p99_ms` | `≥ 0` |
+
+### Namespace mode (additional)
+- For each registered namespace that declares a JSON Schema, the namespace subtree MUST validate against that schema; a failure is `CONFIG_INVALID`.
+- Under `_config.strict: true`, an unregistered top-level namespace MUST be rejected with `CONFIG_INVALID`.
+
+> The constraint set is anchored to the reference SDK (`apcore-python`), which carries the superset. Implementations align **up** to this set; narrowing it would weaken the configuration gate and is not permitted.
+
 ## Introspection
 
 === "Python"

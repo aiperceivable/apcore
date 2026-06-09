@@ -675,6 +675,14 @@ sys_modules:
 ### Returns
 - On success: void/None/()
 
+### Overflow (normative)
+- An event accepted by `emit()` **MUST** eventually be either delivered to each matching subscriber or routed through the dead-letter path (`apcore.event.delivery_failed`). It **MUST NOT** be silently discarded.
+- An implementation **MAY** bound its pending-delivery buffer for memory safety (e.g. the TypeScript `EventEmitter(maxPending)` constructor option). On overflow it **MUST** handle the excess delivery by **either** (a) applying backpressure until capacity frees, **or** (b) failing the affected delivery through the dead-letter path with `reason: "pending_overflow"`. A log-only / `console.warn` drop that bypasses the dead-letter path is non-conformant.
+- This rule does **not** apply to the per-subscriber circuit breaker: once a subscriber's circuit is `OPEN`, its events are silently discarded by design (see *Subscriber circuit breaker*). Overflow concerns the emitter's own pending buffer, not an open subscriber circuit.
+
+### Errors
+- No errors raised to the caller (emit is fire-and-forget; subscriber errors and overflow are handled out-of-band per the rules above, never propagated to the `emit()` caller).
+
 ### Properties
 - async: false in Python and TypeScript (synchronous fire-and-forget dispatch — TypeScript pushes async subscriber promises into an internal pending list and returns synchronously); async in Rust (the Rust async runtime model requires `pub async fn emit`, but observable semantics still match Python/TS fire-and-forget — subscriber errors are caught and logged internally, never propagated to the caller). All three SDKs deliver the same observable contract: emit returns immediately, never raises, and never blocks the caller on subscriber execution.
 - thread_safe: true
