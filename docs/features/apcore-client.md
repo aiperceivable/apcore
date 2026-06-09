@@ -526,7 +526,7 @@ The APCore interface follows each language's idioms while maintaining functional
 
 ### Errors
 - `InvalidInputError(code=INVALID_MODULE_ID)` — `id` is provided but empty, malformed, exceeds `MAX_MODULE_ID_LENGTH`, or contains a reserved first-segment word
-- `InvalidInputError` — `id` is already registered (duplicate registration)
+- `InvalidInputError(code=DUPLICATE_MODULE_ID)` — `id` is already registered (duplicate registration)
 
 ### Returns
 - On success: the decorated function, unchanged (the function is registered as a `FunctionModule` as a side effect; the original callable is returned so it remains directly callable in Python)
