@@ -669,9 +669,6 @@ sys_modules:
 - `event_type` (str/string/&str, required) — event type identifier; MUST NOT be empty
 - `payload` (dict/object/Value, optional) — event payload; passed as-is to subscribers
 
-### Errors
-- No errors raised (emit is fire-and-forget; subscriber errors are caught and logged internally)
-
 ### Returns
 - On success: void/None/()
 
@@ -681,7 +678,7 @@ sys_modules:
 - This rule does **not** apply to the per-subscriber circuit breaker: once a subscriber's circuit is `OPEN`, its events are silently discarded by design (see *Subscriber circuit breaker*). Overflow concerns the emitter's own pending buffer, not an open subscriber circuit.
 
 ### Errors
-- No errors raised to the caller (emit is fire-and-forget; subscriber errors and overflow are handled out-of-band per the rules above, never propagated to the `emit()` caller).
+- No errors raised to the caller. emit is fire-and-forget; subscriber errors are caught and logged internally, and pending-buffer overflow is handled out-of-band per the Overflow rules above — neither is ever propagated to the `emit()` caller.
 
 ### Properties
 - async: false in Python and TypeScript (synchronous fire-and-forget dispatch — TypeScript pushes async subscriber promises into an internal pending list and returns synchronously); async in Rust (the Rust async runtime model requires `pub async fn emit`, but observable semantics still match Python/TS fire-and-forget — subscriber errors are caught and logged internally, never propagated to the caller). All three SDKs deliver the same observable contract: emit returns immediately, never raises, and never blocks the caller on subscriber execution.

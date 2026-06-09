@@ -642,14 +642,20 @@ Out-of-range values MUST be rejected with `CONFIG_INVALID`:
 | Key | Constraint |
 |-----|------------|
 | `acl.default_effect` | one of `allow`, `deny` |
-| `observability.tracing.sampling_rate` | `0.0 ≤ x ≤ 1.0` |
+| `observability.tracing.sampling_rate` | number `0.0 ≤ x ≤ 1.0` |
 | `extensions.max_depth` | integer in `[1, 16]` (discovery-recursion safety cap) |
-| `executor.default_timeout`, `executor.global_timeout` | `≥ 0` |
+| `executor.default_timeout`, `executor.global_timeout` | integer `≥ 0` (milliseconds) |
 | `executor.max_call_depth`, `executor.max_module_repeat` | integer `≥ 1` |
-| `middleware.circuit_breaker.open_threshold` | integer `≥ 1` |
-| `middleware.circuit_breaker.recovery_window_ms` | `≥ 0` |
-| `sys_modules.events.thresholds.error_rate` | `0.0 ≤ x ≤ 1.0` |
-| `sys_modules.events.thresholds.latency_p99_ms` | `≥ 0` |
+| `middleware.circuit_breaker.open_threshold` | number `0.0 ≤ x ≤ 1.0` (error **rate**, default 0.5 — NOT a count) |
+| `middleware.circuit_breaker.recovery_window_ms` | integer `≥ 0` (milliseconds) |
+| `middleware.circuit_breaker.window_size` | integer `≥ 1` |
+| `middleware.circuit_breaker.min_samples` | integer `≥ 1` |
+| `sys_modules.error_history.max_entries_per_module` | integer `≥ 1` |
+| `sys_modules.error_history.max_total_entries` | integer `≥ 1` |
+| `sys_modules.events.thresholds.error_rate` | number `0.0 ≤ x ≤ 1.0` |
+| `sys_modules.events.thresholds.latency_p99_ms` | number `> 0` |
+
+> ⚠️ `middleware.circuit_breaker.open_threshold` is an **error rate** in `[0,1]` (the fraction of failures in the window that trips the breaker), not a failure count. The integer thresholds for the breaker are `window_size` and `min_samples`. Booleans are rejected for all numeric fields.
 
 ### Namespace mode (additional)
 - For each registered namespace that declares a JSON Schema, the namespace subtree MUST validate against that schema; a failure is `CONFIG_INVALID`.

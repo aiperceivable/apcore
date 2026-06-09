@@ -167,7 +167,7 @@ After deserialization the `executor` field is null. The receiving Executor MUST 
 |----------|----------|-------|
 | `context.data` exceeds memory limit | Behavior depends on language runtime (OOM or exception); SHOULD log WARN | SHOULD |
 | Non-serializable value stored in `context.data` | Allowed (in-memory passing); fails when crossing processes | MUST |
-| `call_chain` reaches `max_call_depth` | Raise `CALL_DEPTH_EXCEEDED` | MUST |
+| `call_chain` exceeds `max_call_depth` (depth > max) | Raise `CALL_DEPTH_EXCEEDED` | MUST |
 | `trace_id` not valid 32-hex format | Log WARN and regenerate a 32-char hex trace_id | SHOULD |
 | `caller_id` exceeds 128 chars | Log WARN, allow execution | SHOULD |
 | `data` key conflict (parent/child same key) | Last write wins (dict semantics) | MUST |

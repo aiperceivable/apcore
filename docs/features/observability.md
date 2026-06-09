@@ -915,12 +915,17 @@ Current deduplication is keyed on `(code, message)` tuple, which fails to dedupl
 
 ```
 normalize_message(msg):
-  1. Replace UUID patterns (8-4-4-4-12 hex, optionally hyphenated) with <UUID>
-  2. Replace integers > 3 digits with <ID>
-  3. Replace ISO 8601 timestamps (date, datetime, datetime+timezone) with <TIMESTAMP>
+  1. Replace UUID patterns (8-4-4-4-12 hex, hyphenated) with <UUID>
+  2. Replace ISO 8601 timestamps (date, datetime, datetime+timezone) with <TIMESTAMP>
+  3. Replace integer runs of >= 4 digits with <ID>
   4. Strip leading/trailing whitespace
   5. Lowercase entire string
   Return normalized string
+
+  Step order is significant: timestamps MUST be replaced before the integer step,
+  otherwise a 4-digit year (e.g. 2026) is consumed by <ID> before the timestamp
+  regex can match. All three SDKs implement this order; the fingerprint is only
+  cross-language-equal if every SDK applies the steps identically.
 ```
 
 === "Python"
