@@ -203,10 +203,10 @@ Modules that perform nested calls (calling other modules within their execution)
 ## Contract: guard_call_chain
 
 ### Inputs
-- `context` (Context, required) — current execution context containing the call chain
 - `module_id` (str/string/&str, required) — the module about to be called
-- `max_depth` (int, optional, default=`DEFAULT_MAX_CALL_DEPTH`) — maximum allowed call-chain depth
-- `max_repeat` (int, optional, default=`DEFAULT_MAX_REPEAT`) — maximum allowed repeat invocations of the same module in the current chain
+- `call_chain` (sequence of str, required) — the current call chain; already includes `module_id` at the end, as set by `Context.child()`
+- `max_call_depth` (int, optional, default=`DEFAULT_MAX_CALL_DEPTH`) — maximum allowed call-chain depth
+- `max_module_repeat` (int, optional, default=`DEFAULT_MAX_MODULE_REPEAT`) — maximum allowed repeat invocations of the same module in the current chain
 
 ### Errors
 - `CallDepthExceededError(code=CALL_DEPTH_EXCEEDED)` — call chain depth exceeds `max_depth`
@@ -219,4 +219,4 @@ Modules that perform nested calls (calling other modules within their execution)
 ### Properties
 - async: false
 - thread_safe: true
-- pure: true (reads context state, does not mutate)
+- pure: true (reads the `call_chain` argument, does not mutate)
