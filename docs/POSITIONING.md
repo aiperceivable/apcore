@@ -21,41 +21,39 @@ Traditional software has **UI** for humans and **API** for programs. apcore adds
 ## Where apcore Sits in the Stack
 
 ```
-┌───────────────────────────────────────────────────────-──┐
-│              AI Clients / Callers                        │
-│    Claude    Cursor    GPT    Other Agents    Human CLI  │
-└───────┬─────────┬────────┬──────────┬───────────┬─────-──┘
-        │         │        │          │           │
-        ▼         ▼        ▼          ▼           ▼
-┌────────────────────────────────────────────────────────-─┐
-│              Surface Adapters                            │
-│  ┌───────┐ ┌───────┐ ┌───────┐ ┌───────┐ ┌───────────┐.  │
-│  │  MCP  │ │  A2A  │ │  CLI  │ │ REST  │ │ Future... │   │
-│  └───┬───┘ └───┬───┘ └───┬───┘ └───┬───┘ └─────┬─────┘   │
-└──────┼─────────┼─────────┼─────────┼───────────┼───────-─┘
-       │         │         │         │           │
-       ▼         ▼         ▼         ▼           ▼
-┌───────────────────────────────────────────────────────-──┐
-│              apcore Module Standard                      │
+┌──────────────────────────────────────────────────────────┐
+│                   AI Clients / Callers                   │
+│     Claude   Cursor   GPT   Other Agents   Human CLI     │
+└────────┬──────────┬──────────┬──────────┬──────────┬─────┘
+         │          │          │          │          │
+         ▼          ▼          ▼          ▼          ▼
+┌──────────────────────────────────────────────────────────┐
+│                     Surface Adapters                     │
+│           MCP    A2A    CLI    REST    Future…           │
+└────────┬──────────┬──────────┬──────────┬──────────┬─────┘
+         │          │          │          │          │
+         ▼          ▼          ▼          ▼          ▼
+┌──────────────────────────────────────────────────────────┐
+│                  apcore Module Standard                  │
 │                                                          │
-│  ┌───────────────────────────────────────────────-──┐    │
-│  │ Execution Engine (11-step pipeline)              │    │
-│  │ ACL → Approval → Validation → Middleware →       │    │
-│  │ Execute → Validation → Middleware → Return       │    │
-│  └────────────────────────────────────────────────-─┘    │
+│  ┌────────────────────────────────────────────────────┐  │
+│  │ Execution Engine (11-step pipeline)                │  │
+│  │ ACL → Approval → Validation → Middleware →         │  │
+│  │ Execute → Validation → Middleware → Return         │  │
+│  └────────────────────────────────────────────────────┘  │
 │                                                          │
-│  ┌────────────────────────────────────────────────-─┐    │
-│  │ Registry (auto-discovery, ID mapping, caching)   │    │
-│  └───────────────────────────────────────────────-──┘    │
+│  ┌────────────────────────────────────────────────────┐  │
+│  │ Registry (auto-discovery, ID mapping, caching)     │  │
+│  └────────────────────────────────────────────────────┘  │
 │                                                          │
-│  ┌────────────────────────────────────────────────-─┐    │
-│  │ Modules (user-written business logic)            │    │
-│  │ Enforced: input_schema + output_schema +         │    │
-│  │           description + annotations + ACL        │    │
-│  └───────────────────────────────────────────────-──┘    │
+│  ┌────────────────────────────────────────────────────┐  │
+│  │ Modules (user-written business logic)              │  │
+│  │ Enforced: input_schema + output_schema +           │  │
+│  │           description + annotations + ACL          │  │
+│  └────────────────────────────────────────────────────┘  │
 │                                                          │
-│  Python SDK · TypeScript SDK · Rust SDK                  │
-└───────────────────────────────────────────────────-──────┘
+│          Python SDK · TypeScript SDK · Rust SDK          │
+└──────────────────────────────────────────────────────────┘
 ```
 
 **apcore is not at the same layer as MCP, A2A, or CLI — it is complementary to them.** It is the definition layer each of these protocols projects from: you write the module once, and every protocol builds its own surface on top of that single definition.

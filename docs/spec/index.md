@@ -25,4 +25,4 @@ This directory contains the official specification documents for the apcore stan
 3. **Type Mapping** -- Master the type correspondences for the target language
 4. **Algorithm Reference** -- Implement core algorithms one by one
 
-If you are a module developer rather than an SDK implementer, these documents are for reference only. For day-to-day development, please refer to the [Usage Guides](../guides/).
+If you are a module developer rather than an SDK implementer, these documents are for reference only. For day-to-day development, please refer to the [Usage Guides](../guides/index.md).

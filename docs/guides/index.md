@@ -48,4 +48,4 @@ Practical "recipes" for common real-world scenarios:
 | [Observability](./cookbook-observability.md) | Custom tracing, metrics, and structured logging patterns |
 
 
-Before reading these guides, it is recommended to first understand the [Core Concepts](../concepts.md); for interface details, see the [Feature Specifications](../features/).
+Before reading these guides, it is recommended to first understand the [Core Concepts](../concepts.md); for interface details, see the [Feature Specifications](../features/index.md).

@@ -1,13 +1,44 @@
 # apcore Roadmap
 
-> **Last Updated**: March 2026
+> **Last Updated**: June 2026
 > **Status**: Living document — updated quarterly
 
 This roadmap outlines the planned development for the apcore protocol specification and its ecosystem. Community input is welcome — open an [issue](https://github.com/aiperceivable/apcore/issues) to discuss priorities.
 
 ---
 
-## Current Status (v1.6.0-draft)
+## Path to 1.0
+
+apcore versions two artifacts independently, and "1.0" means something specific for each:
+
+- **Protocol specification** — currently **v1.8.0-draft**. Reaches **1.0 (stable)** when its
+  normative surface is frozen, a conformance suite covers every normative requirement, and
+  multiple independently-verified implementations pass it.
+- **Language SDKs** (`apcore-python` / `apcore-typescript` / `apcore-rust`) — currently
+  **v0.23.0**. Each reaches **1.0** when its public API is stable, it passes the full
+  cross-language conformance suite, and it has shipped at least one minor cycle with no
+  breaking changes.
+
+**Gates for spec 1.0**
+
+- [ ] Normative surface frozen — no open `MUST` / `MUST NOT` changes
+- [ ] Conformance suite covers every normative requirement, by [conformance level](docs/spec/conformance.md)
+- [ ] At least three conforming implementations, with independent verification
+- [ ] Threat model documented (what ACL/approval do and do **not** guarantee)
+
+**Gates for SDK 1.0**
+
+- [ ] Public API frozen and documented
+- [ ] 100% of conformance fixtures passing in CI
+- [ ] One breaking-change-free minor cycle
+- [ ] Type-export parity across languages (e.g. `py.typed`, published `.d.ts`, `docs.rs`)
+
+> 1.0 is gated on readiness, not a date. The quarterly themes below track the work that
+> unblocks these gates.
+
+---
+
+## Current Status (v1.8.0-draft · SDKs v0.23.0)
 
 ### Completed
 
@@ -72,18 +103,24 @@ This roadmap outlines the planned development for the apcore protocol specificat
 
 ---
 
-## 2026 Q2: Specification Finalization & Foundation Submission
+## 2026 Q2: Specification Finalization & Foundation Readiness
 
 ### Specification
-- [ ] Finalize v1.6.0 specification
+- [ ] Stabilize the v1.8.0-draft specification toward the spec 1.0 gates above
 - [ ] Cross-language conformance test suite (Python, TypeScript, Rust)
 - [ ] Formal specification review process
 
-### Foundation Submission
-- [ ] Contact AAIF — understand project acceptance process
-- [ ] CNCF TAG App Delivery engagement (backup track)
-- [ ] Positioning document ([docs/POSITIONING.md](docs/POSITIONING.md))
-- [ ] Formal submission (AAIF primary, CNCF secondary)
+### Foundation readiness (AAIF primary, CNCF secondary)
+
+> Strategy: build credibility first, then submit. A premature submission risks a hard-to-reverse
+> first impression with the AAIF Technical Committee, so submission is gated on the readiness
+> signals below — not on a fixed date.
+
+- [x] Positioning document ([docs/POSITIONING.md](docs/POSITIONING.md))
+- [ ] Governance in place: GOVERNANCE.md (role ladder), MAINTAINERS.md, CODE_OF_CONDUCT.md, SECURITY.md, ADOPTERS.md
+- [ ] Engage the AAIF community as a contributor (showcase demos, conference CFPs, upstream MCP input)
+- [ ] Reach the incubation signals below (independent adopters + external maintainers)
+- [ ] Submit the project proposal once those signals are met ([aaif/project-proposals](https://github.com/aaif/project-proposals))
 
 ### Community Building
 - [ ] "Good first issue" labeling for contributor onboarding
