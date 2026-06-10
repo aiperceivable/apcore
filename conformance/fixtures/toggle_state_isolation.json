@@ -1,0 +1,52 @@
+{
+  "description": "Per-APCore-instance ToggleState isolation (issue #71). Each APCore instance owns one ToggleState, injected into BOTH the toggle module (write path) and the pipeline lookup step (read path). Disabling a module on one instance MUST NOT affect another instance in the same process, and toggle state survives reload of its own instance (A-D-12, re-scoped from process-global to instance-scoped). Runner: construct the named instances in a single process; apply each operation in order through the owning instance's toggle write path; then assert each instance's disabled-set as observed through that instance's read path (the pipeline lookup / is_module_disabled), NOT the process-global fallback. The `reload` action re-registers modules on the instance but MUST preserve its ToggleState. `module_id` values are opaque identifiers the runner may register as no-op modules.",
+  "test_cases": [
+    {
+      "id": "disable_on_a_does_not_affect_b",
+      "instances": ["A", "B"],
+      "operations": [
+        {"instance": "A", "action": "disable", "module_id": "executor.math.add"}
+      ],
+      "expected_disabled": {
+        "A": ["executor.math.add"],
+        "B": []
+      }
+    },
+    {
+      "id": "independent_toggles_per_instance",
+      "instances": ["A", "B"],
+      "operations": [
+        {"instance": "A", "action": "disable", "module_id": "executor.math.add"},
+        {"instance": "B", "action": "disable", "module_id": "executor.math.sub"}
+      ],
+      "expected_disabled": {
+        "A": ["executor.math.add"],
+        "B": ["executor.math.sub"]
+      }
+    },
+    {
+      "id": "enable_on_a_independent_of_b",
+      "instances": ["A", "B"],
+      "operations": [
+        {"instance": "A", "action": "disable", "module_id": "executor.math.add"},
+        {"instance": "B", "action": "disable", "module_id": "executor.math.add"},
+        {"instance": "A", "action": "enable", "module_id": "executor.math.add"}
+      ],
+      "expected_disabled": {
+        "A": [],
+        "B": ["executor.math.add"]
+      }
+    },
+    {
+      "id": "toggle_survives_reload_of_same_instance",
+      "instances": ["A"],
+      "operations": [
+        {"instance": "A", "action": "disable", "module_id": "executor.math.add"},
+        {"instance": "A", "action": "reload"}
+      ],
+      "expected_disabled": {
+        "A": ["executor.math.add"]
+      }
+    }
+  ]
+}

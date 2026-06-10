@@ -451,7 +451,7 @@ Disable or enable a module without unloading it.
 }
 ```
 
-Disabled modules remain registered but calls raise `ModuleDisabledError`. Toggle state is thread-safe (via `ToggleState` class) and survives module reload. Emits `apcore.module.toggled` event.
+Disabled modules remain registered but calls raise `ModuleDisabledError`. Toggle state is thread-safe (via `ToggleState` class), **isolated to the owning `APCore` instance** — disabling a module on one instance does not affect another instance in the same process — and survives reload of that instance. Emits `apcore.module.toggled` event.
 
 ## Contract: system.control.toggle_feature
 
@@ -481,7 +481,7 @@ Disabled modules remain registered but calls raise `ModuleDisabledError`. Toggle
 ### Postconditions
 - When `enabled=false`: `is_module_disabled(module_id)` returns `true`; calls raise `ModuleDisabledError(code=MODULE_DISABLED)`
 - When `enabled=true`: `is_module_disabled(module_id)` returns `false`; module calls proceed normally
-- Toggle state persists across module reload (held by `ToggleState`, external to `Registry`)
+- Toggle state persists across module reload of the same instance (held by the owning `APCore` instance's `ToggleState`, external to `Registry`); it is isolated to that instance, not shared process-globally (issue #71)
 
 ### Errors
 - `InvalidInputError` — `module_id` is absent/empty, `enabled` is absent/non-boolean, or `reason` is absent/empty
@@ -670,9 +670,12 @@ System modules use the reserved `system.*` namespace. Registration bypasses rese
 |---|---|---|---|
 | `module_id` | `str` | Yes | Fully-qualified module ID to inspect. |
 
-The toggle state is read from process-global storage; all three SDKs take
-`module_id` as the sole argument (`is_module_disabled(module_id)` /
-`isModuleDisabled(moduleId)`) — there is no `registry` parameter.
+The free `is_module_disabled(module_id)` / `isModuleDisabled(moduleId)` function reads
+from the **process-global fallback** `ToggleState` and takes `module_id` as its sole
+argument — there is no `registry` parameter. This standalone function exists for callers
+that hold no `APCore` instance; the execution pipeline itself consults the **owning
+instance's** `ToggleState` (injected into the lookup step), so per-instance toggles are
+honored on the call path (issue #71; see `conformance/fixtures/toggle_state_isolation.json`).
 
 ### Errors
 

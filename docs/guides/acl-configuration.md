@@ -845,6 +845,59 @@ rules:
     effect: allow
 ```
 
+### 9.4 AI Agent Tool Governance
+
+This is the canonical scenario for scoping **which tools an AI agent may invoke**, by the agent's identity roles and the depth of its call chain. Unlike the layered/microservice patterns above (which key off plain caller strings), agent governance leans on the `Identity` (`type` / `roles`) and `max_call_depth` conditions — exactly the features that make ACL valuable for per-agent control.
+
+The reference artifact ships in the repo at [`examples/acl/agent-tool-governance.yaml`](https://github.com/aiperceivable/apcore/blob/main/examples/acl/agent-tool-governance.yaml) — vendor it directly. It is locked as a cross-language contract by the conformance fixture `conformance/fixtures/acl_agent_scoping.json`, so every SDK and framework integration produces identical decisions.
+
+```yaml
+# examples/acl/agent-tool-governance.yaml
+version: "1.0"
+default_effect: deny
+
+rules:
+  # 1. External / unauthenticated entry points (no caller_id) — read-only.
+  - callers: ["@external"]
+    targets: ["executor.*.read"]
+    effect: allow
+    description: "External (unauthenticated) callers may only read."
+
+  # 2. Reader-role agents — read + query, depth-capped to fuse runaway chains.
+  - callers: ["agent.*"]
+    targets: ["executor.*.read", "executor.*.query"]
+    effect: allow
+    conditions:
+      roles: ["reader"]
+      max_call_depth: 3
+    description: "Reader agents may read and query, depth-capped."
+
+  # 3. Data-admin agents — exports and sensitive deletes (no depth cap).
+  - callers: ["agent.*"]
+    targets: ["data.export", "executor.*.delete"]
+    effect: allow
+    conditions:
+      roles: ["data_admin"]
+    description: "Data-admin agents may export data and perform sensitive deletes."
+```
+
+**Privilege gradient** (least → most): `@external` < `reader` agent < `data_admin` agent.
+
+| Caller | Identity `roles` | May reach | Depth cap |
+|---|---|---|---|
+| `@external` (no caller) | — | `executor.*.read` | — |
+| `agent.*` | `reader` | `executor.*.read`, `executor.*.query` | `max_call_depth: 3` |
+| `agent.*` | `data_admin` | `data.export`, `executor.*.delete` | none |
+
+How the conditions drive scoping:
+
+- **`roles`** matches by set intersection: the rule fires only when the context `Identity` carries the required role. A `reader` agent cannot reach `data.export`; a `data_admin` agent cannot reach `executor.*.query` (its rule's targets don't include `query`). Roles are additive — an agent holding both `reader` and `data_admin` satisfies either rule.
+- **`max_call_depth`** fuses runaway tool chains: a `reader` agent may issue reads/queries only while its call chain length does not exceed `3` (the comparison is inclusive — depth `3` is allowed, depth `4` is denied). The `data_admin` rule intentionally omits a cap because exports/deletes are deliberate, audited operations rather than exploratory chains.
+- **`@external`** matches calls with no `caller_id` (top-level / unauthenticated entry points) and is restricted to the smallest surface — the `read` verb only.
+
+!!! note "Framework glue stays in the integration"
+    Mapping an incoming request's auth into an `Identity` with the right `roles` (e.g. a Django request, a FastAPI dependency) lives in the respective integration repo (`django-apcore`, `fastapi-apcore`, …). apcore ships only the language-agnostic policy (this YAML + the conformance fixture).
+
 ---
 
 ## 10. Troubleshooting

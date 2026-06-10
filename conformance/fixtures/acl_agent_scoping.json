@@ -1,0 +1,34 @@
+{
+  "description": "AI-agent tool-governance ACL scenario (issue #72). One canonical default-deny ruleset (mirrors examples/acl/agent-tool-governance.yaml) scopes tool access by caller pattern + identity roles + call-chain depth. The shared `rules` / `default_effect` apply to every case; each case is a (caller_id, caller_identity, call_depth, target_id) -> expected access decision (true = allow, false = deny). Locks the agent-governance scenario as a cross-language contract: all SDKs and framework integrations MUST produce identical decisions. Exercises ACL first-match-wins (spec §6) with conditions {roles, max_call_depth} and the @external special caller. Privilege gradient: @external < reader < data_admin.",
+  "default_effect": "deny",
+  "rules": [
+    {"callers": ["@external"], "targets": ["executor.*.read"], "effect": "allow", "description": "External callers may only read."},
+    {"callers": ["agent.*"], "targets": ["executor.*.read", "executor.*.query"], "effect": "allow", "conditions": {"roles": ["reader"], "max_call_depth": 3}, "description": "Reader agents may read/query, depth-capped."},
+    {"callers": ["agent.*"], "targets": ["data.export", "executor.*.delete"], "effect": "allow", "conditions": {"roles": ["data_admin"]}, "description": "Data-admin agents may export and delete."}
+  ],
+  "test_cases": [
+    {"id": "external_can_read", "caller_id": null, "target_id": "executor.crm.read", "expected": true},
+    {"id": "external_cannot_query", "caller_id": null, "target_id": "executor.crm.query", "expected": false},
+    {"id": "external_cannot_export", "caller_id": null, "target_id": "data.export", "expected": false},
+    {"id": "external_cannot_delete", "caller_id": null, "target_id": "executor.crm.delete", "expected": false},
+
+    {"id": "reader_can_read", "caller_id": "agent.research", "caller_identity": {"type": "ai", "roles": ["reader"]}, "call_depth": 1, "target_id": "executor.crm.read", "expected": true},
+    {"id": "reader_can_query", "caller_id": "agent.research", "caller_identity": {"type": "ai", "roles": ["reader"]}, "call_depth": 1, "target_id": "executor.crm.query", "expected": true},
+    {"id": "reader_depth_at_cap_allowed", "caller_id": "agent.research", "caller_identity": {"type": "ai", "roles": ["reader"]}, "call_depth": 3, "target_id": "executor.crm.query", "expected": true},
+    {"id": "reader_depth_exceeds_cap_denied", "caller_id": "agent.research", "caller_identity": {"type": "ai", "roles": ["reader"]}, "call_depth": 4, "target_id": "executor.crm.query", "expected": false},
+    {"id": "reader_cannot_export", "caller_id": "agent.research", "caller_identity": {"type": "ai", "roles": ["reader"]}, "call_depth": 1, "target_id": "data.export", "expected": false},
+    {"id": "reader_cannot_delete", "caller_id": "agent.research", "caller_identity": {"type": "ai", "roles": ["reader"]}, "call_depth": 1, "target_id": "executor.crm.delete", "expected": false},
+
+    {"id": "data_admin_can_export", "caller_id": "agent.etl", "caller_identity": {"type": "ai", "roles": ["data_admin"]}, "call_depth": 1, "target_id": "data.export", "expected": true},
+    {"id": "data_admin_can_delete", "caller_id": "agent.etl", "caller_identity": {"type": "ai", "roles": ["data_admin"]}, "call_depth": 1, "target_id": "executor.crm.delete", "expected": true},
+    {"id": "data_admin_no_depth_cap", "caller_id": "agent.etl", "caller_identity": {"type": "ai", "roles": ["data_admin"]}, "call_depth": 9, "target_id": "executor.crm.delete", "expected": true},
+    {"id": "data_admin_cannot_query", "caller_id": "agent.etl", "caller_identity": {"type": "ai", "roles": ["data_admin"]}, "call_depth": 1, "target_id": "executor.crm.query", "expected": false},
+
+    {"id": "reader_and_data_admin_combined_can_query", "caller_id": "agent.power", "caller_identity": {"type": "ai", "roles": ["reader", "data_admin"]}, "call_depth": 1, "target_id": "executor.crm.query", "expected": true},
+    {"id": "reader_and_data_admin_combined_can_export", "caller_id": "agent.power", "caller_identity": {"type": "ai", "roles": ["reader", "data_admin"]}, "call_depth": 1, "target_id": "data.export", "expected": true},
+
+    {"id": "unknown_role_agent_denied", "caller_id": "agent.guest", "caller_identity": {"type": "ai", "roles": ["guest"]}, "call_depth": 1, "target_id": "executor.crm.read", "expected": false},
+    {"id": "agent_without_identity_denied", "caller_id": "agent.research", "caller_identity": null, "target_id": "executor.crm.read", "expected": false},
+    {"id": "internal_caller_not_agent_denied", "caller_id": "orchestrator.workflow", "caller_identity": {"type": "service", "roles": ["reader"]}, "call_depth": 1, "target_id": "executor.crm.read", "expected": false}
+  ]
+}

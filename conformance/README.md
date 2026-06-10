@@ -69,6 +69,8 @@ SDK conformance runners **must** load `.json` files with a JSON parser. The `.ya
 | `reload_path_filter.json` | Issue #45.4 | Granular reload — `path_filter` glob restricts re-discovery, no `path_filter` = single-`module_id` reload unchanged, zero-match filter is a no-op, both fields together raises `MODULE_RELOAD_CONFLICT` |
 | `usage_exporter.json` | Issue #45 §3, D-55 | `UsageExporter` push interface — `NoopUsageExporter` drops summaries (default), `PeriodicUsageExporter` polls `UsageCollector.summary()` at `interval_seconds` (default 3600) and calls `exporter.export(summary)`, `stop()` halts the loop, awaits `exporter.shutdown()`, and is idempotent |
 | `sensitive_keys_default.json` | Issue #43 §5, D-54 | Canonical default `obs.redaction.sensitive_keys` 16-entry list shipped by all 3 SDKs (`_secret_*` legacy glob + 15 credential terms), case-insensitive substring matching, override replaces (does not merge), and the never-redact correlation fields (`trace_id`/`caller_id`/`target_id`/`module_id`/`span_id`) |
+| `acl_agent_scoping.json` | Issue #72 | Canonical AI-agent tool-governance ACL scenario: shared default-deny ruleset (mirrors `examples/acl/agent-tool-governance.yaml`) scoping tools by caller pattern + identity `roles` + `max_call_depth`; `@external` read-only, `reader` read/query with inclusive depth cap (3 allowed, 4 denied), `data_admin` export/delete uncapped; role-separation and missing-identity deny cases |
+| `toggle_state_isolation.json` | Issue #71 | Per-APCore-instance ToggleState isolation: disable/enable on one instance does not affect another in the same process, independent per-instance disabled-sets, toggle survives reload of its own instance (A-D-12 re-scoped process-global → instance-scoped) |
 
 ## Coverage Gaps
 

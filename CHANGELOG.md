@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.24.0] - 2026-06-10
+
+### Added
+
+- **Per-instance `ToggleState` isolation (#71).** Each `APCore` instance now owns one `ToggleState`, injected into both the toggle module (write path) and the pipeline lookup step `BuiltinModuleLookup` (read path). Disabling a module on one `APCore` instance no longer affects another instance in the same process — closing the isolation gap for multi-tenant servers and test bleed. The process-global `ToggleState` is retained **only** as a fallback for the free `is_module_disabled` / `isModuleDisabled` function (callers that hold no instance handle). A-D-12 is re-scoped from "process-global, survives reload" to "isolated to the `APCore` instance, survives reload of that instance" (`docs/features/system-modules.md`). New conformance fixture `conformance/fixtures/toggle_state_isolation.json` locks the cross-language contract (cross-instance isolation + reload survival). Implemented across `apcore-python`, `apcore-typescript`, and `apcore-rust`.
+
+- **Canonical AI-agent tool-governance ACL artifact + fixture (#72).** New runnable reference `examples/acl/agent-tool-governance.yaml` — a `default_effect: deny` policy that scopes tool access by caller pattern + identity `roles` + `max_call_depth`: `@external` → `executor.*.read` only; `agent.*` + `roles: [reader]` → `executor.*.read` / `executor.*.query` capped at `max_call_depth: 3`; `agent.*` + `roles: [data_admin]` → `data.export` / `executor.*.delete` (uncapped). New conformance fixture `conformance/fixtures/acl_agent_scoping.json` freezes the scenario as a cross-language contract (19 cases: the `@external < reader < data_admin` privilege gradient, the inclusive depth boundary — depth 3 allowed / 4 denied, role separation, and missing-identity deny). New guide section **"9.4 AI Agent Tool Governance"** in `docs/guides/acl-configuration.md`. Additive and non-normative — no `protocol-spec.md` change; the ACL engine already supports `conditions: {roles, max_call_depth}`. Framework integrations (`django-apcore`, `fastapi-apcore`, …) vendor the artifact and verify identical decisions.
+
+### Changed
+
+- **`docs/features/system-modules.md` — toggle-state contract re-scoped from process-global to per-instance (#71).** The "Disabled modules" note, the `system.control.toggle_feature` postconditions, and the `is_module_disabled` Contract block now state that toggle state is isolated to the owning `APCore` instance (with the standalone free function reading the global fallback). No public method-signature changes.
+
+### Notes
+
+- **#70 (default AI error-recovery metadata) confirmed complete across all three SDKs.** `user_fixable`-by-code resolution and the `ai_guidance` defaults ship in `apcore-python` / `apcore-typescript` / `apcore-rust` and pass `error_recovery_metadata.json` (the 0.23.0 "apcore-typescript / apcore-rust pending" note is superseded). Remaining follow-ups are tracked outside this changelog entry: the `protocol-spec.md` §8 `user_fixable` alignment note (requires a linked issue + dual maintainer review per repo policy) and the downstream `apcore-mcp` floor bump to `apcore>=0.23.0`.
+
+---
+
 ## [0.23.0] - 2026-06-10
 
 ### Added

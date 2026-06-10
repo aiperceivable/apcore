@@ -1,0 +1,46 @@
+# AI Agent Tool-Governance ACL (canonical reference)
+#
+# A default-deny policy that scopes which tools an AI agent may invoke, by the
+# agent's identity roles and the depth of its call chain. This is the language-
+# agnostic reference artifact for issue #72 — SDKs and framework integrations
+# (django-apcore, fastapi-apcore, ...) vendor this file and verify identical
+# decisions against conformance/fixtures/acl_agent_scoping.json.
+#
+# Privilege gradient (least -> most): @external  <  reader agent  <  data_admin agent
+#
+# Framework glue (mapping an HTTP request / auth into an Identity with the right
+# `roles`) lives in each integration repo, NOT here. apcore ships only the policy.
+
+version: "1.0"
+default_effect: deny
+
+rules:
+  # 1. External / unauthenticated entry points (no caller_id) — read-only.
+  #    No query, no writes, no deletes. The smallest public surface.
+  - callers: ["@external"]
+    targets: ["executor.*.read"]
+    effect: allow
+    description: "External (unauthenticated) callers may only read."
+
+  # 2. Reader-role agents — read + query, with a call-depth cap that fuses
+  #    runaway tool chains. `roles` overlap is set-intersection; the rule fires
+  #    only when the context identity carries the `reader` role AND the call
+  #    chain length does not exceed max_call_depth.
+  - callers: ["agent.*"]
+    targets: ["executor.*.read", "executor.*.query"]
+    effect: allow
+    conditions:
+      roles: ["reader"]
+      max_call_depth: 3
+    description: "Reader agents may read and query, depth-capped to fuse runaway chains."
+
+  # 3. Data-admin agents — exports and sensitive deletes. No depth cap: these
+  #    are deliberate, audited operations, not exploratory tool chains.
+  - callers: ["agent.*"]
+    targets: ["data.export", "executor.*.delete"]
+    effect: allow
+    conditions:
+      roles: ["data_admin"]
+    description: "Data-admin agents may export data and perform sensitive deletes."
+
+  # Anything not matched above falls through to default_effect: deny.
