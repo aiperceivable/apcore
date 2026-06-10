@@ -1218,6 +1218,8 @@ Development guide: see [Adapter Development Guide](./docs/guides/adapter-develop
 
 ## Contributing
 
+Have a question, an idea, or want to introduce your project? Start a thread in [GitHub Discussions](https://github.com/aiperceivable/apcore/discussions).
+
 Contributions are welcome in the following forms:
 
 - **Specification Feedback**: Suggest improvements to the protocol specification in Issues
