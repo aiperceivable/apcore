@@ -1925,7 +1925,7 @@ Ensure Schema changes don't break compatibility.
         """Discover -> ACL check -> Schema validation -> Execute"""
         client = APCore()
         client.registry.discover()
-        client.executor.acl = ACL.load("./acl/global_acl.yaml")
+        client.executor.set_acl(ACL.load("./acl/global_acl.yaml"))
 
         context = create_mock_context(
             caller_id="orchestrator.engine.task_flow",
@@ -1944,7 +1944,7 @@ Ensure Schema changes don't break compatibility.
         """ACL denial should raise ACLDeniedError"""
         client = APCore()
         client.registry.discover()
-        client.executor.acl = ACL.load("./acl/strict_acl.yaml")
+        client.executor.set_acl(ACL.load("./acl/strict_acl.yaml"))
 
         context = create_mock_context(
             caller_id="unauthorized.module",
@@ -1988,7 +1988,7 @@ Ensure Schema changes don't break compatibility.
       it('runs ACL check then schema validation then execute', async () => {
         const client = new APCore();
         await client.registry.discover();
-        client.executor.acl = ACL.load('./acl/global_acl.yaml');
+        client.executor.setAcl(await ACL.load('./acl/global_acl.yaml'));
 
         const context = createMockContext({
           callerId: 'orchestrator.engine.task_flow',
@@ -2007,7 +2007,7 @@ Ensure Schema changes don't break compatibility.
       it('raises ACLDeniedError when ACL denies the call', async () => {
         const client = new APCore();
         await client.registry.discover();
-        client.executor.acl = ACL.load('./acl/strict_acl.yaml');
+        client.executor.setAcl(await ACL.load('./acl/strict_acl.yaml'));
 
         const context = createMockContext({
           callerId: 'unauthorized.module',

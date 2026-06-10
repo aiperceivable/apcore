@@ -207,9 +207,11 @@ These handlers are provided by the respective bridge packages, not by apcore cor
         CallbackApprovalHandler,
     )
 
-    # Use the built-in auto-approve handler (for testing)
+    # Use the built-in auto-approve handler (for testing).
+    # Use set_approval_handler(): it propagates the handler to the pipeline's
+    # approval_gate step. Plain attribute assignment does NOT wire the gate.
     client = APCore()
-    client.executor.approval_handler = AutoApproveHandler()
+    client.executor.set_approval_handler(AutoApproveHandler())
 
     # Register a module that requires approval
     @client.module(
@@ -229,7 +231,7 @@ These handlers are provided by the respective bridge packages, not by apcore cor
             approved_by="slack_user@example.com",
         )
 
-    client.executor.approval_handler = CallbackApprovalHandler(my_approver)
+    client.executor.set_approval_handler(CallbackApprovalHandler(my_approver))
 
     # Calling a requires_approval module
     try:
@@ -247,9 +249,11 @@ These handlers are provided by the respective bridge packages, not by apcore cor
         ApprovalResult,
     } from "apcore-js/approval";
 
-    // Use the built-in auto-approve handler (for testing)
+    // Use the built-in auto-approve handler (for testing).
+    // Use setApprovalHandler(): it propagates the handler to the pipeline's
+    // approval_gate step. Plain field assignment does NOT wire the gate.
     const client = new APCore();
-    client.executor.approvalHandler = new AutoApproveHandler();
+    client.executor.setApprovalHandler(new AutoApproveHandler());
 
     // Register a module that requires approval
     client.module({
@@ -262,12 +266,12 @@ These handlers are provided by the respective bridge packages, not by apcore cor
     });
 
     // Custom approval handler via callback
-    client.executor.approvalHandler = new CallbackApprovalHandler(
+    client.executor.setApprovalHandler(new CallbackApprovalHandler(
         async (request: ApprovalRequest): Promise<ApprovalResult> => {
             const approved = await askSlack(request.moduleId, request.arguments);
             return { status: approved ? "approved" : "rejected", approvedBy: "slack_user" };
         }
-    );
+    ));
 
     // Calling a requires_approval module
     try {

@@ -377,9 +377,11 @@ _(none — operates on the YAML path stored during `ACL.load`)_
         description="Admins can call any module",
     ))
 
-    # Wire into executor via APCore
+    # Wire into executor via APCore.
+    # Use set_acl(): it propagates the ACL to the pipeline's acl_check step.
+    # Plain attribute assignment does NOT wire enforcement.
     client = APCore()
-    client.executor.acl = acl
+    client.executor.set_acl(acl)
     ```
 === "TypeScript"
     ```typescript
@@ -403,9 +405,11 @@ _(none — operates on the YAML path stored during `ACL.load`)_
         description: "Admins can call any module",
     }));
 
-    // Wire into executor via APCore
+    // Wire into executor via APCore.
+    // Use setAcl(): it propagates the ACL to the pipeline's acl_check step.
+    // Plain field assignment does NOT wire enforcement.
     const client = new APCore();
-    client.executor.acl = acl;
+    client.executor.setAcl(acl);
     ```
 === "Rust"
     ```rust
