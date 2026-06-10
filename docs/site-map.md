@@ -62,7 +62,7 @@ Also see the root directory: [protocol-spec.md](./spec/protocol-spec.md) — Com
 | [concepts.md](./concepts.md) | apcore's design philosophy, core concepts, and modular philosophy |
 | [architecture.md](./architecture.md) | Framework technical architecture, core component interactions, and execution flow |
 
-### [Feature Specifications](./features/)
+### [Feature Specifications](./features/index.md)
 
 Implementation-ready feature specifications for SDK developers. Each document defines a specific subsystem's behavior, interfaces, contracts, and test scenarios.
 
@@ -84,7 +84,7 @@ Implementation-ready feature specifications for SDK developers. Each document de
 
 For the full list of feature specs see [features/index.md](./features/index.md).
 
-### [Usage Guides](./guides/)
+### [Usage Guides](./guides/index.md)
 
 Practical tutorials covering everything from creating your first module to middleware development, ACL configuration, and cross-language development. 8 guides in total, covering the full path from beginner to advanced.
 
@@ -99,7 +99,7 @@ Practical tutorials covering everything from creating your first module to middl
 | [Multi-Language Development](./guides/multi-language.md) | Developing modules in multiple languages using YAML Schema |
 | [Integrating Projects](./guides/integrating-existing-projects.md) | Adopt apcore in applications that already have their own request-ID system |
 
-### [Framework Specifications](./spec/) - Authoritative Specifications
+### [Framework Specifications](./spec/index.md) - Authoritative Specifications
 
 Formal technical specifications for SDK implementors, defining core algorithms, cross-language type mapping, and conformance levels.
 
