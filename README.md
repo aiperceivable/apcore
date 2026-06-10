@@ -1152,7 +1152,8 @@ Development guide: see [Adapter Development Guide](./docs/guides/adapter-develop
 | [Protocol Specification](./docs/spec/protocol-spec.md) | Complete standard specification (RFC 2119 Conformant) |
 | [Scope Definition](./SCOPE.md) | Responsibility boundaries (what's in/out of scope) |
 | [Positioning](./docs/POSITIONING.md) | Where apcore sits in the stack — relationship to MCP, A2A, CLI, REST |
-| [Roadmap](./ROADMAP.md) | Project roadmap and milestones |
+| [Roadmap](./ROADMAP.md) | Project roadmap, milestones, and the path to 1.0 |
+| [Adopters](./ADOPTERS.md) | Projects and organizations building on apcore (add yourself) |
 | [Migration Guide — v0.18.0](./MIGRATION-v0.18.md) | Consolidated breaking-change migration guide for the v0.18.0 release (annotations wire format, apcore-rust Config restructure, apcore-python event aliases) |
 
 ### Concepts & Architecture
@@ -1223,6 +1224,15 @@ Contributions are welcome in the following forms:
 - **SDK Implementation**: Implement SDKs for other languages based on [Protocol Specification](./docs/spec/protocol-spec.md)
 - **Adapter Development**: Develop adapters for web frameworks or AI protocols
 - **Documentation Improvements**: Fix, translate, or supplement documentation
+
+New contributors should read [CONTRIBUTING.md](./CONTRIBUTING.md) first. Project governance is
+documented in:
+
+- [GOVERNANCE.md](./GOVERNANCE.md) — decision-making and the contributor → reviewer → maintainer ladder
+- [MAINTAINERS.md](./MAINTAINERS.md) — current maintainers and sub-project ownership
+- [CODE_OF_CONDUCT.md](./CODE_OF_CONDUCT.md) — community standards
+- [SECURITY.md](./SECURITY.md) — reporting vulnerabilities (never open public issues for these)
+- [ADOPTERS.md](./ADOPTERS.md) — who builds on apcore
 
 ---
 
