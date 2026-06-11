@@ -324,11 +324,11 @@ For a detailed multi-language guide, visit the **[Getting Started Guide](https:/
 
     # Use the global client for easy registration and calling
     @apcore.module(id="math.add", description="Add two integers")
-    def add(a: int, b: int) -> int:
-        return a + b
+    def add(a: int, b: int) -> dict:
+        return {"sum": a + b}
 
     # Call directly
-    print(apcore.call("math.add", {"a": 10, "b": 5}))  # {'result': 15}
+    print(apcore.call("math.add", {"a": 10, "b": 5}))  # {'sum': 15}
     ```
 
     Or use the explicit client:
@@ -339,8 +339,8 @@ For a detailed multi-language guide, visit the **[Getting Started Guide](https:/
     client = APCore()
 
     @client.module(id="math.add")
-    def add(a: int, b: int) -> int:
-        return a + b
+    def add(a: int, b: int) -> dict:
+        return {"sum": a + b}
 
     print(client.call("math.add", {"a": 10, "b": 5}))
     ```
@@ -367,6 +367,52 @@ For a detailed multi-language guide, visit the **[Getting Started Guide](https:/
     registry.register('math.add', add);
     const executor = new Executor({ registry });
     console.log(await executor.call('math.add', { a: 10, b: 5 })); // { sum: 15 }
+    ```
+
+=== "Rust"
+
+    ```bash
+    cargo add apcore
+    ```
+
+    ```rust
+    use apcore::APCore;
+    use serde_json::json;
+
+    #[tokio::main]
+    async fn main() -> Result<(), Box<dyn std::error::Error>> {
+        let mut client = APCore::new();
+
+        client.module(
+            "math.add",
+            "Add two numbers",
+            json!({
+                "type": "object",
+                "properties": { "a": { "type": "integer" }, "b": { "type": "integer" } },
+                "required": ["a", "b"]
+            }),
+            json!({ "type": "object", "properties": { "sum": { "type": "integer" } } }),
+            None,   // documentation
+            vec![], // tags
+            None,   // version
+            None,   // metadata
+            vec![], // examples
+            None,   // display
+            |inputs, _ctx| {
+                Box::pin(async move {
+                    let a = inputs["a"].as_i64().unwrap_or(0);
+                    let b = inputs["b"].as_i64().unwrap_or(0);
+                    Ok(json!({ "sum": a + b }))
+                })
+            },
+        )?;
+
+        let result = client
+            .call("math.add", json!({ "a": 10, "b": 5 }), None, None)
+            .await?;
+        println!("{:?}", result); // {"sum": 15}
+        Ok(())
+    }
     ```
 
 ### Project Directory Structure

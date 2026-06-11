@@ -104,7 +104,7 @@ nav:
           - Observability: features/observability.md
           - Error & AI Guidance: features/error-system.md
           - Event System: features/event-system.md
-          - System Modules (sys.*): features/system-modules.md
+          - System Modules (system.*): features/system-modules.md
       - Framework Internals:
           - Registry System: features/registry-system.md
           - Schema System: features/schema-system.md

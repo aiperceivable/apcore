@@ -353,14 +353,14 @@
           "description": "Maximum call chain depth. Calls exceeding this depth are rejected with CALL_DEPTH_EXCEEDED.",
           "default": 32,
           "minimum": 1,
-          "maximum": 128
+          "maximum": 1000
         },
         "max_module_repeat": {
           "type": "integer",
           "description": "Maximum number of times the same module ID can appear in a single call chain. Exceeding this triggers CALL_FREQUENCY_EXCEEDED. Prevents non-strict cyclic patterns in AI orchestration scenarios.",
           "default": 3,
           "minimum": 1,
-          "maximum": 32
+          "maximum": 100
         }
       }
     },

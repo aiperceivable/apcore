@@ -44,7 +44,7 @@ For caller-identity semantics, type values, and ACL integration see [Identity Sy
 | Field | Type | Level | Limit | Thread Safety | Serializable | Notes |
 |-------|------|-------|-------|---------------|--------------|-------|
 | `trace_id` | string (32-char hex) | MUST | 32 chars | Read-only, safe | MUST | Auto-generated. Not a `Context.create()` input. |
-| `caller_id` | string \| null | MUST | 128 chars | Read-only, safe | MUST | Top-level: null. Managed exclusively by `Context.child()`. Not a `Context.create()` input. |
+| `caller_id` | string \| null | MUST | 192 chars | Read-only, safe | MUST | Top-level: null. Managed exclusively by `Context.child()`. Not a `Context.create()` input. |
 | `call_chain` | list[string] | MUST | Max depth 32 | Read-only, safe | MUST | Managed exclusively by the Executor. |
 | `executor` | Executor \| null | MUST (after binding) | — | Thread-safe | MUST NOT | **Bound by the Executor** at pipeline entry, not by `Context.create()`. See [Executor binding to Context](./core-executor.md#contract-executor-binding-to-context). |
 | `identity` | Identity \| null | SHOULD | — | Read-only, safe | MUST | |
@@ -169,7 +169,7 @@ After deserialization the `executor` field is null. The receiving Executor MUST 
 | Non-serializable value stored in `context.data` | Allowed (in-memory passing); fails when crossing processes | MUST |
 | `call_chain` exceeds `max_call_depth` (depth > max) | Raise `CALL_DEPTH_EXCEEDED` | MUST |
 | `trace_id` not valid 32-hex format | Log WARN and regenerate a 32-char hex trace_id | SHOULD |
-| `caller_id` exceeds 128 chars | Log WARN, allow execution | SHOULD |
+| `caller_id` exceeds 192 chars | Log WARN, allow execution | SHOULD |
 | `data` key conflict (parent/child same key) | Last write wins (dict semantics) | MUST |
 | Concurrent modification of `data` from multiple threads | Race condition; callers SHOULD use locks | SHOULD |
 

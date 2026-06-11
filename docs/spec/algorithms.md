@@ -242,7 +242,7 @@ Steps:
 
 - Exact duplicate detection can use HashSet, O(1) lookup
 - Case collision detection can maintain a lowercase → original_id mapping in advance, optimizing lookup to O(1)
-- Reserved word set see §2.5: `system`, `internal`, `core`, `apcore`, `plugin`, `schema`, `acl` and keywords from various languages
+- Reserved word set see §2.5: `system`, `internal`, `core`, `apcore`, `plugin`, `schema`, `acl`, `ephemeral` and keywords from various languages
 
 ---
 
@@ -1408,7 +1408,7 @@ Steps:
 **Implementation Notes:**
 
 - Execution order of three checks **MUST** be: depth → cycle → frequency (depth check is cheapest, should execute first)
-- `max_module_repeat` default value is 3, configurable via `apcore.yaml`'s `executor.max_module_repeat`, range `[1, 32]`
+- `max_module_repeat` default value is 3, configurable via `apcore.yaml`'s `executor.max_module_repeat`, range `[1, 100]`
 - Step 2 cycle detection covers direct cycle (A→B→A) and indirect cycle (A→B→C→A)
 - Step 3 frequency detection covers non-cycle repeated calls (e.g., same module called multiple times in parallel orchestration then re-entered)
 - If step 2 already threw `CIRCULAR_CALL`, step 3 won't execute (short-circuit)

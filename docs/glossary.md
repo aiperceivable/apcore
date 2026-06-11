@@ -94,7 +94,7 @@ A single-page reference for terminology used across the apcore protocol, the thr
 
 **Stream / Streaming Module** — A module whose `execute()` yields successive partial outputs (chunks). The Executor merges chunks via recursive deep-merge (depth-capped at 32), validates the final accumulated output against the output schema, and emits per-chunk events for observability. See [features/streaming.md](./features/streaming.md).
 
-**System Modules (`sys.*`)** — Reserved namespace for framework-provided control-plane modules: `sys.health.*`, `sys.manifest.*`, `sys.control.*`. Authorization is enforced by the same ACL system as user modules. See [features/system-modules.md](./features/system-modules.md).
+**System Modules (`system.*`)** — Reserved namespace for framework-provided control-plane modules: `system.health.*`, `system.manifest.*`, `system.control.*`. Authorization is enforced by the same ACL system as user modules. See [features/system-modules.md](./features/system-modules.md).
 
 ## T
 
