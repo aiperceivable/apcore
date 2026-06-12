@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.24.0] - 2026-06-10
+## [0.24.0] - 2026-06-12
 
 ### Added
 
@@ -18,6 +18,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **`docs/features/system-modules.md` — toggle-state contract re-scoped from process-global to per-instance (#71).** The "Disabled modules" note, the `system.control.toggle_feature` postconditions, and the `is_module_disabled` Contract block now state that toggle state is isolated to the owning `APCore` instance (with the standalone free function reading the global fallback). No public method-signature changes.
+
+### Fixed
+
+- **`docs/features/event-system.md` — `EventEmitter.emit` Contract internal contradiction resolved.** The `### Inputs` bullet said `event_type` "MUST NOT be empty" while the same block's `### Errors` ("No errors raised to the caller. emit is fire-and-forget") and `### Properties` ("never raises") sections — which all three SDKs implement — mandate never-raising. Surfaced by a cross-language `tester --category protocol` run (a green TypeScript placeholder test mislabeled `SKIP` had been miscounted as enforcing the rule). The `MUST` on the caller is preserved, reframed as a **caller precondition, not a validated rejection**, matching the `Errors`/`Properties` sections and the unanimous SDK behavior. No public surface change, no normative weakening, version stays `0.24.0`. The corresponding `apcore-typescript` placeholder test was converted to a real `it.skip()` so it stops registering as a false-positive pass.
 
 ### Notes
 

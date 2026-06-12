@@ -666,7 +666,7 @@ sys_modules:
 ## Contract: EventEmitter.emit
 
 ### Inputs
-- `event_type` (str/string/&str, required) — event type identifier; MUST NOT be empty
+- `event_type` (str/string/&str, required) — event type identifier. Callers **MUST** provide a non-empty `event_type`; an empty value yields an event that no exact-match subscriber can ever receive. This is a **caller precondition, not a validated rejection**: consistent with the *Errors* and *Properties* sections below, `emit()` is fire-and-forget and does **not** inspect or reject `event_type`, so passing an empty string is a caller bug — never an `emit()` error. (Same "SDKs are mutually consistent; the spec text was the outlier" reconciliation as the `subscribe` amendment D10-016 below.)
 - `payload` (dict/object/Value, optional) — event payload; passed as-is to subscribers
 
 ### Returns
