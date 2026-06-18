@@ -2,7 +2,7 @@
 description: "Maintainer decision log of open cross-language alignment issues from the 2026-05 apcore-skills:sync run covering 20 modules, tracking spec/SDK discrepancies awaiting resolution."
 title: Cross-language alignment decision log (2026-05)
 date: 2026-05-02
-status: active — 51 resolved, 6 open (see "Resolution status")
+status: active — 51 resolved, 7 open (see "Resolution status")
 audience: maintainers + spec reviewers
 source: /apcore-skills:sync findings (2026-05-02 run, 20/20 modules covered)
 ---
@@ -804,9 +804,10 @@ the same fixture file.
     - **D-32** closed via **D-56** (TS `_filterIdConflicts` extracted).
   - **Doc-only follow-throughs landed in iter-9 (2026-05-05)**: D-01, D-07, D-09, D-16, D-59, D-60, D-26 — see addendum below.
 
-- **Open — multi-SDK code fix** (2 items, target v0.21.0):
-  - **D-03** — `ApprovalRequest` to add `caller_id` and `action` fields in all 3 SDKs.
-  - **D-24** — `update_config` constraints registry + rollback in TS + Rust (Python already aligned).
+- **Open — multi-SDK code fix** (3 items):
+  - **D-03** — `ApprovalRequest` to add `caller_id` and `action` fields in all 3 SDKs. (target v0.21.0)
+  - **D-24** — `update_config` constraints registry + rollback in TS + Rust (Python already aligned). (target v0.21.0)
+  - **D-64** — activate `acl.root` config-driven ACL discovery + unify default to `'./acl'` across all 3 SDKs. Tracking [#74](https://github.com/aiperceivable/apcore/issues/74).
 
 - **Open — single-SDK code fix** (2 items, deferred):
   - **D-04** — TS snake_case wire-format rename. Deferred per the entry's notes; needs a dedicated codemod PR (jscodeshift / sed) covering ~50 error subclasses + AuditEntry + ~30 test files. Estimated 1–2 hours focused work.
@@ -1166,3 +1167,46 @@ apcore-typescript PR #29 author noted this in JSDoc; follow-up to upgrade the Ty
   The TS-side follow-through (`apcore-typescript` `Registry.discoverMultiClass` dropping the `multiClassEnabled` argument) remains open and is tracked in the cross-repo issue list above. protocol-spec.md does not reference the global toggle and required no edit.
 
   Direct commit to `main` (no PR) per maintainer authorization; doc-only, no SDK behavior change, no normative spec change.
+
+---
+
+## D-64 — `acl.root` dead key: activate config-driven ACL discovery + unify default
+
+**Tracking issue**: [#74](https://github.com/aiperceivable/apcore/issues/74). Related: [#75](https://github.com/aiperceivable/apcore/issues/75) (`include:` config composition — separate, ACL-independent).
+
+**Status quo**
+
+`acl.root` is registered (and in Rust hard-required) in every SDK's Config, and `acl.default_effect` is validated, but **no code consumes `acl.root` to load an ACL**. ACL enforcement only exists when application code manually calls `ACL.load(path)` + `executor.set_acl(acl)`. The config key is decorative. The default also diverges across SDKs.
+
+| Capability | Python | TypeScript | Rust |
+|---|---|---|---|
+| `acl.root` registered as known/required key | ✅ `config.py:44` | ✅ `config.ts:37` | ✅ `config.rs:481` |
+| `acl.default_effect` validated (`allow`\|`deny`) | ✅ `config.py:51-53` | ✅ `config.ts:67` | ✅ `config.rs:588-596` |
+| Default value for `acl.root` | `'./acl'` (`config.py:133-136`) | `'./acl'` (`config-defaults.ts:38-41`) | **none** — hard-required; omission ⇒ `CONFIG_INVALID` (`config.rs:1865`) |
+| Consumer reads `acl.root` to load ACL | ❌ none | ❌ none | ❌ none |
+| Inline `acl.rules` in `apcore.yaml` | ❌ | ❌ | ❌ |
+| ACL auto-discovery (`discover`) | ❌ | ❌ | ❌ |
+
+Two problems: (1) `acl.root` is a dead key — the "point config at an ACL dir" workflow does not exist; (2) the same `apcore.yaml` omitting `acl.root` passes in Py/TS (default `./acl`) but fails validation in Rust.
+
+**Options**
+
+- **A** Activate `acl.root` via `ACL.discover(config)` that attaches an ACL **only when the resolved `acl.root` path exists** (missing = no ACL attached, preserving today's no-enforcement default); unify the default to `'./acl'` in all 3 SDKs (Rust gains the default, drops hard-required).
+- **B** Activate discovery but make `acl.root` truly required everywhere (Py/TS drop the default). Breaking for existing Py/TS configs that omit the key.
+- **C** Drop `acl.root` from the spec entirely; document `ACL.load(path)` + `set_acl()` as the only path. Removes the dead key but abandons the original config-driven design intent.
+
+**Recommendation**: **A**.
+
+Rationale:
+- Config-driven discovery is the documented design intent; activating it across all 3 SDKs is the consistent fix. Doing it in one SDK only would manufacture a new cross-language divergence (cf. [[project_sdk_behavioral_findings]]).
+- **Critical non-breaking invariant**: a missing `acl.root` path MUST attach **no** ACL — NOT an empty `default_effect: deny` ACL. Attaching default-deny when no file exists would deny every inter-module call in every project that has no ACL today (a silent, severe breaking change). `default_effect: deny` only takes effect once an ACL file is actually present.
+- Unifying on `'./acl'` (Option B's "required everywhere" is breaking for Py/TS) keeps existing configs working and removes Rust's outlier hard-require.
+- Inline `acl.rules` stays unsupported by design; complex ACL structure belongs in its own file via `ACL.load(path)`.
+
+**Action**
+
+- Add `ACL.discover(config)` to Python / TypeScript / Rust: resolve `acl.root` relative to the config file; if the path exists, `ACL.load()` it and wire `executor.set_acl(acl)`; if absent, attach nothing.
+- Unify `acl.root` default to `'./acl'` in all 3 SDKs; Rust no longer rejects a config that omits `acl.root`.
+- Conformance fixture covering: present-dir loads + enforces, missing-dir no-op (no enforcement), unified default value.
+- Update demo + `acl-system.md` to show the config-driven path (`acl.root: ./acl` in `apcore.yaml`).
+- Cross-SDK rollout per the [[feedback_apcore_cross_sdk_pr_pattern]] pattern (spec/fixture in apcore, 3 parallel SDK PRs, no-push boundary).
