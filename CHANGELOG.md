@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.25.0] - 2026-06-22
+
+### Added
+
+- **Config-driven ACL discovery — `acl.root` activation (#74, D-64).** `acl.root` was a dead config key in all three SDKs: registered (hard-required in Rust) and validated, but never consumed to load an ACL. A new `ACL.discover(config)` resolves `acl.root` and attaches an ACL **only when the path exists**, wired automatically by the `APCore` bootstrap. `acl.root` is a directory by convention — discovery loads `<root>/global_acl.yaml` (PROTOCOL_SPEC §3.1) — and MAY also point directly at a YAML file. **Critical non-breaking invariant:** a missing `acl.root` path attaches **no** ACL (preserving today's no-enforcement default) and MUST NOT synthesize an empty `default_effect: deny` ACL. Discovery is skipped when the caller supplies their own `Executor`, so an explicitly-wired ACL is never clobbered. New conformance fixture `conformance/fixtures/acl_root_discovery.json` locks the cross-language contract; the `ACL.discover` contract is documented in `docs/features/acl-system.md`. Implemented across `apcore-python`, `apcore-typescript`, and `apcore-rust`.
+
+- **API Surface & Naming Conventions specification (`docs/spec/api-surface-conventions.md`).** Normative rules for when a symbol is public API, why cross-boundary contract members MUST NOT carry a private name, and the per-language visibility-vs-discoverability idioms. Includes **§8 Cross-SDK Surface Equivalence**: the structural divergences that are by-design (error-taxonomy shape — per-type classes vs. a single `ErrorCode` enum; namespace depth — sub-package vs. root-flattened) and the **reachability rule** that still flags a genuine break (a public symbol reachable only through an internal implementation module), plus auditing guidance so these no longer surface as false-positive findings.
+
+- **RFC — `include:` cross-file configuration composition (`docs/spec/rfc-config-include.md`, Proposed) + decision D-65 (#75).** Design-first contract for a top-level `include:` key: file-path list resolved relative to the declaring file, pre-validation expansion into one merged mapping, precedence `A < B < local` (deep-merge mappings, replace scalars/lists), recursive includes with cycle detection (`CONFIG_INCLUDE_CYCLE`). YAGNI exclusions: no globs, remote URLs, conditional includes, or list-element merging. **No SDK implementation yet** — awaiting maintainer ratification.
+
+### Changed
+
+- **`acl.root` default unified to `./acl` across all three SDKs (#74, D-64).** Rust previously hard-required `acl.root` and rejected its omission with `CONFIG_INVALID`; it now defaults to `./acl` like Python and TypeScript, so a config omitting the key is valid in every SDK. Removes a cross-language divergence where the same `apcore.yaml` passed in Python/TS but failed validation in Rust.
+
+- **`docs/features/acl-system.md` — added the `ACL.discover` contract** (inputs, ordered side-effects, the missing-path danger admonition, and cross-language usage showing `acl.root` in `apcore.yaml` with automatic attach via `APCore`).
+
+### Notes
+
+- **Decision log:** D-64 (`acl.root` activation) recorded and implemented; D-65 (`include:`) opened as a design-first RFC awaiting ratification before any code. Front-matter status is now 51 resolved / 8 open.
+- **SDK-side companion fix (not a spec change):** `apcore-python` resolved #30 by re-exporting the registry module-id constants (`MAX_MODULE_ID_LENGTH`, `RESERVED_WORDS`, `REGISTRY_EVENTS`, `EPHEMERAL_NAMESPACE_PREFIX`, `DEFAULT_MODULE_VERSION`, `MODULE_ID_PATTERN`) from public paths — exactly the class of break the new §8 reachability rule codifies. Tracked in the `apcore-python` changelog.
+
+---
+
 ## [0.24.0] - 2026-06-12
 
 ### Added
