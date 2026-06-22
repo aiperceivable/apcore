@@ -1,0 +1,83 @@
+{
+  "description": "Config-driven ACL discovery (D-64, Recommendation A; issue #74). Each case describes the acl.root config value plus the filesystem state at the resolved path; `expected` captures whether an ACL is attached to the Executor and whether enforcement is therefore active. CRITICAL INVARIANT: a missing acl.root path attaches NO ACL (acl_attached=false) and MUST NOT synthesize an empty default-deny ACL — even when acl.default_effect is 'deny' — otherwise every inter-module call in a project with no ACL would be silently denied. acl.root is a directory by convention; the loaded file is <root>/global_acl.yaml (PROTOCOL_SPEC §3.1 `acl/{scope}_acl.yaml`), but acl.root MAY point directly at a YAML file. acl.root defaults to './acl' in all three SDKs (Rust no longer hard-requires it). Auto-discovery is skipped when the caller supplies their own Executor, so an explicitly-wired ACL is never clobbered. acl.root is resolved relative to the config file's directory when the Config knows its source path, else relative to CWD. The rule-evaluation semantics of a loaded ACL are covered by acl_evaluation.json; this fixture covers only the discovery/attachment behavior.",
+  "default_acl_root": "./acl",
+  "acl_policy": {
+    "default_effect": "deny",
+    "rules": [
+      {"callers": ["@external"], "targets": ["greet"], "effect": "allow", "description": "External callers may reach greet."},
+      {"callers": ["*"], "targets": ["*"], "effect": "deny", "description": "Default deny everything else."}
+    ]
+  },
+  "test_cases": [
+    {
+      "id": "default_value_when_unset",
+      "acl_root_unset": true,
+      "expected": {"resolved_acl_root": "./acl"}
+    },
+    {
+      "id": "config_omitting_acl_root_is_valid",
+      "comment": "Rust previously hard-required acl.root and rejected omission with CONFIG_INVALID; under D-64 omission is valid and the default applies (parity with Python/TS).",
+      "acl_root_unset": true,
+      "expected": {"config_valid": true, "resolved_acl_root": "./acl"}
+    },
+    {
+      "id": "present_dir_with_global_acl_attaches_and_enforces",
+      "acl_root": "acl",
+      "fs": {"acl/global_acl.yaml": "acl_policy"},
+      "expected": {"acl_attached": true, "enforcement": true}
+    },
+    {
+      "id": "present_dir_enforcement_allows_permitted_call",
+      "acl_root": "acl",
+      "fs": {"acl/global_acl.yaml": "acl_policy"},
+      "caller_id": null,
+      "target_id": "greet",
+      "expected": {"acl_attached": true, "decision": true}
+    },
+    {
+      "id": "present_dir_enforcement_denies_other_call",
+      "acl_root": "acl",
+      "fs": {"acl/global_acl.yaml": "acl_policy"},
+      "caller_id": "some.module",
+      "target_id": "db.write",
+      "expected": {"acl_attached": true, "decision": false}
+    },
+    {
+      "id": "root_as_file_attaches",
+      "comment": "acl.root may point directly at a YAML file instead of a directory.",
+      "acl_root": "custom_acl.yaml",
+      "fs": {"custom_acl.yaml": "acl_policy"},
+      "expected": {"acl_attached": true, "enforcement": true}
+    },
+    {
+      "id": "missing_path_no_op",
+      "comment": "Resolved path does not exist -> no ACL attached, no enforcement.",
+      "acl_root": "does_not_exist",
+      "fs": {},
+      "expected": {"acl_attached": false, "enforcement": false}
+    },
+    {
+      "id": "dir_without_global_acl_no_op",
+      "comment": "Directory exists but contains no global_acl.yaml -> still a no-op.",
+      "acl_root": "acl",
+      "fs": {"acl/": "directory"},
+      "expected": {"acl_attached": false, "enforcement": false}
+    },
+    {
+      "id": "missing_path_with_default_deny_does_not_synthesize",
+      "comment": "The D-64 non-breaking invariant: default_effect=deny in config must NOT produce a deny-everything ACL when the path is missing.",
+      "acl_root": "nope",
+      "default_effect": "deny",
+      "fs": {},
+      "expected": {"acl_attached": false, "enforcement": false}
+    },
+    {
+      "id": "caller_supplied_executor_skips_discovery",
+      "comment": "When the caller passes their own Executor, auto-discovery is skipped so an explicitly-wired ACL is never overwritten.",
+      "acl_root": "acl",
+      "fs": {"acl/global_acl.yaml": "acl_policy"},
+      "caller_supplied_executor": true,
+      "expected": {"acl_attached": false, "enforcement": false}
+    }
+  ]
+}

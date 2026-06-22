@@ -223,6 +223,104 @@ Normative behavioral contract. All SDK implementations MUST satisfy these guaran
 - `idempotent`: `true` — repeated calls with identical file content return equivalent instances
 - `reentrant`: `true`
 
+## Contract: ACL.discover
+
+Config-driven activation of the `acl.root` key (decision D-64). `discover()` resolves `acl.root` and loads an ACL **only when the configured path exists**, so that ACL enforcement can be turned on by configuration alone — without application code calling `ACL.load()` + `set_acl()` by hand. The application bootstrap (`APCore`) calls `discover()` automatically and attaches the result.
+
+!!! danger "Missing-path invariant — MUST NOT synthesize a default-deny ACL"
+    When the resolved `acl.root` path does **not** exist, `discover()` MUST return "no ACL" (`None`/`null`/`Option::None`) and attach nothing. It MUST NOT construct an empty ACL — an empty ACL with `default_effect: deny` would deny **every** inter-module call in every project that has no ACL today. A missing path means *no enforcement*, identical to the pre-D-64 default. `acl.default_effect` takes effect only once a real ACL file is loaded.
+
+### Inputs
+
+- `config`: the loaded `Config`, required. `acl.root` is read from it.
+  - `acl.root` default: `"./acl"` in all SDKs (Rust no longer hard-requires the key).
+
+### Preconditions
+
+- None. `acl.root` MAY be unset (the default applies) and MAY point at a path that does not exist (no-op).
+
+### Side Effects (ordered)
+
+1. Read `acl.root` from `config` (apply the `"./acl"` default if unset).
+2. Resolve the path: relative to the config file's directory when the `Config` knows its source path, else relative to the current working directory.
+3. If the resolved path is a **directory**, target `<root>/global_acl.yaml` (the `acl/{scope}_acl.yaml` convention, PROTOCOL_SPEC §3.1); if it is a **file**, target it directly.
+4. If the target file exists, load it via `ACL.load()` and return the new `ACL`.
+5. If the resolved path / target file does not exist, return "no ACL" and attach nothing.
+
+### Postconditions
+
+- Returns a loaded `ACL` **iff** the resolved target file exists; otherwise returns the language's "no ACL" value.
+- No empty/synthesized ACL is ever returned for a missing path.
+- Skipped entirely when the caller supplies their own `Executor` to `APCore`, so an explicitly-wired ACL is never overwritten.
+
+### Errors
+
+- `ACLRuleError` — only when a target file **exists but is structurally invalid** (propagated from `ACL.load()`). A missing path is never an error.
+
+### Returns
+
+- A new `ACL` instance, or the language "no ACL" value (`None` / `null` / `Option::None`).
+
+### Properties
+
+- `async`: `false`
+- `thread_safe`: `true` — creates a new instance; no shared mutable state accessed
+- `pure`: `false` — reads from the filesystem
+- `idempotent`: `true`
+- `reentrant`: `true`
+
+### Usage
+
+With `acl.root` set in `apcore.yaml`, enforcement is wired automatically — no manual `ACL.load()` / `set_acl()` needed:
+
+```yaml
+# apcore.yaml
+acl:
+  root: ./acl            # directory holding global_acl.yaml (default: ./acl)
+  default_effect: deny   # applies only once an ACL file is actually loaded
+```
+
+=== "Python"
+    ```python
+    from apcore import APCore, Config
+
+    # APCore calls ACL.discover(config) and attaches the result.
+    # If ./acl/global_acl.yaml exists, enforcement is active; if not, it is a no-op.
+    app = APCore(config=Config.load("apcore.yaml"))
+
+    # Equivalent explicit form (also still supported):
+    from apcore.acl import ACL
+    acl = ACL.discover(Config.load("apcore.yaml"))
+    if acl is not None:
+        app.executor.set_acl(acl)
+    ```
+=== "TypeScript"
+    ```typescript
+    import { APCore, Config, ACL } from 'apcore';
+
+    // APCore calls ACL.discover(config) and attaches the result.
+    const app = new APCore({ config: Config.load('apcore.yaml') });
+
+    // Equivalent explicit form:
+    const acl = ACL.discover(Config.load('apcore.yaml'));
+    if (acl !== null) {
+      app.executor.setAcl(acl);
+    }
+    ```
+=== "Rust"
+    ```rust
+    use apcore::{APCore, config::Config, acl::ACL};
+
+    // APCore calls ACL::discover(&config) and attaches the result.
+    let config = Config::load("apcore.yaml")?;
+    let app = APCore::new(config.clone())?;
+
+    // Equivalent explicit form:
+    if let Some(acl) = ACL::discover(&config)? {
+        app.executor().set_acl(acl);
+    }
+    ```
+
 ## Contract: ACL.add_rule
 
 ### Inputs
