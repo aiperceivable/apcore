@@ -1208,6 +1208,7 @@ Development guide: see [Adapter Development Guide](./docs/guides/adapter-develop
 | Document | Description |
 |------|------|
 | [Type Mapping](./docs/spec/type-mapping.md) | Cross-language type mapping |
+| [API Surface & Naming Conventions](./docs/spec/api-surface-conventions.md) | When a symbol is public API; why cross-boundary contract members MUST NOT carry a private name; per-language visibility-vs-discoverability idioms |
 | [Conformance Definition](./docs/spec/conformance.md) | Implementation conformance levels |
 | [RFC — `preview()` Method](./docs/spec/rfc-preview-method.md) | Accepted RFC: optional `Module.preview()` for structured pre-execution diff (promoted to protocol-spec in v0.21.0) |
 | [RFC — Ephemeral Modules](./docs/spec/rfc-ephemeral-modules.md) | Accepted RFC: `ephemeral.*` namespace + `discoverable` annotation for runtime-registered modules (promoted to protocol-spec in v0.21.0) |

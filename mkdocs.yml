@@ -118,6 +118,7 @@ nav:
           - Conformance Definition: spec/conformance.md
           - Declarative Config Spec: spec/DECLARATIVE_CONFIG_SPEC.md
           - Type Mapping: spec/type-mapping.md
+          - API Surface & Naming Conventions: spec/api-surface-conventions.md
           - Algorithm Reference: spec/algorithms.md
           - Security Considerations: spec/security-considerations.md
       - Design Docs:

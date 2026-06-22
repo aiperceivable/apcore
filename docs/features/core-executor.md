@@ -377,6 +377,8 @@ The Executor MUST treat all three sources identically. The following normative r
 
 This section unifies the previously separate "re-inject after deserialize" requirement — see [Context Object §Serialization](./context-object.md#serialization) for the cross-reference — with the construction-time binding model. Implementation mechanism is language-idiomatic: mutable field assignment for Python/Rust dataclasses; copy-on-write returning a new instance for TypeScript's `readonly` fields.
 
+The binding method is a **cross-boundary contract member** — the Executor calls it, and a bridge's duck-typed `Context` MUST implement it — so it MUST be public-named in every SDK (no leading-underscore / `private` / non-`pub`). See [API Surface & Naming Conventions](../spec/api-surface-conventions.md) for the visibility-vs-discoverability rules and the worked example.
+
 ## Contract: Distributed cancellation
 
 `cancel_token` is runtime-only and MUST NOT serialize (per PROTOCOL_SPEC §5.7). On the receiving node of a deserialized Context:
