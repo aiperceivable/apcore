@@ -2,7 +2,7 @@
 description: "Maintainer decision log of open cross-language alignment issues from the 2026-05 apcore-skills:sync run covering 20 modules, tracking spec/SDK discrepancies awaiting resolution."
 title: Cross-language alignment decision log (2026-05)
 date: 2026-05-02
-status: active — 51 resolved, 7 open (see "Resolution status")
+status: active — 51 resolved, 8 open (see "Resolution status")
 audience: maintainers + spec reviewers
 source: /apcore-skills:sync findings (2026-05-02 run, 20/20 modules covered)
 ---
@@ -809,6 +809,9 @@ the same fixture file.
   - **D-24** — `update_config` constraints registry + rollback in TS + Rust (Python already aligned). (target v0.21.0)
   - **D-64** — activate `acl.root` config-driven ACL discovery + unify default to `'./acl'` across all 3 SDKs. Tracking [#74](https://github.com/aiperceivable/apcore/issues/74).
 
+- **Open — RFC (design-first)** (1 item):
+  - **D-65** — `include:` cross-file config composition. Design ratification required before code; see [RFC — `include:` Configuration Composition](./rfc-config-include.md). Tracking [#75](https://github.com/aiperceivable/apcore/issues/75).
+
 - **Open — single-SDK code fix** (2 items, deferred):
   - **D-04** — TS snake_case wire-format rename. Deferred per the entry's notes; needs a dedicated codemod PR (jscodeshift / sed) covering ~50 error subclasses + AuditEntry + ~30 test files. Estimated 1–2 hours focused work.
   - **D-61** — Rust `RetryConfig::compute_delay_ms` doc-comment note about `u64` truncation. Local change in apcore-rust source only; does not require a spec edit.
@@ -1210,3 +1213,36 @@ Rationale:
 - Conformance fixture covering: present-dir loads + enforces, missing-dir no-op (no enforcement), unified default value.
 - Update demo + `acl-system.md` to show the config-driven path (`acl.root: ./acl` in `apcore.yaml`).
 - Cross-SDK rollout per the [[feedback_apcore_cross_sdk_pr_pattern]] pattern (spec/fixture in apcore, 3 parallel SDK PRs, no-push boundary).
+
+---
+
+## D-65 — `include:` cross-file configuration composition
+
+**Tracking issue**: [#75](https://github.com/aiperceivable/apcore/issues/75). Full design: [RFC — `include:` Configuration Composition](./rfc-config-include.md). Independent of D-64 (#74).
+
+**Status quo**
+
+`apcore.yaml` is a single monolithic file. There is no in-SDK way to split shared configuration (ACL, observability, pipeline, per-environment overrides) into reusable fragments — teams must duplicate YAML or assemble it with an external pre-processing step before apcore loads it.
+
+**Decision needed**
+
+Whether to add a top-level `include:` key for declarative cross-file composition, and on exactly what merge/resolution semantics — these must be identical across Python, TypeScript, and Rust before any code lands.
+
+**Recommendation**: **adopt** the RFC as drafted (Proposed), pending maintainer ratification. Key semantics:
+
+- `include:` is a list of file-path strings, resolved relative to the **declaring file's** directory.
+- Expansion is a pre-processing phase (before validation / env-overrides / binding) producing one merged mapping.
+- Precedence `A < B < local`: includes in listed order, then the declaring file's own keys win. Deep-merge mappings; **replace** scalars and lists (no element-level list merge — YAGNI).
+- Recursive includes allowed; **cycle detection** raises a new `CONFIG_INCLUDE_CYCLE`; missing file → `CONFIG_NOT_FOUND`; non-list `include` → `CONFIG_INVALID`.
+- Out of scope (YAGNI): globs, remote URLs, conditional includes, list-element merging, reserved-namespace/version scaffolding on the include block.
+
+Rationale:
+- Config-driven composition is a recurring real need; doing it in-SDK with one ratified contract avoids each SDK (and each team's external tooling) inventing divergent merge rules.
+- Local-wins precedence matches developer intuition ("include bases, then tweak locally"; cf. CSS `@import`, shell `source`-then-override).
+- The YAGNI exclusions keep the v1 surface small and the cross-language algorithm trivially portable (see the RFC's three-SDK sketch).
+
+**Open questions** (carried in the RFC): fragment-relative path values vs. root-relative (v1 = root-relative); `CONFIG_INCLUDE_CYCLE` registration against the canonical error-code prefix set; whether a max-depth policy limit is needed beyond cycle detection (v1 = no).
+
+**Action**
+
+- Ratify the RFC (maintainer review). On acceptance: register `CONFIG_INCLUDE_CYCLE`; add `conformance/fixtures/config_include.json` per the RFC's conformance plan; implement the expansion phase in all 3 SDKs via the [[feedback_apcore_cross_sdk_pr_pattern]] pattern; document `include:` in `DECLARATIVE_CONFIG_SPEC.md`.

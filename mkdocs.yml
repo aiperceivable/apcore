@@ -129,6 +129,7 @@ nav:
           - Decision Log (2026-05): spec/2026-05-decision-log.md
           - "RFC — preview() Method": spec/rfc-preview-method.md
           - "RFC — Ephemeral Modules": spec/rfc-ephemeral-modules.md
+          - "RFC — include: Config Composition": spec/rfc-config-include.md
 
 extra:
   social:

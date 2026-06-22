@@ -1212,6 +1212,7 @@ Development guide: see [Adapter Development Guide](./docs/guides/adapter-develop
 | [Conformance Definition](./docs/spec/conformance.md) | Implementation conformance levels |
 | [RFC — `preview()` Method](./docs/spec/rfc-preview-method.md) | Accepted RFC: optional `Module.preview()` for structured pre-execution diff (promoted to protocol-spec in v0.21.0) |
 | [RFC — Ephemeral Modules](./docs/spec/rfc-ephemeral-modules.md) | Accepted RFC: `ephemeral.*` namespace + `discoverable` annotation for runtime-registered modules (promoted to protocol-spec in v0.21.0) |
+| [RFC — `include:` Config Composition](./docs/spec/rfc-config-include.md) | Proposed RFC (D-65, #75): top-level `include:` for cross-file `apcore.yaml` composition — relative paths, deep-merge local-wins, cycle detection |
 | [Algorithm Reference](./docs/spec/algorithms.md) | Core algorithm summary (including namespace, redaction, etc.) |
 | [Durability Boundary](./docs/spec/design-durability-boundary.md) | Stable hooks and explicit non-goals for retry/replay/workflow layers built on apcore |
 
