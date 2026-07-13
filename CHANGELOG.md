@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.26.0] - 2026-07-13
+
+PROTOCOL_SPEC bumped to **v1.9.0-draft**.
+
+### Added
+
+- **Execution Policy — first-class external governance (PROTOCOL_SPEC §7.9, #76).** New normative section defining a declarative, execution-time policy layer that overrides a module's `requires_approval` / `destructive` annotations independently of how the module was registered. Normative rules: attach at the Executor and consult from the Approval Gate (Step 5); pattern rules matched with ACL wildcard semantics (A08) and specificity scoring (A10), with the more-restrictive rule winning ties; policy overrides take precedence over declared annotations; `gate_destructive` opt-in resolves the `destructive`→approval footgun; the handler-visible `ApprovalRequest.annotations` carries **effective** values (preserving the §7.3 "requires_approval guaranteed true" contract); **fail-loud** principle — a needs-approval-but-no-handler case MUST warn (default) or fail closed under `strict`, and policy documents MUST reject unknown keys. Adds Conformance **Level 4 (Governance)**. Reference pilot: apcore-python 0.26.0; TS/Rust rollout in progress.
+
+- **Governance events on the event bus (PROTOCOL_SPEC §9.16.2, #77).** Three new canonical event types make the ACL → policy → approval chain observable: `apcore.approval.decision` (every adjudication incl. strict fail-closed; `info` for approved/pending, `warn` for rejected/timeout), `apcore.policy.override` (when a policy changes effective governance), and `apcore.acl.denied` (on ACL denial). All are emitted only when an event emitter is configured, are best-effort side channels, and are suppressed on a skipped gate / dry-run preflight.
+
+- **Documented six already-emitted events that were absent from the §9.16.2 canonical table:** `apcore.stream.post_validation_failed`, `apcore.registry.module_load_failed`, `apcore.circuit.opened` / `apcore.circuit.closed`, `apcore.subscriber.circuit_opened` / `apcore.subscriber.circuit_closed`, plus the dead-letter `apcore.event.delivery_failed`. The table previously claimed to list "all events emitted by apcore SDKs" but omitted these. `docs/features/event-system.md` mirrors the additions.
+
+### Notes
+
+- **SDK-side companion work (not spec changes), all tracked in their own changelogs:**
+  - #76/#77 pilots landed in apcore-python, apcore-typescript, and apcore-rust at 0.26.0 (`ExecutionPolicy` + the three governance events + the no-handler-skip → fail-loud flip).
+  - #78 (event hygiene): apcore-python and apcore-rust dropped the legacy unprefixed dual-emission (`module_registered` / `error_threshold_exceeded` / …) to comply with the v0.22.0 canonical-only MUST; apcore-typescript was already compliant. apcore-rust additionally now actually emits `apcore.stream.post_validation_failed` (previously a comment-only stub).
+
 ## [0.25.0] - 2026-06-22
 
 ### Added

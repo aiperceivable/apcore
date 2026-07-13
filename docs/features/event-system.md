@@ -479,6 +479,18 @@ Events emitted by the framework (canonical names):
 | `apcore.health.recovered` | info | `PlatformNotifyMiddleware` | `module_id`, recovery details |
 | `apcore.health.error_threshold_exceeded` | error | `PlatformNotifyMiddleware` | `module_id`, `error_rate`, `threshold` |
 | `apcore.health.latency_threshold_exceeded` | warn | `PlatformNotifyMiddleware` | `module_id`, `p99_latency_ms`, `threshold` |
+| `apcore.approval.decision` | info / warn | Approval Gate (§7) | `module_id`, `status`, `approved_by`, `reason`, `approval_id`, `trace_id` |
+| `apcore.policy.override` | info | Approval Gate (§7) | `module_id`, `pattern`, `requires_approval`, `destructive`, `needs_approval`, `reason`, `trace_id` |
+| `apcore.acl.denied` | warn | ACL Check (§6) | `module_id`, `caller_id`, `reason`, `trace_id` |
+| `apcore.stream.post_validation_failed` | error | Executor (streaming Phase 3) | `error_type`, `message`, `trace_id` |
+| `apcore.registry.module_load_failed` | error | Registry | `module_id`, `callback_name`, `error_type`, `error_message` |
+| `apcore.circuit.opened` | warn | `CircuitBreakerMiddleware` | `module_id`, `caller_id`, `error_rate` |
+| `apcore.circuit.closed` | info | `CircuitBreakerMiddleware` | `module_id`, `caller_id`, `error_rate` |
+| `apcore.subscriber.circuit_opened` | warn | Event delivery (per-subscriber breaker) | `subscriber_id`, `subscriber_type`, `consecutive_failures` |
+| `apcore.subscriber.circuit_closed` | info | Event delivery (per-subscriber breaker) | `subscriber_id`, `subscriber_type` |
+| `apcore.event.delivery_failed` | error | Event bus (dead-letter path) | `event_type`, `reason`, `subscriber_id` |
+
+The three **governance events** (`apcore.approval.decision`, `apcore.policy.override`, `apcore.acl.denied`) make the ACL → policy → approval chain observable. They are emitted only when an event emitter is configured, are best-effort side channels, and are suppressed on a skipped gate / dry-run preflight. See [protocol-spec.md §7.9](../spec/protocol-spec.md#79-execution-policy-v190-76) and [§9.16.2](../spec/protocol-spec.md).
 
 ## Configuration
 

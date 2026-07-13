@@ -6,10 +6,10 @@ description: "The canonical, normative apcore protocol specification (RFC 2119, 
 
 > **Canonical Specification** - This document is the authoritative specification for the apcore protocol
 
-> Version: 1.8.0-draft
+> Version: 1.9.0-draft
 > Status: Draft Specification (RFC 2119 Conformant)
 > Stability: Specification content is stable, pending reference implementation verification
-> Last Updated: 2026-05-04
+> Last Updated: 2026-07-13
 
 ---
 
@@ -3896,7 +3896,8 @@ Behavior:
 ```
 
 **Key behaviors:**
-- When no `ApprovalHandler` is configured, Step 5 is **completely skipped** — backward compatible with existing code.
+- When no `ApprovalHandler` is configured, Step 5 is **skipped** for backward compatibility — but per the fail-loud principle (§7.9.4) a module that needs approval **MUST** produce a warning on skip, and an `ExecutionPolicy` with `strict` (§7.9) turns this skip into a fail-closed `ApprovalDeniedError` instead.
+- When an `ExecutionPolicy` (§7.9) is attached, the gate consults it first: the policy may force approval on a module that does not declare `requires_approval`, or (with `gate_destructive`) gate a `destructive` module.
 - The `_approval_token` mechanism (Phase B) allows clients to retry after external approval without re-triggering the approval flow.
 - The `_approval_token` key **MUST** be removed from arguments before passing to subsequent steps.
 
@@ -3970,13 +3971,52 @@ These handlers are **not** part of the apcore core specification — they are pr
 - Suitable for long-running approval workflows (Slack, email, dashboard).
 - **Phase B is optional but recommended for production deployments.**
 
-### 7.9 Conformance
+### 7.9 Execution Policy (v1.9.0, #76)
+
+> **Status:** Normative as of v1.9.0. Reference pilot: apcore-python 0.26.0 (`ExecutionPolicy`). Cross-language rollout to TypeScript and Rust in progress.
+
+An **Execution Policy** is a declarative, execution-time governance layer that overrides a module's governance annotations (`requires_approval`, `destructive`) **independent of how the module was registered**. It exists because "governed capabilities" is a platform-level promise: an operator must be able to gate already-registered modules without editing their code or re-registering them.
+
+#### 7.9.1 Attach Point and Precedence
+
+1. A policy **MUST** attach at the **Executor** and be consulted by the Approval Gate (Step 5, §7.4).
+2. A policy is a set of **pattern rules**. Each rule matches a module ID using the ACL wildcard semantics (Algorithm A08, §6) and carries optional overrides for `requires_approval` and `destructive` (each `null`/absent = "do not override").
+3. Rule selection **MUST** use ACL specificity scoring (Algorithm A10, §6): the most specific matching rule wins. On a specificity tie, the more **restrictive** rule wins (a rule that forces `requires_approval = true` outranks one that clears it).
+4. A matched rule's non-null override **MUST** take precedence over the module's own declared or scanned annotation. This is deliberate: external governance is the platform's word over the module author's.
+5. A policy decision **MUST** be recorded in the audit trail. When a policy changes a module's effective governance, the Executor **MUST** emit `apcore.policy.override` (§9.16.2) when an event emitter is configured.
+
+#### 7.9.2 `destructive` → approval resolution
+
+The approval gate keys on the **effective** `requires_approval`. Because HTTP-method inference and scanners can set `destructive = true` without setting `requires_approval` (a governance footgun — e.g. an inferred `DELETE`), a policy **MAY** enable `gate_destructive`:
+
+- When `gate_destructive` is true, a module whose **effective** `destructive` is true **MUST** be treated as needing approval even when `requires_approval` is false.
+- `gate_destructive` is **opt-in**; with no policy, `destructive` and `requires_approval` remain orthogonal (no behavior change). Independently, an implementation **SHOULD** warn when a `destructive` module is exposed with no approval/ACL covering it (see §7.9.4).
+
+#### 7.9.3 Effective annotations to the handler
+
+When the gate invokes the handler because a policy forced approval, the `ApprovalRequest.annotations` handed to the handler **MUST** carry the **effective** governance values (`requires_approval = true`, `destructive` = the effective value), not the module's raw declaration. This preserves the §7.3 contract that "`requires_approval` is guaranteed true" in a handler-visible `ApprovalRequest`.
+
+#### 7.9.4 Fail loud, not silent (security principle)
+
+A misconfigured or unreachable governance control **MUST NOT** silently allow. Concretely:
+
+1. When a module needs approval but **no** `ApprovalHandler` is configured, the implementation **MUST** either (default) keep the §7.4 skip behavior **and** emit a warning (at least once per module), or — when the policy sets `strict` — **fail closed** by raising `ApprovalDeniedError` (`APPROVAL_DENIED`).
+2. A `destructive` module that no approval gate covers **SHOULD** produce a warning (at least once per module).
+3. A strict-fail-closed rejection **MUST** emit `apcore.approval.decision` (status `rejected`) like any other adjudication.
+4. Strict parsing: an implementation that loads a policy from a document (YAML/JSON) **MUST** reject unknown keys and a missing rule `pattern`, so a typo cannot silently disable a control.
+
+#### 7.9.5 Preflight
+
+`Executor.validate()` (§12.2) **MUST** report the policy-effective `requires_approval` — i.e. the same verdict the gate will enforce, including a `gate_destructive`-driven or rule-forced approval. The `apcore.acl.denied` and governance decision events **MUST NOT** be emitted during a dry-run `validate()`.
+
+### 7.10 Conformance
 
 | Level | Requirement |
 |-------|-------------|
 | **Level 1 (Basic)** | `ApprovalHandler` protocol defined; Executor skips gate when handler is null |
 | **Level 2 (Standard)** | Step 5 implemented in `call()`, `call_async()`, and `stream()` paths; `AlwaysDenyHandler` and `AutoApproveHandler` provided |
 | **Level 3 (Full)** | Phase B support (`check_approval`, `_approval_token`); `CallbackApprovalHandler` provided; approval audit events emitted |
+| **Level 4 (Governance)** | Execution Policy (§7.9): external override + specificity precedence, `gate_destructive`, `strict` fail-closed, effective-annotations contract, and the `apcore.approval.decision` / `apcore.policy.override` / `apcore.acl.denied` events |
 
 ---
 
@@ -6048,7 +6088,19 @@ The following are the canonical event type names, payload keys, and severity for
 | `apcore.health.error_threshold_exceeded` | `apcore.error.threshold_exceeded` (v0.22.0 rename) | `error` | `PlatformNotifyMiddleware` | `module_id`, `error_rate`, `threshold` |
 | `apcore.health.latency_threshold_exceeded` | `apcore.latency.threshold_exceeded` (v0.22.0 rename) | `warn` | `PlatformNotifyMiddleware` | `module_id`, `p99_latency_ms`, `threshold` |
 | `apcore.health.recovered` | *(new — was collision)* | `info` | `PlatformNotifyMiddleware` | `module_id`, `error_rate` |
+| `apcore.approval.decision` | *(new — v1.9.0, #77)* | `info` (approved/pending) / `warn` (rejected/timeout) | Approval Gate (§7) | `module_id`, `status`, `approved_by`, `reason`, `approval_id`, `trace_id` |
+| `apcore.policy.override` | *(new — v1.9.0, #77)* | `info` | Approval Gate (§7) | `module_id`, `pattern`, `requires_approval`, `destructive`, `needs_approval`, `reason`, `trace_id` |
+| `apcore.acl.denied` | *(new — v1.9.0, #77)* | `warn` | ACL Check (§6) | `module_id`, `caller_id`, `reason`, `trace_id` |
+| `apcore.stream.post_validation_failed` | *(new — v1.9.0, documents existing emit)* | `error` | Executor (streaming Phase 3) | `error_type`, `message`, `trace_id` |
+| `apcore.registry.module_load_failed` | *(new — v1.9.0, documents existing emit)* | `error` | Registry | `module_id`, `callback_name`, `error_type`, `error_message` |
+| `apcore.circuit.opened` | *(new — v1.9.0, documents existing emit)* | `warn` | `CircuitBreakerMiddleware` | `module_id`, `caller_id`, `error_rate` |
+| `apcore.circuit.closed` | *(new — v1.9.0, documents existing emit)* | `info` | `CircuitBreakerMiddleware` | `module_id`, `caller_id`, `error_rate` |
+| `apcore.subscriber.circuit_opened` | *(new — v1.9.0, documents existing emit)* | `warn` | Event delivery (per-subscriber breaker) | `subscriber_id`, `subscriber_type`, `consecutive_failures` |
+| `apcore.subscriber.circuit_closed` | *(new — v1.9.0, documents existing emit)* | `info` | Event delivery (per-subscriber breaker) | `subscriber_id`, `subscriber_type` |
+| `apcore.event.delivery_failed` | *(new — v1.9.0, documents existing DLQ emit; see §9.16 dead-letter)* | `error` | Event bus (dead-letter path) | `event_type`, `reason`, `subscriber_id` |
 
+> **Governance events (v1.9.0, #76/#77).** `apcore.approval.decision`, `apcore.policy.override`, and `apcore.acl.denied` make the governance chain (ACL → policy → approval) observable on the event bus. They are emitted **only** when an event emitter is configured, are best-effort side channels (execution outcome **MUST NOT** depend on their delivery), and follow the skip contract: the approval gate emits `apcore.approval.decision` only when it actually adjudicates (never on a skipped gate), and `apcore.acl.denied` is **NOT** emitted during a dry-run `validate()` preflight. See §7.9 (Execution Policy) for the policy layer that drives `apcore.policy.override`.
+>
 > **Collision resolution (v0.18.0):** `"module_health_changed"` was retired. Its two usages are replaced by `apcore.module.toggled` (enable/disable) and `apcore.health.recovered` (error rate recovery). `"config_changed"` was retired and split into `apcore.module.reloaded` and `apcore.config.updated`. These two legacy names were emitted as transitional aliases up to v0.17.x and were **REMOVED in v0.18.0**; implementations **MUST NOT** emit them.
 >
 > **Subsystem-segment correction (v0.22.0):** the registry events moved from `apcore.module.*` to `apcore.registry.*` (subsystem is the emitting module, not the affected entity), and the threshold events moved from `apcore.error.*` / `apcore.latency.*` to `apcore.health.*` (`error` and `latency` are categories, not subsystems; the emitting subsystem is the health-monitoring `PlatformNotifyMiddleware`). See [event-system.md §Legacy Aliases](../features/event-system.md#deprecation-legacy-event-names) for the full rename table.
