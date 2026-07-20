@@ -1,55 +1,45 @@
 # apcore
 
-> A schema-enforced module standard for the AI-Perceivable era: define a module once and have it invoked deterministically by code or by AI agents over MCP and A2A.
+apcore is a governed, protocol-neutral runtime and module standard for application capabilities that can be called by agents or code.
 
-apcore is the perception layer of the AI-Perceivable ecosystem. It constrains how agents call modules (schema + behavior annotations) to eliminate hallucinated tool calls, and verifies a single contract across Python, TypeScript, and Rust instead of hand-syncing it.
+## Canonical sources
 
-## Start Here
+- Protocol: https://github.com/aiperceivable/apcore/blob/main/docs/spec/protocol-spec.md
+- Scope: https://github.com/aiperceivable/apcore/blob/main/SCOPE.md
+- Roadmap: https://github.com/aiperceivable/apcore/blob/main/ROADMAP.md
+- Adopters: https://github.com/aiperceivable/apcore/blob/main/ADOPTERS.md
+- Documentation: https://apcore.aiperceivable.com/
 
-- [Project Overview](https://apcore.aiperceivable.com/): What apcore is, the problem it solves, and the "build once, invoke by code or AI" model.
-- [Core Concepts](https://apcore.aiperceivable.com/concepts/): Modules, schemas, behavior annotations, context, and the executor — the mental model behind apcore.
-- [Getting Started](https://apcore.aiperceivable.com/getting-started/): Install apcore and expose your first schema-enforced, AI-perceivable module in a few minutes.
-- [Glossary](https://apcore.aiperceivable.com/glossary/): Definitions of core terms used across the apcore ecosystem.
+## Current baseline
 
-## Concepts & Architecture
+- Protocol: 1.9.0-draft
+- Python SDK: 0.26.0
+- TypeScript SDK (`apcore-js`): 0.26.0
+- Rust SDK: 0.26.0
 
-- [Project Positioning](https://apcore.aiperceivable.com/POSITIONING/): Where apcore sits versus freeform tool-calling and why determinism matters for agents.
-- [Architecture Design](https://apcore.aiperceivable.com/architecture/): Registry, schema system, executor, and extension points that make up the framework.
-- [Documentation Map](https://apcore.aiperceivable.com/site-map/): Index of all documentation sections for navigation.
+## Runtime contract
 
-## Guides
+- required description, input schema, and output schema;
+- behavioral annotations;
+- identity, ACL, approval, and call-chain guards;
+- input/output validation and middleware;
+- structured errors, trace context, events, and usage hooks; and
+- one registry and execution pipeline across supported surfaces.
 
-- [Guides Overview](https://apcore.aiperceivable.com/guides/): Task-oriented guides for building, securing, and integrating apcore modules.
-- [Creating Modules](https://apcore.aiperceivable.com/guides/creating-modules/): Step-by-step guide to authoring a module with inputs, outputs, and behavior.
-- [Schema Definition](https://apcore.aiperceivable.com/guides/schema-definition/): How to define and constrain module schemas so agents call them correctly.
-- [Multi-Language](https://apcore.aiperceivable.com/guides/multi-language/): Sharing one verified contract across Python, TypeScript, and Rust implementations.
+Schemas make capability contracts machine-readable and validatable. They do not guarantee model understanding, tool selection, or autonomous recovery.
 
-## Features
+## Surface adapters
 
-- [Features Overview](https://apcore.aiperceivable.com/features/): Catalog of apcore's protocols, execution, security, and ops capabilities.
-- [Module Interface](https://apcore.aiperceivable.com/features/module-interface/): The contract every apcore module implements and how it is discovered.
-- [APCore Client](https://apcore.aiperceivable.com/features/apcore-client/): Invoking modules programmatically with deterministic, schema-validated calls.
-- [Schema System](https://apcore.aiperceivable.com/features/schema-system/): How schemas are defined, validated, and enforced at the call boundary.
-- [ACL System](https://apcore.aiperceivable.com/features/acl-system/): Access control governing which callers may invoke which modules.
-- [Observability](https://apcore.aiperceivable.com/features/observability/): Tracing, logging, and metrics for module execution.
+- apcore-mcp: MCP tool projection
+- apcore-a2a: A2A skill and Agent Card projection
+- apcore-cli: command and argument projection
+- framework integrations: HTTP endpoint bindings
+- native SDK: direct code invocation
 
-## Specifications
+MCP and A2A define communication surfaces. apcore defines and governs the application capability behind those surfaces.
 
-- [Framework Specs](https://apcore.aiperceivable.com/spec/): Authoritative protocol and framework specifications for apcore.
+## Boundaries
 
-## Ecosystem
+apcore is not a model, agent framework, orchestration engine, hosted control plane, marketplace, or autonomous code-generation system. Adjacent projects may consume apcore without becoming part of the normative protocol.
 
-- [apcore-mcp](https://apcore-mcp.aiperceivable.com/): MCP server & OpenAI tools bridge for apcore modules.
-- [apcore-a2a](https://apcore-a2a.aiperceivable.com/): Agent-to-Agent (A2A) protocol adapter.
-- [apcore-cli](https://apcore-cli.aiperceivable.com/): Expose apcore modules as command-line tools.
-- [apcore-toolkit](https://apcore-toolkit.aiperceivable.com/): Shared scanner, schema extraction, and output toolkit for adapters.
-- [apflow](https://apflow.aiperceivable.com/): Orchestration layer for long-running, multi-step agent task workflows.
-- [AI Perceivable (ecosystem hub)](https://aiperceivable.com/): Overview of the full ecosystem — apcore (perception), apflow (orchestration), and adapters.
-
-## Key Facts
-
-- apcore is the core/perception layer of the AI-Perceivable ecosystem.
-- Module standard with schema enforcement and behavior annotations for deterministic agent invocation.
-- Multi-language: Python, TypeScript, and Rust with a single verified contract.
-- Exposed over MCP, A2A, and a CLI via dedicated adapters (apcore-mcp, apcore-a2a, apcore-cli).
-- Open source. Source: https://github.com/aiperceivable/apcore
+License: Apache-2.0

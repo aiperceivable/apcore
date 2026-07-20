@@ -161,7 +161,7 @@ Level 1 adds permission control, middleware, basic observability, and structured
 
 ### 4.1 Overview
 
-Level 2 adds all extension points, async modules, hot loading, and advanced observability on top of Level 1. SDKs reaching this level are suitable for enterprise-grade, large-scale distributed scenarios.
+Level 2 adds all extension points, async modules, hot loading, and advanced observability on top of Level 1. Conformance at this level confirms feature coverage; deployment suitability still depends on workload testing, operational controls, and the implementation's support policy.
 
 ### 4.2 Must Implement (MUST)
 

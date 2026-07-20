@@ -4,17 +4,17 @@ description: "Navigable map of the apcore documentation tree, listing the index,
 
 # apcore Documentation
 
-> Complete technical documentation for the apcore (AI-Perceivable Core) standard.
+> Documentation map for the apcore governed, protocol-neutral runtime.
 
 This directory contains all technical documentation for apcore, covering core concepts, architecture design, feature specifications, usage guides, and standard specifications.
 For a project overview and quick start, see the [main README](index.md).
-For language SDK implementations, see [Implementations](index.md#implementations).
+For the supported adoption path, start with [Getting Started](getting-started.md).
 
 ## Directory Overview
 
 ```
 docs/
-├── index.md                           ← Project Overview (former README)
+├── index.md                           ← Documentation entry point
 ├── concepts.md                        ← Design philosophy & core concepts
 ├── architecture.md                    ← Framework technical architecture
 ├── site-map.md                        ← This file (Documentation Map)
@@ -51,7 +51,7 @@ docs/
     └── conformance.md                 ← Conformance level definitions
 ```
 
-Also see the root directory: [protocol-spec.md](./spec/protocol-spec.md) — Complete protocol specification in RFC style (4,450+ lines)
+Also see [protocol-spec.md](./spec/protocol-spec.md), the normative protocol specification.
 
 ## Documentation Structure
 
@@ -129,14 +129,14 @@ Quickly find authoritative definitions for concepts:
 | Concept | Authoritative Definition | Quick Reference |
 |---------|--------------------------|-----------------|
 | APCore Client | [apcore-client.md](./features/apcore-client.md) | [Getting Started](./getting-started.md) |
-| Module | [module-interface.md](./features/module-interface.md) | [README](index.md#module-development) |
-| ModuleAnnotations | [module-interface.md#moduleannotations](./features/module-interface.md#moduleannotations) | [README](index.md#schema-system) |
-| Context | [context-object.md](./features/context-object.md) | [README](index.md#context-object) |
-| Canonical ID | [protocol-spec.md §2](./spec/protocol-spec.md#2-naming-specification) | [README](index.md#directory-as-id) |
-| Registry | [registry-system.md](./features/registry-system.md) | [README](index.md#quick-start) |
-| Executor | [core-executor.md](./features/core-executor.md) | [README](index.md#quick-start) |
-| ACL | [protocol-spec.md §6](./spec/protocol-spec.md#6-acl-specification) | [README](index.md#acl-access-control) |
+| Module | [module-interface.md](./features/module-interface.md) | [Creating Modules](./guides/creating-modules.md) |
+| ModuleAnnotations | [module-interface.md#moduleannotations](./features/module-interface.md#moduleannotations) | [Schema Definition](./guides/schema-definition.md) |
+| Context | [context-object.md](./features/context-object.md) | [Getting Started](./getting-started.md) |
+| Canonical ID | [protocol-spec.md §2](./spec/protocol-spec.md#2-naming-specification) | [Creating Modules](./guides/creating-modules.md) |
+| Registry | [registry-system.md](./features/registry-system.md) | [Getting Started](./getting-started.md) |
+| Executor | [core-executor.md](./features/core-executor.md) | [Getting Started](./getting-started.md) |
+| ACL | [protocol-spec.md §6](./spec/protocol-spec.md#6-acl-specification) | [ACL Configuration](./guides/acl-configuration.md) |
 | ApprovalHandler | [approval-system.md](./features/approval-system.md) | [protocol-spec.md §7](./spec/protocol-spec.md#7-approval-system) |
-| Middleware | [middleware.md](./guides/middleware.md) | [README](index.md#middleware) |
+| Middleware | [middleware.md](./guides/middleware.md) | [Middleware System](./features/middleware-system.md) |
 
 For a single-page reference of all terminology see the [Glossary](./glossary.md).

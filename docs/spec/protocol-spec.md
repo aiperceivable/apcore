@@ -1,5 +1,5 @@
 ---
-description: "The canonical, normative apcore protocol specification (RFC 2119, v1.8.0-draft): module, schema, naming, ACL, approval, error, config, and observability requirements for all conforming SDKs."
+description: "The canonical, normative apcore protocol specification (RFC 2119, v1.9.0-draft): module, schema, naming, ACL, approval, error, config, and observability requirements for all conforming SDKs."
 ---
 
 # apcore — AI-Perceivable Core Standard Specification
@@ -49,16 +49,16 @@ description: "The canonical, normative apcore protocol specification (RFC 2119, 
 
 ### 1.1 Project Positioning
 
-apcore (AI-Perceivable Core) is a **schema-enforced module standard for the AI-Perceivable era**.
+apcore (AI-Perceivable Core) is a **governed, protocol-neutral runtime and module standard for agent-callable application capabilities**.
 
 **One-sentence definition**:
-> apcore is an AI-Perceivable module standard that makes every interface naturally perceivable and understandable by AI through enforced Schema definitions and behavioral annotations.
+> apcore defines and enforces the schemas, behavioral metadata, access rules, approval gates, and execution lifecycle of a capability before adapters expose it to MCP, A2A, CLI, HTTP, or direct code.
 
 **Positioning**:
-- **AI-Perceivable Module Standard**: Not just an AI framework, but a universal module standard that is naturally AI-Perceivable
-- **Enforced AI-Perceivable**: Schema is mandatory, making modules naturally perceivable and understandable by AI
-- **Complementary to MCP/A2A**: MCP/A2A define communication protocols, apcore defines module construction specifications
-- Foundation for other projects (such as apflow)
+- **Governed capability runtime**: apcore validates and governs application capabilities at the execution boundary
+- **Protocol-neutral definition**: a capability is defined once and projected through independently versioned adapters
+- **Complementary to MCP/A2A**: transport protocols define how peers communicate; apcore defines what is executed and which runtime rules are enforced
+- **Cross-language contract**: Python, TypeScript, and Rust SDKs implement the same normative specification
 
 ### 1.2 Core Principles
 
@@ -67,13 +67,13 @@ apcore (AI-Perceivable Core) is a **schema-enforced module standard for the AI-P
 | **Schema-driven** | All modules enforce definition of `input_schema` / `output_schema` / `description` |
 | **Three-layer Metadata** | Core (enforced Schema) + Annotations (behavior Annotations) + Extensions (free metadata) |
 | **Directory as ID** | Directory path automatically maps to module ID, zero manual configuration |
-| **AI-Perceivable** | Schema + Annotations enable AI/LLM to perceive and understand modules, this is a design requirement |
-| **Universal Standard** | Modules can be called by code/AI/HTTP/CLI in any manner |
+| **Agent-readable** | Schema + annotations give agents structured capability metadata without promising model comprehension |
+| **Protocol-neutral** | Adapters can project the same governed capability to code, MCP, A2A, CLI, or HTTP surfaces |
 
 ### 1.3 Design Goals
 
-- **Universality**: Modules can be called by code, AI, HTTP, CLI, etc. in any manner
-- **AI Perceptibility**: Enforced Schema ensures LLM can perceive and understand modules
+- **Protocol neutrality**: Modules can be exposed through code, MCP, A2A, CLI, HTTP, and future adapters
+- **Agent readability**: Enforced schemas make capability contracts machine-readable and independently validatable
 - **Developer Experience**: Directory as ID, zero configuration, automatic discovery
 - **Cross-language**: Specification supports implementation in any programming language, Python as reference implementation
 - **Extensibility**: ACL, middleware, observability
@@ -91,8 +91,8 @@ apcore is a **module construction specification**, MCP/A2A is a **communication 
 └─────────────────────────────────────────────────────────────┘
                            ↓ Modules can be exposed as
 ┌─────────────┬─────────────┬─────────────┬─────────────────┐
-│ MCP Server  │  HTTP API   │  CLI Tool   │  gRPC Service   │
-│ (Claude)    │  (REST)     │  (Terminal) │  (Microservice) │
+│ MCP Server  │  HTTP API   │  CLI Tool   │  Direct Code    │
+│ (Clients)   │  (Adapters) │  (Terminal) │  (Native SDK)   │
 └─────────────┴─────────────┴─────────────┴─────────────────┘
 ```
 

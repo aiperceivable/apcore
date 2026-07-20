@@ -5,23 +5,23 @@
 ## 1. Project Positioning
 
 **One-line definition**:
-> apcore (AI-Perceivable Core) is an AI-Perceivable module standard that makes every interface naturally perceivable and understandable by AI through enforced Schema definitions and behavioral annotations.
+> apcore is a governed, protocol-neutral runtime and module standard for agent-callable application capabilities.
 
 **Slogan**:
-> Build once, invoke by Code or AI.
+> Define a governed capability once. Expose it through any supported surface.
 
 **Core problem**:
-> How to build modules that can be both invoked by code and perceived and understood by AI/LLMs?
+> How can one application capability retain the same validation and governance rules when called by code, agents, or protocol adapters?
 
 **Answer**:
-> Enforce modules to define `input_schema` / `output_schema` / `description`, making modules inherently AI-Perceivable.
+> Require `input_schema`, `output_schema`, and `description`, then enforce ACL, approval, validation, middleware, and observability in one execution pipeline.
 
 **Positioning**:
 ```
-apcore = AI-Perceivable module standard + Enforced Schema definitions
+apcore = governed capability runtime + module standard + enforced schemas
 
 Not: A framework that can only be used in AI scenarios
-But: A universal module standard that is naturally AI-Perceivable
+But: A protocol-neutral definition and execution boundary for application capabilities
 ```
 
 **Analogy**:

@@ -4,7 +4,7 @@ description: "Quick-start for apcore: install the Python, TypeScript, or Rust SD
 
 # Getting Started
 
-apcore defines the **Cognitive Interface** for your application. It ensures your logic is naturally perceivable by AI Agents through enforced schemas, behavioral guardrails, and self-healing error guidance — enabling AI Self-Repair and Self-Evolution.
+apcore defines a governed, agent-readable capability boundary for your application. It combines enforced schemas, behavioral metadata, access rules, approval gates, and structured error guidance without promising that a model will select or repair a call automatically.
 
 Whether you are building from scratch or upgrading a legacy system, apcore provides a path for you. See [Choose Your Integration Path](./guides/creating-modules.md#choose-your-integration-path) for details.
 

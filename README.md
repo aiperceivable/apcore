@@ -4,7 +4,7 @@
 
 # apcore — AI-Perceivable Core
 
-> **AI-Perceivable**: When modules, interfaces, and tools are clearly perceived by AI, the model can understand their structure and purpose, and therefore know exactly how to invoke, orchestrate, and act on them. From perception → cognition → execution.
+> **AI-Perceivable**: application capabilities expose machine-readable contracts and behavioral metadata so agents do not need to infer basic invocation rules from prose.
 
 **[📖 Full Documentation](https://aiperceivable.github.io/apcore/)** · [Getting Started](https://aiperceivable.github.io/apcore/getting-started/) · [Protocol Spec](./docs/spec/protocol-spec.md)
 
@@ -16,11 +16,11 @@
 
 
 
-> **Build once, invoke by Code or AI.**
+> **Define a governed capability once. Expose it through any supported surface.**
 
-A schema-enforced module standard for the AI-Perceivable era.
+A governed, protocol-neutral runtime and module standard for agent-callable application capabilities.
 
-apcore is an **AI-Perceivable module standard** that makes every interface naturally perceivable and understandable by AI through enforced Schema definitions and behavioral annotations.
+apcore enforces schemas, behavioral annotations, ACL rules, approval gates, middleware, and observability at the execution boundary. Surface adapters then project the same capability to MCP, A2A, CLI, HTTP, or direct code.
 
 **apcore is a protocol specification.** Language implementations are maintained in separate repositories:
 
@@ -70,13 +70,13 @@ apcore is an **AI-Perceivable module standard** that makes every interface natur
 
 ## What is apcore?
 
-apcore is an **AI-Perceivable module standard** that makes every module naturally perceivable and understandable by AI through enforced Schema definitions.
+apcore is a **governed capability runtime and module standard**. It gives agents and code a machine-readable contract while enforcing validation and governance before business logic runs.
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                apcore — AI-Perceivable Core                 │
 │                                                             │
-│  AI-Perceivable module standard + Enforced Schema          │
+│  Governed capability runtime + enforced schemas            │
 │  - Directory as ID (zero-config module discovery)          │
 │  - Schema-driven (input/output mandatory)                  │
 │  - ACL / Observability / Middleware                        │
@@ -85,43 +85,42 @@ apcore is an **AI-Perceivable module standard** that makes every module naturall
       ┌──────────┬──────────┬──────────┬──────────┐
       │          │          │          │          │
   Legacy Code  AI/LLM    HTTP API    CLI Tool   MCP Server
-   (import)  (understands) (REST)    (terminal)  (Claude)
+   (import)    (agent)     (REST)    (terminal)  (client)
 ```
 
-**Not just an AI framework, but a module standard that is naturally AI-Perceivable.**
+**A protocol-neutral execution contract, not an agent framework or transport protocol.**
 
 ### The Concept: Cognitive Interface
 
-Traditional software provides **UI** for humans and **API** for programs. apcore provides the **Cognitive Interface** for AI Agents:
-- **Intent-Oriented**: AI thinks in "What to do" (Intents), not "Which endpoint to call".
-- **Strict Contracts**: Mandatory schemas ensure AI uses your tools correctly every time.
-- **Behavioral Personality**: Annotations like `readonly` and `destructive` guide Agent decisions.
+Traditional software provides UI for humans and APIs for programs. apcore adds an **agent-readable capability contract**:
+- **Machine-readable intent**: descriptions and schemas expose what an operation accepts and returns.
+- **Strict contracts**: mandatory schemas let the runtime validate every input and output.
+- **Behavioral metadata**: annotations such as `readonly` and `destructive` inform policy and callers.
 
-### Why Not Just Use Existing MCP Solutions?
+### How apcore Complements MCP
 
-Today, many projects build their own MCP servers independently — Stripe has one, TipTap has one, NestJS has one. Each uses different interfaces, different standards, and none provides a programmable SDK. The result is a fragmented ecosystem where developers must learn a new approach for every integration.
+MCP defines client-server communication and tool metadata. apcore addresses a different boundary: defining and executing application capabilities consistently before they are exposed through MCP or another surface.
 
-apcore takes a different path: **SDK-first, standard-unified**.
-
-| | Fragmented MCP Solutions | apcore |
+| Concern | MCP | apcore |
 |---|---|---|
-| **Programmable SDK** | No — only MCP servers | Yes — `apcore-python`, `apcore-typescript` |
-| **Unified Standard** | No — each project rolls its own | Yes — same schema, annotations, ACL across all integrations |
-| **Behavioral Annotations** | None or minimal | `readonly`, `destructive`, `requires_approval`, `idempotent`, `open_world` |
-| **Access Control** | None | Pattern-based ACL with role support |
-| **Audit Trail** | None | Built-in tracing, metrics, structured logging |
-| **Cross-Language** | Per-language silos | Python and TypeScript with identical behavior |
+| **Primary role** | Client-server protocol and tool surface | Capability definition and governed execution runtime |
+| **Schema and hints** | Tool input/output schemas and annotations | Required schemas plus runtime-enforced validation and governance |
+| **Access and approval** | Implemented by the server or deployment | ACL and approval gates enforced by the execution pipeline |
+| **Auditability** | Implemented by the server or deployment | Trace context, structured errors, events, and usage hooks |
+| **Language model** | Protocol SDKs | Semantically aligned Python, TypeScript, and Rust SDKs |
+
+Use MCP directly when a protocol server is all you need. Add apcore when the same business capability must retain validation, access, approval, and audit semantics across MCP, CLI, HTTP, and direct code.
 
 ### Core Problem
 
 Traditional module development faces a fundamental contradiction:
 
 ```
-Traditional modules: Code can call, but AI cannot understand
-AI-Perceivable modules: Code can call, AI can also perceive and understand
+Traditional modules: callers depend on code-specific signatures and prose
+apcore modules: callers receive a structured contract enforced at runtime
 ```
 
-AI has become an important caller in software systems, but most modules lack AI-understandable metadata. apcore fundamentally solves this by **enforcing** `input_schema` / `output_schema` / `description`.
+Agents have become important callers in software systems, but many application operations lack a portable, enforced contract. apcore addresses this by requiring `input_schema`, `output_schema`, and `description`, then applying governance in the execution pipeline.
 
 ### One-Sentence Summary
 
@@ -132,15 +131,13 @@ AI has become an important caller in software systems, but most modules lack AI-
 
 ## Why AI-Perceivable?
 
-> Once perceived by the AI, it becomes understood, and the AI knows exactly how to act.
-
-**Perceivable by AI → Understandable by AI → Usable by AI**
+Machine-readable metadata reduces avoidable interface guessing. Model selection and semantic understanding remain caller responsibilities.
 
 | Stage | Meaning | apcore Mechanism |
 |-------|---------|-----------------|
 | **Perceived** | AI can discover and read the module | Schema-enforced `description`, `input_schema`, `output_schema` |
-| **Understood** | AI knows *when* and *how* to use it | Behavioral annotations (`x-when-to-use`, `x-common-mistakes`) |
-| **Executed** | AI invokes it correctly and recovers from errors | `ai_guidance`, `user_fixable`, `requires_approval`, self-healing |
+| **Interpreted** | A caller can inspect intended use and behavioral hints | Behavioral annotations (`x-when-to-use`, `x-common-mistakes`) |
+| **Governed** | The runtime decides whether and how the call executes | ACL, `requires_approval`, validation, structured errors |
 
 ### The AI Collaboration Lifecycle
 
@@ -155,7 +152,7 @@ apcore organizes module metadata into a coherent lifecycle that guides an Agent 
 
 | Scenario | Without apcore | With apcore |
 |------|------------|------------|
-| LLM calling your business functions | Manually write tool descriptions, map parameters | Schema auto-provided, LLM understands directly |
+| LLM calling your business functions | Manually duplicate tool descriptions and parameter maps | Adapters project the enforced module schema |
 | New team members onboarding | Read source code, guess parameters | Clear from Schema + annotations |
 | Cross-team module reuse | Outdated docs, unclear interfaces | Schema is doc, enforced validation |
 | Security audit | Manually trace call relationships | ACL + call chain auto-tracked |
@@ -166,7 +163,7 @@ apcore organizes module metadata into a coherent lifecycle that guides an Agent 
 ```
 Reality: AI has become a key caller in software systems
 Decision: Enforce input_schema / output_schema / description
-Result: Modules understandable by both humans and AI, no extra cost
+Result: One machine-readable contract can be validated across supported surfaces
 ```
 
 ---
@@ -445,46 +442,18 @@ Send emails via SMTP protocol, supporting plain text and HTML formats.
 
 ## Version Compatibility
 
-The apcore ecosystem ships in coordinated version lines — packages sharing
-the same minor version are tested to work together. Snapshot below is the
-**currently tested combination** (2026-05-18). Mirror tables live in
-[`apcore-cli` README](https://github.com/aiperceivable/apcore-cli#version-compatibility)
-and [`apcore-toolkit` README](https://github.com/aiperceivable/apcore-toolkit#version-compatibility).
+The repositories below are the current maintained release lines as of
+**2026-07-16**. Core SDKs are version-aligned; adapters have independent
+version lines and declare their supported core range in their package metadata.
 
 | Component | Version | Notes |
 |---|---|---|
-| **apcore** (spec) | 0.22.0 | this repo — `docs/spec/protocol-spec.md` v1.9.0-draft |
-| apcore-python | 0.22.0 | |
-| apcore-typescript (`apcore-js` on npm) | 0.22.0 | |
-| apcore-rust | 0.22.0 | |
-| **apcore-toolkit** (spec) | 0.7.0 | |
-| apcore-toolkit-python | 0.7.0 | |
-| apcore-toolkit-typescript | 0.7.0 | |
-| apcore-toolkit-rust | 0.7.0 | |
-| **apcore-cli** (spec) | 0.9.0 | |
-| apcore-cli-python | 0.10.0 | bumped for 6.1 / 6.2 fixes |
-| apcore-cli-typescript | 0.10.0 | bumped for 6.1 / 6.2 fixes |
-| apcore-cli-rust | 0.10.0 | bumped for 6.2 fix (removed `toolkit` Cargo feature; ADR-07 landed) |
-| **apcore-mcp** (spec) | 0.15.0 | |
-| apcore-mcp-python | 0.15.0 | |
-| apcore-mcp-typescript | 0.15.0 | |
-| apcore-mcp-rust | 0.15.0 | |
-
-### Known dependency-pin divergence (tracked as issue 6.8)
-
-All three apcore-cli packages declare `apcore-toolkit` as a **required**
-runtime dependency, but their version-pin strategies currently differ:
-
-| Language | Declared pin | Effective range |
-|---|---|---|
-| Python | `apcore-toolkit>=0.7.0` | open upper bound — accepts future toolkit minors |
-| TypeScript | `"apcore-toolkit": ">=0.7.0"` | open upper bound — accepts future toolkit minors |
-| Rust | `apcore-toolkit = "=0.7.0"` | **exact pin** — blocks future toolkit minors until manually bumped |
-
-The divergence is acknowledged and will be reconciled by adopting consistent
-caret semantics (`^0.7` / `>=0.7,<0.8` etc.) across all three packages in a
-follow-up coordinated release. Until then, ecosystem-wide upgrades to
-`apcore-toolkit 0.8+` require a synchronized re-release of the Rust pin.
+| **Protocol specification** | 1.9.0-draft | `docs/spec/protocol-spec.md` |
+| apcore Python / TypeScript / Rust | 0.26.0 | Core SDK release line |
+| apcore-mcp Python / TypeScript / Rust | 0.17.2 | MCP surface adapters |
+| apcore-a2a Python / TypeScript / Rust | 0.4.4 | A2A surface adapters |
+| apcore-cli Python / TypeScript / Rust | 0.10.4 | CLI surface adapters |
+| apcore-toolkit Python / TypeScript / Rust | 0.10.1 | Adapter-building utilities |
 
 ## Configuration Requirements
 - SMTP server information must be configured in apcore.yaml

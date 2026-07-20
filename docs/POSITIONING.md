@@ -1,340 +1,115 @@
 ---
-description: "Positions apcore as a protocol-agnostic module standard complementary to MCP, A2A, CLI, and REST, where surface adapters bridge one module definition onto each delivery protocol."
+description: "Positions apcore as a governed, protocol-neutral runtime for agent-callable application capabilities, complementary to MCP, A2A, CLI, HTTP, and direct code."
 ---
 
-# apcore: The Module Standard Every AI Interface Builds On
+# apcore Positioning
 
-> **TL;DR**: apcore is **complementary to MCP, A2A, and other protocols — not a replacement for them.** It is a foundational module standard, not tied to any single protocol: you define a module once with enforced schemas, behavioral annotations, and access control, and surface adapters bridge that one definition onto each protocol (MCP via `apcore-mcp`, CLI via `apcore-cli`, REST via framework adapters, …). apcore solves **how to build AI-perceivable modules**; protocols solve **how to deliver** them — the two layers work together.
+> **In one sentence:** apcore is a governed, protocol-neutral runtime and module standard for application capabilities that can be called by agents or code.
 
----
+## The Problem apcore Owns
 
-## The Core Idea
+Agents can only use application capabilities reliably when four things remain aligned:
 
-```
-"Build once, invoke by Code or AI — through any protocol."
-```
+1. the input and output contract;
+2. the behavioral meaning of the operation;
+3. the rules that decide whether the call may execute; and
+4. the evidence produced after execution.
 
-Traditional software has **UI** for humans and **API** for programs. apcore adds a third interface: the **Cognitive Interface** for AI Agents — modules that AI can perceive, understand, and invoke correctly.
+Protocol servers can publish tools, but each server still has to implement those runtime rules. Application teams also need the same capability to behave consistently when it is called from direct code, a CLI, an HTTP endpoint, MCP, or A2A.
 
----
+apcore owns that execution boundary. It defines a capability once, validates the contract, applies ACL and approval policy, runs middleware, executes the implementation, validates the result, and emits traceable outcome data.
 
-## Where apcore Sits in the Stack
+## Where apcore Sits
 
-```
-┌──────────────────────────────────────────────────────────┐
-│                   AI Clients / Callers                   │
-│     Claude   Cursor   GPT   Other Agents   Human CLI     │
-└────────┬──────────┬──────────┬──────────┬──────────┬─────┘
-         │          │          │          │          │
-         ▼          ▼          ▼          ▼          ▼
-┌──────────────────────────────────────────────────────────┐
-│                     Surface Adapters                     │
-│           MCP    A2A    CLI    REST    Future…           │
-└────────┬──────────┬──────────┬──────────┬──────────┬─────┘
-         │          │          │          │          │
-         ▼          ▼          ▼          ▼          ▼
-┌──────────────────────────────────────────────────────────┐
-│                  apcore Module Standard                  │
-│                                                          │
-│  ┌────────────────────────────────────────────────────┐  │
-│  │ Execution Engine (11-step pipeline)                │  │
-│  │ ACL → Approval → Validation → Middleware →         │  │
-│  │ Execute → Validation → Middleware → Return         │  │
-│  └────────────────────────────────────────────────────┘  │
-│                                                          │
-│  ┌────────────────────────────────────────────────────┐  │
-│  │ Registry (auto-discovery, ID mapping, caching)     │  │
-│  └────────────────────────────────────────────────────┘  │
-│                                                          │
-│  ┌────────────────────────────────────────────────────┐  │
-│  │ Modules (user-written business logic)              │  │
-│  │ Enforced: input_schema + output_schema +           │  │
-│  │           description + annotations + ACL          │  │
-│  └────────────────────────────────────────────────────┘  │
-│                                                          │
-│          Python SDK · TypeScript SDK · Rust SDK          │
-└──────────────────────────────────────────────────────────┘
+```text
+Application code and framework endpoints
+                    │
+                    ▼
+┌───────────────────────────────────────────────┐
+│ apcore capability definition and runtime     │
+│                                               │
+│ schema · annotations · identity · ACL         │
+│ approval · middleware · execution · audit     │
+└───────────────────────────────────────────────┘
+                    │
+                    ▼
+┌──────────┬──────────┬──────────┬──────────────┐
+│ MCP      │ A2A      │ CLI      │ HTTP / code  │
+│ adapter  │ adapter  │ adapter  │ integrations │
+└──────────┴──────────┴──────────┴──────────────┘
 ```
 
-**apcore is not at the same layer as MCP, A2A, or CLI — it is complementary to them.** It is the definition layer each of these protocols projects from: you write the module once, and every protocol builds its own surface on top of that single definition.
-
----
-
-## One Module, Every Surface
-
-Define a module once:
-
-```python
-@module(
-    id="email.send",
-    description="Send an email to a recipient",
-    annotations={"destructive": False, "idempotent": True}
-)
-def send_email(to: str, subject: str, body: str) -> dict:
-    return {"success": True, "message_id": "..."}
-```
-
-Expose through any surface — zero duplication:
-
-| Surface | Adapter | What It Does |
-|---------|---------|-------------|
-| **MCP Server** | `apcore-mcp` | Auto-projects modules as MCP tools for Claude, Cursor |
-| **A2A Agent** | `apcore-a2a` | Auto-generates Agent Cards, exposes modules as agent skills |
-| **CLI Tool** | `apcore-cli` | Auto-maps modules to terminal commands with argument parsing |
-| **REST API** | `flask-apcore`, `fastapi-apcore`, `django-apcore`, `nestjs-apcore`, `axum-apcore` | Auto-generates HTTP endpoints |
-| **Direct Code** | Native SDK | Import and call in Python, TypeScript, or Rust |
-| **Future** | Community adapters | gRPC, GraphQL, OpenAI Tools, or any new protocol |
-
-Each adapter reads the same module definition and translates it to the target protocol. The module itself never changes.
-
-### Surface-Specific Display Overlays
-
-Each surface can customize how a module is presented — without changing the canonical definition:
-
-```yaml
-bindings:
-  - module_id: "executor.delete_user"
-    display:
-      cli:
-        alias: "remove-user"
-        tags: ["dangerous", "admin-only"]
-      mcp:
-        alias: "delete_user"
-      a2a:
-        alias: "user.delete"
-```
-
-Same module, optimized presentation for each protocol.
-
----
+apcore is not a transport protocol, an agent framework, an orchestration engine, or a hosted control plane. Those systems can use apcore, but they are not part of the core contract.
 
 ## What apcore Enforces
 
-### 1. Schema Enforcement
+### Required capability contract
 
-Every module **must** declare `input_schema`, `output_schema`, and `description`. This is not optional — AI agents receive guaranteed-accurate type information regardless of which surface they use.
+Every module has a description plus input and output schemas. The runtime validates calls against those schemas. This makes the contract machine-readable and testable; it does not guarantee that a model will choose the right tool or interpret its purpose correctly.
 
-### 2. Three-Layer Metadata
+### Runtime governance
 
-```
-┌──────────────────────────────────────────────────────┐
-│ CORE (Required)                                      │
-│ input_schema / output_schema / description           │
-│ → AI perceives: "what this module does"              │
-├──────────────────────────────────────────────────────┤
-│ ANNOTATIONS (Recommended)                            │
-│ readonly / destructive / requires_approval /         │
-│ idempotent / open_world / cacheable / paginated      │
-│ → AI understands: "how to use it safely"             │
-├──────────────────────────────────────────────────────┤
-│ EXTENSIONS (Optional)                                │
-│ x-when-to-use / x-common-mistakes / x-cost-per-call  │
-│ x-preconditions / x-rate-limit                       │
-│ → AI gains wisdom: "when and why to use it"          │
-└──────────────────────────────────────────────────────┘
-```
+Behavioral annotations describe properties such as `readonly`, `destructive`, `idempotent`, `requires_approval`, and `open_world`. ACL, identity, approval policy, and call-chain guards turn those properties into enforceable execution decisions.
 
-### 3. Behavioral Annotations as Cognitive Signals
+### Consistent execution
 
-| Annotation | Signal to AI | Effect |
-|------------|-------------|--------|
-| `readonly=True` | "Safe to call autonomously" | No confirmation needed |
-| `destructive=True` | "Irreversible operation" | AI requests human confirmation |
-| `requires_approval=True` | "Must have explicit consent" | Execution pauses for approval |
-| `idempotent=True` | "Safe to retry" | AI can retry on failure |
-| `open_world=True` | "Connects to external system" | AI informs user |
-| `cacheable=True` | "Output can be reused" | AI avoids redundant calls |
-| `paginated=True` | "Returns partial results" | AI handles cursor/offset |
+The execution pipeline applies lookup, safety checks, access control, approval, input validation, middleware, execution, output validation, and result handling in a specified order.
 
-### 4. Access Control (ACL)
+### Operational evidence
 
-Pattern-based, role-aware governance — enforced at the module level, applied consistently across all surfaces:
+Trace context, structured errors, events, metrics hooks, and usage exporters make calls inspectable. Deployments choose their storage, retention, and compliance policy; apcore supplies the runtime signals rather than claiming compliance on their behalf.
 
-```yaml
-rules:
-  - callers: ["api.*"]
-    targets: ["orchestrator.*"]
-    effect: allow
-  - callers: ["api.*"]
-    targets: ["executor.*"]
-    effect: deny
-  - callers: ["@external"]
-    targets: ["executor.payment.*"]
-    conditions:
-      roles: ["admin", "finance"]
-    effect: allow
-default_effect: deny
-```
+## Relationship to MCP and A2A
 
-Whether a module is invoked via MCP, CLI, REST, or direct code — the same ACL applies.
+MCP and A2A define communication surfaces. apcore defines and governs the capability behind a surface.
 
-### 5. AI-Guided Error Recovery
+MCP already supports tool schemas and annotations. apcore does not claim those features are absent. Its value is that the same schema and governance rules can be enforced before a call reaches business logic and reused outside MCP.
 
-Every error includes guidance for autonomous AI recovery:
+The official adapters are independently versioned projects:
 
-```json
-{
-  "code": "SCHEMA_VALIDATION_ERROR",
-  "message": "Invalid input",
-  "ai_guidance": "The user_id must be UUID format. Check the user record and retry.",
-  "retryable": false,
-  "user_fixable": true
-}
-```
+| Surface | Project | Role |
+|---|---|---|
+| MCP | `apcore-mcp` | Project registered modules as MCP tools |
+| A2A | `apcore-a2a` | Project modules as A2A skills and Agent Card metadata |
+| CLI | `apcore-cli` | Map module schemas to commands and arguments |
+| HTTP frameworks | `fastapi-apcore`, `django-apcore`, `flask-apcore`, `nestjs-apcore`, `axum-apcore` | Bind framework endpoints and apcore modules |
+| Direct code | Core SDK | Register and invoke modules without a transport adapter |
 
-### 6. 11-Step Execution Pipeline
+Use a protocol SDK directly when a protocol surface is the only requirement. Use apcore when validation, access, approval, and audit semantics must stay consistent across more than one caller or surface.
 
-Every module invocation, regardless of surface, passes through:
+## Supported Implementations
 
-1. **Context processing** — trace_id, caller_id, call_chain
-2. **Safety checks** — depth limit, circular call detection
-3. **Module lookup** — from Registry
-4. **ACL enforcement** — permission verification
-5. **Approval gate** — human approval if required
-6. **Input validation** — against input_schema
-7. **Middleware before** — auth, logging, transformation
-8. **Module execution** — business logic with timeout
-9. **Output validation** — against output_schema
-10. **Middleware after** — post-processing
-11. **Result return** — with trace metadata
+The normative protocol is implemented in Python, TypeScript, and Rust. Cross-language consistency means shared protocol behavior and conformance expectations, not identical internal code structure.
 
-This pipeline guarantees that every call is validated, governed, observable, and auditable — no matter how it arrives.
+Language SDKs and adapters have separate release lifecycles. Refer to package metadata and each adapter's compatibility declaration rather than assuming all ecosystem packages share one version.
 
----
+## Adoption Path
 
-## The Cognitive Interface Lifecycle
+The primary adoption path is deliberately narrow:
 
-Traditional software provides UI for humans and API for programs. apcore provides the **Cognitive Interface** for AI:
+1. start with one existing application capability;
+2. define its schema and behavioral annotations;
+3. invoke it through the native SDK with validation, ACL, approval, and trace context;
+4. expose it through `apcore-mcp` or another required surface; and
+5. verify that denied, approved, failed, and successful calls produce the expected evidence.
 
-```
-1. DISCOVERY     →  description, schema
-   "I see a tool that handles payments"
+Only add orchestration, discovery services, or additional surfaces after this path creates measurable value.
 
-2. STRATEGY      →  x-when-to-use, x-common-mistakes
-   "I should use this for refunds, not for new charges"
+## Claims Discipline
 
-3. GOVERNANCE    →  requires_approval, destructive, ACL
-   "This is destructive — I need human approval first"
+Project documentation and websites must distinguish among:
 
-4. RECOVERY      →  ai_guidance, retryable
-   "Input was wrong — I'll fix the format and retry"
-```
+- **implemented**: present in released code and covered by the repository's tests;
+- **supported**: documented with a maintained compatibility contract;
+- **experimental**: available for evaluation without a stability promise; and
+- **planned**: a roadmap item, not a current capability.
 
-This lifecycle works identically whether the AI reaches the module through MCP, A2A, CLI, REST, or any future protocol.
+Do not use maturity claims such as “enterprise-grade” or “production ready” without published adoption evidence and an explicit support policy. Do not describe research documents or adjacent projects as part of the normative apcore contract.
 
----
+## Source of Truth
 
-## How apcore Relates to Each Protocol
-
-### MCP (Model Context Protocol)
-
-| | MCP | apcore |
-|---|-----|--------|
-| **Layer** | Transport — client-server communication | Foundation — module definition and governance |
-| **Solves** | How to send messages between Claude and a tool server | How to build modules that are perceivable, governed, and validated |
-| **Bridge** | `apcore-mcp` auto-projects modules as MCP tools | |
-| **Annotation mapping** | `readOnlyHint`, `destructiveHint` | `readonly`, `destructive`, `requires_approval`, `idempotent`, `cacheable`, `paginated` |
-
-**apcore-mcp** auto-discovers modules from the Registry and exposes them as MCP tools — zero code changes. Annotations, schemas, and ACL are preserved through the bridge.
-
-### A2A (Agent-to-Agent Protocol)
-
-| | A2A | apcore |
-|---|-----|--------|
-| **Layer** | Communication — agent-to-agent messaging | Foundation — module/skill definition |
-| **Solves** | How agents discover and communicate with each other | How to define the skills that agents expose |
-| **Bridge** | `apcore-a2a` auto-generates Agent Cards and skill endpoints | |
-| **Discovery** | `/.well-known/agent.json` | Auto-generated from module registry |
-
-**apcore-a2a** transforms apcore modules into A2A-compatible agent skills with auto-generated Agent Cards — including identity, capabilities, and governance metadata.
-
-### CLI (Command-Line Interface)
-
-| | Traditional CLI | apcore |
-|---|-----|--------|
-| **Layer** | Presentation — terminal commands | Foundation — module definition |
-| **Solves** | How to parse arguments and format output | How to define the operations behind commands |
-| **Bridge** | `apcore-cli` auto-maps modules to commands | |
-| **Parameters** | Manual argparse/click | Auto-inferred from input_schema |
-
-**apcore-cli** generates CLI commands from module definitions — argument parsing, help text, and input validation come from the schema automatically.
-
-### REST / Web Frameworks
-
-| | Traditional REST | apcore |
-|---|-----|--------|
-| **Layer** | Presentation — HTTP endpoints | Foundation — module definition |
-| **Solves** | How to route HTTP requests | How to define the logic behind endpoints |
-| **Adapters** | `flask-apcore`, `fastapi-apcore`, `django-apcore`, `nestjs-apcore`, `axum-apcore` | |
-| **Routes** | Manual endpoint definition | Auto-mapped from module ID |
-
-Framework adapters scan the module registry and generate HTTP endpoints — with request/response validation, ACL enforcement, and observability built in.
-
-### Future Protocols
-
-apcore's adapter architecture is extensible. Any new protocol can be supported by writing an adapter that reads from the module registry. Potential future surfaces include:
-
-- **gRPC** — auto-generate .proto from module schemas
-- **GraphQL** — auto-generate queries/mutations from modules
-- **OpenAI Tools** — project modules as OpenAI function calls
-- **WebSocket** — streaming module invocation
-- **Any protocol not yet invented** — the module standard remains stable
-
----
-
-## Cross-Language Consistency
-
-The same module specification works across Python, TypeScript, and Rust:
-
-```
-apcore Protocol Specification (language-agnostic)
-        ↓
-┌───────────────┬────────────────┬──────────────┐
-│ apcore-python │ apcore-ts      │ apcore-rust  │
-│ pip install   │ npm install    │ cargo add    │
-└───────┬───────┴────────┬───────┴──────┬───────┘
-        ↓                ↓              ↓
-   Same schemas, same annotations, same ACL,
-   same 11-step pipeline, same behavior
-```
-
-A module defined in Python behaves identically when ported to TypeScript or Rust. Cross-language conformance tests verify this.
-
----
-
-## Four Integration Paths
-
-apcore supports progressive adoption for existing codebases:
-
-| Path | Intrusion Level | Approach |
-|------|----------------|----------|
-| **Class-based Module** | Full adoption | Implement `Module` interface with explicit schemas |
-| **@module Decorator** | Low intrusion | Decorate existing functions, schemas auto-inferred |
-| **module() Function** | Very low intrusion | Wrap existing methods at registration time |
-| **External YAML Binding** | Zero code modification | Map existing functions via external config files |
-
----
-
-## Summary
-
-| Question | Answer |
-|----------|--------|
-| **What is apcore?** | A module standard for AI-perceivable tools — enforced schemas, behavioral annotations, access control |
-| **What does it solve?** | How to build modules that any AI can perceive, understand, and invoke correctly |
-| **What doesn't it solve?** | Transport protocols, workflow orchestration, LLM invocation — those are separate concerns |
-| **Relationship to MCP?** | MCP is one surface. apcore modules auto-expose as MCP tools via `apcore-mcp` |
-| **Relationship to A2A?** | A2A is one surface. apcore modules auto-expose as agent skills via `apcore-a2a` |
-| **Relationship to CLI?** | CLI is one surface. apcore modules auto-expose as commands via `apcore-cli` |
-| **Relationship to REST?** | REST is one surface. Framework adapters auto-generate endpoints |
-| **Cross-language?** | Python, TypeScript, Rust — identical behavior guaranteed |
-| **Extensible?** | Any future protocol can be supported by writing an adapter |
-
-**Protocols deliver; the module standard defines — apcore is the definition layer every protocol projects from.**
-
----
-
-## Links
-
-* **Official Website:** [aiperceivable.com](https://aiperceivable.com) (Vision & Concept)
-* **Protocol Core & Documentation:** [apcore.aiperceivable.com/POSITIONING/](https://apcore.aiperceivable.com/POSITIONING/) (The Architecture Standard)
-* **GitHub Organization:** [github.com/aiperceivable](https://github.com/aiperceivable) (Open Source Ecosystem & SDKs)
+- [Protocol specification](spec/protocol-spec.md) — normative behavior
+- [Scope](https://github.com/aiperceivable/apcore/blob/main/SCOPE.md) — project boundaries
+- [Roadmap](https://github.com/aiperceivable/apcore/blob/main/ROADMAP.md) — current priorities and gates
+- [Adopters](https://github.com/aiperceivable/apcore/blob/main/ADOPTERS.md) — public adoption evidence
+- Language repository package metadata — released SDK versions

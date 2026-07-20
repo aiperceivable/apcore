@@ -10,7 +10,7 @@ description: "ModuleError hierarchy with code/message/timestamp and AI-guidance 
 
 ## Overview
 
-The Error System provides a structured, hierarchical error model designed for both human developers and AI agents. Every error carries a unique code, a human-readable message, and optional AI guidance fields that enable self-healing agents to diagnose and recover from failures without human intervention. The system also includes an extensible error code registry and a formatter registry for surface-specific error rendering.
+The Error System provides a structured, hierarchical error model for human developers and automated callers. Every error carries a unique code, a human-readable message, and optional guidance fields that a caller may use to diagnose a failure or choose a recovery path. The system also includes an extensible error code registry and a formatter registry for surface-specific error rendering.
 
 ## Requirements
 
