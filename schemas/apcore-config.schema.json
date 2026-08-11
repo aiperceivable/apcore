@@ -4,7 +4,13 @@
   "title": "apcore Configuration Schema",
   "description": "JSON Schema for validating apcore.yaml configuration files. Based on PROTOCOL_SPEC Section 8.",
   "type": "object",
-  "required": ["version", "project", "extensions", "schema", "acl"],
+  "required": [
+    "version",
+    "project",
+    "extensions",
+    "schema",
+    "acl"
+  ],
   "additionalProperties": false,
   "properties": {
     "$schema": {
@@ -16,7 +22,9 @@
       "type": "string",
       "description": "Configuration version. MUST follow semver format.",
       "pattern": "^\\d+\\.\\d+\\.\\d+(-[a-zA-Z0-9.]+)?(\\+[a-zA-Z0-9.]+)?$",
-      "examples": ["1.0.0"]
+      "examples": [
+        "1.0.0"
+      ]
     },
     "project": {
       "$ref": "#/$defs/ProjectConfig"
@@ -50,13 +58,27 @@
     },
     "id_map": {
       "$ref": "#/$defs/IDMapConfig"
+    },
+    "bindings": {
+      "$ref": "#/$defs/BindingsConfig"
+    },
+    "sys_modules": {
+      "$ref": "#/$defs/SysModulesConfig"
+    },
+    "stream": {
+      "$ref": "#/$defs/StreamConfig"
+    },
+    "obs": {
+      "$ref": "#/$defs/ObsConfig"
     }
   },
   "$defs": {
     "ProjectConfig": {
       "type": "object",
       "description": "Project information.",
-      "required": ["name"],
+      "required": [
+        "name"
+      ],
       "additionalProperties": false,
       "properties": {
         "name": {
@@ -65,41 +87,53 @@
           "pattern": "^[a-z][a-z0-9_-]*$",
           "minLength": 1,
           "maxLength": 64,
-          "examples": ["my-ai-project"]
+          "examples": [
+            "my-ai-project"
+          ]
         },
         "version": {
           "type": "string",
           "description": "Project version. SHOULD follow semver format.",
           "pattern": "^\\d+\\.\\d+\\.\\d+(-[a-zA-Z0-9.]+)?(\\+[a-zA-Z0-9.]+)?$",
-          "examples": ["0.1.0"]
+          "examples": [
+            "0.1.0"
+          ]
         }
       }
     },
     "ExtensionsConfig": {
       "type": "object",
       "description": "Extensions discovery and loading configuration. Supports single root (backward compatible) or multiple roots with namespace isolation.",
-      "additionalProperties": false,
+      "unevaluatedProperties": false,
       "oneOf": [
         {
-          "required": ["root"],
+          "required": [
+            "root"
+          ],
           "description": "Single root mode (backward compatible). No namespace by default.",
           "properties": {
             "root": {
               "type": "string",
               "description": "Extensions root directory path. MUST be a valid directory.",
               "default": "./extensions",
-              "examples": ["./extensions"]
+              "examples": [
+                "./extensions"
+              ]
             },
             "namespace": {
               "type": "string",
               "description": "Namespace for modules under this root. Omit for no namespace (backward compatible). When set, all module IDs are prefixed with this namespace (e.g., namespace 'core' → 'core.executor.email.send').",
               "pattern": "^[a-z][a-z0-9_]*$",
-              "examples": ["core"]
+              "examples": [
+                "core"
+              ]
             }
           }
         },
         {
-          "required": ["roots"],
+          "required": [
+            "roots"
+          ],
           "description": "Multi-root mode with namespace isolation. Each root auto-derives namespace from its directory name unless explicitly overridden.",
           "properties": {
             "roots": {
@@ -113,7 +147,9 @@
                   },
                   {
                     "type": "object",
-                    "required": ["root"],
+                    "required": [
+                      "root"
+                    ],
                     "additionalProperties": false,
                     "properties": {
                       "root": {
@@ -131,8 +167,17 @@
               },
               "minItems": 1,
               "examples": [
-                ["./extensions", "./plugins"],
-                [{"root": "./extensions", "namespace": "core"}, "./plugins"]
+                [
+                  "./extensions",
+                  "./plugins"
+                ],
+                [
+                  {
+                    "root": "./extensions",
+                    "namespace": "core"
+                  },
+                  "./plugins"
+                ]
               ]
             }
           }
@@ -168,70 +213,73 @@
             "type": "string"
           },
           "default": [],
-          "examples": [["*.test.*", "*.spec.*"]]
+          "examples": [
+            [
+              "*.test.*",
+              "*.spec.*"
+            ]
+          ]
         }
       }
     },
     "SchemaConfig": {
       "type": "object",
       "description": "Schema loading and validation configuration.",
-      "required": ["root"],
+      "required": [
+        "root"
+      ],
       "additionalProperties": false,
       "properties": {
         "root": {
           "type": "string",
           "description": "Schema files root directory path.",
           "default": "./schemas",
-          "examples": ["./schemas"]
+          "examples": [
+            "./schemas"
+          ]
         },
         "strategy": {
           "type": "string",
           "description": "Schema loading strategy. yaml_first: prefer YAML, fallback to native. native_first: prefer native, fallback to YAML. yaml_only: only YAML schemas.",
-          "enum": ["yaml_first", "native_first", "yaml_only"],
+          "enum": [
+            "yaml_first",
+            "native_first",
+            "yaml_only"
+          ],
           "default": "yaml_first"
-        },
-        "validation": {
-          "type": "object",
-          "description": "Schema validation options.",
-          "additionalProperties": false,
-          "properties": {
-            "strict": {
-              "type": "boolean",
-              "description": "Strict mode: reject additional properties not defined in schema.",
-              "default": true
-            },
-            "coerce_types": {
-              "type": "boolean",
-              "description": "Whether to coerce types during validation (e.g., string '1' to integer 1).",
-              "default": true
-            }
-          }
         },
         "max_ref_depth": {
           "type": "integer",
           "description": "Maximum $ref recursion depth for schema resolution.",
           "default": 32,
           "minimum": 1,
-          "maximum": 128
+          "maximum": 100
         }
       }
     },
     "ACLConfig": {
       "type": "object",
       "description": "Access Control List configuration.",
-      "required": ["root"],
+      "required": [
+        "root"
+      ],
       "additionalProperties": false,
       "properties": {
         "root": {
           "type": "string",
           "description": "ACL configuration files directory path.",
           "default": "./acl",
-          "examples": ["./acl"]
+          "examples": [
+            "./acl"
+          ]
         },
         "default_effect": {
           "type": "string",
           "description": "Default ACL effect when no rule matches. MUST be 'allow' or 'deny'.",
-          "enum": ["allow", "deny"],
+          "enum": [
+            "allow",
+            "deny"
+          ],
           "default": "deny"
         },
         "audit": {
@@ -247,7 +295,13 @@
             "log_level": {
               "type": "string",
               "description": "Audit log level.",
-              "enum": ["trace", "debug", "info", "warn", "error"],
+              "enum": [
+                "trace",
+                "debug",
+                "info",
+                "warn",
+                "error"
+              ],
               "default": "info"
             },
             "include_denied": {
@@ -267,13 +321,23 @@
         "level": {
           "type": "string",
           "description": "Global log level.",
-          "enum": ["trace", "debug", "info", "warn", "error", "fatal"],
+          "enum": [
+            "trace",
+            "debug",
+            "info",
+            "warn",
+            "error",
+            "fatal"
+          ],
           "default": "info"
         },
         "format": {
           "type": "string",
           "description": "Log output format.",
-          "enum": ["json", "text"],
+          "enum": [
+            "json",
+            "text"
+          ],
           "default": "json"
         }
       }
@@ -291,7 +355,7 @@
             "enabled": {
               "type": "boolean",
               "description": "Whether to enable distributed tracing.",
-              "default": true
+              "default": false
             },
             "sampling_rate": {
               "type": "number",
@@ -303,7 +367,11 @@
             "exporter": {
               "type": "string",
               "description": "Trace exporter backend.",
-              "enum": ["stdout", "otlp", "jaeger"],
+              "enum": [
+                "stdout",
+                "otlp",
+                "jaeger"
+              ],
               "default": "stdout"
             }
           }
@@ -316,12 +384,16 @@
             "enabled": {
               "type": "boolean",
               "description": "Whether to enable metrics collection.",
-              "default": true
+              "default": false
             },
             "exporter": {
               "type": "string",
               "description": "Metrics exporter backend.",
-              "enum": ["stdout", "prometheus", "otlp"],
+              "enum": [
+                "stdout",
+                "prometheus",
+                "otlp"
+              ],
               "default": "stdout"
             }
           }
@@ -348,6 +420,20 @@
       "description": "Executor runtime configuration for call chain safety and execution limits.",
       "additionalProperties": false,
       "properties": {
+        "default_timeout": {
+          "type": "integer",
+          "description": "Per-module execution timeout in milliseconds. A module that exceeds it is rejected with MODULE_TIMEOUT. 0 means no per-module limit.",
+          "default": 30000,
+          "minimum": 0,
+          "maximum": 600000
+        },
+        "global_timeout": {
+          "type": "integer",
+          "description": "Global execution timeout in milliseconds across the entire call chain. 0 means no limit.",
+          "default": 60000,
+          "minimum": 0,
+          "maximum": 600000
+        },
         "max_call_depth": {
           "type": "integer",
           "description": "Maximum call chain depth. Calls exceeding this depth are rejected with CALL_DEPTH_EXCEEDED.",
@@ -372,7 +458,9 @@
         "remove": {
           "type": "array",
           "description": "Built-in step names to remove from the default strategy.",
-          "items": { "type": "string" },
+          "items": {
+            "type": "string"
+          },
           "default": []
         },
         "configure": {
@@ -387,7 +475,9 @@
         "steps": {
           "type": "array",
           "description": "Custom step insertions.",
-          "items": { "$ref": "#/$defs/PipelineStep" },
+          "items": {
+            "$ref": "#/$defs/PipelineStep"
+          },
           "default": []
         }
       }
@@ -395,7 +485,9 @@
     "PipelineStep": {
       "type": "object",
       "description": "A custom pipeline step entry. Must specify exactly one of 'type' or 'handler', and exactly one of 'after' or 'before'. See DECLARATIVE_CONFIG_SPEC.md §4.3.",
-      "required": ["name"],
+      "required": [
+        "name"
+      ],
       "additionalProperties": false,
       "properties": {
         "name": {
@@ -421,7 +513,9 @@
         "match_modules": {
           "type": "array",
           "description": "Glob patterns; restrict step to matching modules.",
-          "items": { "type": "string" }
+          "items": {
+            "type": "string"
+          }
         },
         "ignore_errors": {
           "type": "boolean",
@@ -452,15 +546,51 @@
         {
           "comment": "Exactly one of 'type' or 'handler'.",
           "oneOf": [
-            { "required": ["type"], "not": { "required": ["handler"] } },
-            { "required": ["handler"], "not": { "required": ["type"] } }
+            {
+              "required": [
+                "type"
+              ],
+              "not": {
+                "required": [
+                  "handler"
+                ]
+              }
+            },
+            {
+              "required": [
+                "handler"
+              ],
+              "not": {
+                "required": [
+                  "type"
+                ]
+              }
+            }
           ]
         },
         {
           "comment": "Exactly one of 'after' or 'before'.",
           "oneOf": [
-            { "required": ["after"], "not": { "required": ["before"] } },
-            { "required": ["before"], "not": { "required": ["after"] } }
+            {
+              "required": [
+                "after"
+              ],
+              "not": {
+                "required": [
+                  "before"
+                ]
+              }
+            },
+            {
+              "required": [
+                "before"
+              ],
+              "not": {
+                "required": [
+                  "after"
+                ]
+              }
+            }
           ]
         }
       ]
@@ -472,22 +602,32 @@
       "properties": {
         "binding": {
           "type": "object",
+          "description": "Binding-file parse-time limits.",
           "additionalProperties": false,
           "properties": {
             "description_max_length": {
-              "type": ["integer", "null"],
+              "type": [
+                "integer",
+                "null"
+              ],
               "description": "Max length of binding entry 'description'. null = unlimited.",
               "default": 500,
               "minimum": 1
             },
             "documentation_max_length": {
-              "type": ["integer", "null"],
+              "type": [
+                "integer",
+                "null"
+              ],
               "description": "Max length of binding entry 'documentation'. null = unlimited.",
               "default": null,
               "minimum": 1
             },
             "tags_pattern": {
-              "type": ["string", "null"],
+              "type": [
+                "string",
+                "null"
+              ],
               "description": "Regex each tag MUST match. null = no constraint.",
               "default": "^[a-z][a-z0-9_]*$"
             },
@@ -500,16 +640,23 @@
         },
         "pipeline": {
           "type": "object",
+          "description": "Pipeline step parse-time limits.",
           "additionalProperties": false,
           "properties": {
             "step_name_max_length": {
-              "type": ["integer", "null"],
+              "type": [
+                "integer",
+                "null"
+              ],
               "description": "Max length of pipeline step 'name'. null = unlimited.",
               "default": 64,
               "minimum": 1
             },
             "timeout_ms_max": {
-              "type": ["integer", "null"],
+              "type": [
+                "integer",
+                "null"
+              ],
               "description": "Max value for step 'timeout_ms'. null = unlimited.",
               "default": 300000,
               "minimum": 1
@@ -553,6 +700,89 @@
             }
           },
           "default": {}
+        }
+      }
+    },
+    "BindingsConfig": {
+      "type": "object",
+      "description": "Declarative binding-file discovery. See DECLARATIVE_CONFIG_SPEC.md and PROTOCOL_SPEC §9.1.1.",
+      "additionalProperties": false,
+      "properties": {
+        "dir": {
+          "type": "string",
+          "description": "Directory scanned for binding files.",
+          "default": "./bindings",
+          "examples": [
+            "./bindings"
+          ]
+        },
+        "pattern": {
+          "type": "string",
+          "description": "Glob pattern binding files must match within `dir`.",
+          "default": "*.binding.yaml",
+          "examples": [
+            "*.binding.yaml"
+          ]
+        }
+      }
+    },
+    "SysModulesConfig": {
+      "type": "object",
+      "description": "System module registration. Mirrors defaults.schema.json `sys_modules`.",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Whether the built-in system.* modules are registered.",
+          "default": false
+        }
+      }
+    },
+    "StreamConfig": {
+      "type": "object",
+      "description": "Streaming chunk aggregation limits (Algorithm A24). Mirrors defaults.schema.json `stream`.",
+      "additionalProperties": false,
+      "properties": {
+        "max_merge_depth": {
+          "type": "integer",
+          "description": "Maximum recursion depth for deep-merging streaming chunks. Prevents denial-of-service via deeply nested payloads.",
+          "default": 32,
+          "minimum": 1
+        }
+      }
+    },
+    "ObsConfig": {
+      "type": "object",
+      "description": "Observability redaction rules. Registered as the `obs` configuration namespace (env prefix APCORE_OBS). See features/observability.md.",
+      "additionalProperties": false,
+      "properties": {
+        "redaction": {
+          "type": "object",
+          "description": "Declarative redaction rules applied by ContextLogger and the executor.",
+          "additionalProperties": false,
+          "properties": {
+            "regex_patterns": {
+              "type": "array",
+              "description": "Regex patterns matched against field values. A value that fully matches one of the patterns is replaced with `replacement`.",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "sensitive_keys": {
+              "type": "array",
+              "description": "Substring patterns matched case-insensitively against field names. Matching fields are redacted.",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "replacement": {
+              "type": "string",
+              "description": "Token substituted in place of a redacted value.",
+              "default": "***REDACTED***"
+            }
+          }
         }
       }
     }

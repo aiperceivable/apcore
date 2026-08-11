@@ -353,7 +353,8 @@
               "description": "Error code property definition.",
               "properties": {
                 "type": {
-                  "const": "string"
+                  "const": "string",
+                  "description": "Must be 'string'. Error codes are always strings."
                 },
                 "enum": {
                   "type": "array",
@@ -372,7 +373,8 @@
               "description": "Error message property definition.",
               "properties": {
                 "type": {
-                  "const": "string"
+                  "const": "string",
+                  "description": "Must be 'string'. Error messages are always strings."
                 }
               }
             },
