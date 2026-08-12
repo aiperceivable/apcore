@@ -73,7 +73,7 @@ Count occurrences of `module_id` in the full call chain. If `count > max_module_
     ```
 === "TypeScript"
     ```typescript
-    import { guardCallChain } from "apcore/utils/call-chain";
+    import { guardCallChain } from "apcore-js";
 
     function guardCallChain(
         moduleId: string,

@@ -814,6 +814,9 @@ properties:
 
 ### 3.6 Cross-Language Type Mapping Quick Reference
 
+!!! note "The `format:` rows are aspirational"
+    No SDK maps a `format` to a native type today — apcore-python annotates a `format: date-time` field as `str`, not `datetime`. `format` is an **annotation, not an assertion** ([TYPE_MAPPING §11](../spec/type-mapping.md#111-format-keyword)): a non-conforming value emits a warning and **still validates**. To make a format binding, use `pattern` or `enum` instead.
+
 | JSON Schema Type | Python | Rust | Go | Java | TypeScript |
 |-----------------|--------|------|----|------|------------|
 | `string` | `str` | `String` | `string` | `String` | `string` |
@@ -827,9 +830,9 @@ properties:
 | `string` + `format: date-time` | `datetime` | `DateTime<Utc>` | `time.Time` | `OffsetDateTime` | `Date` / `string` |
 | `string` + `format: date` | `date` | `NaiveDate` | `civil.Date` | `LocalDate` | `string` |
 | `string` + `format: time` | `time` | `NaiveTime` | Custom | `LocalTime` | `string` |
-| `string` + `format: email` | `str` + validation | `String` + validation | `string` + validation | `String` + validation | `string` + validation |
-| `string` + `format: uri` | `str` + validation | `String` + validation | `string` + validation | `String` + validation | `string` + validation |
-| `string` + `format: uuid` | `UUID` | `Uuid` | `uuid.UUID` | `UUID` | `string` + validation |
+| `string` + `format: email` | `str` + warning | `String` + warning | `string` + warning | `String` + warning | `string` + warning |
+| `string` + `format: uri` | `str` + warning | `String` + warning | `string` + warning | `String` + warning | `string` + warning |
+| `string` + `format: uuid` | `UUID` | `Uuid` | `uuid.UUID` | `UUID` | `string` + warning |
 | `string enum` | `Literal[...]` / `StrEnum` | `enum` | `type T string` + const | `enum` | union type |
 | `integer enum` | `IntEnum` | `enum` | `type T int64` + iota | `enum` | union type |
 | `oneOf` | Discriminated Union | `enum` (tagged) | `interface{}` | Sealed Class | discriminated union |
@@ -1854,13 +1857,19 @@ schema:
   # native_first: Prefer Python class definition, YAML as fallback
   # yaml_only: YAML only (pure cross-language scenarios)
 
-  paths:
-    yaml_schemas: "./schemas"
+  # Directory the YAML schema files are resolved against
+  root: "./schemas"
 
-  validation:
-    strict: true        # Strict mode: extra fields not allowed
-    coerce_types: true  # Type coercion
+  # Maximum $ref resolution depth
+  max_ref_depth: 32
 ```
+
+`root`, `strategy` and `max_ref_depth` are the whole `schema` namespace —
+`defaults.schema.json` declares it `additionalProperties: false`, so any other
+key is a configuration error. In particular there is no `schema.validation`
+block: whether an undeclared property is rejected, and whether `"42"` counts as
+an integer, are properties of the *contract*, not of the host that loaded it
+(PROTOCOL_SPEC §4.9, TYPE_MAPPING §17.3).
 
 ---
 

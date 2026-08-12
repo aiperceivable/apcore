@@ -32,13 +32,13 @@ apcore provides the `ContextFactory` Protocol/interface for exactly this purpose
     **Django** (`django-apcore` integration):
 
     ```python
-    from apcore import Context, Identity, ContextFactory
-    from apcore.trace_context import parse_traceparent
+    from apcore import Context, Identity, TraceContext
 
     class DjangoContextFactory:
         def create_context(self, request) -> Context:
-            # 1. W3C trace parent (may be None, or invalid — Context.create handles both)
-            tp = parse_traceparent(request.META.get("HTTP_TRACEPARENT"))
+            # 1. W3C trace parent — TraceContext.extract() takes the headers mapping
+            #    and returns None on a missing or malformed header.
+            tp = TraceContext.extract(request.META)
 
             # 2. Project's existing correlation ID — accept any format verbatim
             correlation_id = (
@@ -69,29 +69,27 @@ apcore provides the `ContextFactory` Protocol/interface for exactly this purpose
     **Express** (`express-apcore` or raw middleware):
 
     ```typescript
-    import { Context, Identity, ContextFactory } from "apcore";
-    import { parseTraceparent } from "apcore/trace-context";
+    import { Context, createIdentity, TraceContext } from "apcore-js";
+    import type { ContextFactory, Identity } from "apcore-js";
     import type { Request } from "express";
 
     export class ExpressContextFactory implements ContextFactory {
       createContext(request: Request): Context {
-        // 1. W3C trace parent
-        const tp = parseTraceparent(request.get("traceparent") ?? null);
+        // 1. W3C trace parent — TraceContext.extract() takes the headers object
+        //    and returns null on a missing or malformed header.
+        const tp = TraceContext.extract(request.headers);
 
         // 2. Project's existing correlation ID
         const correlationId =
           request.get("X-Request-ID") ?? request.get("X-Correlation-ID") ?? "";
 
         // 3. Identity from your auth middleware
-        const identity = request.user
-          ? new Identity({
-              id: String(request.user.id),
-              type: "user",
-              roles: request.user.roles,
-            })
+        // `Identity` is a type, not a class — build it with createIdentity().
+        const identity: Identity | null = request.user
+          ? createIdentity(String(request.user.id), "user", request.user.roles)
           : null;
 
-        const ctx = Context.create({ traceParent: tp, identity });
+        const ctx = Context.create(identity, tp);
         if (correlationId) {
           ctx.data["x-correlation-id"] = correlationId;
         }
@@ -107,13 +105,17 @@ apcore provides the `ContextFactory` Protocol/interface for exactly this purpose
     **Actix-web** (`actix-apcore` integration):
 
     ```rust
-    use apcore::{Context, Identity, ContextFactory, TraceParent};
+    use apcore::{Context, Identity, TraceParent};
     use actix_web::HttpRequest;
+    use serde_json::Value;
+    use std::collections::HashMap;
 
     pub struct ActixContextFactory;
 
-    impl ContextFactory<HttpRequest> for ActixContextFactory {
-        fn create_context(&self, req: &HttpRequest) -> Context {
+    // apcore's `ContextFactory` trait is transport-agnostic (`async fn create`),
+    // so a web-framework adapter is an inherent method rather than an impl of it.
+    impl ActixContextFactory {
+        pub fn create_context(&self, req: &HttpRequest) -> Context<Value> {
             // 1. W3C trace parent
             let trace_parent = req
                 .headers()
@@ -132,15 +134,21 @@ apcore provides the `ContextFactory` Protocol/interface for exactly this purpose
 
             // 3. Identity from auth extractor (example)
             let identity = req.extensions().get::<AuthUser>().map(|u| {
-                Identity::new(u.id.to_string(), "user", u.roles.clone())
+                Identity::new(
+                    u.id.to_string(),
+                    "user".to_string(),
+                    u.roles.clone(),
+                    HashMap::new(),
+                )
             });
 
-            let mut ctx = Context::builder()
+            let ctx: Context<Value> = Context::builder()
                 .trace_parent(trace_parent)
                 .identity(identity)
                 .build();
             if !correlation_id.is_empty() {
-                ctx.data_mut().insert(
+                // `data` is an Arc<RwLock<HashMap>> shared with every child context.
+                ctx.data.write().insert(
                     "x-correlation-id".into(),
                     correlation_id.into(),
                 );
@@ -184,7 +192,7 @@ Do the normalization yourself in your `ContextFactory` — it's one line:
     const legacyId = request.get("X-Legacy-Trace-ID") ?? "";
     const normalized = legacyId.replaceAll("-", "").toLowerCase();
     const tp = normalized.length === 32 ? { traceId: normalized, ... } : null;
-    const ctx = Context.create({ traceParent: tp, identity });
+    const ctx = Context.create(identity, tp);
     ```
 
 === "Rust"

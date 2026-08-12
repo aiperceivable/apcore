@@ -90,29 +90,51 @@ The `APCore` client is the recommended entry point. It manages Registry and Exec
 === "Rust"
 
     ```rust
-    use apcore::{APCore, Module};
+    use apcore::errors::ModuleError;
+    use apcore::{APCore, Context, Module};
+    use async_trait::async_trait;
     use serde_json::{json, Value};
 
     struct AddModule;
 
+    // The module ID is supplied at registration, not by the trait.
+    #[async_trait]
     impl Module for AddModule {
-        fn id(&self) -> &str { "math.add" }
         fn description(&self) -> &str { "Add two numbers" }
 
-        fn execute(&self, inputs: Value) -> Value {
-            let a = inputs["a"].as_i64().unwrap();
-            let b = inputs["b"].as_i64().unwrap();
-            json!({"sum": a + b})
+        fn input_schema(&self) -> Value {
+            json!({
+                "type": "object",
+                "properties": {"a": {"type": "integer"}, "b": {"type": "integer"}},
+                "required": ["a", "b"]
+            })
+        }
+
+        fn output_schema(&self) -> Value {
+            json!({"type": "object", "properties": {"sum": {"type": "integer"}}})
+        }
+
+        async fn execute(
+            &self,
+            inputs: Value,
+            _ctx: &Context<Value>,
+        ) -> Result<Value, ModuleError> {
+            let a = inputs["a"].as_i64().unwrap_or(0);
+            let b = inputs["b"].as_i64().unwrap_or(0);
+            Ok(json!({"sum": a + b}))
         }
     }
 
     #[tokio::main]
-    async fn main() {
+    async fn main() -> Result<(), ModuleError> {
         let client = APCore::new();
-        client.register(AddModule);
+        client.register("math.add", Box::new(AddModule))?;
 
-        let result = client.call("math.add", json!({"a": 10, "b": 5}), None, None).await?;
-        println!("{:?}", result); // {"sum": 15}
+        let result = client
+            .call("math.add", json!({"a": 10, "b": 5}), None, None)
+            .await?;
+        println!("{result}"); // {"sum":15}
+        Ok(())
     }
     ```
 
@@ -144,7 +166,8 @@ Before executing, you can validate inputs without running the module:
 === "Rust"
 
     ```rust
-    let preflight = client.validate("math.add", json!({"a": 10, "b": 5})).await?;
+    let inputs = json!({"a": 10, "b": 5});
+    let preflight = client.validate("math.add", &inputs, None).await?;
     if preflight.valid {
         println!("All checks passed");
     } else {
@@ -174,9 +197,12 @@ Modules that implement `stream()` can yield output chunks incrementally:
 === "Rust"
 
     ```rust
-    let chunks = client.stream("my.streaming_module", json!({"query": "hello"}), None, None).await?;
-    for chunk in &chunks {
-        println!("{:?}", chunk);
+    use futures_util::StreamExt;
+
+    // `stream()` returns a Stream, not a Future — poll it, do not await it.
+    let mut chunks = client.stream("my.streaming_module", json!({"query": "hello"}), None, None);
+    while let Some(chunk) = chunks.next().await {
+        println!("{}", chunk?);
     }
     ```
 
@@ -246,10 +272,11 @@ Middleware can intercept calls for logging, tracing, or security.
 === "Python"
 
     ```python
-    from apcore import LoggingMiddleware, TracingMiddleware
+    from apcore import LoggingMiddleware, StdoutExporter, TracingMiddleware
 
     client.use(LoggingMiddleware())
-    client.use(TracingMiddleware())
+    # TracingMiddleware requires an exporter (or a processor) — it raises otherwise.
+    client.use(TracingMiddleware(exporter=StdoutExporter()))
     ```
 
 === "TypeScript"
@@ -263,10 +290,12 @@ Middleware can intercept calls for logging, tracing, or security.
 === "Rust"
 
     ```rust
-    use apcore::middleware::{LoggingMiddleware, TracingMiddleware};
+    use apcore::middleware::{LoggingMiddleware, OtelTracingMiddleware};
 
-    client.use_middleware(Box::new(LoggingMiddleware::new()))?;
-    client.use_middleware(Box::new(TracingMiddleware::new()))?;
+    client.use_middleware(Box::new(LoggingMiddleware::with_defaults()))?;
+    // `apcore::middleware::TracingMiddleware` is re-exported as OtelTracingMiddleware
+    // to avoid colliding with the observability one, which takes a SpanExporter.
+    client.use_middleware(Box::new(OtelTracingMiddleware::builder().build()))?;
     ```
 
 ## 7. Advanced: Manual Registry + Executor

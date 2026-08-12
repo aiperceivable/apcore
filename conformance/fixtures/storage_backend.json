@@ -6,8 +6,17 @@
       "description": "A value written via save() under a (namespace, key) tuple is returned verbatim by a subsequent get() call against the same tuple.",
       "input": {
         "operations": [
-          {"op": "save", "namespace": "errors", "key": "executor.email.send", "value": "ENT-1"},
-          {"op": "get", "namespace": "errors", "key": "executor.email.send"}
+          {
+            "op": "save",
+            "namespace": "errors",
+            "key": "executor.email.send",
+            "value": "ENT-1"
+          },
+          {
+            "op": "get",
+            "namespace": "errors",
+            "key": "executor.email.send"
+          }
         ]
       },
       "expected": {
@@ -19,14 +28,36 @@
       "description": "list() with a prefix returns only entries whose keys start with that prefix, in any order; without prefix it returns the full namespace.",
       "input": {
         "operations": [
-          {"op": "save", "namespace": "metrics", "key": "apcore_module_calls_total", "value": "1"},
-          {"op": "save", "namespace": "metrics", "key": "apcore_module_errors_total", "value": "2"},
-          {"op": "save", "namespace": "metrics", "key": "apcore_usage_calls_total", "value": "3"},
-          {"op": "list", "namespace": "metrics", "prefix": "apcore_module_"}
+          {
+            "op": "save",
+            "namespace": "metrics",
+            "key": "apcore_module_calls_total",
+            "value": "1"
+          },
+          {
+            "op": "save",
+            "namespace": "metrics",
+            "key": "apcore_module_errors_total",
+            "value": "2"
+          },
+          {
+            "op": "save",
+            "namespace": "metrics",
+            "key": "apcore_usage_calls_total",
+            "value": "3"
+          },
+          {
+            "op": "list",
+            "namespace": "metrics",
+            "prefix": "apcore_module_"
+          }
         ]
       },
       "expected": {
-        "matched_keys_sorted": ["apcore_module_calls_total", "apcore_module_errors_total"]
+        "matched_keys_sorted": [
+          "apcore_module_calls_total",
+          "apcore_module_errors_total"
+        ]
       }
     },
     {
@@ -34,11 +65,32 @@
       "description": "delete() against an absent key is a no-op (no error). After deletion, subsequent get() returns null/None.",
       "input": {
         "operations": [
-          {"op": "delete", "namespace": "errors", "key": "never_existed"},
-          {"op": "save", "namespace": "errors", "key": "tmp", "value": "x"},
-          {"op": "delete", "namespace": "errors", "key": "tmp"},
-          {"op": "delete", "namespace": "errors", "key": "tmp"},
-          {"op": "get", "namespace": "errors", "key": "tmp"}
+          {
+            "op": "delete",
+            "namespace": "errors",
+            "key": "never_existed"
+          },
+          {
+            "op": "save",
+            "namespace": "errors",
+            "key": "tmp",
+            "value": "x"
+          },
+          {
+            "op": "delete",
+            "namespace": "errors",
+            "key": "tmp"
+          },
+          {
+            "op": "delete",
+            "namespace": "errors",
+            "key": "tmp"
+          },
+          {
+            "op": "get",
+            "namespace": "errors",
+            "key": "tmp"
+          }
         ]
       },
       "expected": {
@@ -51,10 +103,28 @@
       "description": "Entries written under namespace 'errors' MUST NOT be visible from namespace 'metrics'. The same key string under different namespaces denotes distinct records.",
       "input": {
         "operations": [
-          {"op": "save", "namespace": "errors", "key": "alpha", "value": "from-errors"},
-          {"op": "save", "namespace": "metrics", "key": "alpha", "value": "from-metrics"},
-          {"op": "get", "namespace": "errors", "key": "alpha"},
-          {"op": "get", "namespace": "metrics", "key": "alpha"}
+          {
+            "op": "save",
+            "namespace": "errors",
+            "key": "alpha",
+            "value": "from-errors"
+          },
+          {
+            "op": "save",
+            "namespace": "metrics",
+            "key": "alpha",
+            "value": "from-metrics"
+          },
+          {
+            "op": "get",
+            "namespace": "errors",
+            "key": "alpha"
+          },
+          {
+            "op": "get",
+            "namespace": "metrics",
+            "key": "alpha"
+          }
         ]
       },
       "expected": {
@@ -67,14 +137,33 @@
       "description": "Calling save() on an existing (namespace, key) MUST overwrite the previous value; get() returns the most recent write.",
       "input": {
         "operations": [
-          {"op": "save", "namespace": "errors", "key": "k1", "value": "v1"},
-          {"op": "save", "namespace": "errors", "key": "k1", "value": "v2"},
-          {"op": "get", "namespace": "errors", "key": "k1"}
+          {
+            "op": "save",
+            "namespace": "errors",
+            "key": "k1",
+            "value": "v1"
+          },
+          {
+            "op": "save",
+            "namespace": "errors",
+            "key": "k1",
+            "value": "v2"
+          },
+          {
+            "op": "get",
+            "namespace": "errors",
+            "key": "k1"
+          }
         ]
       },
       "expected": {
         "final_get_value": "v2"
       }
     }
-  ]
+  ],
+  "driver_contract": {
+    "value_is_a_json_object": "`value` is a JSON OBJECT, not a scalar and not opaque bytes: apcore-python types it `dict`, apcore-typescript `Record<string, unknown>`, apcore-rust `serde_json::Value` (structurally wider, same requirement). All three collectors — ErrorHistory, UsageCollector, MetricsCollector — store records. Drivers MUST use object values; a driver that passes a scalar is testing a shape no collector produces, and would have made the bytes-based Redis example in features/observability.md look conformant.",
+    "delete_is_idempotent": "Deleting an absent key is a no-op that MUST NOT raise. Assert the second delete of the same key succeeds, not merely that the first one did.",
+    "namespace_isolation": "Assert the negative direction too: a key written under namespace A MUST NOT be readable via namespace B, and MUST NOT appear in B's list()."
+  }
 }

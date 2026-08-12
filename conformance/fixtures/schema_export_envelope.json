@@ -1,0 +1,221 @@
+{
+  "description": "Cross-language parity for `Registry.export_schema(module_id, strict)` — the exact envelope pinned by schemas/module-schema-export.schema.json. Four keys, no more. This fixture exists because the three SDKs each emitted a different shape: apcore-python added an always-empty `definitions` (a SchemaDefinition field a descriptor does not have, so `$defs` was already inside input_schema where JSON Schema puts it), apcore-typescript added `name`, `version`, `tags`, `annotations` and `examples` — making its export a partial, non-conforming duplicate of system.manifest.module — and apcore-rust emitted the four correct keys. A polyglot caller reading result['input_schema'] got a value on two SDKs and the right answer by accident on the third.",
+  "driver_contract": {
+    "path": "Drive the registry method directly — apcore-python `Registry.export_schema(module_id, strict)`, apcore-typescript `registry.exportSchema(moduleId, strict)`, apcore-rust `Registry::export_schema(name, strict)`. Not the serializing helper, not a profile export: this pins the in-memory envelope.",
+    "assertion": "Assert the returned object's key set EXACTLY equals the four keys — an extra key is the defect this fixture exists to catch, so a subset check would not catch it. Then assert module_id and description. For strict cases, assert input_schema/output_schema equal the Algorithm A23 conversion (schema_strict_conversion.json pins A23 itself; here only the envelope and the fact that strict reaches both schemas are in scope).",
+    "unregistered": "An unregistered module_id returns the language's empty value — Python None, TypeScript null, Rust Option::None — never a partially-filled envelope and never a raised error."
+  },
+  "envelope_keys": [
+    "module_id",
+    "description",
+    "input_schema",
+    "output_schema"
+  ],
+  "test_cases": [
+    {
+      "id": "envelope_has_exactly_the_four_canonical_keys",
+      "module": {
+        "module_id": "demo.export.basic",
+        "description": "Adds two numbers",
+        "input_schema": {
+          "type": "object",
+          "properties": {
+            "a": {
+              "type": "integer"
+            }
+          }
+        },
+        "output_schema": {
+          "type": "object",
+          "properties": {
+            "sum": {
+              "type": "integer"
+            }
+          }
+        }
+      },
+      "strict": false,
+      "expected": {
+        "module_id": "demo.export.basic",
+        "description": "Adds two numbers",
+        "input_schema": {
+          "type": "object",
+          "properties": {
+            "a": {
+              "type": "integer"
+            }
+          }
+        },
+        "output_schema": {
+          "type": "object",
+          "properties": {
+            "sum": {
+              "type": "integer"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "descriptor_metadata_is_not_carried",
+      "description": "name / version / tags / annotations / examples belong to system.manifest.module. A module declaring all of them still exports exactly four keys.",
+      "module": {
+        "module_id": "demo.export.rich",
+        "description": "Rich descriptor",
+        "input_schema": {
+          "type": "object"
+        },
+        "output_schema": {
+          "type": "object"
+        },
+        "version": "2.0.0",
+        "tags": [
+          "a",
+          "b"
+        ],
+        "annotations": {
+          "readonly": true
+        },
+        "examples": [
+          {
+            "title": "t",
+            "inputs": {},
+            "output": {}
+          }
+        ]
+      },
+      "strict": false,
+      "expected": {
+        "module_id": "demo.export.rich",
+        "description": "Rich descriptor",
+        "input_schema": {
+          "type": "object"
+        },
+        "output_schema": {
+          "type": "object"
+        }
+      }
+    },
+    {
+      "id": "defs_stay_inside_input_schema_no_sibling_definitions_key",
+      "description": "A schema using $defs keeps them where JSON Schema puts them. There is deliberately no sibling `definitions` key — it was always empty on this path and gave callers a second place to look.",
+      "module": {
+        "module_id": "demo.export.defs",
+        "description": "Uses $defs",
+        "input_schema": {
+          "type": "object",
+          "properties": {
+            "who": {
+              "$ref": "#/$defs/Name"
+            }
+          },
+          "$defs": {
+            "Name": {
+              "type": "string"
+            }
+          }
+        },
+        "output_schema": {
+          "type": "object"
+        }
+      },
+      "strict": false,
+      "expected": {
+        "module_id": "demo.export.defs",
+        "description": "Uses $defs",
+        "input_schema": {
+          "type": "object",
+          "properties": {
+            "who": {
+              "$ref": "#/$defs/Name"
+            }
+          },
+          "$defs": {
+            "Name": {
+              "type": "string"
+            }
+          }
+        },
+        "output_schema": {
+          "type": "object"
+        }
+      }
+    },
+    {
+      "id": "strict_converts_both_schemas",
+      "description": "strict=true applies Algorithm A23 to input_schema AND output_schema, and does not change the key set.",
+      "module": {
+        "module_id": "demo.export.strict",
+        "description": "Strict export",
+        "input_schema": {
+          "type": "object",
+          "properties": {
+            "a": {
+              "type": "string"
+            },
+            "b": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "a"
+          ]
+        },
+        "output_schema": {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "type": "boolean"
+            }
+          }
+        }
+      },
+      "strict": true,
+      "expected": {
+        "module_id": "demo.export.strict",
+        "description": "Strict export",
+        "input_schema": {
+          "type": "object",
+          "properties": {
+            "a": {
+              "type": "string"
+            },
+            "b": {
+              "type": [
+                "integer",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "a",
+            "b"
+          ],
+          "additionalProperties": false
+        },
+        "output_schema": {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "ok"
+          ],
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "id": "unregistered_module_returns_empty",
+      "description": "None / null / Option::None — never a partially-filled envelope, never a raised error.",
+      "module_id": "demo.export.missing",
+      "strict": false,
+      "expected": null
+    }
+  ]
+}

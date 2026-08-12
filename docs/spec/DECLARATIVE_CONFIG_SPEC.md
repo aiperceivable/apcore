@@ -76,6 +76,16 @@ This pattern accepts:
 
 SDKs MUST add language-specific security validation on top (e.g., reject `..` segments to prevent path traversal in TypeScript). Such validation produces `BindingInvalidTargetError` at parse time.
 
+#### 2.2.1 How `<module_path>` is resolved
+
+`<module_path>` is resolved by the **host language's own module resolution**, from the process's normal resolution root — Python's `sys.path` via `importlib.import_module`, Node's specifier resolution via `import()`, and Rust's handler-map lookup. It is **NOT** resolved relative to the binding file's directory, and implementations **MUST NOT** silently join it against that directory.
+
+This is deliberate. A binding file is a *declaration* of capabilities the host already has, not a loader that reaches into arbitrary neighbouring paths; resolving relative to the YAML would make the reachable code set depend on where the file happens to sit, which is exactly the traversal surface the `..` rejection above exists to close.
+
+Binding authors are therefore responsible for making the target importable — an installed package name, a dotted path already on `sys.path`, or a specifier the bundler resolves. A binding whose target is not importable fails at parse time with `BindingModuleNotFoundError`.
+
+`schema_ref` is the deliberate exception and **is** resolved relative to the binding file's directory (see the field table in §3.2) — it names data, not code.
+
 ### 2.3 Error reporting phases
 
 - **Parse-time errors**: raised when `load_bindings()` / `build_strategy_from_config()` is called and the YAML is structurally invalid, contains unsupported fields, or references unsupported features.
@@ -526,9 +536,9 @@ All binding-related errors inherit from a `BindingError` base; pipeline errors f
 | **Bindings — schema modes** |
 | `input_schema` + `output_schema` | ✅ | ✅ | ✅ |
 | `schema_ref` (external file) | ✅ | ✅ | ✅ (**0.19.0**: previously parsed but not loaded) |
-| `auto_schema: true` (or implicit default) | ✅ via type hints | ✅ (**0.19.0 NEW**) via adapter chain | ✅ (**0.19.0 NEW**) via `apcore-macros` |
-| `auto_schema: strict` | ✅ (**0.19.0 NEW**) | ✅ (**0.19.0 NEW**) | ✅ (**0.19.0 NEW**) |
-| `auto_schema: permissive` | ✅ (**0.19.0 NEW**) | ✅ (**0.19.0 NEW**) | ✅ (**0.19.0 NEW**) |
+| `auto_schema: true` (or implicit default) | ✅ via type hints | ✅ via adapter chain | ⚠️ **not implemented** — `resolve_schemas()` returns a permissive `{"type": "object"}` for every binding and logs a warning; `apcore-macros` inference is tracked as F11 |
+| `auto_schema: strict` | ✅ | ✅ | ⚠️ **partial** — the strict-compatibility assertion runs and `BindingSchemaInferenceFailedError` is raised when no typed schema is available, but inference itself is unimplemented (F11) |
+| `auto_schema: permissive` | ✅ | ✅ | ⚠️ **not implemented** — falls back to a permissive `{"type": "object"}` rather than inferring (F11) |
 | **Pipeline config** |
 | `remove` / `configure` / `steps` | ✅ | ✅ | ✅ |
 | `type:` (registered) | ✅ | ✅ | ✅ |

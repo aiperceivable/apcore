@@ -99,7 +99,8 @@ The 20 codes you are most likely to hit. For the full list see [features/error-s
 | `SCHEMA_VALIDATION_ERROR` | `inputs` or `outputs` did not match `input_schema` / `output_schema` | The error's `errors` list pinpoints the failing path; tighten the schema or fix the data |
 | `SCHEMA_NOT_FOUND` | `external_schema:` referenced a YAML file that doesn't exist | Verify the path is relative to the binding file's directory |
 | `SCHEMA_PARSE_ERROR` | Schema YAML/JSON malformed | Validate with a JSON Schema linter; ensure Draft 2020-12 |
-| `SCHEMA_CIRCULAR_REF` | `$ref` chain references back to an ancestor without a base case | Add a base case or use bounded recursion (`schema_hardening_recursive` fixture) |
+| `SCHEMA_CIRCULAR_REF` | A `$ref` → `$ref` chain that re-enters itself without ever reaching a schema body (PROTOCOL_SPEC §4.15) | Insert a schema body (`properties` / `items`) into the chain, or remove the indirection. A `$ref` re-entered *through* a body is a legal self-reference and does not raise |
+| `SCHEMA_MAX_DEPTH_EXCEEDED` | `$ref` resolution exceeded `schema.max_ref_depth` (default 32) | Flatten the reference chain, or raise `schema.max_ref_depth` (max 100) |
 | `ACL_DENIED` | No matching `allow` rule and `default_effect: deny` | Add an `allow` rule (rare: change default) — see §1.2 |
 | `ACL_RULE_ERROR` | Invalid YAML in the ACL rules (missing required keys, bad pattern) | Compare against the YAML example in [features/acl-system.md](../features/acl-system.md) |
 | `APPROVAL_DENIED` | Handler returned `status: rejected` | Inspect the handler's logic; there is no automatic recovery |
@@ -121,40 +122,84 @@ For codes not listed here:
 
 ## 3. Diagnostic Commands
 
-```bash
-# Enumerate registered modules with metadata
-python -c "from apcore import APCore; c = APCore(); c.discover(); [print(m) for m in c.list_modules()]"
+Language-neutral checks:
 
+```bash
 # Build the docs locally to surface broken cross-references
 mkdocs build 2>&1 | grep WARNING
-
-# Validate apcore.yaml against the schema
-python -c "from apcore.config import Config; print(Config.load('apcore.yaml'))"
 
 # Run a single conformance fixture against your SDK (example: Python)
 pytest tests/conformance/test_acl_evaluation.py -v
 ```
 
-```typescript
-// Enumerate registered modules
-import { APCore } from 'apcore-js';
-const c = new APCore();
-await c.discover();
-console.log(await c.listModules());
-```
+Enumerate registered modules:
 
-```rust
-// Enumerate registered modules
-use apcore::APCore;
+=== "Python"
 
-#[tokio::main]
-async fn main() {
-    let c = APCore::new();
-    c.discover().await.unwrap();
-    // list_modules takes optional tag-filter and prefix-filter; pass None for "all".
-    for m in c.list_modules(None, None) { println!("{:?}", m); }
-}
-```
+    ```python
+    from apcore import APCore
+
+    client = APCore()
+    client.discover()
+    for module_id in client.list_modules():
+        print(module_id)
+    ```
+
+=== "TypeScript"
+
+    ```typescript
+    import { APCore } from "apcore-js";
+
+    const client = new APCore();
+    await client.discover();
+    console.log(client.listModules());
+    ```
+
+=== "Rust"
+
+    ```rust
+    use apcore::APCore;
+
+    #[tokio::main]
+    async fn main() {
+        let client = APCore::new();
+        client.discover().await.unwrap();
+        // list_modules takes optional tag-filter and prefix-filter; None means "all".
+        for module_id in client.list_modules(None, None) {
+            println!("{module_id}");
+        }
+    }
+    ```
+
+Load and validate `apcore.yaml`:
+
+=== "Python"
+
+    ```python
+    from apcore import Config
+
+    config = Config.load("apcore.yaml")
+    print(config.data)
+    ```
+
+=== "TypeScript"
+
+    ```typescript
+    import { Config } from "apcore-js";
+
+    const config = Config.load("apcore.yaml");
+    console.log(config.data);
+    ```
+
+=== "Rust"
+
+    ```rust
+    use apcore::Config;
+    use std::path::Path;
+
+    let config = Config::from_yaml_file(Path::new("apcore.yaml"))?;
+    println!("{:?}", config.data());
+    ```
 
 ---
 

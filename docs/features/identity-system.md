@@ -133,7 +133,7 @@ Resolved per `docs/spec/2026-05-decision-log.md` D-26.
     );
 
     // Attach to context
-    const ctx = Context.create(undefined, admin);
+    const ctx = Context.create(admin);
     console.log(ctx.identity?.id);    // "admin@example.com"
     console.log(ctx.identity?.roles); // ["admin", "operator"]
 
@@ -155,7 +155,7 @@ Resolved per `docs/spec/2026-05-decision-log.md` D-26.
     );
 
     // Attach to context
-    let ctx = Context::create(Some(admin));
+    let ctx = Context::create(Some(admin), None, None, None, Value::Null, None);
     println!("{}", ctx.identity.as_ref().unwrap().id()); // "admin@example.com"
 
     // Identity propagates to child contexts
@@ -234,7 +234,7 @@ The `ContextFactory` protocol enables web framework integrations to extract `Ide
                 user.roles,
                 { email: user.email },
             );
-            return Context.create(undefined, identity);
+            return Context.create(identity);
         }
     }
     ```
@@ -254,7 +254,7 @@ The `ContextFactory` protocol enables web framework integrations to extract `Ide
                 vec!["viewer".to_string()],
                 HashMap::new(),
             );
-            Context::create(Some(identity))
+            Context::create(Some(identity), None, None, None, Value::Null, None)
         }
     }
     ```

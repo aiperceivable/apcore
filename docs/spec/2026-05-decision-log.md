@@ -686,7 +686,7 @@ the same fixture file.
 
 **Recommendation**: **B**. Misconfiguration must surface during application startup, not under load. Strategy construction is all-or-nothing.
 
-**Resolution**: **resolved**. Documented as the "Configuration safety" subsection inside `docs/features/middleware-system.md` "Pipeline Step Middleware (Issue #33)". Conformance: `conformance/fixtures/pipeline_failfast_config.json` (4 cases) covering both error classes and the satisfied-requires happy path.
+**Resolution**: **resolved**. Documented as the "Configuration safety" subsection inside `docs/features/middleware-system.md` "Pipeline Step Middleware (Issue #33)". Conformance: `conformance/fixtures/pipeline_failfast_config.json` (3 cases) covering both error codes and the satisfied-requires happy path. *(Was 4: the `pipeline.step_middleware` case was removed in the 0.26 sweep because that configuration section exists in no SDK and is not declared by the canonical schema — apcore#80.)*
 
 ---
 
@@ -969,12 +969,13 @@ TypeScript SDK adds `OverridesStore` interface, `FileOverridesStore` (YAML-backe
 
 **Status quo (pre-resolution)**
 - D-37 ("Pipeline configuration fail-fast") declared two distinct fail-fast surfaces:
-  - `ConfigurationError` at YAML parse time when a `pipeline.configure[]` or `pipeline.step_middleware[]` entry references an unknown step name.
+  - `ConfigurationError` at YAML parse time when a key of the `pipeline.configure` map references an unknown step name. *(Two corrections since: `configure` is an object map keyed by step name, not an array — `schemas/apcore-config.schema.json` `$defs/PipelineConfig` and all three parsers agree — and `pipeline.step_middleware` is not a configuration section at all; no SDK ever parsed it and the canonical schema does not declare it. See apcore#80.)*
   - `PipelineDependencyError` at strategy construction time when a step's `requires`/`provides` declarations are unsatisfied.
 - Rust collapsed both into a single `PipelineError::Dependency` variant, so callers could not distinguish "you wrote a typo in YAML" from "your topology is unsatisfiable".
 
 **Resolution**
-- Rust now ships a distinct `PipelineError::Configuration` variant mapped to error code `PIPELINE_CONFIGURATION_ERROR`, raised at YAML parse time for unknown step references. `PipelineError::Dependency` (code `PIPELINE_DEPENDENCY_ERROR`) is reserved for strategy-construction-time capability mismatches. Python+TypeScript already raised the two distinct codes.
+- Rust now ships a distinct `PipelineError::Configuration` variant mapped to error code `PIPELINE_CONFIGURATION_ERROR`, raised at YAML parse time for unknown step references. `PipelineError::Dependency` (code `PIPELINE_DEPENDENCY_ERROR`) is reserved for strategy-construction-time capability mismatches.
+- **Correction (0.26 sweep).** This entry originally said "Python+TypeScript already raised the two distinct codes". That was true of Python and **false of TypeScript**, which emitted `PIPELINE_CONFIG_INVALID` — a different code in the `features/error-system.md` registry, meaning a malformed field value rather than a missing step. Rust's variant also serialized to `CONFIGURATION_ERROR`, a string in no registry. So all three emitted different codes for the same event, and `pipeline_failfast_config.json` reported green throughout because it asserted the CLASS name `ConfigurationError`, which all three happen to share. Both SDKs corrected; the fixture now asserts the wire code. See apcore#81, apcore-typescript#34, apcore-rust#31.
 
 **Status**: **resolved**. See `docs/features/middleware-system.md` "Pipeline Step Middleware (Issue #33)" → "Configuration safety" subsection.
 

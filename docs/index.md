@@ -18,7 +18,7 @@ Define a capability with required input and output schemas plus behavioral metad
 
 ## Source of Truth
 
-- [Protocol Specification](spec/protocol-spec.md) — normative behavior (`1.9.0-draft`)
+- [Protocol Specification](spec/protocol-spec.md) — normative behavior (`1.9.0`)
 - [Scope](https://github.com/aiperceivable/apcore/blob/main/SCOPE.md) — what apcore owns and does not own
 - [Roadmap](https://github.com/aiperceivable/apcore/blob/main/ROADMAP.md) — current priorities and 1.0 gates
 - [Adopters](https://github.com/aiperceivable/apcore/blob/main/ADOPTERS.md) — public adoption evidence

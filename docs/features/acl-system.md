@@ -296,7 +296,7 @@ acl:
     ```
 === "TypeScript"
     ```typescript
-    import { APCore, Config, ACL } from 'apcore';
+    import { APCore, Config, ACL } from 'apcore-js';
 
     // APCore calls ACL.discover(config) and attaches the result.
     const app = new APCore({ config: Config.load('apcore.yaml') });
@@ -317,7 +317,9 @@ acl:
 
     // Equivalent explicit form:
     if let Some(acl) = ACL::discover(&config)? {
-        app.executor().set_acl(acl);
+        // set_acl needs &mut Executor; `executor()` yields &Executor.
+        let mut executor = Executor::new(registry.clone(), config.clone());
+        executor.set_acl(acl);
     }
     ```
 
@@ -484,24 +486,25 @@ _(none — operates on the YAML path stored during `ACL.load`)_
 === "TypeScript"
     ```typescript
     import { APCore } from "apcore-js";
-    import { ACL, ACLRule } from "apcore-js/acl";
-    import { Context, Identity } from "apcore-js/context";
+    import { ACL, ACLRule } from "apcore-js";
+    import { Context, Identity } from "apcore-js";
 
     // Load ACL from YAML
     const acl = await ACL.load("acl.yaml");
 
     // Check access
     const identity: Identity = { id: "api.gateway", type: "service", roles: ["reader"] };
-    const ctx = Context.create({ identity });
+    const ctx = Context.create(identity);
     const allowed = acl.check("api.gateway", "db.query", ctx);
 
     // Runtime modification
-    acl.addRule(new ACLRule({
+    // ACLRule is an interface — pass a plain object literal.
+    acl.addRule({
         callers: ["admin.*"],
         targets: ["*"],
         effect: "allow",
         description: "Admins can call any module",
-    }));
+    });
 
     // Wire into executor via APCore.
     // Use setAcl(): it propagates the ACL to the pipeline's acl_check step.
@@ -526,7 +529,7 @@ _(none — operates on the YAML path stored during `ACL.load`)_
         vec!["reader".to_string()],
         HashMap::new(),
     );
-    let ctx = Context::create(Some(identity), None);
+    let ctx = Context::create(Some(identity), None, None, None, Value::Null, None);
     let allowed = acl.check("api.gateway", "db.query", Some(&ctx));
 
     // Runtime modification
@@ -540,7 +543,10 @@ _(none — operates on the YAML path stored during `ACL.load`)_
 
     // Wire into executor via APCore
     let mut client = APCore::new();
-    client.executor_mut().set_acl(acl);
+    // `APCore` exposes only `executor() -> &Executor`, and set_acl needs &mut.
+    // Build the Executor yourself when you need to attach an ACL after the fact:
+    let mut executor = Executor::new(registry.clone(), config.clone());
+    executor.set_acl(acl);
     ```
 
 ## Dependencies

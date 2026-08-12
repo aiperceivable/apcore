@@ -14,7 +14,7 @@ Thank you for your interest in contributing to apcore!
 
 The specification lives in [docs/spec/protocol-spec.md](docs/spec/protocol-spec.md). Changes to
 the spec require an issue discussing the change before a PR is opened.
-Spec changes must be reviewed by at least 2 maintainers.
+Spec changes must be reviewed and approved by at least 2 maintainers — **or by all maintainers when fewer than 3 exist**, per [GOVERNANCE.md](GOVERNANCE.md) § Decision Making. With a single maintainer listed in [MAINTAINERS.md](MAINTAINERS.md), that is one approval. This qualifier used to be missing here, which made the requirement read as unsatisfiable for a single-maintainer project and put this file in conflict with GOVERNANCE.md.
 
 ## Language SDKs
 

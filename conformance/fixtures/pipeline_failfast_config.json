@@ -1,5 +1,5 @@
 {
-  "description": "Pipeline configuration fail-fast (Issue #33): missing step references and unmet requires/provides MUST raise typed errors at parse/construction time, not log warnings or defer to first call(). References middleware-system.md 'Configuration safety' subsection.",
+  "description": "Pipeline YAML fail-fast conformance (issue #33 §1.2): a `pipeline:` section that names a step which does not exist in the active strategy MUST raise at parse time, not warn and continue. `configure` is an OBJECT MAP keyed by step name — that is what schemas/apcore-config.schema.json $defs/PipelineConfig declares and what all three SDKs parse (apcore-python pipeline_config.py:187, apcore-typescript pipeline-config.ts:244, apcore-rust pipeline_config.rs:320). An earlier revision of this fixture used an array of {name, ...} objects, which no SDK accepts.",
   "test_cases": [
     {
       "id": "missing_step_in_configure_raises_configuration_error",
@@ -7,38 +7,24 @@
       "input": {
         "yaml": {
           "pipeline": {
-            "configure": [
-              { "name": "validate_input", "ignore_errors": true },
-              { "name": "nonexistent_step", "timeout_ms": 500 }
-            ]
+            "configure": {
+              "input_validation": {
+                "ignore_errors": true
+              },
+              "nonexistent_step": {
+                "timeout_ms": 500
+              }
+            }
           }
         }
       },
       "expected": {
         "raises": true,
-        "error_type": "ConfigurationError",
         "error_message_contains": "nonexistent_step",
         "raised_at": "parse_time",
-        "deferred_to_first_call": false
-      }
-    },
-    {
-      "id": "missing_step_in_step_middleware_raises_configuration_error",
-      "description": "step_middleware: targets an unknown step name; ConfigurationError MUST be raised at parse time",
-      "input": {
-        "yaml": {
-          "pipeline": {
-            "step_middleware": [
-              { "step": "no_such_step", "handler": "myapp.mw:Timing" }
-            ]
-          }
-        }
-      },
-      "expected": {
-        "raises": true,
-        "error_type": "ConfigurationError",
-        "error_message_contains": "no_such_step",
-        "raised_at": "parse_time"
+        "deferred_to_first_call": false,
+        "error_code": "PIPELINE_CONFIGURATION_ERROR",
+        "error_class_name_is_not_the_contract": "All three SDKs name the class/variant ConfigurationError; only error_code is normative."
       }
     },
     {
@@ -48,16 +34,30 @@
         "strategy": {
           "name": "custom",
           "steps": [
-            { "name": "context_creation", "provides": ["context.identity"] },
-            { "name": "execute", "requires": ["validated_inputs"] }
+            {
+              "name": "context_creation",
+              "provides": [
+                "context.identity"
+              ]
+            },
+            {
+              "name": "execute",
+              "requires": [
+                "validated_inputs"
+              ]
+            }
           ]
         }
       },
       "expected": {
         "raises": true,
-        "error_type": "PipelineDependencyError",
-        "error_message_contains": ["validated_inputs", "execute"],
-        "raised_at": "strategy_construction"
+        "error_message_contains": [
+          "validated_inputs",
+          "execute"
+        ],
+        "raised_at": "strategy_construction",
+        "error_code": "PIPELINE_DEPENDENCY_ERROR",
+        "error_class_name_is_not_the_contract": "All three SDKs name the class PipelineDependencyError; only error_code is normative."
       }
     },
     {
@@ -67,9 +67,27 @@
         "strategy": {
           "name": "custom",
           "steps": [
-            { "name": "context_creation", "provides": ["context.identity"] },
-            { "name": "validate_input", "requires": ["context.identity"], "provides": ["validated_inputs"] },
-            { "name": "execute", "requires": ["validated_inputs"] }
+            {
+              "name": "context_creation",
+              "provides": [
+                "context.identity"
+              ]
+            },
+            {
+              "name": "validate_input",
+              "requires": [
+                "context.identity"
+              ],
+              "provides": [
+                "validated_inputs"
+              ]
+            },
+            {
+              "name": "execute",
+              "requires": [
+                "validated_inputs"
+              ]
+            }
           ]
         }
       },
@@ -78,5 +96,12 @@
         "strategy_callable": true
       }
     }
-  ]
+  ],
+  "driver_contract": {
+    "assert_the_wire_code": "Assert `expected.error_code`, the cross-language wire string. The previous revision asserted `error_type: \"ConfigurationError\"` — a CLASS name that all three SDKs coincidentally share — and so reported green while the three emitted three DIFFERENT wire codes: Python PIPELINE_CONFIGURATION_ERROR, TypeScript PIPELINE_CONFIG_INVALID, Rust CONFIGURATION_ERROR. A fixture that asserts the one attribute that happens to agree proves nothing.",
+    "canonical_code": "PIPELINE_CONFIGURATION_ERROR, per docs/spec/2026-05-decision-log.md and the registry in features/error-system.md. PIPELINE_CONFIG_INVALID is a DIFFERENT code in that registry — field-level validation failure — and MUST NOT be reused for unknown-step references.",
+    "parse_time": "The raise MUST happen while the config is being turned into a strategy, not on first call. A driver that only asserts 'it raised eventually' cannot tell the two apart: build the strategy and assert it raises there, without executing anything.",
+    "the_valid_key_must_really_exist": "`input_validation` is a REAL built-in step (apcore-python builtin_steps.py, apcore-typescript builtin-steps.ts:593, apcore-rust builtin_steps.rs:124). An earlier revision used `validate_input`, which exists in no SDK — so the case would have raised on the FIRST key and the `error_message_contains: nonexistent_step` assertion could never be reached. The valid half of a fail-fast test has to actually be valid.",
+    "one_way_to_say_it": "Every case expresses its expected failure as `error_code`. There is no `error_type` key: a class name is a per-language detail that can agree while the wire codes diverge, which is exactly how the configure case hid a three-way split."
+  }
 }

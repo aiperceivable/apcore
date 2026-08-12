@@ -1,0 +1,169 @@
+name: Conformance integrity
+
+# The doc repo owns the canonical schemas and the conformance fixtures the SDKs
+# drive. These checks guard the seam between them: a fixture that has drifted
+# from schemas/ is worse than no fixture, because three SDKs will be validated
+# against a stale contract and report green.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "schemas/**"
+      - "conformance/**"
+      - "docs/**"
+      - "README.md"
+      - ".github/workflows/conformance-integrity.yml"
+  pull_request:
+    paths:
+      - "schemas/**"
+      - "conformance/**"
+      - "docs/**"
+      - "README.md"
+      - ".github/workflows/conformance-integrity.yml"
+
+jobs:
+  integrity:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install validator
+        run: pip install --quiet jsonschema
+
+      - name: Every schema is valid Draft 2020-12
+        run: |
+          python3 - <<'PY'
+          import glob, json, sys
+          from jsonschema import Draft202012Validator
+          bad = 0
+          for path in sorted(glob.glob("schemas/*.schema.json")):
+              doc = json.load(open(path))
+              if doc.get("$schema") != "https://json-schema.org/draft/2020-12/schema":
+                  print(f"{path}: $schema is not Draft 2020-12", file=sys.stderr); bad += 1
+              try:
+                  Draft202012Validator.check_schema(doc)
+              except Exception as exc:
+                  print(f"{path}: {exc}", file=sys.stderr); bad += 1
+          sys.exit(1 if bad else 0)
+          PY
+
+      - name: The spec's own canonical config validates against its own schema
+        run: |
+          python3 - <<'PY'
+          import json, sys
+          from jsonschema import Draft202012Validator
+          # PROTOCOL_SPEC 9.1's worked example. If the schema rejects it, one of
+          # the two is wrong and users copying the example get a config error.
+          cfg = {
+              "version": "1.0.0",
+              "project": {"name": "my-ai-project", "version": "0.1.0"},
+              "extensions": {"root": "./extensions", "auto_discover": True,
+                             "lazy_load": True, "max_depth": 8,
+                             "follow_symlinks": False,
+                             "ignore_patterns": ["*.test.*"]},
+              "schema": {"root": "./schemas", "strategy": "yaml_first",
+                         "max_ref_depth": 32},
+              "acl": {"root": "./acl", "default_effect": "deny"},
+              "executor": {"default_timeout": 30000, "global_timeout": 60000,
+                           "max_call_depth": 32, "max_module_repeat": 3},
+              "observability": {"tracing": {"enabled": True, "sampling_rate": 1.0,
+                                            "exporter": "stdout"},
+                                "metrics": {"enabled": True, "exporter": "stdout"}},
+              "bindings": {"dir": "./bindings", "pattern": "*.binding.yaml"},
+              "sys_modules": {"enabled": False},
+              "stream": {"max_merge_depth": 32},
+          }
+          schema = json.load(open("schemas/apcore-config.schema.json"))
+          errors = sorted(Draft202012Validator(schema).iter_errors(cfg),
+                          key=lambda e: list(e.path))
+          for err in errors:
+              print(f"{list(err.path)}: {err.message}", file=sys.stderr)
+          sys.exit(1 if errors else 0)
+          PY
+
+      - name: Every fixture parses and is listed in the inventory
+        run: |
+          python3 - <<'PY'
+          import glob, json, os, sys
+          readme = open("conformance/README.md").read()
+          inventory = open("docs/spec/conformance.md").read()
+          bad, total = 0, 0
+          for path in sorted(glob.glob("conformance/fixtures/*.json")):
+              name = os.path.basename(path)
+              try:
+                  total += len(json.load(open(path)).get("test_cases", []))
+              except Exception as exc:
+                  print(f"{path}: {exc}", file=sys.stderr); bad += 1; continue
+              if name not in readme:
+                  print(f"{name}: absent from conformance/README.md", file=sys.stderr); bad += 1
+              if name[:-5] not in inventory:
+                  print(f"{name}: absent from conformance.md 8.1", file=sys.stderr); bad += 1
+          print(f"{len(glob.glob('conformance/fixtures/*.json'))} fixtures, {total} cases")
+          sys.exit(1 if bad else 0)
+          PY
+
+      - name: config_key_governance.json is in sync with schemas/
+        run: python3 conformance/generate_config_key_governance.py
+
+  doc-examples:
+    # Documentation examples are the onboarding API. This job resolves every
+    # symbol they import against the real SDKs — the check that would have
+    # caught the ~120 broken examples found in the 0.26 audit, none of which
+    # cross-language review could see because all three tabs were consistently
+    # wrong.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: apcore
+
+      - uses: actions/checkout@v4
+        with:
+          repository: aiperceivable/apcore-python
+          path: apcore-python
+        continue-on-error: true
+
+      - uses: actions/checkout@v4
+        with:
+          repository: aiperceivable/apcore-typescript
+          path: apcore-typescript
+        continue-on-error: true
+
+      - uses: actions/checkout@v4
+        with:
+          repository: aiperceivable/apcore-rust
+          path: apcore-rust
+        continue-on-error: true
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Every symbol the docs import resolves against the SDK
+        working-directory: apcore
+        run: python3 conformance/check_doc_examples.py --sdk-root ..
+
+      - name: No NEW `expected` key that goes unasserted
+        working-directory: apcore
+        # A key in `expected` that no driver reads is not a contract — it reads
+        # as covered everywhere while nothing is checked. 61 such keys exist
+        # today (`expected_keys_baseline.json`); --baseline blocks a NEW one
+        # without holding up unrelated work. This is the guard that would have
+        # caught `wrapped_in`, declared by the fixture and read by nobody, which
+        # let the MiddlewareChainError wrapping be removed from two SDKs with
+        # every test still green.
+        run: python3 conformance/check_expected_keys_read.py --baseline --sdk-root ..
+
+      - name: Every fixture is driven by all three SDKs
+        working-directory: apcore
+        # --strict, because the backlog is closed: all 60 fixtures are driven by
+        # apcore-python, apcore-typescript AND apcore-rust. A fixture only two
+        # SDKs load proves two implementations agree, not three — and it reads
+        # as covered in every inventory. Strict keeps a new fixture from landing
+        # undriven, which is how the backlog accumulated in the first place.
+        run: python3 conformance/check_driver_coverage.py --strict --sdk-root ..
+

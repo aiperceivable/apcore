@@ -1,0 +1,134 @@
+{
+  "description": "Cross-language governance of the configuration key surface. Asserts that each SDK's default table and constraint table stay inside the key set the canonical schemas declare, and that every canonical default is reproduced exactly. This fixture exists because the same defect class recurred four times in one audit cycle: schema.validation.* (declared by no schema, validated by all three SDKs), a frozen version/project default pair invented by Python and TypeScript that made the required-field check unreachable, middleware.circuit_breaker.* (forbidden by apcore-config.schema.json, validated by all three SDKs, read by none), and a missing Rust default table that resolved 15 documented keys to null. Every one of them is a disagreement between schemas/ and an SDK table, and none was detectable by any test.",
+  "driver_contract": {
+    "sources": "The canonical key surface is derived from schemas/apcore-config.schema.json, schemas/defaults.schema.json and schemas/sys-modules.schema.json (the last namespaced under 'sys_modules.'). `allowed_keys` and `canonical_defaults` below are a projection of those files, regenerated and diffed by the doc repo's own test — do NOT hand-edit them, and do NOT treat this fixture as a second source of truth. Fix the schema, regenerate, then fix the SDK.",
+    "sdk_tables": "Each driver supplies its SDK's constraint-table key set (apcore-python `_CONSTRAINTS`, apcore-typescript `CONSTRAINTS`, apcore-rust `CONSTRAINED_CONFIG_KEYS`) and its default-table key set (`_DEFAULTS` / `DEFAULTS` / `config_default_keys()`). Registered-namespace defaults declared at runtime (PROTOCOL_SPEC 9.15) are NOT part of the default table and are out of scope.",
+    "assertion": "Report the offending keys, not just a boolean — a driver that fails with 'expected 0 violations, got 3' costs more to diagnose than the bug it caught.",
+    "default_value_comparison": "Compare canonical_defaults against the RESOLVED default view — construct a defaults-only Config (`Config.from_defaults()`) and read each key through `get()`. Do NOT compare against the default table directly: an SDK may legitimately implement a default as a typed struct field rather than a table entry (apcore-rust's ExecutorConfig and ObservabilityConfig carry serde defaults that never appear in CONFIG_DEFAULTS), and a table-only comparison reports seven false positives on that SDK. The behavioural question a caller cares about is whether the key resolves to the documented value. Compare numerically when both sides are numbers so 1.0 and 1 agree.",
+    "undeclared_key_check": "The undeclared-key direction DOES read the tables directly, because it needs enumeration: the question is which keys this SDK claims to know about. Typed struct fields are exempt — they are declared by the schemas by construction."
+  },
+  "canonical_sources": [
+    "schemas/apcore-config.schema.json",
+    "schemas/defaults.schema.json",
+    "schemas/sys-modules.schema.json"
+  ],
+  "allowed_keys": [
+    "$schema",
+    "acl.audit.enabled",
+    "acl.audit.include_denied",
+    "acl.audit.log_level",
+    "acl.default_effect",
+    "acl.root",
+    "bindings.dir",
+    "bindings.pattern",
+    "executor.default_timeout",
+    "executor.global_timeout",
+    "executor.max_call_depth",
+    "executor.max_module_repeat",
+    "extensions.auto_discover",
+    "extensions.follow_symlinks",
+    "extensions.ignore_patterns",
+    "extensions.lazy_load",
+    "extensions.max_depth",
+    "extensions.namespace",
+    "extensions.root",
+    "extensions.roots",
+    "id_map.auto_detect",
+    "id_map.overrides",
+    "logging.format",
+    "logging.level",
+    "middleware.disabled",
+    "obs.redaction.regex_patterns",
+    "obs.redaction.replacement",
+    "obs.redaction.sensitive_keys",
+    "observability.metrics.enabled",
+    "observability.metrics.exporter",
+    "observability.tracing.enabled",
+    "observability.tracing.exporter",
+    "observability.tracing.sampling_rate",
+    "pipeline.configure",
+    "pipeline.remove",
+    "pipeline.steps",
+    "project.name",
+    "project.version",
+    "schema.max_ref_depth",
+    "schema.root",
+    "schema.strategy",
+    "stream.max_merge_depth",
+    "sys_modules.control.enabled",
+    "sys_modules.control.overrides_path",
+    "sys_modules.enabled",
+    "sys_modules.error_history.max_entries_per_module",
+    "sys_modules.error_history.max_total_entries",
+    "sys_modules.events.enabled",
+    "sys_modules.events.subscribers",
+    "sys_modules.events.thresholds.error_rate",
+    "sys_modules.events.thresholds.latency_p99_ms",
+    "sys_modules.health.enabled",
+    "sys_modules.manifest.enabled",
+    "sys_modules.usage.bucketing_strategy",
+    "sys_modules.usage.enabled",
+    "sys_modules.usage.retention_hours",
+    "validation.binding.description_max_length",
+    "validation.binding.documentation_max_length",
+    "validation.binding.tags_pattern",
+    "validation.binding.version_require_semver",
+    "validation.pipeline.step_name_max_length",
+    "validation.pipeline.timeout_ms_max",
+    "version"
+  ],
+  "canonical_defaults": {
+    "acl.default_effect": "deny",
+    "acl.root": "./acl",
+    "executor.default_timeout": 30000,
+    "executor.global_timeout": 60000,
+    "executor.max_call_depth": 32,
+    "executor.max_module_repeat": 3,
+    "extensions.auto_discover": true,
+    "extensions.follow_symlinks": false,
+    "extensions.max_depth": 8,
+    "extensions.root": "./extensions",
+    "observability.metrics.enabled": false,
+    "observability.tracing.enabled": false,
+    "observability.tracing.sampling_rate": 1.0,
+    "schema.max_ref_depth": 32,
+    "schema.root": "./schemas",
+    "schema.strategy": "yaml_first",
+    "stream.max_merge_depth": 32,
+    "sys_modules.enabled": false
+  },
+  "test_cases": [
+    {
+      "id": "sdk_default_table_declares_no_undeclared_key",
+      "description": "Every key in the SDK default table appears in allowed_keys. A default for a key no schema declares is an SDK-invented default: apcore-config.schema.json is additionalProperties:false, so a user config carrying that key fails the canonical schema while the SDK silently supplies a value for it.",
+      "sdk_table": "defaults",
+      "expected": {
+        "violations": []
+      }
+    },
+    {
+      "id": "sdk_constraint_table_declares_no_undeclared_key",
+      "description": "Every key in the SDK constraint table appears in allowed_keys. Validating a key the canonical schema forbids is strictly worse than not validating it: it tells the operator the key is understood.",
+      "sdk_table": "constraints",
+      "expected": {
+        "violations": []
+      }
+    },
+    {
+      "id": "sdk_reproduces_every_canonical_default",
+      "description": "Every key in canonical_defaults is present in the SDK default table. A missing entry means the key resolves to null in that SDK while its peers return the documented value.",
+      "sdk_table": "defaults",
+      "expected": {
+        "missing": []
+      }
+    },
+    {
+      "id": "sdk_default_values_match_canonical_defaults",
+      "description": "For every key in both, the SDK value equals the canonical value. Compare by JSON equality; an integer and a float of equal value are equal.",
+      "sdk_table": "defaults",
+      "expected": {
+        "mismatched": []
+      }
+    }
+  ]
+}

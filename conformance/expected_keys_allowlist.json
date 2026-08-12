@@ -1,0 +1,15 @@
+{
+  "description": "Top-level `expected` keys that are DATA under test, not assertion names, so no driver names them as a literal. Each entry needs a reason. check_expected_keys_read.py reports an entry as STALE once a driver does read the key, so a real assertion landing here surfaces its own cleanup rather than leaving a permanent exemption.",
+  "allow": [
+    {
+      "fixture": "sensitive_keys_default.json",
+      "keys": ["AccessKey", "Cookie", "internal_token", "private_key_pem", "session_id"],
+      "reason": "`expected` here is a map from FIELD NAME to whether that field is redacted by the default key list. The keys are the inputs under test — the driver iterates the map rather than naming any single field — so a literal-mention check cannot see them. Adding a field means adding a case, not an assertion."
+    },
+    {
+      "fixture": "redaction_config.json",
+      "keys": ["amount", "openai_key", "other_field", "refresh_token", "session_token_id"],
+      "reason": "Same shape: `expected` is a payload-shaped map of field name to post-redaction value, iterated by the driver. These are data, not assertion names."
+    }
+  ]
+}

@@ -210,7 +210,7 @@ The accessor methods are defined on the **key**, not on the context (see [PROTOC
 === "Python"
 
     ```python
-    from apcore.context import Context, ContextKey
+    from apcore import Context, ContextKey
 
     # Define keys once, near where the state's schema is defined.
     RETRY_COUNT: ContextKey[int] = ContextKey("ext.myapp.retry.count")
@@ -595,14 +595,14 @@ The reserved `_apcore.` prefix described in [`data` Key Convention](#data-key-co
         json!({ "type": "report", "date": "2024-01" }),
     );
 
-    client.executor.call("module_fetch",   json!({}), Some(&context), None).await?;
+    client.executor().call("module_fetch",   json!({}), Some(&context), None).await?;
     // module_fetch writes context.data["raw_records"] = [...]
 
-    client.executor.call("module_analyze", json!({}), Some(&context), None).await?;
+    client.executor().call("module_analyze", json!({}), Some(&context), None).await?;
     // module_analyze reads context.data["raw_records"]
     // and writes context.data["analysis"]
 
-    client.executor.call("module_report",  json!({}), Some(&context), None).await?;
+    client.executor().call("module_report",  json!({}), Some(&context), None).await?;
     // module_report reads both prior outputs from context.data
     # Ok(()) }
     ```

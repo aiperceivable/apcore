@@ -277,7 +277,7 @@ The error-taxonomy difference is concrete:
 === "TypeScript"
     ```typescript
     // Same shape: one exported class per failure.
-    import { ModuleNotFoundError, ApprovalDeniedError } from 'apcore';
+    import { ModuleNotFoundError, ApprovalDeniedError } from 'apcore-js';
 
     throw new ModuleNotFoundError('executor.email.send_email not registered');
     ```

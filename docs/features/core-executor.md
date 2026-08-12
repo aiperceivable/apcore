@@ -533,7 +533,7 @@ When `ignore_errors: true` is set on a step, a failure logs a WARN and execution
     # apcore.yaml — step with ignore_errors: true
     # pipeline:
     #   configure:
-    #     - name: validate_input
+    #     input_validation:            # map keyed by step name
     #       ignore_errors: true
 
     import apcore
@@ -545,7 +545,7 @@ When `ignore_errors: true` is set on a step, a failure logs a WARN and execution
     def process(inputs, ctx):
         return {"result": inputs.get("value", "default")}
 
-    # Even if validate_input raises, the pipeline continues to execute.
+    # Even if input_validation raises, the pipeline continues to execute.
     result = client.call("demo.process", {"value": 42})
     print(result)  # {"result": 42}
 
@@ -553,15 +553,15 @@ When `ignore_errors: true` is set on a step, a failure logs a WARN and execution
     # apcore.yaml:
     # pipeline:
     #   configure:
-    #     - name: validate_input
-    #       ignore_errors: false   # default
+    #     input_validation:            # map keyed by step name
+    #       ignore_errors: false       # default
 
     # A validation failure here raises PipelineStepError immediately;
     # no subsequent steps run.
     try:
         client.call("demo.process", {"unexpected_key": True})
     except apcore.PipelineStepError as e:
-        print(e.step_name)   # "validate_input"
+        print(e.step_name)   # "input_validation"
         print(e.cause)       # original SchemaValidationError
     ```
 
@@ -570,7 +570,7 @@ When `ignore_errors: true` is set on a step, a failure logs a WARN and execution
     // apcore.yaml — step with ignore_errors: true
     // pipeline:
     //   configure:
-    //     - name: validate_input
+    //     input_validation:           // map keyed by step name
     //       ignore_errors: true
 
     import { APCore } from 'apcore-js';
@@ -583,7 +583,7 @@ When `ignore_errors: true` is set on a step, a failure logs a WARN and execution
         execute: ({ value }: { value?: number }) => ({ result: value ?? 'default' }),
     });
 
-    // ignore_errors: true — pipeline continues even if validate_input fails.
+    // ignore_errors: true — pipeline continues even if input_validation fails.
     const result = await client.call('demo.process', { value: 42 });
     console.log(result); // { result: 42 }
 
@@ -592,7 +592,7 @@ When `ignore_errors: true` is set on a step, a failure logs a WARN and execution
         await client.call('demo.process', { unexpected_key: true });
     } catch (e) {
         if (e instanceof PipelineStepError) {
-            console.log(e.stepName);  // "validate_input"
+            console.log(e.stepName);  // "input_validation"
             console.log(e.cause);     // original SchemaValidationError
         }
     }
@@ -603,7 +603,7 @@ When `ignore_errors: true` is set on a step, a failure logs a WARN and execution
     // apcore.yaml — step with ignore_errors: true
     // pipeline:
     //   configure:
-    //     - name: validate_input
+    //     input_validation:           // map keyed by step name
     //       ignore_errors: true
 
     use apcore::{APCore, Config};
@@ -614,7 +614,7 @@ When `ignore_errors: true` is set on a step, a failure logs a WARN and execution
     async fn main() {
         let client = APCore::with_config(Config::load("apcore.yaml").unwrap());
 
-        // ignore_errors: true — pipeline continues even if validate_input fails.
+        // ignore_errors: true — pipeline continues even if input_validation fails.
         let result = client.call("demo.process", json!({"value": 42})).await.unwrap();
         println!("{result}"); // {"result":42}
 
@@ -622,7 +622,7 @@ When `ignore_errors: true` is set on a step, a failure logs a WARN and execution
         match client.call("demo.process", json!({"unexpected_key": true})).await {
             Err(e) if e.is::<PipelineStepError>() => {
                 let pse = e.downcast_ref::<PipelineStepError>().unwrap();
-                println!("{}", pse.step_name);  // "validate_input"
+                println!("{}", pse.step_name);  // "input_validation"
                 println!("{:?}", pse.cause);    // original SchemaValidationError
             }
             _ => {}
@@ -637,16 +637,18 @@ When configuring a pipeline step that already exists (same step name), implement
 This applies to both built-in steps and custom steps. Calling `configure_step` (or the equivalent YAML `configure:` directive) twice with the same step name is idempotent with respect to count — there is always exactly one step with that name.
 
 ```yaml
-# apcore.yaml — replace the built-in validate_input step with a custom handler
+# apcore.yaml — replace the built-in input_validation step with a custom handler
 pipeline:
   configure:
-    - name: validate_input
+    # `configure` is an object MAP keyed by step name, per
+    # schemas/apcore-config.schema.json $defs/PipelineConfig — not an array.
+    input_validation:
       handler: "myapp.pipeline.custom_validator:validate"
       ignore_errors: false
       timeout_ms: 500
 ```
 
-After this configuration, the pipeline has exactly one `validate_input` step (the custom one). The built-in handler is fully replaced. The step remains at position 7 in the execution order (between the Middleware Before Chain and Module Execution steps).
+After this configuration, the pipeline has exactly one `input_validation` step (the custom one). The built-in handler is fully replaced. The step remains at position 7 in the execution order (between the Middleware Before Chain and Module Execution steps).
 
 ### 1.3 Step-Level Middleware
 
@@ -663,85 +665,68 @@ The execution order for a step with both global and step-level middleware is:
 === "Python"
     ```python
     import time
-    import apcore
-    from apcore import APCore, Config
+    from apcore import APCore, Config, PipelineState, StepMiddleware, StepResult
+
+
+    class TimingStepMiddleware(StepMiddleware):
+        """Runs for EVERY step — filter on `step_name` to scope it.
+
+        The hooks are `(step_name, state)` / `(step_name, state, result)`:
+        there is no `inputs` parameter, because a Step is `execute(ctx)`.
+        """
+
+        def __init__(self) -> None:
+            self._started: dict[str, float] = {}
+
+        async def before_step(self, step_name: str, state: PipelineState) -> None:
+            if step_name == "input_validation":
+                self._started[step_name] = time.perf_counter()
+
+        async def after_step(self, step_name: str, state: PipelineState, result: StepResult) -> None:
+            start = self._started.pop(step_name, None)
+            if start is not None:
+                print(f"step={step_name} elapsed_ms={(time.perf_counter() - start) * 1000:.2f}")
+
 
     client = APCore(Config())
-
-    # Attach a timing middleware only to the validate_input step
-    @client.step_middleware("validate_input")
-    def timing_middleware(step_name, ctx, inputs, next_fn):
-        start = time.perf_counter()
-        result = next_fn(ctx, inputs)
-        elapsed_ms = (time.perf_counter() - start) * 1000
-        ctx.services.logger.info(f"step={step_name} elapsed_ms={elapsed_ms:.2f}")
-        return result
+    client.executor.current_strategy.add_step_middleware(TimingStepMiddleware())
 
     @client.module(id="demo.greet", description="Greet the user")
-    def greet(inputs, ctx):
-        return {"message": f"Hello, {inputs['name']}!"}
+    def greet(name: str) -> dict:
+        return {"message": f"Hello, {name}!"}
 
-    result = client.call("demo.greet", {"name": "World"})
-    print(result)  # {"message": "Hello, World!"}
-    # Log output: step=validate_input elapsed_ms=0.42
+    print(client.call("demo.greet", {"name": "World"}))
     ```
 
 === "TypeScript"
     ```typescript
-    import { APCore } from 'apcore-js';
-
-    const client = new APCore();
-
-    // Attach a timing middleware only to the validate_input step
-    client.stepMiddleware('validate_input', async (stepName, ctx, inputs, next) => {
-        const start = performance.now();
-        const result = await next(ctx, inputs);
-        const elapsedMs = performance.now() - start;
-        ctx.services.logger.info(`step=${stepName} elapsed_ms=${elapsedMs.toFixed(2)}`);
-        return result;
-    });
-
-    client.module({
-        id: 'demo.greet',
-        description: 'Greet the user',
-        execute: ({ name }: { name: string }) => ({ message: `Hello, ${name}!` }),
-    });
-
-    const result = await client.call('demo.greet', { name: 'World' });
-    console.log(result); // { message: 'Hello, World!' }
-    // Log output: step=validate_input elapsed_ms=0.42
+    // apcore-typescript registers step middleware on `PipelineEngine`, which the
+    // Executor holds privately — there is currently no public path to it from the
+    // client. See features/middleware-system.md; Python and Rust expose it on the
+    // ExecutionStrategy.
     ```
 
 === "Rust"
     ```rust
-    use apcore::{APCore, Config};
-    use apcore::middleware::StepMiddlewareFn;
-    use serde_json::json;
-    use std::time::Instant;
+    use apcore::{build_standard_strategy, Config, Executor, Registry, StepMiddleware};
+    use std::sync::Arc;
 
-    #[tokio::main]
-    async fn main() {
-        let mut client = APCore::default();
+    // `add_step_middleware` needs `&mut ExecutionStrategy` and `Executor::strategy()`
+    // yields only `&`, so populate the strategy before constructing the executor.
+    let mut strategy = build_standard_strategy();
+    strategy.add_step_middleware(Arc::new(TimingStepMiddleware::default()));
 
-        // Attach a timing middleware only to the validate_input step
-        client.step_middleware("validate_input", |step_name, ctx, inputs, next| {
-            Box::pin(async move {
-                let start = Instant::now();
-                let result = next(ctx, inputs).await;
-                let elapsed_ms = start.elapsed().as_secs_f64() * 1000.0;
-                ctx.services.logger.info(
-                    &format!("step={step_name} elapsed_ms={elapsed_ms:.2f}")
-                );
-                result
-            })
-        });
-
-        client.register("demo.greet", Box::new(GreetModule));
-        let result = client.call("demo.greet", json!({"name": "World"})).await.unwrap();
-        println!("{result}"); // {"message":"Hello, World!"}
-        // Log output: step=validate_input elapsed_ms=0.42
-    }
+    let executor = Executor::with_strategy(Registry::new(), Config::from_defaults(), strategy);
     ```
+
+Step middleware is **not** scoped to a single step: every registered `StepMiddleware`
+receives a `before_step` / `after_step` / `on_step_error` callback for every step in the
+pipeline and filters on `step_name` itself. There is no `next`-style continuation, and no
+step-inputs parameter — a Step is `execute(ctx)`. `before_step` and `after_step` observe
+only; their return values are discarded. `on_step_error` is the one hook whose return
+value is read: a non-null value is a recovery result that short-circuits the remaining
+handlers. See [middleware-system.md](./middleware-system.md) for the full contract.
+
 
 ### 1.4 Unified run_until Pattern
 

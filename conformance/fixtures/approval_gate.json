@@ -29,7 +29,13 @@
       "description": "Gate fires and allows execution when handler returns approved",
       "approval_handler_configured": true,
       "module_requires_approval": true,
-      "approval_result": { "status": "approved", "approved_by": "auto", "reason": null, "approval_id": null, "metadata": null },
+      "approval_result": {
+        "status": "approved",
+        "approved_by": "auto",
+        "reason": null,
+        "approval_id": null,
+        "metadata": null
+      },
       "expected": {
         "gate_invoked": true,
         "outcome": "proceed"
@@ -40,7 +46,13 @@
       "description": "Gate fires and raises ApprovalDeniedError (APPROVAL_DENIED / HTTP 403) when handler returns rejected",
       "approval_handler_configured": true,
       "module_requires_approval": true,
-      "approval_result": { "status": "rejected", "approved_by": null, "reason": "Policy violation", "approval_id": null, "metadata": null },
+      "approval_result": {
+        "status": "rejected",
+        "approved_by": null,
+        "reason": "Policy violation",
+        "approval_id": null,
+        "metadata": null
+      },
       "expected": {
         "gate_invoked": true,
         "outcome": "error",
@@ -53,7 +65,13 @@
       "description": "Gate fires and raises ApprovalPendingError (APPROVAL_PENDING / HTTP 202) when handler returns pending with approval_id",
       "approval_handler_configured": true,
       "module_requires_approval": true,
-      "approval_result": { "status": "pending", "approved_by": null, "reason": null, "approval_id": "req-abc123", "metadata": null },
+      "approval_result": {
+        "status": "pending",
+        "approved_by": null,
+        "reason": null,
+        "approval_id": "req-abc123",
+        "metadata": null
+      },
       "expected": {
         "gate_invoked": true,
         "outcome": "error",

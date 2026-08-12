@@ -15,15 +15,20 @@
         "action": "registry.register",
         "concurrent_check": {
           "after_ms": 25,
-          "calls": ["registry.list", "registry.get:executor.test.warmup"]
+          "calls": [
+            "registry.list",
+            "registry.get:executor.test.warmup"
+          ]
         }
       },
       "expected": {
         "registration_succeeds": true,
         "post_register_visible": true,
         "concurrent_check_visible": false,
-        "concurrent_check_get_raises": "ModuleNotFoundError",
-        "on_load_observed_data": {"_test.warmed": true}
+        "concurrent_check_get_raises": "MODULE_NOT_FOUND",
+        "on_load_observed_data": {
+          "_test.warmed": true
+        }
       }
     },
     {
@@ -42,11 +47,11 @@
         "action": "registry.register"
       },
       "expected": {
-        "registration_raises": "ConnectionError",
+        "registration_raises": "<host exception raised by the on_load callback>",
         "registration_error_message": "Failed to reach upstream during initialization",
         "post_register_visible": false,
         "post_register_list_contains": false,
-        "post_register_get_raises": "ModuleNotFoundError",
+        "post_register_get_raises": "MODULE_NOT_FOUND",
         "load_failed_event_emitted": true,
         "load_failed_event": {
           "event_type": "apcore.registry.module_load_failed",
@@ -80,11 +85,14 @@
       },
       "trigger": {
         "action": "registry.register_concurrent",
-        "modules": ["module_a", "module_b"]
+        "modules": [
+          "module_a",
+          "module_b"
+        ]
       },
       "expected": {
         "one_succeeds": true,
-        "one_raises": "InvalidInputError",
+        "one_raises": "GENERAL_INVALID_INPUT",
         "raised_error_code": "DUPLICATE_MODULE_ID",
         "post_register_visible": true,
         "post_register_count": 1
@@ -105,7 +113,10 @@
       },
       "trigger": {
         "action": "registry.register_concurrent",
-        "modules": ["module_x", "module_y"]
+        "modules": [
+          "module_x",
+          "module_y"
+        ]
       },
       "expected": {
         "both_succeed": true,
@@ -114,5 +125,8 @@
         "_note": "If callbacks were globally serialized the wall clock would be >= 100ms; the assertion confirms per-module parallelism."
       }
     }
-  ]
+  ],
+  "driver_contract": {
+    "assert_the_wire_code": "`*_raises` values are apcore WIRE CODES, not class names. An earlier revision used `ModuleNotFoundError` / `InvalidInputError`, which are Python/TypeScript class names — apcore-rust has neither type, only `ErrorCode` variants — and no driver read the keys at all, so they asserted nothing in any SDK. `registration_raises` is the exception: it names the HOST exception the on_load callback itself throws, which is user code and carries no apcore code."
+  }
 }

@@ -448,7 +448,7 @@ version lines and declare their supported core range in their package metadata.
 
 | Component | Version | Notes |
 |---|---|---|
-| **Protocol specification** | 1.9.0-draft | `docs/spec/protocol-spec.md` |
+| **Protocol specification** | 1.9.0 | `docs/spec/protocol-spec.md` |
 | apcore Python / TypeScript / Rust | 0.26.0 | Core SDK release line |
 | apcore-mcp Python / TypeScript / Rust | 0.17.2 | MCP surface adapters |
 | apcore-a2a Python / TypeScript / Rust | 0.4.4 | A2A surface adapters |
@@ -841,9 +841,7 @@ extensions:
 schema:
   root: "./schemas"
   strategy: "yaml_first"     # yaml_first | native_first | yaml_only
-  validation:
-    strict: true             # Strict validation mode
-    coerce_types: true       # Automatic type coercion
+  max_ref_depth: 32          # $ref resolution depth cap
 
 acl:
   root: "./acl"

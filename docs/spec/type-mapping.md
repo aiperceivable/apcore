@@ -117,7 +117,7 @@ type: boolean
 **Notes:**
 
 - JSON **MUST** use `true` / `false`, does not accept variants like `0` / `1` / `"true"` / `"false"`
-- If `schema.validation.coerce_types` is `true` (see PROTOCOL_SPEC §4.9), implementations **may** convert `0`/`1` to boolean values
+- This holds at the module-invocation boundary unconditionally: `0`, `1`, `"true"` and `"false"` **MUST** be rejected for a `boolean`, and no host configuration may relax it (§17.3)
 
 ### 2.5 Null Type (`null`)
 
@@ -165,6 +165,10 @@ required: [name]
 | Java | `class MyClass { ... }` | Class with typed fields |
 | TypeScript | `interface MyType { ... }` | Interface or object schema |
 
+**Supported Constraints:** `minProperties`, `maxProperties` (§6.5.1–§6.5.2), `required` (§6.5.3), `dependentRequired` (§6.5.4), `patternProperties`, `additionalProperties`, `propertyNames` (§10.3.2), `dependentSchemas` (§10.2.2.4) and `unevaluatedProperties` (§11.3). All SDK implementations **MUST** enforce these during validation — see §17 for the per-keyword requirement and its rationale.
+
+`minProperties` / `maxProperties` count the keys the *instance* carried, undeclared ones included: every `additionalProperties` form except `false` keeps unknown keys, and they count.
+
 ### 3.2 Array Type (`array` with `items`)
 
 **JSON Schema Definition:**
@@ -185,7 +189,18 @@ items:
 | Java | `List<String>` | Usually uses `ArrayList` |
 | TypeScript | `string[]` or `Array<string>` | — |
 
-**Supported Constraints:** `minItems`, `maxItems`, `uniqueItems`. All SDK implementations **MUST** enforce these constraints during validation.
+**Supported Constraints:** `minItems`, `maxItems`, `uniqueItems`, `contains` / `minContains` / `maxContains`, `prefixItems` and `unevaluatedItems`. All SDK implementations **MUST** enforce these constraints during validation — see §17 for the per-keyword requirement and its rationale.
+
+**Tuple form:** when `prefixItems` is present, `items` describes only the positions *past* the prefix (JSON Schema 2020-12 §10.3.1.2). Applying `items` to the whole array is a conformance defect: it rejects a valid tuple head.
+
+```yaml
+type: array
+prefixItems:
+  - type: string    # position 0
+  - type: integer   # position 1
+items:
+  type: boolean     # positions 2 and beyond
+```
 
 **Nested Array Example (Array of Objects):**
 
@@ -550,13 +565,19 @@ additionalProperties:
 
 When `input_schema` declares `additionalProperties: false` (PROTOCOL_SPEC §4.2 **SHOULD**), implementations **MUST** reject inputs containing unknown fields.
 
+A field is "unknown" only if neither `properties` nor `patternProperties` claimed it (JSON Schema 2020-12 §10.3.2.3). A key matched by a `patternProperties` entry **MUST NOT** be rejected by `additionalProperties: false`.
+
+To close an object *after* the branches of `allOf` / `anyOf` / `oneOf` / `if`-`then`-`else` have contributed their own properties, use `unevaluatedProperties: false` instead — `additionalProperties` cannot see those branches. See §17.2.
+
 ---
 
 ## 11. Format Constraint Mappings
 
 ### 11.1 `format` Keyword
 
-The `format` keyword in JSON Schema provides semantic validation for `string` types. Implementations **SHOULD** perform validation for the following formats:
+`format` carries a semantic hint about a `string` value. It is an **annotation, not an assertion**: under the default format-annotation vocabulary of JSON Schema 2020-12 §7.2.1, a value that does not satisfy its declared `format` **MUST NOT** fail validation. Implementations **SHOULD** recognise the formats below and emit a warning when a value does not conform, and **MUST** accept the value regardless. A `format` the implementation does not recognise is collected as an annotation and **MUST** pass silently — a contract is free to declare `format: "path"` or any other vocabulary term without becoming uncallable.
+
+Recognised formats:
 
 | `format` Value | Meaning | Regex/Rule | Example |
 |-------------|------|----------|------|
@@ -571,7 +592,11 @@ The `format` keyword in JSON Schema provides semantic validation for `string` ty
 
 ### 11.2 Format Validation Requirements
 
-All SDK implementations **SHOULD** perform validation for the formats listed in §11.1. The specific validation libraries and methods are left to each SDK implementation.
+All SDK implementations **SHOULD** check a value against its declared `format` when the format appears in §11.1, and **SHOULD** report a non-conforming value as a warning. The check **MUST NOT** produce `SCHEMA_VALIDATION_ERROR` — see §11.1. The specific validation libraries and methods are left to each SDK implementation.
+
+To make a format binding, express it as an assertion the vocabulary already carries: `pattern` for a syntactic shape, or `enum` for a closed set. `format` alone never rejects.
+
+**Where the warning is emitted is not yet uniform.** apcore-typescript and apcore-python emit it on the module-invocation path. apcore-rust computes format warnings in `SchemaValidator::validate_detailed_raw`, but its module-invocation path does not go through `SchemaValidator` at all — the executor's `validate_against_schema` builds its own `jsonschema` validator and returns on `is_valid`, so a Rust module call emits no format warning. Making it uniform means calling the warning path from `validate_against_schema`, not rerouting `SchemaValidator`. The conformance fixture `schema_hardening_formats.json` asserts the annotation semantics (validation passes) on all three SDKs; its `warn_logged` expectations are satisfied through a direct call to the warning path, not through a module invocation, so they do not pin this difference.
 
 ---
 
@@ -777,18 +802,68 @@ Some spec-defined method names conflict with language reserved keywords. Impleme
 
 The TypeScript SDK uses **`@sinclair/typebox`** (^0.34) for JSON Schema–shaped validation rather than a standalone Draft 2020-12 validator (e.g., `ajv`). TypeBox is a schema builder/validator hybrid that provides static TypeScript types from the same schema object.
 
-**Supported Draft 2020-12 keywords** (validated at runtime by TypeBox's `Value.Check` / `TypeCompiler`):
-`type`, `properties`, `required`, `enum`, `const`, `items`, `minItems`, `maxItems`, `uniqueItems`, `minimum`, `maximum`, `exclusiveMinimum`, `exclusiveMaximum`, `multipleOf`, `minLength`, `maxLength`, `pattern`, `format` (subset), `$ref` (within the same schema — not cross-file).
+**Keywords TypeBox validates natively** (through `Value.Check` / `TypeCompiler`):
+`type`, `properties`, `required`, `enum`, `const`, `items`, `minItems`, `maxItems`, `uniqueItems`, `contains`, `minContains`, `maxContains`, `minProperties`, `maxProperties`, `additionalProperties`, `minimum`, `maximum`, `exclusiveMinimum`, `exclusiveMaximum`, `multipleOf`, `minLength`, `maxLength`, `pattern`, `format` (carried as an annotation, see §11), `$ref` (within the same schema — not cross-file).
 
-**Known limitations vs. full Draft 2020-12:**
-- `$ref` to external URIs / files is not supported; use `apcore`'s schema registry for cross-module references.
-- `unevaluatedProperties` and `unevaluatedItems` are not enforced.
-- Complex combinators (`if/then/else`, `contains`, `prefixItems`) have partial support; test coverage is advised before relying on them.
+**Keywords with no TypeBox node**, supplied by the SDK's own evaluator and registered as a custom TypeBox kind so `Value.Check` reaches them: `prefixItems`, `patternProperties`, `propertyNames`, `dependentRequired`, `dependentSchemas`, `if` / `then` / `else`, `unevaluatedItems`, `unevaluatedProperties`. Sub-schemas of these keywords are handed back to the converter, so there is still exactly one validation engine. The requirement level for each is §17 — the absence of a library node is **not** a licence to drop the keyword.
 
-For modules whose schemas exercise the above limitations, implementers **SHOULD** validate with a Draft 2020-12–conformant tool (e.g., `ajv ^8` with `ajv-formats` and the `2020` meta-schema) and treat TypeBox as the TypeScript type inference layer only.
+**Remaining limitation vs. full Draft 2020-12:** `$ref` to external URIs / files is not supported; use `apcore`'s schema registry for cross-module references.
 
-**Python SDK** uses `jsonschema ^4.21` (fully Draft 2020-12 conformant).
-**Rust SDK** uses `jsonschema ^0.28` (pre-1.0; conformance grows with each minor; check release notes).
+**Python SDK** uses `jsonschema ^4.21` (fully Draft 2020-12 conformant); keywords Pydantic cannot express are delegated to it as a sub-schema assertion.
+**Rust SDK** uses `jsonschema ^0.28` (pre-1.0; conformance grows with each minor; check release notes) and hands it the raw schema, so every keyword in §17 is enforced by the library directly.
+
+---
+
+## 17. Validation Keyword Conformance
+
+§2–§11 describe how *types* map. This section states, keyword by keyword, what an SDK is required to do at the validation boundary — the path a module invocation actually takes (schema-to-native conversion followed by the SDK's validator), not a side-channel raw-schema check.
+
+It exists because "partial support" is not a specification. While this document said `if/then/else`, `contains` and `prefixItems` were "partially supported" and said nothing at all about `patternProperties`, `propertyNames`, `dependentRequired` or `minProperties`/`maxProperties`, the three SDKs drifted: apcore-rust rejected inputs that apcore-typescript and apcore-python accepted, from the identical contract. A caller cannot reason about a contract whose constraints are enforced in one runtime and ignored in another.
+
+### 17.1 General rules
+
+- **R1 — No silent drop.** An SDK **MUST NOT** discard a keyword listed as MUST below. If a keyword cannot be enforced, the SDK **MUST** reject the schema at load time with `SCHEMA_PARSE_ERROR` rather than accept it and validate less than the contract declares.
+- **R2 — Inertness.** Every keyword in the table applies only to instances of the type it describes and **MUST** pass every other instance type (JSON Schema 2020-12 §6, §10.3). `{"minimum": 3}` rejects `1` and accepts `"x"`, `[1]`, `true` and `null`; `{"prefixItems": [...]}` accepts every non-array; `{"patternProperties": {...}}` accepts every non-object. A conversion that narrows a type-less schema to the constrained type violates this.
+- **R3 — Adjacency.** A keyword sitting next to `type` is an independent assertion; **both** must hold (§10.2). Converting only the `type` half is a violation.
+- **R4 — Fixture.** Conformance to this section is asserted by `conformance/fixtures/schema_keyword_parity.json`, which every SDK **MUST** drive through its conversion + validation pair. Cases are verified against a Draft 2020-12 reference validator before being added.
+
+### 17.2 Requirement table
+
+| Keyword(s) | JSON Schema 2020-12 | Requirement | Rationale |
+|---|---|---|---|
+| `type`, `enum`, `const` | §6.1 | **MUST** enforce | The core of the contract. A `type` array is a union of *all* its members. |
+| `minimum`, `maximum`, `exclusiveMinimum`, `exclusiveMaximum`, `multipleOf` | §6.2 | **MUST** enforce | Also stated in §2.2. |
+| `minLength`, `maxLength`, `pattern` | §6.3 | **MUST** enforce | `pattern` is an ECMA-262 regex matched anywhere in the string, not anchored. |
+| `minItems`, `maxItems`, `uniqueItems` | §6.4.1–§6.4.3 | **MUST** enforce | Also stated in §3.2. |
+| `contains`, `minContains`, `maxContains` | §6.4.4–§6.4.5, §10.3.1.3 | **MUST** enforce | `minContains` / `maxContains` assert nothing without `contains`; the three travel together. |
+| `minProperties`, `maxProperties` | §6.5.1–§6.5.2 | **MUST** enforce | Counts the keys the *instance* carried, undeclared ones included — every `additionalProperties` form but `false` keeps them. |
+| `required` | §6.5.3 | **MUST** enforce | A name listed here without a `properties` entry is still required: `{"required": ["b"]}` is a complete schema and is the usual shape of an `if` / `then` / `dependentSchemas` sub-schema. |
+| `dependentRequired` | §6.5.4 | **MUST** enforce | Expresses "flag A requires flag B", which CLI- and form-shaped contracts rely on. Pure key-presence logic, cheap in every language. |
+| `allOf`, `anyOf`, `oneOf`, `not` | §10.2.1 | **MUST** enforce | `oneOf` **MUST** be exclusive (exactly one branch), not first-match. |
+| `if`, `then`, `else` | §10.2.2.1–§10.2.2.3 | **MUST** enforce | `if` never fails an instance on its own; it selects `then` or `else`, and a missing branch asserts nothing. Rejecting the schema outright (as apcore-python once did) is **NOT** conformant. |
+| `dependentSchemas` | §10.2.2.4 | **MUST** enforce | The schema-valued counterpart of `dependentRequired`. |
+| `prefixItems`, `items` | §10.3.1.1–§10.3.1.2 | **MUST** enforce | With `prefixItems` present, `items` applies **only** past the prefix. Applying `items` to the tuple head is a defect, not a simplification. |
+| `properties`, `patternProperties`, `additionalProperties` | §10.3.2.1–§10.3.2.3 | **MUST** enforce | `additionalProperties` targets only the keys `properties` and `patternProperties` did not claim; a pattern-matched key **MUST NOT** be rejected by `additionalProperties: false`. |
+| `propertyNames` | §10.3.2.4 | **MUST** enforce | The sub-schema applies to each key *string*, not to its value. |
+| `unevaluatedItems`, `unevaluatedProperties` | §11.2–§11.3 | **MUST** enforce | The only way to write "this object is closed, whatever the `allOf` / `if` branches added". Enforcing it requires collecting annotations from the sibling applicators — only sub-schemas that **succeeded** contribute. |
+| `format` | §7 | **MUST** treat as an annotation; **SHOULD** warn | Draft 2020-12 §7.2.1 makes `format` non-assertive by default. An SDK **MUST NOT** fail validation on an unsatisfied `format`; it **SHOULD** emit a warning (see §11.2). |
+| `$ref` to an external URI or file | §8.2.3 | **MAY** decline | Resolution policy is the schema registry's, not the validator's; `apcore` resolves cross-module references before conversion. An SDK that declines **MUST** say so, as §16.1 does. |
+| `$defs`, `title`, `description`, `default`, `examples`, `deprecated`, `readOnly`, `writeOnly` | §8.2.4, §9 | **MAY** ignore for validation | Annotations. They **SHOULD** be preserved through conversion so schema export round-trips. |
+| `contentMediaType`, `contentEncoding`, `contentSchema` | §8.4–§8.5 | **MAY** ignore | Annotation-only in Draft 2020-12, and apcore transports decoded JSON, so there is no encoded string to inspect. |
+
+### 17.3 No type coercion at the module boundary
+
+**R5 — No coercion.** The module-invocation boundary **MUST NOT** perform type coercion. Every keyword in §17.2, `type` included, is asserted against the instance as it arrived. `{"type": "integer"}` **MUST** reject `"42"`; `{"type": "boolean"}` **MUST** reject `1`, `0`, `"true"` and `"false"`; `{"type": "string"}` **MUST** reject `42`. This holds for inputs and outputs alike, at every depth, and inside `items` / `additionalProperties` / union branches exactly as at the top level.
+
+**This is not host-configurable.** A module's input contract has to mean the same thing regardless of which host loaded it. If a host could switch coercion on, the same module would accept `{"count": "3"}` in one deployment and reject it in another — the contract would no longer be a contract, and a caller could not reason about it without also knowing the deployment's configuration. That is why there is no `schema.validation.coerce_types` key: the `schema` namespace is `root` / `strategy` / `max_ref_depth` and nothing else, and `defaults.schema.json` declares it `additionalProperties: false` (PROTOCOL_SPEC §4.9). Earlier revisions of this section referenced such a key; no SDK ever read it.
+
+**What "no coercion" does *not* mean.** The rule is about instance *types*, not renderings. JSON Schema 2020-12 §6.1.1 defines `integer` as any number with a zero fractional part, so `4.0` **MUST** satisfy `{"type": "integer"}` while `4.5` **MUST NOT**; `42` **MUST** satisfy `{"type": "number"}`. An SDK whose native integer type cannot hold `4.0` has to narrow it — that is honouring the type definition, not relaxing it. (This is a real trap: pydantic's strict mode rejects `4.0` for `int`, so apcore-python normalises the zero-fraction case before the check.)
+
+**Library-level knob.** An SDK **MAY** keep a coercion switch on its standalone validator API — apcore-python `SchemaValidator(coerce_types=…)`, apcore-typescript `new SchemaValidator(…)`, apcore-rust `SchemaValidator::with_coerce_types(…)` — for callers validating their *own* untyped input (a CLI parsing argv, a form handler). Such a knob **MUST NOT** reach the module-invocation path, **MUST NOT** be readable from a configuration file, and its default **SHOULD** be no-coercion so the two paths cannot silently disagree. apcore-rust shipped a validator whose default coerced while its executor path did not, and the two answered differently for the same schema and input; that is the failure mode this paragraph exists to prevent.
+
+**Keyword slicing.** An SDK that delegates part of a schema to a strict Draft 2020-12 engine **SHOULD** delegate the applicator keywords alone rather than the whole schema, so a `type` its own conversion already enforced is not re-asserted twice over a differently-shaped value. The one documented exception is `unevaluatedItems` / `unevaluatedProperties`, which are defined against the annotations of every sibling keyword and therefore cannot be evaluated from a slice.
+
+**Fixture.** `conformance/fixtures/schema_keyword_parity.json` asserts R5 at the boundary; the opt-in library-level coercing mode is covered separately by `conformance/fixtures/schema_validation.json` (`expected_valid_strict` / `expected_valid_coerce`).
 
 ---
 

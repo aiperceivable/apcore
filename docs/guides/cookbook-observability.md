@@ -30,22 +30,23 @@ End-to-end example: emit OpenTelemetry traces and structured logs from your apco
     from apcore import APCore
     client = APCore()
 
+    from typing import Annotated
+    from pydantic import Field
+
+    # `@client.module` accepts no input_schema/output_schema kwargs — the schema is
+    # inferred from the type hints. Carry `x-sensitive` via Field(json_schema_extra=...).
+    Secret = Annotated[str, Field(json_schema_extra={"x-sensitive": True})]
+
     @client.module(
         id="user.create",
         description="Create a user account",
-        input_schema={
-            "type": "object",
-            "properties": {
-                "email":    {"type": "string", "format": "email"},
-                "password": {"type": "string", "x-sensitive": True},
-                "name":     {"type": "string"},
-                "api_key":  {"type": "string", "x-sensitive": True},
-            },
-            "required": ["email", "password"],
-        },
-        output_schema={"type": "object", "properties": {"user_id": {"type": "string"}}},
     )
-    def create_user(email: str, password: str, name: str | None, api_key: str | None) -> dict:
+    def create_user(
+        email: Annotated[str, Field(json_schema_extra={"format": "email"})],
+        password: Secret,
+        name: str | None = None,
+        api_key: Secret | None = None,
+    ) -> dict:
         return {"user_id": db.insert(email, hash(password), name, api_key)}
     ```
 

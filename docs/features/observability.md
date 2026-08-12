@@ -122,7 +122,7 @@ Integration with `Context.create()`:
 === "Python"
     ```python
     from apcore import Context
-    from apcore.observability import TraceContext
+    from apcore import TraceContext
 
     # Extract trace parent from incoming request
     trace_parent = TraceContext.extract(request.headers)
@@ -136,14 +136,14 @@ Integration with `Context.create()`:
     ```
 === "TypeScript"
     ```typescript
-    import { Context } from "apcore-js/context";
-    import { TraceContext } from "apcore-js/observability";
+    import { Context } from "apcore-js";
+    import { TraceContext } from "apcore-js";
 
     // Extract trace parent from incoming request
     const traceParent = TraceContext.extract(request.headers);
 
     // Create context with propagated trace
-    const context = Context.create({ traceParent });
+    const context = Context.create(null, traceParent);
 
     // Inject trace parent into outgoing request headers
     const outgoingHeaders = TraceContext.inject(context);
@@ -158,7 +158,7 @@ Integration with `Context.create()`:
     let trace_parent = TraceContext::extract(&request.headers)?;
 
     // Create context with propagated trace
-    let context = Context::create(None, Some(trace_parent));
+    let context = Context::create(None, Some(trace_parent), None, None, Value::Null, None);
 
     // Inject trace parent into outgoing request headers
     let outgoing_headers = TraceContext::inject(&context);
@@ -256,8 +256,8 @@ W3C interoperability across Python, TypeScript, and Rust SDKs.
     ```
 === "TypeScript"
     ```typescript
-    import { Context } from "apcore-js/context";
-    import { TraceContext } from "apcore-js/trace-context";
+    import { Context } from "apcore-js";
+    import { TraceContext } from "apcore-js";
 
     // Case-insensitive extract preserves tracestate order and flags
     const incoming: Record<string, string> = {
@@ -269,7 +269,7 @@ W3C interoperability across Python, TypeScript, and Rust SDKs.
     console.assert(traceParent.traceFlags === "00"); // honored, not hardcoded
 
     // Build a context that carries the propagated trace + state
-    const context = Context.create({ traceParent });
+    const context = Context.create(null, traceParent);
 
     // Inject with default (auto-derived) parent_id
     let headers = TraceContext.inject(context);
@@ -310,7 +310,7 @@ W3C interoperability across Python, TypeScript, and Rust SDKs.
     assert_eq!(trace_parent.trace_flags, "00"); // honored, not hardcoded
 
     // Build a context that carries the propagated trace + state
-    let context = Context::create(None, Some(trace_parent));
+    let context = Context::create(None, Some(trace_parent), None, None, Value::Null, None);
 
     // Inject with default (auto-derived) parent_id
     let headers = TraceContext::inject(&context, None);
@@ -443,13 +443,12 @@ The `UsageExporter` interface lets you **push** periodic `UsageCollector` summar
         NoopUsageExporter,
         PeriodicUsageExporter,
         UsageExporter,
-        UsageSummary,
-    } from "apcore-js/observability";
+    } from "apcore-js";
 
     class HttpUsageExporter implements UsageExporter {
         constructor(private readonly url: string) {}
 
-        async export(summary: UsageSummary[]): Promise<void> {
+        async export(summary: Record<string, unknown>): Promise<void> {
             // POST to this.url; user-implemented.
         }
 
@@ -580,7 +579,7 @@ The `UsageExporter` interface lets you **push** periodic `UsageCollector` summar
         ObsLoggingMiddleware,
         InMemoryExporter,
         MetricsCollector,
-    } from "apcore-js/observability";
+    } from "apcore-js";
 
     // Build observability stack
     const exporter = new InMemoryExporter();
@@ -824,7 +823,7 @@ tracing:
         SimpleSpanProcessor,
         OTLPExporter,
         TracingMiddleware,
-    } from "apcore-js/observability";
+    } from "apcore-js";
 
     // Production: non-blocking batch export to OTLP endpoint
     const exporter = new OTLPExporter({ endpoint: "http://otel-collector:4318" });
@@ -1081,7 +1080,7 @@ observability:
     ```
 === "TypeScript"
     ```typescript
-    import { RedactionConfig, ObsLoggingMiddleware } from "apcore-js/observability";
+    import { RedactionConfig, ObsLoggingMiddleware } from "apcore-js";
 
     const redaction = new RedactionConfig({
         fieldPatterns: ["*password*", "*token*", "*secret*", "*api_key*"],
@@ -1164,27 +1163,29 @@ annotations:
     # GET /healthz → 200 OK  (liveness)
     # GET /readyz  → 200 OK  (readiness, after APCore finishes loading modules)
 
-    client = APCore()
-    client.configure_observability(prometheus_exporter=exporter)
+    # The exporter scrapes the collector directly; hand the SAME collector to
+    # APCore so module calls feed it. There is no configure_observability().
+    client = APCore(metrics_collector=collector)
     ```
 === "TypeScript"
     ```typescript
     import { APCore } from "apcore-js";
-    import { MetricsCollector, PrometheusExporter, UsageCollector } from "apcore-js/observability";
+    import { MetricsCollector, PrometheusExporter, UsageCollector } from "apcore-js";
 
     const collector = new MetricsCollector();
     const usageCollector = new UsageCollector();
     const exporter = new PrometheusExporter({ collector, usageCollector });
 
-    // Start the metrics HTTP server (non-blocking)
-    await exporter.start({ port: 9090, path: "/metrics" });
+    // Start the metrics HTTP server (non-blocking; start() returns void)
+    exporter.start({ port: 9090, path: "/metrics" });
 
     // Health endpoints served on same port:
     // GET /healthz → 200 OK  (liveness)
     // GET /readyz  → 200 OK  (readiness)
 
-    const client = new APCore();
-    client.configureObservability({ prometheusExporter: exporter });
+    // The exporter scrapes the collector directly; hand the SAME collector to
+    // APCore so module calls feed it. There is no configureObservability().
+    const client = new APCore({ metricsCollector: collector });
     ```
 === "Rust"
     ```rust
@@ -1204,8 +1205,9 @@ annotations:
     // GET /healthz → 200 OK  (liveness)
     // GET /readyz  → 200 OK  (readiness)
 
-    let mut client = APCore::new();
-    client.configure_observability(exporter);
+    // The exporter scrapes the collector directly; hand the SAME collector to
+    // APCore so module calls feed it. There is no configure_observability().
+    let client = APCore::with_options(None, None, None, Some((*collector).clone()));
     ```
 
 ## Contract: PrometheusExporter.export
@@ -1291,7 +1293,7 @@ The processor exposes three normative methods:
         BatchSpanProcessor,
         OTLPExporter,
         TracingMiddleware,
-    } from "apcore-js/observability";
+    } from "apcore-js";
 
     const exporter = new OTLPExporter({ endpoint: "http://otel-collector:4318" });
     const processor = new BatchSpanProcessor({
@@ -1352,6 +1354,7 @@ This section documents the cross-SDK shape of the abstraction. Concrete network-
     - `get(namespace, key) → value | None` — retrieve a record
     - `list(namespace, prefix?) → list[(key, value)]` — list entries; optional key prefix filter
     - `delete(namespace, key)` — remove a record (idempotent — deleting an absent key is a no-op)
+- `value` MUST be a **JSON object** — `dict` in Python, `Record<string, unknown>` in TypeScript, a `serde_json::Value` holding an object in Rust. All three collectors (`ErrorHistory`, `UsageCollector`, `MetricsCollector`) store records, never scalars or opaque bytes. A backend that stores bytes MUST serialize on `save` and deserialize on `get` / `list`, so that a value written as an object is read back as an object: the collectors index into the returned value, and handing them raw bytes fails at the call site, not at the backend. Rust's signature is structurally wider than an object because `serde_json::Value` is the only JSON carrier in the crate; the object requirement still holds.
 - All three SDKs MUST provide `InMemoryStorageBackend` as the default implementation. It MUST be thread-safe and namespace-isolated (entries written under one `namespace` MUST NOT be visible from another).
 - `ErrorHistory`, `UsageCollector`, and `MetricsCollector` MUST accept an optional `StorageBackend` at construction time. When omitted, `InMemoryStorageBackend` MUST be used.
 - The backend MUST NOT be reassigned after construction.
@@ -1361,6 +1364,8 @@ This section documents the cross-SDK shape of the abstraction. Concrete network-
 
 === "Python"
     ```python
+    import json
+
     from apcore.observability import (
         ErrorHistory,
         UsageCollector,
@@ -1385,17 +1390,22 @@ This section documents the cross-SDK shape of the abstraction. Concrete network-
         def __init__(self, client):
             self._client = client
 
-        def save(self, namespace: str, key: str, value: bytes) -> None:
-            self._client.hset(namespace, key, value)
+        # Redis stores bytes; the contract is JSON objects, so encode at the
+        # boundary. Returning the raw bytes here would break every collector.
+        def save(self, namespace: str, key: str, value: dict) -> None:
+            self._client.hset(namespace, key, json.dumps(value))
 
-        def get(self, namespace: str, key: str) -> bytes | None:
-            return self._client.hget(namespace, key)
+        def get(self, namespace: str, key: str) -> dict | None:
+            raw = self._client.hget(namespace, key)
+            return None if raw is None else json.loads(raw)
 
-        def list(self, namespace: str, prefix: str | None = None):
+        def list(self, namespace: str, prefix: str = "") -> list[tuple[str, dict]]:
             entries = self._client.hgetall(namespace).items()
-            if prefix:
-                entries = [(k, v) for k, v in entries if k.startswith(prefix)]
-            return list(entries)
+            return [
+                (k.decode() if isinstance(k, bytes) else k, json.loads(v))
+                for k, v in entries
+                if (k.decode() if isinstance(k, bytes) else k).startswith(prefix)
+            ]
 
         def delete(self, namespace: str, key: str) -> None:
             self._client.hdel(namespace, key)
@@ -1411,7 +1421,7 @@ This section documents the cross-SDK shape of the abstraction. Concrete network-
         MetricsCollector,
         InMemoryStorageBackend,
         StorageBackend,
-    } from "apcore-js/observability";
+    } from "apcore-js";
 
     // Default: every collector gets its own in-memory backend
     const history = new ErrorHistory();
@@ -1428,18 +1438,32 @@ This section documents the cross-SDK shape of the abstraction. Concrete network-
     class RedisStorageBackend implements StorageBackend {
         constructor(private readonly client: RedisClient) {}
 
-        async save(namespace: string, key: string, value: Uint8Array): Promise<void> {
-            await this.client.hset(namespace, key, value);
+        // Redis stores strings; the contract is JSON objects, so encode at the
+        // boundary. Returning the raw string would break every collector.
+        async save(
+            namespace: string,
+            key: string,
+            value: Record<string, unknown>,
+        ): Promise<void> {
+            await this.client.hset(namespace, key, JSON.stringify(value));
         }
 
-        async get(namespace: string, key: string): Promise<Uint8Array | null> {
-            return this.client.hget(namespace, key);
+        async get(
+            namespace: string,
+            key: string,
+        ): Promise<Record<string, unknown> | null> {
+            const raw = await this.client.hget(namespace, key);
+            return raw == null ? null : (JSON.parse(raw) as Record<string, unknown>);
         }
 
-        async list(namespace: string, prefix?: string): Promise<Array<[string, Uint8Array]>> {
+        async list(
+            namespace: string,
+            prefix = "",
+        ): Promise<Array<[string, Record<string, unknown>]>> {
             const all = await this.client.hgetall(namespace);
-            const entries = Object.entries(all);
-            return prefix ? entries.filter(([k]) => k.startsWith(prefix)) : entries;
+            return Object.entries(all)
+                .filter(([k]) => k.startsWith(prefix))
+                .map(([k, v]) => [k, JSON.parse(v as string) as Record<string, unknown>]);
         }
 
         async delete(namespace: string, key: string): Promise<void> {
@@ -1470,22 +1494,47 @@ This section documents the cross-SDK shape of the abstraction. Concrete network-
     let shared_metrics = MetricsCollector::with_storage(backend.clone());
 
     // Out-of-tree: implement your own backend (Redis shown, not bundled)
+    // The trait is async and requires Send + Sync + Debug, so the impl needs
+    // #[async_trait] and a Debug derive — a plain `impl StorageBackend` does
+    // not compile.
+    #[derive(Debug)]
     pub struct RedisStorageBackend {
         client: redis::Client,
     }
 
+    #[async_trait::async_trait]
     impl StorageBackend for RedisStorageBackend {
-        fn save(&self, namespace: &str, key: &str, value: &[u8]) -> Result<(), StorageError> {
-            // delegate to redis crate
+        async fn save(
+            &self,
+            namespace: &str,
+            key: &str,
+            value: serde_json::Value,
+        ) -> Result<(), StorageError> {
+            // Redis stores strings; encode the JSON object at the boundary.
+            let _ = (namespace, key, serde_json::to_string(&value));
             Ok(())
         }
-        fn get(&self, namespace: &str, key: &str) -> Result<Option<Vec<u8>>, StorageError> {
+
+        async fn get(
+            &self,
+            namespace: &str,
+            key: &str,
+        ) -> Result<Option<serde_json::Value>, StorageError> {
+            let _ = (namespace, key);
             Ok(None)
         }
-        fn list(&self, namespace: &str, prefix: Option<&str>) -> Result<Vec<(String, Vec<u8>)>, StorageError> {
+
+        async fn list(
+            &self,
+            namespace: &str,
+            prefix: &str,
+        ) -> Result<Vec<(String, serde_json::Value)>, StorageError> {
+            let _ = (namespace, prefix);
             Ok(vec![])
         }
-        fn delete(&self, namespace: &str, key: &str) -> Result<(), StorageError> {
+
+        async fn delete(&self, namespace: &str, key: &str) -> Result<(), StorageError> {
+            let _ = (namespace, key);
             Ok(())
         }
     }
@@ -1605,7 +1654,7 @@ The following 16-entry list is the canonical superset that all three SDKs (Pytho
 
 === "TypeScript"
     ```typescript
-    import { RedactionConfig } from "apcore-js/observability";
+    import { RedactionConfig } from "apcore-js";
 
     // Default: ships with the canonical 16-entry sensitiveKeys list.
     const redaction = new RedactionConfig();
@@ -1681,7 +1730,7 @@ obs:
 === "TypeScript"
     ```typescript
     import { APCore, Config } from "apcore-js";
-    import { RedactionConfig, ObsLoggingMiddleware } from "apcore-js/observability";
+    import { RedactionConfig, ObsLoggingMiddleware } from "apcore-js";
 
     const config = Config.load("apcore.yaml");  // reads obs.redaction.* keys
     const client = new APCore({ config });
@@ -1733,4 +1782,4 @@ Pre-D-53 TypeScript builds read the following legacy keys, mirroring the §1.5 p
 | `observability.redaction.field_patterns` | `obs.redaction.sensitive_keys` |
 | `observability.redaction.value_patterns` | `obs.redaction.regex_patterns` |
 
-`RedactionConfig.fromConfig(config)` continues to honor the legacy keys for one minor cycle (v0.21.x). When a legacy key is present in `apcore.yaml`, the TypeScript SDK MUST emit a one-shot `console.warn` deprecation notice naming the legacy key and the canonical replacement, and continue applying the rule. Removal target: **v0.22.0**. Python and Rust SDKs only ever supported the canonical keys and are unaffected.
+`RedactionConfig.fromConfig(config)` continues to honor the legacy keys for one minor cycle (v0.21.x). When a legacy key is present in `apcore.yaml`, the TypeScript SDK MUST emit a one-shot `console.warn` deprecation notice naming the legacy key and the canonical replacement, and continue applying the rule. Removal target: **v0.22.0**. **Correction (0.26 sweep):** this line previously read "Python and Rust SDKs only ever supported the canonical keys and are unaffected". That was true of apcore-python and the **exact inverse** for apcore-rust, which read *only* the legacy `observability.redaction.*` path — so an operator following this document and writing `obs.redaction.sensitive_keys` had their redaction configuration silently discarded by Rust, with no warning and no error. apcore-rust now reads canonical first with a one-shot deprecation warning on the legacy path, matching apcore-typescript. The sentence is kept rather than deleted because it is what would have told a maintainer not to check (apcore-rust#32).

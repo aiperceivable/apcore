@@ -304,7 +304,7 @@ The `AsyncTaskManager` MUST support pluggable storage backends via a `TaskStore`
     - `list_expired(before_timestamp) → List[TaskInfo]` — return tasks whose `completed_at` is before the given timestamp
 - All `TaskStore` methods MUST be asynchronous in every SDK (Python `async def`, TypeScript returning `Promise<T>`, Rust `async fn` on the trait via `#[async_trait]`). This is required so that Redis-, SQL-, and other I/O-backed stores can be plugged in without blocking the runtime's event loop. The `InMemoryTaskStore` MUST still expose async signatures even though its operations are CPU-only — uniform shape lets callers and middleware compose stores generically. (Decision **D-17**, supersedes the partially-sync contract that existed in Python+TS through v0.21.x.)
 - Implementations MUST provide `InMemoryTaskStore` as the default backend.
-- Implementations SHOULD provide `RedisTaskStore` and `SqlTaskStore` as optional backends.
+- Durable backends (Redis, SQL, …) are **out of scope for the SDKs** and are expected to be supplied by the application as a `TaskStore` implementation. No SDK ships one — apcore takes no dependency on a storage client.
 - The store MUST be injected at construction time: `AsyncTaskManager(store=InMemoryTaskStore())`.
 
 !!! note "Python `TaskStore.put` deprecation"
@@ -339,33 +339,44 @@ The `AsyncTaskManager` MUST support pluggable storage backends via a `TaskStore`
     let manager = AsyncTaskManager::new(executor, InMemoryTaskStore::new());
     ```
 
-**Injecting a `RedisTaskStore`:**
+**Injecting a custom `TaskStore`:**
+
+Only `InMemoryTaskStore` ships with the SDKs. A durable backend (Redis, Postgres, …) is something you implement against the `TaskStore` interface above and inject — apcore deliberately does not depend on any storage client.
 
 === "Python"
     ```python
-    from apcore.async_task import AsyncTaskManager, RedisTaskStore
     from apcore import Executor, Registry
+    from apcore.async_task import AsyncTaskManager, InMemoryTaskStore
 
     executor = Executor(registry=Registry())
-    store = RedisTaskStore(redis_url="redis://localhost:6379", key_prefix="apcore:tasks:")
+
+    # Swap InMemoryTaskStore for your own class implementing the TaskStore
+    # protocol (save / get / list / delete / list_expired) to get durability.
+    store = InMemoryTaskStore()
     manager = AsyncTaskManager(executor, store=store)
     ```
 === "TypeScript"
     ```typescript
-    import { AsyncTaskManager, RedisTaskStore, Executor, Registry } from "apcore-js/async-task";
+    import { AsyncTaskManager, InMemoryTaskStore, Executor, Registry } from "apcore-js";
 
     const executor = new Executor({ registry: new Registry() });
-    const store = new RedisTaskStore({ url: "redis://localhost:6379" });
+
+    // Swap InMemoryTaskStore for your own class implementing TaskStore
+    // (save / get / list / delete / listExpired) to get durability.
+    const store = new InMemoryTaskStore();
     const manager = new AsyncTaskManager({ executor, store });
     ```
 === "Rust"
     ```rust
-    use apcore::async_task::{AsyncTaskManager, RedisTaskStore};
+    use apcore::async_task::{AsyncTaskManager, InMemoryTaskStore};
     use apcore::{Executor, Registry};
+    use std::sync::Arc;
 
-    let executor = Executor::new(Registry::new());
-    let store = RedisTaskStore::new("redis://localhost:6379")?;
-    let manager = AsyncTaskManager::new(executor, store);
+    let executor = Arc::new(Executor::new(Registry::new(), Config::from_defaults()));
+
+    // Swap InMemoryTaskStore for your own `impl TaskStore` to get durability.
+    let store = Arc::new(InMemoryTaskStore::default());
+    let manager = AsyncTaskManager::with_store(executor, 10, 1000, store);
     ```
 
 ## Contract: TaskStore.save
@@ -443,7 +454,7 @@ async_task:
     ```
 === "TypeScript"
     ```typescript
-    import { AsyncTaskManager, RetryConfig } from "apcore-js/async-task";
+    import { AsyncTaskManager, RetryConfig } from "apcore-js";
 
     const manager = new AsyncTaskManager({ executor });
 
@@ -523,7 +534,7 @@ async_task:
     ```
 === "TypeScript"
     ```typescript
-    import { AsyncTaskManager } from "apcore-js/async-task";
+    import { AsyncTaskManager } from "apcore-js";
 
     const manager = new AsyncTaskManager({ executor });
 

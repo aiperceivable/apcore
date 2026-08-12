@@ -530,7 +530,7 @@ When the module under test calls other modules through `context.executor`, swap 
             self.log.lock().unwrap().push(CallLogEntry {
                 module_id: module_id.to_string(),
                 inputs: inputs.clone(),
-                trace_id: ctx.trace_id().to_string(),
+                trace_id: ctx.trace_id.to_string(),
             });
 
             if let Some(err) = self.errors.lock().unwrap().get(module_id).cloned() {
@@ -872,7 +872,7 @@ Verify that the module's Schema definition matches actual behavior. Each SDK shi
     fn accepts_valid_input() {
         let v = SchemaValidator::new();
         let data = json!({"table": "user_info", "sql": "SELECT 1", "timeout": 30});
-        assert!(v.validate(&data, &db_params_input_schema()).is_valid());
+        assert!(v.validate(&data, &db_params_input_schema()).valid);
     }
 
     #[test]
@@ -880,7 +880,7 @@ Verify that the module's Schema definition matches actual behavior. Each SDK shi
         let v = SchemaValidator::new();
         let data = json!({"sql": "SELECT 1"});
         let result = v.validate_detailed(&data, &db_params_input_schema());
-        assert!(!result.is_valid());
+        assert!(!result.valid);
         assert!(result.errors().iter().any(|e| e.path().contains("table")));
     }
 
@@ -888,7 +888,7 @@ Verify that the module's Schema definition matches actual behavior. Each SDK shi
     fn rejects_invalid_table_pattern() {
         let v = SchemaValidator::new();
         let data = json!({"table": "User-Info", "sql": "SELECT 1"});
-        assert!(!v.validate(&data, &db_params_input_schema()).is_valid());
+        assert!(!v.validate(&data, &db_params_input_schema()).valid);
     }
 
     #[test]
@@ -900,7 +900,7 @@ Verify that the module's Schema definition matches actual behavior. Each SDK shi
                 &json!({"table": "t", "sql": "SELECT 1", "timeout": timeout}),
                 &schema,
             )
-            .is_valid()
+            .valid
         };
 
         assert!(ok(1));
@@ -1242,21 +1242,21 @@ Ensure the YAML Schema file structure itself is correct.
     fn rejects_null_in_required_field() {
         let v = SchemaValidator::new();
         let data = json!({"table": null, "sql": "SELECT 1"});
-        assert!(!v.validate(&data, input_schema()).is_valid());
+        assert!(!v.validate(&data, input_schema()).valid);
     }
 
     #[test]
     fn rejects_empty_string_failing_pattern() {
         let v = SchemaValidator::new();
         let data = json!({"table": "", "sql": "SELECT 1"});
-        assert!(!v.validate(&data, input_schema()).is_valid());
+        assert!(!v.validate(&data, input_schema()).valid);
     }
 
     #[test]
     fn accepts_only_required_fields() {
         let v = SchemaValidator::new();
         let data = json!({"table": "user_info", "sql": "SELECT 1"});
-        assert!(v.validate(&data, input_schema()).is_valid());
+        assert!(v.validate(&data, input_schema()).valid);
     }
 
     #[test]
@@ -1272,7 +1272,7 @@ Ensure the YAML Schema file structure itself is correct.
             .and_then(|p| p.as_bool())
             == Some(false)
         {
-            assert!(!v.validate(&data, input_schema()).is_valid());
+            assert!(!v.validate(&data, input_schema()).valid);
         }
     }
 
@@ -1284,7 +1284,7 @@ Ensure the YAML Schema file structure itself is correct.
                 &json!({"table": "t", "sql": "SELECT 1", "timeout": timeout}),
                 input_schema(),
             )
-            .is_valid()
+            .valid
         };
         assert!(case(1));
         assert!(case(300));
@@ -1411,7 +1411,7 @@ Ensure Schema changes don't break compatibility.
         let schema = load_input_schema();
         let v = SchemaValidator::new();
         let old_input = json!({"table": "user_info", "sql": "SELECT 1"});
-        assert!(v.validate(&old_input, &schema).is_valid());
+        assert!(v.validate(&old_input, &schema).valid);
     }
 
     #[test]
@@ -1598,7 +1598,7 @@ Ensure Schema changes don't break compatibility.
             caller_id: Some("api.handler.task_submit".to_string()),
             ..Default::default()
         });
-        let trace_before = ctx.trace_id().to_string();
+        let trace_before = ctx.trace_id.to_string();
 
         apcore
             .call(
@@ -1610,7 +1610,7 @@ Ensure Schema changes don't break compatibility.
             .await
             .unwrap();
 
-        assert_eq!(ctx.trace_id(), trace_before);
+        assert_eq!(ctx.trace_id, trace_before);
     }
     ```
 
@@ -1868,7 +1868,7 @@ Ensure Schema changes don't break compatibility.
             _ctx: &Context<Value>,
         ) -> Result<Option<Value>, ModuleError> {
             Err(ModuleError::new(
-                ErrorCode::PermissionDenied,
+                ErrorCode::ACLDenied,
                 "Middleware abort".to_string(),
             ))
         }
@@ -1907,7 +1907,7 @@ Ensure Schema changes don't break compatibility.
             )
             .await
             .expect_err("should abort");
-        assert_eq!(err.code, ErrorCode::PermissionDenied);
+        assert_eq!(err.code, ErrorCode::ACLDenied);
     }
     ```
 
@@ -2092,7 +2092,7 @@ Ensure Schema changes don't break compatibility.
             .await
             .expect_err("should be denied");
 
-        assert_eq!(err.code, ErrorCode::AclDenied);
+        assert_eq!(err.code, ErrorCode::ACLDenied);
         assert!(err
             .message
             .contains("unauthorized.module"));

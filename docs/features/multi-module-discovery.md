@@ -91,7 +91,7 @@ The single-class guarantee ensures zero breaking changes for existing module fil
 === "Python"
     ```python
     from apcore import Module, ModuleAnnotations, Context
-    from apcore.discovery import multi_class
+    from apcore.registry import multi_class
     from pydantic import BaseModel, Field
 
     class AddInput(BaseModel):
@@ -129,7 +129,8 @@ The single-class guarantee ensures zero breaking changes for existing module fil
 
 === "TypeScript"
     ```typescript
-    import { Module, ModuleAnnotations, Context, multiClass } from "apcore-js";
+    import { discoverMultiClass } from "apcore-js";
+    import type { ClassDescriptor, Context, Module } from "apcore-js";
     import { Type } from "@sinclair/typebox";
 
     const MathInputSchema = Type.Object({
@@ -141,8 +142,10 @@ The single-class guarantee ensures zero breaking changes for existing module fil
         result: Type.Number({ description: "Computed result" }),
     });
 
-    @multiClass()
-    export class Addition extends Module {
+    // `Module` is an interface — implement it. TypeScript has no `@multiClass`
+    // decorator; multi-class mode is opted into per class through the
+    // `ClassDescriptor.multiClass` flag handed to discoverMultiClass().
+    export class Addition implements Module {
         inputSchema = MathInputSchema;
         outputSchema = MathResultSchema;
         description = "Add two numbers and return their sum.";
@@ -154,8 +157,7 @@ The single-class guarantee ensures zero breaking changes for existing module fil
         }
     }
 
-    @multiClass()
-    export class Subtraction extends Module {
+    export class Subtraction implements Module {
         inputSchema = MathInputSchema;
         outputSchema = MathResultSchema;
         description = "Subtract b from a and return the difference.";
@@ -168,6 +170,12 @@ The single-class guarantee ensures zero breaking changes for existing module fil
     }
 
     // File: extensions/math/math_ops.ts
+    const classes: ClassDescriptor[] = [
+        { name: "Addition", implementsModule: true, multiClass: true },
+        { name: "Subtraction", implementsModule: true, multiClass: true },
+    ];
+
+    const entries = discoverMultiClass("extensions/math/math_ops.ts", classes, "extensions");
     // Registered IDs:
     //   math.math_ops.addition
     //   math.math_ops.subtraction

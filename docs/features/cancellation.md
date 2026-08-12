@@ -112,7 +112,7 @@ The Cancellation System provides cooperative cancellation for long-running modul
 A `ModuleError` subclass with code `EXECUTION_CANCELLED`. Raised by `CancelToken.check()` when the token has been cancelled.
 
 ```python
-from apcore.errors import ExecutionCancelledError
+from apcore import ExecutionCancelledError
 
 class ExecutionCancelledError(ModuleError):
     def __init__(self, message: str = "Execution was cancelled") -> None:
@@ -166,7 +166,7 @@ The `CancelToken` is an optional field on the `Context` object. When a parent co
     use std::sync::Arc;
 
     let token = Arc::new(CancelToken::new());
-    let ctx = Context::create(Some(token.clone()));
+    let ctx = Context::create(None, None, Some(token.clone()), None, Value::Null, None);
 
     // Token is propagated to child contexts
     let child = ctx.child("target.module");

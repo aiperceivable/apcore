@@ -162,7 +162,7 @@ PreflightResult:
 
 === "TypeScript"
     ```typescript
-    import { Module, Context, PreviewResult } from 'apcore';
+    import { Module, Context, PreviewResult } from 'apcore-js';
 
     class DeleteUser implements Module {
       // ... existing inputSchema, outputSchema, execute() ...

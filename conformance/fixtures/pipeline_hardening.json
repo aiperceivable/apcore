@@ -4,19 +4,19 @@
     {
       "id": "fail_fast_on_step_error",
       "description": "Pipeline stops at failing step when ignore_errors is false",
-      "input": { "step": "validate_input", "raises": true, "ignore_errors": false },
-      "expected": { "stopped": true, "steps_executed": ["context_creation", "module_lookup", "validate_input"], "error_code": "PIPELINE_STEP_ERROR" }
+      "input": { "step": "input_validation", "raises": true, "ignore_errors": false },
+      "expected": { "stopped": true, "steps_executed": ["context_creation", "module_lookup", "input_validation"], "error_code": "PIPELINE_STEP_ERROR" }
     },
     {
       "id": "continue_on_ignored_error",
       "description": "Pipeline continues when step has ignore_errors: true",
-      "input": { "step": "validate_input", "raises": true, "ignore_errors": true },
+      "input": { "step": "input_validation", "raises": true, "ignore_errors": true },
       "expected": { "stopped": false, "continued": true }
     },
     {
       "id": "replace_semantic_no_duplicate",
       "description": "Configuring an existing step replaces it, not duplicates it",
-      "input": { "configure_step": "validate_input", "times": 2 },
+      "input": { "configure_step": "input_validation", "times": 2 },
       "expected": { "step_count_for_name": 1 }
     },
     {

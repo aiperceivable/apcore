@@ -1,15 +1,24 @@
 {
-  "description": "OverridesStore cross-SDK conformance: pluggable persistence for system.control.update_config and system.control.toggle_feature. Verifies file-backed persistence, startup load-and-apply order, in-memory variant for tests, and missing-file-on-first-run tolerance (Issue #45.1, D-40).",
+  "description": "OverridesStore cross-SDK conformance: pluggable persistence for system.control.update_config and system.control.toggle_feature. The interface is the whole-map form all three SDKs ship (decision D-47): `load() -> mapping` and `save(mapping)`. An earlier revision of this fixture and of features/system-modules.md described a per-key surface — set(key,value) / get(key) / get_all() / delete(key) — that NO SDK implements; three independent implementations agreeing against a spec sentence is the spec being wrong, not three bugs.",
   "test_cases": [
     {
       "id": "save_persists_override",
-      "description": "After save() returns, the override is durable: a fresh FileOverridesStore reading the same path MUST observe the value via get() / get_all().",
+      "description": "After save() returns, the override is durable: a fresh FileOverridesStore reading the same path MUST observe the value in the mapping returned by load().",
       "input": {
         "store_type": "FileOverridesStore",
         "operations": [
-          {"op": "save", "key": "executor.default_timeout", "value": 60000},
-          {"op": "reopen_store"},
-          {"op": "get", "key": "executor.default_timeout"}
+          {
+            "op": "load_modify_save",
+            "set": {
+              "executor.default_timeout": 60000
+            }
+          },
+          {
+            "op": "reopen_store"
+          },
+          {
+            "op": "load"
+          }
         ]
       },
       "expected": {
@@ -38,32 +47,52 @@
     },
     {
       "id": "inmemory_store_for_tests",
-      "description": "InMemoryOverridesStore behaves identically to FileOverridesStore for the four operations but performs no disk I/O. Two separate InMemoryOverridesStore instances do NOT share state.",
+      "description": "InMemoryOverridesStore behaves identically to FileOverridesStore for load() and save() but performs no disk I/O. Two separate InMemoryOverridesStore instances do NOT share state.",
       "input": {
         "store_type": "InMemoryOverridesStore",
         "operations": [
-          {"op": "save", "key": "k1", "value": "v1"},
-          {"op": "get", "key": "k1"},
-          {"op": "new_store_instance"},
-          {"op": "get", "key": "k1"}
+          {
+            "op": "load_modify_save",
+            "set": {
+              "k1": "v1"
+            }
+          },
+          {
+            "op": "load"
+          },
+          {
+            "op": "new_store_instance"
+          },
+          {
+            "op": "load"
+          }
         ]
       },
       "expected": {
-        "first_get_value": "v1",
-        "second_instance_get_value": null,
-        "disk_writes": 0
+        "disk_writes": 0,
+        "first_load_value": "v1",
+        "second_instance_load_value": null
       }
     },
     {
       "id": "missing_path_first_run_ok",
-      "description": "Constructing FileOverridesStore with a path that does not yet exist MUST succeed (treat as empty store). The first save() call MUST create the file.",
+      "description": "Constructing FileOverridesStore with a path that does not yet exist MUST succeed (treat as empty store). load() MUST return an empty mapping; the first save() MUST create the file.",
       "input": {
         "store_type": "FileOverridesStore",
         "path_exists_at_construction": false,
         "operations": [
-          {"op": "construct"},
-          {"op": "get_all"},
-          {"op": "save", "key": "first.key", "value": "first-value"}
+          {
+            "op": "construct"
+          },
+          {
+            "op": "load"
+          },
+          {
+            "op": "load_modify_save",
+            "set": {
+              "first.key": "first-value"
+            }
+          }
         ]
       },
       "expected": {
@@ -74,14 +103,31 @@
     },
     {
       "id": "delete_removes_override",
-      "description": "delete() removes the override and persists the removal. Subsequent get_all() MUST NOT include the deleted key. Deleting an absent key is a no-op.",
+      "description": "Removing a key is a read-modify-write: load(), drop the key, save() the remaining map. A subsequent load() MUST NOT include it. Saving a map that never contained the key is a no-op.",
       "input": {
         "store_type": "FileOverridesStore",
         "operations": [
-          {"op": "save", "key": "feature.x", "value": false},
-          {"op": "delete", "key": "feature.x"},
-          {"op": "delete", "key": "feature.x"},
-          {"op": "get_all"}
+          {
+            "op": "load_modify_save",
+            "set": {
+              "feature.x": false
+            }
+          },
+          {
+            "op": "load_modify_save",
+            "remove": [
+              "feature.x"
+            ]
+          },
+          {
+            "op": "load_modify_save",
+            "remove": [
+              "feature.x"
+            ]
+          },
+          {
+            "op": "load"
+          }
         ]
       },
       "expected": {
@@ -89,5 +135,10 @@
         "get_all_keys": []
       }
     }
-  ]
+  ],
+  "driver_contract": {
+    "interface": "Drive `load()` and `save(mapping)` only. A single-key change is a read-modify-write: load the map, set or remove the key, save the whole map back. That is what the sys-modules code paths actually do.",
+    "durability": "For FileOverridesStore, 'persisted' means observable through a FRESHLY CONSTRUCTED store on the same path — not through the instance that wrote it, which could satisfy the assertion from memory.",
+    "isolation": "Two InMemoryOverridesStore instances MUST NOT share state."
+  }
 }

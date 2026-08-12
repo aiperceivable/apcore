@@ -222,7 +222,7 @@ The framework defines error subclasses grouped by domain. Each subclass sets an 
 | `SchemaValidationError` | `SCHEMA_VALIDATION_ERROR` | — | Input/output validation failed (carries `errors` list) |
 | `SchemaNotFoundError` | `SCHEMA_NOT_FOUND` | — | Schema file not found |
 | `SchemaParseError` | `SCHEMA_PARSE_ERROR` | — | Invalid schema syntax |
-| `SchemaCircularRefError` | `SCHEMA_CIRCULAR_REF` | — | Circular `$ref` detected |
+| `SchemaCircularRefError` | `SCHEMA_CIRCULAR_REF` | — | A `$ref` → `$ref` chain that re-enters itself without reaching a schema body. A `$ref` re-entered *through* a body is a legal self-reference and does **not** raise (PROTOCOL_SPEC §4.15) |
 | `InvalidInputError` | `GENERAL_INVALID_INPUT` | — | Invalid input data |
 
 #### Call Chain Safety Errors
@@ -286,21 +286,31 @@ The framework defines error subclasses grouped by domain. Each subclass sets an 
 
 | Error Class | Code | Retryable | Description |
 |---|---|---|---|
-| `PipelineConfigurationError` | `PIPELINE_CONFIGURATION_ERROR` | — | Pipeline YAML structure is invalid (parse-time fail-fast, see `pipeline_failfast_config` fixture) |
-| `PipelineConfigInvalidError` | `PIPELINE_CONFIG_INVALID` | — | Specific pipeline config field validation failure |
+| `PipelineConfigurationError` | `PIPELINE_CONFIGURATION_ERROR` | — | The `pipeline:` config section names a step or anchor that does not exist, in `remove`, `configure`, or a `steps[].after` / `steps[].before` anchor. Raised at parse time (see `pipeline_failfast_config` fixture) |
+| `PipelineConfigInvalidError` | `PIPELINE_CONFIG_INVALID` | — | A pipeline config **field** failed validation — a malformed value, not a missing step |
 | `PipelineDependencyError` | `PIPELINE_DEPENDENCY_ERROR` | — | Step `requires` not satisfied by preceding `provides` declarations |
 | `PipelineStepError` | `PIPELINE_STEP_ERROR` | — | Generic step-level execution failure raised by `StepMiddleware.on_step_error` |
-| `PipelineStepNotFoundError` | `PIPELINE_STEP_NOT_FOUND` | — | `pipeline.configure[]` references a step name that does not exist |
-| `StepNotFoundError` | `STEP_NOT_FOUND` | — | Internal pipeline lookup failed for a named step (lower-level alias of `PIPELINE_STEP_NOT_FOUND`) |
+| `PipelineStepNotFoundError` | `PIPELINE_STEP_NOT_FOUND` | — | `configure_step()` called directly on a strategy with an unknown step name |
+| `StepNotFoundError` | `STEP_NOT_FOUND` | — | Any other direct strategy-API lookup miss: `remove()`, `insert_after()` / `insert_before()` anchor resolution |
 | `StepNameDuplicateError` | `STEP_NAME_DUPLICATE` | — | Two steps registered under the same name |
 | `StrategyNotFoundError` | `STRATEGY_NOT_FOUND` | — | Pipeline strategy preset name (e.g. `standard`, `minimal`) does not exist |
+
+!!! note "Config layer vs strategy API"
+    The same mistake — naming a step that does not exist — produces a **different** code depending on which layer you are in, and the distinction is deliberate:
+
+    - Calling the strategy API directly (`strategy.remove("x")`, `configure_step("x")`, an `insert_after` anchor) raises `STEP_NOT_FOUND` / `PIPELINE_STEP_NOT_FOUND`. The caller is code, and the step name is a program value.
+    - Going through the `pipeline:` config section re-classifies that miss as `PIPELINE_CONFIGURATION_ERROR`. The caller is a YAML file, and `STEP_NOT_FOUND` is too low-level to tell an operator which config key is wrong — the re-classified message names the section (`pipeline.configure:`, `pipeline.steps:`).
+
+    All three SDKs implement the re-classification (apcore-rust `pipeline_config.rs:344`/`:358`, and the equivalent guards in apcore-python `pipeline_config.py` and apcore-typescript `pipeline-config.ts`). `PIPELINE_CONFIG_INVALID` is **not** part of this pair — it is a malformed-value code and MUST NOT be emitted for a missing step.
 
 #### Schema Edge-Case Errors
 
 | Error Class | Code | Retryable | Description |
 |---|---|---|---|
 | `SchemaValidationFailedError` | `SCHEMA_VALIDATION_FAILED` | — | **Deprecated, retired alias — no longer emitted by any SDK.** All schema validation failures (raised errors and validate-result `error_code`) now use `SCHEMA_VALIDATION_ERROR`. Retained only for backward-compatible imports. |
-| `SchemaMaxDepthExceededError` | `SCHEMA_MAX_DEPTH_EXCEEDED` | — | Recursive schema (`$ref` self-reference) expansion exceeded the depth cap (default 32) |
+| `SchemaMaxDepthExceededError` | `SCHEMA_MAX_DEPTH_EXCEEDED` | — | `$ref` resolution exceeded `schema.max_ref_depth` (default 32). Distinct from `SCHEMA_CIRCULAR_REF`: the chain is well-formed, just too deep. Depth is consumed by `$ref` hops only, not by structural descent |
+| `SchemaValidationError` | `SCHEMA_UNION_NO_MATCH` | — | Value matched no branch of a `oneOf` / `anyOf` union. Carried as the error's `error_code`; pinned by `conformance/fixtures/schema_hardening_union.json` |
+| `SchemaValidationError` | `SCHEMA_UNION_AMBIGUOUS` | — | Value matched more than one branch of a `oneOf` union, which **MUST** be exclusive. Carried as the error's `error_code`; pinned by `conformance/fixtures/schema_hardening_union.json` |
 
 #### Module Registration Conflict Errors
 
@@ -445,7 +455,7 @@ The `ErrorFormatterRegistry` enables adapters (MCP, OpenAI, etc.) to register cu
 
 === "Python"
     ```python
-    from apcore.errors import ErrorFormatterRegistry, ModuleError
+    from apcore import ErrorFormatterRegistry, ModuleError
 
     # Register a formatter for an adapter
     ErrorFormatterRegistry.register("mcp", lambda error, ctx: {

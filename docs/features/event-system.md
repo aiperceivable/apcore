@@ -190,8 +190,11 @@ Immutable by design (Python uses `frozen=True`; TypeScript uses `readonly`; Rust
             self,
             url: str,
             headers: dict[str, str] | None = None,
-            retry_count: int = 3,
             timeout_ms: int = 5000,
+            *,
+            id: str | None = None,
+            retry: EventRetryConfig | None = None,
+            event_pattern: str = "*",
         ) -> None: ...
     ```
 
@@ -204,8 +207,9 @@ Immutable by design (Python uses `frozen=True`; TypeScript uses `readonly`; Rust
     new WebhookSubscriber(
         url: string,
         headers?: Record<string, string>,
-        retryCount?: number,   // default 3
-        timeoutMs?: number,    // default 5000
+        // number, or an options object { timeoutMs?, retry?, id? }
+        timeoutMsOrOpts?: number | { timeoutMs?: number; retry?: RetryConfig; id?: string },
+        id?: string,
     );
     ```
 
@@ -353,7 +357,7 @@ Extensible factory system for config-driven subscriber instantiation:
 === "TypeScript"
 
     ```typescript
-    import { registerSubscriberType } from "apcore-js/events";
+    import { registerSubscriberType } from "apcore-js";
     import type { EventSubscriber } from "apcore-js";
 
     // Register a custom subscriber type
@@ -608,21 +612,18 @@ sys_modules:
     ```
 === "TypeScript"
     ```typescript
-    import { EventEmitter, ApCoreEvent, WebhookSubscriber } from "apcore-js";
+    import { EventEmitter, createEvent, WebhookSubscriber } from "apcore-js";
 
-    const emitter = new EventEmitter({ maxWorkers: 4 });
-    emitter.subscribe(new WebhookSubscriber({ url: "https://example.com/hook" }));
+    // maxPending is positional (default 1000).
+    const emitter = new EventEmitter(1000);
+    emitter.subscribe(new WebhookSubscriber("https://example.com/hook"));
 
-    emitter.emit(new ApCoreEvent({
-        eventType: "custom.event",
-        moduleId: "my.module",
-        timestamp: "2026-03-08T12:00:00Z",
-        severity: "info",
-        data: { key: "value" },
-    }));
+    // ApCoreEvent is an interface, not a class — build it with createEvent(),
+    // which stamps `timestamp` for you.
+    emitter.emit(createEvent("custom.event", "my.module", "info", { key: "value" }));
 
-    // Wait for delivery in tests
-    await emitter.flush(5.0);
+    // Wait for delivery in tests (milliseconds; 0 waits indefinitely)
+    await emitter.flush(5000);
     ```
 === "Rust"
     ```rust
@@ -761,7 +762,7 @@ The `register_subscriber_type` API MUST be available in all three SDKs. Implemen
     ```
 === "TypeScript"
     ```typescript
-    import { registerSubscriberType } from "apcore-js/events";
+    import { registerSubscriberType } from "apcore-js";
 
     // Factory function receives a config object, returns an EventSubscriber
     registerSubscriberType("slack", (config) => new SlackSubscriber(config));
@@ -840,7 +841,7 @@ The five built-in factories (`webhook`, `a2a`, `file`, `stdout`, `filter`) plus 
     ```
 === "TypeScript"
     ```typescript
-    import { registerSubscriberType } from "apcore-js/events";
+    import { registerSubscriberType } from "apcore-js";
 
     registerSubscriberType("slack", (config) => new SlackSubscriber(config));
     ```

@@ -1,0 +1,4 @@
+{
+  "description": "Fixtures not yet driven by all three SDKs, accepted as a known backlog. EMPTY as of the 0.26 conformance sweep: every fixture is driven by apcore-python, apcore-typescript and apcore-rust. CI runs check_driver_coverage.py --strict, so a new fixture cannot land undriven and this file should stay empty. If an entry ever reappears here, it is a deliberate, temporary exception that needs a reason next to it.",
+  "gaps": {}
+}

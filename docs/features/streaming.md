@@ -233,7 +233,9 @@ After all chunks have been emitted, the accumulated output is passed through Out
 
     ```typescript
     import { APCore, Registry, Executor } from "apcore-js";
-    import type { Context, Module, TSchema } from "apcore-js";
+    import type { Context, Module } from "apcore-js";
+    // TSchema is TypeBox's schema type; apcore-js builds on it but does not re-export it.
+    import type { TSchema } from "@sinclair/typebox";
 
     class ChatModule implements Module {
         inputSchema: TSchema = { type: "object", properties: { prompt: { type: "string" } } };

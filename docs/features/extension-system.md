@@ -303,7 +303,7 @@ A custom `Discoverer` replaces the default filesystem scan. `discover()` receive
 === "TypeScript"
 
     ```typescript
-    import { Registry, Discoverer } from "apcore";
+    import { Registry, Discoverer } from "apcore-js";
 
     const discoverer: Discoverer = {
       async discover(roots: string[]) {

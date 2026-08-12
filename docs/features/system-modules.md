@@ -712,7 +712,7 @@ Currently `system.control.update_config` and `system.control.toggle_feature` cha
 
 - Implementations MUST support an optional `overrides_path` configuration field. When set, changes from `system.control.update_config` and `system.control.toggle_feature` MUST be persisted to `overrides_path` as YAML.
 - The overrides file MUST be loaded on startup and applied AFTER the base config, so manual restores of the base config do not erase runtime overrides.
-- Implementations SHOULD support KV-store persistence (Redis, etcd) as an alternative backend via a pluggable `OverridesStore` interface with methods: `set(key, value)`, `get(key) → value | None`, `get_all() → dict`, `delete(key)`.
+- Implementations SHOULD support alternative backends (Redis, etcd, a remote config service) via the pluggable `OverridesStore` interface. Its surface is the **whole map**, not per key: `load() → mapping` and `save(mapping)` (decision **D-47**). A single-key change is a read-modify-write, which is what the `system.control.*` code paths do. An earlier revision of this line specified `set(key, value)` / `get(key)` / `get_all()` / `delete(key)`; no SDK ever implemented it, and `conformance/fixtures/overrides_store.json` now pins the D-47 surface.
 - When no `overrides_path` or KV store is configured, the existing in-memory-only behavior MUST be preserved (backward compatible).
 
 #### YAML Configuration
@@ -742,7 +742,7 @@ sys_modules:
     client = APCore(config=config)
 
     # Runtime update — persisted to overrides_path automatically
-    await client.executor.call(
+    await client.executor.call_async(
         "system.control.update_config",
         {"key": "executor.default_timeout", "value": 60000, "reason": "increase timeout"},
         context,
@@ -778,7 +778,7 @@ sys_modules:
     let client = APCore::from_path("apcore.yaml")?;
 
     // Runtime update — persisted to overrides_path automatically
-    client.executor.call(
+    client.executor().call(
         "system.control.update_config",
         json!({
             "key": "executor.default_timeout",
@@ -797,19 +797,19 @@ All three SDKs ship a pluggable `OverridesStore` abstraction plus a `FileOverrid
 | SDK | Form | Public symbol |
 |-----|------|---------------|
 | Python | `typing.Protocol` (runtime-checkable) | `apcore.sys_modules.overrides.OverridesStore` |
-| TypeScript | `interface` | `OverridesStore` (exported from `apcore-js/sys-modules/overrides`) |
+| TypeScript | `interface` | `OverridesStore` (exported from the package root, `apcore-js` — `package.json` declares only `.` and `./context-keys` as subpaths) |
 | Rust | `pub trait OverridesStore: Send + Sync` | `apcore::sys_modules::overrides::OverridesStore` |
 
 `FileOverridesStore` and `InMemoryOverridesStore` are the bundled implementations; users MAY supply their own implementation (e.g. a Redis- or KMS-backed store) by satisfying the protocol/interface/trait directly.
 
-The abstraction MUST expose:
+The abstraction MUST expose the **whole-map** surface of decision **D-47** — two methods, not four:
 
 | Method | Behavior |
 |---|---|
-| `save(key, value)` | Persist a single override; subsequent reads MUST return the new value |
-| `get(key) → value \| None` | Return the persisted override or `None`/`null` if absent |
-| `get_all() → dict` | Snapshot of every persisted override (used at startup to apply on top of base config) |
-| `delete(key)` | Remove an override; deleting an absent key MUST be a no-op |
+| `load() → mapping` | Snapshot of every persisted override (used at startup to apply on top of base config). MUST return an empty mapping, never an error, when the backing store is empty or absent |
+| `save(mapping)` | Replace the entire override set with `mapping`. Persisting a single key is a read-modify-write over `load()` — which is what the `system.control.*` code paths do |
+
+An earlier revision of this table specified a per-key surface (`save(key, value)` / `get(key)` / `get_all()` / `delete(key)`). No SDK ever implemented it: apcore-python `sys_modules/overrides.py`, apcore-typescript `sys-modules/overrides.ts` and apcore-rust `sys_modules/overrides.rs` all ship `load()` / `save(mapping)`, and `conformance/fixtures/overrides_store.json` pins that surface.
 
 Wiring during APCore construction:
 
@@ -826,12 +826,21 @@ Wiring during APCore construction:
 
     config = Config.load("apcore.yaml")
 
+    # The store is a register_sys_modules() parameter, not an APCore ctor param.
+    client = APCore(config=config)
+
     # Production: persist runtime overrides to disk
     overrides_store: OverridesStore = FileOverridesStore(path="/etc/apcore/overrides.yaml")
-    client = APCore(config=config, overrides_store=overrides_store)
+    register_sys_modules(
+        client.registry, client.executor, config, overrides_store=overrides_store
+    )
 
     # Tests: in-memory only, no disk side effects
-    test_client = APCore(config=config, overrides_store=InMemoryOverridesStore())
+    test_client = APCore(config=config)
+    register_sys_modules(
+        test_client.registry, test_client.executor, config,
+        overrides_store=InMemoryOverridesStore(),
+    )
     ```
 
 === "TypeScript"
@@ -842,16 +851,23 @@ Wiring during APCore construction:
         OverridesStore,            // the interface — implement to plug in a custom backend
         FileOverridesStore,        // default, YAML-backed
         InMemoryOverridesStore,    // default, in-memory (for tests)
-    } from "apcore-js/sys-modules/overrides";
+        registerSysModules,
+    } from "apcore-js";
 
     const config = Config.load("apcore.yaml");
 
+    // The store is a registerSysModules() option, not an APCore ctor option.
+    const client = new APCore({ config });
+
     // Production: persist runtime overrides to disk
-    const overridesStore = new FileOverridesStore({ path: "/etc/apcore/overrides.yaml" });
-    const client = new APCore({ config, overridesStore });
+    const overridesStore = new FileOverridesStore("/etc/apcore/overrides.yaml");
+    registerSysModules(client.registry, client.executor, config, null, { overridesStore });
 
     // Tests: in-memory only, no disk side effects
-    const testClient = new APCore({ config, overridesStore: new InMemoryOverridesStore() });
+    const testClient = new APCore({ config });
+    registerSysModules(testClient.registry, testClient.executor, config, null, {
+        overridesStore: new InMemoryOverridesStore(),
+    });
     ```
 
 === "Rust"
@@ -914,10 +930,12 @@ AuditEntry:
     config = Config.load("apcore.yaml")
     audit_store = InMemoryAuditStore()
 
-    client = APCore(config=config, audit_store=audit_store)
+    # The store is a register_sys_modules() parameter, not an APCore ctor param.
+    client = APCore(config=config)
+    register_sys_modules(client.registry, client.executor, config, audit_store=audit_store)
 
     # After a control call, query the audit log
-    await client.executor.call(
+    await client.executor.call_async(
         "system.control.toggle_feature",
         {"module_id": "risky.module", "enabled": False, "reason": "maintenance"},
         context,
@@ -931,13 +949,14 @@ AuditEntry:
 === "TypeScript"
 
     ```typescript
-    import { APCore, Config } from 'apcore-js';
-    import { InMemoryAuditStore } from 'apcore-js';
+    import { APCore, Config, InMemoryAuditStore, registerSysModules } from 'apcore-js';
 
     const config = Config.load('apcore.yaml');
     const auditStore = new InMemoryAuditStore();
 
-    const client = new APCore({ config, auditStore });
+    // The store is a registerSysModules() option, not an APCore ctor option.
+    const client = new APCore({ config });
+    registerSysModules(client.registry, client.executor, config, null, { auditStore });
 
     // After a control call, query the audit log
     await client.executor.call(
@@ -960,11 +979,12 @@ AuditEntry:
     use serde_json::json;
 
     let audit_store = Arc::new(InMemoryAuditStore::new());
-    let client = APCore::from_path("apcore.yaml")?
-        .with_audit_store(audit_store.clone());
+    // There is no APCore::with_audit_store — pass the store to
+    // register_sys_modules_with_options via SysModulesOptions.
+    let client = APCore::from_path("apcore.yaml")?;
 
     // After a control call, query the audit log
-    client.executor.call(
+    client.executor().call(
         "system.control.toggle_feature",
         json!({ "module_id": "risky.module", "enabled": false, "reason": "maintenance" }),
         None,
@@ -1038,7 +1058,8 @@ This requirement complements the structured audit-store contract in §1.2. While
     ```typescript
     // Emitted by system.control.update_config when context.caller_id and
     // context.identity are populated.
-    const event = new ApCoreEvent({
+    // ApCoreEvent is an interface — this is the emitted payload shape.
+    const event: ApCoreEvent = {
         eventType: "apcore.config.updated",
         moduleId: "system.control.update_config",
         timestamp: "2026-05-03T12:00:00Z",
@@ -1055,10 +1076,10 @@ This requirement complements the structured audit-store contract in §1.2. While
                 display_name: "alice@example.com",
             },
         },
-    });
+    };
 
     // Unauthenticated caller — caller_id defaults to @external, identity omitted.
-    const externalEvent = new ApCoreEvent({
+    const externalEvent: ApCoreEvent = {
         eventType: "apcore.module.toggled",
         moduleId: "system.control.toggle_feature",
         timestamp: "2026-05-03T12:00:00Z",
@@ -1069,7 +1090,7 @@ This requirement complements the structured audit-store contract in §1.2. While
             reason: "incident-1234",
             caller_id: "@external",
         },
-    });
+    };
     ```
 
 === "Rust"
@@ -1222,7 +1243,7 @@ Currently `system.control.reload_module` reloads a single module by ID. The opti
     client = APCore(config=config)
 
     # Reload all executor modules
-    result = await client.executor.call(
+    result = await client.executor.call_async(
         "system.control.reload_module",
         {"path_filter": "executor.*", "reload_dependents": False, "reason": "deploy"},
         context,
@@ -1230,7 +1251,7 @@ Currently `system.control.reload_module` reloads a single module by ID. The opti
     # result["reloaded_modules"] == ["executor.email.send", "executor.math.add", ...]
 
     # Reload a single module by ID (existing behavior unchanged)
-    result = await client.executor.call(
+    result = await client.executor.call_async(
         "system.control.reload_module",
         {"module_id": "executor.email.send", "reason": "hotfix"},
         context,
@@ -1268,7 +1289,7 @@ Currently `system.control.reload_module` reloads a single module by ID. The opti
     let client = APCore::from_path("apcore.yaml")?;
 
     // Reload all executor modules
-    let result = client.executor.call(
+    let result = client.executor().call(
         "system.control.reload_module",
         json!({ "path_filter": "executor.*", "reload_dependents": false, "reason": "deploy" }),
         None,

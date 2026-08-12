@@ -1,16 +1,28 @@
 {
-  "description": "Pipeline StepMiddleware lifecycle (Issue #33): before_step/after_step/on_step_error invocation order, recovery semantics, error propagation, and async support. References middleware-system.md 'Pipeline Step Middleware' section.",
+  "description": "Pipeline StepMiddleware lifecycle (Issue #33): before_step / after_step / on_step_error invocation order, recovery semantics, error propagation, and async support. The callbacks are before_step(step_name, state), after_step(step_name, state, result), on_step_error(step_name, state, error) — all three SDKs agree, and `state` is the PipelineState view. There is NO step-inputs parameter: a Step is execute(ctx), so nothing exists for a middleware to replace. References features/middleware-system.md 'Pipeline Step Middleware'.",
   "test_cases": [
     {
       "id": "before_after_invocation_order",
       "description": "before_step runs in registration order; after_step runs in reverse registration order (onion model)",
       "input": {
-        "step": "validate_input",
-        "register_order": ["mw_a", "mw_b", "mw_c"]
+        "step": "input_validation",
+        "register_order": [
+          "mw_a",
+          "mw_b",
+          "mw_c"
+        ]
       },
       "expected": {
-        "before_step_order": ["mw_a", "mw_b", "mw_c"],
-        "after_step_order": ["mw_c", "mw_b", "mw_a"]
+        "before_step_order": [
+          "mw_a",
+          "mw_b",
+          "mw_c"
+        ],
+        "after_step_order": [
+          "mw_c",
+          "mw_b",
+          "mw_a"
+        ]
       }
     },
     {
@@ -22,16 +34,32 @@
           "code": "DEMO_FAILURE",
           "message": "synthetic step failure"
         },
-        "register_order": ["mw_a", "mw_b", "mw_c"],
+        "register_order": [
+          "mw_a",
+          "mw_b",
+          "mw_c"
+        ],
         "on_step_error_returns": {
           "mw_c": null,
-          "mw_b": { "recovered": true, "by": "mw_b" },
-          "mw_a": { "recovered": true, "by": "mw_a" }
+          "mw_b": {
+            "recovered": true,
+            "by": "mw_b"
+          },
+          "mw_a": {
+            "recovered": true,
+            "by": "mw_a"
+          }
         }
       },
       "expected": {
-        "on_step_error_invoked": ["mw_c", "mw_b"],
-        "step_output": { "recovered": true, "by": "mw_b" },
+        "on_step_error_invoked": [
+          "mw_c",
+          "mw_b"
+        ],
+        "step_output": {
+          "recovered": true,
+          "by": "mw_b"
+        },
         "error_propagated": false
       }
     },
@@ -44,7 +72,10 @@
           "code": "DEMO_FAILURE",
           "message": "synthetic step failure"
         },
-        "register_order": ["mw_a", "mw_b"],
+        "register_order": [
+          "mw_a",
+          "mw_b"
+        ],
         "on_step_error_returns": {
           "mw_b": null,
           "mw_a": null
@@ -52,54 +83,218 @@
         "ignore_errors": false
       },
       "expected": {
-        "on_step_error_invoked": ["mw_b", "mw_a"],
+        "on_step_error_invoked": [
+          "mw_b",
+          "mw_a"
+        ],
         "error_propagated": true,
-        "error_code": "DEMO_FAILURE",
-        "wrapped_in": "PipelineStepError"
+        "original_error_code": "DEMO_FAILURE",
+        "wrapper_error_code": "PIPELINE_STEP_ERROR"
       }
     },
     {
       "id": "on_step_error_only_executed_middlewares",
       "description": "If before_step of mw_b raises, on_step_error MUST be invoked only on mw_b (and earlier executed mws), reverse order; mw_c (not yet executed) MUST NOT be invoked",
       "input": {
-        "step": "validate_input",
-        "register_order": ["mw_a", "mw_b", "mw_c"],
+        "step": "input_validation",
+        "register_order": [
+          "mw_a",
+          "mw_b",
+          "mw_c"
+        ],
         "before_step_raises_in": "mw_b"
       },
       "expected": {
-        "before_step_invoked": ["mw_a", "mw_b"],
-        "on_step_error_invoked": ["mw_b", "mw_a"],
-        "wrapped_in": "MiddlewareChainError"
+        "before_step_invoked": [
+          "mw_a",
+          "mw_b"
+        ],
+        "on_step_error_invoked": [
+          "mw_b",
+          "mw_a"
+        ],
+        "wrapper_error_code": "MIDDLEWARE_CHAIN_ERROR"
       }
     },
     {
       "id": "async_middleware_awaited",
-      "description": "Async StepMiddleware callbacks MUST be awaited; the step body MUST observe the resolved value, not a coroutine/Promise/Future",
+      "description": "Async StepMiddleware callbacks MUST be awaited before the pipeline advances: the coroutine/Promise/Future MUST be resolved, not merely created and dropped. The previous revision asserted the step observed a value returned by an async before_step. There is no step-inputs parameter, so the only observable proof of awaiting is that the side effect landed before the pipeline moved on.",
       "input": {
-        "step": "validate_input",
-        "register_order": ["async_mw"],
-        "async_before_step_returns": { "validated": true, "from_async": true }
+        "step": "input_validation",
+        "register_order": [
+          "async_mw"
+        ],
+        "async_before_step_records": "async_mw:before",
+        "async_after_step_records": "async_mw:after"
       },
       "expected": {
-        "step_received_inputs": { "validated": true, "from_async": true },
-        "callback_was_awaited": true
+        "recorded_in_order": [
+          "async_mw:before",
+          "async_mw:after"
+        ],
+        "callback_was_awaited": true,
+        "no_unawaited_warning": true
       }
     },
     {
-      "id": "before_step_input_replacement",
-      "description": "before_step returning a non-null dict MUST replace inputs to the step body; returning null/None MUST pass through unchanged",
+      "id": "before_step_return_value_is_ignored",
+      "description": "before_step returning a value MUST NOT change what the step body sees. The hook observes; it does not rewrite. This is the inverse of the removed `before_step_input_replacement` case, kept so the mistaken contract cannot quietly return.",
       "input": {
         "step": "input_validation",
-        "register_order": ["mw_replace", "mw_passthrough"],
+        "register_order": [
+          "mw_returns_dict"
+        ],
         "before_step_returns": {
-          "mw_replace": { "name": "replaced" },
-          "mw_passthrough": null
+          "mw_returns_dict": {
+            "name": "replaced"
+          }
         },
-        "original_inputs": { "name": "original" }
+        "original_call_inputs": {
+          "name": "original"
+        }
       },
       "expected": {
-        "step_received_inputs": { "name": "replaced" }
+        "module_received_inputs": {
+          "name": "original"
+        },
+        "before_step_invoked": [
+          "mw_returns_dict"
+        ],
+        "error_raised": false
+      }
+    },
+    {
+      "id": "before_step_failure_recovery_is_discarded",
+      "description": "A before_step failure terminates the step and is NOT recoverable. on_step_error is still invoked on the already-executed middlewares — for observation and cleanup only — and any value it returns MUST be discarded: it MUST NOT become the step's output and MUST NOT let the pipeline continue. Honouring it would advance past a step whose body never ran, and the built-in strategy puts acl_check and approval_gate in that sequence, so it is an authorization bypass reachable from an extension point that carries no authority.",
+      "input": {
+        "step": "acl_check",
+        "register_order": [
+          "mw_a",
+          "mw_b"
+        ],
+        "before_step_raises_in": "mw_b",
+        "on_step_error_returns": {
+          "mw_b": {
+            "recovered": true,
+            "by": "mw_b"
+          },
+          "mw_a": null
+        },
+        "ignore_errors": true,
+        "following_step": "execute"
+      },
+      "expected": {
+        "before_step_invoked": [
+          "mw_a",
+          "mw_b"
+        ],
+        "on_step_error_invoked": [
+          "mw_b",
+          "mw_a"
+        ],
+        "after_step_invoked": [],
+        "recovery_honored": false,
+        "step_output": null,
+        "following_step_executed": false,
+        "error_propagated": true,
+        "wrapper_error_code": "MIDDLEWARE_CHAIN_ERROR",
+        "ignore_errors_applies": false
+      }
+    },
+    {
+      "id": "after_step_fires_after_a_recovered_step",
+      "description": "A step body that failed and was recovered by on_step_error produced an output and the pipeline continued, so the onion MUST close: after_step runs, in reverse registration order. A middleware that acquired something in before_step must get its after_step or the recovery path leaks. This is the STEP-BODY failure path and is deliberately the opposite of `before_step_failure_recovery_is_discarded`. Also pins `state.outputs` on the RECOVERY path: a recovered step is still the current step, so `after_step` MUST NOT see it. That ordering lives at a SECOND snapshot site in each engine, and `state_outputs_excludes_the_current_step_in_every_hook` cannot reach it — it recovers from nothing. Swapping the two lines at the recovery site left every conformance case green in apcore-typescript until this expectation was added.",
+      "input": {
+        "step": "execute",
+        "step_raises": {
+          "code": "DEMO_FAILURE",
+          "message": "synthetic step failure"
+        },
+        "register_order": [
+          "mw_a",
+          "mw_b"
+        ],
+        "on_step_error_returns": {
+          "mw_b": {
+            "recovered": true,
+            "by": "mw_b"
+          },
+          "mw_a": null
+        },
+        "preceding_step": "first"
+      },
+      "expected": {
+        "on_step_error_invoked": [
+          "mw_b"
+        ],
+        "after_step_invoked": [
+          "mw_b",
+          "mw_a"
+        ],
+        "step_output": {
+          "recovered": true,
+          "by": "mw_b"
+        },
+        "error_propagated": false,
+        "outputs_keys_in_after_step": [
+          "first"
+        ]
+      }
+    },
+    {
+      "id": "state_outputs_excludes_the_current_step_in_every_hook",
+      "description": "`state.outputs` contains exactly the steps that completed BEFORE the current one — never the current step, in any hook. The alternative reading, 'outputs of completed steps', would make after_step the one hook whose outputs differs in shape, so a middleware would have to know which hook it was in before reading the map. The current step's output reaches after_step as the `result` parameter; carrying the same value down two paths is how the two drift apart.",
+      "input": {
+        "steps": [
+          "first",
+          "second",
+          "third"
+        ],
+        "step_outputs": {
+          "first": {
+            "v": 1
+          },
+          "second": {
+            "v": 2
+          },
+          "third": {
+            "v": 3
+          }
+        },
+        "observe_hooks_on": "second",
+        "third_step_raises": {
+          "code": "DEMO_FAILURE",
+          "message": "synthetic step failure"
+        }
+      },
+      "expected": {
+        "outputs_keys_in_before_step": [
+          "first"
+        ],
+        "outputs_keys_in_after_step": [
+          "first"
+        ],
+        "outputs_keys_in_on_step_error": [
+          "first",
+          "second"
+        ],
+        "current_step_never_present": true
       }
     }
-  ]
+  ],
+  "driver_contract": {
+    "no_input_replacement": "before_step is an OBSERVATION hook; its return value carries no meaning. An earlier revision of this fixture asserted that a returned dict replaced the step's inputs — a calling convention that exists in no SDK, because Step.execute takes only ctx.",
+    "step_names_are_real": "Built-in steps are context_creation, call_chain_guard, module_lookup, acl_check, approval_gate, middleware_before, input_validation, execute, output_validation, middleware_after, return_result. An earlier revision used `validate_input`, which is not one of them.",
+    "order_is_the_assertion": "after_step and on_step_error run in REVERSE registration order (onion model). Asserting only the SET of invoked middlewares passes against a straight-through implementation and is the single most common way this fixture is driven vacuously — assert the ordered list.",
+    "first_recovery_wins": "The first on_step_error returning a non-null value supplies the recovery result and short-circuits the remaining handlers. An implementation that runs all handlers and keeps the LAST non-null return produces the same value whenever only one handler recovers, so the recovery case MUST have two handlers that both would recover.",
+    "assert_the_wire_code": "Every error expectation is a WIRE CODE (`wrapper_error_code`, `original_error_code`), never a class name. An earlier revision of THIS fixture — written in the same sweep that filed the issue against class-name assertions — used `wrapped_in: \"MiddlewareChainError\"` / \"PipelineStepError\". Those are Python/TypeScript class names; apcore-rust has neither type, only `ErrorCode` variants, so no Rust driver could assert them. apcore-python's driver \"checked\" the key by comparing the fixture to a string literal — a tautology that cannot fail on SDK behaviour — and the TS and Rust drivers ignored it entirely. The codes are MIDDLEWARE_CHAIN_ERROR and PIPELINE_STEP_ERROR in all three SDKs.",
+    "wrapper_is_load_bearing": "Drivers MUST assert `wrapper_error_code`. Removing the MiddlewareChainError wrapping from an SDK was verified to leave every driver GREEN before this was pinned — in apcore-typescript and apcore-rust alike. It is the single behaviour the before_step fix exists to provide.",
+    "step_output_is_a_MUST": "`on_step_error_recovery_short_circuits.expected.step_output` pins the rule that the recovery value BECOMES the step's output (features/middleware-system.md, Normative Rules). All three SDKs now do this. apcore-typescript previously declined on purpose (src/pipeline.ts: \"the recovery value is informational ... NOT auto-merged into ctx.output\") and the field was asserted by apcore-python's driver alone, so a MUST was being violated in the open. Drivers MUST assert it.",
+    "before_step_failure_is_terminal": "A before_step failure and a step-body failure MUST NOT share a recovery path. On the before_step path the recovery value is DISCARDED, after_step does NOT fire, and the step's `ignore_errors` does NOT apply — `MiddlewareChainError` propagates regardless. Drivers MUST assert `recovery_honored: false` by observing that the FOLLOWING step did not execute, not merely that an error was raised: an implementation that honours the recovery and then happens to fail later would satisfy a raise-only assertion while the bypass is live.",
+    "two_recovery_paths": "`before_step_failure_recovery_is_discarded` and `after_step_fires_after_a_recovered_step` are deliberate opposites. Both had TWO middlewares returning a recovery so that first-wins is distinguishable, and both use a real built-in step name — `acl_check` in the first, because the rule exists to protect the gates.",
+    "cleanup_pass_does_not_short_circuit": "In `before_step_failure_recovery_is_discarded`, `on_step_error_invoked` is [\"mw_b\", \"mw_a\"] while mw_b RETURNS a recovery value. That is deliberate: first-recovery-wins is for shopping for a recovery, and this pass is not shopping — every already-entered middleware MUST be notified so it can clean up. An implementation that reuses its normal on_step_error helper here will short-circuit at mw_b and strand mw_a; the expectation is written to catch exactly that.",
+    "assert_the_exact_key_set": "Drivers MUST assert the EXACT key set of `state.outputs`, not that a particular key is absent. `assert 'second' not in outputs` also passes against an implementation that lost `first`, and against one that never populated the map at all. The three expectations differ from each other on purpose: `on_step_error` is observed on the THIRD step, so it proves the map does keep earlier steps while excluding the failing one — an all-empty map would satisfy the other two.",
+    "outputs_is_a_live_reference": "`state.outputs` is a LIVE reference to the engine's map in at least apcore-typescript, not a copy. A driver that stashes the reference and reads it after `run()` returns sees the FINAL map on every entry and can never fail. Snapshot the key set INSIDE the hook.",
+    "both_snapshot_sites": "Each engine snapshots `step_outputs` at TWO sites — after the natural success path and after the recovery path — and only the first is reachable from `state_outputs_excludes_the_current_step_in_every_hook`. `after_step_fires_after_a_recovered_step` carries the second. Drivers MUST assert both, or half the rule is unpinned."
+  }
 }

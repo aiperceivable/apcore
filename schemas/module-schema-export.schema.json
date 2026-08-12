@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://apcore.dev/schemas/module-schema-export.schema.json",
+  "title": "apcore Registry.export_schema Envelope",
+  "description": "The exact object `Registry.export_schema(module_id, strict)` returns. Four keys, no more: this is a schema export, not a module manifest. Descriptor metadata (name, version, tags, annotations, examples, documentation, source_path, dependencies) belongs to `system.manifest.module`, which sys-manifest-module.schema.json already defines — an export that carries a subset of those fields is a third shape that matches neither contract.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["module_id", "description", "input_schema", "output_schema"],
+  "properties": {
+    "module_id": {
+      "type": "string",
+      "description": "Canonical ID of the exported module, as registered."
+    },
+    "description": {
+      "type": "string",
+      "description": "The module's one-line description, copied from its descriptor."
+    },
+    "input_schema": {
+      "type": "object",
+      "description": "The module's input JSON Schema. When `strict` is true this is the Algorithm A23 conversion of it. Any `$defs` the schema uses stay inside this object where JSON Schema puts them — there is deliberately no sibling `definitions` key, which would be a second, always-empty place to look."
+    },
+    "output_schema": {
+      "type": "object",
+      "description": "The module's output JSON Schema, under the same `strict` rule as input_schema."
+    }
+  }
+}

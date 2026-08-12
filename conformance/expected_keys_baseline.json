@@ -1,0 +1,84 @@
+{
+  "description": "`expected` keys no SDK driver reads, accepted as a known backlog. check_expected_keys_read.py --baseline fails on any key NOT listed here, so the backlog can shrink without new vacuous expectations slipping in. Delete an entry when a driver starts asserting it; the list reaching empty is the signal to switch CI to --strict. A key here is NOT covered \u2014 it only looks covered.",
+  "unread": {
+    "approval_gate.json": [
+      "http_status"
+    ],
+    "config_key_governance.json": [
+      "mismatched",
+      "violations"
+    ],
+    "context_create.json": [
+      "call_succeeded",
+      "caller_id_after_create",
+      "caller_id_is_not_a_parameter",
+      "cancel_token_after_deserialize",
+      "cancel_token_bound",
+      "cancel_token_matches_input",
+      "child_call_chain_appends_target",
+      "child_caller_id_from_parent_chain_tip",
+      "child_cancel_token_bound",
+      "child_cancel_token_matches_parent",
+      "child_executor_matches_parent",
+      "data_empty",
+      "executor_after_deserialize",
+      "executor_at_create_time",
+      "executor_bound_on_first_call",
+      "executor_identity_stable",
+      "executor_is_not_a_parameter",
+      "global_deadline_after_deserialize",
+      "no_in_context_token_rides_across_processes",
+      "no_remote_deadline_rides_via_global_deadline_field",
+      "no_separate_tracestate_parameter",
+      "raised_binding_error",
+      "rebind_noop",
+      "services_after_deserialize",
+      "trace_id_pattern",
+      "tracestate_preserved"
+    ],
+    "dependency_version_constraints.json": [
+      "skipped_edges"
+    ],
+    "event_delivery_semantics.json": [
+      "backoff_delays_ms",
+      "dlq_events_emitted",
+      "error_log_count",
+      "second_order_dlq_event_emitted"
+    ],
+    "observability_hardening.json": [
+      "spans_exported_immediately"
+    ],
+    "pipeline_hardening.json": [
+      "steps_after_skipped"
+    ],
+    "registry_load_ordering.json": [
+      "concurrent_check_get_raises",
+      "one_raises",
+      "post_register_get_raises",
+      "post_register_list_contains",
+      "registration_raises"
+    ],
+    "system_modules_hardening.json": [
+      "audit_entries_count",
+      "audit_entry",
+      "base_not_modified",
+      "call_success",
+      "err_variant",
+      "error_includes_module_id",
+      "export_within_timeout_ms",
+      "log_level_on_failure",
+      "metrics_endpoint_contains",
+      "not_reloaded",
+      "ok_variant",
+      "overrides_file_contains",
+      "overrides_file_written",
+      "panics",
+      "reload_order",
+      "remaining_modules_registered",
+      "resolved_value",
+      "return_type",
+      "returns_option",
+      "timestamp_present"
+    ]
+  }
+}

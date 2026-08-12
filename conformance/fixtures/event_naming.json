@@ -32,37 +32,18 @@
       }
     },
     {
-      "id": "legacy_dual_emit",
-      "description": "During v0.21.x, registry register MUST emit BOTH the canonical name and the legacy name, with the legacy event carrying data.deprecated=true.",
-      "trigger": {
-        "action": "registry.register",
-        "target_id": "math.add"
-      },
-      "expected": {
-        "events": [
-          {
-            "event_type": "apcore.registry.module_registered",
-            "data_contains": {
-              "module_id": "math.add"
-            }
-          },
-          {
-            "event_type": "module_registered",
-            "data_contains": {
-              "module_id": "math.add",
-              "deprecated": true
-            }
-          }
-        ]
-      }
-    },
-    {
       "id": "glob_subscription_registry",
       "description": "An apcore.registry.* glob subscription MUST receive both module_registered and module_unregistered canonical events.",
       "subscription_pattern": "apcore.registry.*",
       "trigger_sequence": [
-        {"action": "registry.register", "target_id": "math.add"},
-        {"action": "registry.unregister", "target_id": "math.add"}
+        {
+          "action": "registry.register",
+          "target_id": "math.add"
+        },
+        {
+          "action": "registry.unregister",
+          "target_id": "math.add"
+        }
       ],
       "expected": {
         "received_event_types": [
@@ -76,8 +57,14 @@
       "description": "An apcore.health.* glob subscription MUST receive recovered + threshold-exceeded events under the canonical apcore.health.* namespace.",
       "subscription_pattern": "apcore.health.*",
       "trigger_sequence": [
-        {"action": "platform_notify.error_threshold_crossed", "target_id": "email.send"},
-        {"action": "platform_notify.recovered", "target_id": "email.send"}
+        {
+          "action": "platform_notify.error_threshold_crossed",
+          "target_id": "email.send"
+        },
+        {
+          "action": "platform_notify.recovered",
+          "target_id": "email.send"
+        }
       ],
       "expected": {
         "received_event_types": [
@@ -88,13 +75,13 @@
     },
     {
       "id": "health_threshold_canonical",
-      "description": "Threshold-crossing events MUST be emitted under apcore.health.* (not apcore.error.* / apcore.latency.*).",
+      "description": "Threshold-crossing events MUST be emitted under apcore.health.* (not apcore.error.* / apcore.latency.*). The p99 value is asserted as `data_at_least`, not an exact match: every SDK estimates p99 from histogram BUCKET BOUNDS, and the bucket layout is not fixed by the spec — apcore-rust's DEFAULT_BUCKETS has no 6.0s boundary and reports 10000.0 for a 6s sample. The canonical event NAME is still asserted exactly, which is what this case is for. Also carries the inverse assertion for the HEALTH legacy aliases removed at v0.22.0 (apcore#78): this is the only trigger that could emit them, so it is the only place the assertion is not vacuous.",
       "trigger_sequence": [
         {
           "action": "platform_notify.error_threshold_crossed",
           "target_id": "email.send",
           "error_rate": 0.15,
-          "threshold": 0.10
+          "threshold": 0.1
         },
         {
           "action": "platform_notify.latency_threshold_crossed",
@@ -110,44 +97,23 @@
             "data_contains": {
               "module_id": "email.send",
               "error_rate": 0.15,
-              "threshold": 0.10
+              "threshold": 0.1
             }
           },
           {
             "event_type": "apcore.health.latency_threshold_exceeded",
             "data_contains": {
               "module_id": "email.send",
-              "p99_latency_ms": 6000.0,
               "threshold": 5000.0
+            },
+            "data_at_least": {
+              "p99_latency_ms": 5000.0
             }
           }
-        ]
-      }
-    },
-    {
-      "id": "legacy_health_dual_emit",
-      "description": "During v0.21.x, error/latency threshold events MUST be dual-emitted under both the canonical apcore.health.* form and the legacy apcore.error.* / apcore.latency.* form (deprecated:true).",
-      "trigger": {
-        "action": "platform_notify.error_threshold_crossed",
-        "target_id": "email.send",
-        "error_rate": 0.15,
-        "threshold": 0.10
-      },
-      "expected": {
-        "events": [
-          {
-            "event_type": "apcore.health.error_threshold_exceeded",
-            "data_contains": {
-              "module_id": "email.send"
-            }
-          },
-          {
-            "event_type": "apcore.error.threshold_exceeded",
-            "data_contains": {
-              "module_id": "email.send",
-              "deprecated": true
-            }
-          }
+        ],
+        "forbidden_event_types": [
+          "apcore.error.threshold_exceeded",
+          "apcore.latency.threshold_exceeded"
         ]
       }
     },
@@ -162,6 +128,31 @@
       "expected": {
         "received_event_types": []
       }
+    },
+    {
+      "id": "legacy_names_are_not_emitted",
+      "description": "Dual-emission ended at v0.22.0 (apcore#78): a conformant SDK MUST emit the canonical name ONLY. This case replaces `legacy_dual_emit` and `legacy_health_dual_emit`, which required the v0.21.x dual emit and which no v0.22+ SDK could satisfy without violating the current MUST in features/event-system.md. Keeping the inverse assertion means the removal stays pinned instead of merely deleted. Scope note: this case's trigger is `registry.register`, so it can only pin the REGISTRY legacy names. An earlier revision also listed `apcore.error.threshold_exceeded` and `apcore.latency.threshold_exceeded` here, which no implementation could emit on a registration path — half the assertion was vacuous. Those two moved to `health_threshold_canonical`, whose trigger can actually produce them.",
+      "trigger": {
+        "action": "registry.register",
+        "target_id": "math.add"
+      },
+      "expected": {
+        "events": [
+          {
+            "event_type": "apcore.registry.module_registered",
+            "data_contains": {
+              "module_id": "math.add"
+            }
+          }
+        ],
+        "forbidden_event_types": [
+          "module_registered",
+          "module_unregistered"
+        ]
+      }
     }
-  ]
+  ],
+  "driver_contract": {
+    "forbidden_names_need_a_reachable_trigger": "A `forbidden_event_types` entry is only an assertion if the case's trigger could plausibly emit it. Listing a health-threshold name under a `registry.register` trigger asserts nothing — no implementation emits it on that path — while making the case look twice as thorough. Each forbidden name is placed on the case whose trigger can actually produce it."
+  }
 }

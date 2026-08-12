@@ -1,12 +1,12 @@
 ---
-description: "The canonical, normative apcore protocol specification (RFC 2119, v1.9.0-draft): module, schema, naming, ACL, approval, error, config, and observability requirements for all conforming SDKs."
+description: "The canonical, normative apcore protocol specification (RFC 2119, v1.9.0): module, schema, naming, ACL, approval, error, config, and observability requirements for all conforming SDKs."
 ---
 
 # apcore — AI-Perceivable Core Standard Specification
 
 > **Canonical Specification** - This document is the authoritative specification for the apcore protocol
 
-> Version: 1.9.0-draft
+> Version: 1.9.0
 > Status: Draft Specification (RFC 2119 Conformant)
 > Stability: Specification content is stable, pending reference implementation verification
 > Last Updated: 2026-07-13
@@ -144,7 +144,7 @@ relying on language-native namespace mechanisms to avoid conflicts:
 | Python | Package import | `from apcore import Module` / `import apcore` |
 | Go | Package name qualification | `apcore.Module(...)` |
 | Rust | Module path | `apcore::Module` |
-| TypeScript | Module import | `import { Module } from 'apcore'` |
+| TypeScript | Module import | `import { Module } from 'apcore-js'` |
 | Java | Package path | `import com.apcore.Module` |
 
 Implementations **MUST** follow these naming rules:
@@ -1448,14 +1448,20 @@ schema:
   # native_first: Prefer native implementation, YAML as fallback
   # yaml_only: Only use YAML (pure cross-language scenario)
 
-  paths:
-    yaml_schemas: "./schemas"
+  # Directory the YAML schema files are resolved against
+  root: "./schemas"
 
-  # Validation options
-  validation:
-    strict: true                # Strict mode: disallow extra fields
-    coerce_types: true          # Type coercion
+  # Maximum $ref resolution depth
+  max_ref_depth: 32
 ```
+
+These three keys are the whole of the `schema` namespace: `apcore/schemas/defaults.schema.json`
+declares it `additionalProperties: false`, so any other key is a configuration error.
+
+Strictness and type coercion are **not** configurable here. Whether an undeclared
+property is rejected is a property of the contract (`additionalProperties`, §4.15),
+not of the host's configuration — a module's input contract must mean the same
+thing regardless of who loads it.
 
 ### 4.10 Language-specific Schema Implementations
 
@@ -1463,38 +1469,65 @@ Each language SDK **MUST** provide a native schema implementation that supports 
 
 ### 4.11 Schema References ($ref)
 
-Implementations **MUST** support `$ref` references and **MUST** resolve according to the following algorithm. Implementations **MUST** detect and reject circular references.
+Implementations **MUST** support `$ref` references and **MUST** resolve according to the following algorithm. Implementations **MUST** reject circular references — a `$ref` → `$ref` chain that never reaches a schema body — and **MUST** preserve self-references as lazy `$ref` nodes rather than inlining or rejecting them. §4.15 defines the distinction; it is the sole authority on which re-entry is which.
 
 ```
-Algorithm: resolve_ref(ref_string, current_file, schemas_dir, visited_refs)
+Algorithm: resolve_ref(ref_string, current_file, schemas_dir, visited_refs,
+                       depth, from_ref_chain)
 
 Input:
-  ref_string   — $ref value (e.g., "./common/error.schema.yaml#/definitions/ErrorDetail")
-  current_file — Current Schema file path
-  schemas_dir  — schemas root directory
-  visited_refs — Set of visited refs (for loop detection)
+  ref_string     — $ref value (e.g., "./common/error.schema.yaml#/definitions/ErrorDetail")
+  current_file   — Current Schema file path
+  schemas_dir    — schemas root directory
+  visited_refs   — Set of refs already on the resolution stack. Seeded by the
+                   caller with the aliases of the document being resolved
+                   ("#", "#/", and the document's own $id), so a reference
+                   naming that document is lazy from the FIRST encounter
+   depth         — Number of $ref hops taken so far (starts at 0)
+  from_ref_chain — True when this call was reached because the previous node
+                   was itself a bare $ref, i.e. no schema body was traversed
+                   between the two. False on any structural descent
+                   (properties / items / additionalProperties / a combinator
+                   branch)
 
 Output:
-  resolved_schema — Resolved Schema object
+  resolved_schema — Resolved Schema object, or the $ref node unchanged when
+                    the reference is a self-reference (see §4.15)
 
 Preconditions:
   - ref_string is not empty
 
 Steps:
-  1. If ref_string ∈ visited_refs → Throw SCHEMA_CIRCULAR_REF error
-  2. visited_refs ← visited_refs ∪ {ref_string}
-  3. Parse ref_string into (file_part, json_pointer):
+  1. If ref_string ∈ visited_refs:
+     a. If from_ref_chain → Throw SCHEMA_CIRCULAR_REF error
+        (a $ref → $ref chain consumes no instance and cannot terminate)
+     b. Otherwise → Return { "$ref": ref_string } unchanged, preserving any
+        sibling keys. This is a legal self-reference; the schema-to-native
+        converter MUST bind it lazily against the document root at
+        validation time (§4.15)
+  2. If depth >= schema.max_ref_depth → Throw SCHEMA_MAX_DEPTH_EXCEEDED error
+  3. visited_refs ← visited_refs ∪ {ref_string}
+  4. Parse ref_string into (file_part, json_pointer):
      a. If starts with "#" → file_part = current_file, json_pointer = ref_string[1:]
      b. If contains "#" → Split by "#" into file_part and json_pointer
      c. If starts with "apcore://" → Convert to file path under schemas_dir
      d. Otherwise → file_part is path relative to current_file directory
-  4. schema_doc ← Load and parse YAML/JSON file for file_part
-  5. resolved ← Locate target_id node in schema_doc using json_pointer
-  6. If resolved still contains $ref → Recursively call resolve_ref(...)
-  7. Return resolved
+  5. schema_doc ← Load and parse YAML/JSON file for file_part
+  6. resolved ← Locate target_id node in schema_doc using json_pointer
+  7. If resolved is itself a bare $ref → Recursively call resolve_ref(...) with
+     depth + 1 and from_ref_chain = True
+  8. Walk resolved's children. For each nested $ref reached by structural
+     descent, call resolve_ref(...) with depth + 1 and from_ref_chain = False
+  9. Return resolved
 
-Complexity: O(d), where d is reference depth (implementations SHOULD limit max depth to 32)
+Complexity: O(d), where d is reference depth (bounded by schema.max_ref_depth,
+default 32)
 ```
+
+**Depth is consumed by `$ref` hops only.** Steps 7 and 8 both increment `depth`
+because both follow a reference; ordinary structural descent into `properties`
+or `items` does not. Exhausting the cap is a distinct condition from an actual
+cycle and **MUST** raise `SCHEMA_MAX_DEPTH_EXCEEDED`, not `SCHEMA_CIRCULAR_REF`.
 
 Supports cross-file references for Schema reuse:
 
@@ -1629,17 +1662,62 @@ Implementations **MUST** handle Schema edge cases according to the following tab
 
 | Scenario | Behavior | Level |
 |------|------|------|
-| `$ref` depth exceeds `schema.max_ref_depth` | Throw `SCHEMA_CIRCULAR_REF` | **MUST** |
+| `$ref` depth exceeds `schema.max_ref_depth` | Throw `SCHEMA_MAX_DEPTH_EXCEEDED` | **MUST** |
 | `$ref` target_id path doesn't exist (404) | Throw `SCHEMA_NOT_FOUND` | **MUST** |
 | Empty Schema `{}` | Treat as `type: object`, allow any properties | **MUST** |
 | YAML/JSON syntax error | Throw `SCHEMA_PARSE_ERROR` | **MUST** |
 | Unknown JSON Schema keyword (e.g., `x-custom`) | Ignore (forward compatible) | **MUST** |
-| Circular reference detection (A → B → A) | Throw `SCHEMA_CIRCULAR_REF` | **MUST** |
+| **Self-reference** — a `$ref` re-entered after descending through `properties` / `items` / a combinator | Preserve the `$ref` as a lazy reference; **MUST NOT** throw | **MUST** |
+| **Circular reference** — a `$ref` → `$ref` chain that re-enters itself without reaching a schema body (A → B → A) | Throw `SCHEMA_CIRCULAR_REF` | **MUST** |
 | `required` field is empty array `[]` | Treat as no required fields | **MUST** |
 | `enum` value contains `null` | Allow, `null` is valid enum value | **MUST** |
 | Cross-file `$ref` loading timeout | Throw `SCHEMA_PARSE_ERROR` (cause: timeout) | **SHOULD** |
 
-**Example — Circular Reference Detection:**
+#### Self-reference vs. circular reference
+
+A `$ref` that re-enters a reference already on the resolution stack is **not**
+automatically an error. JSON Schema 2020-12 §8.2.3 uses exactly that shape to
+express recursive data structures — tree nodes, nested comment threads, linked
+lists — and the Schema System hardening requirement "Recursive Schema Support"
+([features/schema-system.md](../features/schema-system.md#2-recursive-schema-support))
+requires implementations to support them. The two cases **MUST** be
+distinguished by *how* the reference was re-entered:
+
+- **Self-reference (legal).** The reference was re-entered after descending
+  through a schema body — a `properties` entry, `items`, `additionalProperties`,
+  or a combinator branch. Every hop consumes one level of the *instance*, so
+  resolution terminates as soon as the data does. The resolver **MUST** leave the
+  `$ref` node in place rather than inlining the target again, and the
+  schema-to-native converter **MUST** bind it lazily (resolving it at validation
+  time against the document root). Implementations **MUST NOT** throw
+  `SCHEMA_CIRCULAR_REF` for this case.
+- **Circular reference (illegal).** The reference was re-entered along a chain in
+  which every hop is itself a bare `$ref`, so resolution never reaches a schema
+  body and consumes no instance. Such a chain cannot terminate and asserts
+  nothing. Implementations **MUST** throw `SCHEMA_CIRCULAR_REF`.
+
+A reference naming the document being resolved — `#`, `#/`, or the document's own
+`$id` — is a self-reference by definition and **MUST** be treated as lazy from the
+first encounter, so a recursive schema is never inlined even once.
+
+**Example — legal self-reference (lazy `$ref`, no error):**
+
+```yaml
+$id: TreeNode
+type: object
+required: [value]
+properties:
+  value: { type: string }
+  children:
+    type: array
+    items:
+      $ref: "#"      # re-entered through properties → items: a recursive structure
+```
+
+Resolution returns the schema unchanged: `items` still holds `{$ref: "#"}`, which
+the converter binds to the root at validation time.
+
+**Example — illegal circular reference (`SCHEMA_CIRCULAR_REF`):**
 
 ```yaml
 # schemas/user.schema.yaml
@@ -1648,10 +1726,12 @@ $ref: "./team.schema.yaml#/definitions/team"
 # schemas/team.schema.yaml
 definitions:
   team:
-    $ref: "./user.schema.yaml"  # Circular reference
+    $ref: "./user.schema.yaml"  # $ref → $ref, no schema body in between
 ```
 
-**Behavior**: Maintain reference path stack in `resolve_ref()`, throw `SCHEMA_CIRCULAR_REF` when duplicate path is detected.
+**Behavior**: maintain a reference path stack in `resolve_ref()`. On a duplicate
+entry, throw `SCHEMA_CIRCULAR_REF` when the duplicate was reached along a
+`$ref` → `$ref` chain, and emit a lazy `$ref` otherwise.
 
 ### 4.16 Strict Mode Export
 
@@ -1661,11 +1741,13 @@ OpenAI and Anthropic's `strict: true` mode requires JSON Schema to satisfy addit
 
 | Requirement | Description |
 |------|------|
-| `additionalProperties: false` | All nested `object` types **MUST** set this |
+| `additionalProperties: false` | All nested `object` schemas **MUST** set this. A node counts as an `object` schema when it carries `properties` and either has no `type` keyword or has a `type` declaring `"object"` — see the object-detection rule below |
 | All fields `required` | All fields in `properties` **MUST** appear in `required` array |
-| Optional fields expressed with nullable | Originally optional fields become `required` + `type: ["original_type", "null"]` |
+| Optional fields expressed with nullable | Originally optional fields become `required` + `type: ["original_type", "null"]`; a field with no `type` keyword is wrapped as `{anyOf: [<original>, {type: "null"}]}` instead |
 | No `x-*` extension fields | All `x-*` fields **MUST** be stripped |
 | No `default` values | `default` fields **MUST** be removed |
+
+**Object detection.** `properties` alone identifies an object schema; a missing `type` keyword does not make the node any less of one. A node **MUST** be hardened when it carries `properties` **and** either has no `type` keyword at all, or has a `type` declaring `"object"` in the string form (`"object"`) or the array form (`["object", "null"]`). `properties` sitting beside a **non-object** `type` is inert (TYPE_MAPPING §17.1 R2) and **MUST NOT** be hardened. Leaving a type-less `{"properties": {…}}` node unhardened produces a schema OpenAI structured outputs rejects under `strict: true`, which is the whole reason this conversion exists.
 
 **`to_strict_schema()` Conversion Rules:**
 
@@ -1674,14 +1756,23 @@ Input: apcore_schema (standard JSON Schema + x-* extensions)
 Output: strict_schema (Strict Mode compatible JSON Schema)
 
 Rules:
-  1. Recursively traverse all type: "object" nodes:
+  1. Recursively traverse all object-schema nodes (see "Object detection" above —
+     `properties` present, and `type` either absent or declaring "object"):
      a. Set additionalProperties: false
-     b. Add properties not in required to required
-     c. For newly added required fields, change their type to [original_type, "null"]
+     b. Replace required with every name in properties, sorted by Unicode code
+        point (not insertion order — the output must be byte-identical across
+        SDKs whose object types iterate differently)
+     c. For newly added required fields, change their type to [original_type, "null"];
+        a field with no `type` keyword (pure $ref, allOf/oneOf/anyOf, or a bare
+        `properties` object) is wrapped as {anyOf: [<original>, {type: "null"}]}
   2. Remove all fields starting with "x-" (x-llm-description, x-examples, x-sensitive, x-constraints, etc.)
   3. Remove all default fields
-  4. Recursively process nested objects (including array items, oneOf/anyOf/allOf sub-schemas)
+  4. Recursively process nested schemas: `properties` values, `items`, every
+     `prefixItems` entry, every oneOf/anyOf/allOf branch, and every
+     `definitions` / `$defs` entry
 ```
+
+The normative statement of these rules is ALGORITHMS A23; `conformance/fixtures/schema_strict_conversion.json` pins the exact output all three SDKs must emit.
 
 **Example — Before/After Conversion:**
 
@@ -1710,7 +1801,7 @@ properties:
     type: ["array", "null"]
     items: { type: string }
     description: "CC list"
-required: [to, cc]
+required: [cc, to]        # every property, sorted (see ALGORITHMS A23 step 2f)
 additionalProperties: false
 ```
 
@@ -3961,7 +4052,7 @@ These handlers are **not** part of the apcore core specification — they are pr
 
 - `request_approval()` blocks until a decision is reached or timeout occurs.
 - Suitable for interactive scenarios (MCP client dialogs, agent-to-agent confirmation).
-- **All conformant implementations must support Phase A.**
+- **All conformant implementations MUST support Phase A.**
 
 #### Phase B: Asynchronous Approval (Optional)
 
@@ -3973,7 +4064,7 @@ These handlers are **not** part of the apcore core specification — they are pr
 
 ### 7.9 Execution Policy (v1.9.0, #76)
 
-> **Status:** Normative as of v1.9.0. Reference pilot: apcore-python 0.26.0 (`ExecutionPolicy`). Cross-language rollout to TypeScript and Rust in progress.
+> **Status:** Normative as of v1.9.0. Implemented in all three SDKs at 0.26.0 — apcore-python, apcore-typescript (`ExecutionPolicy`, `PolicyRule`) and apcore-rust (`ExecutionPolicy`, `PolicyDecision`, `PolicyRule`, `Executor::set_policy`).
 
 An **Execution Policy** is a declarative, execution-time governance layer that overrides a module's governance annotations (`requires_approval`, `destructive`) **independent of how the module was registered**. It exists because "governed capabilities" is a platform-level promise: an operator must be able to gate already-registered modules without editing their code or re-registering them.
 
@@ -4158,8 +4249,17 @@ error_codes:
     description: "Schema parse error"
     http_status: 500
   SCHEMA_CIRCULAR_REF:
-    description: "Schema circular reference detected"
+    description: "Schema circular reference detected — a $ref → $ref chain that never reaches a schema body (§4.15)"
     http_status: 500
+  SCHEMA_MAX_DEPTH_EXCEEDED:
+    description: "$ref resolution exceeded schema.max_ref_depth. Distinct from SCHEMA_CIRCULAR_REF: the chain is well-formed but too deep (§4.11, §4.15)"
+    http_status: 500
+  SCHEMA_UNION_NO_MATCH:
+    description: "Value matched no branch of a oneOf/anyOf union"
+    http_status: 400
+  SCHEMA_UNION_AMBIGUOUS:
+    description: "Value matched more than one branch of a oneOf union, which MUST be exclusive"
+    http_status: 400
 
   # Permission-related (ACL_*)
   ACL_DENIED:
@@ -4410,6 +4510,9 @@ Implementations **MUST NOT** default retry failed module invocations. Retry beha
 | `SCHEMA_NOT_FOUND` | **No** | Schema reference missing, needs config fix |
 | `SCHEMA_PARSE_ERROR` | **No** | Schema syntax error, needs manual fix |
 | `SCHEMA_CIRCULAR_REF` | **No** | Circular reference in schema, needs manual fix |
+| `SCHEMA_MAX_DEPTH_EXCEEDED` | **No** | Reference chain too deep, needs schema or config fix |
+| `SCHEMA_UNION_NO_MATCH` | **No** | Input error won't change with retry |
+| `SCHEMA_UNION_AMBIGUOUS` | **No** | Input error won't change with retry |
 | `CALL_DEPTH_EXCEEDED` | **No** | Call chain structure issue, retry won't change |
 | `CIRCULAR_CALL` | **No** | Call chain structure issue, retry won't change |
 | `CALL_FREQUENCY_EXCEEDED` | **No** | Call chain structure issue, retry won't change |
@@ -4456,6 +4559,7 @@ ModuleError (base error for all framework errors)
 ├── SchemaValidationError          # SCHEMA_VALIDATION_ERROR — Schema validation failed
 ├── SchemaParseError               # SCHEMA_PARSE_ERROR — Schema parse error
 ├── SchemaCircularRefError         # SCHEMA_CIRCULAR_REF — Schema circular reference
+├── SchemaMaxDepthExceededError    # SCHEMA_MAX_DEPTH_EXCEEDED — $ref chain exceeded max_ref_depth
 ├── ACLDeniedError                 # ACL_DENIED — Permission denied
 ├── ACLRuleError                   # ACL_RULE_ERROR — ACL rule error
 ├── FuncMissingTypeHintError       # FUNC_MISSING_TYPE_HINT — Function parameter missing type annotation
@@ -4560,22 +4664,32 @@ apcore itself does not ship these formatters. Each adapter package owns its impl
 
 apcore.yaml is the core configuration file of the framework. Implementations **MUST** validate configuration files according to the following JSON Schema.
 
+**What is required, and why so little is.** A key is required **only when it has no canonical default** — that is, only when omitting it leaves a value the framework cannot supply. By that rule exactly two keys are required: `version` and `project.name`. Every other key in this section either carries a default in `schemas/defaults.schema.json` (`extensions.*`, `schema.*`, `acl.*`, `executor.*`, `sys_modules.*`, `observability.*`, `stream.*`) or is optional outright, so requiring it would reject a configuration the framework can resolve perfectly well.
+
+The `MUST` markers in the example below therefore mean "this key is normative and its default is fixed", **not** "the file is invalid without it". Only `version` and `project.name` make a file invalid by their absence — `schemas/apcore-config.schema.json` declares exactly those two in its `required` array.
+
+Requiredness is evaluated against the **declared** document, before defaults are merged. An implementation that merges its default table into the parsed document and then checks for required fields can never fail the check — the merge has already supplied every key — which is how a required-field list becomes dead code that looks like validation.
+
+**What "declared" means.** The declared document is everything supplied by *someone* — the configuration file, environment-variable overrides (§9.2), runtime `set()`, and `mount()` — and excludes exactly one thing: the framework's own default table. Implementations **MUST** expose this view (`Config.get_declared()` / `getDeclared()` / `Config.declared`) and **MUST** use it for the required-field check.
+
+Environment overrides count as declaration. `APCORE_PROJECT_NAME=my-app` against a file that omits `project.name` **MUST** satisfy the requirement: the operator has supplied the value, and a container deployment that configures entirely through the environment is a first-class case, not a degraded one. Only the default table is excluded, because a default is the framework answering its own question.
+
 **apcore.yaml Complete JSON Schema Definition:**
 
 ```yaml
 # apcore.yaml — Complete configuration structure and constraints
 
 $schema: "https://apcore.dev/config/v1"
-version: "1.0.0"                    # MUST, configuration version
+version: "1.0.0"                    # REQUIRED — no default exists
 
 # Project information
 project:
-  name: "my-ai-project"             # MUST, project name (pattern: ^[a-z][a-z0-9_-]*$)
+  name: "my-ai-project"             # REQUIRED — no default exists (pattern: ^[a-z][a-z0-9_-]*$)
   version: "0.1.0"                   # SHOULD, project version (semver)
 
 # Extension configuration
 extensions:
-  root: "./extensions"               # MUST, extension root directory
+  root: "./extensions"               # MUST (default: "./extensions")
   auto_discover: true                # SHOULD, auto-discovery (default: true)
   lazy_load: true                    # MAY, lazy loading (default: true)
   follow_symlinks: false             # MUST NOT default true (default: false)
@@ -4584,19 +4698,19 @@ extensions:
     - "*.test.*"
     - "*.spec.*"
 
-# Schema configuration
+# Schema configuration — these three keys are the whole namespace (§4.9);
+# `defaults.schema.json` declares it additionalProperties: false. Strictness and
+# type coercion are NOT configurable: they are properties of the contract, not
+# of the host (§4.9, TYPE_MAPPING §17.3).
 schema:
-  root: "./schemas"                  # MUST, Schema directory
+  root: "./schemas"                  # MUST (default: "./schemas")
   strategy: "yaml_first"             # SHOULD, loading strategy (yaml_first|native_first|yaml_only)
-  validation:
-    strict: true                     # SHOULD, strict mode (default: true)
-    coerce_types: true               # MAY, type coercion (default: true)
   max_ref_depth: 32                  # MAY, $ref max recursion depth (default: 32)
 
 # ACL configuration
 acl:
-  root: "./acl"                      # MUST, ACL configuration directory
-  default_effect: "deny"             # MUST, default policy (deny|allow, default: deny)
+  root: "./acl"                      # MUST (default: "./acl")
+  default_effect: "deny"             # MUST (default: deny) — deny|allow
   audit:
     enabled: true                    # SHOULD, audit logging (default: true)
     log_level: "info"                # MAY, audit log level
@@ -4610,11 +4724,11 @@ logging:
 # Observability configuration
 observability:
   tracing:
-    enabled: true                    # SHOULD (default: true)
+    enabled: true                    # SHOULD (default: false — opt in)
     sampling_rate: 1.0               # MAY (0.0-1.0, default: 1.0)
     exporter: "stdout"               # MAY (stdout|otlp|jaeger)
   metrics:
-    enabled: true                    # MAY (default: true)
+    enabled: true                    # MAY (default: false — opt in)
     exporter: "stdout"               # MAY (stdout|prometheus|otlp)
 
 # Middleware configuration
@@ -4649,8 +4763,11 @@ Implementations **MUST** follow these default value conventions:
 | `executor.global_timeout` | `60000` (ms) | `0..600000` | Global execution timeout across entire call chain (0 means no limit) |
 | `executor.max_call_depth` | `32` | `1..1000` | Call chain max depth |
 | `executor.max_module_repeat` | `3` | `1..100` | Max occurrences of same module in call chain |
-| `observability.enabled` | `true` | `true`/`false` | Observability master switch |
-| `observability.exporter` | `"stdout"` | `stdout`/`prometheus`/`otlp` | Default exporter |
+| `observability.tracing.enabled` | `false` | `true`/`false` | Distributed tracing switch |
+| `observability.tracing.sampling_rate` | `1.0` | `0.0..1.0` | Trace sampling rate |
+| `observability.tracing.exporter` | `"stdout"` | `stdout`/`otlp`/`jaeger` | Tracing exporter |
+| `observability.metrics.enabled` | `false` | `true`/`false` | Metrics collection switch |
+| `observability.metrics.exporter` | `"stdout"` | `stdout`/`prometheus`/`otlp` | Metrics exporter |
 | `bindings.dir` | `"./bindings"` | Valid directory path | Binding file directory |
 | `bindings.pattern` | `"*.binding.yaml"` | glob pattern | Binding file matching pattern |
 | `id_map.auto_detect` | `true` | `true`/`false` | Auto ID mapping detection |
@@ -4686,7 +4803,7 @@ Rules:
 
 Examples:
   extensions.root        → APCORE_EXTENSIONS_ROOT
-  schema.validation.strict → APCORE_SCHEMA_VALIDATION_STRICT
+  schema.max_ref_depth   → APCORE_SCHEMA_MAX_REF_DEPTH
   acl.default_effect     → APCORE_ACL_DEFAULT_EFFECT
   logging.level          → APCORE_LOGGING_LEVEL
   observability.tracing.enabled → APCORE_OBSERVABILITY_TRACING_ENABLED
@@ -4706,8 +4823,12 @@ Output:
   validated_config — Validated configuration, or throw CONFIG_INVALID error
 
 Steps:
-  1. For each required field (MUST):
-     If missing → Throw CONFIG_INVALID with missing field path
+  1. For each required field — `version` and `project.name`, the only two keys
+     with no canonical default (§9.1):
+     If missing from the DECLARED document (before the default table is merged)
+       → Throw CONFIG_INVALID with the missing field path
+     A key that carries a default in defaults.schema.json is NEVER required;
+     checking it after merging defaults is a no-op and MUST NOT be relied on.
   2. Type validation:
      For each field, validate value type conforms to Schema definition
   3. Constraint validation:
@@ -4824,7 +4945,7 @@ Config.register_namespace(
 **TypeScript:**
 
 ```typescript
-import { Config } from 'apcore';
+import { Config } from 'apcore-js';
 
 // Nested style (default)
 Config.registerNamespace({
@@ -5565,7 +5686,7 @@ This is useful for diagnostic tools, CLI introspection, and IDE plugins.
 
 #### 9.9.5 Reserved Namespace Query
 
-> **Added in v1.9.0-draft**
+> **Added in v1.9.0**
 
 §9.5.1 (rules 3 and 4) defines a set of namespace names that are reserved by the framework and **MUST NOT** be registered by external callers (`apcore` is owned by the framework itself; `_config` is used for Config Bus meta-configuration per §9.6.3).
 
@@ -5609,7 +5730,7 @@ Config.reserved_namespaces()
 
 === "TypeScript"
     ```typescript
-    import { Config } from 'apcore';
+    import { Config } from 'apcore-js';
 
     // Static getter — no Config instance needed
     const reserved: ReadonlySet<string> = Config.reservedNamespaces;
@@ -5713,7 +5834,7 @@ Steps:
 2. Re-detect mode (legacy vs namespace).
 3. Re-apply all registered namespace defaults.
 4. Re-apply all environment variable overrides per registered namespace.
-5. Re-validate per A12-NS.
+5. Re-validate per A12-NS — **but only if the originating `load()` validated.** An SDK whose `load()` accepts a validation opt-out (`validate=False` / `{validate: false}`) **MUST** carry that choice forward to `reload()`. Silently re-imposing validation on a config the caller deliberately loaded without it is a behaviour change disguised as a refresh; conversely an SDK with no such opt-out **MUST** always re-validate here. Reload is a refresh of the same config, not a stricter reload of it.
 6. Atomically replace the config data tree.
 7. Re-apply mount data for namespaces that were mounted (mount sources **SHOULD** be remembered).
 
@@ -5889,7 +6010,7 @@ Config.register_namespace(
 
 ```typescript
 // nestjs-apcore/src/index.ts
-import { Config } from 'apcore';
+import { Config } from 'apcore-js';
 
 Config.registerNamespace({
   name: 'nestjs-apcore',
@@ -7432,6 +7553,26 @@ prerelease: draft, alpha, beta, rc
 
 ### 13.2 Compatibility Promise
 
+!!! note "Normative corrections in v1.9.0 — no deprecation cycle is owed"
+    v1.9.0 changes three requirements that shipped in v1.8.x. **No implementation ever
+    provided the v1.8.x behaviour**, so there is nobody to deprecate *for*: these are
+    corrections to text that was wrong, not a migration users have to make. Verified
+    against all three SDKs rather than assumed.
+
+    | v1.8.x text | v1.9.0 text | Did any SDK ship the v1.8.x behaviour? |
+    |---|---|---|
+    | `$ref` circular-reference detection **MUST** reject `A → B → A` in all forms (§4.11) | Only a `$ref` → `$ref` chain that never reaches a schema body is rejected; a **self-reference** reached by descending through `properties` / `items` / a combinator **MUST** be preserved as a lazy reference (§4.15) | **No.** All three ship the `from_ref_chain` discriminator that implements the v1.9.0 rule. v1.8.x also required Recursive Schema Support, so the blanket rule was never simultaneously satisfiable — implementers followed the requirement that worked. |
+    | `$ref` depth exhaustion **MUST** throw `SCHEMA_CIRCULAR_REF` (§4.15 edge-case table) | It **MUST** throw `SCHEMA_MAX_DEPTH_EXCEEDED` | **No.** All three already emit `SCHEMA_MAX_DEPTH_EXCEEDED`; no SDK emits `SCHEMA_CIRCULAR_REF` for depth. The code was missing from the §8 registry, which is what this change repairs. |
+    | The §9.1 example marked `extensions.root` / `schema.root` and peers as **MUST**, and `apcore-config.schema.json` required `version`, `project`, `extensions`, `schema`, `acl` | Those keys are normative with **fixed defaults**; only `version` and `project.name` make a file invalid by their absence | **No.** All three invented a `version: "0.16.0"` default rather than enforcing the requirement — evidence that hard-required was never what implementers understood. |
+
+    This is a **deliberate relaxation** in the third row and a contradiction-resolution in
+    the first two. All three are judged on their own merits in the linked governance issue;
+    none carries a dual-accept window, because there is no prior behaviour to accept.
+
+    Added in v1.9.0 (new requirements, not corrections): the A23 object-detection rule
+    (§4.16), and the declared-configuration view `get_declared()` / `getDeclared()` /
+    `Config.declared` with the rule that environment overrides count as declaration (§9.1).
+
 - **Within major version**: Protocol backward compatible
 - **Schema evolution**: Support version declaration, old version Schema readable by new SDK
 - **Deprecation policy**: Keep at least 2 minor versions for deprecation period
@@ -7518,10 +7659,10 @@ Migration types:
 
 **Compatibility Rules:**
 
-1. **SDK must** ignore unknown configuration fields and Schema properties (forward compatibility foundation)
-2. **SDK must** provide reasonable defaults for all new fields (backward compatibility foundation)
-3. **SDK should** gracefully handle unknown error codes
-4. **SDK must not** remove published public APIs in minor/patch versions
+1. **SDK MUST** ignore unknown configuration fields and Schema properties (forward compatibility foundation)
+2. **SDK MUST** provide reasonable defaults for all new fields (backward compatibility foundation)
+3. **SDK SHOULD** gracefully handle unknown error codes
+4. **SDK MUST NOT** remove published public APIs in minor/patch versions
 
 ---
 
@@ -7719,4 +7860,5 @@ Each language SDK **SHOULD** provide idiomatic module definition syntax. The fol
 | 1.6.0-draft | 2026-04-08 | §2.7 EBNF constraint #1 — `canonical_id` maximum length raised from 128 to 192 characters to accommodate deep-namespace languages (Java/.NET/Spring FQN-derived IDs). 192 is filesystem-safe (`192 + ".binding.yaml" = 205 bytes < 255-byte filename limit on ext4/xfs/NTFS/APFS/btrfs`) and remains within `VARCHAR(255)` for typical persistence. Schemas updated: `binding.schema.json`, `module-schema.schema.json`, `module-meta.schema.json`, `acl-config.schema.json` (callers/targets pattern strings, kept symmetric with module_id). Algorithm A01 (`directory_to_canonical_id`) Step 7 threshold updated. Conformance test T01-006 boundary updated. Forward-compatible relaxation: implementations conforming to this revision MUST accept IDs up to 192; older 128-only implementations cannot load IDs in the 129–192 range from newer SDKs. |
 | 1.7.0-draft | 2026-05-04 | **§6.1** — formalised compound operators `$or` (list[object]) and `$not` (object) as conditions sub-fields, with required cross-mode (sync/async) evaluator semantics and fail-closed rules for empty `$not` (resolves issue #46 / `planning/acl-compound-operators-spec-patch`). **§6.2.1** (new) — formalised compound operators `$or` and `$not` as the first element of `callers`/`targets` pattern arrays, with the four allowed forms tabulated and a reservation rule preventing literal-token matching (resolves issue #46). All four behaviour shapes are already implemented uniformly in apcore-python, apcore-typescript, and apcore-rust at v0.20.0 and verified by `../../conformance/fixtures/acl_evaluation.json`; no SDK behaviour change. **§5.1** — `Executor.validate()` description aligned with §12.8: "Steps 1–5 and Step 7" (skipping Step 6 Middleware Before Chain) plus optional module-level preflight, replacing the stale "Steps 1–6" wording that pre-dated the v0.18 step swap (resolves issue #47 / `planning/validate-step-count-spec-patch`). No SDK behaviour change. |
 | 1.8.0-draft | 2026-05-04 | **§5 streaming semantics** — corrected "shallow merge" to "**recursive deep merge** with depth cap" matching all three SDK implementations (`apcore-python/src/apcore/executor.py:_deep_merge`, `apcore-typescript/src/executor.ts:deepMergeChunk`, `apcore-rust/src/executor.rs:deep_merge_chunks`) and `../../conformance/fixtures/stream_aggregation.json` (9 cases). Added algorithm `A24 deep_merge_chunks` to `./algorithms.md` formalising the merge with the canonical 32-depth cap (resolves issue #49). **§7.4 Step 11 Contract** (new block after the pipeline diagram) — five-point normative contract specifying: `call()` returns module output unchanged (no envelope), `stream()` final accumulated dict is what Step 9 validates, `validate()` returns `PreflightResult`, trace metadata lives on `Context` (not the return value), side-channel emissions are independent (resolves issue #50). **§6.7 Canonical System Module Catalogue** (new) — enumerates the 9 canonical `system.*` modules with read/write classification, conformance level (Level 1 for the 6 read modules; Level 2 for the 3 control modules), and 6 cross-cutting requirements (registration via `register_internal()`, audit events for write modules, `system.control.reload_module` mutually-exclusive `module_id`/`path_filter`, sensitive-key redaction in `update_config` output, persistence requirement for `toggle_feature`). Authoritative JSON Schemas remain in SDK source to avoid drift; this section is the contract surface (resolves issue #51). All three patches: zero SDK behaviour change. |
-| 1.9.0-draft | 2026-05-18 | **§9.9.5 Reserved Namespace Query** (new) — formalised public API requirement that all SDKs MUST expose a read-only query API returning the set of reserved top-level namespace names (`apcore`, `_config` at minimum). Returned set MUST be the single source of truth used by `register_namespace` to enforce `CONFIG_NAMESPACE_RESERVED` (single source of truth invariant). Class-level / module-level access (callable without instantiating Config). Cross-language examples for Python (`Config.reserved_namespaces()`), TypeScript (`Config.reservedNamespaces`), Rust (`Config::reserved_namespaces()`). Intended for third-party consumers (custom CLIs, framework integrations) needing fail-fast pre-validation of user-supplied namespace names. Resolves issue #60. |
+| 1.9.0 | 2026-05-18 | **§9.9.5 Reserved Namespace Query** (new) — formalised public API requirement that all SDKs MUST expose a read-only query API returning the set of reserved top-level namespace names (`apcore`, `_config` at minimum). Returned set MUST be the single source of truth used by `register_namespace` to enforce `CONFIG_NAMESPACE_RESERVED` (single source of truth invariant). Class-level / module-level access (callable without instantiating Config). Cross-language examples for Python (`Config.reserved_namespaces()`), TypeScript (`Config.reservedNamespaces`), Rust (`Config::reserved_namespaces()`). Intended for third-party consumers (custom CLIs, framework integrations) needing fail-fast pre-validation of user-supplied namespace names. Resolves issue #60. |
+| 1.9.0 | 2026-08-12 | **Finalised — first non-draft release of the specification.** Normative corrections from the cross-language consistency sweep: **§4.11/§4.15/A05** self-reference and circular reference separated (a `$ref` re-entered through a schema body is a recursive data structure and MUST be preserved as a lazy reference; only a `$ref` → `$ref` chain MUST raise), resolving a contradiction with the Recursive Schema Support requirement in the same document; **§4.15/§8** `$ref` depth exhaustion MUST raise `SCHEMA_MAX_DEPTH_EXCEEDED`, not `SCHEMA_CIRCULAR_REF`, and the code is registered; **§4.16/A23** object detection widened to `properties` present AND (`type` absent OR declaring `object`); **§9.1** `required` narrowed to `version` and `project` — a key with a canonical default is normative but not required — and the declared-configuration view (`get_declared()`) added, with environment overrides counting as declaration; **§11 type-mapping** `format` is an annotation and MUST NOT fail validation, and the module boundary MUST NOT coerce types. No implementation had provided the superseded v1.8.x behaviour, so no deprecation cycle was owed. Governance: apcore#79. |

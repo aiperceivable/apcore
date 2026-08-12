@@ -4,7 +4,10 @@
     {
       "id": "regex_pattern_value_match",
       "redaction_config": {
-        "regex_patterns": ["^Bearer\\s+[A-Za-z0-9._\\-]+$", "^sk-[A-Za-z0-9]{20,}$"],
+        "regex_patterns": [
+          "^Bearer\\s+[A-Za-z0-9._\\-]+$",
+          "^sk-[A-Za-z0-9]{20,}$"
+        ],
         "sensitive_keys": [],
         "replacement": "***REDACTED***"
       },
@@ -27,7 +30,11 @@
       "id": "sensitive_keys_substring_case_insensitive",
       "redaction_config": {
         "regex_patterns": [],
-        "sensitive_keys": ["password", "token", "api_key"],
+        "sensitive_keys": [
+          "password",
+          "token",
+          "api_key"
+        ],
         "replacement": "***REDACTED***"
       },
       "input": {
@@ -95,8 +102,16 @@
     {
       "id": "correlation_fields_never_redacted",
       "redaction_config": {
-        "regex_patterns": [".*"],
-        "sensitive_keys": ["trace_id", "caller_id", "target_id", "module_id", "span_id"],
+        "regex_patterns": [
+          ".*"
+        ],
+        "sensitive_keys": [
+          "trace_id",
+          "caller_id",
+          "target_id",
+          "module_id",
+          "span_id"
+        ],
         "replacement": "***REDACTED***"
       },
       "input": {
@@ -116,6 +131,86 @@
         "other_field": "***REDACTED***",
         "_note": "Even when patterns/keys would match, correlation fields MUST appear unmodified."
       }
+    },
+    {
+      "id": "canonical_config_key_is_read",
+      "scenario": "The canonical `obs.redaction.sensitive_keys` MUST be the key an implementation reads. Nothing else in this fixture pins WHICH key path is consulted, which is how apcore-rust read only the legacy `observability.redaction.*` path undetected: an operator following the documentation had their redaction config silently discarded, with no warning and no error (apcore-rust#32).",
+      "config": {
+        "obs.redaction.sensitive_keys": [
+          "username"
+        ]
+      },
+      "input": {
+        "password": "hunter2",
+        "_secret_token": "abc123",
+        "username": "alice",
+        "trace_id": "00000000000000000000000000000001"
+      },
+      "expected": {
+        "username": "***REDACTED***",
+        "password": "hunter2",
+        "_secret_token": "abc123",
+        "trace_id": "00000000000000000000000000000001",
+        "deprecation_warning_emitted": false
+      }
+    },
+    {
+      "id": "legacy_config_key_is_honoured_with_a_deprecation_warning",
+      "scenario": "Each SDK MUST still honour the pre-canonical spelling IT SHIPPED, with a ONE-SHOT deprecation warning naming the legacy key and its canonical replacement. The legacy spelling is per-SDK history, NOT a cross-language contract: apcore-rust shipped `observability.redaction.sensitive_keys`, apcore-typescript shipped `observability.redaction.field_patterns`, and apcore-python never had an `observability.*` namespace at all. An earlier revision of this case hard-coded Rust's spelling, so it was satisfiable by apcore-rust alone — the same defect this fixture exists to catch, committed inside the fixture itself.",
+      "legacy_key_by_sdk": {
+        "rust": "observability.redaction.sensitive_keys",
+        "typescript": "observability.redaction.field_patterns",
+        "python": null
+      },
+      "legacy_value": [
+        "username"
+      ],
+      "input": {
+        "password": "hunter2",
+        "_secret_token": "abc123",
+        "username": "alice",
+        "trace_id": "00000000000000000000000000000001"
+      },
+      "expected": {
+        "username": "***REDACTED***",
+        "password": "hunter2",
+        "deprecation_warning_emitted": true,
+        "deprecation_warning_is_one_shot": true
+      },
+      "skip_when_legacy_key_is_null": "apcore-python MUST NOT gain the fallback. No Python deployment ever had that spelling honoured, so adding it creates a deprecated surface for zero users — and it is a security-relevant regression: a stale `observability.redaction.sensitive_keys: []` would flip from 'ignored, defaults apply' to 'key-based redaction disabled'. A driver whose `legacy_key_by_sdk` entry is null MUST skip with that reason, not xfail as though the SDK were deficient."
+    },
+    {
+      "id": "canonical_config_key_wins_over_legacy",
+      "scenario": "When both spellings are present the canonical one MUST win. Drivers whose SDK has no legacy spelling skip this case — see `legacy_config_key_is_honoured_with_a_deprecation_warning`.",
+      "input": {
+        "password": "hunter2",
+        "_secret_token": "abc123",
+        "username": "alice",
+        "trace_id": "00000000000000000000000000000001"
+      },
+      "expected": {
+        "username": "***REDACTED***",
+        "password": "hunter2"
+      },
+      "config_canonical": {
+        "obs.redaction.sensitive_keys": [
+          "username"
+        ]
+      },
+      "legacy_key_by_sdk": {
+        "rust": "observability.redaction.sensitive_keys",
+        "typescript": "observability.redaction.field_patterns",
+        "python": null
+      },
+      "legacy_value": [
+        "password"
+      ]
     }
-  ]
+  ],
+  "driver_contract": {
+    "discriminating_payload": "`username` matches NO entry of the canonical default list; `password` and `_secret_token` both do. That is what makes these cases able to tell 'the override was read and replaced the defaults' from 'the defaults are in force'. A payload whose keys all match a default anyway — such as this fixture's existing `auth_header`, which contains `auth` — stays green under both, and is why the config-key defect went unnoticed in every SDK.",
+    "which_key_is_read_is_part_of_the_contract": "Behaviour-given-a-config is not enough. Drivers MUST build the config from the exact dot-path the case names and assert the resulting redaction, so that reading the wrong key path fails here rather than in an operator's production logs.",
+    "legacy_spelling_is_per_sdk_history": "The CANONICAL key `obs.redaction.*` is the cross-language contract and every SDK MUST read it — that is `canonical_config_key_is_read`, and it applies to all three. The LEGACY spelling is not: each SDK carries whatever it shipped before D-53, and apcore-python carries nothing. Drivers read `legacy_key_by_sdk` for their own language; a `null` entry means the case does not apply and MUST be skipped with that reason stated, not xfailed as though the SDK were deficient.",
+    "a_case_must_carry_its_own_inputs": "Every config-key case names BOTH the key to write (`legacy_key_by_sdk` / `config_canonical`) and the value to write (`legacy_value` / the value inside `config_canonical`). An earlier revision named the key and dropped the value, which forces each driver to invent one — and a driver-invented input is not a cross-language contract, it is three private guesses that happen to agree today."
+  }
 }

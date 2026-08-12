@@ -1,0 +1,663 @@
+{
+  "description": "Cross-language parity for OpenAI structured-outputs strict-mode compatibility detection (DECLARATIVE_CONFIG_SPEC.md §6.2 / §6.6). Drives the detector that backs BindingStrictSchemaIncompatibleError on the `auto_schema: strict` binding path.",
+  "keyword_set_source": {
+    "url": "https://developers.openai.com/api/docs/guides/structured-outputs",
+    "sections": [
+      "Supported schemas / Supported properties",
+      "Some type-specific keywords are not yet supported"
+    ],
+    "verified": "2026-08-03",
+    "supported_formats": [
+      "date-time",
+      "time",
+      "date",
+      "duration",
+      "email",
+      "hostname",
+      "ipv4",
+      "ipv6",
+      "uuid"
+    ],
+    "notes": "anyOf IS supported (but not at the root); $ref/$defs including recursion ARE supported; pattern, multipleOf, minimum/maximum/exclusive*, minItems/maxItems ARE supported. allOf/not/dependentRequired/dependentSchemas/if/then/else are explicitly unsupported. Keywords in neither list (oneOf, minLength/maxLength, patternProperties, uniqueItems, ...) are treated as unsupported because OpenAI rejects unlisted keywords under strict:true. This set tracks a moving target — when OpenAI expands support, update all three SDK modules together and re-run this fixture."
+  },
+  "driver_contract": {
+    "path": "MUST drive the SDK's OpenAI-strict detector directly — apcore-python apcore.schema.openai_strict.detect_openai_strict_incompatibilities(), apcore-typescript detectOpenAiStrictIncompatibilities(), apcore-rust apcore::detect_openai_strict_incompatibilities(). The detector is the shared, deterministic surface; the binding wrapper around it differs per SDK (Rust performs no runtime type inference, so its strict check runs at register_into_with_typed_handlers() time).",
+    "assertion": "Compare the returned feature list to `expected_features` for exact equality INCLUDING ORDER. Detectors MUST return a sorted, de-duplicated list so all three SDKs emit byte-identical output; that byte-identity is the point of this fixture.",
+    "no_rewriting": "The detector MUST NOT mutate the input schema. In particular an author-written `oneOf` is reported, never downgraded to `anyOf`: the two differ in exclusivity and apcore's own validator relies on the distinction (it counts matching branches and raises SCHEMA_UNION_AMBIGUOUS). Rewriting at export time would swap an explicit export-time rejection for a silent runtime mismatch.",
+    "path_grammar": "`$` is the root. `.name` descends a property, `[]` descends `items`, `.anyOf[i]`/`.oneOf[i]` descend a union branch, `.additionalProperties` descends an additionalProperties sub-schema, `.$defs.Name`/`.definitions.Name` descend a definition. A finding is `<path>.<keyword>`, or `<path>.format=<value>` for an unsupported format value. `$.anyOf` means anyOf was used AT THE ROOT (nested anyOf is legal and never reported)."
+  },
+  "test_cases": [
+    {
+      "id": "compatible_flat_object",
+      "description": "Plain object of scalars is accepted as-is.",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "count": {
+            "type": "integer"
+          },
+          "ok": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "name",
+          "count",
+          "ok"
+        ],
+        "additionalProperties": false
+      },
+      "expected_features": []
+    },
+    {
+      "id": "compatible_nullable_anyof_nested",
+      "description": "The nullable wrapper all three SDKs now emit is a nested anyOf; OpenAI supports anyOf below the root, so it must NOT be reported.",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "note"
+        ],
+        "additionalProperties": false
+      },
+      "expected_features": []
+    },
+    {
+      "id": "compatible_supported_string_formats",
+      "description": "All nine formats OpenAI lists for strings.",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "a": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "b": {
+            "type": "string",
+            "format": "time"
+          },
+          "c": {
+            "type": "string",
+            "format": "date"
+          },
+          "d": {
+            "type": "string",
+            "format": "duration"
+          },
+          "e": {
+            "type": "string",
+            "format": "email"
+          },
+          "f": {
+            "type": "string",
+            "format": "hostname"
+          },
+          "g": {
+            "type": "string",
+            "format": "ipv4"
+          },
+          "h": {
+            "type": "string",
+            "format": "ipv6"
+          },
+          "i": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      },
+      "expected_features": []
+    },
+    {
+      "id": "compatible_number_constraints",
+      "description": "multipleOf/minimum/maximum/exclusive* are supported number properties.",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "n": {
+            "type": "number",
+            "multipleOf": 5,
+            "minimum": 0,
+            "maximum": 100,
+            "exclusiveMinimum": -1,
+            "exclusiveMaximum": 101
+          }
+        }
+      },
+      "expected_features": []
+    },
+    {
+      "id": "compatible_array_and_pattern",
+      "description": "minItems/maxItems and string `pattern` are supported.",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "tags": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 8,
+            "items": {
+              "type": "string",
+              "pattern": "^[a-z]+$"
+            }
+          }
+        }
+      },
+      "expected_features": []
+    },
+    {
+      "id": "compatible_recursive_ref_defs",
+      "description": "$ref/$defs including root recursion are supported.",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "root": {
+            "$ref": "#/$defs/Node"
+          }
+        },
+        "$defs": {
+          "Node": {
+            "type": "object",
+            "properties": {
+              "value": {
+                "type": "string"
+              },
+              "children": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/Node"
+                }
+              }
+            }
+          }
+        }
+      },
+      "expected_features": []
+    },
+    {
+      "id": "compatible_enum_and_const",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "mode": {
+            "type": "string",
+            "enum": [
+              "a",
+              "b"
+            ]
+          },
+          "kind": {
+            "const": "fixed"
+          }
+        }
+      },
+      "expected_features": []
+    },
+    {
+      "id": "compatible_additional_properties_false_and_missing_required",
+      "description": "additionalProperties:false and un-listed required are strict-mode REQUIREMENTS that to_strict_schema() produces; they are transformed, never reported as incompatibilities.",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "a": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "expected_features": []
+    },
+    {
+      "id": "oneof_author_written_is_reported",
+      "description": "An author-written oneOf is reported, never rewritten to anyOf: the two differ in exclusivity and apcore's validator relies on the distinction.",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "mode": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "integer"
+              }
+            ]
+          }
+        }
+      },
+      "expected_features": [
+        "$.mode.oneOf"
+      ]
+    },
+    {
+      "id": "allof_is_reported",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "meta": {
+            "allOf": [
+              {
+                "type": "object"
+              }
+            ]
+          }
+        }
+      },
+      "expected_features": [
+        "$.meta.allOf"
+      ]
+    },
+    {
+      "id": "not_is_reported",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "not": {
+              "type": "null"
+            }
+          }
+        }
+      },
+      "expected_features": [
+        "$.v.not"
+      ]
+    },
+    {
+      "id": "if_then_else_is_reported",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "if": {
+              "const": "x"
+            },
+            "then": {
+              "type": "string"
+            },
+            "else": {
+              "type": "integer"
+            }
+          }
+        }
+      },
+      "expected_features": [
+        "$.v.else",
+        "$.v.if",
+        "$.v.then"
+      ]
+    },
+    {
+      "id": "dependent_keywords_are_reported",
+      "schema": {
+        "type": "object",
+        "dependentRequired": {
+          "a": [
+            "b"
+          ]
+        },
+        "dependentSchemas": {
+          "a": {
+            "type": "object"
+          }
+        },
+        "properties": {
+          "a": {
+            "type": "string"
+          }
+        }
+      },
+      "expected_features": [
+        "$.dependentRequired",
+        "$.dependentSchemas"
+      ]
+    },
+    {
+      "id": "string_length_bounds_are_reported",
+      "description": "minLength/maxLength are absent from OpenAI's supported string properties (only pattern and format are listed).",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "s": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 10
+          }
+        }
+      },
+      "expected_features": [
+        "$.s.maxLength",
+        "$.s.minLength"
+      ]
+    },
+    {
+      "id": "pattern_properties_is_reported",
+      "schema": {
+        "type": "object",
+        "patternProperties": {
+          "^x": {
+            "type": "string"
+          }
+        }
+      },
+      "expected_features": [
+        "$.patternProperties"
+      ]
+    },
+    {
+      "id": "property_names_and_size_bounds_are_reported",
+      "schema": {
+        "type": "object",
+        "propertyNames": {
+          "pattern": "^[a-z]+$"
+        },
+        "minProperties": 1,
+        "maxProperties": 4
+      },
+      "expected_features": [
+        "$.maxProperties",
+        "$.minProperties",
+        "$.propertyNames"
+      ]
+    },
+    {
+      "id": "array_extras_are_reported",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "l": {
+            "type": "array",
+            "uniqueItems": true,
+            "contains": {
+              "type": "string"
+            },
+            "minContains": 1,
+            "maxContains": 3,
+            "prefixItems": [
+              {
+                "type": "string"
+              }
+            ],
+            "additionalItems": false,
+            "unevaluatedItems": false
+          }
+        }
+      },
+      "expected_features": [
+        "$.l.additionalItems",
+        "$.l.contains",
+        "$.l.maxContains",
+        "$.l.minContains",
+        "$.l.prefixItems",
+        "$.l.unevaluatedItems",
+        "$.l.uniqueItems"
+      ]
+    },
+    {
+      "id": "unevaluated_properties_is_reported",
+      "schema": {
+        "type": "object",
+        "unevaluatedProperties": false,
+        "properties": {
+          "a": {
+            "type": "string"
+          }
+        }
+      },
+      "expected_features": [
+        "$.unevaluatedProperties"
+      ]
+    },
+    {
+      "id": "unsupported_format_uri_is_reported",
+      "description": "`uri` is not among the nine formats OpenAI accepts.",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "link": {
+            "type": "string",
+            "format": "uri"
+          }
+        }
+      },
+      "expected_features": [
+        "$.link.format=uri"
+      ]
+    },
+    {
+      "id": "unsupported_format_binary_is_reported",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "blob": {
+            "type": "string",
+            "format": "binary"
+          }
+        }
+      },
+      "expected_features": [
+        "$.blob.format=binary"
+      ]
+    },
+    {
+      "id": "root_anyof_is_reported",
+      "description": "anyOf is supported, but the root schema must be an object.",
+      "schema": {
+        "anyOf": [
+          {
+            "type": "object",
+            "properties": {
+              "a": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "properties": {
+              "b": {
+                "type": "string"
+              }
+            }
+          }
+        ]
+      },
+      "expected_features": [
+        "$.anyOf"
+      ]
+    },
+    {
+      "id": "defs_subtrees_are_traversed",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "root": {
+            "$ref": "#/$defs/Node"
+          }
+        },
+        "$defs": {
+          "Node": {
+            "type": "object",
+            "properties": {
+              "tags": {
+                "type": "array",
+                "uniqueItems": true
+              }
+            }
+          }
+        }
+      },
+      "expected_features": [
+        "$.$defs.Node.tags.uniqueItems"
+      ]
+    },
+    {
+      "id": "legacy_definitions_subtrees_are_traversed",
+      "schema": {
+        "type": "object",
+        "definitions": {
+          "Old": {
+            "type": "string",
+            "minLength": 2
+          }
+        }
+      },
+      "expected_features": [
+        "$.definitions.Old.minLength"
+      ]
+    },
+    {
+      "id": "items_subtree_is_traversed",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "list": {
+            "type": "array",
+            "items": {
+              "oneOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            }
+          }
+        }
+      },
+      "expected_features": [
+        "$.list[].oneOf"
+      ]
+    },
+    {
+      "id": "additional_properties_subschema_is_traversed",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "bag": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string",
+              "minLength": 3
+            }
+          }
+        }
+      },
+      "expected_features": [
+        "$.bag.additionalProperties.minLength"
+      ]
+    },
+    {
+      "id": "union_branches_are_traversed",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string",
+                "minLength": 4
+              }
+            ]
+          }
+        }
+      },
+      "expected_features": [
+        "$.v.anyOf[1].minLength"
+      ]
+    },
+    {
+      "id": "oneof_branches_are_traversed_in_addition_to_the_oneof_itself",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "oneOf": [
+              {
+                "type": "string",
+                "format": "uri"
+              },
+              {
+                "type": "integer"
+              }
+            ]
+          }
+        }
+      },
+      "expected_features": [
+        "$.v.oneOf",
+        "$.v.oneOf[0].format=uri"
+      ]
+    },
+    {
+      "id": "findings_are_sorted_and_deduplicated",
+      "description": "Two properties carrying the same keyword yield two distinct paths; the list is globally sorted so all three SDKs emit byte-identical output.",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "zeta": {
+            "type": "string",
+            "minLength": 1
+          },
+          "alpha": {
+            "type": "string",
+            "minLength": 1
+          },
+          "mid": {
+            "type": "array",
+            "uniqueItems": true
+          }
+        }
+      },
+      "expected_features": [
+        "$.alpha.minLength",
+        "$.mid.uniqueItems",
+        "$.zeta.minLength"
+      ]
+    },
+    {
+      "id": "nested_object_paths_are_reported_with_full_path",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "outer": {
+            "type": "object",
+            "properties": {
+              "inner": {
+                "type": "string",
+                "format": "uri"
+              }
+            }
+          }
+        }
+      },
+      "expected_features": [
+        "$.outer.inner.format=uri"
+      ]
+    },
+    {
+      "id": "non_object_schema_yields_no_findings",
+      "description": "A boolean/true schema is not a map; the walker must tolerate it.",
+      "schema": true,
+      "expected_features": []
+    }
+  ]
+}

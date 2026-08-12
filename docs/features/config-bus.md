@@ -65,6 +65,10 @@ Namespaces are registered globally (class-level) before loading a config file. T
 === "Rust"
 
     ```rust
+    use apcore::config::DEFAULT_MAX_DEPTH;
+    use apcore::{Config, EnvStyle, NamespaceRegistration};
+    use std::collections::HashMap;
+
     Config::register_namespace(NamespaceRegistration {
         name: "my-plugin".into(),
         env_prefix: None,  // auto-derived as "MY_PLUGIN"
@@ -172,7 +176,8 @@ Global env_map maps to the **config root level**, not inside any namespace. This
 === "Rust"
 
     ```rust
-    use apcore::{Config, NamespaceRegistration, EnvStyle, DEFAULT_MAX_DEPTH};
+    use apcore::config::DEFAULT_MAX_DEPTH;
+    use apcore::{Config, EnvStyle, NamespaceRegistration};
     use std::collections::HashMap;
 
     Config::register_namespace(NamespaceRegistration {
@@ -217,7 +222,8 @@ Namespace env_map maps into the specified namespace. Use for env vars with well-
 === "Rust"
 
     ```rust
-    use apcore::{Config, NamespaceRegistration, EnvStyle, DEFAULT_MAX_DEPTH};
+    use apcore::config::DEFAULT_MAX_DEPTH;
+    use apcore::{Config, EnvStyle, NamespaceRegistration};
 
     Config::register_namespace(NamespaceRegistration {
         name: "myapp".into(),
@@ -275,7 +281,8 @@ The same bare env var name cannot appear in more than one env_map (global or nam
 === "Rust"
 
     ```rust
-    use apcore::{Config, NamespaceRegistration, EnvStyle, DEFAULT_MAX_DEPTH};
+    use apcore::config::DEFAULT_MAX_DEPTH;
+    use apcore::{Config, EnvStyle, NamespaceRegistration};
     use std::collections::HashMap;
 
     Config::env_map(HashMap::from([("PORT".into(), "port".into())]))?;
@@ -332,7 +339,8 @@ Matches the env var suffix against the `defaults` tree structure. Flat keys matc
 === "Rust"
 
     ```rust
-    use apcore::{Config, NamespaceRegistration, EnvStyle, DEFAULT_MAX_DEPTH};
+    use apcore::config::DEFAULT_MAX_DEPTH;
+    use apcore::{Config, EnvStyle, NamespaceRegistration};
 
     Config::register_namespace(NamespaceRegistration {
         name: "myapp".into(),
@@ -456,8 +464,9 @@ env_map / env_prefix overrides  >  YAML file  >  namespace defaults
 
     ```rust
     use apcore::Config;
+    use std::path::Path;
 
-    let config = Config::load("apcore.yaml")?;
+    let config = Config::load(Path::new("apcore.yaml"))?;
 
     let plugin_cfg = config.namespace("my-plugin");
     let timeout: u64 = config.get_typed("my-plugin.timeout")?;
@@ -627,14 +636,17 @@ The `_config` reserved namespace controls validation behavior. `strict: true` ca
 `validate()` enforces the same required-field set and value constraints in **all three SDKs**, in both legacy and namespace mode. Any violation is reported as `ConfigError(code=CONFIG_INVALID)`. (Prior to this contract each SDK enforced a different subset, so the same config could pass in one SDK and fail in another — implementations MUST converge on the set below.)
 
 ### Required fields
-Absence of any of these MUST be rejected with `CONFIG_INVALID`:
+
+A key is required **only when it has no canonical default** (PROTOCOL_SPEC §9.1). Exactly two qualify — absence of either MUST be rejected with `CONFIG_INVALID`:
 
 - `version`
 - `project.name`
-- `extensions.root`
-- `schema.root`
-- `acl.root`
-- `acl.default_effect`
+
+`extensions.root`, `schema.root`, `acl.root` and `acl.default_effect` were previously on this list. They all carry defaults in `schemas/defaults.schema.json`, so requiring them rejected configurations the framework resolves perfectly well; they were removed from `schemas/apcore-config.schema.json`'s `required` array for the same reason.
+
+**Requiredness is evaluated against the declared document, before the default table is merged.** An implementation that deep-merges its defaults into the parsed document and *then* checks for required fields can never fail the check — the merge has already supplied every key. That is not validation, it is dead code that looks like validation, and it is how all three SDKs came to ship a required-field list that could not fire. Each SDK exposes the pre-merge view for this purpose (`Config.get_declared()` / `getDeclared()`).
+
+A consequence worth stating: a defaults-only configuration (`Config.from_defaults()`) declares nothing, so `validate()` on it MUST fail. The no-config bootstrap path is unaffected — `Config.load()` with no discoverable file returns the defaults without validating them.
 
 ### Value constraints
 Out-of-range values MUST be rejected with `CONFIG_INVALID`:
@@ -646,22 +658,22 @@ Out-of-range values MUST be rejected with `CONFIG_INVALID`:
 | `extensions.max_depth` | integer in `[1, 16]` (discovery-recursion safety cap) |
 | `executor.default_timeout`, `executor.global_timeout` | integer `≥ 0` (milliseconds) |
 | `executor.max_call_depth`, `executor.max_module_repeat` | integer `≥ 1` |
-| `middleware.circuit_breaker.open_threshold` | number `0.0 ≤ x ≤ 1.0` (error **rate**, default 0.5 — NOT a count) |
-| `middleware.circuit_breaker.recovery_window_ms` | integer `≥ 0` (milliseconds) |
-| `middleware.circuit_breaker.window_size` | integer `≥ 1` |
-| `middleware.circuit_breaker.min_samples` | integer `≥ 1` |
 | `sys_modules.error_history.max_entries_per_module` | integer `≥ 1` |
 | `sys_modules.error_history.max_total_entries` | integer `≥ 1` |
 | `sys_modules.events.thresholds.error_rate` | number `0.0 ≤ x ≤ 1.0` |
 | `sys_modules.events.thresholds.latency_p99_ms` | number `> 0` |
 
-> ⚠️ `middleware.circuit_breaker.open_threshold` is an **error rate** in `[0,1]` (the fraction of failures in the window that trips the breaker), not a failure count. The integer thresholds for the breaker are `window_size` and `min_samples`. Booleans are rejected for all numeric fields.
+> ⚠️ Booleans are rejected for all numeric fields.
+>
+> **`middleware.circuit_breaker.*` is not a configuration namespace.** Earlier revisions listed four such keys here, and all three SDKs validated them — but `apcore-config.schema.json` declares `MiddlewareConfig` as `{ disabled }` with `additionalProperties: false`, so a config that set them was *rejected by the canonical schema and accepted by every SDK*, then ignored at runtime: no SDK ever read them. They have been removed from all three constraint tables. A circuit breaker is configured through its constructor options (`open_threshold` 0.5, `window_size` 20, `recovery_window_ms` 30000, `min_samples` 5 — identical in all three SDKs) or through the declarative middleware-chain config, which is per-entry rather than global.
 
 ### Namespace mode (additional)
 - For each registered namespace that declares a JSON Schema, the namespace subtree MUST validate against that schema; a failure is `CONFIG_INVALID`.
 - Under `_config.strict: true`, an unregistered top-level namespace MUST be rejected with `CONFIG_INVALID`.
 
-> The constraint set is anchored to the reference SDK (`apcore-python`), which carries the superset. Implementations align **up** to this set; narrowing it would weaken the configuration gate and is not permitted.
+> **This applies to the value-constraint table above, not to the required-field set.** Every constraint listed is enforced by all three SDKs; an implementation missing one aligns **up**, and dropping a constraint weakens the configuration gate.
+>
+> The required-field set is governed by a different rule and was deliberately narrowed — see above. It is anchored to PROTOCOL_SPEC §9.1 ("required only when no canonical default exists"), **not** to any reference SDK. An earlier revision of this contract anchored it to `apcore-python` as "the superset"; that was a mistake, because Python's required-field check was unreachable dead code — it merged its defaults in before checking. Deferring to whichever SDK enforces the most is only sound when that SDK's enforcement actually runs.
 
 ## Introspection
 
@@ -720,7 +732,8 @@ Out-of-range values MUST be rejected with `CONFIG_INVALID`:
 
     ```rust
     use std::path::Path;
-    use apcore::{Config, NamespaceRegistration, EnvStyle, DEFAULT_MAX_DEPTH};
+    use apcore::config::DEFAULT_MAX_DEPTH;
+    use apcore::{Config, EnvStyle, NamespaceRegistration};
 
     Config::register_namespace(NamespaceRegistration {
         name: "myapp".into(),
@@ -773,7 +786,8 @@ Out-of-range values MUST be rejected with `CONFIG_INVALID`:
     ```rust
     use std::collections::HashMap;
     use std::path::Path;
-    use apcore::{Config, NamespaceRegistration, EnvStyle, DEFAULT_MAX_DEPTH};
+    use apcore::config::DEFAULT_MAX_DEPTH;
+    use apcore::{Config, EnvStyle, NamespaceRegistration};
 
     Config::env_map(HashMap::from([("PORT".into(), "port".into())]))?;
     Config::register_namespace(NamespaceRegistration {
@@ -853,7 +867,8 @@ Out-of-range values MUST be rejected with `CONFIG_INVALID`:
     ```rust
     use std::collections::HashMap;
     use std::path::Path;
-    use apcore::{Config, NamespaceRegistration, EnvStyle, DEFAULT_MAX_DEPTH};
+    use apcore::config::DEFAULT_MAX_DEPTH;
+    use apcore::{Config, EnvStyle, NamespaceRegistration};
 
     Config::env_map(HashMap::from([
         ("PORT".into(), "port".into()),

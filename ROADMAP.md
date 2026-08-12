@@ -1,6 +1,6 @@
 # apcore Roadmap
 
-> **Current baseline (2026-07-16):** protocol `1.9.0-draft`; core SDKs `0.26.0` for Python, TypeScript, and Rust.
+> **Current baseline (2026-08-12):** protocol `1.9.0` (first non-draft release); core SDKs `0.27.0` for Python, TypeScript, and Rust.
 
 This roadmap prioritizes proof of adoption over expansion of the product matrix. The source of truth for implemented behavior is the [protocol specification](docs/spec/protocol-spec.md) plus released SDK code and conformance tests.
 

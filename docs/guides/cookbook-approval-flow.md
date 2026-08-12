@@ -37,18 +37,10 @@ The annotation is what triggers the gate. Without `requires_approval=true` the e
         id="finance.refund",
         description="Issue a refund — requires approval",
         annotations={"requires_approval": True},
-        input_schema={
-            "type": "object",
-            "properties": {
-                "order_id": {"type": "string"},
-                "amount_cents": {"type": "integer", "minimum": 1},
-                "reason": {"type": "string"},
-            },
-            "required": ["order_id", "amount_cents", "reason"],
-        },
-        output_schema={"type": "object", "properties": {"refund_id": {"type": "string"}}},
     )
     def refund(order_id: str, amount_cents: int, reason: str, context: Context) -> dict:
+        # `@client.module` accepts no input_schema/output_schema kwargs — both are
+        # inferred from these annotations and the return type.
         # By the time we reach here, an approver has signed off.
         return {"refund_id": gateway.refund(order_id, amount_cents, reason)}
     ```
@@ -63,7 +55,7 @@ The annotation is what triggers the gate. Without `requires_approval=true` the e
     client.module({
       id: 'finance.refund',
       description: 'Issue a refund — requires approval',
-      annotations: { requires_approval: true },
+      annotations: { requiresApproval: true },
       inputSchema: Type.Object({
         order_id: Type.String(),
         amount_cents: Type.Integer({ minimum: 1 }),
@@ -156,8 +148,8 @@ The simplest case: the handler blocks until a human/policy returns a decision. U
 
     # CallbackApprovalHandler requires an async callback.
     async def policy_check(req: ApprovalRequest) -> ApprovalResult:
-        # Inputs you can branch on:  req.module_id, req.inputs, req.context.identity
-        if req.inputs.get("amount_cents", 0) > 100_00:
+        # Fields you can branch on:  req.module_id, req.arguments, req.context.identity
+        if req.arguments.get("amount_cents", 0) > 100_00:
             # Block on Slack — pseudocode
             verdict = await slack.ask_approval(req)
             return ApprovalResult(
@@ -182,15 +174,15 @@ The simplest case: the handler blocks until a human/policy returns a decision. U
     import { ApprovalRequest, ApprovalResult, CallbackApprovalHandler } from 'apcore-js';
 
     const policyCheck = async (req: ApprovalRequest): Promise<ApprovalResult> => {
-      if ((req.inputs.amount_cents as number) > 100_00) {
+      if ((req.arguments.amount_cents as number) > 100_00) {
         const verdict = await slack.askApproval(req);
         return {
           status: verdict.ok ? 'approved' : 'rejected',
-          approved_by: verdict.userEmail,
+          approvedBy: verdict.userEmail,
           reason: verdict.reason,
         };
       }
-      return { status: 'approved', approved_by: 'auto:policy', reason: 'under threshold' };
+      return { status: 'approved', approvedBy: 'auto:policy', reason: 'under threshold' };
     };
 
     // Use the setter — it both stores the handler and wires the
@@ -213,7 +205,7 @@ The simplest case: the handler blocks until a human/policy returns a decision. U
     // returning a Future. Construct ApprovalResult by listing every field
     // explicitly — there is no Default impl.
     let handler = CallbackApprovalHandler::new(|req: ApprovalRequest| async move {
-        let amount = req.inputs["amount_cents"].as_i64().unwrap_or(0);
+        let amount = req.arguments["amount_cents"].as_i64().unwrap_or(0);
         if amount > 100_00 {
             let verdict = slack::ask_approval(&req).await?;
             Ok(ApprovalResult {

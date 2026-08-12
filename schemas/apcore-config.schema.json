@@ -6,10 +6,7 @@
   "type": "object",
   "required": [
     "version",
-    "project",
-    "extensions",
-    "schema",
-    "acl"
+    "project"
   ],
   "additionalProperties": false,
   "properties": {

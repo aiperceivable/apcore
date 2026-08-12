@@ -359,7 +359,7 @@ The `TracingMiddleware` creates spans around module execution compatible with OT
 === "Python"
     ```python
     from apcore import APCore
-    from apcore.middleware import TracingMiddleware
+    from apcore import TracingMiddleware
 
     # opentelemetry-api must be installed for active tracing;
     # if absent, TracingMiddleware silently becomes a no-op.
@@ -466,54 +466,119 @@ Incorrect async detection causes middleware to be invoked synchronously when it 
 
 ## Pipeline Step Middleware (Issue #33)
 
-Module-level middleware (`before` / `after` / `on_error`) wraps the entire 11-step pipeline. **Pipeline step middleware** is a finer-grained extension point: it wraps the execution of a single named pipeline step (e.g., `validate_input`, `acl_check`, `execute`). This is the lifecycle-shaped surface for the step-level middleware concept introduced in [`core-executor.md` §1.3](./core-executor.md#13-step-level-middleware) — the core-executor section documents the wrapper-style `next`-callback API, while this section documents the lifecycle-shaped API that mirrors module-level `Middleware`.
+Module-level middleware (`before` / `after` / `on_error`) wraps the entire 11-step pipeline. **Pipeline step middleware** is a finer-grained extension point: it wraps the execution of a single named pipeline step (e.g., `input_validation`, `acl_check`, `execute`). This is the lifecycle-shaped surface for the step-level middleware concept introduced in [`core-executor.md` §1.3](./core-executor.md#13-step-level-middleware) — that section states the ordering guarantee relative to global middleware, while this section is the normative contract for the callbacks themselves. There is no `next`-callback wrapper form: the hooks observe the step, they do not wrap the call.
 
 ### Lifecycle
 
 A registered `StepMiddleware` participates in three callbacks per step invocation:
 
 ```
-before_step(step_name, ctx, inputs)
+before_step(step_name, state)
   --> step body executes
        |
-       +-- on success: after_step(step_name, ctx, inputs, output)
-       +-- on failure: on_step_error(step_name, ctx, inputs, error)
+       +-- on success: after_step(step_name, state, result)
+       +-- on failure: on_step_error(step_name, state, error)
 ```
+
+`state` is the `PipelineState` view — the step name, the outputs produced so far,
+and the pipeline context. It is a single growable parameter rather than a
+`ctx` / `inputs` pair, because **a step takes no `inputs` argument**: every step
+is `execute(ctx)`, and reads whatever it needs off the context. All three SDKs
+converged on this shape independently.
+
+#### What `state.outputs` contains
+
+`state.outputs` maps step name → that step's output, and it contains **exactly the
+steps that completed before the current one**. The current step is **never** present,
+in any of the three hooks:
+
+| Hook | Why the current step is absent |
+|---|---|
+| `before_step` | It has not run. |
+| `on_step_error` | It ran and failed; there is no output. |
+| `after_step` | It succeeded, and its output is the `result` parameter. |
+
+This is one rule with one meaning, deliberately, rather than the more obvious
+"outputs of completed steps" — which would make `after_step` the single hook whose
+`outputs` differs in shape, so a middleware reading `state.outputs` would first have
+to know which hook it was in. The current step's output is not omitted from
+`after_step` for lack of it; it is passed as `result`, and carrying the same value
+down two paths is how the two drift apart.
+
+Implementations **MUST NOT** insert the current step's output into `state.outputs`
+before invoking `after_step`. Ordering the snapshot after the hook is what enforces
+this, and it is what apcore-typescript and apcore-rust already do; apcore-python
+snapshotted first and is corrected.
+
+!!! warning "`run_until` is the deliberate exception — do not make it uniform"
+    `PipelineState` has a second consumer: the `run_until` predicate, which is
+    evaluated **after** a step completes and **does** see that step's output. That is
+    the point of the predicate — it decides whether to stop *because of* what the step
+    just produced, so hiding the value would make it useless.
+
+    So the snapshot belongs **between** the `after_step` hook and the `run_until`
+    predicate, not after both. The two consumers see deliberately different maps, and an
+    implementation that "cleans this up" into one ordering breaks whichever it moves.
+    apcore-python's `test_run_until_state_has_correct_outputs` pins the predicate's
+    view; the fixture cases here pin the hooks'.
+
+    A note on shape: `state.outputs` is a **live reference** to the engine's map in at
+    least apcore-python and apcore-typescript, not a copy. Anything that stores the
+    reference and reads it later sees the final map, not the map as it stood at the
+    hook. Read it inside the hook.
 
 ### Normative Rules
 
 - Implementations MUST provide a `StepMiddleware` extension point with three callbacks: `before_step`, `after_step`, and `on_step_error`. Each callback MAY be omitted (default no-op).
-- `before_step(step_name, ctx, inputs)` MUST be invoked before the step body executes. Returning a non-null/non-None/`Some(...)` dict MUST replace the inputs passed to the step body. Returning null/None/`None` MUST pass inputs through unchanged.
-- `after_step(step_name, ctx, inputs, output)` MUST be invoked after the step body completes successfully. Returning a non-null/non-None/`Some(...)` dict MUST replace the step output observed by downstream steps.
-- `on_step_error(step_name, ctx, inputs, error)` MUST be invoked when the step body raises. **Returning a non-null/non-None/`Some(...)` value MUST be treated as recovery output**, mirroring the recovery contract of module-level `on_error`. The error MUST NOT propagate further; the recovery value becomes the step's output.
+- `before_step(step_name, state)` MUST be invoked before the step body executes. It is an **observation** hook: there is no step-input parameter to replace, so its return value carries no meaning. Input rewriting is the module-level `Middleware.before` contract, which runs once per call rather than once per step.
+- `after_step(step_name, state, result)` MUST be invoked after the step body completes successfully, with `result` a snapshot of the output the step produced.
+- `on_step_error(step_name, state, error)` MUST be invoked when the step body raises. **Returning a non-null/non-None/`Some(...)` value MUST be treated as recovery output.** The error MUST NOT propagate further, the recovery value MUST become the step's output, and the pipeline MUST continue with the next step.
 - Returning null/None/`None` from `on_step_error` MUST cause the original error to continue propagating (subject to the step's `ignore_errors` setting per [§1.1 Fail-Fast Error Handling](./core-executor.md#11-fail-fast-error-handling)).
+- `after_step` MUST be invoked after a **recovered** step body as well as after a naturally successful one. A recovered step produced an output and the pipeline continued, so the onion MUST close: a middleware that acquired something in `before_step` MUST get its `after_step`, or the recovery path leaks.
 - When multiple `StepMiddleware` instances are registered for the same step, `before_step` callbacks MUST run in registration order, and `after_step` callbacks MUST run in **reverse** registration order (onion model, identical to module-level middleware).
 - `on_step_error` callbacks MUST run in reverse registration order over only the middlewares whose `before_step` had executed before the failure. The first non-null recovery value short-circuits remaining handlers (first-recovery-wins).
-- Async `StepMiddleware` callbacks MUST be supported in all SDKs. Python SDKs MUST detect async callbacks via `inspect.iscoroutinefunction`; TypeScript SDKs MUST inspect `handler.constructor.name === "AsyncFunction"`; Rust SDKs MUST use `async_trait` (see [§1.5 Async Handler Detection](#15-async-handler-detection)).
-- Step middleware errors raised from `before_step` itself (not from the step body) MUST be wrapped in `MiddlewareChainError`, identical to the module-level contract.
+- Async `StepMiddleware` callbacks MUST be supported in all SDKs. Detection is an SDK-local concern and implementations MUST NOT be judged on the mechanism: apcore-python gates on `inspect.isawaitable()` applied to the **returned value** rather than `inspect.iscoroutinefunction()` on the callable, because the latter misses `functools.partial` and decorator wrappers (Issue #42); TypeScript awaits the return unconditionally; Rust uses `async_trait`. See [§1.5 Async Handler Detection](#15-async-handler-detection).
+
+#### A `before_step` failure terminates the step — it is not recoverable
+
+`before_step` raising is categorically different from the step body raising, and the two MUST NOT share a recovery path.
+
+- An error raised by `before_step` MUST be wrapped in `MiddlewareChainError`, identical to the module-level contract.
+- The step body MUST NOT execute.
+- `on_step_error` MUST still be invoked, in reverse registration order, on the middlewares whose `before_step` had already been entered — **for observation and cleanup only**. Any value it returns **MUST be discarded**: it MUST NOT become the step's output and it MUST NOT allow the pipeline to continue.
+- **First-recovery-wins MUST NOT apply to this pass.** Short-circuiting exists to stop shopping for a recovery once one is found; here no recovery is being sought, so **every** already-entered middleware MUST be notified. Stopping at the first middleware that happens to return a value would strand the cleanup of every middleware registered behind it — the opposite of what this pass is for.
+- `after_step` MUST NOT be invoked for that step. No step body ran, so there is nothing to close over.
+- The step's `ignore_errors` setting **MUST NOT apply**. `ignore_errors` declares that *this step's* failure is tolerable; a broken middleware chain is not a step failure. `MiddlewareChainError` MUST propagate regardless.
+
+**Why recovery is forbidden here.** Honouring a recovery value would let the pipeline advance past a step whose body never ran. The built-in strategy places `acl_check` and `approval_gate` in that sequence, so a middleware that can make its own `before_step` raise and then return a value from `on_step_error` would **skip the ACL check or the approval gate outright** — a silent authorization bypass reachable from an extension point that is not supposed to carry authority. The onion is also torn at that moment: some middlewares have entered `before_step` and others have not, so no choice of `after_step` set preserves the enter/exit pairing.
+
+!!! note "This is not the module-level contract, despite the shared vocabulary"
+    Module-level `execute_on_error` **does** honour a recovery value raised during the before phase. That is consistent, because a module-level recovery value **terminates the call** — it *is* the return value and nothing further executes. A step-level recovery value **resumes a pipeline**. The two operations share a name and are not the same thing, so the module-level precedent MUST NOT be transferred.
 
 ### Configuration safety
 
 Pipeline configuration MUST fail fast on structural errors so that misconfiguration is caught at startup rather than at first request.
 
-- Implementations MUST raise `ConfigurationError` at YAML/config parse time when a `pipeline.configure[].name` references a step that does not exist in the active strategy. Implementations MUST NOT silently ignore the directive or log a warning and continue.
+- Implementations MUST raise `ConfigurationError` at YAML/config parse time when a key of the `pipeline.configure` map references a step that does not exist in the active strategy. Implementations MUST NOT silently ignore the directive or log a warning and continue.
 - Implementations MUST raise `PipelineDependencyError` at strategy construction time (before any `call()` runs) when a step's declared `requires:` is not satisfied by an upstream step's `provides:`. The error message MUST include the unsatisfied capability name and the dependent step name.
 - Implementations MUST NOT defer dependency validation until first invocation. Strategy construction MUST be all-or-nothing: a strategy either validates cleanly and is callable, or construction fails with a typed error.
 
 ```yaml
-# apcore.yaml — declarative step middleware + dependency contract
+# apcore.yaml — pipeline step dependency contract
 pipeline:
-  step_middleware:
-    - step: validate_input
-      handler: "myapp.pipeline.tracing:TimingStepMiddleware"
-    - step: execute
-      handler: "myapp.pipeline.cost:CostStepMiddleware"
-
   configure:
-    - name: validate_input
-      requires: ["context.identity"]   # provided by context_creation
-      provides: ["validated_inputs"]   # consumed by execute
+    # A map keyed by step name, matching schemas/apcore-config.schema.json.
+    input_validation:
+      requires: ["context"]              # provided by context_creation
+      provides: ["validated_inputs"]     # consumed by execute
 ```
+
+There is no `pipeline.step_middleware:` configuration section. An earlier
+revision of this document showed one; `schemas/apcore-config.schema.json`
+declares `pipeline` as `additionalProperties: false` with only `remove`,
+`configure` and `steps`, no SDK ever parsed it, and no rule above required it.
+Register step middleware programmatically on the `ExecutionStrategy` instead —
+see the examples below.
 
 ### Cross-language usage
 
@@ -522,29 +587,35 @@ A tracing-style `StepMiddleware` that logs the wall-clock duration of each step:
 === "Python"
     ```python
     import time
-    from apcore import APCore
-    from apcore.middleware import StepMiddleware
+    from apcore import APCore, PipelineState, StepMiddleware, StepResult
 
     class TimingStepMiddleware(StepMiddleware):
-        async def before_step(self, step_name, ctx, inputs):
-            ctx.data[f"_apcore.step.{step_name}.start"] = time.perf_counter()
-            return None  # pass inputs through unchanged
+        # All three hooks take the PipelineState view. There is no `inputs`
+        # parameter — a Step is `execute(ctx)` — so per-step state is kept on
+        # the middleware instance rather than threaded through the signature.
+        def __init__(self) -> None:
+            self._started: dict[str, float] = {}
 
-        async def after_step(self, step_name, ctx, inputs, output):
-            start = ctx.data.pop(f"_apcore.step.{step_name}.start", None)
+        async def before_step(self, step_name: str, state: PipelineState) -> None:
+            # Observation only: the engine discards whatever this returns.
+            self._started[step_name] = time.perf_counter()
+
+        async def after_step(self, step_name: str, state: PipelineState, result: StepResult) -> None:
+            start = self._started.pop(step_name, None)
             if start is not None:
                 elapsed_ms = (time.perf_counter() - start) * 1000
-                print(f"step={step_name} elapsed_ms={elapsed_ms:.2f}")
-            return None  # pass output through unchanged
+                print(f"step={step_name} elapsed_ms={elapsed_ms:.2f} action={result.action}")
 
-        async def on_step_error(self, step_name, ctx, inputs, error):
-            start = ctx.data.pop(f"_apcore.step.{step_name}.start", None)
-            elapsed_ms = (time.perf_counter() - start) * 1000 if start else 0.0
+        async def on_step_error(self, step_name: str, state: PipelineState, error: Exception) -> None:
+            start = self._started.pop(step_name, None)
+            elapsed_ms = (time.perf_counter() - start) * 1000 if start is not None else 0.0
             print(f"step={step_name} elapsed_ms={elapsed_ms:.2f} error={type(error).__name__}")
             return None  # do not recover; let the error propagate
 
     client = APCore()
-    client.use_step_middleware("validate_input", TimingStepMiddleware())
+    # Step middleware is registered on the execution strategy and runs for EVERY
+    # step; filter by `step_name` inside the hook rather than binding to one step.
+    client.executor.current_strategy.add_step_middleware(TimingStepMiddleware())
 
     @client.module(id="demo.greet", description="Greet the user")
     def greet(name: str) -> dict:
@@ -554,27 +625,36 @@ A tracing-style `StepMiddleware` that logs the wall-clock duration of each step:
     ```
 === "TypeScript"
     ```typescript
-    import { APCore, StepMiddleware } from "apcore-js";
+    import { APCore } from "apcore-js";
+    import type { PipelineState, StepMiddleware } from "apcore-js";
 
-    class TimingStepMiddleware extends StepMiddleware {
-        async beforeStep(stepName: string, ctx: any, inputs: Record<string, unknown>) {
-            ctx.data[`_apcore.step.${stepName}.start`] = performance.now();
-            return null; // pass inputs through unchanged
+    // StepMiddleware is an interface — implement it, do not extend it.
+    // Every hook takes (stepName, state, …). There is no `inputs` parameter —
+    // a Step is `execute(ctx)` — so per-step state lives on the instance.
+    class TimingStepMiddleware implements StepMiddleware {
+        private readonly started = new Map<string, number>();
+
+        async beforeStep(stepName: string, state: PipelineState): Promise<void> {
+            // Observation only: the engine ignores whatever this returns.
+            this.started.set(stepName, performance.now());
         }
 
-        async afterStep(stepName: string, ctx: any, inputs: Record<string, unknown>, output: Record<string, unknown>) {
-            const start = ctx.data[`_apcore.step.${stepName}.start`];
-            delete ctx.data[`_apcore.step.${stepName}.start`];
+        async afterStep(stepName: string, state: PipelineState, result: unknown): Promise<void> {
+            const start = this.started.get(stepName);
+            this.started.delete(stepName);
             if (start !== undefined) {
                 const elapsedMs = performance.now() - start;
                 console.log(`step=${stepName} elapsed_ms=${elapsedMs.toFixed(2)}`);
             }
-            return null; // pass output through unchanged
         }
 
-        async onStepError(stepName: string, ctx: any, inputs: Record<string, unknown>, error: Error) {
-            const start = ctx.data[`_apcore.step.${stepName}.start`];
-            delete ctx.data[`_apcore.step.${stepName}.start`];
+        async onStepError(
+            stepName: string,
+            state: PipelineState,
+            error: Error,
+        ): Promise<unknown | null> {
+            const start = this.started.get(stepName);
+            this.started.delete(stepName);
             const elapsedMs = start !== undefined ? performance.now() - start : 0;
             console.log(`step=${stepName} elapsed_ms=${elapsedMs.toFixed(2)} error=${error.constructor.name}`);
             return null; // do not recover; let the error propagate
@@ -582,7 +662,11 @@ A tracing-style `StepMiddleware` that logs the wall-clock duration of each step:
     }
 
     const client = new APCore();
-    client.useStepMiddleware("validate_input", new TimingStepMiddleware());
+
+    // NOTE: apcore-typescript registers step middleware on `PipelineEngine`,
+    // which the Executor holds privately — there is currently no public path to
+    // it from the client. Track this gap before relying on step middleware in
+    // TypeScript; Python and Rust expose it on the ExecutionStrategy.
 
     client.module({
         id: "demo.greet",
@@ -596,85 +680,103 @@ A tracing-style `StepMiddleware` that logs the wall-clock duration of each step:
     ```
 === "Rust"
     ```rust
-    use apcore::APCore;
-    use apcore::middleware::StepMiddleware;
-    use apcore::context::Context;
-    use apcore::errors::ModuleError;
+    use apcore::{ModuleError, PipelineState, StepMiddleware};
     use async_trait::async_trait;
     use serde_json::Value;
+    use std::collections::HashMap;
+    use std::sync::Mutex;
     use std::time::Instant;
 
-    struct TimingStepMiddleware;
+    // Every hook takes `&PipelineState<'_>`. There is no `inputs` parameter —
+    // a Step is `execute(ctx)` — so per-step state lives on the middleware,
+    // behind a Mutex because the trait takes `&self` and requires Send + Sync.
+    #[derive(Default)]
+    struct TimingStepMiddleware {
+        started: Mutex<HashMap<String, Instant>>,
+    }
 
     #[async_trait]
     impl StepMiddleware for TimingStepMiddleware {
         async fn before_step(
             &self,
             step_name: &str,
-            ctx: &mut Context<Value>,
-            _inputs: &Value,
-        ) -> Result<Option<Value>, ModuleError> {
-            let key = format!("_apcore.step.{}.start", step_name);
-            ctx.data.insert(key, Value::String(format!("{:?}", Instant::now())));
-            Ok(None)
+            _state: &PipelineState<'_>,
+        ) -> Result<(), ModuleError> {
+            // Observation only: `before_step` returns no value the engine reads.
+            self.started
+                .lock()
+                .unwrap()
+                .insert(step_name.to_string(), Instant::now());
+            Ok(())
         }
 
         async fn after_step(
             &self,
             step_name: &str,
-            _ctx: &mut Context<Value>,
-            _inputs: &Value,
-            _output: &Value,
-        ) -> Result<Option<Value>, ModuleError> {
-            println!("step={} completed", step_name);
-            Ok(None)
+            _state: &PipelineState<'_>,
+            _result: &Value,
+        ) -> Result<(), ModuleError> {
+            if let Some(start) = self.started.lock().unwrap().remove(step_name) {
+                let elapsed_ms = start.elapsed().as_secs_f64() * 1000.0;
+                println!("step={step_name} elapsed_ms={elapsed_ms:.2}");
+            }
+            Ok(())
         }
 
         async fn on_step_error(
             &self,
             step_name: &str,
-            _ctx: &mut Context<Value>,
-            _inputs: &Value,
+            _state: &PipelineState<'_>,
             error: &ModuleError,
         ) -> Result<Option<Value>, ModuleError> {
-            println!("step={} error={}", step_name, error.code());
+            self.started.lock().unwrap().remove(step_name);
+            println!("step={} error={}", step_name, error.code);
             Ok(None) // do not recover; let the error propagate
         }
     }
 
-    let mut client = APCore::new();
-    client.use_step_middleware("validate_input", Box::new(TimingStepMiddleware));
+    use apcore::{build_standard_strategy, Config, Executor, Registry};
+    use std::sync::Arc;
+
+    // `add_step_middleware` takes `&mut ExecutionStrategy`, and `Executor::strategy()`
+    // hands out only `&` — so build and populate the strategy BEFORE constructing
+    // the executor. Step middleware runs for every step; filter on `step_name`.
+    let mut strategy = build_standard_strategy();
+    strategy.add_step_middleware(Arc::new(TimingStepMiddleware::default()));
+
+    let executor = Executor::with_strategy(Registry::new(), Config::from_defaults(), strategy);
     ```
 
 ### Contract: StepMiddleware.before_step
 
 #### Inputs
-- `step_name` (str/string/&str, required) — pipeline step name (e.g., `validate_input`)
-- `ctx` (PipelineContext, required) — current pipeline context
-- `inputs` (dict/object/Value, required) — current inputs to the step
+- `step_name` (str/string/&str, required) — pipeline step name (e.g., `input_validation`)
+- `state` (PipelineState, required) — the step name, the outputs produced so far, and the pipeline context
+
+There is **no** `inputs` parameter. A Step is `execute(ctx)`; it reads what it needs off the context, so there is nothing for a middleware to be handed or to replace.
 
 #### Errors
 - Any error raised aborts the step body and triggers `on_step_error` callbacks of already-executed step middlewares (mirrors `MiddlewareChainError` for the module-level chain)
 
 #### Returns
-- On success: dict/object/Value or null/None/None — replacement inputs (null = pass through unchanged)
+- None/void. `before_step` is an **observation** hook: any value returned is discarded and MUST NOT change what the step body sees. Input rewriting is the module-level `Middleware.before` contract.
 
 #### Properties
 - async: language-dependent (Python sync or async; TypeScript and Rust MUST be async)
 - thread_safe: true
-- pure: false (may mutate ctx)
+- pure: false (may mutate the context reachable through `state`)
 
 ### Contract: StepMiddleware.after_step
 
 #### Inputs
-- `step_name`, `ctx`, `inputs` (same as `before_step`)
-- `output` (dict/object/Value, required) — step output
+- `step_name`, `state` (same as `before_step`)
+- `result` (StepResult/unknown/&Value, required) — snapshot of the output the step produced
 
 #### Errors
 - Behavior is SDK-defined (see Middleware.after for parity rule)
 
 #### Returns
-- On success: dict/object/Value or null/None/None — replacement output (null = pass through)
+- None/void. `after_step` observes; it does not replace the step output.
 
 #### Properties
 - async: language-dependent
@@ -683,7 +785,7 @@ A tracing-style `StepMiddleware` that logs the wall-clock duration of each step:
 ### Contract: StepMiddleware.on_step_error
 
 #### Inputs
-- `step_name`, `ctx`, `inputs` (same as `before_step`)
+- `step_name`, `state` (same as `before_step`)
 - `error` (ModuleError, required) — the error raised by the step body
 
 #### Errors

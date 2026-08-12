@@ -225,8 +225,8 @@ Normative contract for the filesystem scanner used by step 1 of the discovery pi
     ```
 === "TypeScript"
     ```typescript
-    import { Registry } from "apcore-js/registry";
-    import { Executor } from "apcore-js/executor";
+    import { Registry } from "apcore-js";
+    import { Executor } from "apcore-js";
 
     // Create registry and register a module manually
     const registry = new Registry();

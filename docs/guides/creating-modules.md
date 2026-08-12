@@ -1094,12 +1094,12 @@ extensions/
                 .json(&inputs)
                 .send()
                 .await
-                .map_err(|e| ModuleError::new(ErrorCode::GeneralExecutionFailed, e.to_string()))?;
+                .map_err(|e| ModuleError::new(ErrorCode::ModuleExecuteError, e.to_string()))?;
 
             let data: serde_json::Value = resp
                 .json()
                 .await
-                .map_err(|e| ModuleError::new(ErrorCode::GeneralExecutionFailed, e.to_string()))?;
+                .map_err(|e| ModuleError::new(ErrorCode::ModuleExecuteError, e.to_string()))?;
 
             Ok(json!({
                 "success": true,
@@ -1193,7 +1193,7 @@ extensions/
                 .max_connections(8)
                 .connect(url)
                 .await
-                .map_err(|e| ModuleError::new(ErrorCode::GeneralExecutionFailed, e.to_string()))?;
+                .map_err(|e| ModuleError::new(ErrorCode::ModuleExecuteError, e.to_string()))?;
             Ok(Self { pool })
         }
     }
@@ -1213,7 +1213,7 @@ extensions/
             let rows: Vec<(i64,)> = sqlx::query_as(sql)
                 .fetch_all(&self.pool)
                 .await
-                .map_err(|e| ModuleError::new(ErrorCode::GeneralExecutionFailed, e.to_string()))?;
+                .map_err(|e| ModuleError::new(ErrorCode::ModuleExecuteError, e.to_string()))?;
             Ok(json!({ "rows": rows.len() }))
         }
 
@@ -1477,12 +1477,12 @@ extensions/
                 .query(&[("city", city)])
                 .send()
                 .await
-                .map_err(|e| ModuleError::new(ErrorCode::GeneralExecutionFailed, e.to_string()))?
+                .map_err(|e| ModuleError::new(ErrorCode::ModuleExecuteError, e.to_string()))?
                 .error_for_status()
-                .map_err(|e| ModuleError::new(ErrorCode::GeneralExecutionFailed, e.to_string()))?
+                .map_err(|e| ModuleError::new(ErrorCode::ModuleExecuteError, e.to_string()))?
                 .json()
                 .await
-                .map_err(|e| ModuleError::new(ErrorCode::GeneralExecutionFailed, e.to_string()))?;
+                .map_err(|e| ModuleError::new(ErrorCode::ModuleExecuteError, e.to_string()))?;
             Ok(json!({ "temperature": data.temp, "description": data.desc }))
         }
     }

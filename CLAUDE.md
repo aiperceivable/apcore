@@ -67,7 +67,7 @@ Deploy: push to `main` → GitHub Actions builds and deploys to GitHub Pages aut
 4. Check all `$ref` references still resolve
 
 ### Updating docs/spec/protocol-spec.md
-1. Requires a linked issue and 2 maintainer reviews
+1. Requires a linked issue and maintainer approval: 2 maintainers, **or all maintainers when fewer than 3 exist** (GOVERNANCE.md § Decision Making). `MAINTAINERS.md` currently lists one, so one approval satisfies it.
 2. Do NOT remove/weaken a `MUST`/`MUST NOT` without deprecation notice + version bump
 3. Do NOT delete or rename anchor IDs — external SDKs link to them
 4. Update `CHANGELOG.md` with the change
@@ -100,7 +100,7 @@ Use standardized terms consistently:
 ## Critical Rules
 
 ### Specification Integrity
-- Do NOT modify `docs/spec/protocol-spec.md` without a linked issue and dual maintainer approval
+- Do NOT modify `docs/spec/protocol-spec.md` without a linked issue and maintainer approval (2 maintainers, or all of them when fewer than 3 exist — see `GOVERNANCE.md`)
 - Do NOT add normative requirements without bumping the relevant version number
 - Do NOT contradict existing normative statements — search for conflicts first
 

@@ -247,7 +247,7 @@ These handlers are provided by the respective bridge packages, not by apcore cor
         CallbackApprovalHandler,
         ApprovalRequest,
         ApprovalResult,
-    } from "apcore-js/approval";
+    } from "apcore-js";
 
     // Use the built-in auto-approve handler (for testing).
     // Use setApprovalHandler(): it propagates the handler to the pipeline's
@@ -289,7 +289,10 @@ These handlers are provided by the respective bridge packages, not by apcore cor
 
     // Use the built-in auto-approve handler (for testing)
     let mut client = APCore::new();
-    client.executor_mut().set_approval_handler(Box::new(AutoApproveHandler));
+    // `APCore` exposes only `executor() -> &Executor`, and set_approval_handler
+    // needs &mut — build the Executor directly to attach a handler.
+    let mut executor = Executor::new(registry.clone(), config.clone());
+    executor.set_approval_handler(Box::new(AutoApproveHandler));
 
     // Custom approval handler
     struct SlackApprovalHandler;
@@ -319,7 +322,10 @@ These handlers are provided by the respective bridge packages, not by apcore cor
         }
     }
 
-    client.executor_mut().set_approval_handler(Box::new(SlackApprovalHandler));
+    // `APCore` exposes only `executor() -> &Executor`, and set_approval_handler
+    // needs &mut — build the Executor directly to attach a handler.
+    let mut executor = Executor::new(registry.clone(), config.clone());
+    executor.set_approval_handler(Box::new(SlackApprovalHandler));
     ```
 
 ## Dependencies

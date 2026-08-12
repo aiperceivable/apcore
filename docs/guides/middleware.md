@@ -280,9 +280,9 @@ Middleware are hooks that run before and after module execution, used for:
             _inputs: Value,
             ctx: &Context<Value>,
         ) -> Result<Option<Value>, ModuleError> {
-            println!("[{}] Calling {}", ctx.trace_id(), module_id);
-            // Use ctx.redacted_inputs() to avoid leaking sensitive data
-            println!("  Inputs: {:?}", ctx.redacted_inputs());
+            println!("[{}] Calling {}", ctx.trace_id, module_id);
+            // Use ctx.redacted_inputs to avoid leaking sensitive data
+            println!("  Inputs: {:?}", ctx.redacted_inputs);
             Ok(None)
         }
 
@@ -293,7 +293,7 @@ Middleware are hooks that run before and after module execution, used for:
             output: Value,
             ctx: &Context<Value>,
         ) -> Result<Option<Value>, ModuleError> {
-            println!("[{}] {} completed", ctx.trace_id(), module_id);
+            println!("[{}] {} completed", ctx.trace_id, module_id);
             println!("  Output: {}", output);
             Ok(None)
         }
@@ -305,7 +305,7 @@ Middleware are hooks that run before and after module execution, used for:
             error: &ModuleError,
             ctx: &Context<Value>,
         ) -> Result<Option<Value>, ModuleError> {
-            eprintln!("[{}] {} failed: {}", ctx.trace_id(), module_id, error);
+            eprintln!("[{}] {} failed: {}", ctx.trace_id, module_id, error);
             Ok(None)
         }
     }
@@ -670,15 +670,15 @@ If any `on_error` returns non-None, the exception is "swallowed" and that value 
         ) -> Result<Option<Value>, ModuleError> {
             self.start_times
                 .lock()
-                .insert(ctx.trace_id().to_string(), Instant::now());
-            // Security: use ctx.redacted_inputs() to avoid leaking sensitive data
+                .insert(ctx.trace_id.to_string(), Instant::now());
+            // Security: use ctx.redacted_inputs to avoid leaking sensitive data
             tracing::info!(
-                trace_id = %ctx.trace_id(),
+                trace_id = %ctx.trace_id,
                 module_id = %module_id,
                 caller_id = ?ctx.caller_id(),
-                inputs = ?ctx.redacted_inputs(),
+                inputs = ?ctx.redacted_inputs,
                 "[{}] START {}",
-                ctx.trace_id(),
+                ctx.trace_id,
                 module_id,
             );
             Ok(None)
@@ -694,16 +694,16 @@ If any `on_error` returns non-None, the exception is "swallowed" and that value 
             let start = self
                 .start_times
                 .lock()
-                .remove(ctx.trace_id())
+                .remove(ctx.trace_id)
                 .unwrap_or_else(Instant::now);
             let duration_ms = start.elapsed().as_secs_f64() * 1000.0;
             tracing::info!(
-                trace_id = %ctx.trace_id(),
+                trace_id = %ctx.trace_id,
                 module_id = %module_id,
                 duration_ms = duration_ms,
                 output = ?output,
                 "[{}] END {} ({:.2}ms)",
-                ctx.trace_id(),
+                ctx.trace_id,
                 module_id,
                 duration_ms,
             );
@@ -717,14 +717,14 @@ If any `on_error` returns non-None, the exception is "swallowed" and that value 
             error: &ModuleError,
             ctx: &Context<Value>,
         ) -> Result<Option<Value>, ModuleError> {
-            // Security: use ctx.redacted_inputs() instead of raw inputs
+            // Security: use ctx.redacted_inputs instead of raw inputs
             tracing::error!(
-                trace_id = %ctx.trace_id(),
+                trace_id = %ctx.trace_id,
                 module_id = %module_id,
                 error = %error,
-                inputs = ?ctx.redacted_inputs(),
+                inputs = ?ctx.redacted_inputs,
                 "[{}] ERROR {}: {}",
-                ctx.trace_id(),
+                ctx.trace_id,
                 module_id,
                 error,
             );
@@ -917,7 +917,7 @@ If any `on_error` returns non-None, the exception is "swallowed" and that value 
         ) -> Result<Option<Value>, ModuleError> {
             let mut s = self.state.lock();
             s.start_times
-                .insert(ctx.trace_id().to_string(), Instant::now());
+                .insert(ctx.trace_id.to_string(), Instant::now());
             *s.call_counts.entry(module_id.to_string()).or_insert(0) += 1;
             Ok(None)
         }
@@ -932,7 +932,7 @@ If any `on_error` returns non-None, the exception is "swallowed" and that value 
             let mut s = self.state.lock();
             let start = s
                 .start_times
-                .remove(ctx.trace_id())
+                .remove(ctx.trace_id)
                 .unwrap_or_else(Instant::now);
             let duration = start.elapsed().as_secs_f64();
             s.durations
@@ -1117,11 +1117,11 @@ If any `on_error` returns non-None, the exception is "swallowed" and that value 
             let key = Self::cache_key(module_id, &inputs);
             if let Some((cached_output, cached_time)) = self.cache.lock().get(&key).cloned() {
                 if Self::now_secs() - cached_time < self.ttl_seconds {
-                    ctx.data().insert("_apcore.mw.cache.hit", json!(true));
-                    ctx.data().insert("_apcore.mw.cache.value", cached_output);
+                    ctx.data.insert("_apcore.mw.cache.hit", json!(true));
+                    ctx.data.insert("_apcore.mw.cache.value", cached_output);
                 }
             }
-            ctx.data().insert("_apcore.mw.cache.key", json!(key));
+            ctx.data.insert("_apcore.mw.cache.key", json!(key));
             Ok(None)
         }
 
@@ -1132,10 +1132,10 @@ If any `on_error` returns non-None, the exception is "swallowed" and that value 
             output: Value,
             ctx: &Context<Value>,
         ) -> Result<Option<Value>, ModuleError> {
-            if ctx.data().get("_apcore.mw.cache.hit").is_some() {
+            if ctx.data.get("_apcore.mw.cache.hit").is_some() {
                 return Ok(None);
             }
-            if let Some(Value::String(key)) = ctx.data().get("_apcore.mw.cache.key") {
+            if let Some(Value::String(key)) = ctx.data.get("_apcore.mw.cache.key") {
                 self.cache.lock().insert(key, (output, Self::now_secs()));
             }
             Ok(None)
@@ -1503,7 +1503,7 @@ Emits events when module error rates or p99 latency exceed configured thresholds
             let mut modified = inputs.clone();
             if let Some(obj) = modified.as_object_mut() {
                 obj.entry("timeout".to_string()).or_insert(json!(30));
-                obj.insert("_trace_id".to_string(), json!(ctx.trace_id()));
+                obj.insert("_trace_id".to_string(), json!(ctx.trace_id));
             }
             Ok(Some(modified))
         }
@@ -1618,7 +1618,7 @@ Emits events when module error rates or p99 latency exceed configured thresholds
                     "_metadata".to_string(),
                     json!({
                         "module_id": module_id,
-                        "trace_id": ctx.trace_id(),
+                        "trace_id": ctx.trace_id,
                         "timestamp": Utc::now().to_rfc3339(),
                     }),
                 );
@@ -2479,7 +2479,7 @@ When middleware records logs, it is **forbidden** to directly log raw `inputs` p
     tracing::info!(inputs = ?inputs, "inputs logged");
 
     // Safe: sensitive fields are replaced with ***REDACTED***
-    tracing::info!(inputs = ?ctx.redacted_inputs(), "inputs logged");
+    tracing::info!(inputs = ?ctx.redacted_inputs, "inputs logged");
     ```
 
 ### 9.2 `_secret_` Prefix Convention
@@ -2512,7 +2512,7 @@ When passing middleware state via `context.data`, if it contains sensitive infor
     use serde_json::json;
 
     // Set sensitive data
-    ctx.data().insert("_secret_auth_token", json!("Bearer sk-..."));
+    ctx.data.insert("_secret_auth_token", json!("Bearer sk-..."));
 
     // Framework guarantee: keys starting with _secret_ are automatically
     // redacted in log serialization.
@@ -2699,7 +2699,7 @@ When passing middleware state via `context.data`, if it contains sensitive infor
             }
             // Store an opaque token in context.data so after() can read it.
             // (Using elapsed-millis-from-now as a portable u128 stored as string.)
-            ctx.data().insert(
+            ctx.data.insert(
                 "_apcore.mw.start_time_ns",
                 json!(Instant::now().elapsed().as_nanos().to_string()),
             );
@@ -2713,7 +2713,7 @@ When passing middleware state via `context.data`, if it contains sensitive infor
             _output: Value,
             ctx: &Context<Value>,
         ) -> Result<Option<Value>, ModuleError> {
-            if let Some(Value::String(_token)) = ctx.data().get("_apcore.mw.start_time_ns") {
+            if let Some(Value::String(_token)) = ctx.data.get("_apcore.mw.start_time_ns") {
                 // Process duration here using your timing source of choice.
             }
             Ok(None)
@@ -2928,18 +2928,17 @@ Does your logic need to wrap execution (see inputs AND outputs)?
 
 === "TypeScript"
     ```typescript
-    import { BaseStep, StepResult, PipelineContext } from 'apcore-js';
+    import type { Step, StepResult, PipelineContext } from 'apcore-js';
 
-    class RateLimiterStep extends BaseStep {
-      constructor(private maxRps: number = 100) {
-        super({
-          name: 'rate_limiter',
-          description: 'Per-module rate limiting',
-          removable: true,
-          replaceable: true,
-          pure: true,
-        });
-      }
+    // `Step` is an interface, not a base class — implement it.
+    class RateLimiterStep implements Step {
+      readonly name = 'rate_limiter';
+      readonly description = 'Per-module rate limiting';
+      readonly removable = true;
+      readonly replaceable = true;
+      readonly pure = true;
+
+      constructor(private maxRps: number = 100) {}
 
       async execute(ctx: PipelineContext): Promise<StepResult> {
         if (this.overLimit(ctx.moduleId)) {
@@ -2954,7 +2953,9 @@ Does your logic need to wrap execution (see inputs AND outputs)?
 
 === "Rust"
     ```rust
-    use apcore::pipeline::{BaseStep, StepResult, PipelineContext};
+    use apcore::{PipelineContext, Step, StepResult};
+    use apcore::errors::ModuleError;
+    use async_trait::async_trait;
 
     struct RateLimiterStep { max_rps: u32 }
 
@@ -3171,8 +3172,8 @@ Does your logic need to wrap execution (see inputs AND outputs)?
         ) -> Result<Option<Value>, ModuleError> {
             self.times
                 .lock()
-                .insert(ctx.trace_id().to_string(), Instant::now());
-            tracing::info!("[{}] -> {}", ctx.trace_id(), module_id);
+                .insert(ctx.trace_id.to_string(), Instant::now());
+            tracing::info!("[{}] -> {}", ctx.trace_id, module_id);
             Ok(None)
         }
 
@@ -3186,7 +3187,7 @@ Does your logic need to wrap execution (see inputs AND outputs)?
             let start = self
                 .times
                 .lock()
-                .remove(ctx.trace_id())
+                .remove(ctx.trace_id)
                 .unwrap_or_else(Instant::now);
             let duration_ms = start.elapsed().as_secs_f64() * 1000.0;
             let success = output
@@ -3196,7 +3197,7 @@ Does your logic need to wrap execution (see inputs AND outputs)?
             let status = if success { "OK" } else { "FAIL" };
             tracing::info!(
                 "[{}] {} {} ({:.1}ms)",
-                ctx.trace_id(),
+                ctx.trace_id,
                 status,
                 module_id,
                 duration_ms,
@@ -3211,7 +3212,7 @@ Does your logic need to wrap execution (see inputs AND outputs)?
             error: &ModuleError,
             ctx: &Context<Value>,
         ) -> Result<Option<Value>, ModuleError> {
-            tracing::error!("[{}] FAIL {}: {}", ctx.trace_id(), module_id, error);
+            tracing::error!("[{}] FAIL {}: {}", ctx.trace_id, module_id, error);
             Ok(None)
         }
     }

@@ -1,0 +1,19 @@
+{
+  "description": "Symbols the documentation deliberately references before they exist. Every entry needs a reason and the thing that will make it removable — an allowlist without an expiry condition is just a way to stop looking. check_doc_examples.py reports an entry as STALE once the symbol resolves, so a landed feature surfaces its own cleanup rather than leaving a permanent exemption behind.",
+  "allow": [
+    {
+      "symbol": "BindingSchema",
+      "language": "rust",
+      "file": "docs/spec/DECLARATIVE_CONFIG_SPEC.md",
+      "reason": "The `#[derive(BindingSchema)]` macro from the apcore-macros crate. Rust auto-schema inference is unimplemented — §12's support matrix marks `auto_schema: true` / `permissive` as not implemented and `strict` as partial for Rust, and resolve_schemas() warns on every permissive fallback. The example documents the intended surface.",
+      "removable_when": "apcore-macros lands (F11) and the crate root re-exports BindingSchema"
+    },
+    {
+      "symbol": "ConfigIncludeCycle",
+      "language": "rust",
+      "file": "docs/spec/rfc-config-include.md",
+      "reason": "An error variant proposed by the `include:` cross-file config composition RFC (D-65). RFCs describe surfaces that do not exist yet — that is what makes them RFCs.",
+      "removable_when": "the include: RFC is accepted and ErrorCode gains the variant"
+    }
+  ]
+}

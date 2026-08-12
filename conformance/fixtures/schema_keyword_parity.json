@@ -1,0 +1,3176 @@
+{
+  "description": "Cross-language parity for JSON Schema keyword handling at the validation boundary (spec §4.15, JSON Schema 2020-12 §6 validation keywords, §10.2/§10.3 applicators and §11 unevaluated locations).",
+  "driver_contract": {
+    "path": "MUST drive the same code path module invocation uses, i.e. the SDK's schema-to-native conversion followed by its validator — apcore-python generate_model() + model_validate(strict=True), apcore-typescript jsonSchemaToTypeBox() + SchemaValidator.validate(), apcore-rust validate_against_schema().",
+    "rationale": "An earlier generation of these fixtures drove only the raw-JSON-Schema validator (validate_schema_dict / Draft202012Validator). That path is not what a module call goes through, so an entire class of converter defects — dropped type members, discarded combinator siblings, vanished array constraints — was invisible to conformance for several releases. Driving the conversion is the whole point of this file.",
+    "coercion": "The module-invocation boundary performs NO type coercion, in any SDK, under any host configuration (TYPE_MAPPING §17.3): a contract that declares `integer` receives an integer, and `\"42\"` is a type error. Drivers MUST run the boundary in that mode — apcore-python `model_validate(strict=True)`, apcore-typescript `new SchemaValidator(false)`, apcore-rust `validate_against_schema()`. \"No coercion\" is about instance TYPES, not renderings: `4.0` still satisfies `integer` (§6.1.1 — any number with a zero fractional part) and `42` still satisfies `number`. An SDK that exposes a `coerce_types` library knob may keep it, but it MUST NOT reach this path, and it is NOT a configuration-file setting. Cases that deliberately exercise the opt-in coercing mode live in schema_validation.json."
+  },
+  "test_cases": [
+    {
+      "id": "type_array_accepts_first_member",
+      "description": "A `type` array is a union of all its members, not just the first.",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": [
+              "string",
+              "boolean"
+            ]
+          }
+        },
+        "required": [
+          "v"
+        ]
+      },
+      "input": {
+        "v": "s"
+      },
+      "expected_valid": true
+    },
+    {
+      "id": "type_array_accepts_trailing_member",
+      "description": "apexe emits this for a value-optional flag. Collapsing to the first member rejected `true`.",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": [
+              "string",
+              "boolean"
+            ]
+          }
+        },
+        "required": [
+          "v"
+        ]
+      },
+      "input": {
+        "v": true
+      },
+      "expected_valid": true
+    },
+    {
+      "id": "type_array_rejects_outside_member",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": [
+              "string",
+              "boolean"
+            ]
+          }
+        },
+        "required": [
+          "v"
+        ]
+      },
+      "input": {
+        "v": 42
+      },
+      "expected_valid": false
+    },
+    {
+      "id": "type_array_with_object_member_is_not_widened",
+      "description": "An object/array member with no scalar mapping must not widen the union to accept-anything.",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "a": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "required": [
+          "v"
+        ]
+      },
+      "input": {
+        "v": 42
+      },
+      "expected_valid": false
+    },
+    {
+      "id": "type_array_with_object_member_accepts_null",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "a": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "required": [
+          "v"
+        ]
+      },
+      "input": {
+        "v": null
+      },
+      "expected_valid": true
+    },
+    {
+      "id": "type_array_branch_constraints_do_not_leak",
+      "description": "A numeric bound must not apply to the string branch: 5 fails `minimum: 10`.",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": [
+              "string",
+              "integer"
+            ],
+            "minLength": 3,
+            "minimum": 10
+          }
+        },
+        "required": [
+          "v"
+        ]
+      },
+      "input": {
+        "v": 5
+      },
+      "expected_valid": false
+    },
+    {
+      "id": "type_array_branch_constraints_apply_to_owner",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": [
+              "string",
+              "integer"
+            ],
+            "minLength": 3,
+            "minimum": 10
+          }
+        },
+        "required": [
+          "v"
+        ]
+      },
+      "input": {
+        "v": "abc"
+      },
+      "expected_valid": true
+    },
+    {
+      "id": "enum_sibling_of_type_array_is_enforced",
+      "description": "What apexe emits for `ls --color[=WHEN]`.",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": [
+              "string",
+              "boolean"
+            ],
+            "enum": [
+              "always",
+              "auto",
+              "never"
+            ]
+          }
+        },
+        "required": [
+          "v"
+        ]
+      },
+      "input": {
+        "v": "bogus-not-in-enum"
+      },
+      "expected_valid": false
+    },
+    {
+      "id": "type_half_of_a_type_array_is_enforced",
+      "description": "An enum member outside the declared types is still rejected by the type half.",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": [
+              "string",
+              "boolean"
+            ],
+            "enum": [
+              "a",
+              1
+            ]
+          }
+        },
+        "required": [
+          "v"
+        ]
+      },
+      "input": {
+        "v": 1
+      },
+      "expected_valid": false
+    },
+    {
+      "id": "type_is_not_discarded_by_a_combinator_sibling",
+      "description": "`type` and a combinator are independent assertions; both must hold (§10.2).",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "string",
+            "anyOf": [
+              {
+                "minLength": 3
+              }
+            ]
+          }
+        },
+        "required": [
+          "v"
+        ]
+      },
+      "input": {
+        "v": 12345
+      },
+      "expected_valid": false
+    },
+    {
+      "id": "combinator_sibling_of_type_is_not_discarded",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "string",
+            "anyOf": [
+              {
+                "minLength": 3
+              }
+            ]
+          }
+        },
+        "required": [
+          "v"
+        ]
+      },
+      "input": {
+        "v": "ab"
+      },
+      "expected_valid": false
+    },
+    {
+      "id": "every_combinator_sibling_is_enforced",
+      "description": "Not just the first one found: the `not` here excludes an otherwise valid enum member.",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "string",
+            "enum": [
+              "a",
+              "b"
+            ],
+            "not": {
+              "const": "a"
+            }
+          }
+        },
+        "required": [
+          "v"
+        ]
+      },
+      "input": {
+        "v": "a"
+      },
+      "expected_valid": false
+    },
+    {
+      "id": "every_combinator_sibling_accepts_a_conforming_value",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "string",
+            "enum": [
+              "a",
+              "b"
+            ],
+            "not": {
+              "const": "a"
+            }
+          }
+        },
+        "required": [
+          "v"
+        ]
+      },
+      "input": {
+        "v": "b"
+      },
+      "expected_valid": true
+    },
+    {
+      "id": "non_scalar_const_accepts_the_exact_value",
+      "description": "`const`/`enum` members may be any JSON value, not only scalars.",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "object",
+            "const": {
+              "a": 1
+            }
+          }
+        },
+        "required": [
+          "v"
+        ]
+      },
+      "input": {
+        "v": {
+          "a": 1
+        }
+      },
+      "expected_valid": true
+    },
+    {
+      "id": "non_scalar_const_rejects_a_different_value",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "object",
+            "const": {
+              "a": 1
+            }
+          }
+        },
+        "required": [
+          "v"
+        ]
+      },
+      "input": {
+        "v": {
+          "a": 2
+        }
+      },
+      "expected_valid": false
+    },
+    {
+      "id": "non_scalar_enum_accepts_a_listed_member",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "enum": [
+              {
+                "a": 1
+              }
+            ]
+          }
+        },
+        "required": [
+          "v"
+        ]
+      },
+      "input": {
+        "v": {
+          "a": 1
+        }
+      },
+      "expected_valid": true
+    },
+    {
+      "id": "array_min_items_is_enforced",
+      "description": "§6.4.2. Array option keywords were dropped wholesale by at least one converter.",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            },
+            "minItems": 2
+          }
+        },
+        "required": [
+          "v"
+        ]
+      },
+      "input": {
+        "v": [
+          1
+        ]
+      },
+      "expected_valid": false
+    },
+    {
+      "id": "array_max_items_is_enforced",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            },
+            "maxItems": 2
+          }
+        },
+        "required": [
+          "v"
+        ]
+      },
+      "input": {
+        "v": [
+          1,
+          2,
+          3
+        ]
+      },
+      "expected_valid": false
+    },
+    {
+      "id": "array_unique_items_is_enforced",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            },
+            "uniqueItems": true
+          }
+        },
+        "required": [
+          "v"
+        ]
+      },
+      "input": {
+        "v": [
+          1,
+          1
+        ]
+      },
+      "expected_valid": false
+    },
+    {
+      "id": "nullable_array_keeps_min_items",
+      "description": "The array branch of a `type` array must carry the array keywords.",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "integer"
+            },
+            "minItems": 2
+          }
+        },
+        "required": [
+          "v"
+        ]
+      },
+      "input": {
+        "v": [
+          1
+        ]
+      },
+      "expected_valid": false
+    },
+    {
+      "id": "nullable_array_accepts_a_conforming_array",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "integer"
+            },
+            "minItems": 2
+          }
+        },
+        "required": [
+          "v"
+        ]
+      },
+      "input": {
+        "v": [
+          1,
+          2
+        ]
+      },
+      "expected_valid": true
+    },
+    {
+      "id": "nullable_array_accepts_null",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "integer"
+            },
+            "minItems": 2
+          }
+        },
+        "required": [
+          "v"
+        ]
+      },
+      "input": {
+        "v": null
+      },
+      "expected_valid": true
+    },
+    {
+      "id": "min_contains_without_contains_has_no_effect",
+      "description": "§6.4.4/§6.4.5: minContains/maxContains are inert without `contains`. Emitting them bare turns this into a schema that rejects every array.",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            },
+            "minContains": 5
+          }
+        },
+        "required": [
+          "v"
+        ]
+      },
+      "input": {
+        "v": [
+          1
+        ]
+      },
+      "expected_valid": true
+    },
+    {
+      "id": "object_min_properties_is_enforced",
+      "description": "§6.5.1.",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "object",
+            "properties": {
+              "a": {
+                "type": "string"
+              }
+            },
+            "minProperties": 1
+          }
+        },
+        "required": [
+          "v"
+        ]
+      },
+      "input": {
+        "v": {}
+      },
+      "expected_valid": false
+    },
+    {
+      "id": "bool_is_not_an_integer",
+      "description": "Distinct instance types. `bool` subclasses `int` in Python, which made lax coercion read `true` as `1`.",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "v"
+        ]
+      },
+      "input": {
+        "v": true
+      },
+      "expected_valid": false
+    },
+    {
+      "id": "integer_is_not_a_bool",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "v"
+        ]
+      },
+      "input": {
+        "v": 1
+      },
+      "expected_valid": false
+    },
+    {
+      "id": "bool_does_not_satisfy_a_numeric_union_branch",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": [
+              "string",
+              "integer"
+            ]
+          }
+        },
+        "required": [
+          "v"
+        ]
+      },
+      "input": {
+        "v": true
+      },
+      "expected_valid": false
+    },
+    {
+      "id": "bool_satisfies_a_boolean_union_branch",
+      "description": "The guard must not stop a genuine boolean branch from claiming the value.",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": [
+              "boolean",
+              "integer"
+            ]
+          }
+        },
+        "required": [
+          "v"
+        ]
+      },
+      "input": {
+        "v": true
+      },
+      "expected_valid": true
+    },
+    {
+      "id": "additional_properties_false_rejects_an_undeclared_key",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "a": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "a"
+        ]
+      },
+      "input": {
+        "a": "x",
+        "zzz": 1
+      },
+      "expected_valid": false
+    },
+    {
+      "id": "additional_properties_sub_schema_constrains_undeclared_values",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "a": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": {
+          "type": "integer"
+        },
+        "required": [
+          "a"
+        ]
+      },
+      "input": {
+        "a": "x",
+        "zzz": "not-an-integer"
+      },
+      "expected_valid": false
+    },
+    {
+      "id": "additional_properties_sub_schema_accepts_a_conforming_value",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "a": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": {
+          "type": "integer"
+        },
+        "required": [
+          "a"
+        ]
+      },
+      "input": {
+        "a": "x",
+        "zzz": 7
+      },
+      "expected_valid": true
+    },
+    {
+      "id": "additional_properties_non_scalar_sub_schema_is_enforced",
+      "description": "A shallow type mapping widened array/object/bare-constraint sub-schemas to accept-anything.",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "a": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": {
+          "type": "array",
+          "items": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "a"
+        ]
+      },
+      "input": {
+        "a": "x",
+        "zzz": [
+          "not-an-integer"
+        ]
+      },
+      "expected_valid": false
+    },
+    {
+      "id": "additional_properties_bare_constraint_sub_schema_is_enforced",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "a": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": {
+          "minimum": 3
+        },
+        "required": [
+          "a"
+        ]
+      },
+      "input": {
+        "a": "x",
+        "zzz": 1
+      },
+      "expected_valid": false
+    },
+    {
+      "id": "unrecognised_format_is_an_annotation",
+      "description": "§7.2.1: an unrecognised format MUST NOT be treated as an assertion failure. apexe#32.",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "string",
+            "format": "path"
+          }
+        },
+        "required": [
+          "v"
+        ]
+      },
+      "input": {
+        "v": "/usr/bin/ls"
+      },
+      "expected_valid": true
+    },
+    {
+      "id": "recognised_but_unsatisfied_format_is_an_annotation",
+      "description": "SHOULD-level: the SDK may warn, but validation passes. The warning itself is covered by schema_hardening_formats.json.",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "string",
+            "format": "email"
+          }
+        },
+        "required": [
+          "v"
+        ]
+      },
+      "input": {
+        "v": "not-an-email"
+      },
+      "expected_valid": true
+    },
+    {
+      "id": "prefix_items_checks_each_position",
+      "description": "§10.3.1.1 — each prefix position is validated against its own sub-schema.",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "array",
+            "prefixItems": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "integer"
+              }
+            ]
+          }
+        },
+        "required": [
+          "v"
+        ]
+      },
+      "input": {
+        "v": [
+          "a",
+          1
+        ]
+      },
+      "expected_valid": true
+    },
+    {
+      "id": "prefix_items_rejects_wrong_position_type",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "array",
+            "prefixItems": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "integer"
+              }
+            ]
+          }
+        },
+        "required": [
+          "v"
+        ]
+      },
+      "input": {
+        "v": [
+          "a",
+          "b"
+        ]
+      },
+      "expected_valid": false
+    },
+    {
+      "id": "prefix_items_shorter_instance_is_valid",
+      "description": "Only positions that exist are constrained; `minItems` is what asserts length.",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "array",
+            "prefixItems": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "integer"
+              }
+            ]
+          }
+        },
+        "required": [
+          "v"
+        ]
+      },
+      "input": {
+        "v": [
+          "a"
+        ]
+      },
+      "expected_valid": true
+    },
+    {
+      "id": "prefix_items_items_does_not_apply_to_the_prefix",
+      "description": "§10.3.1.2 — with `prefixItems` present, `items` describes only the tail. Applying it to the whole array rejected this valid instance.",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "array",
+            "prefixItems": [
+              {
+                "type": "string"
+              }
+            ],
+            "items": {
+              "type": "integer"
+            }
+          }
+        },
+        "required": [
+          "v"
+        ]
+      },
+      "input": {
+        "v": [
+          "a",
+          3
+        ]
+      },
+      "expected_valid": true
+    },
+    {
+      "id": "prefix_items_items_rejects_bad_tail",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "array",
+            "prefixItems": [
+              {
+                "type": "string"
+              }
+            ],
+            "items": {
+              "type": "integer"
+            }
+          }
+        },
+        "required": [
+          "v"
+        ]
+      },
+      "input": {
+        "v": [
+          "a",
+          "x"
+        ]
+      },
+      "expected_valid": false
+    },
+    {
+      "id": "prefix_items_is_inert_on_a_non_array",
+      "description": "An array applicator on a type-less schema must not narrow the accepted instance type.",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "prefixItems": [
+              {
+                "type": "string"
+              }
+            ]
+          }
+        },
+        "required": [
+          "v"
+        ]
+      },
+      "input": {
+        "v": "not-an-array"
+      },
+      "expected_valid": true
+    },
+    {
+      "id": "pattern_properties_checks_matching_values",
+      "description": "§10.3.2.2 — a key matching the pattern is validated against its sub-schema.",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "object",
+            "patternProperties": {
+              "^S_": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "required": [
+          "v"
+        ]
+      },
+      "input": {
+        "v": {
+          "S_a": "x"
+        }
+      },
+      "expected_valid": true
+    },
+    {
+      "id": "pattern_properties_rejects_bad_matching_value",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "object",
+            "patternProperties": {
+              "^S_": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "required": [
+          "v"
+        ]
+      },
+      "input": {
+        "v": {
+          "S_a": 1
+        }
+      },
+      "expected_valid": false
+    },
+    {
+      "id": "pattern_properties_ignores_a_non_matching_key",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "object",
+            "patternProperties": {
+              "^S_": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "required": [
+          "v"
+        ]
+      },
+      "input": {
+        "v": {
+          "other": 1
+        }
+      },
+      "expected_valid": true
+    },
+    {
+      "id": "pattern_properties_exempts_a_matched_key_from_additional_properties",
+      "description": "§10.3.2.3 — a pattern-matched key is not `additional`, so `additionalProperties: false` must not reject it.",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "object",
+            "patternProperties": {
+              "^S_": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "v"
+        ]
+      },
+      "input": {
+        "v": {
+          "S_a": "x"
+        }
+      },
+      "expected_valid": true
+    },
+    {
+      "id": "additional_properties_still_rejects_an_unmatched_key",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "object",
+            "patternProperties": {
+              "^S_": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "v"
+        ]
+      },
+      "input": {
+        "v": {
+          "other": 1
+        }
+      },
+      "expected_valid": false
+    },
+    {
+      "id": "pattern_properties_is_inert_on_a_non_object",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "patternProperties": {
+              "^S_": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "required": [
+          "v"
+        ]
+      },
+      "input": {
+        "v": 42
+      },
+      "expected_valid": true
+    },
+    {
+      "id": "property_names_accepts_a_conforming_key",
+      "description": "§10.3.2.4 — the sub-schema is applied to each key string, not to its value.",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "object",
+            "propertyNames": {
+              "maxLength": 3
+            }
+          }
+        },
+        "required": [
+          "v"
+        ]
+      },
+      "input": {
+        "v": {
+          "ab": 1
+        }
+      },
+      "expected_valid": true
+    },
+    {
+      "id": "property_names_rejects_a_long_key",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "object",
+            "propertyNames": {
+              "maxLength": 3
+            }
+          }
+        },
+        "required": [
+          "v"
+        ]
+      },
+      "input": {
+        "v": {
+          "abcdef": 1
+        }
+      },
+      "expected_valid": false
+    },
+    {
+      "id": "property_names_rejects_a_key_failing_its_pattern",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "object",
+            "propertyNames": {
+              "pattern": "^[a-z]+$"
+            }
+          }
+        },
+        "required": [
+          "v"
+        ]
+      },
+      "input": {
+        "v": {
+          "Not_Lower": 1
+        }
+      },
+      "expected_valid": false
+    },
+    {
+      "id": "property_names_is_inert_on_a_non_object",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "propertyNames": {
+              "maxLength": 3
+            }
+          }
+        },
+        "required": [
+          "v"
+        ]
+      },
+      "input": {
+        "v": [
+          1,
+          2
+        ]
+      },
+      "expected_valid": true
+    },
+    {
+      "id": "dependent_required_satisfied",
+      "description": "§6.5.4 — the trigger key's presence requires its dependents.",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "object",
+            "dependentRequired": {
+              "a": [
+                "b"
+              ]
+            }
+          }
+        },
+        "required": [
+          "v"
+        ]
+      },
+      "input": {
+        "v": {
+          "a": 1,
+          "b": 2
+        }
+      },
+      "expected_valid": true
+    },
+    {
+      "id": "dependent_required_missing_dependency",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "object",
+            "dependentRequired": {
+              "a": [
+                "b"
+              ]
+            }
+          }
+        },
+        "required": [
+          "v"
+        ]
+      },
+      "input": {
+        "v": {
+          "a": 1
+        }
+      },
+      "expected_valid": false
+    },
+    {
+      "id": "dependent_required_trigger_absent",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "object",
+            "dependentRequired": {
+              "a": [
+                "b"
+              ]
+            }
+          }
+        },
+        "required": [
+          "v"
+        ]
+      },
+      "input": {
+        "v": {
+          "c": 1
+        }
+      },
+      "expected_valid": true
+    },
+    {
+      "id": "dependent_required_is_inert_on_a_non_object",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "dependentRequired": {
+              "a": [
+                "b"
+              ]
+            }
+          }
+        },
+        "required": [
+          "v"
+        ]
+      },
+      "input": {
+        "v": "s"
+      },
+      "expected_valid": true
+    },
+    {
+      "id": "dependent_required_on_the_root_schema",
+      "description": "Applicators on the root schema must be enforced too, not only on property sub-schemas.",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "a": {
+            "type": "integer"
+          },
+          "b": {
+            "type": "integer"
+          }
+        },
+        "dependentRequired": {
+          "a": [
+            "b"
+          ]
+        }
+      },
+      "input": {
+        "a": 1
+      },
+      "expected_valid": false
+    },
+    {
+      "id": "dependent_schemas_satisfied",
+      "description": "§10.2.2.4 — the trigger key applies a whole sub-schema to the object.",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "object",
+            "dependentSchemas": {
+              "a": {
+                "required": [
+                  "b"
+                ]
+              }
+            }
+          }
+        },
+        "required": [
+          "v"
+        ]
+      },
+      "input": {
+        "v": {
+          "a": 1,
+          "b": 2
+        }
+      },
+      "expected_valid": true
+    },
+    {
+      "id": "dependent_schemas_violated",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "object",
+            "dependentSchemas": {
+              "a": {
+                "required": [
+                  "b"
+                ]
+              }
+            }
+          }
+        },
+        "required": [
+          "v"
+        ]
+      },
+      "input": {
+        "v": {
+          "a": 1
+        }
+      },
+      "expected_valid": false
+    },
+    {
+      "id": "if_then_branch_satisfied",
+      "description": "§10.2.2.1/§10.2.2.2 — `if` asserts nothing itself; it selects `then`.",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "object",
+            "if": {
+              "properties": {
+                "k": {
+                  "const": "x"
+                }
+              },
+              "required": [
+                "k"
+              ]
+            },
+            "then": {
+              "required": [
+                "extra"
+              ]
+            }
+          }
+        },
+        "required": [
+          "v"
+        ]
+      },
+      "input": {
+        "v": {
+          "k": "x",
+          "extra": 1
+        }
+      },
+      "expected_valid": true
+    },
+    {
+      "id": "if_then_branch_violated",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "object",
+            "if": {
+              "properties": {
+                "k": {
+                  "const": "x"
+                }
+              },
+              "required": [
+                "k"
+              ]
+            },
+            "then": {
+              "required": [
+                "extra"
+              ]
+            }
+          }
+        },
+        "required": [
+          "v"
+        ]
+      },
+      "input": {
+        "v": {
+          "k": "x"
+        }
+      },
+      "expected_valid": false
+    },
+    {
+      "id": "if_else_branch_violated",
+      "description": "§10.2.2.3 — a failing `if` selects `else`.",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "object",
+            "if": {
+              "properties": {
+                "k": {
+                  "const": "x"
+                }
+              },
+              "required": [
+                "k"
+              ]
+            },
+            "then": {
+              "required": [
+                "extra"
+              ]
+            },
+            "else": {
+              "required": [
+                "other"
+              ]
+            }
+          }
+        },
+        "required": [
+          "v"
+        ]
+      },
+      "input": {
+        "v": {
+          "k": "y"
+        }
+      },
+      "expected_valid": false
+    },
+    {
+      "id": "if_else_branch_satisfied",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "object",
+            "if": {
+              "properties": {
+                "k": {
+                  "const": "x"
+                }
+              },
+              "required": [
+                "k"
+              ]
+            },
+            "then": {
+              "required": [
+                "extra"
+              ]
+            },
+            "else": {
+              "required": [
+                "other"
+              ]
+            }
+          }
+        },
+        "required": [
+          "v"
+        ]
+      },
+      "input": {
+        "v": {
+          "k": "y",
+          "other": 1
+        }
+      },
+      "expected_valid": true
+    },
+    {
+      "id": "if_then_on_the_root_schema",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "a": {
+            "type": "string"
+          },
+          "b": {
+            "type": "string"
+          }
+        },
+        "if": {
+          "required": [
+            "a"
+          ]
+        },
+        "then": {
+          "required": [
+            "b"
+          ]
+        }
+      },
+      "input": {
+        "a": "x"
+      },
+      "expected_valid": false
+    },
+    {
+      "id": "if_without_then_or_else_asserts_nothing",
+      "description": "`if` alone produces annotations only; it never fails an instance.",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "object",
+            "if": {
+              "required": [
+                "k"
+              ]
+            }
+          }
+        },
+        "required": [
+          "v"
+        ]
+      },
+      "input": {
+        "v": {}
+      },
+      "expected_valid": true
+    },
+    {
+      "id": "unevaluated_properties_rejects_an_unevaluated_key",
+      "description": "§11.3 — `z` is reached by no applicator, so `unevaluatedProperties: false` rejects it.",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "object",
+            "allOf": [
+              {
+                "properties": {
+                  "a": {
+                    "type": "string"
+                  }
+                }
+              }
+            ],
+            "unevaluatedProperties": false
+          }
+        },
+        "required": [
+          "v"
+        ]
+      },
+      "input": {
+        "v": {
+          "a": "x",
+          "z": 1
+        }
+      },
+      "expected_valid": false
+    },
+    {
+      "id": "unevaluated_properties_accepts_a_key_evaluated_by_all_of",
+      "description": "The annotation from the `allOf` member is what makes `a` evaluated — a plain `additionalProperties: false` would reject it.",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "object",
+            "allOf": [
+              {
+                "properties": {
+                  "a": {
+                    "type": "string"
+                  }
+                }
+              }
+            ],
+            "unevaluatedProperties": false
+          }
+        },
+        "required": [
+          "v"
+        ]
+      },
+      "input": {
+        "v": {
+          "a": "x"
+        }
+      },
+      "expected_valid": true
+    },
+    {
+      "id": "unevaluated_properties_counts_the_selected_then_branch",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "object",
+            "properties": {
+              "k": {
+                "type": "string"
+              }
+            },
+            "if": {
+              "required": [
+                "k"
+              ]
+            },
+            "then": {
+              "properties": {
+                "extra": {
+                  "type": "integer"
+                }
+              }
+            },
+            "unevaluatedProperties": false
+          }
+        },
+        "required": [
+          "v"
+        ]
+      },
+      "input": {
+        "v": {
+          "k": "x",
+          "extra": 1
+        }
+      },
+      "expected_valid": true
+    },
+    {
+      "id": "unevaluated_properties_ignores_an_unselected_branch",
+      "description": "The `then` branch is not applied when `if` fails, so `extra` stays unevaluated.",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "object",
+            "properties": {
+              "k": {
+                "type": "string"
+              }
+            },
+            "if": {
+              "required": [
+                "k"
+              ]
+            },
+            "then": {
+              "properties": {
+                "extra": {
+                  "type": "integer"
+                }
+              }
+            },
+            "unevaluatedProperties": false
+          }
+        },
+        "required": [
+          "v"
+        ]
+      },
+      "input": {
+        "v": {
+          "extra": 1
+        }
+      },
+      "expected_valid": false
+    },
+    {
+      "id": "unevaluated_properties_counts_a_matching_one_of_branch",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "object",
+            "oneOf": [
+              {
+                "properties": {
+                  "a": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "a"
+                ]
+              },
+              {
+                "properties": {
+                  "b": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "b"
+                ]
+              }
+            ],
+            "unevaluatedProperties": false
+          }
+        },
+        "required": [
+          "v"
+        ]
+      },
+      "input": {
+        "v": {
+          "a": 1
+        }
+      },
+      "expected_valid": true
+    },
+    {
+      "id": "unevaluated_properties_rejects_a_key_no_one_of_branch_reached",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "object",
+            "oneOf": [
+              {
+                "properties": {
+                  "a": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "a"
+                ]
+              },
+              {
+                "properties": {
+                  "b": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "b"
+                ]
+              }
+            ],
+            "unevaluatedProperties": false
+          }
+        },
+        "required": [
+          "v"
+        ]
+      },
+      "input": {
+        "v": {
+          "a": 1,
+          "c": 2
+        }
+      },
+      "expected_valid": false
+    },
+    {
+      "id": "unevaluated_properties_on_the_root_schema",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "a": {
+            "type": "string"
+          }
+        },
+        "unevaluatedProperties": false
+      },
+      "input": {
+        "a": "x",
+        "z": 1
+      },
+      "expected_valid": false
+    },
+    {
+      "id": "unevaluated_items_rejects_a_position_past_prefix_items",
+      "description": "§11.2 — `prefixItems` evaluated index 0 only, so index 1 is unevaluated.",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "array",
+            "prefixItems": [
+              {
+                "type": "string"
+              }
+            ],
+            "unevaluatedItems": false
+          }
+        },
+        "required": [
+          "v"
+        ]
+      },
+      "input": {
+        "v": [
+          "a",
+          2
+        ]
+      },
+      "expected_valid": false
+    },
+    {
+      "id": "unevaluated_items_accepts_a_prefix_covered_instance",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "array",
+            "prefixItems": [
+              {
+                "type": "string"
+              }
+            ],
+            "unevaluatedItems": false
+          }
+        },
+        "required": [
+          "v"
+        ]
+      },
+      "input": {
+        "v": [
+          "a"
+        ]
+      },
+      "expected_valid": true
+    },
+    {
+      "id": "unevaluated_items_counts_contains_matches",
+      "description": "§10.3.1.3 — `contains` evaluates exactly the positions that matched it.",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "array",
+            "contains": {
+              "type": "integer"
+            },
+            "unevaluatedItems": false
+          }
+        },
+        "required": [
+          "v"
+        ]
+      },
+      "input": {
+        "v": [
+          1,
+          2
+        ]
+      },
+      "expected_valid": true
+    },
+    {
+      "id": "unevaluated_items_rejects_a_position_contains_did_not_match",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "array",
+            "contains": {
+              "type": "integer"
+            },
+            "unevaluatedItems": false
+          }
+        },
+        "required": [
+          "v"
+        ]
+      },
+      "input": {
+        "v": [
+          "x",
+          1
+        ]
+      },
+      "expected_valid": false
+    },
+    {
+      "id": "bare_required_subschema_is_enforced",
+      "description": "`{required: [...]}` is a complete schema and is what if/then/dependentSchemas sub-schemas usually look like; dropping it made every such condition vacuously true.",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "anyOf": [
+              {
+                "required": [
+                  "b"
+                ]
+              }
+            ]
+          }
+        },
+        "required": [
+          "v"
+        ]
+      },
+      "input": {
+        "v": {
+          "a": 1
+        }
+      },
+      "expected_valid": false
+    },
+    {
+      "id": "bare_required_subschema_is_inert_on_a_non_object",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "anyOf": [
+              {
+                "required": [
+                  "b"
+                ]
+              }
+            ]
+          }
+        },
+        "required": [
+          "v"
+        ]
+      },
+      "input": {
+        "v": "x"
+      },
+      "expected_valid": true
+    },
+    {
+      "id": "recursive_root_ref_hash_depth_1",
+      "description": "A `$ref: \"#\"` re-entered through properties/items is a recursive data structure, not a cycle. Depth 1: a leaf node.",
+      "schema": {
+        "$id": "TreeNode",
+        "type": "object",
+        "required": [
+          "value"
+        ],
+        "properties": {
+          "value": {
+            "type": "string"
+          },
+          "children": {
+            "type": "array",
+            "items": {
+              "$ref": "#"
+            }
+          }
+        }
+      },
+      "input": {
+        "value": "root"
+      },
+      "expected_valid": true
+    },
+    {
+      "id": "recursive_root_ref_hash_depth_3",
+      "description": "The same schema three levels deep. Resolving the reference eagerly never terminates; binding it lazily does.",
+      "schema": {
+        "$id": "TreeNode",
+        "type": "object",
+        "required": [
+          "value"
+        ],
+        "properties": {
+          "value": {
+            "type": "string"
+          },
+          "children": {
+            "type": "array",
+            "items": {
+              "$ref": "#"
+            }
+          }
+        }
+      },
+      "input": {
+        "value": "root",
+        "children": [
+          {
+            "value": "child",
+            "children": [
+              {
+                "value": "grandchild"
+              }
+            ]
+          }
+        ]
+      },
+      "expected_valid": true
+    },
+    {
+      "id": "recursive_root_ref_hash_rejects_nested_type_error",
+      "description": "The recursive position must keep asserting: widening an unresolved `$ref` to accept-anything made the whole sub-tree unchecked.",
+      "schema": {
+        "$id": "TreeNode",
+        "type": "object",
+        "required": [
+          "value"
+        ],
+        "properties": {
+          "value": {
+            "type": "string"
+          },
+          "children": {
+            "type": "array",
+            "items": {
+              "$ref": "#"
+            }
+          }
+        }
+      },
+      "input": {
+        "value": "root",
+        "children": [
+          {
+            "value": 42
+          }
+        ]
+      },
+      "expected_valid": false
+    },
+    {
+      "id": "recursive_root_ref_hash_rejects_nested_missing_required",
+      "description": "`required` inside the recursive target still applies at depth.",
+      "schema": {
+        "$id": "TreeNode",
+        "type": "object",
+        "required": [
+          "value"
+        ],
+        "properties": {
+          "value": {
+            "type": "string"
+          },
+          "children": {
+            "type": "array",
+            "items": {
+              "$ref": "#"
+            }
+          }
+        }
+      },
+      "input": {
+        "value": "root",
+        "children": [
+          {
+            "children": []
+          }
+        ]
+      },
+      "expected_valid": false
+    },
+    {
+      "id": "recursive_root_ref_by_id_depth_2",
+      "description": "A document may reference itself by its own `$id` instead of by `#` — the canonical form used by schema_hardening_recursive.json.",
+      "schema": {
+        "$id": "TreeNode",
+        "type": "object",
+        "required": [
+          "value"
+        ],
+        "properties": {
+          "value": {
+            "type": "string"
+          },
+          "children": {
+            "type": "array",
+            "items": {
+              "$ref": "TreeNode"
+            }
+          }
+        }
+      },
+      "input": {
+        "value": "root",
+        "children": [
+          {
+            "value": "child"
+          }
+        ]
+      },
+      "expected_valid": true
+    },
+    {
+      "id": "recursive_root_ref_by_id_rejects_nested_type_error",
+      "description": "Same `$id` self-reference, invalid at depth 2.",
+      "schema": {
+        "$id": "TreeNode",
+        "type": "object",
+        "required": [
+          "value"
+        ],
+        "properties": {
+          "value": {
+            "type": "string"
+          },
+          "children": {
+            "type": "array",
+            "items": {
+              "$ref": "TreeNode"
+            }
+          }
+        }
+      },
+      "input": {
+        "value": "root",
+        "children": [
+          {
+            "value": 42
+          }
+        ]
+      },
+      "expected_valid": false
+    },
+    {
+      "id": "recursive_defs_ref_depth_2",
+      "description": "Recursion anchored on a `$defs` entry rather than on the document root.",
+      "schema": {
+        "type": "object",
+        "required": [
+          "root"
+        ],
+        "properties": {
+          "root": {
+            "$ref": "#/$defs/Node"
+          }
+        },
+        "$defs": {
+          "Node": {
+            "type": "object",
+            "required": [
+              "value"
+            ],
+            "properties": {
+              "value": {
+                "type": "string"
+              },
+              "children": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/Node"
+                }
+              }
+            }
+          }
+        }
+      },
+      "input": {
+        "root": {
+          "value": "a",
+          "children": [
+            {
+              "value": "b"
+            }
+          ]
+        }
+      },
+      "expected_valid": true
+    },
+    {
+      "id": "recursive_defs_ref_rejects_nested_type_error",
+      "description": "The `$defs`-anchored recursive position must keep asserting at depth.",
+      "schema": {
+        "type": "object",
+        "required": [
+          "root"
+        ],
+        "properties": {
+          "root": {
+            "$ref": "#/$defs/Node"
+          }
+        },
+        "$defs": {
+          "Node": {
+            "type": "object",
+            "required": [
+              "value"
+            ],
+            "properties": {
+              "value": {
+                "type": "string"
+              },
+              "children": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/Node"
+                }
+              }
+            }
+          }
+        }
+      },
+      "input": {
+        "root": {
+          "value": "a",
+          "children": [
+            {
+              "value": 9
+            }
+          ]
+        }
+      },
+      "expected_valid": false
+    },
+    {
+      "id": "nested_one_of_ambiguous_integer_and_number",
+      "description": "`oneOf` exclusivity is location-independent: 3 satisfies both `integer` and `number`. Mapping `oneOf` onto a host union type degrades it to `anyOf` and accepted this.",
+      "schema": {
+        "type": "object",
+        "required": [
+          "a"
+        ],
+        "properties": {
+          "a": {
+            "oneOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "number"
+              }
+            ]
+          }
+        }
+      },
+      "input": {
+        "a": 3
+      },
+      "expected_valid": false
+    },
+    {
+      "id": "nested_one_of_exactly_one_match",
+      "description": "3.5 satisfies `number` only, so exactly one branch matches.",
+      "schema": {
+        "type": "object",
+        "required": [
+          "a"
+        ],
+        "properties": {
+          "a": {
+            "oneOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "number"
+              }
+            ]
+          }
+        }
+      },
+      "input": {
+        "a": 3.5
+      },
+      "expected_valid": true
+    },
+    {
+      "id": "nested_one_of_no_branch_matches",
+      "description": "Zero matches fails just as two do.",
+      "schema": {
+        "type": "object",
+        "required": [
+          "a"
+        ],
+        "properties": {
+          "a": {
+            "oneOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "number"
+              }
+            ]
+          }
+        }
+      },
+      "input": {
+        "a": "x"
+      },
+      "expected_valid": false
+    },
+    {
+      "id": "nested_one_of_inside_array_items_ambiguous",
+      "description": "Exclusivity applies inside `items` too, not only inside `properties`.",
+      "schema": {
+        "type": "object",
+        "required": [
+          "a"
+        ],
+        "properties": {
+          "a": {
+            "type": "array",
+            "items": {
+              "oneOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "number"
+                }
+              ]
+            }
+          }
+        }
+      },
+      "input": {
+        "a": [
+          3
+        ]
+      },
+      "expected_valid": false
+    },
+    {
+      "id": "nested_one_of_inside_array_items_exactly_one",
+      "description": "Same schema, a value only the `number` branch accepts.",
+      "schema": {
+        "type": "object",
+        "required": [
+          "a"
+        ],
+        "properties": {
+          "a": {
+            "type": "array",
+            "items": {
+              "oneOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "number"
+                }
+              ]
+            }
+          }
+        }
+      },
+      "input": {
+        "a": [
+          3.5
+        ]
+      },
+      "expected_valid": true
+    },
+    {
+      "id": "nested_any_of_multiple_matches_allowed",
+      "description": "`anyOf` has no exclusivity rule — the same input `oneOf` rejects is valid here.",
+      "schema": {
+        "type": "object",
+        "required": [
+          "a"
+        ],
+        "properties": {
+          "a": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "number"
+              }
+            ]
+          }
+        }
+      },
+      "input": {
+        "a": 3
+      },
+      "expected_valid": true
+    },
+    {
+      "id": "nested_one_of_with_type_sibling_ambiguous",
+      "description": "`type` and `oneOf` are independent assertions (§10.2); the union half still has to be exclusive when the intersection buries it.",
+      "schema": {
+        "type": "object",
+        "required": [
+          "a"
+        ],
+        "properties": {
+          "a": {
+            "type": "number",
+            "oneOf": [
+              {
+                "minimum": 0
+              },
+              {
+                "maximum": 10
+              }
+            ]
+          }
+        }
+      },
+      "input": {
+        "a": 5
+      },
+      "expected_valid": false
+    },
+    {
+      "id": "nested_one_of_with_type_sibling_exactly_one",
+      "description": "Only the `minimum: 0` branch matches 50, so the union half is satisfied.",
+      "schema": {
+        "type": "object",
+        "required": [
+          "a"
+        ],
+        "properties": {
+          "a": {
+            "type": "number",
+            "oneOf": [
+              {
+                "minimum": 0
+              },
+              {
+                "maximum": 10
+              }
+            ]
+          }
+        }
+      },
+      "input": {
+        "a": 50
+      },
+      "expected_valid": true
+    },
+    {
+      "id": "top_level_one_of_ambiguous_identical_branches",
+      "description": "A root-level combinator has no owning property; generating a field-less model for it accepted every input.",
+      "schema": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "k": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "properties": {
+              "k": {
+                "type": "string"
+              }
+            }
+          }
+        ]
+      },
+      "input": {
+        "k": "x"
+      },
+      "expected_valid": false
+    },
+    {
+      "id": "top_level_any_of_no_branch_matches",
+      "description": "Root-level `anyOf` with neither `required` satisfied.",
+      "schema": {
+        "anyOf": [
+          {
+            "required": [
+              "k"
+            ]
+          },
+          {
+            "required": [
+              "j"
+            ]
+          }
+        ]
+      },
+      "input": {
+        "z": 1
+      },
+      "expected_valid": false
+    },
+    {
+      "id": "top_level_any_of_one_branch_matches",
+      "description": "Root-level `anyOf` with the first branch satisfied.",
+      "schema": {
+        "anyOf": [
+          {
+            "required": [
+              "k"
+            ]
+          },
+          {
+            "required": [
+              "j"
+            ]
+          }
+        ]
+      },
+      "input": {
+        "k": 1
+      },
+      "expected_valid": true
+    },
+    {
+      "id": "unique_items_object_array_rejects_duplicate",
+      "description": "`uniqueItems` over an array of objects. A hash-set implementation raised a bare TypeError here instead of failing validation.",
+      "schema": {
+        "type": "object",
+        "required": [
+          "a"
+        ],
+        "properties": {
+          "a": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": {
+              "type": "object",
+              "properties": {
+                "k": {
+                  "type": "string"
+                },
+                "j": {
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        }
+      },
+      "input": {
+        "a": [
+          {
+            "k": "x"
+          },
+          {
+            "k": "x"
+          }
+        ]
+      },
+      "expected_valid": false
+    },
+    {
+      "id": "unique_items_object_array_accepts_distinct",
+      "description": "Distinct objects satisfy `uniqueItems`.",
+      "schema": {
+        "type": "object",
+        "required": [
+          "a"
+        ],
+        "properties": {
+          "a": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": {
+              "type": "object",
+              "properties": {
+                "k": {
+                  "type": "string"
+                },
+                "j": {
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        }
+      },
+      "input": {
+        "a": [
+          {
+            "k": "x"
+          },
+          {
+            "k": "y"
+          }
+        ]
+      },
+      "expected_valid": true
+    },
+    {
+      "id": "unique_items_object_array_key_order_is_irrelevant",
+      "description": "JSON Schema object equality ignores key order, so these two members are duplicates.",
+      "schema": {
+        "type": "object",
+        "required": [
+          "a"
+        ],
+        "properties": {
+          "a": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": {
+              "type": "object",
+              "properties": {
+                "k": {
+                  "type": "string"
+                },
+                "j": {
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        }
+      },
+      "input": {
+        "a": [
+          {
+            "k": "x",
+            "j": 1
+          },
+          {
+            "j": 1,
+            "k": "x"
+          }
+        ]
+      },
+      "expected_valid": false
+    },
+    {
+      "id": "unique_items_nested_array_rejects_duplicate",
+      "description": "`uniqueItems` over an array of arrays — the other non-hashable item type.",
+      "schema": {
+        "type": "object",
+        "required": [
+          "a"
+        ],
+        "properties": {
+          "a": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": {
+              "type": "array",
+              "items": {
+                "type": "integer"
+              }
+            }
+          }
+        }
+      },
+      "input": {
+        "a": [
+          [
+            1,
+            2
+          ],
+          [
+            1,
+            2
+          ]
+        ]
+      },
+      "expected_valid": false
+    },
+    {
+      "id": "unique_items_nested_array_accepts_distinct",
+      "description": "Element order distinguishes two otherwise equal arrays.",
+      "schema": {
+        "type": "object",
+        "required": [
+          "a"
+        ],
+        "properties": {
+          "a": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": {
+              "type": "array",
+              "items": {
+                "type": "integer"
+              }
+            }
+          }
+        }
+      },
+      "input": {
+        "a": [
+          [
+            1,
+            2
+          ],
+          [
+            2,
+            1
+          ]
+        ]
+      },
+      "expected_valid": true
+    },
+    {
+      "id": "type_integer_rejects_numeric_string",
+      "description": "The module-invocation boundary performs NO type coercion (TYPE_MAPPING §17.3). `\"42\"` is a string instance; `integer` rejects it. A module's input contract has to mean the same thing regardless of which host loaded it, so this is not host-configurable.",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "a": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "a"
+        ]
+      },
+      "input": {
+        "a": "42"
+      },
+      "expected_valid": false
+    },
+    {
+      "id": "type_number_rejects_numeric_string",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "x": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "x"
+        ]
+      },
+      "input": {
+        "x": "3.14"
+      },
+      "expected_valid": false
+    },
+    {
+      "id": "type_boolean_rejects_true_string",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "f": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "f"
+        ]
+      },
+      "input": {
+        "f": "true"
+      },
+      "expected_valid": false
+    },
+    {
+      "id": "type_string_rejects_integer",
+      "description": "Coercion is not one-directional either — a number is not a string.",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "s": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "s"
+        ]
+      },
+      "input": {
+        "s": 42
+      },
+      "expected_valid": false
+    },
+    {
+      "id": "type_string_rejects_null",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "s": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "s"
+        ]
+      },
+      "input": {
+        "s": null
+      },
+      "expected_valid": false
+    },
+    {
+      "id": "type_integer_rejects_fractional_number",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "a": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "a"
+        ]
+      },
+      "input": {
+        "a": 4.5
+      },
+      "expected_valid": false
+    },
+    {
+      "id": "type_integer_accepts_zero_fraction_number",
+      "description": "§6.1.1 defines `integer` as any number with a zero fractional part, so `4.0` IS an integer. \"No coercion\" means no *type* coercion — it must not become \"reject a JSON integer written with a decimal point\".",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "a": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "a"
+        ]
+      },
+      "input": {
+        "a": 4.0
+      },
+      "expected_valid": true
+    },
+    {
+      "id": "type_number_accepts_integer",
+      "description": "§6.1.1: `number` matches any numeric instance, integers included. Not a coercion.",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "x": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "x"
+        ]
+      },
+      "input": {
+        "x": 42
+      },
+      "expected_valid": true
+    },
+    {
+      "id": "nested_type_integer_rejects_numeric_string",
+      "description": "The rule holds at depth, not just on top-level properties.",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "o": {
+            "type": "object",
+            "properties": {
+              "n": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "n"
+            ]
+          }
+        },
+        "required": [
+          "o"
+        ]
+      },
+      "input": {
+        "o": {
+          "n": "7"
+        }
+      },
+      "expected_valid": false
+    },
+    {
+      "id": "array_items_integer_rejects_numeric_strings",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "xs": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            }
+          }
+        },
+        "required": [
+          "xs"
+        ]
+      },
+      "input": {
+        "xs": [
+          "1",
+          "2"
+        ]
+      },
+      "expected_valid": false
+    },
+    {
+      "id": "array_items_integer_accepts_zero_fraction",
+      "description": "An `items` sub-schema must apply the same `integer` rule a top-level property gets.",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "xs": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            }
+          }
+        },
+        "required": [
+          "xs"
+        ]
+      },
+      "input": {
+        "xs": [
+          1.0,
+          2.0
+        ]
+      },
+      "expected_valid": true
+    },
+    {
+      "id": "array_items_integer_rejects_bool",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "xs": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            }
+          }
+        },
+        "required": [
+          "xs"
+        ]
+      },
+      "input": {
+        "xs": [
+          true
+        ]
+      },
+      "expected_valid": false
+    },
+    {
+      "id": "additional_properties_integer_rejects_numeric_string",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "m": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "integer"
+            }
+          }
+        },
+        "required": [
+          "m"
+        ]
+      },
+      "input": {
+        "m": {
+          "k": "5"
+        }
+      },
+      "expected_valid": false
+    },
+    {
+      "id": "type_union_integer_null_rejects_numeric_string",
+      "description": "A nullable integer is still an integer — the `null` member does not open a coercion path.",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "v"
+        ]
+      },
+      "input": {
+        "v": "42"
+      },
+      "expected_valid": false
+    },
+    {
+      "id": "enum_integer_rejects_numeric_string",
+      "description": "`enum` compares instances, not renderings: `\"2\"` is not the integer `2`.",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "e": {
+            "type": "integer",
+            "enum": [
+              1,
+              2,
+              3
+            ]
+          }
+        },
+        "required": [
+          "e"
+        ]
+      },
+      "input": {
+        "e": "2"
+      },
+      "expected_valid": false
+    },
+    {
+      "id": "const_integer_rejects_numeric_string",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "c": {
+            "const": 7
+          }
+        },
+        "required": [
+          "c"
+        ]
+      },
+      "input": {
+        "c": "7"
+      },
+      "expected_valid": false
+    },
+    {
+      "id": "type_object_rejects_json_string",
+      "description": "An object contract receives an object, not a JSON document to parse.",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "o": {
+            "type": "object",
+            "properties": {
+              "k": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "k"
+            ]
+          }
+        },
+        "required": [
+          "o"
+        ]
+      },
+      "input": {
+        "o": "{\"k\": \"v\"}"
+      },
+      "expected_valid": false
+    },
+    {
+      "id": "type_array_rejects_string",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "xs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "xs"
+        ]
+      },
+      "input": {
+        "xs": "nope"
+      },
+      "expected_valid": false
+    }
+  ]
+}

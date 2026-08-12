@@ -1,0 +1,391 @@
+{
+  "description": "Cross-language parity for Algorithm A23 `to_strict_schema()` (PROTOCOL_SPEC §4.16 / ALGORITHMS A23). Pins the exact strict-mode schema all three SDKs must emit for the same input, byte-for-byte after JSON parsing.",
+  "driver_contract": {
+    "path": "MUST drive the SDK's A23 entry point directly — apcore-python `apcore.schema.to_strict_schema()`, apcore-typescript `toStrictSchema()`, apcore-rust `apcore::to_strict_schema()`. Not the exporter, not the binding wrapper: A23 is the shared deterministic surface.",
+    "assertion": "Compare the returned schema to `expected` by deep structural equality of the parsed JSON. Object key order is NOT significant; array order IS (a `required` list is emitted sorted, and a nullable wrapper always puts the original sub-schema first and `{\"type\": \"null\"}` second).",
+    "no_mutation": "`to_strict_schema()` MUST deep-copy: after the call, `schema` MUST still equal the fixture value. Drivers SHOULD assert this.",
+    "object_detection": "A node is an object schema when it carries `properties` AND either has no `type` keyword at all or has a `type` that declares \"object\" (string form `\"object\"`, or array form containing `\"object\"`). `properties` alone is sufficient — a missing `type` does not make the node any less of an object, and leaving it unhardened produces a schema OpenAI structured outputs rejects. Conversely `properties` sitting next to a non-object `type` is inert (type-mapping §17.1 R2) and MUST NOT be hardened.",
+    "nullable_wrapping": "An optional property gains exactly one nullable spelling. With a `type` keyword: `\"null\"` is added to it (string form becomes a two-member array; an array form that already contains `\"null\"` is left alone). Without a `type` keyword (pure `$ref`, `allOf`, `oneOf`, `anyOf`, or a bare `properties` object): the whole sub-schema is wrapped as `{\"anyOf\": [<original>, {\"type\": \"null\"}]}`. `anyOf`, never `oneOf` — OpenAI structured outputs accepts only `anyOf` as the nullable-union spelling. An author-written `oneOf`/`anyOf` is wrapped, never appended to: pushing a `null` branch into their union rewrites the contract they declared, and for `oneOf` it changes the exclusivity count apcore's own validator counts branches against.",
+    "recursion": "convert_to_strict recurses into `properties` values, `items`, every `prefixItems` entry, every `oneOf`/`anyOf`/`allOf` branch, and every `definitions`/`$defs` entry. `prefixItems` is not optional: an object at a tuple position is still an object."
+  },
+  "test_cases": [
+    {
+      "id": "object_without_type_keyword_is_hardened",
+      "description": "`properties` alone makes this an object schema; A23 must add additionalProperties:false and a complete required list.",
+      "schema": {
+        "properties": {
+          "x": { "type": "string" }
+        }
+      },
+      "expected": {
+        "properties": {
+          "x": { "type": ["string", "null"] }
+        },
+        "additionalProperties": false,
+        "required": ["x"]
+      }
+    },
+    {
+      "id": "nested_object_without_type_keyword_is_hardened",
+      "description": "The same rule applies at depth, not just at the root.",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "inner": {
+            "properties": { "y": { "type": "integer" } }
+          }
+        },
+        "required": ["inner"]
+      },
+      "expected": {
+        "type": "object",
+        "properties": {
+          "inner": {
+            "properties": { "y": { "type": ["integer", "null"] } },
+            "additionalProperties": false,
+            "required": ["y"]
+          }
+        },
+        "additionalProperties": false,
+        "required": ["inner"]
+      }
+    },
+    {
+      "id": "optional_typeless_object_is_wrapped_then_hardened",
+      "description": "An OPTIONAL typeless object gets the anyOf-null wrapper (it has no `type` to extend), and the wrapped copy is still hardened by the recursion.",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "nested": {
+            "properties": { "q": { "type": "integer" } }
+          }
+        }
+      },
+      "expected": {
+        "type": "object",
+        "properties": {
+          "nested": {
+            "anyOf": [
+              {
+                "properties": { "q": { "type": ["integer", "null"] } },
+                "additionalProperties": false,
+                "required": ["q"]
+              },
+              { "type": "null" }
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "required": ["nested"]
+      }
+    },
+    {
+      "id": "object_type_union_form_is_hardened",
+      "description": "`type: [\"object\", \"null\"]` — what the nullable wrapper itself produces — still declares an object schema.",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "inner": {
+            "type": ["object", "null"],
+            "properties": { "k": { "type": "string" } }
+          }
+        },
+        "required": ["inner"]
+      },
+      "expected": {
+        "type": "object",
+        "properties": {
+          "inner": {
+            "type": ["object", "null"],
+            "properties": { "k": { "type": ["string", "null"] } },
+            "additionalProperties": false,
+            "required": ["k"]
+          }
+        },
+        "additionalProperties": false,
+        "required": ["inner"]
+      }
+    },
+    {
+      "id": "properties_next_to_non_object_type_is_inert",
+      "description": "type-mapping §17.1 R2 — `properties` beside `type: \"string\"` asserts nothing and MUST NOT be hardened.",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "s": {
+            "type": "string",
+            "properties": { "nope": { "type": "string" } }
+          }
+        },
+        "required": ["s"]
+      },
+      "expected": {
+        "type": "object",
+        "properties": {
+          "s": {
+            "type": "string",
+            "properties": { "nope": { "type": "string" } }
+          }
+        },
+        "additionalProperties": false,
+        "required": ["s"]
+      }
+    },
+    {
+      "id": "prefix_items_object_is_hardened",
+      "description": "Draft 2020-12 tuple form. Skipping `prefixItems` in the recursion leaves an object at a tuple position unhardened.",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "tup": {
+            "type": "array",
+            "prefixItems": [
+              { "type": "object", "properties": { "z": { "type": "string" } } },
+              { "type": "string" }
+            ]
+          }
+        },
+        "required": ["tup"]
+      },
+      "expected": {
+        "type": "object",
+        "properties": {
+          "tup": {
+            "type": "array",
+            "prefixItems": [
+              {
+                "type": "object",
+                "properties": { "z": { "type": ["string", "null"] } },
+                "additionalProperties": false,
+                "required": ["z"]
+              },
+              { "type": "string" }
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "required": ["tup"]
+      }
+    },
+    {
+      "id": "optional_pure_ref_is_wrapped_in_anyof",
+      "description": "No `type` to extend — wrap. `anyOf`, never `oneOf`.",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "addr": { "$ref": "#/definitions/Address" }
+        },
+        "required": []
+      },
+      "expected": {
+        "type": "object",
+        "properties": {
+          "addr": {
+            "anyOf": [{ "$ref": "#/definitions/Address" }, { "type": "null" }]
+          }
+        },
+        "additionalProperties": false,
+        "required": ["addr"]
+      }
+    },
+    {
+      "id": "optional_oneof_is_wrapped_not_appended",
+      "description": "An author-written `oneOf` is wrapped whole. Appending `{type: null}` into it would rewrite the exclusivity count their contract asserts.",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "oneOf": [{ "type": "string" }, { "type": "integer" }]
+          }
+        },
+        "required": []
+      },
+      "expected": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "anyOf": [
+              { "oneOf": [{ "type": "string" }, { "type": "integer" }] },
+              { "type": "null" }
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "required": ["kind"]
+      }
+    },
+    {
+      "id": "optional_anyof_is_wrapped_not_appended",
+      "description": "Same rule for `anyOf`: one nullable spelling, applied uniformly.",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "alt": {
+            "anyOf": [{ "type": "string" }, { "type": "integer" }]
+          }
+        },
+        "required": []
+      },
+      "expected": {
+        "type": "object",
+        "properties": {
+          "alt": {
+            "anyOf": [
+              { "anyOf": [{ "type": "string" }, { "type": "integer" }] },
+              { "type": "null" }
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "required": ["alt"]
+      }
+    },
+    {
+      "id": "optional_allof_is_wrapped_in_anyof",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "comp": { "allOf": [{ "type": "string" }, { "minLength": 2 }] }
+        },
+        "required": []
+      },
+      "expected": {
+        "type": "object",
+        "properties": {
+          "comp": {
+            "anyOf": [
+              { "allOf": [{ "type": "string" }, { "minLength": 2 }] },
+              { "type": "null" }
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "required": ["comp"]
+      }
+    },
+    {
+      "id": "already_nullable_type_array_is_not_doubled",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "field": { "type": ["string", "null"] }
+        }
+      },
+      "expected": {
+        "type": "object",
+        "properties": {
+          "field": { "type": ["string", "null"] }
+        },
+        "additionalProperties": false,
+        "required": ["field"]
+      }
+    },
+    {
+      "id": "required_list_is_sorted_and_complete",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "zebra": { "type": "string" },
+          "apple": { "type": "string" },
+          "mango": { "type": "string" }
+        },
+        "required": ["zebra"]
+      },
+      "expected": {
+        "type": "object",
+        "properties": {
+          "zebra": { "type": "string" },
+          "apple": { "type": ["string", "null"] },
+          "mango": { "type": ["string", "null"] }
+        },
+        "additionalProperties": false,
+        "required": ["apple", "mango", "zebra"]
+      }
+    },
+    {
+      "id": "strips_x_extensions_and_defaults",
+      "description": "x-* and `default` are removed everywhere, including inside `items` and `$defs`.",
+      "schema": {
+        "type": "object",
+        "x-custom": "keep-out",
+        "properties": {
+          "cc": {
+            "type": "array",
+            "default": [],
+            "items": { "type": "string", "x-hint": "tag" }
+          }
+        },
+        "required": ["cc"],
+        "$defs": {
+          "Thing": {
+            "type": "object",
+            "properties": { "id": { "type": "string", "default": "x" } }
+          }
+        }
+      },
+      "expected": {
+        "type": "object",
+        "properties": {
+          "cc": {
+            "type": "array",
+            "items": { "type": "string" }
+          }
+        },
+        "additionalProperties": false,
+        "required": ["cc"],
+        "$defs": {
+          "Thing": {
+            "type": "object",
+            "properties": { "id": { "type": ["string", "null"] } },
+            "additionalProperties": false,
+            "required": ["id"]
+          }
+        }
+      }
+    },
+    {
+      "id": "items_and_defs_recursion",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": { "key": { "type": "string" } }
+            }
+          }
+        },
+        "required": ["tags"]
+      },
+      "expected": {
+        "type": "object",
+        "properties": {
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": { "key": { "type": ["string", "null"] } },
+              "additionalProperties": false,
+              "required": ["key"]
+            }
+          }
+        },
+        "additionalProperties": false,
+        "required": ["tags"]
+      }
+    },
+    {
+      "id": "non_object_schema_passthrough",
+      "description": "No `properties`, so nothing to harden — additionalProperties MUST NOT be invented.",
+      "schema": { "type": "string", "minLength": 1 },
+      "expected": { "type": "string", "minLength": 1 }
+    },
+    {
+      "id": "empty_schema_passthrough",
+      "description": "The always-true schema has no properties; A23 leaves it alone.",
+      "schema": {},
+      "expected": {}
+    }
+  ]
+}

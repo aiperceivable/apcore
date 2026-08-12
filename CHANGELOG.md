@@ -7,6 +7,94 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+(nothing yet)
+
+---
+
+## [1.9.0] - 2026-08-12
+
+> **First non-draft release of the specification.** Every prior version in the §14 version
+> history is recorded as `X.Y.Z-draft`; 1.9.0 is the first finalised one. Governance gate:
+> apcore#79 (linked issue + maintainer approval per GOVERNANCE.md § Decision Making).
+>
+> This section contains BREAKING specification changes. **No implementation had provided the
+> superseded v1.8.x behaviour for any of them**, verified per item against all three SDKs, so
+> no deprecation cycle is owed and no dual-accept window applies.
+
+> **Release note:** this section contains BREAKING specification changes.
+
+### Changed
+
+- **BREAKING: a `before_step` failure terminates the step and is NOT recoverable (middleware-system).** `before_step` raising and the step body raising previously shared one recovery path, so a value returned from `on_step_error` after a `before_step` failure let the pipeline advance past a step whose body never ran. The built-in strategy places `acl_check` and `approval_gate` in that sequence, making this a silent authorization bypass reachable from an extension point that carries no authority. The two paths are now separate: on the `before_step` path the recovery value **MUST be discarded**, `after_step` **MUST NOT** fire, and the step's `ignore_errors` **MUST NOT** apply — `MiddlewareChainError` propagates regardless. apcore-rust already behaved this way and the spec adopted its behaviour; apcore-python and apcore-typescript are changed to match. Pinned by `pipeline_step_middleware.json` → `before_step_failure_recovery_is_discarded`, whose driver contract requires asserting that the **following step did not execute** rather than merely that an error was raised — a raise-only assertion is satisfied by an implementation that honours the recovery and happens to fail later, while the bypass is live.
+
+  The module-level precedent does not transfer, despite the shared vocabulary: a module-level recovery value **terminates the call** and *is* the return value, whereas a step-level recovery value **resumes a pipeline**. Same name, different operation.
+
+- **`after_step` MUST fire after a recovered step body (middleware-system).** A recovered step produced an output and the pipeline continued, so the onion has to close — a middleware that acquired something in `before_step` was not getting its `after_step`, which leaks. apcore-python and apcore-typescript already did this; apcore-rust skipped it (`pipeline.rs` recovery branch jumped past the hook block). Pinned by `after_step_fires_after_a_recovered_step`, deliberately the opposite case to the one above.
+
+- **Async-callback detection is an SDK-local concern (middleware-system).** The rule prescribed `inspect.iscoroutinefunction` for Python, which misses `functools.partial` and decorator wrappers; apcore-python gates on `inspect.isawaitable()` applied to the returned value (Issue #42) and is correct to. Implementations MUST NOT be judged on the mechanism.
+
+- **BREAKING: `format` is an annotation, not an assertion (type-mapping §11).** §11.1 said `format` "provides semantic validation" and implementations **SHOULD** validate it, which reads as "a non-conforming value fails". Under the default format-annotation vocabulary of JSON Schema 2020-12 §7.2.1 it does not: a value that does not satisfy its declared `format` **MUST NOT** fail validation, and a format the implementation does not recognise **MUST** pass silently. §11 now states this, and points at `pattern` / `enum` for authors who want a binding constraint. Also records that where the SHOULD-level warning is emitted is **not** uniform — apcore-rust computes format warnings in `SchemaValidator::validate_detailed_raw`, but its module-invocation path never goes through `SchemaValidator` at all (the executor's `validate_against_schema` builds its own validator), so a Rust module call emits no format warning.
+
+- **BREAKING: no type coercion at the module boundary (type-mapping §17.3, rule R5).** The boundary **MUST NOT** coerce, under any host configuration. A `coerce_types` library knob MAY exist but **MUST NOT** reach that path and **MUST NOT** be readable from configuration. "No coercion" is about instance *types*, not renderings — `4.0` still satisfies `integer` per §6.1.1. Removes the last references to `schema.validation.coerce_types`, a key no SDK ever read.
+
+- **BREAKING: self-reference and circular reference are different things (§4.15).** The blanket "circular reference detection (A → B → A) MUST throw `SCHEMA_CIRCULAR_REF`" made every recursive schema unregisterable, contradicting the Recursive Schema Support requirement stated in the same specification. A `$ref` re-entered after descending through a schema body (`properties` / `items` / a combinator) is a recursive data structure and **MUST** be preserved as a lazy reference; only a `$ref` → `$ref` chain reaching no schema body **MUST** raise. RefResolver **MUST NOT** inline a self-reference, and the conversion layer **MUST** bind it at validation time rather than widening it to accept-anything.
+
+- **BREAKING: `oneOf` exclusivity is location-independent (schema-system).** The exhaustive-evaluation rule applies inside `properties`, `items`, `$defs` and nested combinators, not only at the document root; a root-level combinator **MUST** be enforced on the generated native model so every call path observes it.
+
+- **BREAKING: A23 object detection and nullable spelling (algorithms, §4.16).** Object detection is now "carries `properties` **and** (`type` absent **or** `type` declares `object`)", resolving the contradiction between §4.16 ("All nested object types MUST set `additionalProperties: false`") and the A23 pseudo-code (`node.type == "object"`). The recursion list gains `prefixItems`, plus `definitions` / `$defs` which all three SDKs already walked but the specification never listed. An optional property with no `type` — including an author-written `oneOf` / `anyOf` — is **wrapped** as `{anyOf: [<original>, {type: "null"}]}`, never appended to: one nullable spelling, and `anyOf` because OpenAI structured outputs accepts only that.
+
+- **`schema` configuration namespace corrected (§4.9).** The example declared `schema.paths.yaml_schemas` and `schema.validation.*`; the real namespace is `root` / `strategy` / `max_ref_depth`, and `schemas/defaults.schema.json` declares it `additionalProperties: false` — so the documented example was a configuration error. Strictness and coercion are properties of the contract, not of the host.
+
+### Added
+
+- **type-mapping §17 "Validation Keyword Conformance".** A normative MUST/MAY table for every Draft 2020-12 validation and applicator keyword, with four general rules: **R1** no silent drop (a keyword that cannot be enforced fails at load with `SCHEMA_PARSE_ERROR`), **R2** keyword inertness on instances of other types, **R3** adjacency with `type` (both are independent assertions), **R4** conformance asserted by fixture. Replaces the "Complex combinators have partial support" note, which was too vague to judge an implementation against. §3.1 / §3.2 / §10.3 extended to the full §6.4 / §6.5 / §10.3 keyword sets.
+
+- **`conformance/fixtures/schema_keyword_parity.json` (119 cases).** Keyword handling parity **at the validation boundary** — the path a module call actually takes. Its `driver_contract` states this explicitly, because the previous generation of fixtures drove only the raw-JSON-Schema validator, and that is precisely why a whole class of converter defects stayed invisible for several releases.
+
+- **`conformance/fixtures/schema_strict_conversion.json` (16 cases).** The exact A23 output all three SDKs must emit.
+
+- **`conformance/fixtures/openai_strict_compat.json` (30 cases).** The OpenAI structured-outputs keyword set backing `BindingStrictSchemaIncompatibleError`, recording its source URL and verification date so it can be re-checked as the provider evolves.
+
+- **`driver_contract` on `schema_hardening_formats.json`.** States which halves of that fixture are normative: the `valid: true` half holds on all three SDKs at the module boundary; the `warn_logged` half does not pin equivalent behaviour, and `format_mappings` is aspirational metadata no SDK implements.
+
+- **A23 `required` is emitted sorted (algorithms A23 step 2f, §4.16).** The algorithm said only "`node.required` ← all_property_names" and both worked examples showed insertion order, while `schema_strict_conversion.json` pins a sorted list and all three SDKs already sort. The sort is now normative, specified as Unicode **code point** order (JavaScript's default `Array.prototype.sort()` compares UTF-16 code units and orders supplementary-plane names differently), and both worked examples corrected.
+
+### Fixed
+
+- **`features/middleware-system.md` §Pipeline Step Middleware was written without implementation contact.** It specified `before_step(step_name, ctx, inputs)` and a MUST that a non-null return **replaces the step's inputs** — a calling convention that exists in no SDK, because a `Step` is `execute(ctx)` and takes no `inputs` argument. All three SDKs independently ship `before_step(step_name, state)` over a single growable `PipelineState`; three implementations agreeing against one spec sentence is the sentence being wrong. `before_step` is now documented as an **observation** hook whose return value carries no meaning. The section also showed `pipeline.configure` as an array of `{name, …}` objects — it is an object map keyed by step name, per `$defs/PipelineConfig` and all three parsers — and documented a `pipeline.step_middleware:` config section that no SDK has ever parsed.
+
+- **Three SDKs emitted three different wire codes for the same pipeline-config failure.** `conformance/fixtures/pipeline_failfast_config.json` asserted `error_type: "ConfigurationError"` — a *class* name that all three happen to share — and so reported green while Python emitted `PIPELINE_CONFIGURATION_ERROR`, TypeScript `PIPELINE_CONFIG_INVALID` and Rust `CONFIGURATION_ERROR` (a string in no registry). The fixture now asserts the wire code. The canonical code is `PIPELINE_CONFIGURATION_ERROR`; `features/error-system.md` additionally had two rows describing the same event, and now states the deliberate layer boundary: the strategy API raises `STEP_NOT_FOUND` / `PIPELINE_STEP_NOT_FOUND`, and the `pipeline:` config layer re-classifies that miss as `PIPELINE_CONFIGURATION_ERROR` so the message can name the offending config key.
+
+- **`validate_input` is not a step.** The built-in steps are `context_creation`, `call_chain_guard`, `module_lookup`, `acl_check`, `approval_gate`, `middleware_before`, `input_validation`, `execute`, `output_validation`, `middleware_after`, `return_result`. Three fixtures (`pipeline_hardening`, `pipeline_failfast_config`, `pipeline_step_middleware`) referenced `validate_input`, which exists in no SDK. In `pipeline_failfast_config` this was load-bearing: the fail-fast case relied on one *valid* key and one invalid one, so with both invalid it would have raised on the first and never reached the assertion it was written to make.
+
+- **`features/observability.md` `StorageBackend` examples stored bytes; the contract is JSON objects.** All three Redis examples used `bytes` / `Uint8Array` / `&[u8]` while the actual signatures are `dict` / `Record<string, unknown>` / `serde_json::Value`, and all three collectors index into the returned value — so a backend copied from the docs breaks at the collector, not at the backend. The examples now serialize at the boundary, the value type is stated normatively, and the Rust example gains the `#[async_trait]` and `Debug` the real trait requires (it could not have compiled).
+
+- **`OverridesStore` was specified with a per-key surface no SDK implements.** `features/system-modules.md` required `set(key, value)` / `get(key)` / `get_all()` / `delete(key)`; all three SDKs ship the whole-map `load()` / `save(mapping)` of decision **D-47**, and the `system.control.*` paths do a read-modify-write. Spec and `conformance/fixtures/overrides_store.json` aligned to D-47.
+
+- **`conformance/fixtures/async_task_evolution.json` reaper case was arithmetically unreachable.** With `now_timestamp: 1700003000.0` the cutoff expired *both* tasks, making the asserted `remaining_task_ids: ["fresh-task-001"]` impossible; apcore-typescript had silently substituted its own `stableNow` to get the driver to pass. Corrected to `1700002000.0`.
+
+- **`conformance/fixtures/event_naming.json` still required removed behavior.** Two cases asserted the v0.21.x legacy dual-emission that v0.22.0 removed (apcore#78). Replaced with the inverse assertion — legacy names MUST NOT be emitted — so the removal is pinned rather than merely un-tested. The health-threshold case also asserted an exact `p99` of `6000.0`; p99 is a bucketed estimate and Rust's default bucket boundaries have no `6.0s` edge, so it now asserts a lower bound.
+
+- **`schemas/apcore-config.schema.json` rejected the specification's own canonical config.** `ExtensionsConfig` declared `additionalProperties: false` as a sibling of `oneOf` with no sibling `properties`, so under Draft 2020-12 it saw no annotations from the branches and rejected **every** `extensions` key — including `root`, a MUST field. Replaced with `unevaluatedProperties: false`, which is exactly the rule type-mapping §17.2/§10 now states. The root object also omitted four documented namespaces (`bindings`, `sys_modules`, `stream`, `obs`) and `ExecutorConfig` omitted `default_timeout` / `global_timeout`, all of which are normatively required; `schema.validation.*` was still declared; `max_ref_depth` allowed 128 against the §9.1.1 range of 1..100.
+
+- **`observability.{tracing,metrics}.enabled` default corrected to `false`.** `apcore-config.schema.json` and the §9.1 example said `true`; `defaults.schema.json` and all three SDKs use `false`. Aligned to the implementations.
+
+- **§9.1.1 declared two configuration keys that exist nowhere.** `observability.enabled` and `observability.exporter` appear in neither the §9.1 example nor either JSON Schema, both of which are `additionalProperties: false` — so a config following that MUST was rejected. Replaced with the five nested keys actually defined.
+
+- **A05 `resolve_ref` pseudocode still threw on every revisited `$ref`** in both PROTOCOL_SPEC §4.11 and ALGORITHMS, contradicting the new §4.15 and making the spec's own `TreeNode` example raise. Rewritten with the `visited_refs` root-alias seed, the `depth` cap and the `from_ref_chain` discriminator that all three SDKs implement. The §4.15 edge-case table also still required `SCHEMA_CIRCULAR_REF` for depth exhaustion; it now requires `SCHEMA_MAX_DEPTH_EXCEEDED`, which is added to the §8 error-code registry, the retryability table and the exception hierarchy along with `SCHEMA_UNION_NO_MATCH` / `SCHEMA_UNION_AMBIGUOUS` (asserted by fixtures but previously absent from both registries).
+
+- **Stale propagation of the schema-hardening change.** `docs/features/schema-system.md` Data Flow still said `RefResolver` inlines *all* `$ref` targets; its "Semantic Format Mapping" section still demanded assertive `format` checking; `docs/guides/troubleshooting.md` gave the now-legal self-reference as the `SCHEMA_CIRCULAR_REF` trigger; `docs/guides/schema-definition.md` promised native-type `format` mappings no SDK performs.
+
+- **`docs/spec/conformance.md` §8.1 fixture inventory** was stale by 15 fixtures and 267 cases (370/43 → 637/58); regenerated from disk. `conformance/README.md` listed A23 as a coverage gap in the same commit that added its fixture, said "Four fixtures" for what is now seven non-standard patterns, omitted the three new fixtures' `expected_valid` / `expected_features` shapes and the root-level `driver_contract` convention, and cited PROTOCOL_SPEC §6.2/§6.6 where DECLARATIVE_CONFIG_SPEC was meant.
+
+- **~120 non-runnable code examples across `docs/features/`, `docs/guides/` and `docs/getting-started.md`.** Whole sections documented a client surface that exists in no SDK (`configure_observability`, `use_step_middleware`, `client.use(mw, allow_duplicate=…)`, `RedisTaskStore`), written identically into all three language tabs — mutually consistent and mutually wrong, which is why cross-language review never caught them. Also fixed: ~25 `apcore-js/<subpath>` imports (the package exports only `.` and `./context-keys`), 11 imports of a nonexistent `apcore` npm package, `Context.create()` called with an options object or the wrong positional slot in all three languages, 49 Rust public fields called as methods, nonexistent `ErrorCode` variants, 7 Python imports from module paths that do not exist, TypeScript type-only exports instantiated with `new`, `Executor.call` awaited in Python where it is synchronous, and a `getting-started.md` Rust tab that could not compile.
+
+- **RFC 2119 keywords lowercased** in §13 Compatibility Rules and the Phase A approval conformance requirement.
+
+- **`ExecutionPolicy` status** said the TypeScript and Rust rollout was in progress; both shipped in 0.26.0.
+
 ## [0.26.0] - 2026-07-13
 
 PROTOCOL_SPEC bumped to **v1.9.0-draft**.

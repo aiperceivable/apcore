@@ -35,7 +35,9 @@
         "submitted_at": 1700000000.0,
         "started_at": 1700000001.0,
         "completed_at": 1700000005.0,
-        "result": {"processed": 42},
+        "result": {
+          "processed": 42
+        },
         "error": null,
         "retry_count": 0,
         "max_retries": 0
@@ -46,7 +48,9 @@
         "found": true,
         "task_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
         "status": "completed",
-        "result": {"processed": 42}
+        "result": {
+          "processed": 42
+        }
       }
     },
     {
@@ -94,7 +98,9 @@
       "status_filter": "completed",
       "expected": {
         "count": 1,
-        "task_ids": ["task-001"]
+        "task_ids": [
+          "task-001"
+        ]
       }
     },
     {
@@ -200,7 +206,7 @@
     },
     {
       "id": "reaper_deletes_expired_tasks",
-      "description": "When the Reaper is enabled and ttl_seconds elapses, tasks with completed_at older than now - ttl_seconds are deleted on the next sweep.",
+      "description": "When the Reaper is enabled and ttl_seconds elapses, tasks with completed_at older than now - ttl_seconds are deleted on the next sweep. now_timestamp is 1700002000: the cutoff is 1699998400, so expired-task-001 (completed 1699990002) is swept and fresh-task-001 (completed 1699999002) survives. It was 1700003000, which put the cutoff at 1699999400 and expired BOTH tasks — remaining_task_ids was unreachable and no SDK drove this case as written; apcore-typescript silently substituted its own timestamp to get past it.",
       "config": {
         "reaper": {
           "enabled": true,
@@ -235,10 +241,14 @@
         }
       ],
       "action": "trigger_reaper_sweep",
-      "now_timestamp": 1700003000.0,
+      "now_timestamp": 1700002000.0,
       "expected": {
-        "deleted_task_ids": ["expired-task-001"],
-        "remaining_task_ids": ["fresh-task-001"]
+        "deleted_task_ids": [
+          "expired-task-001"
+        ],
+        "remaining_task_ids": [
+          "fresh-task-001"
+        ]
       }
     },
     {
@@ -281,7 +291,10 @@
       "now_timestamp": 1700003000.0,
       "expected": {
         "deleted_task_ids": [],
-        "remaining_task_ids": ["long-running-task-001", "long-pending-task-001"]
+        "remaining_task_ids": [
+          "long-running-task-001",
+          "long-pending-task-001"
+        ]
       }
     }
   ]

@@ -330,7 +330,7 @@ Steps:
 
 **Source**: PROTOCOL_SPEC §4.10
 
-**Description**: Resolves `$ref` references in JSON Schema, supporting local references, cross-file references, and Canonical ID references. **MUST** detect and reject circular references.
+**Description**: Resolves `$ref` references in JSON Schema, supporting local references, cross-file references, and Canonical ID references. **MUST** reject circular references — a `$ref` → `$ref` chain that never reaches a schema body — and **MUST** preserve self-references as lazy `$ref` nodes. PROTOCOL_SPEC §4.15 ("Self-reference vs. circular reference") is the sole authority on which re-entry is which.
 
 **Input Parameters:**
 
@@ -339,13 +339,15 @@ Steps:
 | `ref_string` | `String` | `$ref` value (e.g., `"./common/error.schema.yaml#/definitions/ErrorDetail"`) |
 | `current_file` | `String` | Current Schema file path |
 | `schemas_dir` | `String` | schemas root directory |
-| `visited_refs` | `Set<String>` | Set of visited refs (for cycle detection) |
+| `visited_refs` | `Set<String>` | Refs already on the resolution stack. Seeded by the caller with the aliases of the document being resolved (`#`, `#/`, and the document's own `$id`), so a reference naming that document is lazy from the **first** encounter |
+| `depth` | `Integer` | `$ref` hops taken so far (starts at 0) |
+| `from_ref_chain` | `Boolean` | True when the previous node was itself a bare `$ref`, i.e. no schema body was traversed between the two. False on any structural descent |
 
 **Output:**
 
 | Return Value | Type | Description |
 |--------|------|------|
-| `resolved_schema` | `Object` | Resolved Schema object |
+| `resolved_schema` | `Object` | Resolved Schema object, or the `$ref` node unchanged when the reference is a self-reference |
 
 **Preconditions:**
 
@@ -353,26 +355,35 @@ Steps:
 
 **Postconditions:**
 
-- The returned Schema object does not contain unresolved `$ref`s (or has reached maximum depth limit)
-- No circular references exist
+- The returned Schema object contains no unresolved `$ref`s **except** self-references, which are preserved verbatim as lazy `$ref` nodes for the converter to bind at validation time
+- No `$ref` → `$ref` cycle remains: such a chain raises `SCHEMA_CIRCULAR_REF` instead of returning
+- `depth` never exceeded `schema.max_ref_depth`
 
 **Pseudocode:**
 
 ```
-Algorithm: resolve_ref(ref_string, current_file, schemas_dir, visited_refs)
+Algorithm: resolve_ref(ref_string, current_file, schemas_dir, visited_refs,
+                       depth, from_ref_chain)
 
 Steps:
-  1. If ref_string ∈ visited_refs → throw SCHEMA_CIRCULAR_REF error
-  2. visited_refs ← visited_refs ∪ {ref_string}
-  3. Parse ref_string into (file_part, json_pointer):
+  1. If ref_string ∈ visited_refs:
+     a. If from_ref_chain → throw SCHEMA_CIRCULAR_REF error
+     b. Otherwise → return { "$ref": ref_string } unchanged, preserving any
+        sibling keys (legal self-reference — bind lazily, do not inline)
+  2. If depth >= schema.max_ref_depth → throw SCHEMA_MAX_DEPTH_EXCEEDED error
+  3. visited_refs ← visited_refs ∪ {ref_string}
+  4. Parse ref_string into (file_part, json_pointer):
      a. If starts with "#" → file_part = current_file, json_pointer = ref_string[1:]
      b. If contains "#" → split by "#" into file_part and json_pointer
      c. If starts with "apcore://" → convert to file path under schemas_dir
      d. Otherwise → file_part is relative to current_file's directory
-  4. schema_doc ← load and parse YAML/JSON file corresponding to file_part
-  5. resolved ← locate target node by json_pointer in schema_doc
-  6. If resolved still contains $ref → recursively call resolve_ref(...)
-  7. Return resolved
+  5. schema_doc ← load and parse YAML/JSON file corresponding to file_part
+  6. resolved ← locate target node by json_pointer in schema_doc
+  7. If resolved is itself a bare $ref → recursively call resolve_ref(...) with
+     depth + 1 and from_ref_chain = True
+  8. Walk resolved's children; for each nested $ref reached by structural
+     descent call resolve_ref(...) with depth + 1 and from_ref_chain = False
+  9. Return resolved
 ```
 
 **Complexity Analysis:**
@@ -384,7 +395,9 @@ Steps:
 
 **Implementation Notes:**
 
-- Implementations **SHOULD** limit maximum reference depth to 32 (configurable via `schema.max_ref_depth`)
+- Implementations **SHOULD** limit maximum reference depth to 32 (configurable via `schema.max_ref_depth`). Exhausting the cap raises `SCHEMA_MAX_DEPTH_EXCEEDED`, which is a **distinct** condition from an actual cycle — do not conflate it with `SCHEMA_CIRCULAR_REF`
+- **Depth is consumed by `$ref` hops only.** Steps 7 and 8 both increment `depth` because both follow a reference; ordinary structural descent into `properties` or `items` does not
+- **`from_ref_chain` is the whole discriminator.** A reference re-entered after descending through a schema body consumes one level of the *instance* per hop, so resolution terminates as soon as the data does — that is the recursive-structure shape JSON Schema 2020-12 §8.2.3 sanctions, and it **MUST NOT** raise. A reference re-entered along a chain of bare `$ref`s consumes no instance and cannot terminate — that **MUST** raise
 - Reference formats come in three types:
   - Local reference: `#/definitions/ErrorDetail`
   - Relative path reference: `./common/error.schema.yaml#/definitions/ErrorDetail`
@@ -1821,7 +1834,10 @@ Sub-algorithm: convert_to_strict(node)
 
 Steps:
   1. If node is not Object → return node
-  2. If node.type == "object" and node contains properties:
+  2. If node declares an object schema — node contains properties AND
+     (node has no "type" keyword at all
+      OR node.type declares "object", in either the string form "object"
+         or the array form ["object", "null"]):
      a. node.additionalProperties ← false
      b. existing_required ← node.required ?? []
      c. all_property_names ← all keys in node.properties
@@ -1832,19 +1848,30 @@ Steps:
           prop.type ← [prop.type, "null"]
         If prop.type is array and does not contain "null":
           prop.type ← prop.type ∪ ["null"]
-        If prop does not contain type (e.g., pure $ref):
-          prop ← { oneOf: [prop, { type: "null" }] }  # Wrap as oneOf
-     f. node.required ← all_property_names (all fields)
+        If prop does not contain type (e.g., pure $ref or a composition):
+          prop ← { anyOf: [prop, { type: "null" }] }  # Wrap as anyOf, never oneOf
+     f. node.required ← sort(all_property_names)   # ALL fields, lexicographically
+        # Sorted, not insertion-ordered: the output has to be byte-identical
+        # across SDKs whose object types iterate in different orders.
+        # Compare by Unicode code point (not UTF-16 code unit) so a property
+        # name outside the BMP orders the same everywhere.
   3. Recursively process nested structures:
      a. If node.properties exists:
         For each (key, prop) ∈ node.properties:
           node.properties[key] ← convert_to_strict(prop)
      b. If node.items exists:
         node.items ← convert_to_strict(node.items)
-     c. For keyword ∈ ["oneOf", "anyOf", "allOf"]:
+     c. If node.prefixItems exists:
+        For each entry ∈ node.prefixItems:
+          entry ← convert_to_strict(entry)
+     d. For keyword ∈ ["oneOf", "anyOf", "allOf"]:
         If node[keyword] exists:
           For each sub_schema ∈ node[keyword]:
             sub_schema ← convert_to_strict(sub_schema)
+     e. For defs_key ∈ ["definitions", "$defs"]:
+        If node[defs_key] exists:
+          For each (name, defn) ∈ node[defs_key]:
+            node[defs_key][name] ← convert_to_strict(defn)
   4. Return node
 ```
 
@@ -1859,11 +1886,15 @@ Steps:
 
 - Conversion **MUST** be performed on copy, **forbidden** to modify original Schema
 - `x-llm-description` **SHOULD** first replace corresponding field's `description` before stripping (see §4.3 export rules), then execute `strip_extensions()`
-- Pure `$ref` nodes (no `type`) use `oneOf` wrapping when making nullable, rather than directly adding `type`
+- Pure `$ref` nodes (no `type`) use **`anyOf`** wrapping when making nullable, rather than directly adding `type`. `anyOf`, not `oneOf`: OpenAI structured outputs — the consumer strict mode exists to feed — accepts only `anyOf` as the nullable-union spelling. A `oneOf` the module author wrote is preserved untouched inside the wrapper; rewriting it would drop the exclusivity their contract asserts
+- An author-written `oneOf` / `anyOf` on an optional property is **wrapped** by the same rule, never appended to. There is exactly one nullable spelling — `{anyOf: [<original>, {type: "null"}]}` — and pushing a `null` branch into the author's union rewrites the contract they declared (for `oneOf`, it also changes the exclusivity count the validator counts branches against)
+- **`properties` alone identifies an object schema.** A node carrying `properties` **MUST** be hardened when it has no `type` keyword at all, or when its `type` declares `"object"` in either the string form (`"object"`) or the array form (`["object", "null"]` — which is exactly what the nullable wrapping in step 2e produces for an optional nested object). Requiring a literal `type: "object"` let `{"properties": {…}}` through with neither `additionalProperties: false` nor a `required` list, which OpenAI structured outputs then rejects. Conversely, `properties` sitting beside a **non-object** `type` is inert (TYPE_MAPPING §17.1 R2) and **MUST NOT** be hardened
 - If `additionalProperties` already exists and is `true`, **MUST** change to `false`
 - For fields already in `type: ["string", "null"]` form, should not add `"null"` again
-- `object` inside `items` also need recursive processing
+- `object` inside `items` also need recursive processing, and so does an `object` at a `prefixItems` tuple position — the Draft 2020-12 tuple form is not an exception
 - `default` values are invalid in Strict Mode (AI won't auto-fill), so remove them as well
+- **`required` is emitted sorted, and array order is significant.** Step 2f replaces `required` wholesale with every property name in lexicographic order, discarding the author's original ordering. Insertion order would make the output depend on each language's object-iteration order, so the fixture below could not assert equality. Sort by Unicode **code point**: JavaScript's default `Array.prototype.sort()` compares UTF-16 code units and orders supplementary-plane names differently from Python's `sorted()` and Rust's `Vec<String>::sort()`, so a JS implementation needs an explicit code-point comparator
+- Conformance to this algorithm is asserted by `conformance/fixtures/schema_strict_conversion.json`, which pins the exact strict schema all three SDKs must emit for each input
 
 **Example — Complex Conversion:**
 
@@ -1910,7 +1941,7 @@ properties:
         type: ["integer", "null"]
     required: [retry, timeout]
     additionalProperties: false
-required: [to, cc, config]
+required: [cc, config, to]     # every property, sorted (step 2f)
 additionalProperties: false
 ```
 

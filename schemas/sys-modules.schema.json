@@ -1,0 +1,146 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://apcore.dev/schemas/sys-modules.schema.json",
+  "title": "apcore sys_modules Namespace Schema",
+  "description": "JSON Schema for the `sys_modules` configuration namespace registered by PROTOCOL_SPEC §9.15.3 (env prefix APCORE_SYS). §9.15.3 has referenced this file since it was written; this is that file. It is the canonical declaration of every key `register_sys_modules()` reads, so an SDK default table carrying a `sys_modules.*` key absent from here is an SDK-invented default.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "enabled": {
+      "type": "boolean",
+      "description": "Master switch. When false, no system.* module is registered and every other key here is inert.",
+      "default": false
+    },
+    "health": {
+      "type": "object",
+      "description": "system.health.* module group.",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Whether system.health.summary and system.health.module are registered.",
+          "default": true
+        }
+      }
+    },
+    "manifest": {
+      "type": "object",
+      "description": "system.manifest.* module group.",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Whether system.manifest.module and system.manifest.full are registered.",
+          "default": true
+        }
+      }
+    },
+    "usage": {
+      "type": "object",
+      "description": "system.usage.* module group and the collector backing it.",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Whether system.usage.summary and system.usage.module are registered.",
+          "default": true
+        },
+        "retention_hours": {
+          "type": "integer",
+          "description": "How long usage records are retained by the collector.",
+          "default": 168,
+          "minimum": 1
+        },
+        "bucketing_strategy": {
+          "type": "string",
+          "description": "Granularity of the usage distribution buckets.",
+          "enum": ["hourly"],
+          "default": "hourly"
+        }
+      }
+    },
+    "control": {
+      "type": "object",
+      "description": "system.control.* module group. These modules are approval-gated (annotations.requires_approval = true).",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Whether the system.control.* modules are registered.",
+          "default": true
+        },
+        "overrides_path": {
+          "type": ["string", "null"],
+          "description": "Path to the runtime overrides file. When set and no OverridesStore is supplied explicitly, a file-backed store is constructed from it.",
+          "default": null
+        }
+      }
+    },
+    "error_history": {
+      "type": "object",
+      "description": "Bounded error-history store feeding system.health.*.",
+      "additionalProperties": false,
+      "properties": {
+        "max_entries_per_module": {
+          "type": "integer",
+          "description": "Maximum retained error entries per module.",
+          "default": 50,
+          "minimum": 1
+        },
+        "max_total_entries": {
+          "type": "integer",
+          "description": "Maximum retained error entries across all modules.",
+          "default": 1000,
+          "minimum": 1
+        }
+      }
+    },
+    "events": {
+      "type": "object",
+      "description": "Event emitter and the platform-notify thresholds derived from it.",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Whether an EventEmitter is created and the event-driven system.control.* modules are registered.",
+          "default": false
+        },
+        "subscribers": {
+          "type": "array",
+          "description": "Declarative subscriber definitions instantiated at registration time. Each entry needs a `type` naming a registered subscriber factory (webhook, a2a, file, stdout, filter).",
+          "items": {
+            "type": "object",
+            "required": ["type"],
+            "properties": {
+              "type": {
+                "type": "string",
+                "description": "Registered subscriber factory name."
+              }
+            }
+          },
+          "default": []
+        },
+        "thresholds": {
+          "type": "object",
+          "description": "PlatformNotifyMiddleware alert thresholds.",
+          "additionalProperties": false,
+          "properties": {
+            "error_rate": {
+              "type": "number",
+              "description": "Error rate at or above which apcore.health.error_threshold_exceeded is emitted.",
+              "default": 0.1,
+              "minimum": 0.0,
+              "maximum": 1.0
+            },
+            "latency_p99_ms": {
+              "type": "number",
+              "description": "p99 latency in milliseconds at or above which apcore.health.latency_threshold_exceeded is emitted.",
+              "default": 5000.0,
+              "exclusiveMinimum": 0
+            }
+          }
+        }
+      }
+    }
+  }
+}
