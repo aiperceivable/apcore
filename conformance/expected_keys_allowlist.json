@@ -3,13 +3,33 @@
   "allow": [
     {
       "fixture": "sensitive_keys_default.json",
-      "keys": ["AccessKey", "Cookie", "internal_token", "private_key_pem", "session_id"],
+      "keys": [
+        "AccessKey",
+        "Cookie",
+        "internal_token",
+        "private_key_pem",
+        "session_id"
+      ],
       "reason": "`expected` here is a map from FIELD NAME to whether that field is redacted by the default key list. The keys are the inputs under test — the driver iterates the map rather than naming any single field — so a literal-mention check cannot see them. Adding a field means adding a case, not an assertion."
     },
     {
       "fixture": "redaction_config.json",
-      "keys": ["amount", "openai_key", "other_field", "refresh_token", "session_token_id"],
+      "keys": [
+        "amount",
+        "openai_key",
+        "other_field",
+        "refresh_token",
+        "session_token_id"
+      ],
       "reason": "Same shape: `expected` is a payload-shaped map of field name to post-redaction value, iterated by the driver. These are data, not assertion names."
+    },
+    {
+      "fixture": "approval_gate.json",
+      "keys": [
+        "http_status"
+      ],
+      "reason": "403 / 202 for the approval outcomes. NO SDK exposes a code-to-HTTP mapping — `grep -ri http_status` across apcore-python, apcore-typescript and apcore-rust `src/` returns nothing. The mapping lives in the transport adapters (express-apcore, fastapi-apcore), which are separate repos with their own conformance surface. There is nothing on the thrown error for a core-SDK driver to observe, and restating 403 from the fixture would assert nothing. The drivers assert `error_code` instead, which is the core-SDK-observable half of the same contract.",
+      "removable_when": "the transport adapters gain a conformance driver against this fixture, or the core SDKs grow a code-to-HTTP mapping"
     }
   ]
 }

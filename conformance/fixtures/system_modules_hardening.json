@@ -227,7 +227,7 @@
     },
     {
       "id": "rust_register_returns_result",
-      "description": "Rust register_sys_modules returns Result<(), SysModuleError> — Ok(()) on success, Err(SysModuleError) on failure",
+      "description": "Rust register_sys_modules returns Result<SysModulesContext, SysModuleError> — Ok(SysModulesContext) on success, Err(SysModuleError) on failure. The Ok arm carries the registered-module map and the shared EventEmitter/ToggleState/ErrorHistory/UsageCollector handles, matching apcore-python's returned context dict; it is NOT unit.",
       "language": "rust",
       "setup": {
         "simulated_failure": null
@@ -238,7 +238,7 @@
       },
       "expected": {
         "return_type": "Result",
-        "ok_variant": "()",
+        "ok_variant": "SysModulesContext",
         "err_variant": "SysModuleError",
         "panics": false,
         "returns_option": false

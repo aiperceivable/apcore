@@ -69,8 +69,9 @@
         "ms_since_opened": 5000
       },
       "expected": {
-        "error": "CircuitBreakerOpenError",
-        "module_reached": false
+        "module_reached": false,
+        "error_code": "CIRCUIT_BREAKER_OPEN",
+        "error_class_name_is_not_the_contract": "apcore-python names the class CircuitBreakerOpenError; apcore-rust has no such type, only ErrorCode::CircuitBreakerOpen. Only the wire code is assertable in all three."
       }
     },
     {
@@ -156,5 +157,8 @@
         }
       }
     }
-  ]
+  ],
+  "driver_contract": {
+    "assert_the_wire_code": "Cross-language cases state their expected failure as `error_code`, the wire string, never a class name. `circuit_breaker_short_circuits_open` asserted `CircuitBreakerOpenError`, a Python/TypeScript class apcore-rust cannot have — Rust models these as `ErrorCode` variants — so no Rust driver could ever satisfy it. Cases carrying an explicit `language` field are the exception: they assert that language's API shape, and a type name there is the thing under test rather than a stand-in for the contract."
+  }
 }

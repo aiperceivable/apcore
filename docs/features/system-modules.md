@@ -1336,7 +1336,7 @@ config.reload_from_disk()?;
 
 - **Python**: `register_sys_modules()` MUST accept a `fail_on_error: bool = False` parameter. When `True`, any system module registration failure MUST raise immediately. When `False` (default), failures MUST be logged at ERROR level but execution continues.
 - **TypeScript**: `registerSysModules()` MUST accept `failOnError: boolean = false` with the same behavior.
-- **Rust**: `register_sys_modules()` MUST return `Result<(), SysModuleError>` instead of returning `Option` or panicking. The caller MUST handle the Result.
+- **Rust**: `register_sys_modules()` MUST return `Result<SysModulesContext, SysModuleError>` instead of returning `Option` or panicking. The caller MUST handle the Result. The `Ok` arm carries the same context the Python/TypeScript call returns — it is not unit.
 
 #### Usage Examples
 
@@ -1440,8 +1440,8 @@ config.reload_from_disk()?;
 
 ### Returns
 
-- **On success:** `SysModulesContext` — all system modules registered (void/None/() in Rust: `Result<(), SysModuleError>`).
-- **Rust:** `Result<(), SysModuleError>`
+- **On success:** `SysModulesContext` — all system modules registered.
+- **Rust:** `Result<SysModulesContext, SysModuleError>` — the `Ok` arm carries the same `SysModulesContext`, so the return is uniform across all three SDKs.
 
 ### Properties
 

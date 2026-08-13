@@ -147,16 +147,15 @@ jobs:
         working-directory: apcore
         run: python3 conformance/check_doc_examples.py --sdk-root ..
 
-      - name: No NEW `expected` key that goes unasserted
+      - name: Every `expected` key is asserted by a driver
         working-directory: apcore
-        # A key in `expected` that no driver reads is not a contract — it reads
-        # as covered everywhere while nothing is checked. 61 such keys exist
-        # today (`expected_keys_baseline.json`); --baseline blocks a NEW one
-        # without holding up unrelated work. This is the guard that would have
-        # caught `wrapped_in`, declared by the fixture and read by nobody, which
-        # let the MiddlewareChainError wrapping be removed from two SDKs with
-        # every test still green.
-        run: python3 conformance/check_expected_keys_read.py --baseline --sdk-root ..
+        # --strict, because the backlog is closed: all 378 top-level `expected`
+        # keys are asserted by at least one driver. A key no driver reads is not
+        # a contract — it reads as covered everywhere while nothing is checked.
+        # This is the guard that would have caught `wrapped_in`, declared by the
+        # fixture and read by nobody, which let the MiddlewareChainError
+        # wrapping be removed from two SDKs with every test still green.
+        run: python3 conformance/check_expected_keys_read.py --strict --sdk-root ..
 
       - name: Every fixture is driven by all three SDKs
         working-directory: apcore

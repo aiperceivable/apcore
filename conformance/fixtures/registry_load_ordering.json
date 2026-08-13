@@ -25,10 +25,10 @@
         "registration_succeeds": true,
         "post_register_visible": true,
         "concurrent_check_visible": false,
-        "concurrent_check_get_raises": "MODULE_NOT_FOUND",
         "on_load_observed_data": {
           "_test.warmed": true
-        }
+        },
+        "concurrent_check_get_returns": null
       }
     },
     {
@@ -51,7 +51,6 @@
         "registration_error_message": "Failed to reach upstream during initialization",
         "post_register_visible": false,
         "post_register_list_contains": false,
-        "post_register_get_raises": "MODULE_NOT_FOUND",
         "load_failed_event_emitted": true,
         "load_failed_event": {
           "event_type": "apcore.registry.module_load_failed",
@@ -67,7 +66,8 @@
             "error_message",
             "timestamp"
           ]
-        }
+        },
+        "post_register_get_returns": null
       }
     },
     {
@@ -92,7 +92,6 @@
       },
       "expected": {
         "one_succeeds": true,
-        "one_raises": "GENERAL_INVALID_INPUT",
         "raised_error_code": "DUPLICATE_MODULE_ID",
         "post_register_visible": true,
         "post_register_count": 1
@@ -127,6 +126,8 @@
     }
   ],
   "driver_contract": {
-    "assert_the_wire_code": "`*_raises` values are apcore WIRE CODES, not class names. An earlier revision used `ModuleNotFoundError` / `InvalidInputError`, which are Python/TypeScript class names — apcore-rust has neither type, only `ErrorCode` variants — and no driver read the keys at all, so they asserted nothing in any SDK. `registration_raises` is the exception: it names the HOST exception the on_load callback itself throws, which is user code and carries no apcore code."
+    "assert_the_wire_code": "`*_raises` values are apcore WIRE CODES, not class names. An earlier revision used `ModuleNotFoundError` / `InvalidInputError`, which are Python/TypeScript class names — apcore-rust has neither type, only `ErrorCode` variants — and no driver read the keys at all, so they asserted nothing in any SDK. `registration_raises` is the exception: it names the HOST exception the on_load callback itself throws, which is user code and carries no apcore code.",
+    "get_returns_empty_it_does_not_raise": "`Registry.get()` returns the empty value when a module is not visible — None / null / None per features/registry-system.md 'On success (not found)'. Two cases here declared `*_get_raises: \"MODULE_NOT_FOUND\"`, which contradicts that and which no SDK does, so no driver in any language could read the key: it asserted a behaviour that exists nowhere. They now declare `*_get_returns: null`, which is the observable thing.",
+    "one_error_code_per_failure": "`concurrent_same_id_rejects_duplicate` declared BOTH `one_raises: GENERAL_INVALID_INPUT` and `raised_error_code: DUPLICATE_MODULE_ID` for the same failure. Only the second is right, and the first parsed only under apcore-python's class hierarchy, where DuplicateModuleId is carried by an InvalidInputError whose DEFAULT code is GENERAL_INVALID_INPUT. apcore-typescript raises DuplicateModuleIdError directly and apcore-rust has only ErrorCode::DuplicateModuleId — neither has an invalid-input family, so the extra key was a Python implementation detail promoted to a cross-language expectation."
   }
 }
