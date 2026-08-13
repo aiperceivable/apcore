@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+(nothing yet)
+
+---
+
+## [1.10.0] - 2026-08-13
+
+### Added
+
+- **§12.2 `Interface: Registry` states `register`, and `metadata.dependencies` is now normative (#90).** The normative component interface declared `discover`, `get`, `list` and `describe` — not `register`, the most-used entry point on the component and the one every SDK exposes with a four-argument signature. `protocol-spec.md` §12.2 now states `register(module_id, module, version?, metadata?)`, and requires that when an implementation accepts `metadata`, a `dependencies` entry — a list of `{module_id, version?, optional?}` — **MUST** reach the registered module's descriptor, so `get_definition(module_id).dependencies` returns what the caller declared.
+
+  That requirement existed nowhere, which is why all three SDKs lost it independently and all three fixed it independently (apcore-python `ad2998d`, apcore-typescript#35, apcore-rust `71295e1`). The loss is quiet by construction: discovery-time dependency sorting reads its own parse and keeps working, so `resolve_dependencies` looks healthy while the post-registration accessor returns nothing and a dependency-ordered reload degrades to its sort's seed order — usually alphabetical, therefore plausible, therefore not reported. Convergent behaviour with nothing holding it in place is the arrangement that produced the divergence in the first place.
+
+  **`version` is stated as an OPTIONAL parameter only, not as resolution.** All three SDKs accept `version` and `metadata`; only apcore-python resolves *by* version. §5.4 continues to govern multi-version coexistence as optional, and `get(module_id)` keeps its single-argument normative form. Making resolution a MUST would put a requirement into the specification that two of three implementations do not provide — the exact shape 1.9.0 spent a release removing. The ordered side effects, the in-flight reservation and the visibility rule stay in `features/registry-system.md` § Contract: Registry.register; §12.2 carries the signature and the data-survival requirement. **No SDK behaviour change** — all three already satisfy it. No anchor ID added, removed or renamed.
+
 ### Changed
 
 - **`pipeline.configure` now has a declared field set, and it is four fields wide (#89).**

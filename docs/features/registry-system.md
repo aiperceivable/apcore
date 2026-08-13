@@ -101,11 +101,13 @@ Normative behavioral contract. All SDK implementations MUST satisfy these guaran
 - `module`: Module instance, required. Must implement the module protocol (`description`, `input_schema`, `output_schema`, `execute`).
 - `metadata`: mapping, optional. When an implementation accepts it, a `dependencies` entry — a list of `{module_id, version?, optional?}` objects — reaches the registered module's descriptor, so `get_definition(module_id).dependencies` returns what the caller declared. All three SDKs behave this way.
 
-!!! warning "Converged behaviour, not yet a normative requirement"
+!!! info "Normative as of spec v1.10.0"
 
-    §12.2's `Interface: Registry` declares `discover`, `get`, `list` and `describe` — it does not declare `register` at all, so nothing above the SDKs requires `metadata.dependencies` to survive registration. Each of the three lost it at least once and each was fixed independently (apcore-python `ad2998d`, apcore-typescript#35, apcore-rust#35).
+    [PROTOCOL_SPEC](../spec/protocol-spec.md#122-core-component-interface-contracts) §12.2 `Interface: Registry` states `register(module_id, module, version?, metadata?)` and requires that a `dependencies` entry in `metadata` reach the module descriptor. Until v1.10.0 §12.2 declared only `discover`, `get`, `list` and `describe` — `register` was outside the normative interface entirely, so nothing above the SDKs required this.
 
-    The loss is quiet by construction: discovery-time dependency sorting reads its own parse and keeps working, so `resolve_dependencies` looks healthy, while the post-registration accessor returns nothing and a dependency-ordered reload degrades to the sort's seed order — usually alphabetical, therefore plausible, therefore not reported. See [apcore#90](https://github.com/aiperceivable/apcore/issues/90) for the §12.2 gap.
+    That gap is why each of the three lost it at least once and each was fixed independently (apcore-python `ad2998d`, apcore-typescript#35, apcore-rust#35). The loss is quiet by construction: discovery-time dependency sorting reads its own parse and keeps working, so `resolve_dependencies` looks healthy, while the post-registration accessor returns nothing and a dependency-ordered reload degrades to the sort's seed order — usually alphabetical, therefore plausible, therefore not reported.
+
+    The ordered side effects, the in-flight reservation and the visibility rule stay on this page; §12.2 carries the signature and the data-survival requirement. Governance: [apcore#90](https://github.com/aiperceivable/apcore/issues/90).
 
 !!! info "Multi-version registration (optional, Phase B)"
     SDKs MAY accept additional `version` and `metadata` parameters to support [§5.4 Multi-version Coexistence](../spec/protocol-spec.md#54-multi-version-coexistence). When supported, the same `module_id` MAY be registered with multiple distinct versions, and `Registry.get(module_id, version_hint=...)` resolves via semantic-version range matching.

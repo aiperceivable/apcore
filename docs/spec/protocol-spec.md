@@ -6,7 +6,7 @@ description: "The canonical, normative apcore protocol specification (RFC 2119, 
 
 > **Canonical Specification** - This document is the authoritative specification for the apcore protocol
 
-> Version: 1.9.0
+> Version: 1.10.0
 > Status: Draft Specification (RFC 2119 Conformant)
 > Stability: Specification content is stable, pending reference implementation verification
 > Last Updated: 2026-07-13
@@ -6855,6 +6855,37 @@ Interface: SchemaLoader
 
 Interface: Registry
   /**
+   * Register a module under a canonical ID.
+   *
+   * `version` and `metadata` are OPTIONAL parameters an implementation MAY
+   * accept; §5.4 governs multi-version coexistence, and resolving BY version
+   * remains optional. Accepting the parameters and resolving by version are
+   * separate capabilities — see the SDK status table in
+   * features/registry-system.md.
+   *
+   * When `metadata` is accepted, a `dependencies` entry — a list of
+   * {module_id, version?, optional?} objects — MUST reach the registered
+   * module's descriptor, so that `get_definition(module_id).dependencies`
+   * returns what the caller declared. Reload ordering reads that accessor: an
+   * implementation that parses `dependencies` for load-time sorting but drops
+   * it from the descriptor degrades a dependency-ordered reload to its sort's
+   * seed order, which is usually alphabetical and therefore plausible enough
+   * to go unreported.
+   *
+   * The ordered side effects, the in-flight reservation and the visibility
+   * rule are specified in features/registry-system.md
+   * § "Contract: Registry.register".
+   *
+   * @param module_id — Canonical ID
+   * @param module    — Module instance
+   * @param version   — Optional declared version (§5.4)
+   * @param metadata  — Optional metadata map; `dependencies` MUST survive
+   * @throws INVALID_ID          — If module_id fails validation
+   * @throws DUPLICATE_MODULE_ID — If module_id is already registered
+   */
+  register(module_id: String, module: Module, version: String?, metadata: Map?) → void
+
+  /**
    * Scan extension directory, discover and register all modules
    * @param config — Framework configuration
    * @throws EXTENSION_ROOT_NOT_FOUND — If extension root directory doesn't exist
@@ -7921,3 +7952,4 @@ Each language SDK **SHOULD** provide idiomatic module definition syntax. The fol
 | 1.8.0-draft | 2026-05-04 | **§5 streaming semantics** — corrected "shallow merge" to "**recursive deep merge** with depth cap" matching all three SDK implementations (`apcore-python/src/apcore/executor.py:_deep_merge`, `apcore-typescript/src/executor.ts:deepMergeChunk`, `apcore-rust/src/executor.rs:deep_merge_chunks`) and `../../conformance/fixtures/stream_aggregation.json` (9 cases). Added algorithm `A24 deep_merge_chunks` to `./algorithms.md` formalising the merge with the canonical 32-depth cap (resolves issue #49). **§7.4 Step 11 Contract** (new block after the pipeline diagram) — five-point normative contract specifying: `call()` returns module output unchanged (no envelope), `stream()` final accumulated dict is what Step 9 validates, `validate()` returns `PreflightResult`, trace metadata lives on `Context` (not the return value), side-channel emissions are independent (resolves issue #50). **§6.7 Canonical System Module Catalogue** (new) — enumerates the 9 canonical `system.*` modules with read/write classification, conformance level (Level 1 for the 6 read modules; Level 2 for the 3 control modules), and 6 cross-cutting requirements (registration via `register_internal()`, audit events for write modules, `system.control.reload_module` mutually-exclusive `module_id`/`path_filter`, sensitive-key redaction in `update_config` output, persistence requirement for `toggle_feature`). Authoritative JSON Schemas remain in SDK source to avoid drift; this section is the contract surface (resolves issue #51). All three patches: zero SDK behaviour change. |
 | 1.9.0 | 2026-05-18 | **§9.9.5 Reserved Namespace Query** (new) — formalised public API requirement that all SDKs MUST expose a read-only query API returning the set of reserved top-level namespace names (`apcore`, `_config` at minimum). Returned set MUST be the single source of truth used by `register_namespace` to enforce `CONFIG_NAMESPACE_RESERVED` (single source of truth invariant). Class-level / module-level access (callable without instantiating Config). Cross-language examples for Python (`Config.reserved_namespaces()`), TypeScript (`Config.reservedNamespaces`), Rust (`Config::reserved_namespaces()`). Intended for third-party consumers (custom CLIs, framework integrations) needing fail-fast pre-validation of user-supplied namespace names. Resolves issue #60. |
 | 1.9.0 | 2026-08-12 | **Finalised — first non-draft release of the specification.** Normative corrections from the cross-language consistency sweep: **§4.11/§4.15/A05** self-reference and circular reference separated (a `$ref` re-entered through a schema body is a recursive data structure and MUST be preserved as a lazy reference; only a `$ref` → `$ref` chain MUST raise), resolving a contradiction with the Recursive Schema Support requirement in the same document; **§4.15/§8** `$ref` depth exhaustion MUST raise `SCHEMA_MAX_DEPTH_EXCEEDED`, not `SCHEMA_CIRCULAR_REF`, and the code is registered; **§4.16/A23** object detection widened to `properties` present AND (`type` absent OR declaring `object`); **§9.1** `required` narrowed to `version` and `project` — a key with a canonical default is normative but not required — and the declared-configuration view (`get_declared()`) added, with environment overrides counting as declaration; **§11 type-mapping** `format` is an annotation and MUST NOT fail validation, and the module boundary MUST NOT coerce types. No implementation had provided the superseded v1.8.x behaviour, so no deprecation cycle was owed. Governance: apcore#79. |
+| 1.10.0 | 2026-08-13 | **§12.2 `Interface: Registry` gains `register` (#90).** The normative component interface declared `discover`, `get`, `list` and `describe` — not `register`, the most-used entry point on the component and the one every SDK exposes with a four-argument signature. `register(module_id, module, version?, metadata?)` is now stated, and when an implementation accepts `metadata`, a `dependencies` entry (a list of `{module_id, version?, optional?}`) **MUST** reach the registered module's descriptor so `get_definition(module_id).dependencies` returns what the caller declared. That requirement existed nowhere: all three SDKs lost it independently and all three fixed it independently (apcore-python `ad2998d`, apcore-typescript#35, apcore-rust `71295e1`), because discovery-time sorting reads its own parse and keeps working — `resolve_dependencies` looks healthy while the accessor is empty and reload order degrades to its sort's seed order, which is alphabetical and therefore plausible. `version` is stated as an OPTIONAL parameter only: all three SDKs accept it, only apcore-python resolves by it, and §5.4 continues to govern multi-version coexistence as optional — making resolution normative would put a requirement into the spec that two of three implementations do not provide, which is the shape 1.9.0 spent a release removing. `get(module_id)` keeps its single-argument normative form for the same reason. No SDK behaviour change: all three already satisfy the requirement. Governance: apcore#90. |
