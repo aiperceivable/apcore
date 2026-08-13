@@ -5835,9 +5835,10 @@ Steps:
   1. If meta_config.strict != true:
        → Return (the key is retained and readable; see below)
 
-  2. For each framework section declared by apcore-config.schema.json:
+  2. declared ← union of the canonical config schemas (see below)
+     For each framework section in declared:
        For each key present in apcore_data[section]:
-         If the section's schema does not declare the key:
+         If declared[section] does not contain the key:
            Collect error: "Unknown key '{section}.{key}' (strict mode enabled)"
 
   3. If any errors collected → throw CONFIG_INVALID with ALL of them
@@ -5860,6 +5861,20 @@ closedness is now enforced — but **only** under `_config.strict: true`.
 `allow_unknown` does **not** apply here. It is defined in §9.6.3 for unknown
 top-level *namespaces*, and stretching one field across two granularities would
 make its meaning depend on where it is read.
+
+**The declared surface is the union of the canonical schemas, not one file.**
+`schemas/apcore-config.schema.json` is the root, but sections that own a separate
+file declare their keys there — `$defs/SysModulesConfig` stops at `enabled` while
+`schemas/sys-modules.schema.json` declares `control.*`, `error_history.*` and
+`events.*` under §9.15.3. Implementations **MUST** derive the surface from the
+same set `conformance/generate_config_key_governance.py` reads, which is the
+authoritative list and is pinned by `conformance/fixtures/config_key_governance.json`.
+
+Taking the root file alone would reject `sys_modules.events.enabled` — documented,
+and validated by every SDK's constraint table. This is stated because apcore-python
+and apcore-typescript each arrived at the union independently while implementing
+this rule: two implementations converging on an unwritten convention is how the
+next one diverges.
 
 !!! note "Why `strict` and not a warning"
     `strict` already means "every top-level key must correspond to a registered

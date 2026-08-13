@@ -721,12 +721,43 @@ Currently `system.control.update_config` and `system.control.toggle_feature` cha
 sys_modules:
   control:
     overrides_path: "/etc/apcore/overrides.yaml"
-    # OR
-    overrides_store:
-      type: "redis"
-      url: "redis://localhost:6379"
-      key_prefix: "apcore:overrides:"
 ```
+
+`overrides_path` is the only **configuration** key here. An alternative backend
+is supplied **programmatically**, because there is nothing for YAML to name: this
+document requires that SDKs [MUST NOT ship Redis, Postgres or S3
+implementations](./observability.md#pluggable-storage-backends), so a
+`type: "redis"` block would name a class the framework does not have.
+
+=== "Python"
+    ```python
+    import json
+
+    from apcore import APCore
+    from apcore.sys_modules.registration import register_sys_modules
+
+    class RedisOverridesStore:          # yours, against your own client
+        def __init__(self, client, prefix="apcore:overrides:"):
+            self._client, self._prefix = client, prefix
+
+        def load(self) -> dict:
+            raw = self._client.get(self._prefix + "all")
+            return json.loads(raw) if raw else {}
+
+        def save(self, overrides: dict) -> None:
+            self._client.set(self._prefix + "all", json.dumps(overrides))
+
+    client = APCore()
+    register_sys_modules(client, overrides_store=RedisOverridesStore(my_redis))
+    ```
+
+!!! note "An earlier revision showed this as YAML"
+    This block previously offered `overrides_store: {type: "redis", url: …}` as
+    an alternative to `overrides_path`. No SDK ever read it — `overrides_store`
+    is a `register_sys_modules()` parameter, not a configuration key — and no
+    SDK could have, since none ships a Redis backend to instantiate. Under
+    `_config.strict` (§9.10) that key is now rejected outright, which is what
+    surfaced it.
 
 #### Usage Examples
 
