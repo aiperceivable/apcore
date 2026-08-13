@@ -9,7 +9,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-(nothing yet)
+### Changed
+
+- **`pipeline.configure` now has a declared field set, and it is four fields wide (#89).**
+  `schemas/apcore-config.schema.json` gains `$defs/ConfigurableStepFields` —
+  `match_modules`, `ignore_errors`, `pure`, `timeout_ms`, `additionalProperties: false` — and
+  `configure`'s value subschema points at it. It was `additionalProperties: true`, which pinned
+  nothing, and three SDKs accepted three different sets: apcore-python took any attribute of the
+  concrete `Step` object (`hasattr`), apcore-typescript a 9-entry map, apcore-rust a 4-name list.
+  An unknown key was a parse-time error in two of them and a `warn`-and-continue in the third,
+  so an operator's typo silently produced an unconfigured pipeline on one SDK.
+  `spec/DECLARATIVE_CONFIG_SPEC.md` §4.2 states the set, states that any other key **MUST** raise
+  `PIPELINE_CONFIGURATION_ERROR`, and states that snake_case is the wire spelling — an SDK **MAY**
+  accept an idiomatic alias at its own API boundary but a configuration *file* carries the
+  canonical spelling only.
+
+- **`requires` / `provides` are not configurable, and the specification's own example said
+  otherwise (#89).** `features/middleware-system.md` § Configuration safety shipped an
+  `apcore.yaml` setting them under `configure:`, annotated *"matching
+  schemas/apcore-config.schema.json"*. Run through the shipped apcore-python loader, that exact
+  example moved the built-in `input_validation` step from `requires=('module',)` to
+  `requires=('context',)` — **deleting** the upstream dependency `module_lookup` satisfies, after
+  which strategy construction validates cleanly and the `PipelineDependencyError` that the same
+  section states as a MUST can never fire for that step. The documented way to exercise the
+  dependency contract was the way to disable it. A step's capability contract belongs to its
+  implementation; the example is replaced with one showing the contract declared on the step class
+  in all three languages, and a `configure:` block using only the four configurable fields. A
+  configuration file carrying `requires`/`provides` is now a startup error, with a migration note
+  in the page.
+
+### Fixed
+
+- **The conformance inventory's case counts were unverified and 8 of 60 had drifted.**
+  `docs/spec/conformance.md` §8.1 prints a per-fixture case count and a Total; CI checked only
+  that each fixture *name* appeared. `config_key_governance` said 4 against 6, `redaction_config`
+  4 against 7, `pipeline_step_middleware` 6 against 9, `event_naming` 8 against 7 — drift in both
+  directions — and the Total read 646 against an actual 657. Counts corrected, and the CI step
+  now verifies each row and the Total against the fixtures. Injection-tested in both directions:
+  altering a row and altering the Total each turn the step red. A number nobody checks reads as
+  coverage in every review and every inventory built from it, which is the same failure the
+  `expected`-keys guard exists to catch, one level up.
 
 ---
 

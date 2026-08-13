@@ -105,7 +105,7 @@ jobs:
       - name: Every fixture parses and is listed in the inventory
         run: |
           python3 - <<'PY'
-          import glob, json, os, sys
+          import glob, json, os, re, sys
           readme = open("conformance/README.md").read()
           inventory = open("docs/spec/conformance.md").read()
           bad, total = 0, 0
@@ -119,6 +119,32 @@ jobs:
                   print(f"{name}: absent from conformance/README.md", file=sys.stderr); bad += 1
               if name[:-5] not in inventory:
                   print(f"{name}: absent from conformance.md 8.1", file=sys.stderr); bad += 1
+                  continue
+              # The inventory prints a per-fixture case count. Checking only that
+              # the name appears leaves that number free to drift, and it had:
+              # 8 of 60 rows were wrong, in both directions, while this step
+              # passed. A count nobody verifies reads as coverage in every
+              # review and every inventory built from it.
+              cases = len(json.load(open(path)).get("test_cases", []))
+              m = re.search(rf"\[`{re.escape(name[:-5])}`\]\([^)]*\)\s*\|\s*(\d+)\s*\|",
+                            inventory)
+              if not m:
+                  print(f"{name}: no case-count cell in conformance.md 8.1", file=sys.stderr)
+                  bad += 1
+              elif int(m.group(1)) != cases:
+                  print(f"{name}: conformance.md says {m.group(1)} cases, fixture has {cases}",
+                        file=sys.stderr)
+                  bad += 1
+          # The inventory's Total row is the number quoted in release notes and
+          # governance issues. It was 646 against an actual 657 — the eight
+          # per-fixture drifts above, compounded.
+          m = re.search(r"\|\s*\*\*Total\*\*\s*\|\s*\*\*(\d+)\*\*", inventory)
+          if not m:
+              print("conformance.md 8.1 has no Total row", file=sys.stderr); bad += 1
+          elif int(m.group(1)) != total:
+              print(f"conformance.md Total says {m.group(1)}, fixtures hold {total}",
+                    file=sys.stderr)
+              bad += 1
           print(f"{len(glob.glob('conformance/fixtures/*.json'))} fixtures, {total} cases")
           sys.exit(1 if bad else 0)
           PY

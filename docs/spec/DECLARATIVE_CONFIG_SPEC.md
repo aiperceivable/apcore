@@ -302,8 +302,33 @@ pipeline:
 | Key | Type | Required | Description |
 |---|---|---|---|
 | `remove` | list of strings | no | Built-in step names to remove. |
-| `configure` | map (string → object) | no | Field overrides for existing steps. |
+| `configure` | map (string → object) | no | Field overrides for existing steps. See the configurable set below. |
 | `steps` | list | no | Custom step insertions. |
+
+**`configure` accepts exactly four fields**, and implementations **MUST** reject any other key
+with `PIPELINE_CONFIGURATION_ERROR` at parse time:
+
+| Field | Type | Description |
+|---|---|---|
+| `match_modules` | list of glob strings | Restrict the step to matching modules. |
+| `ignore_errors` | boolean | Step errors are logged rather than aborting the pipeline. |
+| `pure` | boolean | Marks the step side-effect-free. |
+| `timeout_ms` | integer | Per-step timeout in milliseconds; `0` = none. |
+
+These are the §4.3 fields that mean something applied to a step that already exists. The rest are
+structural (`name`, `type`, `handler`, `after`, `before`) or constructor arguments (`config`).
+
+A step's `requires` / `provides` capability contract is **not** configurable. It is declared by the
+step implementation, and configuration that could rewrite it would disable the
+`PipelineDependencyError` check that `features/middleware-system.md` § Configuration safety states
+as a MUST — an operator could delete a built-in step's dependency and construction would still
+validate cleanly.
+
+The canonical spelling is snake_case, as written above and in
+`schemas/apcore-config.schema.json` `$defs/ConfigurableStepFields`. An SDK **MAY** additionally
+accept its own idiomatic spelling at its programmatic API boundary (apcore-typescript accepts
+`ignoreErrors` alongside `ignore_errors`), but **MUST** accept the canonical spelling, and a
+configuration *file* carries the canonical spelling only.
 
 ### 4.3 Step entry fields
 

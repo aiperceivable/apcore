@@ -95,6 +95,88 @@
         "raises": false,
         "strategy_callable": true
       }
+    },
+    {
+      "id": "unknown_configure_field_raises_configuration_error",
+      "description": "A `pipeline.configure` entry names a field outside the four configurable step fields; PIPELINE_CONFIGURATION_ERROR MUST be raised at parse time. This is the row on which the three SDKs diverged most sharply and which no case exercised: Python and TypeScript raised, Rust logged `Unknown configurable field — ignored` and ran the unconfigured pipeline.",
+      "input": {
+        "yaml": {
+          "pipeline": {
+            "configure": {
+              "input_validation": {
+                "ignore_error": true
+              }
+            }
+          }
+        }
+      },
+      "expected": {
+        "raises": true,
+        "error_message_contains": "ignore_error",
+        "raised_at": "parse_time",
+        "deferred_to_first_call": false,
+        "error_code": "PIPELINE_CONFIGURATION_ERROR"
+      }
+    },
+    {
+      "id": "configure_must_not_rewrite_a_step_capability_contract",
+      "description": "`requires` / `provides` under `pipeline.configure` MUST be rejected. A step's capability contract is declared by its implementation; configuration that can rewrite it disables the PipelineDependencyError rule this same fixture pins. Measured before the fix: this exact YAML shipped as the canonical example in features/middleware-system.md and, run through apcore-python, moved input_validation from requires=('module',) to requires=('context',) — deleting a dependency, after which construction validates cleanly and the MUST can never fire for that step.",
+      "input": {
+        "yaml": {
+          "pipeline": {
+            "configure": {
+              "input_validation": {
+                "requires": [
+                  "context"
+                ],
+                "provides": [
+                  "validated_inputs"
+                ]
+              }
+            }
+          }
+        }
+      },
+      "expected": {
+        "raises": true,
+        "error_message_contains": "requires",
+        "raised_at": "parse_time",
+        "deferred_to_first_call": false,
+        "error_code": "PIPELINE_CONFIGURATION_ERROR"
+      }
+    },
+    {
+      "id": "all_four_configurable_fields_are_accepted",
+      "description": "The four fields of $defs/ConfigurableStepFields applied to a real built-in step MUST construct cleanly, and each MUST reach the step. Without this the rejection cases above are also satisfied by an implementation that rejects everything.",
+      "input": {
+        "yaml": {
+          "pipeline": {
+            "configure": {
+              "input_validation": {
+                "match_modules": [
+                  "executor.*"
+                ],
+                "ignore_errors": true,
+                "pure": false,
+                "timeout_ms": 5000
+              }
+            }
+          }
+        }
+      },
+      "expected": {
+        "raises": false,
+        "strategy_callable": true,
+        "configured_step_fields": {
+          "step_name": "input_validation",
+          "match_modules": [
+            "executor.*"
+          ],
+          "ignore_errors": true,
+          "pure": false,
+          "timeout_ms": 5000
+        }
+      }
     }
   ],
   "driver_contract": {
@@ -102,6 +184,9 @@
     "canonical_code": "PIPELINE_CONFIGURATION_ERROR, per docs/spec/2026-05-decision-log.md and the registry in features/error-system.md. PIPELINE_CONFIG_INVALID is a DIFFERENT code in that registry — field-level validation failure — and MUST NOT be reused for unknown-step references.",
     "parse_time": "The raise MUST happen while the config is being turned into a strategy, not on first call. A driver that only asserts 'it raised eventually' cannot tell the two apart: build the strategy and assert it raises there, without executing anything.",
     "the_valid_key_must_really_exist": "`input_validation` is a REAL built-in step (apcore-python builtin_steps.py, apcore-typescript builtin-steps.ts:593, apcore-rust builtin_steps.rs:124). An earlier revision used `validate_input`, which exists in no SDK — so the case would have raised on the FIRST key and the `error_message_contains: nonexistent_step` assertion could never be reached. The valid half of a fail-fast test has to actually be valid.",
-    "one_way_to_say_it": "Every case expresses its expected failure as `error_code`. There is no `error_type` key: a class name is a per-language detail that can agree while the wire codes diverge, which is exactly how the configure case hid a three-way split."
+    "one_way_to_say_it": "Every case expresses its expected failure as `error_code`. There is no `error_type` key: a class name is a per-language detail that can agree while the wire codes diverge, which is exactly how the configure case hid a three-way split.",
+    "read_the_field_back_off_the_step": "For `all_four_configurable_fields_are_accepted`, assert `expected.configured_step_fields` by reading each field off the built step object — not by asserting construction succeeded. `raises: false` alone passes against an implementation that accepts the keys and applies none of them, which is precisely the pre-fix Rust behaviour for `requires`/`provides`: warn, drop, continue.",
+    "snake_case_is_the_wire_spelling": "Feed the fixture's keys verbatim. An SDK MAY accept an idiomatic alias at its own API boundary — apcore-typescript takes `ignoreErrors` alongside `ignore_errors` — but a driver that translates the fixture's snake_case into its own spelling is testing its translation table, not the contract. An earlier revision of the TypeScript driver carried exactly such a private FIELD_NAME_TRANSLATION map, and it hid that 3 of the 4 canonical fields were unreachable from real YAML.",
+    "configurable_set_is_four": "match_modules, ignore_errors, pure, timeout_ms — schemas/apcore-config.schema.json $defs/ConfigurableStepFields, spec/DECLARATIVE_CONFIG_SPEC.md §4.2. Not six: `requires` and `provides` belong to the step implementation. Not open-ended: apcore-python used `hasattr(step, key)`, which accepted any attribute of the concrete class and made a working config non-portable to the other two SDKs."
   }
 }

@@ -466,10 +466,9 @@
         },
         "configure": {
           "type": "object",
-          "description": "Field overrides for existing steps. Key = step name, value = field overrides.",
+          "description": "Field overrides for existing steps. Key = step name, value = the overrides. Previously `additionalProperties: true`, which pinned nothing: three SDKs accepted three different field sets and an unknown key was a hard error in two of them and a warning in the third.",
           "additionalProperties": {
-            "type": "object",
-            "additionalProperties": true
+            "$ref": "#/$defs/ConfigurableStepFields"
           },
           "default": {}
         },
@@ -793,6 +792,36 @@
           "type": "boolean",
           "default": true,
           "description": "Only relevant when `strict` is false. True: unknown NAMESPACE data is stored and readable but not validated. False: silently ignored. Does not apply to keys inside framework sections."
+        }
+      }
+    },
+    "ConfigurableStepFields": {
+      "type": "object",
+      "description": "Field overrides applicable to an already-constructed pipeline step. Exactly the four behavioural modifiers of DECLARATIVE_CONFIG_SPEC.md §4.3: the remaining step entry fields are either structural (`name`, `type`, `handler`, `after`, `before`) or constructor arguments (`config`), and none of them means anything applied to a step that already exists. `requires` / `provides` are deliberately absent — a step's capability contract is declared by its implementation, and letting configuration rewrite it disables the PipelineDependencyError check that features/middleware-system.md states as a MUST.",
+      "additionalProperties": false,
+      "properties": {
+        "match_modules": {
+          "type": "array",
+          "description": "Glob patterns; restrict step to matching modules.",
+          "items": {
+            "type": "string"
+          }
+        },
+        "ignore_errors": {
+          "type": "boolean",
+          "description": "If true, step errors are logged but do not abort the pipeline.",
+          "default": false
+        },
+        "pure": {
+          "type": "boolean",
+          "description": "Marks the step as side-effect-free (enables caching).",
+          "default": false
+        },
+        "timeout_ms": {
+          "type": "integer",
+          "description": "Per-step timeout in milliseconds. 0 = no timeout. Max governed by apcore.validation.pipeline.timeout_ms_max.",
+          "minimum": 0,
+          "default": 0
         }
       }
     }

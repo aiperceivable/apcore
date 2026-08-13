@@ -545,14 +545,114 @@ Pipeline configuration MUST fail fast on structural errors so that misconfigurat
 - Implementations MUST raise `PipelineDependencyError` at strategy construction time (before any `call()` runs) when a step's declared `requires:` is not satisfied by an upstream step's `provides:`. The error message MUST include the unsatisfied capability name and the dependent step name.
 - Implementations MUST NOT defer dependency validation until first invocation. Strategy construction MUST be all-or-nothing: a strategy either validates cleanly and is callable, or construction fails with a typed error.
 
+A step's `requires:` / `provides:` are declared by the step **implementation**, not by
+configuration. `pipeline.configure:` accepts exactly the four behavioural modifiers
+`match_modules`, `ignore_errors`, `pure` and `timeout_ms`
+(`schemas/apcore-config.schema.json` `$defs/ConfigurableStepFields`,
+`spec/DECLARATIVE_CONFIG_SPEC.md` §4.2), and implementations MUST reject any other key with
+`PIPELINE_CONFIGURATION_ERROR`.
+
+!!! warning "An earlier revision of this page showed `requires:` / `provides:` under `configure:`"
+
+    That example was wrong, and wrong in the direction that quietly defeats the rule above it.
+    The built-in `input_validation` step declares `requires=("module",)`, satisfied upstream by
+    `module_lookup`. Copying the example replaced it with `requires=("context",)` — deleting the
+    dependency, after which construction validates cleanly and the `PipelineDependencyError`
+    this section makes a MUST can never fire for that step. If a configuration file in your
+    deployment carries those keys, it is now a startup error; remove them, and declare the
+    contract on the step class instead.
+
+=== "Python"
+
+    ```python
+    from apcore.pipeline import BaseStep, PipelineContext, StepResult
+
+
+    class ValidateInputStep(BaseStep):
+        """Declares its capability contract in code, where it belongs."""
+
+        def __init__(self) -> None:
+            super().__init__(
+                name="input_validation",
+                description="Validate the call inputs against the module input schema.",
+                requires=("module",),
+                provides=("validated_inputs",),
+            )
+
+        async def execute(self, ctx: PipelineContext) -> StepResult:
+            return StepResult(action="continue")
+    ```
+
+=== "TypeScript"
+
+    ```typescript
+    import type { PipelineContext, Step, StepResult } from 'apcore-js';
+
+    /** Declares its capability contract in code, where it belongs. */
+    export class ValidateInputStep implements Step {
+      readonly name = 'input_validation';
+      readonly description = 'Validate the call inputs against the module input schema.';
+      readonly removable = true;
+      readonly replaceable = true;
+      readonly requires = ['module'] as const;
+      readonly provides = ['validated_inputs'] as const;
+
+      async execute(ctx: PipelineContext): Promise<StepResult> {
+        return { action: 'continue' };
+      }
+    }
+    ```
+
+=== "Rust"
+
+    ```rust
+    use apcore::errors::ModuleError;
+    use apcore::pipeline::{PipelineContext, Step, StepResult};
+
+    /// Declares its capability contract in code, where it belongs.
+    pub struct ValidateInputStep;
+
+    impl Step for ValidateInputStep {
+        fn name(&self) -> &str {
+            "input_validation"
+        }
+
+        fn description(&self) -> &str {
+            "Validate the call inputs against the module input schema."
+        }
+
+        fn removable(&self) -> bool {
+            true
+        }
+
+        fn replaceable(&self) -> bool {
+            true
+        }
+
+        fn requires(&self) -> &[&str] {
+            &["module"]
+        }
+
+        fn provides(&self) -> &[&str] {
+            &["validated_inputs"]
+        }
+
+        async fn execute(&self, ctx: &mut PipelineContext) -> Result<StepResult, ModuleError> {
+            let _ = ctx;
+            Ok(StepResult::continue_step())
+        }
+    }
+    ```
+
+What a configuration file *may* say about that step:
+
 ```yaml
-# apcore.yaml — pipeline step dependency contract
+# apcore.yaml — the four configurable fields, canonical snake_case spelling
 pipeline:
   configure:
-    # A map keyed by step name, matching schemas/apcore-config.schema.json.
     input_validation:
-      requires: ["context"]              # provided by context_creation
-      provides: ["validated_inputs"]     # consumed by execute
+      ignore_errors: false
+      timeout_ms: 5000
 ```
 
 There is no `pipeline.step_middleware:` configuration section. An earlier
