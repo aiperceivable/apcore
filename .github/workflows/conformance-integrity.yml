@@ -192,9 +192,16 @@ jobs:
 
       - name: Every `expected` key is asserted by a driver
         working-directory: apcore
-        # --strict, because the backlog is closed: all 378 top-level `expected`
-        # keys are asserted by at least one driver. A key no driver reads is not
+        # --strict, because the backlog is closed: every top-level `expected`
+        # key is asserted by at least one driver. A key no driver reads is not
         # a contract — it reads as covered everywhere while nothing is checked.
+        #
+        # LANDING ORDER: this step checks out the three SDKs as siblings, so a
+        # fixture that gains a new `expected` key reds this job until every
+        # driver asserts it. That is the guard working, not a flake — land the
+        # SDK drivers with, or before, the fixture. (The count that used to be
+        # quoted here read 378 against an actual 388; a number nobody verifies
+        # is the exact failure the conformance inventory had.)
         # This is the guard that would have caught `wrapped_in`, declared by the
         # fixture and read by nobody, which let the MiddlewareChainError
         # wrapping be removed from two SDKs with every test still green.
