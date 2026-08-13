@@ -4,13 +4,22 @@ description: "Specification for apcore's three declarative YAML surfaces — bin
 
 # APCore Declarative Configuration Specification
 
-**Spec version**: `1.0`
+**Spec version**: `1.1`
 **Applies to SDKs**: `apcore-python >= 0.19.0`, `apcore-typescript >= 0.19.0`, `apcore-rust >= 0.19.0`
-**Status**: Draft for review — not yet implemented
+**Status**: Normative. The `pipeline:` section (§4) is implemented in all three SDKs; §4.4 records the per-SDK resolution differences.
 **Canonical location**: `apcore/docs/spec/DECLARATIVE_CONFIG_SPEC.md`
 **Authoritative schemas**: `apcore/schemas/{binding,apcore-config,module-meta}.schema.json`
 **Related specs**: `apcore/protocol-spec.md` (module ID format, protocol wire format)
-**Last updated**: 2026-04-16
+**Last updated**: 2026-08-13
+
+> **1.1 — §4.2 pins the `configure` field set.** `pipeline.configure` accepts exactly
+> `match_modules`, `ignore_errors`, `pure`, `timeout_ms`, and any other key **MUST** raise
+> `PIPELINE_CONFIGURATION_ERROR` at parse time. Previously unstated, and the three SDKs had
+> three different answers with two different failure modes. `requires` / `provides` are
+> explicitly not configurable. See apcore#89.
+>
+> The status line above also changes: this document said *"Draft for review — not yet
+> implemented"* while all three SDKs had shipped §4 since 0.19.0.
 
 ---
 

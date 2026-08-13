@@ -38,6 +38,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   configuration file carrying `requires`/`provides` is now a startup error, with a migration note
   in the page.
 
+- **`DECLARATIVE_CONFIG_SPEC.md` is at spec version 1.1, and no longer calls itself unimplemented.**
+  The §4.2 rule above is the normative change. The header also said *"Draft for review — not yet
+  implemented"* while all three SDKs had shipped the `pipeline:` section since 0.19.0 — a status
+  line four months stale on a document the schema and three implementations already follow.
+
+- **`features/registry-system.md` § Multi-version registration described two SDKs wrongly.**
+  It said apcore-typescript's `register(moduleId, module)` *"always replaces any prior
+  registration"* — it takes the full four-argument signature and rejects a duplicate id through
+  A03 conflict detection with `DUPLICATE_MODULE_ID` — and called apcore-rust's three-argument
+  descriptor form *"a Rust-only signature divergence tracked for cross-language alignment"*, when
+  `register_versioned(name, module, version, metadata)` is the spec-shaped four-argument form and
+  has been there all along. Rewritten around the distinction that actually separates the three:
+  all three **accept** `version` and `metadata`, only apcore-python **resolves** by version. The
+  page also now records that `metadata.dependencies` reaching the module descriptor is converged
+  behaviour with nothing normative behind it — §12.2's `Interface: Registry` does not declare
+  `register` at all — filed as #90.
+
 ### Fixed
 
 - **The conformance inventory's case counts were unverified and 8 of 60 had drifted.**

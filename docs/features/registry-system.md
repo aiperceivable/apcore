@@ -99,17 +99,26 @@ Normative behavioral contract. All SDK implementations MUST satisfy these guaran
 
 - `module_id`: string, required. Must pass module-ID validation (see Schema System). Empty, malformed, or reserved IDs MUST be rejected before any mutation of the registry.
 - `module`: Module instance, required. Must implement the module protocol (`description`, `input_schema`, `output_schema`, `execute`).
+- `metadata`: mapping, optional. When an implementation accepts it, a `dependencies` entry — a list of `{module_id, version?, optional?}` objects — reaches the registered module's descriptor, so `get_definition(module_id).dependencies` returns what the caller declared. All three SDKs behave this way.
+
+!!! warning "Converged behaviour, not yet a normative requirement"
+
+    §12.2's `Interface: Registry` declares `discover`, `get`, `list` and `describe` — it does not declare `register` at all, so nothing above the SDKs requires `metadata.dependencies` to survive registration. Each of the three lost it at least once and each was fixed independently (apcore-python `ad2998d`, apcore-typescript#35, apcore-rust#35).
+
+    The loss is quiet by construction: discovery-time dependency sorting reads its own parse and keeps working, so `resolve_dependencies` looks healthy, while the post-registration accessor returns nothing and a dependency-ordered reload degrades to the sort's seed order — usually alphabetical, therefore plausible, therefore not reported. See [apcore#90](https://github.com/aiperceivable/apcore/issues/90) for the §12.2 gap.
 
 !!! info "Multi-version registration (optional, Phase B)"
     SDKs MAY accept additional `version` and `metadata` parameters to support [§5.4 Multi-version Coexistence](../spec/protocol-spec.md#54-multi-version-coexistence). When supported, the same `module_id` MAY be registered with multiple distinct versions, and `Registry.get(module_id, version_hint=...)` resolves via semantic-version range matching.
 
+    Accepting the parameters and resolving by version are separate things, and only apcore-python does both.
+
     **SDK status (Phase B)**:
 
-    - **apcore-python** implements multi-version registration via an internal `VersionedStore`. `register(module_id, module, version=None, metadata=None)` accepts the optional version/metadata arguments.
-    - **apcore-typescript** does NOT currently expose multi-version registration. `register(moduleId, module)` always replaces any prior registration for the same ID.
-    - **apcore-rust** does NOT currently expose multi-version registration. The 3-arg form `register(name, Box<dyn Module>, descriptor: Option<ModuleDescriptor>)` accepts an optional `ModuleDescriptor` for code-side metadata (a Rust-only signature divergence from the spec's `register(module_id, module, version?, metadata?)` shape — tracked for cross-language alignment). The 2-arg convenience form `register_module(name, Box<dyn Module>)` mirrors the Python/TS shape.
+    - **apcore-python** — accepts and resolves. `register(module_id, module, version=None, metadata=None)`, backed by an internal `VersionedStore`; `get(module_id, version_hint=...)` performs semantic-version range matching.
+    - **apcore-typescript** — accepts, does not resolve. `register(moduleId, module, version?, metadata?, options?)` takes the full signature; `version` and `metadata` are merged into the module's metadata and readable back through `getDefinition()` and `list({tags})`. `get(moduleId, versionHint?)` and `getDefinition(moduleId, versionHint?)` accept the hint for signature parity and ignore it. A duplicate `module_id` is rejected by A03 conflict detection with `DUPLICATE_MODULE_ID`; it does **not** replace the prior registration.
+    - **apcore-rust** — accepts, does not resolve. `register_versioned(name, module, version: Option<&str>, metadata: Option<HashMap<..>>)` is the spec-shaped four-argument form and honours `metadata["dependencies"]`. Two other forms exist: `register(name, module, descriptor: Option<ModuleDescriptor>)` takes a code-side `ModuleDescriptor` directly, and `register_module(name, module)` is the two-argument convenience form. `get` / `get_definition` take no version hint.
 
-    Implementations that omit multi-version support MUST behave as single-version registries. Cross-language portable code SHOULD NOT rely on `version` / `metadata` parameters until all SDKs implement them.
+    Implementations that omit multi-version support MUST behave as single-version registries. Cross-language portable code SHOULD NOT rely on `version` resolution until all SDKs implement it; `metadata.dependencies` is safe today and normative per the `metadata` input above.
 
 ### Preconditions
 
