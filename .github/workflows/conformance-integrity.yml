@@ -32,7 +32,7 @@ jobs:
           python-version: "3.11"
 
       - name: Install validator
-        run: pip install --quiet jsonschema
+        run: pip install --quiet jsonschema referencing
 
       - name: Every schema is valid Draft 2020-12
         run: |
@@ -55,7 +55,9 @@ jobs:
         run: |
           python3 - <<'PY'
           import glob, json, os, sys
-          from jsonschema import Draft202012Validator, RefResolver
+          from jsonschema import Draft202012Validator
+          from referencing import Registry, Resource
+          from referencing.jsonschema import DRAFT202012
           # PROTOCOL_SPEC 9.1's worked example. If the schema rejects it, one of
           # the two is wrong and users copying the example get a config error.
           cfg = {
@@ -79,18 +81,21 @@ jobs:
           }
           schema = json.load(open("schemas/apcore-config.schema.json"))
           # Resolve sibling schemas from disk. `$id` is a canonical identifier,
-          # not a fetch instruction — without a local store the validator tries
+          # not a fetch instruction — without a local registry the validator tries
           # to reach apcore.dev over the network and CI fails on a defect that
           # is not in the schema. $defs/SysModulesConfig $refs
           # sys-modules.schema.json, which owns that namespace under §9.15.3.
-          store = {}
+          # Registered under both basename and $id: the relative $ref resolves
+          # against apcore-config's own $id, the basename covers a bare lookup.
+          resources = []
           for path in glob.glob("schemas/*.schema.json"):
               doc = json.load(open(path))
-              store[os.path.basename(path)] = doc
+              res = Resource.from_contents(doc, default_specification=DRAFT202012)
+              resources.append((os.path.basename(path), res))
               if "$id" in doc:
-                  store[doc["$id"]] = doc
-          resolver = RefResolver(base_uri="", referrer=schema, store=store)
-          errors = sorted(Draft202012Validator(schema, resolver=resolver).iter_errors(cfg),
+                  resources.append((doc["$id"], res))
+          registry = Registry().with_resources(resources)
+          errors = sorted(Draft202012Validator(schema, registry=registry).iter_errors(cfg),
                           key=lambda e: list(e.path))
           for err in errors:
               print(f"{list(err.path)}: {err.message}", file=sys.stderr)
