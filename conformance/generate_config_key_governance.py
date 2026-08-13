@@ -38,43 +38,96 @@ SOURCES: list[tuple[str, str]] = [
 DEFAULT_TABLE_SOURCE = "schemas/defaults.schema.json"
 
 
+def schema_store() -> dict:
+    """Every schema in `schemas/`, keyed by basename and by `$id`.
+
+    `$id` is a canonical identifier, not a fetch instruction. Without a local
+    store a cross-file `$ref` resolves to nothing, and `flatten` used to treat
+    that nothing as a scalar — `sys_modules` entered `allowed_keys` as a leaf key
+    the moment `$defs/SysModulesConfig` began delegating to the sibling schema,
+    while its seven real subkeys came in only because SOURCES happens to list
+    that file separately. Silent degradation that still exits 0.
+    """
+    store: dict = {}
+    for path in sorted((REPO / "schemas").glob("*.schema.json")):
+        doc = json.loads(path.read_text())
+        store[path.name] = doc
+        if "$id" in doc:
+            store[doc["$id"]] = doc
+    return store
+
+
+def resolve(node: dict, defs: dict, store: dict) -> tuple[dict, dict]:
+    """Follow a `$ref` chain to a schema body, with the `$defs` in scope for it.
+
+    Node and `$defs` travel together because a cross-file `$ref` changes which
+    document's definitions apply. An unresolvable `$ref` raises rather than
+    yielding `{}`: a typo would otherwise collapse a namespace into one scalar
+    key and the generator would still report success.
+    """
+    for _ in range(32):
+        ref = node.get("$ref")
+        if ref is None:
+            return node, defs
+        file_part, _sep, frag = ref.partition("#")
+        if file_part:
+            doc = store.get(file_part)
+            if doc is None:
+                raise KeyError(f"unresolvable cross-file $ref {ref!r}; "
+                               f"known: {', '.join(sorted(k for k in store if '://' not in k))}")
+            node, defs = doc, doc.get("$defs", {})
+            if not frag:
+                continue
+        target = defs.get(frag.split("/")[-1])
+        if target is None:
+            raise KeyError(f"unresolvable $ref {ref!r}")
+        node = target
+    raise RecursionError("$ref chain exceeded 32 hops")
+
+
 def flatten(schema: dict, defs: dict, prefix: str = "", out: dict | None = None,
-            seen: frozenset[str] | None = None) -> dict:
+            seen: frozenset[str] | None = None, store: dict | None = None) -> dict:
     """Walk a config JSON Schema, yielding {dot_path: default}."""
     if out is None:
         out = {}
     if seen is None:
         seen = frozenset()
-    node = schema
-    if "$ref" in node:
-        ref = node["$ref"]
+    if store is None:
+        store = {}
+    ref = schema.get("$ref")
+    if ref is not None:
         if ref in seen:
             return out
         seen = seen | {ref}
-        node = defs.get(ref.split("/")[-1], {})
+    node, defs = resolve(schema, defs, store)
     # oneOf/anyOf branches contribute keys too — `extensions` declares `root`
     # and `roots` in exclusive branches, and both are legal config.
     for branch in [node, *node.get("oneOf", []), *node.get("anyOf", [])]:
         for key, val in branch.get("properties", {}).items():
             path = f"{prefix}.{key}" if prefix else key
-            target = defs.get(val["$ref"].split("/")[-1], {}) if "$ref" in val else val
+            target, _ = resolve(val, defs, store)
             if target.get("type") == "object" and ("properties" in target or "oneOf" in target):
-                flatten(val, defs, path, out, seen)
+                flatten(val, defs, path, out, seen, store)
             else:
                 out[path] = val.get("default", SENTINEL)
     return out
 
 
-def load(rel: str, prefix: str = "") -> dict:
+def load(rel: str, prefix: str = "", store: dict | None = None) -> dict:
     doc = json.loads((REPO / rel).read_text())
-    return flatten(doc, doc.get("$defs", {}), prefix)
+    return flatten(doc, doc.get("$defs", {}), prefix, store=store)
 
 
 def derive() -> dict:
+    store = schema_store()
     allowed: dict = {}
     for rel, prefix in SOURCES:
-        allowed.update(load(rel, prefix))
-    canon = {k: v for k, v in load(DEFAULT_TABLE_SOURCE).items() if v != SENTINEL}
+        allowed.update(load(rel, prefix, store))
+    # sys-modules.schema.json is reached twice — once through apcore-config's
+    # $defs/SysModulesConfig delegation, once as its own SOURCES entry. Both
+    # yield the same prefixed paths, so the merge is idempotent; the explicit
+    # entry stays because §9.10 names it a canonical source in its own right.
+    canon = {k: v for k, v in load(DEFAULT_TABLE_SOURCE, "", store).items() if v != SENTINEL}
     return {
         "allowed_keys": sorted(allowed),
         "canonical_defaults": dict(sorted(canon.items())),

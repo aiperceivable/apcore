@@ -54,8 +54,8 @@ jobs:
       - name: The spec's own canonical config validates against its own schema
         run: |
           python3 - <<'PY'
-          import json, sys
-          from jsonschema import Draft202012Validator
+          import glob, json, os, sys
+          from jsonschema import Draft202012Validator, RefResolver
           # PROTOCOL_SPEC 9.1's worked example. If the schema rejects it, one of
           # the two is wrong and users copying the example get a config error.
           cfg = {
@@ -78,7 +78,19 @@ jobs:
               "stream": {"max_merge_depth": 32},
           }
           schema = json.load(open("schemas/apcore-config.schema.json"))
-          errors = sorted(Draft202012Validator(schema).iter_errors(cfg),
+          # Resolve sibling schemas from disk. `$id` is a canonical identifier,
+          # not a fetch instruction — without a local store the validator tries
+          # to reach apcore.dev over the network and CI fails on a defect that
+          # is not in the schema. $defs/SysModulesConfig $refs
+          # sys-modules.schema.json, which owns that namespace under §9.15.3.
+          store = {}
+          for path in glob.glob("schemas/*.schema.json"):
+              doc = json.load(open(path))
+              store[os.path.basename(path)] = doc
+              if "$id" in doc:
+                  store[doc["$id"]] = doc
+          resolver = RefResolver(base_uri="", referrer=schema, store=store)
+          errors = sorted(Draft202012Validator(schema, resolver=resolver).iter_errors(cfg),
                           key=lambda e: list(e.path))
           for err in errors:
               print(f"{list(err.path)}: {err.message}", file=sys.stderr)

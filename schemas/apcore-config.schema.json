@@ -728,16 +728,8 @@
       }
     },
     "SysModulesConfig": {
-      "type": "object",
-      "description": "System module registration. Mirrors defaults.schema.json `sys_modules`.",
-      "additionalProperties": false,
-      "properties": {
-        "enabled": {
-          "type": "boolean",
-          "description": "Whether the built-in system.* modules are registered.",
-          "default": false
-        }
-      }
+      "$ref": "sys-modules.schema.json",
+      "description": "System module registration. Delegates to `sys-modules.schema.json`, which owns this namespace under protocol-spec §9.15.3, rather than restating its keys. This definition previously declared only `enabled` while being additionalProperties: false, so read literally it rejected `sys_modules.events.enabled` and every other documented subkey — harmless while nothing validated config, and a startup failure once `_config.strict` began enforcing the schema. A $ref rather than a copy: duplicating the sibling's keys here would reintroduce exactly the drift that splitting the file avoids. Cross-file $ref follows the precedent in sys-manifest-full.schema.json."
     },
     "StreamConfig": {
       "type": "object",
