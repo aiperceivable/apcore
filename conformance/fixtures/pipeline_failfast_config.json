@@ -139,7 +139,10 @@
       },
       "expected": {
         "raises": true,
-        "error_message_contains": "requires",
+        "error_message_contains": [
+          "requires",
+          "provides"
+        ],
         "raised_at": "parse_time",
         "deferred_to_first_call": false,
         "error_code": "PIPELINE_CONFIGURATION_ERROR"
@@ -213,6 +216,7 @@
     "read_the_field_back_off_the_step": "For `all_four_configurable_fields_are_accepted`, assert `expected.configured_step_fields` by reading each field off the built step object — not by asserting construction succeeded. `raises: false` alone passes against an implementation that accepts the keys and applies none of them, which is precisely the pre-fix Rust behaviour for `requires`/`provides`: warn, drop, continue.",
     "snake_case_is_the_wire_spelling": "Feed the fixture's keys verbatim. An SDK MAY accept an idiomatic alias at its own API boundary — apcore-typescript takes `ignoreErrors` alongside `ignore_errors` — but a driver that translates the fixture's snake_case into its own spelling is testing its translation table, not the contract. An earlier revision of the TypeScript driver carried exactly such a private FIELD_NAME_TRANSLATION map, and it hid that 3 of the 4 canonical fields were unreachable from real YAML.",
     "configurable_set_is_four": "match_modules, ignore_errors, pure, timeout_ms — schemas/apcore-config.schema.json $defs/ConfigurableStepFields, spec/DECLARATIVE_CONFIG_SPEC.md §4.2. Not six: `requires` and `provides` belong to the step implementation. Not open-ended: apcore-python used `hasattr(step, key)`, which accepted any attribute of the concrete class and made a working config non-portable to the other two SDKs.",
-    "steps_entries_are_closed_too": "`$defs/PipelineStep` is `additionalProperties: false`. A driver needs a step TYPE registered under the fixture's `type` value to reach the insertion path at all — register a no-op step type named by the case rather than rewriting the case to use a built-in, since the point is the unknown key on an otherwise valid insertion."
+    "steps_entries_are_closed_too": "`$defs/PipelineStep` is `additionalProperties: false`. A driver needs a step TYPE registered under the fixture's `type` value to reach the insertion path at all — register a no-op step type named by the case rather than rewriting the case to use a built-in, since the point is the unknown key on an otherwise valid insertion.",
+    "name_every_offending_key": "An error for an unknown key MUST name EVERY offending key, not the first. One restart shows the whole problem instead of one restart per typo — the precedent apcore-python set for the `_config.strict` framework-key check. It is also what makes this assertion portable: reporting only the first makes the message depend on map iteration order, and that differs by language — `serde_json::Map` is a BTreeMap (sorted) while Python dicts and JS objects preserve insertion order. `configure_must_not_rewrite_a_step_capability_contract` therefore requires BOTH `requires` and `provides` in the message; an implementation that stops at the first fails it in one language and passes in the other two, for no behavioural reason."
   }
 }
