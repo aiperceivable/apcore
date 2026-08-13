@@ -1,0 +1,57 @@
+{
+  "description": "Fixture cases that no SDK driver runs, accepted as a known backlog. check_case_pinning.py --strict fails on any unpinned case; this file records the ones already known so the backlog can shrink without new ones slipping in. A case here is NOT covered \u2014 it only looks covered, in the fixture and in every count derived from the inventory. Delete an entry when a driver starts running it; the list reaching empty is the signal to run --strict everywhere.",
+  "unpinned": {
+    "context_create.json": [
+      "executor_rejects_cross_executor_rebind"
+    ],
+    "dependency_version_constraints.json": [
+      "caret_constraint_major_nonzero_violated",
+      "caret_constraint_major_zero_minor_nonzero",
+      "exact_match_violated",
+      "gte_constraint_violated",
+      "partial_version_major_only_violated",
+      "range_constraint_violated_upper",
+      "tilde_constraint_three_parts_violated"
+    ],
+    "error_codes.json": [
+      "cross_module_collision",
+      "dropped_prefix_circuit_custom_ok",
+      "dropped_prefix_context_custom_ok",
+      "dropped_prefix_pipeline_custom_ok",
+      "dropped_prefix_step_custom_ok",
+      "dropped_prefix_strategy_custom_ok",
+      "dropped_prefix_streaming_custom_ok",
+      "framework_prefix_collision",
+      "framework_prefix_general",
+      "register_custom_code",
+      "same_module_same_code_ok",
+      "unregister_allows_reuse"
+    ],
+    "identity_system.json": [
+      "identity_propagates_to_child_context"
+    ],
+    "schema_strict_conversion.json": [
+      "empty_schema_passthrough"
+    ],
+    "version_negotiation.json": [
+      "declared_minor_exceeds_sdk_error",
+      "invalid_version_error",
+      "major_mismatch_error"
+    ]
+  },
+  "not_measurable": {
+    "annotations_extra_round_trip.json": [
+      "producer_must_not_emit_both_forms"
+    ],
+    "context_serialization.json": [
+      "all_identity_types_serialize"
+    ],
+    "schema_content_hash.json": [
+      "baseline_simple_object",
+      "float_one_point_zero",
+      "large_integer",
+      "nested_unsorted_keys",
+      "non_ascii_unicode_key_and_value"
+    ]
+  }
+}

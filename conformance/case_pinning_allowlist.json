@@ -1,0 +1,11 @@
+{
+  "description": "Cases an SDK is REQUIRED to skip, so `check_case_pinning.py --sdk <name>` does not report them as gaps. A deliberate per-SDK skip and a forgotten case look identical from outside; only the fixture knows which it is, so the reason is recorded here alongside the fixture text that states it. This list does NOT affect the default question — whether ANY driver runs the case — which a genuinely dead case still fails.",
+  "allow": [
+    {
+      "fixture": "redaction_config.json",
+      "case": "legacy_config_key_is_honoured_with_a_deprecation_warning",
+      "sdks": ["python"],
+      "why": "The case's own `legacy_key_by_sdk.python` is null and its `skip_when_legacy_key_is_null` note states that apcore-python MUST NOT gain the fallback: no Python deployment ever had `observability.redaction.*` honoured, so adding it would create a deprecated surface for zero users, and a stale `observability.redaction.sensitive_keys: []` would flip from 'ignored, defaults apply' to 'key-based redaction disabled'. apcore-rust and apcore-typescript both pin it."
+    }
+  ]
+}

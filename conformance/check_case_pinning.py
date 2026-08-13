@@ -1,0 +1,316 @@
+#!/usr/bin/env python3
+"""Report fixture cases that no SDK driver actually runs.
+
+Two guards already ship, and both answer a question adjacent to this one:
+
+* ``check_driver_coverage.py`` — *does each SDK load this fixture?*
+* ``check_expected_keys_read.py`` — *does any driver read this ``expected`` key?*
+
+Neither answers **does any driver run this case**. A fixture can carry a case
+every driver skips, quarantines or simply never reaches, and both stay green:
+the fixture is loaded, and its ``expected`` key *names* are read — by some other
+case in the same file. The case then reads as covered in the fixture, in review,
+and in every count derived from the inventory, while nothing is checked.
+
+Static detection does not work here, and the failed attempts are worth recording
+so they are not retried:
+
+* Scanning drivers for skip markers (``QUARANTINED``, ``skip``, ``xfail``,
+  ``#[ignore]``) flagged 125 of 180 (fixture, SDK) pairs. The word ``skip``
+  appears throughout large shared drivers, including inside case *names* such as
+  ``skips_running_tasks``. Unusable.
+* "Names some case ids but not all" flagged 25 pairs, most of them false: a
+  driver that iterates generically may still mention one id in a comment or an
+  extra targeted assertion.
+* Adding "does the file iterate ``test_cases``" collapsed it to 0 suspects with
+  one regex and 37 with a slightly tighter one, almost all TypeScript — the
+  answer moved with the regex rather than with the code. A guard whose result
+  depends on how its pattern is spelled measures the pattern.
+
+So this checks the property directly: **mutate the case's ``expected`` block so
+no correct implementation can satisfy it, run the drivers that reference the
+fixture, and see whether anything goes red.** A case no driver runs cannot go
+red. That is the same instrument used to verify every fix in the 0.27 sweep, and
+it is the only one that caught a driver reading ``expected.wrapped_in`` and
+asserting nothing.
+
+    python3 conformance/check_case_pinning.py [--fixture NAME] [--sdk-root DIR]
+                                              [--strict] [--write-baseline]
+
+It runs test processes, so it is slow — minutes, not seconds. It belongs in a
+scheduled job or a local sweep, not on the per-PR path. ``--strict`` exits 1 on
+any unpinned case; the default reports and exits 0.
+
+MUTATION IS DESTRUCTIVE: the fixture file is rewritten and restored around each
+case. It restores on exceptions and on SIGINT, but do not run it on a dirty
+fixture tree — check `git status` first.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import shutil
+import signal
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parent.parent
+FIXTURES = REPO / "conformance" / "fixtures"
+BASELINE = REPO / "conformance" / "case_pinning_baseline.json"
+ALLOWLIST = REPO / "conformance" / "case_pinning_allowlist.json"
+
+SENTINEL = "__APCORE_MUTATION_CANARY__"
+
+# Ordered cheapest-first: a case pinned by the first SDK needs no further runs.
+SDKS: list[tuple[str, str, str]] = [
+    ("python", "apcore-python", ".py"),
+    ("rust", "apcore-rust", ".rs"),
+    ("typescript", "apcore-typescript", ".ts"),
+]
+
+
+def mutate(value):
+    """Return a value no correct implementation can produce.
+
+    Every leaf changes, so a driver asserting any part of the block fails. Prose
+    notes inside `expected` (`error_class_name_is_not_the_contract` and its kind)
+    mutate too and are simply not asserted — the case is judged by its real
+    assertions, which is the intent.
+    """
+    if isinstance(value, bool):
+        return not value
+    if isinstance(value, str):
+        return value + SENTINEL
+    if isinstance(value, (int, float)):
+        return value + 987654
+    if isinstance(value, list):
+        return [mutate(v) for v in value] if value else [SENTINEL]
+    if isinstance(value, dict):
+        return {k: mutate(v) for k, v in value.items()}
+    return SENTINEL
+
+
+#: Top-level keys, besides `expected`, that state an expectation rather than an
+#: input. Fixtures are not uniform: 242 of 658 cases carry no `expected` object
+#: at all and say it with a prefixed top-level key instead — `expected_valid`
+#: (134 cases), `expected_features`, `expected_error`, `expected_path`,
+#: `expected_score`. The first run of this tool measured only `expected` and so
+#: silently skipped 37% of the corpus while reporting a confident number for the
+#: rest, which is the defect it exists to find.
+_EXTRA_EXPECTATION_KEYS = frozenset({"error_code", "error_message_contains"})
+
+
+def expectation_keys(case: dict) -> list[str]:
+    """Top-level keys of `case` that state an expectation.
+
+    Anything spelled `expected` or `expected_*`, plus the small set above. A case
+    with none of them cannot be probed by mutation — it is reported rather than
+    counted as passing, because "not measurable" and "measured and fine" are the
+    two answers this whole exercise exists to keep apart.
+    """
+    return sorted(k for k in case
+                  if k == "expected" or k.startswith("expected_") or k in _EXTRA_EXPECTATION_KEYS)
+
+
+def driver_files(sdk_root: Path) -> dict[str, dict[str, list[Path]]]:
+    """{fixture_stem: {sdk: [test files that mention it]}}."""
+    stems = [p.stem for p in FIXTURES.glob("*.json")]
+    out: dict[str, dict[str, list[Path]]] = {s: {} for s in stems}
+    for sdk, repo, suffix in SDKS:
+        base = sdk_root / repo / "tests"
+        if not base.is_dir():
+            continue
+        for path in base.rglob(f"*{suffix}"):
+            try:
+                text = path.read_text()
+            except (UnicodeDecodeError, OSError):
+                continue
+            for stem in stems:
+                if stem in text:
+                    out[stem].setdefault(sdk, []).append(path)
+    return out
+
+
+def run_drivers(sdk: str, sdk_root: Path, files: list[Path]) -> bool:
+    """True when the given driver files FAIL. Timeouts and crashes count as red.
+
+    A crash is a legitimate red: a driver that blows up on a mutated expectation
+    was reading it.
+    """
+    repo = sdk_root / dict((s, r) for s, r, _ in SDKS)[sdk]
+    if sdk == "python":
+        cmd = [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider",
+               *[str(f.relative_to(repo)) for f in files]]
+    elif sdk == "typescript":
+        cmd = ["npx", "vitest", "run", *[str(f.relative_to(repo)) for f in files]]
+    else:
+        # `tests/it.rs` uses autotests=false, so a file is a MODULE of the `it`
+        # binary and its stem is the filter. Files compiled as their own
+        # [[test]] target are reached by the same substring.
+        filters = sorted({f.stem for f in files})
+        cmd = ["cargo", "test", "--all-features", "--", *filters]
+    try:
+        proc = subprocess.run(cmd, cwd=repo, capture_output=True, text=True, timeout=600)
+    except subprocess.TimeoutExpired:
+        return True
+    return proc.returncode != 0
+
+
+def load_allowlist() -> dict[tuple[str, str], set[str]]:
+    """{(fixture, case_id): {sdks that MUST NOT run it}} — deliberate skips.
+
+    Some cases are per-SDK by construction and a driver is *required* to skip
+    them. `redaction_config`'s `legacy_config_key_is_honoured_with_a_deprecation_
+    warning` is the worked example: it carries `legacy_key_by_sdk.python: null`
+    and a `skip_when_legacy_key_is_null` note stating that apcore-python MUST NOT
+    gain the fallback, because no Python deployment ever had that spelling and
+    adding it would be a security-relevant regression.
+
+    Without this list `--sdk python` reports that case as a gap, which is the
+    asymmetric-skip false positive: a case one SDK is *supposed* to skip looks
+    identical to a case it forgot to run. Only `--sdk` mode consults it; the
+    default question ("does ANY driver run this case") is unaffected, and that
+    is the question a genuinely dead case fails.
+    """
+    if not ALLOWLIST.is_file():
+        return {}
+    doc = json.loads(ALLOWLIST.read_text())
+    return {(e["fixture"], e["case"]): set(e["sdks"]) for e in doc.get("allow", [])}
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--sdk-root", type=Path, default=REPO.parent)
+    ap.add_argument("--fixture", help="limit to one fixture (stem, no .json)")
+    ap.add_argument("--sdk", choices=[s[0] for s in SDKS],
+                    help="ask the question of ONE SDK: which cases does it not run? "
+                         "The default asks whether ANY driver runs the case, which is "
+                         "the weaker question — a case only one SDK drives still "
+                         "proves one implementation, not three.")
+    ap.add_argument("--strict", action="store_true", help="exit 1 on any unpinned case")
+    ap.add_argument("--write-baseline", action="store_true")
+    args = ap.parse_args()
+
+    sdks = [t for t in SDKS if not args.sdk or t[0] == args.sdk]
+    allow = load_allowlist()
+    drivers = driver_files(args.sdk_root)
+    paths = sorted(FIXTURES.glob("*.json"))
+    if args.fixture:
+        paths = [p for p in paths if p.stem == args.fixture]
+        if not paths:
+            print(f"no fixture named {args.fixture!r}", file=sys.stderr)
+            return 2
+
+    scratch = Path(tempfile.mkdtemp(prefix="apcore-pinning-"))
+    unpinned: dict[str, list[str]] = {}
+    no_expected: dict[str, list[str]] = {}
+    indeterminate: dict[str, str] = {}
+    checked = 0
+
+    def restore_all(*_):
+        for backup in scratch.glob("*.json"):
+            shutil.copy(backup, FIXTURES / backup.name)
+        print("\nfixtures restored", file=sys.stderr)
+
+    signal.signal(signal.SIGINT, lambda *_: (restore_all(), sys.exit(130)))
+
+    try:
+        for path in paths:
+            doc = json.loads(path.read_text())
+            cases = [c for c in doc.get("test_cases", []) if isinstance(c, dict) and c.get("id")]
+            if not cases:
+                continue
+            backup = scratch / path.name
+            shutil.copy(path, backup)
+            by_sdk = drivers.get(path.stem, {})
+
+            # The whole method reads "red under mutation" as "the case is run",
+            # which is only meaningful if the drivers are GREEN unmutated. A
+            # fixture whose tests already fail would report every one of its
+            # cases as pinned — the tool would be at its most reassuring exactly
+            # where the suite is broken.
+            already_red = [sdk for sdk, *_ in sdks
+                           if by_sdk.get(sdk) and run_drivers(sdk, args.sdk_root, by_sdk[sdk])]
+            if already_red:
+                indeterminate[path.name] = ", ".join(already_red)
+                print(f"  INDETERMINATE  {path.stem} — red before mutation on "
+                      f"{indeterminate[path.name]}", flush=True)
+                continue
+
+            for case in cases:
+                cid = case["id"]
+                targets = expectation_keys(case)
+                if not targets:
+                    no_expected.setdefault(path.name, []).append(cid)
+                    continue
+                checked += 1
+                mutated = json.loads(backup.read_text())
+                for c in mutated["test_cases"]:
+                    if c.get("id") == cid:
+                        for key in targets:
+                            c[key] = mutate(c[key])
+                path.write_text(json.dumps(mutated, indent=2, ensure_ascii=False) + "\n")
+                pinned_by = None
+                for sdk, *_ in sdks:
+                    files = by_sdk.get(sdk)
+                    if not files:
+                        continue
+                    if run_drivers(sdk, args.sdk_root, files):
+                        pinned_by = sdk
+                        break
+                shutil.copy(backup, path)
+                if pinned_by is not None:
+                    continue
+                skips = allow.get((path.name, cid), set())
+                if args.sdk and args.sdk in skips:
+                    # Required to skip, not failing to run — see load_allowlist.
+                    continue
+                unpinned.setdefault(path.name, []).append(cid)
+                print(f"  UNPINNED  {path.stem} :: {cid}", flush=True)
+    finally:
+        restore_all()
+        shutil.rmtree(scratch, ignore_errors=True)
+
+    total_unpinned = sum(len(v) for v in unpinned.values())
+    print(f"\n{checked} cases mutated across {len(paths)} fixtures — "
+          f"{total_unpinned} pinned by no driver, in {len(unpinned)} fixtures")
+    if indeterminate:
+        print(f"{len(indeterminate)} fixture(s) were RED before mutation, so nothing "
+              f"could be concluded about their cases:")
+        for stem, sdks in sorted(indeterminate.items()):
+            print(f"  {stem}: failing on {sdks}")
+    if no_expected:
+        n = sum(len(v) for v in no_expected.values())
+        print(f"{n} cases state no expectation this tool can mutate — NOT MEASURED, which is "
+              f"not the same as measured and fine:")
+        for stem, ids in sorted(no_expected.items()):
+            print(f"  {stem}: {', '.join(ids[:6])}{' …' if len(ids) > 6 else ''}")
+
+    if args.write_baseline:
+        BASELINE.write_text(json.dumps(
+            {"description":
+                "Fixture cases that no SDK driver runs, accepted as a known backlog. "
+                "check_case_pinning.py --strict fails on any unpinned case; this file records "
+                "the ones already known so the backlog can shrink without new ones slipping in. "
+                "A case here is NOT covered — it only looks covered, in the fixture and in every "
+                "count derived from the inventory. Delete an entry when a driver starts running "
+                "it; the list reaching empty is the signal to run --strict everywhere.",
+             "unpinned": {k: sorted(v) for k, v in sorted(unpinned.items())},
+             "not_measurable": {k: sorted(v) for k, v in sorted(no_expected.items())}},
+            indent=2) + "\n")
+        print(f"wrote {BASELINE.relative_to(REPO)}")
+        return 0
+
+    if args.strict and total_unpinned:
+        print(f"\n{total_unpinned} fixture case(s) are run by no driver. A case that cannot "
+              f"go red is not coverage.", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
