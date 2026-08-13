@@ -337,7 +337,7 @@ The framework defines `ContextKey` constants for its own internal state. Third-p
 | `REDACTED_OUTPUT` | `_apcore.executor.redacted_output` | dict | Executor-redacted snapshot of the call output |
 | `RETRY_COUNT_BASE` | `_apcore.mw.retry.count` | int | Base key for retry middleware; use `.scoped(module_id)` per target |
 
-Framework subsystems also use additional raw-string `_apcore.*` keys (e.g., the middleware-hardening canonical table lists `_apcore.mw.logging.start_time`, `_apcore.mw.tracing.span_id`, `_apcore.mw.circuit.state` — some of which are written directly via raw dict access). Both raw-string and `ContextKey`-typed access into the `_apcore.*` namespace are reserved for the framework.
+Framework subsystems also use additional raw-string `_apcore.*` keys (e.g., the middleware-hardening canonical table lists `_apcore.mw.logging.start_time`, `_apcore.mw.tracing.spans`, `_apcore.mw.circuit.state` — some of which are written directly via raw dict access). Both raw-string and `ContextKey`-typed access into the `_apcore.*` namespace are reserved for the framework.
 
 !!! info "Where SDK constants live"
     Each SDK exports these as named module-level constants (`SCREAMING_SNAKE_CASE` in Python and Rust statics, exported `const` in TypeScript). The identifier string is identical across languages. Consult the respective SDK reference for the exact import path.
@@ -764,7 +764,7 @@ The reserved `_apcore.` prefix described in [`data` Key Convention](#data-key-co
 
     class TracingMiddleware(Middleware):
         def before(self, module_id: str, inputs: dict, context: Context) -> None:
-            context.data["_apcore.mw.tracing.span_id"] = str(uuid.uuid4())[:16]
+            context.data.setdefault("_apcore.mw.tracing.spans", []).append(span)
             context.data["_apcore.mw.tracing.span_start"] = time.time()
             return None
 
@@ -794,7 +794,7 @@ The reserved `_apcore.` prefix described in [`data` Key Convention](#data-key-co
             _inputs: Record<string, unknown>,
             context: Context,
         ): null {
-            context.data['_apcore.mw.tracing.span_id'] = randomUUID().slice(0, 16);
+            (context.data['_apcore.mw.tracing.spans'] ??= []).push(span);
             context.data['_apcore.mw.tracing.span_start'] = Date.now();
             return null;
         }
@@ -845,7 +845,7 @@ The reserved `_apcore.` prefix described in [`data` Key Convention](#data-key-co
                 .take(16)
                 .collect();
             let mut data = ctx.data.write();
-            data.insert("_apcore.mw.tracing.span_id".into(), json!(span_id));
+            data.entry("_apcore.mw.tracing.spans".into()).or_insert_with(|| json!([])).as_array_mut().unwrap().push(json!(span));
             data.insert("_apcore.mw.tracing.span_start".into(), json!(now_ms() as u64));
             Ok(None)
         }
@@ -886,7 +886,7 @@ The reserved `_apcore.` prefix described in [`data` Key Convention](#data-key-co
 | Purpose | Example keys | Notes |
 |---------|--------------|-------|
 | Pipeline intermediate state | `raw_records`, `analysis` | AI orchestration multi-step calls |
-| Observability | `_apcore.mw.tracing.span_id`, `_apcore.mw.tracing.parent_span_id` | Written by middleware |
+| Observability | `_apcore.mw.tracing.spans` (stack), `_apcore.mw.tracing.sampled` | Written by the framework's `TracingMiddleware` |
 | Internationalization | `locale`, `timezone` | Set at top level, read as needed |
 | Feature flags | `feature_flags` | Set at top level |
 | Request metadata | `source`, `client_ip`, `session_id` | Written at the entry layer |

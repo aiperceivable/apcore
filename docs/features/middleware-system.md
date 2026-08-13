@@ -282,7 +282,8 @@ Context keys in `context.data` are partitioned by namespace to prevent collision
 | Key | Set by | Value |
 |-----|--------|-------|
 | `_apcore.mw.logging.start_time` | `LoggingMiddleware.before()` | Wall-clock time (float, seconds since epoch) at the start of the module call |
-| `_apcore.mw.tracing.span_id` | `TracingMiddleware.before()` | Active span ID string for the current module execution span |
+| `_apcore.mw.tracing.spans` | `TracingMiddleware.before()` | Stack of active spans for the current trace. A stack, not a single id: modules call modules, so a single slot is overwritten on the first nested call. Each entry links `parent_span_id` to the one below it. |
+| `_apcore.mw.tracing.sampled` | `TracingMiddleware.before()` | The sampling decision for this trace |
 | `_apcore.mw.circuit.state` | `CircuitBreakerMiddleware.before()` | Circuit state string: `CLOSED`, `OPEN`, or `HALF_OPEN` |
 
 ### 1.2 CircuitBreakerMiddleware
@@ -344,67 +345,48 @@ The `CircuitBreakerMiddleware` tracks per-module error rates and latencies, and 
     let result = client.call("executor.payment.charge", json!({ "amount": 100 })).await?;
     ```
 
-### 1.3 TracingMiddleware (OpenTelemetry-Compatible)
+### 1.3 TracingMiddleware — superseded, see Observability
 
-The `TracingMiddleware` creates spans around module execution compatible with OTLP exporters.
+**This section is withdrawn.** `TracingMiddleware` is specified once, in
+[observability.md § Tracing Architecture](./observability.md#tracing-architecture),
+and `protocol-spec.md` §12 is the normative source for the span it creates.
 
-**Normative rules:**
+§1.3 previously described a second, weaker formulation of the same middleware.
+It was withdrawn rather than implemented because every one of its rules either
+duplicated or contradicted the surviving one:
 
-- `TracingMiddleware` MUST create a span in `before()` with span name equal to `module_id` and attributes `{ apcore.trace_id, apcore.caller_id, apcore.module_id }`.
-- `TracingMiddleware` MUST end the span in `after()` with the execution result status (`ok` on success, `error` on failure).
-- `TracingMiddleware` MUST store the span ID in `context.data["_apcore.mw.tracing.span_id"]`.
-- `TracingMiddleware` SHOULD propagate W3C `traceparent` headers to outbound calls.
-- `TracingMiddleware` MUST NOT raise if the OpenTelemetry SDK is not installed; in that case it MUST operate as a no-op.
+- **Span name.** §1.3 required the span name to equal `module_id`. `protocol-spec.md`
+  requires `apcore.module.execute` (conformance T08-007), with the module id carried
+  as an attribute. The protocol specification is the source of truth, and it is also
+  the correct practice: a span name per module is high-cardinality, which the
+  OpenTelemetry semantic conventions advise against — so the section labelled
+  "OpenTelemetry-Compatible" prescribed the less OTel-compatible of the two.
+- **Storage.** §1.3 required a single span id in `context.data["_apcore.mw.tracing.span_id"]`.
+  Modules call modules, so a single slot is overwritten on the first nested call.
+  The surviving contract stores a **stack** in `_apcore.mw.tracing.spans` and links
+  `parent_span_id` explicitly. That is not a stylistic difference; it is the correct
+  solution to a problem the single-slot form did not model.
+- **`traceparent` propagation.** §1.3 carried a SHOULD to propagate W3C `traceparent`
+  to outbound calls. No SDK implemented it, because **the extension point it needs does
+  not exist**: there is no outbound-call hook to attach it to. Reinstating it requires
+  that hook first, which is a separate feature.
+- **No-op without the OpenTelemetry SDK.** This rule survives and is stated in
+  observability.md.
 
-=== "Python"
-    ```python
-    from apcore import APCore
-    from apcore import TracingMiddleware
+The two shared the `_apcore.mw.tracing.*` context-data namespace, which is what makes
+them the same middleware rather than two: that prefix is a single framework
+middleware's private space by definition.
 
-    # opentelemetry-api must be installed for active tracing;
-    # if absent, TracingMiddleware silently becomes a no-op.
-    client = APCore()
-
-    client.use(TracingMiddleware(
-        service_name="my-service",
-        propagate_traceparent=True,
-    ))
-
-    result = client.call("executor.email.send_email", {"to": "user@example.com"})
-    ```
-=== "TypeScript"
-    ```typescript
-    import { APCore, TracingMiddleware } from "apcore-js";
-    // @opentelemetry/api must be installed for active tracing;
-    // if absent, TracingMiddleware silently becomes a no-op.
-
-    const client = new APCore();
-
-    client.use(new TracingMiddleware({
-        serviceName: "my-service",
-        propagateTraceparent: true,
-    }));
-
-    const result = await client.call("executor.email.send_email", { to: "user@example.com" });
-    ```
-=== "Rust"
-    ```rust
-    use apcore::APCore;
-    use apcore::middleware::TracingMiddleware;
-    // opentelemetry crate must be in Cargo.toml for active tracing;
-    // if absent (feature-flag disabled), TracingMiddleware is a no-op.
-
-    let mut client = APCore::new();
-
-    client.use_middleware(Box::new(
-        TracingMiddleware::builder()
-            .service_name("my-service")
-            .propagate_traceparent(true)
-            .build(),
-    ));
-
-    let result = client.call("executor.email.send_email", json!({ "to": "user@example.com" })).await?;
-    ```
+!!! note "Nothing was removed from any SDK's capability"
+    No SDK ever provided the §1.3 surface as a usable product. apcore-python never
+    implemented it; apcore-typescript's implementation was never re-exported from the
+    package root, so it was unreachable; apcore-rust renamed its copy to
+    `OtelTracingMiddleware` to dodge the name clash and documented its
+    `propagate_traceparent` as behaviourally inert. Each SDK was working around the
+    collision rather than offering a second capability — and §1.3's own Python example
+    imported `from apcore import TracingMiddleware`, which resolves to the
+    observability one. The section demonstrated itself with the other middleware's
+    import.
 
 ### 1.4 Declarative Middleware Configuration (YAML-Driven)
 

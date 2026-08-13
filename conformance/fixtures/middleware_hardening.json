@@ -34,8 +34,8 @@
       "description": "User middleware attempting to write a key with the _apcore.* prefix must produce a warning or error — this is a namespace violation.",
       "input": {
         "writer": "user",
-        "key": "_apcore.mw.tracing.span_id",
-        "value": "user-injected-span"
+        "key": "_apcore.mw.tracing.spans",
+        "value": "user-injected"
       },
       "expected": {
         "valid": false,
@@ -105,27 +105,6 @@
       }
     },
     {
-      "id": "tracing_span_created",
-      "description": "TracingMiddleware must create a span in before() with the correct name and mandatory attributes.",
-      "input": {
-        "module_id": "executor.email.send_email",
-        "caller_id": "orchestrator.notifications",
-        "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736",
-        "otel_available": true
-      },
-      "expected": {
-        "span_created": true,
-        "span_name": "executor.email.send_email",
-        "span_attributes": {
-          "apcore.trace_id": "4bf92f3577b34da6a3ce929d0e0e4736",
-          "apcore.caller_id": "orchestrator.notifications",
-          "apcore.module_id": "executor.email.send_email"
-        },
-        "span_id_stored_in_context": true,
-        "context_key": "_apcore.mw.tracing.span_id"
-      }
-    },
-    {
       "id": "tracing_noop_without_otel",
       "description": "TracingMiddleware must not raise any error when the OpenTelemetry SDK is not installed; it must silently operate as a no-op.",
       "input": {
@@ -159,6 +138,7 @@
     }
   ],
   "driver_contract": {
-    "assert_the_wire_code": "Cross-language cases state their expected failure as `error_code`, the wire string, never a class name. `circuit_breaker_short_circuits_open` asserted `CircuitBreakerOpenError`, a Python/TypeScript class apcore-rust cannot have — Rust models these as `ErrorCode` variants — so no Rust driver could ever satisfy it. Cases carrying an explicit `language` field are the exception: they assert that language's API shape, and a type name there is the thing under test rather than a stand-in for the contract."
+    "assert_the_wire_code": "Cross-language cases state their expected failure as `error_code`, the wire string, never a class name. `circuit_breaker_short_circuits_open` asserted `CircuitBreakerOpenError`, a Python/TypeScript class apcore-rust cannot have — Rust models these as `ErrorCode` variants — so no Rust driver could ever satisfy it. Cases carrying an explicit `language` field are the exception: they assert that language's API shape, and a type name there is the thing under test rather than a stand-in for the contract.",
+    "tracing_is_specified_once": "`tracing_span_created` was removed. It pinned middleware-system.md §1.3, which required a span named `module_id` and a single span id in `_apcore.mw.tracing.span_id`. Both contradicted the surviving contract: protocol-spec.md §12 and conformance T08-007 require the span name `apcore.module.execute` with the module id as an attribute (a span name per module is high-cardinality, which OpenTelemetry's semantic conventions advise against), and observability.md stores a STACK in `_apcore.mw.tracing.spans` because modules call modules and a single slot is overwritten on the first nested call. §1.3 is withdrawn. TracingMiddleware's span contract is asserted where it is specified — see the observability fixtures and T08-007 — not here."
   }
 }

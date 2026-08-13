@@ -5,7 +5,9 @@
     "sdk_tables": "Each driver supplies its SDK's constraint-table key set (apcore-python `_CONSTRAINTS`, apcore-typescript `CONSTRAINTS`, apcore-rust `CONSTRAINED_CONFIG_KEYS`) and its default-table key set (`_DEFAULTS` / `DEFAULTS` / `config_default_keys()`). Registered-namespace defaults declared at runtime (PROTOCOL_SPEC 9.15) are NOT part of the default table and are out of scope.",
     "assertion": "Report the offending keys, not just a boolean — a driver that fails with 'expected 0 violations, got 3' costs more to diagnose than the bug it caught.",
     "default_value_comparison": "Compare canonical_defaults against the RESOLVED default view — construct a defaults-only Config (`Config.from_defaults()`) and read each key through `get()`. Do NOT compare against the default table directly: an SDK may legitimately implement a default as a typed struct field rather than a table entry (apcore-rust's ExecutorConfig and ObservabilityConfig carry serde defaults that never appear in CONFIG_DEFAULTS), and a table-only comparison reports seven false positives on that SDK. The behavioural question a caller cares about is whether the key resolves to the documented value. Compare numerically when both sides are numbers so 1.0 and 1 agree.",
-    "undeclared_key_check": "The undeclared-key direction DOES read the tables directly, because it needs enumeration: the question is which keys this SDK claims to know about. Typed struct fields are exempt — they are declared by the schemas by construction."
+    "undeclared_key_check": "The undeclared-key direction DOES read the tables directly, because it needs enumeration: the question is which keys this SDK claims to know about. Typed struct fields are exempt — they are declared by the schemas by construction.",
+    "strict_enumerates_every_key": "The strict case declares TWO undeclared keys in DIFFERENT sections on purpose. Drivers MUST assert both appear in the error, not merely that an error was raised: an implementation that fails on the first offending key satisfies a raise-only assertion while forcing the operator into one restart per typo.",
+    "default_tier_must_be_asserted_by_reading_it_back": "Assert the retained key by READING IT BACK through get(), not by checking that load did not raise. Not-raising is also true of an implementation that discarded the key at parse time — which is precisely the defect this case exists to catch."
   },
   "canonical_sources": [
     "schemas/apcore-config.schema.json",
@@ -14,6 +16,8 @@
   ],
   "allowed_keys": [
     "$schema",
+    "_config.allow_unknown",
+    "_config.strict",
     "acl.audit.enabled",
     "acl.audit.include_denied",
     "acl.audit.log_level",
@@ -128,6 +132,37 @@
       "sdk_table": "defaults",
       "expected": {
         "mismatched": []
+      }
+    },
+    {
+      "id": "unknown_framework_key_is_retained_by_default",
+      "description": "With `_config.strict` absent or false, a key inside a framework section that apcore-config.schema.json does not declare MUST be RETAINED and readable through get(). Implementations MUST NOT silently discard it — an SDK that models the section as a typed record still has to keep what the record does not model. 'The operator wrote it and it vanished' is indistinguishable from 'the operator never wrote it', and apcore-rust did exactly that for every observability.* subkey until apcore-rust#33.",
+      "config": {
+        "executor.max_call_depth": 7,
+        "executor.zz_undeclared": "kept"
+      },
+      "expected": {
+        "load_succeeds": true,
+        "get_declared_key": 7,
+        "get_undeclared_key": "kept",
+        "error_raised": false
+      }
+    },
+    {
+      "id": "unknown_framework_key_is_rejected_under_strict",
+      "description": "With `_config.strict: true`, the same key MUST cause CONFIG_INVALID. The error MUST enumerate EVERY offending key rather than failing on the first, so one restart shows the whole problem. `allow_unknown` does not apply — it is defined for unknown top-level NAMESPACES, and stretching it across two granularities would make its meaning depend on where it is read.",
+      "config": {
+        "_config.strict": true,
+        "executor.zz_undeclared": "x",
+        "acl.zz_also_undeclared": "y"
+      },
+      "expected": {
+        "load_succeeds": false,
+        "error_code": "CONFIG_INVALID",
+        "error_names_all_offending_keys": [
+          "executor.zz_undeclared",
+          "acl.zz_also_undeclared"
+        ]
       }
     }
   ]

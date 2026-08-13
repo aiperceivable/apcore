@@ -5132,7 +5132,7 @@ _config:
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `strict` | boolean | `false` | When `true`, every top-level key (except `_config`) **MUST** correspond to a registered namespace. Unknown namespaces cause a `ConfigError`. |
+| `strict` | boolean | `false` | When `true`: (a) every top-level key (except `_config`) **MUST** correspond to a registered namespace — unknown namespaces cause a `ConfigError`; and (b) every key inside a framework section of the `apcore` namespace **MUST** be declared by `schemas/apcore-config.schema.json`, which is `additionalProperties: false` for all of them. See the `reject_unknown_framework_keys` sub-algorithm in §9.10. Clause (b) applies in legacy mode too, where the whole file *is* the `apcore` namespace. |
 | `allow_unknown` | boolean | `true` | When `strict` is `false` and `allow_unknown` is `true`, unknown namespace data is stored and accessible via `get()` but not validated. When `allow_unknown` is `false`, unknown namespaces are silently ignored (not stored). |
 
 **Behavior matrix:**
@@ -5798,11 +5798,13 @@ Output:
 Steps:
   1. If mode == "legacy":
        → Run original A12 algorithm on config_data (unchanged behavior)
+       → Run reject_unknown_framework_keys(config_data, meta_config)
        → Return
 
   2. Validate the "apcore" namespace:
        apcore_data ← config_data["apcore"]
        Run original A12 algorithm on apcore_data
+       Run reject_unknown_framework_keys(apcore_data, meta_config)
 
   3. For each top-level key (ns_name) in config_data:
        If ns_name == "_config" → skip (meta-configuration)
@@ -5825,6 +5827,48 @@ Steps:
   4. If any errors collected → throw CONFIG_INVALID with all errors
   5. Return validated config_data
 ```
+
+```
+Sub-algorithm: reject_unknown_framework_keys(apcore_data, meta_config)
+
+Steps:
+  1. If meta_config.strict != true:
+       → Return (the key is retained and readable; see below)
+
+  2. For each framework section declared by apcore-config.schema.json:
+       For each key present in apcore_data[section]:
+         If the section's schema does not declare the key:
+           Collect error: "Unknown key '{section}.{key}' (strict mode enabled)"
+
+  3. If any errors collected → throw CONFIG_INVALID with ALL of them
+```
+
+**Unknown keys inside the `apcore` namespace.** Every framework section in
+`schemas/apcore-config.schema.json` is `additionalProperties: false`. That
+closedness is now enforced — but **only** under `_config.strict: true`.
+
+- **Default (`strict: false`).** An unknown key inside a framework section
+  **MUST** be retained and readable through `get()`. Implementations **MUST NOT**
+  silently discard it. This is a cross-language requirement: an SDK that models a
+  section as a typed record still has to keep what the record does not model,
+  because "the operator wrote it and it vanished" is indistinguishable from "the
+  operator never wrote it".
+- **`strict: true`.** The key **MUST** cause `CONFIG_INVALID`, and the error
+  **MUST** enumerate every offending key rather than failing on the first, so one
+  restart is enough to see the whole problem.
+
+`allow_unknown` does **not** apply here. It is defined in §9.6.3 for unknown
+top-level *namespaces*, and stretching one field across two granularities would
+make its meaning depend on where it is read.
+
+!!! note "Why `strict` and not a warning"
+    `strict` already means "every top-level key must correspond to a registered
+    namespace" (§9.6.3). Extending it to the keys *inside* the framework namespace
+    is the same promise one level down, for operators who have already asked for it.
+    A key with no declaration is either a typo — in which case the operator is
+    looking at a default they believe they overrode — or dead configuration. Both
+    are worth a startup failure to someone who opted into strictness, and neither
+    is worth one to someone who did not.
 
 ### 9.11 Hot-Reload (Namespace Mode)
 

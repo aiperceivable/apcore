@@ -67,6 +67,10 @@
     },
     "obs": {
       "$ref": "#/$defs/ObsConfig"
+    },
+    "_config": {
+      "$ref": "#/$defs/ConfigBusMeta",
+      "description": "Config Bus meta-configuration (§9.6.3). Reserved: MUST NOT be registered by external packages."
     }
   },
   "$defs": {
@@ -780,6 +784,23 @@
               "default": "***REDACTED***"
             }
           }
+        }
+      }
+    },
+    "ConfigBusMeta": {
+      "type": "object",
+      "description": "Controls Config Bus behaviour itself (protocol-spec §9.6.3). Declared here because the root object is `additionalProperties: false` — without it, a legacy apcore.yaml that enables strict mode fails to validate against this very schema.",
+      "additionalProperties": false,
+      "properties": {
+        "strict": {
+          "type": "boolean",
+          "default": false,
+          "description": "When true: every top-level key (except `_config`) must correspond to a registered namespace, AND every key inside a framework section must be declared by this schema."
+        },
+        "allow_unknown": {
+          "type": "boolean",
+          "default": true,
+          "description": "Only relevant when `strict` is false. True: unknown NAMESPACE data is stored and readable but not validated. False: silently ignored. Does not apply to keys inside framework sections."
         }
       }
     }

@@ -290,12 +290,14 @@ Middleware can intercept calls for logging, tracing, or security.
 === "Rust"
 
     ```rust
-    use apcore::middleware::{LoggingMiddleware, OtelTracingMiddleware};
+    use apcore::middleware::LoggingMiddleware;
+    use apcore::observability::TracingMiddleware;
 
     client.use_middleware(Box::new(LoggingMiddleware::with_defaults()))?;
-    // `apcore::middleware::TracingMiddleware` is re-exported as OtelTracingMiddleware
-    // to avoid colliding with the observability one, which takes a SpanExporter.
-    client.use_middleware(Box::new(OtelTracingMiddleware::builder().build()))?;
+    // There is one TracingMiddleware. The `OtelTracingMiddleware` alias existed
+    // only to dodge a name collision with a second, withdrawn one; see
+    // features/middleware-system.md §1.3.
+    client.use_middleware(Box::new(TracingMiddleware::new(exporter)))?;
     ```
 
 ## 7. Advanced: Manual Registry + Executor
