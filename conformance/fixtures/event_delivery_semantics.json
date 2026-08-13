@@ -15,20 +15,28 @@
             "max_backoff_ms": 100,
             "backoff_multiplier": 2.0
           },
-          "fail_attempts": [1, 2]
+          "fail_attempts": [
+            1,
+            2
+          ]
         }
       },
       "trigger": {
         "action": "emit",
         "event": {
           "name": "apcore.test.transient",
-          "payload": {"value": 42}
+          "payload": {
+            "value": 42
+          }
         }
       },
       "expected": {
         "attempt_count": 3,
         "dlq_event_emitted": false,
-        "backoff_delays_ms": [10, 20]
+        "backoff_delays_ms": [
+          10,
+          20
+        ]
       }
     },
     {
@@ -51,7 +59,10 @@
         "action": "emit",
         "event": {
           "name": "apcore.health.error_threshold_exceeded",
-          "payload": {"service": "billing", "error_rate": 0.42}
+          "payload": {
+            "service": "billing",
+            "error_rate": 0.42
+          }
         }
       },
       "expected": {
@@ -86,7 +97,10 @@
           "type": "a2a",
           "id": "broken-primary",
           "platform_url": "https://platform.example.invalid",
-          "retry": {"max_attempts": 2, "initial_backoff_ms": 10},
+          "retry": {
+            "max_attempts": 2,
+            "initial_backoff_ms": 10
+          },
           "fail_attempts": "all"
         },
         "dlq_subscriber": {
@@ -94,7 +108,10 @@
           "id": "broken-dlq",
           "path": "/dev/null/invalid",
           "event_pattern": "apcore.event.delivery_failed",
-          "retry": {"max_attempts": 5, "initial_backoff_ms": 1000},
+          "retry": {
+            "max_attempts": 5,
+            "initial_backoff_ms": 1000
+          },
           "fail_attempts": "all"
         }
       },
@@ -120,25 +137,159 @@
         "subscribers": [
           {
             "type": "stdout",
-            "retry": {"max_attempts": 1},
+            "retry": {
+              "max_attempts": 1
+            },
             "fail_attempts": "all"
           },
           {
             "type": "stdout",
-            "retry": {"max_attempts": 1},
+            "retry": {
+              "max_attempts": 1
+            },
             "fail_attempts": "all"
           }
         ]
       },
       "trigger": {
         "action": "emit",
-        "event": {"name": "apcore.test.unidentified", "payload": {}}
+        "event": {
+          "name": "apcore.test.unidentified",
+          "payload": {}
+        }
       },
       "expected": {
         "dlq_events_emitted": 2,
         "subscriber_ids_distinct": true,
         "subscriber_ids_pattern": "^stdout-[0-9]+$"
       }
+    },
+    {
+      "id": "declared_retry_policy_is_read_for_every_subscriber_type",
+      "description": "A subscriber's `retry:` block in config MUST reach the delivery policy, for EVERY built-in subscriber type. features/event-system.md documents it under the heading 'showing the policy on multiple subscriber types', and no SDK read it: only the `webhook` factory built a policy, and only from the legacy flat `retry_count`. Two SDKs did not even have a `retry` field on `file` / `stdout` (and `filter` in apcore-rust) for a parser to write into, and apcore-rust's `webhook` wrote `retry_count` to a field its `retry()` never read — so the one spelling that looked wired was inert too. See apcore#85.",
+      "subscribers": [
+        {
+          "type": "webhook",
+          "url": "https://webhook.example.invalid/events",
+          "retry": {
+            "max_attempts": 7,
+            "initial_backoff_ms": 250,
+            "max_backoff_ms": 10000,
+            "backoff_multiplier": 3.0
+          }
+        },
+        {
+          "type": "a2a",
+          "platform_url": "https://platform.example.invalid",
+          "retry": {
+            "max_attempts": 7,
+            "initial_backoff_ms": 250,
+            "max_backoff_ms": 10000,
+            "backoff_multiplier": 3.0
+          }
+        },
+        {
+          "type": "file",
+          "path": "/tmp/apcore-conformance-retry-policy.jsonl",
+          "retry": {
+            "max_attempts": 7,
+            "initial_backoff_ms": 250,
+            "max_backoff_ms": 10000,
+            "backoff_multiplier": 3.0
+          }
+        },
+        {
+          "type": "stdout",
+          "retry": {
+            "max_attempts": 7,
+            "initial_backoff_ms": 250,
+            "max_backoff_ms": 10000,
+            "backoff_multiplier": 3.0
+          }
+        },
+        {
+          "type": "filter",
+          "retry": {
+            "max_attempts": 7,
+            "initial_backoff_ms": 250,
+            "max_backoff_ms": 10000,
+            "backoff_multiplier": 3.0
+          },
+          "delegate_type": "stdout",
+          "delegate_config": {}
+        }
+      ],
+      "expected": {
+        "resolved_policy_per_type": {
+          "webhook": {
+            "max_attempts": 7,
+            "initial_backoff_ms": 250,
+            "max_backoff_ms": 10000,
+            "backoff_multiplier": 3.0
+          },
+          "a2a": {
+            "max_attempts": 7,
+            "initial_backoff_ms": 250,
+            "max_backoff_ms": 10000,
+            "backoff_multiplier": 3.0
+          },
+          "file": {
+            "max_attempts": 7,
+            "initial_backoff_ms": 250,
+            "max_backoff_ms": 10000,
+            "backoff_multiplier": 3.0
+          },
+          "stdout": {
+            "max_attempts": 7,
+            "initial_backoff_ms": 250,
+            "max_backoff_ms": 10000,
+            "backoff_multiplier": 3.0
+          },
+          "filter": {
+            "max_attempts": 7,
+            "initial_backoff_ms": 250,
+            "max_backoff_ms": 10000,
+            "backoff_multiplier": 3.0
+          }
+        },
+        "every_field_differs_from_the_default": true
+      }
+    },
+    {
+      "id": "nested_retry_block_wins_over_legacy_retry_count",
+      "description": "`retry_count` is the pre-nested-block spelling and MUST keep working for `webhook` as a deprecated alias, translated as `max_attempts = retry_count + 1`. When both are present the NESTED block wins — it is the documented form and carries all four fields, where the flat one carries only an attempt count.",
+      "subscribers": [
+        {
+          "type": "webhook",
+          "url": "https://webhook.example.invalid/events",
+          "retry_count": 1,
+          "retry": {
+            "max_attempts": 7,
+            "initial_backoff_ms": 250,
+            "max_backoff_ms": 10000,
+            "backoff_multiplier": 3.0
+          }
+        },
+        {
+          "type": "webhook",
+          "url": "https://webhook.example.invalid/events",
+          "retry_count": 1
+        }
+      ],
+      "expected": {
+        "nested_wins": {
+          "max_attempts": 7
+        },
+        "legacy_alone_still_translates": {
+          "max_attempts": 2
+        }
+      }
     }
-  ]
+  ],
+  "driver_contract": {
+    "assert_a_policy_that_differs_from_the_default": "Every asserted value differs from the shipped default on ALL FOUR fields (7/250/10000/3.0 against 3/100/30000/2.0). A case whose policy matches any default field passes whether or not the config was read — which is how this defect survived in three SDKs at once.",
+    "every_type_or_the_case_is_half_done": "Drivers MUST assert all five built-in types. The defect was not uniform: `webhook` parsed a different (flat) spelling, and `file` / `stdout` / `filter` had no field at all in some SDKs. Asserting `webhook` alone would have reported green in every SDK while four types ignored their configuration.",
+    "read_the_resolved_policy_not_the_config": "Assert the policy the DELIVERY PATH resolves for the subscriber — what the emitter would act on — not the dict the factory was handed. apcore-rust stored `retry_count` on a field its `retry()` never consulted, so a config-shaped assertion was green while delivery used the default.",
+    "a_case_must_carry_its_own_inputs": "Each subscriber entry carries the fields its type REQUIRES to construct — `url`, `platform_url`, `path`, `delegate_type` / `delegate_config` — not just `type` and `retry`. An earlier revision omitted them and every driver invented its own table. The three happened to agree, so nothing broke — but agreement reached separately by three drivers is not a contract, it is three private guesses that have not diverged yet. The inputs live here so that if an SDK ever spells a required field differently, the case fails instead of each driver quietly compensating."
+  }
 }
