@@ -643,7 +643,7 @@ The repository ships **43 cross-language fixture files** under `conformance/fixt
 | [`openai_strict_compat`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/openai_strict_compat.json) | 30 | OpenAI structured-outputs strict-mode incompatibility detection (DECLARATIVE_CONFIG_SPEC §6.2 / §6.6) |
 | [`overrides_store`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/overrides_store.json) | 5 | OverridesStore pluggable persistence |
 | [`pattern_matching`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/pattern_matching.json) | 12 | ACL pattern matching (Algorithm A09) |
-| [`pipeline_failfast_config`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/pipeline_failfast_config.json) | 6 | Pipeline configuration fail-fast (Issue #33) |
+| [`pipeline_failfast_config`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/pipeline_failfast_config.json) | 7 | Pipeline configuration fail-fast (Issue #33) |
 | [`pipeline_hardening`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/pipeline_hardening.json) | 5 | Pipeline execution hardening: fail-fast, replace-step, run_until |
 | [`pipeline_step_middleware`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/pipeline_step_middleware.json) | 9 | Pipeline StepMiddleware lifecycle (Issue #33) |
 | [`redaction_config`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/redaction_config.json) | 7 | Redaction config via `obs.redaction.regex_patterns` / `sensitive_keys` |
@@ -668,7 +668,7 @@ The repository ships **43 cross-language fixture files** under `conformance/fixt
 | [`trace_context`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/trace_context.json) | 8 | W3C TraceContext alignment (Issue #35) |
 | [`usage_exporter`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/usage_exporter.json) | 3 | `UsageExporter` push interface (#45 §3, D-55) |
 | [`version_negotiation`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/version_negotiation.json) | 10 | Version negotiation (Algorithm A14) |
-| **Total** | **657** | **60 fixtures** |
+| **Total** | **658** | **60 fixtures** |
 
 ### 8.2 Loading Fixtures from a Test Runner
 

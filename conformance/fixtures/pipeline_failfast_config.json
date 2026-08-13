@@ -177,6 +177,31 @@
           "timeout_ms": 5000
         }
       }
+    },
+    {
+      "id": "unknown_key_on_a_steps_entry_raises_configuration_error",
+      "description": "A `pipeline.steps` entry carries a key outside $defs/PipelineStep; PIPELINE_CONFIGURATION_ERROR MUST be raised at parse time. The schema has declared that entry `additionalProperties: false` all along and nothing enforced it: measured on apcore-python, `tiemout_ms: 5000` was dropped without a word and the built step kept timeout_ms=0. Same silent-drop failure mode #89 removes from `configure:`, one key over.",
+      "input": {
+        "yaml": {
+          "pipeline": {
+            "steps": [
+              {
+                "name": "custom_probe",
+                "type": "noop",
+                "after": "execute",
+                "tiemout_ms": 5000
+              }
+            ]
+          }
+        }
+      },
+      "expected": {
+        "raises": true,
+        "error_message_contains": "tiemout_ms",
+        "raised_at": "parse_time",
+        "deferred_to_first_call": false,
+        "error_code": "PIPELINE_CONFIGURATION_ERROR"
+      }
     }
   ],
   "driver_contract": {
@@ -187,6 +212,7 @@
     "one_way_to_say_it": "Every case expresses its expected failure as `error_code`. There is no `error_type` key: a class name is a per-language detail that can agree while the wire codes diverge, which is exactly how the configure case hid a three-way split.",
     "read_the_field_back_off_the_step": "For `all_four_configurable_fields_are_accepted`, assert `expected.configured_step_fields` by reading each field off the built step object — not by asserting construction succeeded. `raises: false` alone passes against an implementation that accepts the keys and applies none of them, which is precisely the pre-fix Rust behaviour for `requires`/`provides`: warn, drop, continue.",
     "snake_case_is_the_wire_spelling": "Feed the fixture's keys verbatim. An SDK MAY accept an idiomatic alias at its own API boundary — apcore-typescript takes `ignoreErrors` alongside `ignore_errors` — but a driver that translates the fixture's snake_case into its own spelling is testing its translation table, not the contract. An earlier revision of the TypeScript driver carried exactly such a private FIELD_NAME_TRANSLATION map, and it hid that 3 of the 4 canonical fields were unreachable from real YAML.",
-    "configurable_set_is_four": "match_modules, ignore_errors, pure, timeout_ms — schemas/apcore-config.schema.json $defs/ConfigurableStepFields, spec/DECLARATIVE_CONFIG_SPEC.md §4.2. Not six: `requires` and `provides` belong to the step implementation. Not open-ended: apcore-python used `hasattr(step, key)`, which accepted any attribute of the concrete class and made a working config non-portable to the other two SDKs."
+    "configurable_set_is_four": "match_modules, ignore_errors, pure, timeout_ms — schemas/apcore-config.schema.json $defs/ConfigurableStepFields, spec/DECLARATIVE_CONFIG_SPEC.md §4.2. Not six: `requires` and `provides` belong to the step implementation. Not open-ended: apcore-python used `hasattr(step, key)`, which accepted any attribute of the concrete class and made a working config non-portable to the other two SDKs.",
+    "steps_entries_are_closed_too": "`$defs/PipelineStep` is `additionalProperties: false`. A driver needs a step TYPE registered under the fixture's `type` value to reach the insertion path at all — register a no-op step type named by the case rather than rewriting the case to use a built-in, since the point is the unknown key on an otherwise valid insertion."
   }
 }
