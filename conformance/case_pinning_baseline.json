@@ -1,19 +1,77 @@
 {
-  "description": "Fixture cases that no SDK driver runs, accepted as a known backlog. check_case_pinning.py --strict fails on any unpinned case; this file records the ones already known so the backlog can shrink without new ones slipping in. A case here is NOT covered \u2014 it only looks covered, in the fixture and in every count derived from the inventory. Delete an entry when a driver starts running it; the list reaching empty is the signal to run --strict everywhere.",
-  "unpinned": {},
-  "not_measurable": {
-    "annotations_extra_round_trip.json": [
-      "producer_must_not_emit_both_forms"
-    ],
-    "context_serialization.json": [
-      "all_identity_types_serialize"
-    ],
-    "schema_content_hash.json": [
-      "baseline_simple_object",
-      "float_one_point_zero",
-      "large_integer",
-      "nested_unsorted_keys",
-      "non_ascii_unicode_key_and_value"
-    ]
+  "description": "Fixture cases that no SDK driver runs, accepted as a known backlog. check_case_pinning.py --strict fails on any unpinned case; this file records the ones already known so the backlog can shrink without new ones slipping in. A case here is NOT covered \u2014 it only looks covered, in the fixture and in every count derived from the inventory. Keyed by SCOPE: `any` is the weak question (does SOME driver run it) and each SDK name is the real one, because the per-SDK sets are nearly disjoint and a total hides which one regressed.",
+  "by_scope": {
+    "any": {
+      "unpinned": {},
+      "not_measurable": {
+        "annotations_extra_round_trip.json": [
+          "producer_must_not_emit_both_forms"
+        ],
+        "context_serialization.json": [
+          "all_identity_types_serialize"
+        ],
+        "schema_content_hash.json": [
+          "baseline_simple_object",
+          "float_one_point_zero",
+          "large_integer",
+          "nested_unsorted_keys",
+          "non_ascii_unicode_key_and_value"
+        ]
+      }
+    },
+    "python": {
+      "unpinned": {},
+      "not_measurable": {
+        "annotations_extra_round_trip.json": [
+          "producer_must_not_emit_both_forms"
+        ],
+        "context_serialization.json": [
+          "all_identity_types_serialize"
+        ],
+        "schema_content_hash.json": [
+          "baseline_simple_object",
+          "float_one_point_zero",
+          "large_integer",
+          "nested_unsorted_keys",
+          "non_ascii_unicode_key_and_value"
+        ]
+      }
+    },
+    "typescript": {
+      "unpinned": {},
+      "not_measurable": {
+        "annotations_extra_round_trip.json": [
+          "producer_must_not_emit_both_forms"
+        ],
+        "context_serialization.json": [
+          "all_identity_types_serialize"
+        ],
+        "schema_content_hash.json": [
+          "baseline_simple_object",
+          "float_one_point_zero",
+          "large_integer",
+          "nested_unsorted_keys",
+          "non_ascii_unicode_key_and_value"
+        ]
+      }
+    },
+    "rust": {
+      "unpinned": {},
+      "not_measurable": {
+        "annotations_extra_round_trip.json": [
+          "producer_must_not_emit_both_forms"
+        ],
+        "context_serialization.json": [
+          "all_identity_types_serialize"
+        ],
+        "schema_content_hash.json": [
+          "baseline_simple_object",
+          "float_one_point_zero",
+          "large_integer",
+          "nested_unsorted_keys",
+          "non_ascii_unicode_key_and_value"
+        ]
+      }
+    }
   }
 }

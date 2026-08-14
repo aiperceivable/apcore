@@ -50,6 +50,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import shutil
 import signal
@@ -210,7 +211,16 @@ def run_drivers(sdk: str, sdk_root: Path, files: list[Path]) -> bool:
     ran_something = False
     for cmd in cmds:
         try:
-            proc = subprocess.run(cmd, cwd=repo, capture_output=True, text=True, timeout=600)
+            # Point the drivers at the fixture tree THIS run is mutating. Without
+            # it they fall through to their own sibling-directory lookup and
+            # validate whichever `../apcore` happens to be there: tests run,
+            # `NoTestsRan` stays quiet, and every case reports unpinned because
+            # the mutation landed in a file nothing read. Worse than the earlier
+            # no-op bug, which at least produced a suspicious zero — this one
+            # produces a plausible non-zero against the wrong corpus.
+            proc = subprocess.run(cmd, cwd=repo, capture_output=True, text=True,
+                                  timeout=600,
+                                  env={**os.environ, "CONFORMANCE_SPEC_REPO": str(REPO)})
         except subprocess.TimeoutExpired:
             return True
         if proc.returncode != 0:
