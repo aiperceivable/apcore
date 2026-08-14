@@ -383,18 +383,30 @@ def main() -> int:
             print(f"  {stem}: {', '.join(ids[:6])}{' …' if len(ids) > 6 else ''}")
 
     if args.write_baseline:
+        # Partitioned by scope. "any" is the weak question — does SOME driver run
+        # this case — and each SDK name is the real one. Storing only the total
+        # would say a number moved without saying whose, and the per-SDK sets are
+        # nearly disjoint: 84 gaps over 75 cases, only 9 shared by two SDKs and
+        # none by all three, which is exactly why "any" read as zero while every
+        # SDK still had its own blind spots (apcore#93).
+        scope = args.sdk or "any"
+        existing = (json.loads(BASELINE.read_text())
+                    if BASELINE.is_file() and "by_scope" in BASELINE.read_text() else {})
+        by_scope = existing.get("by_scope", {})
+        by_scope[scope] = {"unpinned": {k: sorted(v) for k, v in sorted(unpinned.items())},
+                           "not_measurable": {k: sorted(v) for k, v in sorted(no_expected.items())}}
         BASELINE.write_text(json.dumps(
             {"description":
                 "Fixture cases that no SDK driver runs, accepted as a known backlog. "
                 "check_case_pinning.py --strict fails on any unpinned case; this file records "
                 "the ones already known so the backlog can shrink without new ones slipping in. "
                 "A case here is NOT covered — it only looks covered, in the fixture and in every "
-                "count derived from the inventory. Delete an entry when a driver starts running "
-                "it; the list reaching empty is the signal to run --strict everywhere.",
-             "unpinned": {k: sorted(v) for k, v in sorted(unpinned.items())},
-             "not_measurable": {k: sorted(v) for k, v in sorted(no_expected.items())}},
+                "count derived from the inventory. Keyed by SCOPE: `any` is the weak question "
+                "(does SOME driver run it) and each SDK name is the real one, because the "
+                "per-SDK sets are nearly disjoint and a total hides which one regressed.",
+             "by_scope": by_scope},
             indent=2) + "\n")
-        print(f"wrote {BASELINE.relative_to(REPO)}")
+        print(f"wrote {BASELINE.relative_to(REPO)} (scope: {scope})")
         return 0
 
     if args.strict and total_unpinned:

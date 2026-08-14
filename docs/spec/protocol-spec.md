@@ -4198,6 +4198,22 @@ These fields are the foundation of apcore's **Self-Healing** mechanism, which se
 
 ### 8.2 Framework Error Codes
 
+!!! info "`http_status` is descriptive, not a required SDK surface"
+
+    Each entry below carries an `http_status`. It is a **suggested** mapping for
+    an integration that places an executor behind HTTP — a gateway, an
+    `apcore-a2a-*` server — and implementations are **NOT** required to expose it.
+    The MUST in §7.5 and here is *define the following error types*; the status is
+    metadata about each type, in the same way `description` is.
+
+    Read as a requirement it would be 47 unimplemented MUSTs: no SDK exposes the
+    mapping, and none is expected to. Stated because a conformance fixture had
+    declared `expected.http_status` that no driver could ever assert, and the
+    ambiguity is what put it there (apcore#94). `499` is an nginx extension and
+    `508` is WebDAV — deliberately practical choices for a gateway author, and
+    another reason this is guidance rather than a contract three SDKs must
+    reproduce.
+
 ```yaml
 error_codes:
   # Configuration-related (CONFIG_*)

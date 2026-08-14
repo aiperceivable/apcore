@@ -13,9 +13,27 @@
       "fixture": "binding_errors.json",
       "case": "pipeline_handler_not_supported_rust",
       "sdks": [
-        "python"
+        "python",
+        "typescript"
       ],
-      "why": "PIPELINE_HANDLER_NOT_SUPPORTED is raised only by apcore-rust, which cannot dynamically load a `handler:` target (DECLARATIVE_CONFIG_SPEC §4.4 records the per-SDK split). apcore-python supports `handler:` and therefore has no such error to raise, so its driver is REQUIRED to skip. apcore-typescript likewise supports it. The case's old apcore-python handling was `else: pytest.skip(\"Unknown error_code\")`, which read as deliberate while checking nothing — that fallback is now pytest.fail, and this entry records the one skip that is genuinely correct."
+      "why": "PIPELINE_HANDLER_NOT_SUPPORTED is raised only by apcore-rust, which cannot dynamically load a `handler:` target (DECLARATIVE_CONFIG_SPEC §4.4 records the per-SDK split). apcore-python supports `handler:` and therefore has no such error to raise, so its driver is REQUIRED to skip. apcore-typescript likewise supports it. The case's old apcore-python handling was `else: pytest.skip(\"Unknown error_code\")`, which read as deliberate while checking nothing — that fallback is now pytest.fail, and this entry records the one skip that is genuinely correct. apcore-typescript resolves `handler:` through `await import()` (DECLARATIVE_CONFIG_SPEC §4.4) and likewise has no such error to raise, so it is required to skip for the same reason."
+    },
+    {
+      "fixture": "binding_errors.json",
+      "case": "binding_schema_inference_failed_python",
+      "sdks": [
+        "rust"
+      ],
+      "why": "BINDING_SCHEMA_INFERENCE_FAILED is raised when a binding target's schema cannot be inferred from the function signature. apcore-python (type hints) and apcore-typescript (the typia/decorator adapters) both infer at runtime and can fail doing it. apcore-rust resolves a binding through an opaque handler-map keyed by the target string with no compile-time linking (DECLARATIVE_CONFIG_SPEC §4.4 \"Rust caveat\"), so it performs no inference and has no such failure to produce. Required to skip, not failing to run."
+    },
+    {
+      "fixture": "system_modules_hardening.json",
+      "case": "rust_register_returns_result",
+      "sdks": [
+        "python",
+        "typescript"
+      ],
+      "why": "The case's own description pins an apcore-rust signature: `register_sys_modules` returns `Result<SysModulesContext, SysModuleError>` rather than unit, with the Ok arm carrying the module map and the shared handles. apcore-python returns a context dict and apcore-typescript an object — there is no Result to assert. Required to skip."
     }
   ]
 }

@@ -14,8 +14,8 @@ name: Case pinning
 # all measured their own pattern rather than the code — recorded in the tool's
 # module docstring so they are not retried.
 #
-# SCHEDULED, not per-PR: the sweep mutates 651 cases and runs the drivers for
-# each, roughly 20 minutes with all three SDKs checked out. Putting that on the
+# SCHEDULED, not per-PR: four scopes x 651 mutated cases, each running real
+# driver processes — roughly 80 minutes. Putting that on the
 # PR path would make it the slowest gate in the repo for a property that changes
 # only when a fixture case or a driver changes.
 on:
@@ -37,7 +37,7 @@ permissions:
 jobs:
   pinning:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 150
     steps:
       - uses: actions/checkout@v4
         with:
@@ -84,7 +84,15 @@ jobs:
       - name: Prebuild Rust tests
         run: cargo test --manifest-path apcore-rust/Cargo.toml --all-features --no-run
 
-      - name: Every fixture case is run by some driver
+      # Four scopes. `any` is the weak question — does SOME driver run this case —
+      # and it is kept because a wholly dead case fails it first and cheapest.
+      # The three per-SDK scopes are the real gate: the sets are nearly disjoint
+      # (84 gaps over 75 cases, 9 shared by two SDKs, none by all three), so `any`
+      # read as zero while every SDK still had blind spots. Worse, fixing toward
+      # `any` STOPS at the first SDK that turns the case green — call_chain's six
+      # positive cases were fixed in apcore-python and stayed broken in the other
+      # two for exactly that reason (apcore#93).
+      - name: Every fixture case is run by some driver, and by each of them
         working-directory: apcore
         # The baseline is EMPTY: all 651 measurable cases are pinned as of
         # apcore#92. The diff below therefore fails on the first case that stops
@@ -92,31 +100,48 @@ jobs:
         # baseline ever gains entries again, they are a backlog to shrink, not a
         # permanent exemption.
         run: |
-          python3 conformance/check_case_pinning.py --sdk-root .. \
-            ${{ github.event.inputs.fixture && format('--fixture {0}', github.event.inputs.fixture) || '' }} \
-            ${{ github.event.inputs.sdk && format('--sdk {0}', github.event.inputs.sdk) || '' }} \
-            | tee pinning.txt
+          FIXTURE="${{ github.event.inputs.fixture }}"
+          ONLY="${{ github.event.inputs.sdk }}"
+          : > pinning.txt
+          for scope in any python typescript rust; do
+            [ -n "$ONLY" ] && [ "$scope" != "$ONLY" ] && continue
+            echo "===== scope: $scope" | tee -a pinning.txt
+            python3 conformance/check_case_pinning.py --sdk-root .. \
+              ${FIXTURE:+--fixture "$FIXTURE"} \
+              $([ "$scope" != any ] && echo "--sdk $scope") | tee -a pinning.txt
+          done
           python3 - <<'PY'
           import json, re, sys
           from pathlib import Path
-          found = {}
+          scope, found = "any", {}
           for line in Path("pinning.txt").read_text().splitlines():
+              m = re.match(r"===== scope: (\S+)", line)
+              if m:
+                  scope = m.group(1); continue
               m = re.match(r"\s*UNPINNED\s+(\S+)\s+::\s+(\S+)", line)
               if m:
-                  found.setdefault(m.group(1) + ".json", []).append(m.group(2))
-          known = json.loads(Path("conformance/case_pinning_baseline.json").read_text())["unpinned"]
-          new = {f: sorted(set(v) - set(known.get(f, []))) for f, v in found.items()}
-          new = {f: v for f, v in new.items() if v}
-          closed = {f: sorted(set(v) - set(found.get(f, []))) for f, v in known.items()}
-          closed = {f: v for f, v in closed.items() if v}
-          for f, ids in sorted(closed.items()):
-              print(f"CLOSED   {f}: {', '.join(ids)} — a driver now runs it; drop it from the baseline")
-          if new:
-              print(f"\n{sum(len(v) for v in new.values())} NEW unpinned case(s):", file=sys.stderr)
-              for f, ids in sorted(new.items()):
-                  print(f"  {f}: {', '.join(ids)}", file=sys.stderr)
+                  found.setdefault(scope, {}).setdefault(m.group(1) + ".json", []).append(m.group(2))
+          base = json.loads(Path("conformance/case_pinning_baseline.json").read_text())
+          by_scope = base.get("by_scope", {})
+          failed = 0
+          for scope in ("any", "python", "typescript", "rust"):
+              known = by_scope.get(scope, {}).get("unpinned", {})
+              seen = found.get(scope, {})
+              new = {f: sorted(set(v) - set(known.get(f, []))) for f, v in seen.items()}
+              new = {f: v for f, v in new.items() if v}
+              closed = {f: sorted(set(v) - set(seen.get(f, []))) for f, v in known.items()}
+              closed = {f: v for f, v in closed.items() if v}
+              for f, ids in sorted(closed.items()):
+                  print(f"CLOSED [{scope}] {f}: {', '.join(ids)} — now run; drop it from the baseline")
+              if new:
+                  failed += sum(len(v) for v in new.values())
+                  print(f"\n[{scope}] {sum(len(v) for v in new.values())} NEW unpinned:", file=sys.stderr)
+                  for f, ids in sorted(new.items()):
+                      print(f"  {f}: {', '.join(ids)}", file=sys.stderr)
+          if failed:
               print("\nA case that cannot go red is not coverage. Assert it, or do not "
-                    "declare it.", file=sys.stderr)
+                    "declare it. A case one SDK is REQUIRED to skip belongs in "
+                    "conformance/case_pinning_allowlist.json with the reason.", file=sys.stderr)
               sys.exit(1)
           PY
 

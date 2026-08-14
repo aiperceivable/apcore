@@ -56,8 +56,7 @@
       "expected": {
         "gate_invoked": true,
         "outcome": "error",
-        "error_code": "APPROVAL_DENIED",
-        "http_status": 403
+        "error_code": "APPROVAL_DENIED"
       }
     },
     {
@@ -76,9 +75,11 @@
         "gate_invoked": true,
         "outcome": "error",
         "error_code": "APPROVAL_PENDING",
-        "http_status": 202,
         "approval_id": "req-abc123"
       }
     }
-  ]
+  ],
+  "driver_contract": {
+    "no_http_status": "This fixture used to declare `expected.http_status` (403 / 202) and no driver asserted it, because none can: no SDK exposes a mapping from an error code to an HTTP status, and that is deliberate. `protocol-spec.md` §7.5 and §8.2 annotate 47 framework codes with an `http_status`, but the MUST there is \"define the following error TYPES\" — the status is descriptive metadata for whoever puts an executor behind HTTP, not a required SDK surface. A conformance fixture may only declare what a driver can assert (apcore#94)."
+  }
 }
