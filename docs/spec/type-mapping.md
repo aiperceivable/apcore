@@ -865,11 +865,15 @@ It exists because "partial support" is not a specification. While this document 
 
 | from | to | accepted |
 |---|---|---|
-| string | `integer` | a string whose entire content parses as an integer — `"42"`, `"-7"`. `"3.14"` **MUST NOT** be accepted for `integer`. |
-| string | `number` | a string whose entire content parses as a number — `"1.5"`, `"42"`, `"-0.5"`. |
+| string | `integer` | surrounding whitespace is trimmed, then the whole remainder must parse as a number with a zero fractional part — `"42"`, `"-7"`, `" 42 "`, `"42.0"`. `"3.14"` **MUST NOT** be accepted, nor may a trailing remainder be ignored (`"42abc"`). |
+| string | `number` | surrounding whitespace is trimmed, then the whole remainder must parse as a finite number — `"1.5"`, `"42"`, `"-0.5"`, `" 1.5 "`. |
 | string | `boolean` | exactly `"true"` and `"false"`, **case-sensitive**. |
 
-Coercion is **from a string only**, and only toward a type the schema declares. A number is never coerced to a boolean, a boolean never to a number, and nothing is coerced toward `string`.
+`"42.0"` coercing to `integer` is not a tolerance: R5's own note above states that `4.0` **MUST** satisfy `{"type": "integer"}`, since JSON Schema 2020-12 §6.1.1 defines `integer` as any number with a zero fractional part. The string form follows the number form. Whitespace trimming is stated explicitly because all three SDKs do it and an unstated tolerance is the thing this table exists to remove.
+
+Coercion is **from a string only**, and only toward a type the schema declares.
+
+**Not to be confused with §9.2 environment-override coercion.** `APCORE_*` variables arrive as strings and are coerced into config values by a *different* rule, which accepts `true` / `false` **case-insensitively** — apcore-python `_coerce_env_value`, apcore-typescript `coerceEnvValue`, apcore-rust `coerce_env_value`, all three matching. That is the §9.2 contract and this table does not govern it. So an SDK correctly carries two boolean coercions with different casing rules: case-sensitive here, because a JSON Schema instance is JSON and JSON's literals are lowercase; case-insensitive there, because a shell variable is not JSON and `APCORE_DEBUG=True` is what an operator types. Neither is a defect, and a reader who does not know which section applies could reasonably think one of them is. A number is never coerced to a boolean, a boolean never to a number, and nothing is coerced toward `string`.
 
 The boolean row is deliberately narrow. `"true"` and `"false"` are JSON's own spelling of a boolean, so accepting them is reading the same value written as text. `"yes"`, `"on"`, `"y"`, `"t"`, `"1"`, `"0"` and their negatives are shell and INI conventions: they belong to whatever parses `argv`, not to a JSON Schema validator, and each one is somebody's default rather than anybody's standard. `"0"` → `false` is the sharpest case — R5 above makes the *number* `0` a MUST-reject for `boolean`, so accepting the string `"0"` puts two paths of the same SDK on opposite sides of one value.
 
