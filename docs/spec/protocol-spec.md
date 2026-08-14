@@ -6,7 +6,7 @@ description: "The canonical, normative apcore protocol specification (RFC 2119, 
 
 > **Canonical Specification** - This document is the authoritative specification for the apcore protocol
 
-> Version: 1.10.0
+> Version: 1.11.0
 > Status: Draft Specification (RFC 2119 Conformant)
 > Stability: Specification content is stable, pending reference implementation verification
 > Last Updated: 2026-07-13
@@ -6922,9 +6922,18 @@ Interface: Executor
    * signature is folded into `call()` — the executor always runs the
    * module's `execute()` method through the full pipeline.
    *
+   * `context` MUST be bound to at most one Executor. When `context.executor`
+   * is non-null and refers to a DIFFERENT Executor instance, the call MUST
+   * raise `CONTEXT_BINDING_ERROR`. Accepting the rebind silently was permitted
+   * as a documented deviation through v1.10.0; no SDK took it — apcore-python
+   * `context.py:152`, apcore-typescript `context.ts:187` and apcore-rust
+   * `context.rs:765` all raise — and the alternative made the behaviour
+   * unassertable, since a conformance case cannot state two legal outcomes
+   * without each driver deciding which one applies to it (apcore#92).
+   *
    * @param module_id — Canonical ID
    * @param inputs    — Input parameters (conform to input_schema)
-   * @param context   — Execution context
+   * @param context   — Execution context, bound to at most one Executor
    * @return output   — Output result (conform to output_schema)
    * @throws INPUT_VALIDATION_FAILED  — Input validation failed
    * @throws OUTPUT_VALIDATION_FAILED — Output validation failed
@@ -7953,3 +7962,4 @@ Each language SDK **SHOULD** provide idiomatic module definition syntax. The fol
 | 1.9.0 | 2026-05-18 | **§9.9.5 Reserved Namespace Query** (new) — formalised public API requirement that all SDKs MUST expose a read-only query API returning the set of reserved top-level namespace names (`apcore`, `_config` at minimum). Returned set MUST be the single source of truth used by `register_namespace` to enforce `CONFIG_NAMESPACE_RESERVED` (single source of truth invariant). Class-level / module-level access (callable without instantiating Config). Cross-language examples for Python (`Config.reserved_namespaces()`), TypeScript (`Config.reservedNamespaces`), Rust (`Config::reserved_namespaces()`). Intended for third-party consumers (custom CLIs, framework integrations) needing fail-fast pre-validation of user-supplied namespace names. Resolves issue #60. |
 | 1.9.0 | 2026-08-12 | **Finalised — first non-draft release of the specification.** Normative corrections from the cross-language consistency sweep: **§4.11/§4.15/A05** self-reference and circular reference separated (a `$ref` re-entered through a schema body is a recursive data structure and MUST be preserved as a lazy reference; only a `$ref` → `$ref` chain MUST raise), resolving a contradiction with the Recursive Schema Support requirement in the same document; **§4.15/§8** `$ref` depth exhaustion MUST raise `SCHEMA_MAX_DEPTH_EXCEEDED`, not `SCHEMA_CIRCULAR_REF`, and the code is registered; **§4.16/A23** object detection widened to `properties` present AND (`type` absent OR declaring `object`); **§9.1** `required` narrowed to `version` and `project` — a key with a canonical default is normative but not required — and the declared-configuration view (`get_declared()`) added, with environment overrides counting as declaration; **§11 type-mapping** `format` is an annotation and MUST NOT fail validation, and the module boundary MUST NOT coerce types. No implementation had provided the superseded v1.8.x behaviour, so no deprecation cycle was owed. Governance: apcore#79. |
 | 1.10.0 | 2026-08-13 | **§12.2 `Interface: Registry` gains `register` (#90).** The normative component interface declared `discover`, `get`, `list` and `describe` — not `register`, the most-used entry point on the component and the one every SDK exposes with a four-argument signature. `register(module_id, module, version?, metadata?)` is now stated, and when an implementation accepts `metadata`, a `dependencies` entry (a list of `{module_id, version?, optional?}`) **MUST** reach the registered module's descriptor so `get_definition(module_id).dependencies` returns what the caller declared. That requirement existed nowhere: all three SDKs lost it independently and all three fixed it independently (apcore-python `ad2998d`, apcore-typescript#35, apcore-rust `71295e1`), because discovery-time sorting reads its own parse and keeps working — `resolve_dependencies` looks healthy while the accessor is empty and reload order degrades to its sort's seed order, which is alphabetical and therefore plausible. `version` is stated as an OPTIONAL parameter only: all three SDKs accept it, only apcore-python resolves by it, and §5.4 continues to govern multi-version coexistence as optional — making resolution normative would put a requirement into the spec that two of three implementations do not provide, which is the shape 1.9.0 spent a release removing. `get(module_id)` keeps its single-argument normative form for the same reason. No SDK behaviour change: all three already satisfy the requirement. Governance: apcore#90. |
+| 1.11.0 | 2026-08-14 | **§12.2 `Interface: Executor` — cross-executor rebind is a MUST (#92).** `features/core-executor.md` stated it as *SHOULD raise `ContextBindingError`*, with *"SDKs that choose to accept silently instead MUST document the deviation prominently"* as the escape hatch. All three SDKs raise, so the deviation was permitted for nobody — and the alternative had a cost: `conformance/fixtures/context_create.json` had to express it as `expected_one_of: [raise, silent_accept]`, which no driver can assert without deciding its own branch. All three hardcoded `raise` and read the alternation only in a comment, so mutating the entire expectation left every suite green. The rule is now stated normatively with the wire code `CONTEXT_BINDING_ERROR`, the fixture carries a single `expected`, and the feature page records the withdrawal. **No SDK behaviour change.** Governance: apcore#92. |

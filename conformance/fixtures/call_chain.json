@@ -146,5 +146,9 @@
       "divergence_ref": "T-B-005",
       "note": "max_module_repeat < 1 is invalid input and MUST be rejected before the frequency check."
     }
-  ]
+  ],
+  "driver_contract": {
+    "map_the_wire_code_do_not_hardcode_a_class": "The negative half of this fixture is the model: apcore-python maps `expected_error` through `_CALL_CHAIN_ERROR_MAP` before asserting, so a fixture value the map does not know raises KeyError and the test goes red. That is why the negative cases are pinned and the positive ones are not — the same file contains both the right and the wrong pattern.",
+    "positive_cases_need_a_post_condition": "A case whose expectation is the sentinel `\"ok\"` means \"no error\", and a driver that merely calls the API satisfies it — an implementation that does nothing at all also passes. Positive cases MUST assert an OBSERVABLE POST-CONDITION: that the registration is now queryable, that the guard left the chain unchanged, that the value can be read back. Without one the case is exercised but proves nothing."
+  }
 }

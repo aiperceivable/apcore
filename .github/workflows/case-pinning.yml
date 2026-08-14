@@ -1,0 +1,126 @@
+name: Case pinning
+
+# Does any driver actually RUN each fixture case?
+#
+# `conformance-integrity.yml` answers two adjacent questions — does each SDK
+# LOAD this fixture (check_driver_coverage) and does any driver READ this
+# `expected` key (check_expected_keys_read). Neither answers this one. A case
+# every driver skips or never reaches leaves both green, because the fixture is
+# loaded and its key names are read by some OTHER case in the same file.
+#
+# The check is empirical, not static: mutate a case's expectation so no correct
+# implementation can satisfy it, run the drivers that reference the fixture, and
+# see whether anything goes red. Three static approaches were tried first and
+# all measured their own pattern rather than the code — recorded in the tool's
+# module docstring so they are not retried.
+#
+# SCHEDULED, not per-PR: the sweep mutates 651 cases and runs the drivers for
+# each, roughly 20 minutes with all three SDKs checked out. Putting that on the
+# PR path would make it the slowest gate in the repo for a property that changes
+# only when a fixture case or a driver changes.
+on:
+  schedule:
+    # 04:00 UTC daily — after the SDK repos' own nightly runs.
+    - cron: "0 4 * * *"
+  workflow_dispatch:
+    inputs:
+      fixture:
+        description: "Limit to one fixture (stem, no .json)"
+        required: false
+      sdk:
+        description: "Ask the per-SDK question instead: python | typescript | rust"
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  pinning:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: apcore
+
+      # The sweep runs the real drivers, so all three SDKs must be present and
+      # buildable. A missing checkout is not a pass: the tool raises NoTestsRan
+      # rather than reading "no tests ran" as "nothing went red", which is the
+      # bug that manufactured its own first Rust result.
+      - uses: actions/checkout@v4
+        with:
+          repository: aiperceivable/apcore-python
+          path: apcore-python
+      - uses: actions/checkout@v4
+        with:
+          repository: aiperceivable/apcore-typescript
+          path: apcore-typescript
+      - uses: actions/checkout@v4
+        with:
+          repository: aiperceivable/apcore-rust
+          path: apcore-rust
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: pnpm
+          cache-dependency-path: apcore-typescript/pnpm-lock.yaml
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install SDKs
+        run: |
+          python3 -m pip install --quiet -e apcore-python[dev]
+          pnpm --dir apcore-typescript install --frozen-lockfile
+          cargo build --manifest-path apcore-rust/Cargo.toml --tests --all-features
+
+      # Warm the Rust build so the first mutated case is not charged for a full
+      # compile inside the per-case timeout.
+      - name: Prebuild Rust tests
+        run: cargo test --manifest-path apcore-rust/Cargo.toml --all-features --no-run
+
+      - name: Every fixture case is run by some driver
+        working-directory: apcore
+        # --strict fails on ANY unpinned case. The baseline records the backlog
+        # that existed when the tool was written; it is a list to shrink, not a
+        # permanent exemption, and the run below fails when it grows.
+        run: |
+          python3 conformance/check_case_pinning.py --sdk-root .. \
+            ${{ github.event.inputs.fixture && format('--fixture {0}', github.event.inputs.fixture) || '' }} \
+            ${{ github.event.inputs.sdk && format('--sdk {0}', github.event.inputs.sdk) || '' }} \
+            | tee pinning.txt
+          python3 - <<'PY'
+          import json, re, sys
+          from pathlib import Path
+          found = {}
+          for line in Path("pinning.txt").read_text().splitlines():
+              m = re.match(r"\s*UNPINNED\s+(\S+)\s+::\s+(\S+)", line)
+              if m:
+                  found.setdefault(m.group(1) + ".json", []).append(m.group(2))
+          known = json.loads(Path("conformance/case_pinning_baseline.json").read_text())["unpinned"]
+          new = {f: sorted(set(v) - set(known.get(f, []))) for f, v in found.items()}
+          new = {f: v for f, v in new.items() if v}
+          closed = {f: sorted(set(v) - set(found.get(f, []))) for f, v in known.items()}
+          closed = {f: v for f, v in closed.items() if v}
+          for f, ids in sorted(closed.items()):
+              print(f"CLOSED   {f}: {', '.join(ids)} — a driver now runs it; drop it from the baseline")
+          if new:
+              print(f"\n{sum(len(v) for v in new.values())} NEW unpinned case(s):", file=sys.stderr)
+              for f, ids in sorted(new.items()):
+                  print(f"  {f}: {', '.join(ids)}", file=sys.stderr)
+              print("\nA case that cannot go red is not coverage. Assert it, or do not "
+                    "declare it.", file=sys.stderr)
+              sys.exit(1)
+          PY
+
+      - name: Publish the sweep
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: case-pinning
+          path: apcore/pinning.txt

@@ -24,7 +24,9 @@
         "identity": {
           "id": "user-42",
           "type": "user",
-          "roles": ["analyst"]
+          "roles": [
+            "analyst"
+          ]
         }
       },
       "expected": {
@@ -99,7 +101,11 @@
       "description": "Reusing the same Context across multiple top-level Executor.call() invocations on the same Executor instance is a noop on subsequent calls — MUST NOT raise.",
       "input": {
         "construction": "Context.create()",
-        "calls": ["test.echo", "test.echo", "test.echo"],
+        "calls": [
+          "test.echo",
+          "test.echo",
+          "test.echo"
+        ],
         "same_executor": true
       },
       "expected": {
@@ -110,22 +116,16 @@
     },
     {
       "id": "executor_rejects_cross_executor_rebind",
-      "description": "If ctx.executor is already bound to Executor A and Executor B receives the same Context, B SHOULD raise ContextBindingError. SDKs that accept silently MUST document this deviation prominently.",
+      "description": "ctx.executor is bound to Executor A; Executor B receives the same Context and MUST raise ContextBindingError. Was `expected_one_of` with a silent-accept alternative: all three SDKs take the raise branch (apcore-python context.py:152, apcore-typescript context.ts:187, apcore-rust context.rs:765), so the alternative permitted a deviation nobody took while making the case unassertable — every driver hardcoded 'raise' and read the alternation only in a comment.",
       "input": {
         "executor_a_first": true,
         "executor_b_second": true,
         "same_executor": false
       },
-      "expected_one_of": [
-        {
-          "behavior": "raise",
-          "error_type": "ContextBindingError"
-        },
-        {
-          "behavior": "silent_accept",
-          "documented_deviation_required": true
-        }
-      ]
+      "expected": {
+        "raises": true,
+        "error_code": "CONTEXT_BINDING_ERROR"
+      }
     },
     {
       "id": "child_propagates_executor",
@@ -160,8 +160,16 @@
           "_context_version": 1,
           "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736",
           "caller_id": "remote.caller",
-          "call_chain": ["remote.caller", "remote.target"],
-          "identity": {"id": "user-remote", "type": "user", "roles": [], "attrs": {}},
+          "call_chain": [
+            "remote.caller",
+            "remote.target"
+          ],
+          "identity": {
+            "id": "user-remote",
+            "type": "user",
+            "roles": [],
+            "attrs": {}
+          },
           "data": {}
         },
         "call_module": "local.target"
@@ -211,7 +219,16 @@
           "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736",
           "parent_id": "00f067aa0ba902b7",
           "trace_flags": "01",
-          "tracestate": [["vendor1", "value1"], ["vendor2", "value2"]]
+          "tracestate": [
+            [
+              "vendor1",
+              "value1"
+            ],
+            [
+              "vendor2",
+              "value2"
+            ]
+          ]
         }
       },
       "expected": {
@@ -220,5 +237,9 @@
         "no_separate_tracestate_parameter": true
       }
     }
-  ]
+  ],
+  "driver_contract": {
+    "assert_the_wire_code": "`error_code` is the contract. `ContextBindingError` is a class name apcore-python and apcore-typescript share and apcore-rust does not have — it has ErrorCode::ContextBindingError — so a class-name assertion is green on two SDKs and unwritable on the third.",
+    "one_behaviour_not_two": "This case previously carried `expected_one_of: [raise, silent_accept]`. A driver cannot assert an alternation without deciding which branch its SDK takes, so all three hardcoded the branch and never read the fixture — mutating the whole block left every suite green. If an SDK ever needs the silent-accept behaviour again, that is a spec change, not a fixture alternation."
+  }
 }

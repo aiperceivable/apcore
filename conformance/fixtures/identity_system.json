@@ -14,10 +14,16 @@
       "description": "Identity type is preserved when explicitly set to 'service'",
       "input_id": "svc-account",
       "input_type": "service",
-      "input_roles": ["read", "write"],
+      "input_roles": [
+        "read",
+        "write"
+      ],
       "input_attrs": {},
       "expected_type": "service",
-      "expected_roles": ["read", "write"]
+      "expected_roles": [
+        "read",
+        "write"
+      ]
     },
     {
       "id": "identity_explicit_type_ai",
@@ -25,7 +31,9 @@
       "input_id": "agent-007",
       "input_type": "ai",
       "input_roles": [],
-      "input_attrs": { "model": "gpt-4" },
+      "input_attrs": {
+        "model": "gpt-4"
+      },
       "expected_type": "ai"
     },
     {
@@ -33,9 +41,15 @@
       "description": "Roles are stored as an immutable sequence",
       "input_id": "user-123",
       "input_type": "user",
-      "input_roles": ["admin", "operator"],
+      "input_roles": [
+        "admin",
+        "operator"
+      ],
       "input_attrs": {},
-      "expected_roles": ["admin", "operator"]
+      "expected_roles": [
+        "admin",
+        "operator"
+      ]
     },
     {
       "id": "identity_attrs_preserved",
@@ -43,18 +57,33 @@
       "input_id": "user-456",
       "input_type": "user",
       "input_roles": [],
-      "input_attrs": { "department": "engineering", "tier": 2 },
-      "expected_attrs": { "department": "engineering", "tier": 2 }
+      "input_attrs": {
+        "department": "engineering",
+        "tier": 2
+      },
+      "expected_attrs": {
+        "department": "engineering",
+        "tier": 2
+      }
     },
     {
       "id": "identity_propagates_to_child_context",
-      "description": "Identity attached to a parent context is accessible on child contexts",
+      "description": "Identity attached to a parent context is visible on a child context, field for field. The expectation used to be the string \"child.identity === parent.identity\" — prose in a value slot, which no driver can assert generically, so every driver hardcoded the comparison and the fixture value was decoration.",
       "input_id": "admin@example.com",
       "input_type": "user",
-      "input_roles": ["admin"],
+      "input_roles": [
+        "admin"
+      ],
       "input_attrs": {},
       "child_module_id": "target.module",
-      "expected": "child.identity === parent.identity"
+      "expected": {
+        "child_identity_id": "admin@example.com",
+        "child_identity_type": "user",
+        "child_identity_roles": [
+          "admin"
+        ],
+        "child_identity_equals_parent": true
+      }
     },
     {
       "id": "identity_anonymous_type",

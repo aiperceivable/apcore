@@ -26,8 +26,14 @@
       "id": "cross_module_collision",
       "action": "register_sequence",
       "steps": [
-        {"module_id": "mod_a", "error_code": "SHARED_CODE"},
-        {"module_id": "mod_b", "error_code": "SHARED_CODE"}
+        {
+          "module_id": "mod_a",
+          "error_code": "SHARED_CODE"
+        },
+        {
+          "module_id": "mod_b",
+          "error_code": "SHARED_CODE"
+        }
       ],
       "expected_error": "ERROR_CODE_COLLISION"
     },
@@ -35,8 +41,14 @@
       "id": "same_module_same_code_ok",
       "action": "register_sequence",
       "steps": [
-        {"module_id": "mod_a", "error_code": "MY_CODE"},
-        {"module_id": "mod_a", "error_code": "MY_CODE"}
+        {
+          "module_id": "mod_a",
+          "error_code": "MY_CODE"
+        },
+        {
+          "module_id": "mod_a",
+          "error_code": "MY_CODE"
+        }
       ],
       "expected": "ok"
     },
@@ -44,13 +56,23 @@
       "id": "unregister_allows_reuse",
       "action": "register_unregister_register",
       "steps": [
-        {"action": "register", "module_id": "mod_a", "error_code": "TEMP_CODE"},
-        {"action": "unregister", "module_id": "mod_a"},
-        {"action": "register", "module_id": "mod_b", "error_code": "TEMP_CODE"}
+        {
+          "action": "register",
+          "module_id": "mod_a",
+          "error_code": "TEMP_CODE"
+        },
+        {
+          "action": "unregister",
+          "module_id": "mod_a"
+        },
+        {
+          "action": "register",
+          "module_id": "mod_b",
+          "error_code": "TEMP_CODE"
+        }
       ],
       "expected": "ok"
     },
-
     {
       "id": "dropped_prefix_circuit_custom_ok",
       "action": "register",
@@ -93,7 +115,6 @@
       "error_code": "STRATEGY_CUSTOM",
       "expected": "ok"
     },
-
     {
       "id": "exact_framework_code_circuit_breaker_open_collision",
       "action": "register",
@@ -152,5 +173,11 @@
     "MODULE_",
     "SCHEMA_",
     "VERSION_"
-  ]
+  ],
+  "driver_contract": {
+    "assert_the_wire_code": "`expected_error` is a WIRE CODE (`ERROR_CODE_COLLISION`). Drivers asserted the class name `ErrorCodeCollisionError` instead and never compared the two, so mutating the fixture's declared code left every suite green on all three SDKs — measured, 12 of 18 cases.",
+    "presence_is_not_a_value": "`if \"expected_error\" in case:` branches on the KEY EXISTING, not on what it says. The value must reach an assertion.",
+    "unknown_expectation_must_fail": "An expectation the driver does not recognise MUST be a hard FAILURE, never a skipped branch. Both shapes were found here: `if error_code == \"X\": ...` with no else, and `else: raises(Exception)` which accepts anything. Both turn a wrong fixture value into a passing test, so the contract becomes the driver's literal and the fixture is decoration. The pattern that works is in this repo already — pipeline_failfast_config's driver panics with \"teach the driver, do not skip it\" and has stayed honest through four rounds of new cases.",
+    "positive_cases_need_a_post_condition": "A case whose expectation is the sentinel `\"ok\"` means \"no error\", and a driver that merely calls the API satisfies it — an implementation that does nothing at all also passes. Positive cases MUST assert an OBSERVABLE POST-CONDITION: that the registration is now queryable, that the guard left the chain unchanged, that the value can be read back. Without one the case is exercised but proves nothing."
+  }
 }

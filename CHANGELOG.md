@@ -9,7 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-(nothing yet)
+### Changed
+
+- **Cross-executor rebind is normative, and the deviation clause is withdrawn (#92, spec v1.11.0).** `features/core-executor.md` stated it as *SHOULD raise `ContextBindingError`*, with *"SDKs that choose to accept silently instead MUST document the deviation prominently"* as the escape hatch. All three SDKs raise — apcore-python `context.py:152`, apcore-typescript `context.ts:187`, apcore-rust `context.rs:765` — so the deviation was permitted for nobody, and it had a real cost: `conformance/fixtures/context_create.json` expressed it as `expected_one_of: [raise, silent_accept]`, and **no driver can assert an alternation without deciding its own branch**. All three hardcoded `raise` and read the alternation only in a comment, so mutating the whole expectation left every suite green. `protocol-spec.md` §12.2 now states the rule on `Interface: Executor` with the wire code `CONTEXT_BINDING_ERROR`; the fixture carries a single `expected`. **No SDK behaviour change** — this pins what all three already do.
+
+### Fixed
+
+- **Two fixture cases stated expectations no driver could assert (#92).** `identity_system`'s `identity_propagates_to_child_context` had `expected: "child.identity === parent.identity"` — prose in a value slot. A driver cannot compare that to anything, so every driver hardcoded the comparison and the fixture value was decoration; it now states four checkable fields. `context_create`'s rebind case is covered above. Both were found by `check_case_pinning.py`, which reported them as run by nobody.
+
+- **Driver contracts added to the three fixtures whose declared values reached no assertion (#92).** `error_codes`, `version_negotiation` and `call_chain` now state, in the fixture itself: assert the WIRE CODE not the class name; branching on `"expected_error" in case` tests that the key exists, not what it says; an expectation the driver does not recognise MUST be a hard failure rather than a skipped branch; and a positive case whose expectation is the sentinel `"ok"` MUST assert an observable post-condition, because "the call did not raise" is also satisfied by an implementation that does nothing. `call_chain` is cited as the model — its negative half maps the wire code through a table before asserting, which is exactly why its negative cases are pinned and its positive ones are not. The same file contains both the right and the wrong pattern.
+
+- **`check_case_pinning.py` had three bugs that manufactured its own findings**, each an instance of the class it exists to detect. `mutate({})` returned `{}`, so a case expecting an empty object could never go red. `cargo test -- <name>` filtered by test name, matched nothing, exited 0, and a run that executed no tests was read as "nothing went red" — every Rust verdict in the first per-SDK sweep came from that. Fixing it introduced the third: a combined `--test A --test B -- filter` applies the filter to both binaries, silently filtering out the real driver. The tool now raises `NoTestsRan` instead of treating a no-op run as green. Corrected sweep: 651 cases mutated, 23 unpinned in 5 fixtures, down from a claimed 25 in 6 — `dependency_version_constraints` turned out to be fully pinned by apcore-rust, a finding the broken invocation had buried.
+
+### Added
+
+- **`.github/workflows/case-pinning.yml` — a scheduled sweep that fails when a NEW case goes unpinned.** `check_driver_coverage.py` answers *does each SDK load this fixture*, `check_expected_keys_read.py` answers *does any driver read this `expected` key*; neither answers *does any driver run this case*, and a case every driver skips leaves both green. The new job mutates each case's expectation and diffs the result against `conformance/case_pinning_baseline.json`, so the backlog can shrink but cannot grow. Daily rather than per-PR: the sweep runs the real drivers for 651 cases across three SDKs, roughly 20 minutes.
 
 ---
 

@@ -62,5 +62,9 @@
       "sdk": "99.100.300",
       "expected": "99.100.300"
     }
-  ]
+  ],
+  "driver_contract": {
+    "assert_the_wire_code": "`expected_error` is a wire code. The apcore-python driver asserted the class `VersionIncompatibleError` for one code and fell through to `pytest.raises(Exception)` for every other — the weakest possible assertion, satisfied by any error at all.",
+    "unknown_expectation_must_fail": "An expectation the driver does not recognise MUST be a hard FAILURE, never a skipped branch. Both shapes were found here: `if error_code == \"X\": ...` with no else, and `else: raises(Exception)` which accepts anything. Both turn a wrong fixture value into a passing test, so the contract becomes the driver's literal and the fixture is decoration. The pattern that works is in this repo already — pipeline_failfast_config's driver panics with \"teach the driver, do not skip it\" and has stayed honest through four rounds of new cases."
+  }
 }
