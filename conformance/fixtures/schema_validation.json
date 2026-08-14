@@ -6,12 +6,21 @@
       "schema": {
         "type": "object",
         "properties": {
-          "name": {"type": "string"},
-          "age": {"type": "integer"}
+          "name": {
+            "type": "string"
+          },
+          "age": {
+            "type": "integer"
+          }
         },
-        "required": ["name"]
+        "required": [
+          "name"
+        ]
       },
-      "input": {"name": "Alice", "age": 30},
+      "input": {
+        "name": "Alice",
+        "age": 30
+      },
       "expected_valid": true
     },
     {
@@ -19,12 +28,20 @@
       "schema": {
         "type": "object",
         "properties": {
-          "name": {"type": "string"},
-          "age": {"type": "integer"}
+          "name": {
+            "type": "string"
+          },
+          "age": {
+            "type": "integer"
+          }
         },
-        "required": ["name"]
+        "required": [
+          "name"
+        ]
       },
-      "input": {"age": 30},
+      "input": {
+        "age": 30
+      },
       "expected_valid": false,
       "expected_error_path": "name"
     },
@@ -34,11 +51,17 @@
       "schema": {
         "type": "object",
         "properties": {
-          "count": {"type": "integer"}
+          "count": {
+            "type": "integer"
+          }
         },
-        "required": ["count"]
+        "required": [
+          "count"
+        ]
       },
-      "input": {"count": "123"},
+      "input": {
+        "count": "123"
+      },
       "expected_valid_strict": false,
       "expected_valid_coerce": true,
       "expected_coerced_value": 123
@@ -49,11 +72,17 @@
       "schema": {
         "type": "object",
         "properties": {
-          "count": {"type": "integer"}
+          "count": {
+            "type": "integer"
+          }
         },
-        "required": ["count"]
+        "required": [
+          "count"
+        ]
       },
-      "input": {"count": "abc"},
+      "input": {
+        "count": "abc"
+      },
       "expected_valid": false,
       "expected_error_path": "count"
     },
@@ -61,7 +90,9 @@
       "id": "empty_schema_accepts_any_value",
       "description": "Empty schema {} validates any value per JSON Schema Draft 2020-12. In apcore context, module input/output schemas MUST be type:object, but an empty schema itself imposes no constraints.",
       "schema": {},
-      "input": {"any_key": "any_value"},
+      "input": {
+        "any_key": "any_value"
+      },
       "expected_valid": true
     },
     {
@@ -78,12 +109,21 @@
         "type": "object",
         "properties": {
           "status": {
-            "type": ["string", "null"],
-            "enum": ["active", "inactive", null]
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "active",
+              "inactive",
+              null
+            ]
           }
         }
       },
-      "input": {"status": null},
+      "input": {
+        "status": null
+      },
       "expected_valid": true
     },
     {
@@ -92,7 +132,9 @@
       "schema": {
         "type": "object",
         "properties": {
-          "optional_field": {"type": "string"}
+          "optional_field": {
+            "type": "string"
+          }
         },
         "required": []
       },
@@ -104,11 +146,16 @@
       "schema": {
         "type": "object",
         "properties": {
-          "name": {"type": "string"}
+          "name": {
+            "type": "string"
+          }
         },
         "additionalProperties": false
       },
-      "input": {"name": "Alice", "extra": "not_allowed"},
+      "input": {
+        "name": "Alice",
+        "extra": "not_allowed"
+      },
       "expected_valid": false,
       "expected_error_path": "extra"
     },
@@ -117,10 +164,15 @@
       "schema": {
         "type": "object",
         "properties": {
-          "name": {"type": "string"}
+          "name": {
+            "type": "string"
+          }
         }
       },
-      "input": {"name": "Alice", "extra": "allowed"},
+      "input": {
+        "name": "Alice",
+        "extra": "allowed"
+      },
       "expected_valid": true
     },
     {
@@ -134,9 +186,13 @@
             "x-sensitive": true
           }
         },
-        "required": ["password"]
+        "required": [
+          "password"
+        ]
       },
-      "input": {"password": "secret123"},
+      "input": {
+        "password": "secret123"
+      },
       "expected_valid": true
     },
     {
@@ -150,9 +206,13 @@
             "x-custom-unknown": "should be ignored"
           }
         },
-        "required": ["name"]
+        "required": [
+          "name"
+        ]
       },
-      "input": {"name": "Alice"},
+      "input": {
+        "name": "Alice"
+      },
       "expected_valid": true
     },
     {
@@ -163,14 +223,26 @@
           "address": {
             "type": "object",
             "properties": {
-              "city": {"type": "string"},
-              "zip": {"type": "string", "pattern": "^[0-9]{5}$"}
+              "city": {
+                "type": "string"
+              },
+              "zip": {
+                "type": "string",
+                "pattern": "^[0-9]{5}$"
+              }
             },
-            "required": ["city"]
+            "required": [
+              "city"
+            ]
           }
         }
       },
-      "input": {"address": {"city": "NYC", "zip": "12345"}},
+      "input": {
+        "address": {
+          "city": "NYC",
+          "zip": "12345"
+        }
+      },
       "expected_valid": true
     },
     {
@@ -181,12 +253,19 @@
           "address": {
             "type": "object",
             "properties": {
-              "zip": {"type": "string", "pattern": "^[0-9]{5}$"}
+              "zip": {
+                "type": "string",
+                "pattern": "^[0-9]{5}$"
+              }
             }
           }
         }
       },
-      "input": {"address": {"zip": "ABCDE"}},
+      "input": {
+        "address": {
+          "zip": "ABCDE"
+        }
+      },
       "expected_valid": false,
       "expected_error_path": "address.zip"
     },
@@ -197,11 +276,19 @@
         "properties": {
           "tags": {
             "type": "array",
-            "items": {"type": "string"}
+            "items": {
+              "type": "string"
+            }
           }
         }
       },
-      "input": {"tags": ["a", "b", "c"]},
+      "input": {
+        "tags": [
+          "a",
+          "b",
+          "c"
+        ]
+      },
       "expected_valid": true
     },
     {
@@ -211,13 +298,148 @@
         "properties": {
           "tags": {
             "type": "array",
-            "items": {"type": "string"}
+            "items": {
+              "type": "string"
+            }
           }
         }
       },
-      "input": {"tags": ["a", 123, "c"]},
+      "input": {
+        "tags": [
+          "a",
+          123,
+          "c"
+        ]
+      },
       "expected_valid": false,
       "expected_error_path": "tags[1]"
+    },
+    {
+      "id": "coerce_string_true_to_boolean",
+      "description": "The string 'true' is JSON's own spelling of a boolean, so the coercing knob MUST accept it. The strict half MUST reject it — R5 makes that a MUST at the module-invocation boundary and the knob is a separate path.",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "flag": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "flag"
+        ]
+      },
+      "input": {
+        "flag": "true"
+      },
+      "expected_valid_strict": false,
+      "expected_valid_coerce": true,
+      "expected_coerced_value": true
+    },
+    {
+      "id": "coerce_string_false_to_boolean",
+      "description": "As above for 'false'. Both halves matter: an implementation that coerces every non-empty string to true passes the 'true' case and fails this one.",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "flag": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "flag"
+        ]
+      },
+      "input": {
+        "flag": "false"
+      },
+      "expected_valid_strict": false,
+      "expected_valid_coerce": true,
+      "expected_coerced_value": false
+    },
+    {
+      "id": "coerce_rejects_shell_boolean_spellings",
+      "description": "'yes' MUST NOT be coerced to a boolean. apcore-rust and apcore-typescript shipped a twelve-spelling case-insensitive dialect — 'yes', 'on', 'y', 't', '1', '0' and negatives — that no document described; TYPE_MAPPING §11 now caps the set at JSON's two literals (apcore#95).",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "flag": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "flag"
+        ]
+      },
+      "input": {
+        "flag": "yes"
+      },
+      "expected_valid_strict": false,
+      "expected_valid_coerce": false
+    },
+    {
+      "id": "coerce_rejects_string_zero_for_boolean",
+      "description": "'0' MUST NOT be coerced to false. This is the sharpest case in the set: R5 makes the NUMBER 0 a MUST-reject for boolean, so an SDK accepting the string '0' put two of its own paths on opposite sides of one value.",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "flag": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "flag"
+        ]
+      },
+      "input": {
+        "flag": "0"
+      },
+      "expected_valid_strict": false,
+      "expected_valid_coerce": false
+    },
+    {
+      "id": "coerce_is_case_sensitive_for_boolean",
+      "description": "'True' MUST NOT be coerced. The accepted spellings are JSON's, and JSON's boolean literals are lowercase.",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "flag": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "flag"
+        ]
+      },
+      "input": {
+        "flag": "True"
+      },
+      "expected_valid_strict": false,
+      "expected_valid_coerce": false
+    },
+    {
+      "id": "coerce_rejects_fractional_string_for_integer",
+      "description": "'3.14' MUST NOT be coerced to an integer even though it parses as a number — the declared type is what bounds the coercion, not the string's parseability.",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "count": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "count"
+        ]
+      },
+      "input": {
+        "count": "3.14"
+      },
+      "expected_valid_strict": false,
+      "expected_valid_coerce": false
     }
-  ]
+  ],
+  "driver_contract": {
+    "this_section_pins_an_optional_api": "`expected_valid_coerce` pins the BEHAVIOUR of the library-level coercion knob, not its existence. TYPE_MAPPING §11 keeps offering the knob a MAY — an SDK with no coercing mode is conforming and its driver should skip these halves with that reason recorded in conformance/case_pinning_allowlist.json. All three SDKs currently offer it.",
+    "both_halves_or_neither": "Every case here states `expected_valid_strict` AND `expected_valid_coerce`. Asserting only the coercing half hides the failure this fixture is for: the strict path and the knob answering the same way. R5 requires the strict half to reject every one of these inputs.",
+    "negative_spellings_are_the_point": "Four of the boolean cases assert a spelling that MUST NOT coerce. A fixture carrying only `\"true\"` is satisfied by an implementation that coerces any non-empty string, which is close to what two SDKs actually shipped."
+  }
 }

@@ -861,6 +861,20 @@ It exists because "partial support" is not a specification. While this document 
 
 **Library-level knob.** An SDK **MAY** keep a coercion switch on its standalone validator API — apcore-python `SchemaValidator(coerce_types=…)`, apcore-typescript `new SchemaValidator(…)`, apcore-rust `SchemaValidator::with_coerce_types(…)` — for callers validating their *own* untyped input (a CLI parsing argv, a form handler). Such a knob **MUST NOT** reach the module-invocation path, **MUST NOT** be readable from a configuration file, and its default **SHOULD** be no-coercion so the two paths cannot silently disagree. apcore-rust shipped a validator whose default coerced while its executor path did not, and the two answered differently for the same schema and input; that is the failure mode this paragraph exists to prevent.
 
+**What the knob coerces, when it exists (normative as of v1.12.0).** Offering the switch stays a **MAY**; an SDK with no coercing mode at all is conforming. But an SDK that offers one **MUST** coerce exactly this set, and **MUST NOT** coerce anything else:
+
+| from | to | accepted |
+|---|---|---|
+| string | `integer` | a string whose entire content parses as an integer — `"42"`, `"-7"`. `"3.14"` **MUST NOT** be accepted for `integer`. |
+| string | `number` | a string whose entire content parses as a number — `"1.5"`, `"42"`, `"-0.5"`. |
+| string | `boolean` | exactly `"true"` and `"false"`, **case-sensitive**. |
+
+Coercion is **from a string only**, and only toward a type the schema declares. A number is never coerced to a boolean, a boolean never to a number, and nothing is coerced toward `string`.
+
+The boolean row is deliberately narrow. `"true"` and `"false"` are JSON's own spelling of a boolean, so accepting them is reading the same value written as text. `"yes"`, `"on"`, `"y"`, `"t"`, `"1"`, `"0"` and their negatives are shell and INI conventions: they belong to whatever parses `argv`, not to a JSON Schema validator, and each one is somebody's default rather than anybody's standard. `"0"` → `false` is the sharpest case — R5 above makes the *number* `0` a MUST-reject for `boolean`, so accepting the string `"0"` puts two paths of the same SDK on opposite sides of one value.
+
+This is stated because it was not. apcore-rust and apcore-typescript shipped a twelve-spelling case-insensitive dialect (`"true" | "yes" | "on" | "y" | "t" | "1"` and its negatives) while apcore-python coerced no string to a boolean at all, and `conformance/fixtures/schema_validation.json` pinned the coercing mode across SDKs in exactly one case — on `integer`, the one axis where all three agreed. Both behaviours were conforming, because the paragraph above constrains only where the knob may be used and never what it does (apcore#95).
+
 **Keyword slicing.** An SDK that delegates part of a schema to a strict Draft 2020-12 engine **SHOULD** delegate the applicator keywords alone rather than the whole schema, so a `type` its own conversion already enforced is not re-asserted twice over a differently-shaped value. The one documented exception is `unevaluatedItems` / `unevaluatedProperties`, which are defined against the annotations of every sibling keyword and therefore cannot be evaluated from a slice.
 
 **Fixture.** `conformance/fixtures/schema_keyword_parity.json` asserts R5 at the boundary; the opt-in library-level coercing mode is covered separately by `conformance/fixtures/schema_validation.json` (`expected_valid_strict` / `expected_valid_coerce`).
