@@ -1,17 +1,16 @@
 {
   "description": "Fixture cases that no SDK driver runs, accepted as a known backlog. check_case_pinning.py --strict fails on any unpinned case; this file records the ones already known so the backlog can shrink without new ones slipping in. A case here is NOT covered \u2014 it only looks covered, in the fixture and in every count derived from the inventory. Delete an entry when a driver starts running it; the list reaching empty is the signal to run --strict everywhere.",
   "unpinned": {
+    "call_chain.json": [
+      "default_depth_32_ok",
+      "empty_chain",
+      "frequency_within_limit",
+      "self_call_not_circular",
+      "single_element",
+      "valid_chain"
+    ],
     "context_create.json": [
       "executor_rejects_cross_executor_rebind"
-    ],
-    "dependency_version_constraints.json": [
-      "caret_constraint_major_nonzero_violated",
-      "caret_constraint_major_zero_minor_nonzero",
-      "exact_match_violated",
-      "gte_constraint_violated",
-      "partial_version_major_only_violated",
-      "range_constraint_violated_upper",
-      "tilde_constraint_three_parts_violated"
     ],
     "error_codes.json": [
       "cross_module_collision",
@@ -29,9 +28,6 @@
     ],
     "identity_system.json": [
       "identity_propagates_to_child_context"
-    ],
-    "schema_strict_conversion.json": [
-      "empty_schema_passthrough"
     ],
     "version_negotiation.json": [
       "declared_minor_exceeds_sdk_error",

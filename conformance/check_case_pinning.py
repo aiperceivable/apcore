@@ -50,6 +50,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import shutil
 import signal
 import subprocess
@@ -89,7 +90,12 @@ def mutate(value):
     if isinstance(value, list):
         return [mutate(v) for v in value] if value else [SENTINEL]
     if isinstance(value, dict):
-        return {k: mutate(v) for k, v in value.items()}
+        # An EMPTY dict must not mutate to itself. The comprehension alone
+        # returned `{}` unchanged, so any case expecting `{}` could never go red
+        # and was reported unpinned no matter what its driver did — a false
+        # positive manufactured by the tool. `schema_strict_conversion`'s
+        # `empty_schema_passthrough` was exactly that.
+        return {k: mutate(v) for k, v in value.items()} if value else {SENTINEL: SENTINEL}
     return SENTINEL
 
 
@@ -134,29 +140,87 @@ def driver_files(sdk_root: Path) -> dict[str, dict[str, list[Path]]]:
     return out
 
 
+def rust_targets(repo: Path) -> set[str]:
+    """The `[[test]]` target names declared in Cargo.toml.
+
+    apcore-rust sets `autotests = false`, so a file under `tests/` is either its
+    own declared target or a MODULE of `tests/it.rs`. The two need different
+    invocations and getting it wrong is silent — see `run_drivers`.
+    """
+    try:
+        text = (repo / "Cargo.toml").read_text()
+    except OSError:
+        return set()
+    return set(re.findall(r'^\s*name\s*=\s*"([^"]+)"', text, re.M)) - {"apcore"}
+
+
+class NoTestsRan(RuntimeError):
+    """The invocation executed zero tests, so its exit code means nothing."""
+
+
 def run_drivers(sdk: str, sdk_root: Path, files: list[Path]) -> bool:
     """True when the given driver files FAIL. Timeouts and crashes count as red.
 
     A crash is a legitimate red: a driver that blows up on a mutated expectation
     was reading it.
+
+    Raises `NoTestsRan` when the invocation executed nothing. That is NOT green:
+    a filter matching no test exits 0, and reading that as "nothing went red"
+    reports the case as unpinned no matter what its driver does. It happened —
+    `cargo test -- conformance_test` filters by test NAME, and no test in that
+    target is named after its file, so every Rust verdict in the first per-SDK
+    sweep was manufactured by this bug rather than measured.
     """
     repo = sdk_root / dict((s, r) for s, r, _ in SDKS)[sdk]
     if sdk == "python":
-        cmd = [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider",
-               *[str(f.relative_to(repo)) for f in files]]
+        cmds = [[sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider",
+                 *[str(f.relative_to(repo)) for f in files]]]
     elif sdk == "typescript":
-        cmd = ["npx", "vitest", "run", *[str(f.relative_to(repo)) for f in files]]
+        cmds = [["npx", "vitest", "run", *[str(f.relative_to(repo)) for f in files]]]
     else:
-        # `tests/it.rs` uses autotests=false, so a file is a MODULE of the `it`
-        # binary and its stem is the filter. Files compiled as their own
-        # [[test]] target are reached by the same substring.
-        filters = sorted({f.stem for f in files})
-        cmd = ["cargo", "test", "--all-features", "--", *filters]
-    try:
-        proc = subprocess.run(cmd, cwd=repo, capture_output=True, text=True, timeout=600)
-    except subprocess.TimeoutExpired:
-        return True
-    return proc.returncode != 0
+        # A declared [[test]] target is selected with `--test <name>`; anything
+        # else is a module of `it.rs`, reached by filtering the `it` binary on
+        # the module name.
+        #
+        # ONE COMMAND PER TARGET, deliberately. Combining them —
+        # `--test conformance_test --test it -- test_errors` — applies the
+        # filter to BOTH binaries, so the target that has no test matching
+        # `test_errors` runs nothing while the other runs something, the summed
+        # count is non-zero, and the zero-tests guard below stays quiet. The
+        # real driver is silently filtered out and every case reports unpinned.
+        targets = rust_targets(repo)
+        cmds = []
+        for stem in sorted({f.stem for f in files}):
+            if stem in targets:
+                cmds.append(["cargo", "test", "--all-features", "--test", stem])
+            else:
+                cmds.append(["cargo", "test", "--all-features", "--test", "it", "--", stem])
+        if not cmds:
+            raise NoTestsRan("no Rust target or module resolved")
+
+    ran_something = False
+    for cmd in cmds:
+        try:
+            proc = subprocess.run(cmd, cwd=repo, capture_output=True, text=True, timeout=600)
+        except subprocess.TimeoutExpired:
+            return True
+        if proc.returncode != 0:
+            return True
+        if not ran_nothing(sdk, proc.stdout + proc.stderr):
+            ran_something = True
+    if not ran_something:
+        raise NoTestsRan(" | ".join(" ".join(c) for c in cmds))
+    return False
+
+
+def ran_nothing(sdk: str, output: str) -> bool:
+    """Whether a zero-exit run actually executed no tests."""
+    if sdk == "python":
+        return "no tests ran" in output or "collected 0 items" in output
+    if sdk == "typescript":
+        return "No test files found" in output or "no tests" in output.lower()
+    counts = [int(n) for n in re.findall(r"test result: ok\. (\d+) passed", output)]
+    return bool(counts) and sum(counts) == 0
 
 
 def load_allowlist() -> dict[tuple[str, str], set[str]]:
@@ -233,8 +297,20 @@ def main() -> int:
             # fixture whose tests already fail would report every one of its
             # cases as pinned — the tool would be at its most reassuring exactly
             # where the suite is broken.
-            already_red = [sdk for sdk, *_ in sdks
-                           if by_sdk.get(sdk) and run_drivers(sdk, args.sdk_root, by_sdk[sdk])]
+            already_red = []
+            broken = []
+            for sdk, *_ in sdks:
+                if not by_sdk.get(sdk):
+                    continue
+                try:
+                    if run_drivers(sdk, args.sdk_root, by_sdk[sdk]):
+                        already_red.append(sdk)
+                except NoTestsRan as exc:
+                    broken.append(f"{sdk} ran no tests ({exc})")
+            if broken:
+                indeterminate[path.name] = "; ".join(broken)
+                print(f"  INDETERMINATE  {path.stem} — {indeterminate[path.name]}", flush=True)
+                continue
             if already_red:
                 indeterminate[path.name] = ", ".join(already_red)
                 print(f"  INDETERMINATE  {path.stem} — red before mutation on "
@@ -259,8 +335,15 @@ def main() -> int:
                     files = by_sdk.get(sdk)
                     if not files:
                         continue
-                    if run_drivers(sdk, args.sdk_root, files):
-                        pinned_by = sdk
+                    try:
+                        if run_drivers(sdk, args.sdk_root, files):
+                            pinned_by = sdk
+                            break
+                    except NoTestsRan:
+                        # Cannot conclude anything; the fixture pre-check above
+                        # already rejected this shape, so reaching here means the
+                        # invocation degraded mid-sweep.
+                        pinned_by = "indeterminate"
                         break
                 shutil.copy(backup, path)
                 if pinned_by is not None:
