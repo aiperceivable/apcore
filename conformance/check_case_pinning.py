@@ -99,14 +99,23 @@ def mutate(value):
     return SENTINEL
 
 
-#: Top-level keys, besides `expected`, that state an expectation rather than an
-#: input. Fixtures are not uniform: 242 of 658 cases carry no `expected` object
-#: at all and say it with a prefixed top-level key instead — `expected_valid`
-#: (134 cases), `expected_features`, `expected_error`, `expected_path`,
-#: `expected_score`. The first run of this tool measured only `expected` and so
-#: silently skipped 37% of the corpus while reporting a confident number for the
-#: rest, which is the defect it exists to find.
-_EXTRA_EXPECTATION_KEYS = frozenset({"error_code", "error_message_contains"})
+#: Fixtures are not uniform: 242 of 658 cases carry no `expected` object at all
+#: and state it with a prefixed top-level key instead — `expected_valid` (134
+#: cases), `expected_features`, `expected_error`, `expected_path`,
+#: `expected_score`. The first version measured only `expected` and so silently
+#: skipped 37% of the corpus while reporting a confident number for the rest.
+#:
+#: The prefix is the WHOLE rule, deliberately. An earlier revision also counted
+#: `error_code`, which reads like an expectation and is one nowhere: in all 21
+#: cases that carry it — `error_codes.json`, `binding_errors.json` — it is the
+#: code being REGISTERED, an input. Mutating it changed what the test did rather
+#: than what it expected, so a driver reacting to the altered input was scored as
+#: asserting the declared expectation. That is a false NEGATIVE: it reports
+#: coverage that is not there, which is the one direction this tool must never
+#: err in. `error_message_contains` appears at top level in zero cases (it lives
+#: inside `expected`, where it is mutated anyway), so the list is now empty and
+#: kept only to make its emptiness deliberate rather than accidental.
+_EXTRA_EXPECTATION_KEYS: frozenset[str] = frozenset()
 
 
 def expectation_keys(case: dict) -> list[str]:

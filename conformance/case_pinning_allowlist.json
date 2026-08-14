@@ -4,8 +4,18 @@
     {
       "fixture": "redaction_config.json",
       "case": "legacy_config_key_is_honoured_with_a_deprecation_warning",
-      "sdks": ["python"],
+      "sdks": [
+        "python"
+      ],
       "why": "The case's own `legacy_key_by_sdk.python` is null and its `skip_when_legacy_key_is_null` note states that apcore-python MUST NOT gain the fallback: no Python deployment ever had `observability.redaction.*` honoured, so adding it would create a deprecated surface for zero users, and a stale `observability.redaction.sensitive_keys: []` would flip from 'ignored, defaults apply' to 'key-based redaction disabled'. apcore-rust and apcore-typescript both pin it."
+    },
+    {
+      "fixture": "binding_errors.json",
+      "case": "pipeline_handler_not_supported_rust",
+      "sdks": [
+        "python"
+      ],
+      "why": "PIPELINE_HANDLER_NOT_SUPPORTED is raised only by apcore-rust, which cannot dynamically load a `handler:` target (DECLARATIVE_CONFIG_SPEC §4.4 records the per-SDK split). apcore-python supports `handler:` and therefore has no such error to raise, so its driver is REQUIRED to skip. apcore-typescript likewise supports it. The case's old apcore-python handling was `else: pytest.skip(\"Unknown error_code\")`, which read as deliberate while checking nothing — that fallback is now pytest.fail, and this entry records the one skip that is genuinely correct."
     }
   ]
 }

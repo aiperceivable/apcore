@@ -86,9 +86,11 @@ jobs:
 
       - name: Every fixture case is run by some driver
         working-directory: apcore
-        # --strict fails on ANY unpinned case. The baseline records the backlog
-        # that existed when the tool was written; it is a list to shrink, not a
-        # permanent exemption, and the run below fails when it grows.
+        # The baseline is EMPTY: all 651 measurable cases are pinned as of
+        # apcore#92. The diff below therefore fails on the first case that stops
+        # being pinned, which is the state this job exists to hold. If the
+        # baseline ever gains entries again, they are a backlog to shrink, not a
+        # permanent exemption.
         run: |
           python3 conformance/check_case_pinning.py --sdk-root .. \
             ${{ github.event.inputs.fixture && format('--fixture {0}', github.event.inputs.fixture) || '' }} \

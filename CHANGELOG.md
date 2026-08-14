@@ -23,6 +23,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **The case-pinning backlog is zero (#92).** All 651 measurable fixture cases are now run by at least one driver — mutating any one of them reddens a suite. The starting point was 36 measured against apcore-python alone, and the fixes landed in all three SDKs (apcore-python `2f4daad`, apcore-typescript `5b3b875`, apcore-rust `289c2f8`). **No SDK defect surfaced in any of them**: every newly-real assertion passed against the shipped implementation on its first run, so the contracts these fixtures declare were being met all along and simply were not checked. The last one standing was `binding_errors::pipeline_handler_not_supported_rust` — a case that exists to pin a Rust-only behaviour, whose driver hardcoded its message fragments as an OR of two literals and asserted no code at all.
+
 - **`.github/workflows/case-pinning.yml` — a scheduled sweep that fails when a NEW case goes unpinned.** `check_driver_coverage.py` answers *does each SDK load this fixture*, `check_expected_keys_read.py` answers *does any driver read this `expected` key*; neither answers *does any driver run this case*, and a case every driver skips leaves both green. The new job mutates each case's expectation and diffs the result against `conformance/case_pinning_baseline.json`, so the backlog can shrink but cannot grow. Daily rather than per-PR: the sweep runs the real drivers for 651 cases across three SDKs, roughly 20 minutes.
 
 ---
