@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+(nothing yet)
+
+---
+
+## [1.12.0] - 2026-08-14
+
 ### Changed
 
 - **The library-level coercion knob's behaviour is normative when the knob exists (#95, spec v1.12.0).** Offering the switch stays a **MAY**; an SDK that offers one **MUST** coerce exactly `string→integer`, `string→number`, and `string→boolean` limited to `"true"` / `"false"` **case-sensitive**, and **MUST NOT** coerce anything else.
