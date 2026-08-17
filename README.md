@@ -22,6 +22,8 @@ A governed, protocol-neutral runtime and module standard for agent-callable appl
 
 apcore enforces schemas, behavioral annotations, ACL rules, approval gates, middleware, and observability at the execution boundary. Surface adapters then project the same capability to MCP, A2A, CLI, HTTP, or direct code.
 
+MCP tells an agent what it *can* call. apcore decides whether this call — with these arguments, in this environment, by this identity — should happen at all, and leaves evidence that it did.
+
 **apcore is a protocol specification.** Language implementations are maintained in separate repositories:
 
 | SDK | Language | Install | Repository |
