@@ -835,6 +835,85 @@
       "expected_valid": true
     },
     {
+      "id": "format_inside_an_anyof_branch_is_an_annotation",
+      "description": "The annotation rule reaches INSIDE a union branch. No sibling branch can rescue this value — `not-an-email` is 12 characters — so an implementation that asserts `format` on a branch has no matching branch left and rejects. type-mapping §11.1.",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "email"
+              },
+              {
+                "type": "string",
+                "maxLength": 3
+              }
+            ]
+          }
+        },
+        "required": [
+          "v"
+        ]
+      },
+      "input": {
+        "v": "not-an-email"
+      },
+      "expected_valid": true
+    },
+    {
+      "id": "format_beside_a_type_array_is_an_annotation",
+      "description": "`format` sits beside a `type` array and annotates its string branch only. It neither rejects the string nor narrows the union away from `integer`.",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": [
+              "string",
+              "integer"
+            ],
+            "format": "email"
+          }
+        },
+        "required": [
+          "v"
+        ]
+      },
+      "input": {
+        "v": "not-an-email"
+      },
+      "expected_valid": true
+    },
+    {
+      "id": "format_does_not_discriminate_a_oneof",
+      "description": "Both branches are `type: string`, so both match and `oneOf` exclusivity fails. Treating `format` as an assertion would leave exactly one branch matching and wrongly ACCEPT — which is why this case is expected_valid false rather than true.",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "oneOf": [
+              {
+                "type": "string",
+                "format": "email"
+              },
+              {
+                "type": "string",
+                "format": "uri"
+              }
+            ]
+          }
+        },
+        "required": [
+          "v"
+        ]
+      },
+      "input": {
+        "v": "whatever"
+      },
+      "expected_valid": false
+    },
+    {
       "id": "prefix_items_checks_each_position",
       "description": "§10.3.1.1 — each prefix position is validated against its own sub-schema.",
       "schema": {

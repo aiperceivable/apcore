@@ -1,15 +1,15 @@
 ---
-description: "The canonical, normative apcore protocol specification (RFC 2119, v1.9.0): module, schema, naming, ACL, approval, error, config, and observability requirements for all conforming SDKs."
+description: "The canonical, normative apcore protocol specification (RFC 2119, v1.13.0): module, schema, naming, ACL, approval, error, config, and observability requirements for all conforming SDKs."
 ---
 
 # apcore — AI-Perceivable Core Standard Specification
 
 > **Canonical Specification** - This document is the authoritative specification for the apcore protocol
 
-> Version: 1.12.0
+> Version: 1.13.0
 > Status: Draft Specification (RFC 2119 Conformant)
 > Stability: Specification content is stable, pending reference implementation verification
-> Last Updated: 2026-07-13
+> Last Updated: 2026-08-17
 
 ---
 
@@ -1672,6 +1672,14 @@ Implementations **MUST** handle Schema edge cases according to the following tab
 | `required` field is empty array `[]` | Treat as no required fields | **MUST** |
 | `enum` value contains `null` | Allow, `null` is valid enum value | **MUST** |
 | Cross-file `$ref` loading timeout | Throw `SCHEMA_PARSE_ERROR` (cause: timeout) | **SHOULD** |
+| A value does not satisfy a **recognised** `format` | Accept the value. Raising `SCHEMA_VALIDATION_ERROR` is forbidden; emitting a warning is **SHOULD** | **MUST** |
+| `format` names a term the implementation does not recognise | Collect as an annotation and pass silently | **MUST** |
+
+**`format` is an annotation, and [type-mapping §11.1](./type-mapping.md#111-format-keyword) is its
+sole authority.** The two rows above restate its consequence for edge-case handling so that a
+reader arriving at this table is not left to infer that an unsatisfied `format` behaves like an
+unsatisfied `pattern`. §11.1 carries the recognised-format list, the warning requirement, and the
+rule that a binding is expressed with `pattern` or `enum` rather than with `format`.
 
 #### Self-reference vs. circular reference
 
@@ -6967,7 +6975,9 @@ Interface: Executor
    * Runs: context creation (Step 1), call chain guard (Step 2), module
    * lookup (Step 3), ACL enforcement (Step 4), approval detection (Step 5,
    * report only — MUST NOT invoke ApprovalHandler), input schema validation
-   * (Step 7), and optionally module.preflight() for advisory warnings.
+   * (Step 7), and — only when the ACL permitted the call — module.preflight()
+   * and module.preview() for advisory warnings and predicted changes
+   * (§12.8.5.1).
    *
    * MUST NOT: execute module code, run middleware, or modify external state.
    *
@@ -7010,7 +7020,8 @@ Type: PreflightResult
   valid: Boolean             // True only if ALL checks passed
   checks: List<PreflightCheckResult>
   requires_approval: Boolean // True if module has requires_approval annotation
-  predicted_changes: List<Change>  // Populated when module implements preview() and Executor.validate() ran in dry_run mode (default: empty list)
+  predicted_changes: List<Change>  // Populated when module implements preview() and Executor.validate() ran in dry_run mode (default: empty list).
+                                   // ALWAYS empty when the acl check failed — §12.8.5.1
 
 Interface: ACLChecker
   /**
@@ -7234,6 +7245,7 @@ Consistency Test Suite:
    - Invalid module_id format → module_id check failed, early return
    - Unknown module → module_lookup check failed, early return
    - ACL denial → acl check failed, valid=false
+   - ACL denial → NO module_preflight / module_preview check, predicted_changes empty (§12.8.5.1)
    - Module with requires_approval → requiresApproval=true, approval check still passed
    - Schema validation failure → schema check failed with error details
    - PreflightResult.errors matches filtered failed checks (duck-type ValidationResult)
@@ -7588,6 +7600,7 @@ SDK implementers.
 2. **Early return only when subsequent checks are meaningless.** module_id format failure or module-not-found justifies early return because later checks require a valid module reference.
 3. **Reuse existing internals.** validate() calls the same helper functions used by the `call()` pipeline (regex check, registry lookup, ACL check, schema validation). No new capabilities are required.
 4. **Duck-type backward compatibility.** PreflightResult SHOULD expose `.valid` (Boolean) and `.errors` (List) so existing consumers of the old ValidationResult continue to work.
+5. **Authorization gates disclosure.** A failed `acl` check does not stop the checks the Executor computes on its own, but it **MUST** stop module-level introspection — see §12.8.5.1. `validate()` is a preflight, not a way around the ACL.
 
 #### 12.8.2 Error Handling Mapping
 
@@ -7632,8 +7645,31 @@ No additional schema library is required beyond what the SDK already uses.
 After schema validation, validate() **MAY** invoke the module's optional `preflight(inputs, context)` method (§5.6). This check is advisory:
 
 - If `preflight()` returns a non-empty list of strings, they are stored as `warnings` on a `module_preflight` check result with `passed: true`.
-- If `preflight()` returns an empty list or is not defined, no `module_preflight` check is added.
+- If `preflight()` returns an empty list, a `module_preflight` check result with `passed: true` and no warnings is added.
+- If the module does not define `preflight()`, no `module_preflight` check is added.
 - If `preflight()` raises an exception, the exception is caught and reported as a warning (not a failure).
+
+##### Authorization gates module-level introspection
+
+`preflight()` and `preview()` (§5.6) are **module-authored code**, and what they return describes what
+calling the module would do — the target a side effect would land on, the argv a command-wrapping module
+would execute, the records a query would touch. When the `acl` check has **failed**, `validate()`
+**MUST NOT**:
+
+- invoke the module's `preflight()` or `preview()` method,
+- emit a `module_preflight` or `module_preview` check result, or
+- populate `predicted_changes` — it **MUST** be empty.
+
+Everything else keeps the collect-don't-throw behaviour of §12.8.1. The failed `acl` check itself
+**MUST** still be reported, so the caller learns *why* the preflight came back invalid, and the checks
+the Executor computes on its own (`schema`, `call_chain`, `module_lookup`) are unaffected. What is
+withheld is exactly the part a denied caller has no authority to learn.
+
+The rule is about **authorization**, not about validity in general. A failed `schema` check does **not**
+suppress module-level introspection: a caller the ACL permits is a caller entitled to hear what the
+module would do, even when its inputs are malformed. `requires_approval` likewise does not suppress it —
+an approval gate means the caller is authorized and awaiting a human decision, which is precisely the
+decision `predicted_changes` exists to inform.
 
 #### 12.8.6 Naming Convention
 
@@ -7980,3 +8016,4 @@ Each language SDK **SHOULD** provide idiomatic module definition syntax. The fol
 | 1.10.0 | 2026-08-13 | **§12.2 `Interface: Registry` gains `register` (#90).** The normative component interface declared `discover`, `get`, `list` and `describe` — not `register`, the most-used entry point on the component and the one every SDK exposes with a four-argument signature. `register(module_id, module, version?, metadata?)` is now stated, and when an implementation accepts `metadata`, a `dependencies` entry (a list of `{module_id, version?, optional?}`) **MUST** reach the registered module's descriptor so `get_definition(module_id).dependencies` returns what the caller declared. That requirement existed nowhere: all three SDKs lost it independently and all three fixed it independently (apcore-python `ad2998d`, apcore-typescript#35, apcore-rust `71295e1`), because discovery-time sorting reads its own parse and keeps working — `resolve_dependencies` looks healthy while the accessor is empty and reload order degrades to its sort's seed order, which is alphabetical and therefore plausible. `version` is stated as an OPTIONAL parameter only: all three SDKs accept it, only apcore-python resolves by it, and §5.4 continues to govern multi-version coexistence as optional — making resolution normative would put a requirement into the spec that two of three implementations do not provide, which is the shape 1.9.0 spent a release removing. `get(module_id)` keeps its single-argument normative form for the same reason. No SDK behaviour change: all three already satisfy the requirement. Governance: apcore#90. |
 | 1.11.0 | 2026-08-14 | **§12.2 `Interface: Executor` — cross-executor rebind is a MUST (#92).** `features/core-executor.md` stated it as *SHOULD raise `ContextBindingError`*, with *"SDKs that choose to accept silently instead MUST document the deviation prominently"* as the escape hatch. All three SDKs raise, so the deviation was permitted for nobody — and the alternative had a cost: `conformance/fixtures/context_create.json` had to express it as `expected_one_of: [raise, silent_accept]`, which no driver can assert without deciding its own branch. All three hardcoded `raise` and read the alternation only in a comment, so mutating the entire expectation left every suite green. The rule is now stated normatively with the wire code `CONTEXT_BINDING_ERROR`, the fixture carries a single `expected`, and the feature page records the withdrawal. **No SDK behaviour change.** Governance: apcore#92. |
 | 1.12.0 | 2026-08-14 | **§11 type-mapping — the library-level coercion knob's behaviour is normative when the knob exists (#95).** Offering the switch stays a MAY; an SDK that offers one **MUST** coerce exactly `string→integer`, `string→number`, and `string→boolean` limited to `"true"` / `"false"` case-sensitive, and **MUST NOT** coerce anything else. Previously the paragraph constrained only *where* the knob could be used — not on the module path, not from configuration, default off — and said nothing about what it does, so apcore-rust and apcore-typescript shipped a twelve-spelling case-insensitive dialect (`"yes"`, `"on"`, `"y"`, `"t"`, `"1"`, `"0"` and negatives) while apcore-python coerced no string to a boolean at all, and both were conforming. `"0"` → `false` sat directly against R5, which makes the number `0` a MUST-reject for `boolean`. `conformance/fixtures/schema_validation.json` had pinned the coercing mode cross-SDK in exactly one case, on `integer` — the one axis where all three agreed — which is why it never fired. Governance: apcore#95. |
+| 1.13.0 | 2026-08-17 | **§12.8.5.1 — a failed `acl` check withholds module-level introspection (#96).** `validate()` looked the module up at Step 3 and ran `preflight()` and `preview()` at Check 7 on the strength of that lookup alone, so a caller the ACL had just denied still made module-authored code run and still received what it returned. For a command-wrapping module that is the resolved binary and its argv; for a writer it is the target of the side effect. All three SDKs did this — apcore-python `executor.py`, apcore-typescript `executor.ts`, apcore-rust `executor.rs` — each guarding only on "module lookup succeeded", and `apcore-mcp-rust` had already grown a string-matched disclosure filter over the top of it (`async_task_bridge.rs`), which is the evidence the gap was reachable in a shipped product rather than theoretical. `validate()` **MUST NOT** now invoke either hook, emit a `module_preflight` / `module_preview` check, or populate `predicted_changes` when `acl` failed; the failed `acl` check itself is still reported and no other check is suppressed, because the rule is about authorization and not about validity — a malformed input from a permitted caller still gets the module's own account of what would happen. §12.8.1 gains principle 5, §12.4 gains the test, and `conformance/fixtures/preflight_disclosure.json` pins it. **§4.15** additionally gains the two `format` rows its edge-case table never carried, so that `schema_hardening_formats.json`'s long-standing §4.15 citation resolves to something; [type-mapping §11.1](./type-mapping.md#111-format-keyword) remains the authority. Governance: apcore#96. |

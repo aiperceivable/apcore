@@ -1,0 +1,191 @@
+{
+  "description": "Executor.validate() MUST NOT disclose module-level introspection to a caller the ACL denied (PROTOCOL_SPEC §12.8.5.1). preflight() and preview() are module-authored code whose output names what a call would do — the resolved binary and argv of a command-wrapping module, the target of a write. Module lookup (Step 3) precedes the ACL check (Step 4), so guarding these hooks on 'lookup succeeded' alone runs them for a denied caller and returns what they say. All three SDKs did exactly that until spec v1.13.0. The rule is about AUTHORIZATION, not validity: a failed schema check does not suppress introspection, because a caller the ACL permits is entitled to hear what the module would do even when its inputs are malformed.",
+  "driver_contract": {
+    "path": "MUST drive the real Executor.validate() against a real Registry and a real ACL — not a hand-assembled PreflightResult. The defect this fixture pins lives in validate()'s own gating, so a driver that constructs the result itself asserts nothing.",
+    "module": "The driver MUST register a module matching `module_contract` below: `preflight()` returns exactly the one warning string in `preflight_returns`, and `preview()` returns exactly one Change equal to `preview_change`. Both carry `sentinel` verbatim.",
+    "sentinel": "`sentinel` is a disclosure canary. It appears in no value the Executor computes on its own, so finding it anywhere in the serialized PreflightResult proves module-level introspection ran and reached the caller. Cases carrying `expected.sentinel_absent` MUST serialize the WHOLE result (checks, warnings, errors, predicted_changes) and assert the substring is absent.",
+    "hooks_invoked": "MUST be observed by recording invocations inside the module's own preflight()/preview() bodies. Asserting only on the absent check entries is weaker: an implementation that calls the hooks and then drops their results still ran module code for a denied caller, which is the side-effect half of the requirement.",
+    "checks_absent": "MUST assert the named check is not present in `checks` AT ALL. A present-but-empty `module_preflight` entry does not satisfy it — the presence of the entry is itself the disclosure that the module implements the hook.",
+    "checks_present": "A SUBSET assertion: each named check MUST appear in `checks`. The full list varies with the SDK's execution strategy (context / call_chain / module_lookup / approval entries) and is deliberately not pinned here.",
+    "failed_checks": "The EXACT set of checks whose `passed` is false, order-insensitive. Exactness matters: `acl` alone is what a denied caller may learn, and a driver asserting only 'acl is among the failures' would not notice a second failure carrying module detail."
+  },
+  "module_contract": {
+    "module_id": "demo.destructive",
+    "sentinel": "/srv/customer-data",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "confirm": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "confirm"
+      ]
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {}
+    },
+    "preflight_returns": [
+      "would run /bin/rm -rf /srv/customer-data"
+    ],
+    "preview_change": {
+      "action": "delete",
+      "target": "/srv/customer-data",
+      "summary": "delete /srv/customer-data recursively"
+    }
+  },
+  "test_cases": [
+    {
+      "id": "acl_denied_withholds_module_introspection",
+      "description": "The headline rule. A denied caller learns that it was denied and nothing else the module would have said.",
+      "input": {
+        "acl_rules": [
+          {
+            "callers": [
+              "*"
+            ],
+            "targets": [
+              "demo.destructive"
+            ],
+            "effect": "deny"
+          }
+        ],
+        "default_effect": "allow",
+        "caller_id": "untrusted.caller",
+        "inputs": {
+          "confirm": true
+        }
+      },
+      "expected": {
+        "valid": false,
+        "checks_present": [
+          "acl"
+        ],
+        "failed_checks": [
+          "acl"
+        ],
+        "checks_absent": [
+          "module_preflight",
+          "module_preview"
+        ],
+        "predicted_changes_count": 0,
+        "hooks_invoked": [],
+        "sentinel_absent": true
+      }
+    },
+    {
+      "id": "acl_allowed_reports_module_introspection",
+      "description": "The control. Without it, an implementation that never runs the hooks at all also passes the case above.",
+      "input": {
+        "acl_rules": [
+          {
+            "callers": [
+              "*"
+            ],
+            "targets": [
+              "demo.destructive"
+            ],
+            "effect": "allow"
+          }
+        ],
+        "default_effect": "deny",
+        "caller_id": "trusted.caller",
+        "inputs": {
+          "confirm": true
+        }
+      },
+      "expected": {
+        "valid": true,
+        "checks_present": [
+          "acl",
+          "module_preflight",
+          "module_preview"
+        ],
+        "failed_checks": [],
+        "checks_absent": [],
+        "predicted_changes_count": 1,
+        "hooks_invoked": [
+          "preflight",
+          "preview"
+        ],
+        "sentinel_absent": false
+      }
+    },
+    {
+      "id": "schema_failure_does_not_withhold_module_introspection",
+      "description": "The rule is scoped to authorization. `confirm` is required and missing, so the schema check fails — and the permitted caller still gets the module's account of what would happen, which is what it needs in order to fix the call. `acl` is deliberately not asserted present here: SDKs differ on whether the checks that passed before a raising step survive in the list, which is a separate question from this one.",
+      "input": {
+        "acl_rules": [
+          {
+            "callers": [
+              "*"
+            ],
+            "targets": [
+              "demo.destructive"
+            ],
+            "effect": "allow"
+          }
+        ],
+        "default_effect": "deny",
+        "caller_id": "trusted.caller",
+        "inputs": {}
+      },
+      "expected": {
+        "valid": false,
+        "checks_present": [
+          "schema",
+          "module_preflight",
+          "module_preview"
+        ],
+        "failed_checks": [
+          "schema"
+        ],
+        "checks_absent": [],
+        "predicted_changes_count": 1,
+        "hooks_invoked": [
+          "preflight",
+          "preview"
+        ],
+        "sentinel_absent": false
+      }
+    },
+    {
+      "id": "acl_denied_with_invalid_inputs_still_withholds",
+      "description": "Denial wins over every other outcome. An implementation that ordered the two rules the other way round — introspect unless the schema failed — would pass the first case by accident and leak here.",
+      "input": {
+        "acl_rules": [
+          {
+            "callers": [
+              "*"
+            ],
+            "targets": [
+              "demo.destructive"
+            ],
+            "effect": "deny"
+          }
+        ],
+        "default_effect": "allow",
+        "caller_id": "untrusted.caller",
+        "inputs": {}
+      },
+      "expected": {
+        "valid": false,
+        "checks_present": [
+          "acl"
+        ],
+        "failed_checks": [
+          "acl"
+        ],
+        "checks_absent": [
+          "module_preflight",
+          "module_preview"
+        ],
+        "predicted_changes_count": 0,
+        "hooks_invoked": [],
+        "sentinel_absent": true
+      }
+    }
+  ]
+}
