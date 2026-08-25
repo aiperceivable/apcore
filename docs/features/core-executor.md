@@ -242,6 +242,83 @@ for info in executor.list_strategies():
 
 Built-in strategies and authoring custom ones are described in [Pipeline Hardening](#pipeline-hardening-issue-33) below.
 
+### Governance State API
+
+> **Added in spec v1.15.0** ([PROTOCOL_SPEC §6.6.5](../spec/protocol-spec.md#665-governance-state-query), issue #97).
+
+`acl != null` does not mean ACL evaluation runs. The ACL and approval gates are pipeline **steps**, and three of the four built-in strategies remove them — `internal`, `testing` and `minimal` all drop `acl_check` (see [§6.6.3.2](../spec/protocol-spec.md#6632-a-configured-layer-is-not-necessarily-an-enforced-one)). An executor can therefore hold an ACL that is never consulted, which is exactly the state a naive `acl != null` check reports as "protected".
+
+`governance_state()` is the read-only accessor that separates the two questions. It is a **pure read**: it never enforces, warns, throws, or mutates.
+
+| Surface | Type | Description |
+|---------|------|-------------|
+| `executor.governance_state()` | instance method | Returns the current `GovernanceState` — eight booleans, computed live |
+
+| Field | Answers |
+|---|---|
+| `control_modules_registered` | Is at least one `system.control.*` module in the registry? |
+| `read_modules_registered` | Is at least one read-only `system.*` module registered? |
+| `acl_configured` | Is an ACL object attached? |
+| `builtin_acl_gate_wired` | Does the **running strategy** contain the built-in ACL gate (matched by type, never by step name)? |
+| `approval_handler_configured` | Is an `ApprovalHandler` attached? |
+| `builtin_approval_gate_wired` | Does the running strategy contain the built-in approval gate? |
+| `policy_strict` | Is `ExecutionPolicy(strict=true)` set — the approval gate failing closed with no handler? |
+| `unprotected_control_surface` | Derived: control modules are registered and no recognised built-in gate is both configured **and** wired. |
+
+=== "Python"
+    ```python
+    from apcore import APCore, Config
+
+    client = APCore(Config())
+    state = client.executor.governance_state()
+
+    # The distinction the flag exists for: an attached ACL that no step consults.
+    if state.acl_configured and not state.builtin_acl_gate_wired:
+        print("ACL attached but the running strategy has no acl_check step")
+
+    if state.unprotected_control_surface:
+        print("system.control.* is registered with no recognised gate in front of it")
+    ```
+
+=== "TypeScript"
+    ```typescript
+    import { APCore } from 'apcore-js';
+
+    const client = new APCore();
+    const state = client.executor.governanceState();
+
+    if (state.aclConfigured && !state.builtinAclGateWired) {
+      console.warn('ACL attached but the running strategy has no acl_check step');
+    }
+
+    if (state.unprotectedControlSurface) {
+      console.warn('system.control.* is registered with no recognised gate in front of it');
+    }
+    ```
+
+=== "Rust"
+    ```rust
+    use apcore::APCore;
+
+    # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let client = APCore::new()?;
+    let state = client.executor().governance_state();
+
+    if state.acl_configured && !state.builtin_acl_gate_wired {
+        eprintln!("ACL attached but the running strategy has no acl_check step");
+    }
+
+    if state.unprotected_control_surface {
+        eprintln!("system.control.* is registered with no recognised gate in front of it");
+    }
+    # Ok(())
+    # }
+    ```
+
+**What `unprotected_control_surface` does not say.** It reports the *absence of a gate*, never the presence of protection: a wired ACL that permits every call still yields `false`. And a `true` does not mean the call will succeed — a deployment may enforce through a custom step, custom middleware, or an upstream gateway, none of which this accessor can see. Do not surface it as a security verdict, and do not add an `is_secure`-shaped inverse.
+
+**Consumers.** `apcore-mcp` ([apcore-mcp#15](https://github.com/aiperceivable/apcore-mcp/issues/15)) and `apcore-a2a` ([apcore-a2a#5](https://github.com/aiperceivable/apcore-a2a/issues/5)) specify startup warnings over exactly this condition; both should call this accessor rather than re-derive it from `describe_pipeline()` output, which carries step **names** only and cannot tell a built-in gate from a look-alike.
+
 ## Contract: Executor.call
 
 Normative behavioral contract. All SDK implementations MUST satisfy these guarantees.

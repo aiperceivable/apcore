@@ -32,6 +32,7 @@ See [PROTOCOL_SPEC §7](../spec/protocol-spec.md#7-approval-system) for the full
 
 The approval gate is inserted between ACL Enforcement (Step 4) and Middleware Before Chain (Step 6) in the Executor's pipeline. The algorithm:
 
+0. The gate runs only if the running `ExecutionStrategy` **contains** the `approval_gate` step. The `internal`, `testing` and `minimal` presets remove it, so on those the gate never runs no matter what is configured ([PROTOCOL_SPEC §6.6.3.2](../spec/protocol-spec.md#6632-a-configured-layer-is-not-necessarily-an-enforced-one)).
 1. Check if `approval_handler` is configured on the Executor.
 2. If not configured, skip to Step 6.
 3. Check if the target module declares `requires_approval=true` in its annotations.
@@ -43,6 +44,8 @@ The approval gate is inserted between ACL Enforcement (Step 4) and Middleware Be
 9. If `pending` (Phase B only) → raise `ApprovalPendingError` with `approval_id`.
 
 **Annotation access note:** Modules created via `@module(annotations={"requires_approval": True})` store annotations as a `dict`, not a `ModuleAnnotations` dataclass. Implementations **must** handle both forms when checking `requires_approval`.
+
+> **Steps 0 and 2 are the "inactive by absence" cases.** Neither fails closed: with no handler the module executes anyway, with a warning. `ExecutionPolicy(strict=true)` (§7.9) is the documented way to make the skip a fail-closed `ApprovalDeniedError`. To observe which of the two absences applies to a live executor, read [`governance_state()`](./core-executor.md#governance-state-api) — `builtin_approval_gate_wired`, `approval_handler_configured` and `policy_strict` are reported separately ([PROTOCOL_SPEC §6.6.5](../spec/protocol-spec.md#665-governance-state-query)).
 
 ### Approval Lifecycle State Machine
 

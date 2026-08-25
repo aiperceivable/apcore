@@ -482,7 +482,13 @@ _(none — operates on the YAML path stored during `ACL.load`)_
     # Plain attribute assignment does NOT wire enforcement.
     client = APCore()
     client.executor.set_acl(acl)
+
+    # set_acl() warns when the running strategy has no acl_check step, but the
+    # warning is a one-shot log line. To OBSERVE the state at any later point:
+    assert client.executor.governance_state().builtin_acl_gate_wired
     ```
+
+> **An attached ACL is not an enforced one.** `acl_check` is a pipeline step, and the `internal`, `testing` and `minimal` strategies all remove it — so `set_acl()` on an executor running one of those leaves the ACL attached and never consulted. [`governance_state()`](./core-executor.md#governance-state-api) reports `acl_configured` and `builtin_acl_gate_wired` separately for exactly this reason ([PROTOCOL_SPEC §6.6.5](../spec/protocol-spec.md#665-governance-state-query)).
 === "TypeScript"
     ```typescript
     import { APCore } from "apcore-js";

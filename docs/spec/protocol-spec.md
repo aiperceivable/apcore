@@ -1,12 +1,12 @@
 ---
-description: "The canonical, normative apcore protocol specification (RFC 2119, v1.14.0): module, schema, naming, ACL, approval, error, config, and observability requirements for all conforming SDKs."
+description: "The canonical, normative apcore protocol specification (RFC 2119, v1.15.0): module, schema, naming, ACL, approval, error, config, and observability requirements for all conforming SDKs."
 ---
 
 # apcore — AI-Perceivable Core Standard Specification
 
 > **Canonical Specification** - This document is the authoritative specification for the apcore protocol
 
-> Version: 1.14.0
+> Version: 1.15.0
 > Status: Draft Specification (RFC 2119 Conformant)
 > Stability: Specification content is stable, pending reference implementation verification
 > Last Updated: 2026-08-25
@@ -3769,13 +3769,19 @@ Adapters **SHOULD NOT** invent their own classification mechanisms (such as rese
 
 #### 6.6.3 Defense-in-Depth Model
 
-System module access is governed by three independent layers. Each layer operates regardless of the others:
+System module access is governed by three independent layers. Each layer operates regardless of the others — and each is **inactive by absence**: a layer that was never configured does not fail closed, it does not run. Nothing in this section is a default-deny. That is deliberate, and stating it is the point of §6.6.3.1.
 
 ```
-Layer 1: Activation (Config)
+Layer 1: Activation (Config) — two stages, not one
   sys_modules.enabled = false (default)
-  → system.* modules are NOT registered
-  → No system module exists in the registry — nothing to call or list
+    → 0 modules registered. Nothing to call, nothing to list.
+  sys_modules.enabled = true, sys_modules.events.enabled = false (default)
+    → 6 read modules: system.health.*, system.usage.*, system.manifest.*
+    → NO system.control.* — the write modules require the EventEmitter that
+      carries their audit events (§6.7 cross-cutting requirement 3), so they
+      are registered inside the events branch and not otherwise.
+  both = true
+    → 9 modules: the 6 above plus the 3 system.control.* write modules.
 
 Layer 2: Authorization (ACL)
   When system modules ARE registered, ACL rules control who can call them.
@@ -3792,7 +3798,32 @@ Layer 3: Approval (requires_approval annotation)
   SHOULD set requires_approval = true for human-in-the-loop enforcement.
 ```
 
+The 0 / 6 / 9 distinction matters to anything that reasons about exposure: a registry holding six read-only modules and no ACL is an **information-disclosure** question, not a control-plane one. Treating "system modules are registered" as one state produces a warning that fires on a configuration with no write surface at all.
+
 Adapters and UI layers **SHOULD NOT** introduce additional independent permission switches. The three layers above are sufficient — adding adapter-level switches creates shadow permission systems that can diverge from the actual ACL state.
+
+##### 6.6.3.1 Layers 2 and 3 are inactive by absence
+
+**Layer 2 — a missing `acl/` path attaches nothing.** When `acl.root` resolves to a path that does not exist, implementations **MUST** attach no ACL and **MUST NOT** synthesize an empty `default_effect: deny` ACL in its place. An empty default-deny ACL denies every inter-module call, so synthesizing one would break every project that has no `acl/` directory — which is every project that has not opted in. `default_effect: deny` is the default *within a ruleset that exists*; it is not a default *for the absence of one*. Pinned by `../../conformance/fixtures/acl_root_discovery.json`.
+
+**Layer 3 — a missing `ApprovalHandler` skips the gate.** With no handler configured, Step 5 is skipped and a module declaring `requires_approval` executes anyway, with a warning (§7.4, §7.9.4). Failing closed is opt-in through `ExecutionPolicy(strict = true)` (§7.9), which converts the skip into `ApprovalDeniedError`. Implementations **MUST NOT** change this default.
+
+##### 6.6.3.2 A configured layer is not necessarily an enforced one
+
+Layers 2 and 3 are pipeline **steps** — `acl_check` and `approval_gate` (§12.3). An `ExecutionStrategy` that does not contain the step does not run the layer, **even when the ACL object or the `ApprovalHandler` is attached to the executor**.
+
+This is not a hypothetical about exotic custom strategies. Three of the four presets this specification defines remove one or both:
+
+| Preset | `acl_check` | `approval_gate` |
+|---|---|---|
+| `standard` | present | present |
+| `internal` | **removed** | **removed** |
+| `testing` | **removed** | **removed** |
+| `minimal` | **removed** | **removed** |
+
+So `executor.set_acl(acl)` followed by selecting the `internal` strategy leaves an ACL attached and never consulted. Implementations **SHOULD** warn at the moment the mismatch is created — when an ACL or handler is attached to an executor whose current strategy has no corresponding built-in step — and **MUST** expose the condition for reading through §6.6.5, so an adapter or a health endpoint can observe it rather than infer it from the presence of the object.
+
+Consequently, for any consumer asking "what is gating this registry?", **`acl != null` is not the answer.** The two questions — *is an object configured* and *is the gate wired into the running pipeline* — are independent, and collapsing them into one boolean reports "protected" in precisely the configuration a conformant implementation is already warning about.
 
 #### 6.6.4 UI Adapter Guidelines
 
@@ -3803,6 +3834,88 @@ Explorer-style UIs that display module listings **SHOULD**:
 3. **Not duplicate authorization**: The UI should faithfully reflect what the backend exposes. If ACL blocks a call, the Executor returns `ACL_DENIED` — the UI handles this error gracefully, rather than pre-filtering modules with its own logic.
 
 This "backend-driven visibility" approach ensures the UI always matches the actual permission state without maintaining a parallel authorization model.
+
+#### 6.6.5 Governance State Query
+
+> **Added in v1.15.0.** Governance: [apcore#97](https://github.com/aiperceivable/apcore/issues/97).
+
+§6.6.3.2 establishes that *configured* and *enforced* are independent. This section defines the read-only accessor that lets a consumer observe both without guessing, and without each adapter re-deriving it from whatever the executor happens to expose.
+
+Implementations **MUST** expose a public, read-only accessor returning the governance state of an executor.
+
+**Canonical signature (pseudocode):**
+
+```
+executor.governance_state()
+→ GovernanceState    # a value object of booleans; MUST NOT expose the ACL or handler itself
+```
+
+Method naming follows language idiom (`governance_state()` in Python and Rust, `governanceState()` in TypeScript). Field names are **normative and identical across languages** in their language-idiomatic casing — an adapter written against one SDK must read the same facts from the other two.
+
+##### 6.6.5.1 Fields
+
+Seven observations, each a plain fact about the executor's current state, plus one derived flag.
+
+| Field | Meaning |
+|---|---|
+| `control_modules_registered` | At least one `system.control.*` module is in the registry. This is a fact about the **registry**, not about configuration: the two `sys_modules` flags of §6.6.3 are the usual cause, but internal or manual registration can produce one without them, and the accessor **MUST** report what is registered either way. |
+| `read_modules_registered` | At least one read-only `system.*` module (`system.health.*`, `system.usage.*`, `system.manifest.*`) is in the registry. |
+| `acl_configured` | An ACL object is attached to this executor. |
+| `builtin_acl_gate_wired` | The **running** strategy contains a step the executor recognises as the built-in ACL gate. See §6.6.5.2 — this is a type/capability test, never a name test. |
+| `approval_handler_configured` | An `ApprovalHandler` is attached. |
+| `builtin_approval_gate_wired` | The running strategy contains a step recognised as the built-in approval gate. |
+| `policy_strict` | An `ExecutionPolicy` with `strict = true` (§7.9) is attached, which makes the approval gate fail closed with no handler. |
+| `unprotected_control_surface` | Derived; defined below. |
+
+`unprotected_control_surface` **MUST** be computed exactly as:
+
+```
+unprotected_control_surface =
+      control_modules_registered
+   && !(acl_configured && builtin_acl_gate_wired)
+   && !(builtin_approval_gate_wired && (approval_handler_configured || policy_strict))
+```
+
+Read it as: *no built-in gate that this runtime knows how to recognise is standing in front of `system.control.*`.*
+
+Two things it **does not** claim, and implementations **MUST NOT** document it as claiming:
+
+1. **That protection exists when it is `false`.** A configured, wired ACL may permit every call. The flag reports the **absence of a gate**, never the presence of protection. Implementations **MUST NOT** name it `is_secure`, expose an inverse spelled as safety, or otherwise present it as a security verdict.
+2. **That nothing will stop the call when it is `true`.** A deployment may enforce through a custom pipeline step, custom middleware, or an upstream gateway. Those are invisible to this accessor by construction and are not negated by the flag.
+
+The read modules are reported separately for the reason given in §6.6.3: six read-only modules with no ACL is an information-disclosure question, and folding them into the control-surface flag makes it fire on a configuration with no write surface at all.
+
+##### 6.6.5.2 Gate detection MUST be by type, not by name
+
+`StrategyInfo` (design-execution-pipeline §2.6) carries `name`, `step_count`, `step_names` and `description` — names only. A custom step named `acl_check` that never consults an ACL satisfies a name test.
+
+The `*_gate_wired` fields **MUST** therefore be determined by the step's type or an explicit capability marker, matching the test the executor already performs when it wires a gate: attaching an ACL locates the step by *both* its name and its built-in type before injecting, and warns when no such step exists.
+
+The direction of failure is the reason this is a MUST. A name test on a look-alike step produces `builtin_acl_gate_wired = true`, hence `unprotected_control_surface = false` — the accessor reporting a gate that is not there. That is the one direction this flag must never fail in; a false `true` on the derived flag is merely conservative.
+
+This is also why the accessor belongs on `Executor`, where the step objects are reachable, and **MUST NOT** be derived by adapters from `describe_pipeline()` or `list_strategies()` output. Extending `StrategyInfo` with a capability marker is a conforming alternative implementation, but it is a public-API change and is not required here.
+
+##### 6.6.5.3 Constraints
+
+1. **Pure read.** `governance_state()` **MUST NOT** enforce, warn, throw, or mutate any executor state. What to do about an unprotected control surface belongs to the caller — a serve-time adapter may warn or refuse, a test may assert, a health endpoint may report. Putting the reaction inside the accessor makes it unavoidable and untestable.
+2. **Booleans only.** The returned value **MUST NOT** contain the ACL object, the `ApprovalHandler`, the `ExecutionPolicy`, or any rule content. An SDK that already exposes those (for example as public struct fields) **MAY** keep doing so; this accessor answers a different question and does not replace them.
+3. **No default changes.** Adding this accessor changes no behaviour. In particular the two invariants of §6.6.3.1 stand: a missing `acl/` path still attaches nothing, and a missing `ApprovalHandler` still warns and continues under a non-strict policy.
+4. **Live, not cached.** The returned value **MUST** reflect the executor's state at the moment of the call. Swapping the strategy, attaching an ACL, or registering a control module after a previous call **MUST** be visible in the next one.
+
+##### 6.6.5.4 Conformance
+
+Pinned by `../../conformance/fixtures/governance_state.json`. Every field, the derived flag included, **MUST** be identical across the three SDKs for every case, which **MUST** include at minimum:
+
+- no system modules registered;
+- read modules only;
+- control modules with an ACL attached but no `acl_check` step in the running strategy (the `internal` / `testing` / `minimal` presets of §6.6.3.2);
+- control modules with an ACL attached and the built-in step present;
+- control modules with an `ApprovalHandler` but no `approval_gate` step;
+- control modules with `ExecutionPolicy(strict = true)` and no handler;
+- control modules with none of the three;
+- **control modules with a custom step named `acl_check` that is not the built-in gate** — `builtin_acl_gate_wired` MUST be `false`.
+
+The last case is the one that decides whether an implementation satisfies §6.6.5.2 or merely appears to.
 
 ### 6.7 Canonical System Module Catalogue
 
@@ -8104,3 +8217,4 @@ Each language SDK **SHOULD** provide idiomatic module definition syntax. The fol
 | 1.12.0 | 2026-08-14 | **§11 type-mapping — the library-level coercion knob's behaviour is normative when the knob exists (#95).** Offering the switch stays a MAY; an SDK that offers one **MUST** coerce exactly `string→integer`, `string→number`, and `string→boolean` limited to `"true"` / `"false"` case-sensitive, and **MUST NOT** coerce anything else. Previously the paragraph constrained only *where* the knob could be used — not on the module path, not from configuration, default off — and said nothing about what it does, so apcore-rust and apcore-typescript shipped a twelve-spelling case-insensitive dialect (`"yes"`, `"on"`, `"y"`, `"t"`, `"1"`, `"0"` and negatives) while apcore-python coerced no string to a boolean at all, and both were conforming. `"0"` → `false` sat directly against R5, which makes the number `0` a MUST-reject for `boolean`. `conformance/fixtures/schema_validation.json` had pinned the coercing mode cross-SDK in exactly one case, on `integer` — the one axis where all three agreed — which is why it never fired. Governance: apcore#95. |
 | 1.13.0 | 2026-08-17 | **§12.8.5.1 — a failed `acl` check withholds module-level introspection (#96).** `validate()` looked the module up at Step 3 and ran `preflight()` and `preview()` at Check 7 on the strength of that lookup alone, so a caller the ACL had just denied still made module-authored code run and still received what it returned. For a command-wrapping module that is the resolved binary and its argv; for a writer it is the target of the side effect. All three SDKs did this — apcore-python `executor.py`, apcore-typescript `executor.ts`, apcore-rust `executor.rs` — each guarding only on "module lookup succeeded", and `apcore-mcp-rust` had already grown a string-matched disclosure filter over the top of it (`async_task_bridge.rs`), which is the evidence the gap was reachable in a shipped product rather than theoretical. `validate()` **MUST NOT** now invoke either hook, emit a `module_preflight` / `module_preview` check, or populate `predicted_changes` when `acl` failed; the failed `acl` check itself is still reported and no other check is suppressed, because the rule is about authorization and not about validity — a malformed input from a permitted caller still gets the module's own account of what would happen. §12.8.1 gains principle 5, §12.4 gains the test, and `conformance/fixtures/preflight_disclosure.json` pins it. **§4.15** additionally gains the two `format` rows its edge-case table never carried, so that `schema_hardening_formats.json`'s long-standing §4.15 citation resolves to something; [type-mapping §11.1](./type-mapping.md#111-format-keyword) remains the authority. Governance: maintainer approval per GOVERNANCE.md § Decision Making; **no tracking issue was opened.** The `apcore#96` cited when this row was written was a reserved number that issue #96 has since been assigned to for an unrelated change (`system.usage.*` schemas) — the citation is withdrawn rather than repointed, because inventing a link is worse than recording that there is none. |
 | 1.14.0 | 2026-08-25 | **§6.7.1 Usage Module Output Contract (new) — the `system.usage.*` field contract is stated, not deferred (#96).** §6.7 required "equivalent input/output schemas" and pointed at each SDK's source as the schema source of truth. That deferral is why three implementations diverged in five ways without any becoming non-conformant. Now normative: `period` **MUST** match `^[1-9][0-9]*[hd]$`, declared as a `pattern` in `input_schema` so a malformed value fails uniformly with `SCHEMA_VALIDATION_ERROR` rather than through an implementation-private parser (apcore-python accepted `"0h"`, `"-5d"` and `"+3h"`; apcore-typescript rejected all three; apcore-rust parsed no period at all), and **every** statistic in both outputs MUST be computed over `[now − period, now]` — apcore-rust echoed `period` back while `get_all_summaries()` / `get_module_summary()` covered the full retained history. `hourly_distribution[].hour` **MUST** be the collector's own key `YYYY-MM-DDTHH`; apcore-rust reformatted it to `%Y-%m-%dT%H:00:00Z` behind a constant whose comment claimed the two matched, and **this specification's own example in `features/system-modules.md` showed the reformatted spelling**, so the divergent implementation was the one following the docs. Exactly 24 entries, ascending, zero-filled. `p99_latency_ms` **MUST** be nearest-rank `sorted[min(ceil(0.99·N), N) − 1]` with no interpolation — apcore-python computed that index and then returned `sorted[rank]`, one element higher, contradicting its own comment; for 100 samples it answered 100 where the other two answered 99. Unattributed calls are the literal `caller_id` `"unknown"`. `output_schema()` **MUST** declare `properties` and `required`; apcore-rust returned a bare `{"type": "object"}` for both modules. `schemas/sys-usage-summary.schema.json` and `schemas/sys-usage-module.schema.json` are added as the canonical shape — both with `additionalProperties: false`, and the `hour` pattern deliberately rejects the current apcore-rust output. **This is an SDK behaviour change in apcore-rust (all six points) and apcore-python (p99, period grammar).** Governance: apcore#96. |
+| 1.15.0 | 2026-08-25 | **§6.6.5 Governance State Query (new), §6.6.3 rewritten — *configured* and *enforced* are separate facts (#97).** Nothing exposed what is actually gating a registry: apcore-rust leaked `acl` / `approval_handler` / `policy` as public struct fields with no defined semantics, apcore-typescript and apcore-python exposed nothing, and none of the three answered the useful question — because `acl != null` means an ACL is attached, not that ACL evaluation runs. The gates are pipeline **steps**, and three of the four strategies this specification itself defines (`internal`, `testing`, `minimal`) remove `acl_check`, so an adapter reading `acl.is_some()` reports "protected" in precisely the configuration `set_acl()` already warns about. §6.6.5 requires a read-only `governance_state()` returning seven observations plus one derived flag, with normative field names across the three SDKs; `builtin_acl_gate_wired` / `builtin_approval_gate_wired` **MUST** be determined by step type or capability, **never** by step name, because `StrategyInfo` carries names only and a custom step named `acl_check` would otherwise report a gate that is not there — the one direction the flag must never fail in. `unprotected_control_surface` is defined exactly, and is explicitly **not** a security verdict: it reports the absence of a recognised gate, never the presence of protection, and an `is_secure`-shaped field is forbidden. §6.6.3 additionally states what was previously only implied: Layer 1 registers **0 / 6 / 9** modules across two config flags, not one; and Layers 2 and 3 are **inactive by absence** — a missing `acl/` path attaches nothing and **MUST NOT** synthesize an empty default-deny ACL, a missing `ApprovalHandler` warns and continues unless `ExecutionPolicy(strict)` is set. **No default changes and no behaviour changes**; the accessor is purely additive, and apcore-rust's existing public fields are untouched. Governance: apcore#97. |

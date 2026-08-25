@@ -637,7 +637,21 @@ sys_modules:
 - `EventEmitter` — Event dispatch for control modules.
 
 ### Permissions
-System modules use the reserved `system.*` namespace. Registration bypasses reserved word checks via `registry.register_internal()`. See [PROTOCOL_SPEC §6.6](../spec/protocol-spec.md) for the defense-in-depth permission model.
+System modules use the reserved `system.*` namespace. Registration bypasses reserved word checks via `registry.register_internal()`. See [PROTOCOL_SPEC §6.6](../spec/protocol-spec.md#66-system-module-permissions) for the defense-in-depth permission model.
+
+**Activation has two stages, not one** ([§6.6.3](../spec/protocol-spec.md#663-defense-in-depth-model)):
+
+| Config | Modules registered |
+|---|---|
+| `sys_modules.enabled: false` *(default)* | **0** |
+| `sys_modules.enabled: true`, `sys_modules.events.enabled: false` *(default)* | **6** — `system.health.*`, `system.usage.*`, `system.manifest.*` |
+| both `true` | **9** — the above plus the three `system.control.*` write modules |
+
+The control modules live inside the events branch because their audit events need the `EventEmitter`. A registry holding the six read modules has no write surface at all, which is why anything reasoning about exposure should distinguish the two states rather than treat "system modules are on" as one.
+
+**Layers 2 and 3 are inactive by absence** ([§6.6.3.1](../spec/protocol-spec.md#6631-layers-2-and-3-are-inactive-by-absence)): a missing `acl/` path attaches no ACL (and MUST NOT synthesize an empty default-deny one), and a missing `ApprovalHandler` skips the gate with a warning unless `ExecutionPolicy(strict=true)` is set. Neither absence fails closed.
+
+To observe what is actually gating a registry — rather than infer it from `acl != null` — read [`executor.governance_state()`](./core-executor.md#governance-state-api) (§6.6.5).
 
 ??? info "Python SDK reference"
     The following table is **not a protocol requirement** — it documents the Python SDK's source layout for implementers/users of `apcore-python`.
