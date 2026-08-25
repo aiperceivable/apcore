@@ -62,7 +62,7 @@ what makes them useful as the target the SDK work converges on.
 
 ## Open, tracked elsewhere
 
-The `$id` authority. These two files use `https://apcore.dev/`, matching all fifteen
-existing schemas — the issue's own constraint is that the set must never be split, and
-16/16 on one authority satisfies it. If the project migrates to
+The `$id` authority. These two files use `https://apcore.dev/`, matching the fifteen
+that already existed — the issue's own constraint is that the set must never be split,
+and 17/17 on one authority satisfies it. If the project migrates to
 `apcore.aiperceivable.com` or the GitHub Pages URL, all seventeen move together.

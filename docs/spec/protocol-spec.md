@@ -3921,7 +3921,7 @@ The last case is the one that decides whether an implementation satisfies §6.6.
 
 ### 6.7 Canonical System Module Catalogue
 
-This section documents the canonical `system.*` module catalogue. Conformant SDKs at the indicated level **MUST** ship modules with these exact Canonical IDs, equivalent semantics, and equivalent input/output schemas (verified by `../../conformance/fixtures/system_modules_hardening.json`). The full JSON Schema definitions live in each SDK's reference source — see `apcore-python/src/apcore/sys_modules/`, `apcore-typescript/src/sys_modules/`, `apcore-rust/src/sys_modules/`. This catalogue is the contract surface; the SDK source is the schema source of truth.
+This section documents the canonical `system.*` module catalogue. Conformant SDKs at the indicated level **MUST** ship modules with these exact Canonical IDs, equivalent semantics, and equivalent input/output schemas (verified by `../../conformance/fixtures/system_modules_hardening.json`). This catalogue is the contract surface. Where this repository ships a canonical schema for a module, **that schema is the source of truth** and the SDK source MUST match it — `system.health.*`, `system.manifest.*`, `system.control.*` and, as of §6.7.1, `system.usage.*` are all covered by files in `../../schemas/`. For anything not yet covered, the SDK reference sources remain the description of record (`apcore-python/src/apcore/sys_modules/`, `apcore-typescript/src/sys_modules/`, `apcore-rust/src/sys_modules/`); §6.7.1 exists because that arrangement let three implementations diverge unnoticed.
 
 | Canonical ID | Layer | Read/Write | Required at | Description |
 |---|---|---|---|---|
@@ -3950,7 +3950,7 @@ This section documents the canonical `system.*` module catalogue. Conformant SDK
 
 > **Added in v1.14.0.** Governance: [apcore#96](https://github.com/aiperceivable/apcore/issues/96).
 
-§6.7 requires `system.usage.summary` and `system.usage.module` to ship with "equivalent input/output schemas" and defers the field contract to each SDK's source. That deferral is why three implementations of it diverged in four ways without any of them becoming non-conformant: the catalogue named the modules, and nothing said what their fields mean. This section states the parts an SDK cannot infer, and `../../schemas/sys-usage-summary.schema.json` and `../../schemas/sys-usage-module.schema.json` are the canonical shape.
+§6.7 requires `system.usage.summary` and `system.usage.module` to ship with "equivalent input/output schemas" and defers the field contract to each SDK's source. That deferral is why three implementations of it diverged in five ways without any of them becoming non-conformant: the catalogue named the modules, and nothing said what their fields mean. This section states the parts an SDK cannot infer, and `../../schemas/sys-usage-summary.schema.json` and `../../schemas/sys-usage-module.schema.json` are the canonical shape.
 
 Two of the requirements below are **value** semantics that no JSON Schema can assert — a wrong `p99_latency_ms` and a full-history `call_count` are both a `number` in the right place. Those are pinned by fixture (§6.7.1.6), not by schema.
 

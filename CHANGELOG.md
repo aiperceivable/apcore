@@ -19,6 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   A pre-existing instance of the same defect is fixed alongside: §"Display Resolution" cited `conformance/fixtures/display_resolve.json` as *"already created"*. It was never created, and no other fixture covers display resolution.
 
+- **Three count contradictions in the #96 material.** §6.7.1 said the implementations "diverged in four ways" where §14 and this file say five (five is right — the issue's four plus the `period` grammar). `planning/usage-contract-parity/overview.md` said `16/16` for a set that is fifteen plus two. And §6.7's preamble still said "the SDK source is the schema source of truth", contradicting §6.7.1 declaring the two new files canonical; it now states that a shipped canonical schema wins and the SDK source is the description of record only where none exists.
+
 ### Added
 
 - **PROTOCOL_SPEC §6.7.1 "Usage Module Output Contract" and the two `system.usage.*` schemas (spec v1.14.0, #96).** §6.7 named the two usage modules, required "equivalent input/output schemas", and deferred the field contract to each SDK's source. Three implementations diverged in five ways without any of them becoming non-conformant, because nothing said what the fields mean. Now normative:
