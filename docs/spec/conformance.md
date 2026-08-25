@@ -646,6 +646,7 @@ The repository ships **43 cross-language fixture files** under `conformance/fixt
 | [`pipeline_failfast_config`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/pipeline_failfast_config.json) | 7 | Pipeline configuration fail-fast (Issue #33) |
 | [`pipeline_hardening`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/pipeline_hardening.json) | 5 | Pipeline execution hardening: fail-fast, replace-step, run_until |
 | [`pipeline_step_middleware`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/pipeline_step_middleware.json) | 9 | Pipeline StepMiddleware lifecycle (Issue #33) |
+| [`preflight_disclosure`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/preflight_disclosure.json) | 4 | `validate()` withholds `preflight()` / `preview()` from an ACL-denied caller (spec §12.8.5.1) |
 | [`redaction_config`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/redaction_config.json) | 7 | Redaction config via `obs.redaction.regex_patterns` / `sensitive_keys` |
 | [`registry_load_ordering`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/registry_load_ordering.json) | 4 | Discovery load order and dependency topological sort (Algorithm A07) |
 | [`reload_path_filter`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/reload_path_filter.json) | 4 | Granular reload via `path_filter` glob (`system.control.reload_module`) |
@@ -656,7 +657,7 @@ The repository ships **43 cross-language fixture files** under `conformance/fixt
 | [`schema_hardening_formats`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/schema_hardening_formats.json) | 9 | Semantic format validation (date-time, date, email, uri, uuid, etc.) |
 | [`schema_hardening_recursive`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/schema_hardening_recursive.json) | 6 | Recursive schema support (`$ref` self-reference, depth 1–5) |
 | [`schema_hardening_union`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/schema_hardening_union.json) | 8 | Union type evaluation (anyOf / oneOf / allOf) |
-| [`schema_keyword_parity`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/schema_keyword_parity.json) | 119 | JSON Schema 2020-12 keyword conformance at the validation boundary (TYPE_MAPPING §17) |
+| [`schema_keyword_parity`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/schema_keyword_parity.json) | 122 | JSON Schema 2020-12 keyword conformance at the validation boundary (TYPE_MAPPING §17) |
 | [`schema_strict_conversion`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/schema_strict_conversion.json) | 16 | `to_strict_schema()` output parity (Algorithm A23 / spec §4.16) |
 | [`schema_validation`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/schema_validation.json) | 22 | Schema validation edge cases (spec §4.15) |
 | [`sensitive_keys_default`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/sensitive_keys_default.json) | 4 | Canonical default `obs.redaction.sensitive_keys` list (D-54) |
@@ -668,7 +669,7 @@ The repository ships **43 cross-language fixture files** under `conformance/fixt
 | [`trace_context`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/trace_context.json) | 8 | W3C TraceContext alignment (Issue #35) |
 | [`usage_exporter`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/usage_exporter.json) | 3 | `UsageExporter` push interface (#45 §3, D-55) |
 | [`version_negotiation`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/version_negotiation.json) | 10 | Version negotiation (Algorithm A14) |
-| **Total** | **664** | **60 fixtures** |
+| **Total** | **671** | **61 fixtures** |
 
 ### 8.2 Loading Fixtures from a Test Runner
 

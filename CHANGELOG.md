@@ -9,7 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-(nothing yet)
+### Fixed
+
+- **`docs/spec/conformance.md` §8.1 fixture inventory was three ways out of date, and CI was red on it.** `preflight_disclosure` (4 cases) was absent entirely, `schema_keyword_parity` was recorded as 119 against an actual 122, and the Total read **664 / 60 fixtures** against an actual **671 / 61**. The `conformance-integrity` workflow verifies all three, so `main` had been failing since 019eaa4 and every PR touching `docs/`, `schemas/` or `conformance/` inherited the failure.
 
 ---
 
@@ -27,7 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **`conformance/fixtures/preflight_disclosure.json` (4 cases) and §12.8.5.1 — a failed `acl` check withholds module-level introspection (spec v1.13.0, #96).** `Executor.validate()` looked the module up at Step 3 and ran `preflight()` and `preview()` at Check 7 on the strength of that lookup alone, so a caller the ACL had just denied still made module-authored code run and still received what it returned. For a command-wrapping module that is the resolved binary and its argv; for a writer it is the target of the side effect. All three SDKs did it, each guarding only on "module lookup succeeded" — and `apcore-mcp-rust` had already grown a string-matched disclosure filter over the top (`async_task_bridge.rs`), which is the evidence the gap was reachable in a shipped product rather than theoretical.
+- **`conformance/fixtures/preflight_disclosure.json` (4 cases) and §12.8.5.1 — a failed `acl` check withholds module-level introspection (spec v1.13.0; no tracking issue — the `#96` cited here originally was a reserved number now held by an unrelated issue).** `Executor.validate()` looked the module up at Step 3 and ran `preflight()` and `preview()` at Check 7 on the strength of that lookup alone, so a caller the ACL had just denied still made module-authored code run and still received what it returned. For a command-wrapping module that is the resolved binary and its argv; for a writer it is the target of the side effect. All three SDKs did it, each guarding only on "module lookup succeeded" — and `apcore-mcp-rust` had already grown a string-matched disclosure filter over the top (`async_task_bridge.rs`), which is the evidence the gap was reachable in a shipped product rather than theoretical.
 
   `validate()` now **MUST NOT** invoke either hook, emit a `module_preflight` / `module_preview` check, or populate `predicted_changes` when `acl` failed. The failed `acl` check itself is still reported and no other check is suppressed: the rule is about **authorization**, not validity, so a malformed input from a permitted caller still gets the module's own account of what would happen — which is exactly what the caller needs in order to fix the call. Fixed in apcore-python, apcore-typescript and apcore-rust.
 
