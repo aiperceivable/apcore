@@ -3298,7 +3298,7 @@ Fields with a resolve chain fallback to scanner data are **always non-null** aft
 - Fall back to `descriptor.module_id` / `descriptor.description` if `metadata["display"]` is absent (backward compatibility with modules registered without DisplayResolver)
 - **Never call DisplayResolver at surface time** — display resolution is a one-time operation at registration
 
-**Conformance tests** (`../../conformance/fixtures/display_resolve.json`, already created):
+**Conformance tests** — **PENDING**, no such fixture exists. `display_resolve.json` is not in `../../conformance/fixtures/`, and no other fixture covers display resolution. The table below is the required coverage, not a description of coverage that exists:
 
 | Test ID | Scenario |
 |---------|----------|
@@ -3904,7 +3904,9 @@ This is also why the accessor belongs on `Executor`, where the step objects are 
 
 ##### 6.6.5.4 Conformance
 
-Pinned by `../../conformance/fixtures/governance_state.json`. Every field, the derived flag included, **MUST** be identical across the three SDKs for every case, which **MUST** include at minimum:
+> **Conformance coverage is PENDING.** No SDK implements this accessor yet and no fixture drives it. The cases below are the required coverage, drafted in `../../planning/governance-state/fixtures/governance_state.json` and held there deliberately: a fixture in `conformance/fixtures/` that no SDK drives fails the repository's own `check_driver_coverage --strict` gate. This section will cite the landed fixture once the three implementations and their drivers are in. Until then, treat §6.6.5 as specified-but-unverified.
+
+Every field, the derived flag included, **MUST** be identical across the three SDKs for every case, and the coverage **MUST** include at minimum:
 
 - no system modules registered;
 - read modules only;
@@ -4028,7 +4030,7 @@ The thresholds are normative so that the same traffic does not read as `rising` 
 
 1. Both modules' `output_schema()` **MUST** declare the full field contract — `type`, `properties` and `required` — matching the canonical schemas. A bare `{"type": "object"}` is **MUST**-reject: it satisfies §6.7's "equivalent output schemas" only in the sense that any two such declarations are equivalent to each other, which is precisely the divergence this section closes.
 2. Output from every conformant SDK **MUST** validate against `sys-usage-summary.schema.json` / `sys-usage-module.schema.json`. Both declare `additionalProperties: false`: a field one SDK emits and the others do not is a parity gap, and failing loudly is the intended behaviour.
-3. **Schemas cannot assert §6.7.1.1 or §6.7.1.3.** A full-history `call_count` and an off-by-one `p99_latency_ms` are both well-typed values in the right field. Those two, and only those two, are pinned by `../../conformance/fixtures/usage_contract.json` with fixed inputs and expected outputs.
+3. **Schemas cannot assert §6.7.1.1 or §6.7.1.3.** A full-history `call_count` and an off-by-one `p99_latency_ms` are both well-typed values in the right field. Those two, and only those two, need a fixture with fixed inputs and expected outputs. **That coverage is PENDING**: it is drafted in `../../planning/usage-contract-parity/fixtures/usage_contract.json` and held there until the three SDKs implement §6.7.1 and drive it, because a fixture no SDK drives fails `check_driver_coverage --strict`. Until it lands, §6.7.1.1 and §6.7.1.3 are specified-but-unverified.
 
 ---
 

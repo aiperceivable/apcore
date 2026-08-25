@@ -250,6 +250,9 @@ Built-in strategies and authoring custom ones are described in [Pipeline Hardeni
 
 `governance_state()` is the read-only accessor that separates the two questions. It is a **pure read**: it never enforces, warns, throws, or mutates.
 
+!!! warning "Not implemented yet — specified surface"
+    No SDK ships `governance_state()` as of apcore-python 0.27, apcore-typescript 0.27 and apcore-rust 0.27. The examples below describe the surface [PROTOCOL_SPEC §6.6.5](../spec/protocol-spec.md#665-governance-state-query) requires, not code that runs today. Implementation and conformance coverage are tracked in `planning/governance-state/`.
+
 | Surface | Type | Description |
 |---------|------|-------------|
 | `executor.governance_state()` | instance method | Returns the current `GovernanceState` — eight booleans, computed live |
