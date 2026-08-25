@@ -1,10 +1,10 @@
 {
-  "description": "Occurrences of a `sys.` module-ID namespace that are deliberate. There is exactly one legitimate reason to write it: explaining that it is wrong. Every entry needs a reason; check_module_namespace.py reports an entry as STALE once the occurrence is gone, so a deleted example surfaces its own cleanup rather than leaving a permanent exemption behind. Host-language spellings (`sys.path`, `sys.exit`) and the `sys.modules.*` Config Bus key path are excluded by the checker itself and do NOT belong here.",
+  "description": "Occurrences of a `sys.` module-ID namespace that are deliberate. There is exactly one legitimate reason to write it: explaining that it is wrong. `match` is the FULL dotted ID as it appears, not a prefix \u2014 an entry for `sys.control.reload_module` must not exempt `sys.control.shutdown`. Every entry needs a reason; check_module_namespace.py reports an entry as STALE once the occurrence is gone, so a deleted example surfaces its own cleanup rather than leaving a permanent exemption behind. Host-language spellings (`sys.path`, `sys.exit`) and the `sys.modules.*` Config Bus key path are excluded by the checker itself and do NOT belong here.",
   "allow": [
     {
       "file": "docs/spec/security-considerations.md",
-      "match": "sys.control",
-      "reason": "The 2.1 mitigation note names `sys.control.reload_module` in order to say it is NOT a privileged ID and that an ACL rule written against it protects nothing. Naming the wrong spelling is the point of the sentence — an operator who copied it from apcore-mcp#14 needs to recognise it.",
+      "match": "sys.control.reload_module",
+      "reason": "The 2.1 mitigation note names `sys.control.reload_module` in order to say it is NOT a privileged ID and that an ACL rule written against it protects nothing. Naming the wrong spelling is the point of the sentence \u2014 an operator who copied it from apcore-mcp#14 needs to recognise it.",
       "removable_when": "the note is dropped, which should not happen while the misspelling is still in circulation"
     },
     {
@@ -12,6 +12,12 @@
       "match": "sys.*",
       "reason": "Same sentence, referring to the namespace form of the same misspelling.",
       "removable_when": "as above"
+    },
+    {
+      "file": "docs/spec/security-considerations.md",
+      "match": "sys.control.*",
+      "reason": "The \u00a73.2 audit checklist tells operators that a rule targeting `sys.control.*` matches no module and enforces nothing. The wrong pattern has to be spelled out for an operator to recognise it in their own ruleset \u2014 this is the apcore-mcp#14 failure mode named so it can be found.",
+      "removable_when": "the parenthetical is dropped, which should not happen while the misspelling is still in circulation"
     }
   ]
 }

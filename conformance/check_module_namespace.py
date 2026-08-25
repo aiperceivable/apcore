@@ -44,13 +44,23 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 ALLOWLIST = REPO / "conformance" / "module_namespace_allowlist.json"
 
-# `sys.` followed by something ID-shaped. The apcore ID grammar is
-# ^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$ (2.1), so a capital or a digit right
-# after the dot is not a module ID and never reaches here.
-PATTERN = re.compile(r"\bsys\.(?:\*|[a-z][a-z0-9_]*)")
+# `sys.` followed by something ID-shaped, matched to the END of the dotted ID.
+# The apcore ID grammar is ^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$ (2.1), so a
+# capital or a digit right after a dot is not a module ID and never reaches here.
+#
+# Matching the WHOLE id, not just the first segment after `sys.`, is load-bearing:
+# an allowlist entry is keyed on the matched text, so a one-segment match made
+# `sys.control` the key for every `sys.control.*` there is — and the exemption
+# written for `sys.control.reload_module` silently covered a newly-introduced
+# `sys.control.shutdown`. An allowlist that widens itself is worse than none,
+# because it reads as a reviewed exception.
+_SEG = r"(?:\*|[a-z][a-z0-9_]*)"
+PATTERN = re.compile(rf"\bsys\.{_SEG}(?:\.{_SEG})*")
 
-# Not module IDs, in any file, ever. Listing them here rather than in the
-# allowlist keeps the allowlist to things that are actually exceptions.
+# Not module IDs, in any file, ever. Compared against the first TWO segments of
+# the match, so `sys.modules.reload.enabled` is covered by `sys.modules`.
+# Listing them here rather than in the allowlist keeps the allowlist to things
+# that are actually exceptions.
 NOT_A_MODULE_ID = {
     # Python standard library — `sys.path`, `sys.exit`, `sys.stderr`, ...
     "sys.path", "sys.argv", "sys.exit", "sys.stderr", "sys.stdout",
@@ -103,7 +113,7 @@ def main() -> int:
         for lineno, line in enumerate(lines, 1):
             for match in PATTERN.finditer(line):
                 token = match.group(0)
-                if token in NOT_A_MODULE_ID:
+                if ".".join(token.split(".")[:2]) in NOT_A_MODULE_ID:
                     continue
                 covered = False
                 for idx, entry in enumerate(allow):

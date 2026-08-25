@@ -11,14 +11,20 @@ on:
       - "schemas/**"
       - "conformance/**"
       - "docs/**"
+      - "examples/**"
       - "README.md"
+      - "CONTRIBUTING.md"
+      - "llms.txt"
       - ".github/workflows/conformance-integrity.yml"
   pull_request:
     paths:
       - "schemas/**"
       - "conformance/**"
       - "docs/**"
+      - "examples/**"
       - "README.md"
+      - "CONTRIBUTING.md"
+      - "llms.txt"
       - ".github/workflows/conformance-integrity.yml"
 
 jobs:

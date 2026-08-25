@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **The `sys.` guard's allowlist widened itself (#98).** The pattern matched one segment after `sys.`, so an entry keyed on `sys.control` exempted every `sys.control.*` there is — a newly-introduced `sys.control.shutdown` was silently allowed, which is the one thing the guard exists to catch. The pattern now matches the full dotted ID, allowlist keys are full IDs, and host-language / config-path exclusions compare the first two segments. The `conformance-integrity` path filter also now covers `examples/**`, `CONTRIBUTING.md` and `llms.txt`, which the guard scans and the filter did not.
+
 ### Added
 
 - **PROTOCOL_SPEC §6.7.1 "Usage Module Output Contract" and the two `system.usage.*` schemas (spec v1.14.0, #96).** §6.7 named the two usage modules, required "equivalent input/output schemas", and deferred the field contract to each SDK's source. Three implementations diverged in five ways without any of them becoming non-conformant, because nothing said what the fields mean. Now normative:
