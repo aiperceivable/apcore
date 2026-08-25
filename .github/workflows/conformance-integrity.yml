@@ -152,6 +152,15 @@ jobs:
       - name: config_key_governance.json is in sync with schemas/
         run: python3 conformance/generate_config_key_governance.py
 
+      - name: No `sys.` module-ID namespace
+        # The control plane is `system.*`; `sys` is not reserved. In prose that
+        # misnames a module; in an ACL rule it is a pattern matching nothing,
+        # skipped in silence — a deny rule protecting the management surface
+        # that protects nothing. The same misspelling independently reached six
+        # places in this repo and three in the MCP adapters (apcore#98,
+        # apcore-mcp#14), which is the rate that justifies a guard over edits.
+        run: python3 conformance/check_module_namespace.py
+
   doc-examples:
     # Documentation examples are the onboarding API. This job resolves every
     # symbol they import against the real SDKs — the check that would have

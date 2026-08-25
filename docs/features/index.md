@@ -37,7 +37,7 @@ This directory contains detailed specifications for each subsystem of the apcore
 - [Observability](./observability.md) — Tracing, metrics, and logs.
 - [Error & AI Guidance](./error-system.md) — Self-healing error protocols.
 - [Event System](./event-system.md) — Framework-wide async event bus.
-- [System Modules (sys.*)](./system-modules.md) — Built-in control plane modules.
+- [System Modules (system.*)](./system-modules.md) — Built-in control plane modules.
 
 ### Framework Internals
 *Deep-level infrastructure, primarily for SDK implementers.*

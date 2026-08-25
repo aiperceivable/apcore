@@ -48,11 +48,15 @@ apcore is a **module standard**, not a sandbox. The host process trusts every lo
 
 ### 2.1 Module-ID Spoofing (T8)
 
-**Threat.** A module file placed at a crafted path could attempt to claim a Canonical ID belonging to a privileged module (e.g., `sys.control.reload_module`).
+**Threat.** A module file placed at a crafted path could attempt to claim a Canonical ID belonging to a privileged module (e.g., `system.control.reload_module`).
 
 **Mitigation.**
 
-1. **Reserved prefixes are enforced.** Algorithm A01 ([PROTOCOL_SPEC §2.1](./protocol-spec.md#2-naming-specification)) rejects user-defined modules whose IDs begin with `sys.`, `system.`, or `apcore.`. This is verified by fixture `normalize_id`.
+1. **Reserved first segments are enforced.** Reserved-word rejection is **not** part of Algorithm A01 (`directory_to_canonical_id`, [§2.1](./protocol-spec.md#21-directory-as-id-core-rule)) — A01 validates segment pattern and length only. It is [§2.6 `detect_id_conflicts`](./protocol-spec.md#26-id-conflict-detection) step 2, which rejects an ID any of whose dot-separated segments is a reserved word, and the equivalent check in each SDK's public `register()`. The framework reserved words are the eight in [§2.5](./protocol-spec.md#25-reserved-words): `system`, `internal`, `core`, `apcore`, `plugin`, `schema`, `acl`, `ephemeral`. `system.*` is therefore registrable only through the privileged `register_internal()` path ([§6.6.1](./protocol-spec.md#661-registration-restriction)).
+
+   > **`sys` is not reserved.** `sys.control.reload_module` is an ordinary module ID that any user module may claim, and it names no privileged module — the control-plane namespace is `system.*`. An ACL rule or audit check written against `sys.*` matches nothing and silently protects nothing.
+
+   **Coverage gap.** No conformance fixture exercises reserved-word rejection today; `normalize_id` covers Algorithm A02 (ID normalization) and carries no reserved-word case. Treat this mitigation as implementation-verified, not fixture-verified.
 2. **Conflict detection.** If two modules resolve to the same Canonical ID, the second is rejected with `MODULE_ID_CONFLICT` rather than silently overriding (fixture: `multi_module_discovery`).
 3. **Path traversal is impossible.** Canonical IDs derive from the path *relative to* the configured `extension_dir`. Symlinks pointing outside the dir are followed at filesystem level — operators **MUST** ensure the extension directory does not contain attacker-controlled symlinks.
 
@@ -151,7 +155,7 @@ obs:
 For each production deployment:
 
 - [ ] `default_effect: deny` is set.
-- [ ] No ACL rule grants `allow` from `*` to a `sys.control.*` target without an `identity_types: [system]` or equivalent condition.
+- [ ] No ACL rule grants `allow` from `*` to a `system.control.*` target without an `identity_types: [system]` or equivalent condition. (Check the spelling: a rule targeting `sys.control.*` matches no module and enforces nothing.)
 - [ ] An `ApprovalHandler` is configured and its tokens are bound + single-use.
 - [ ] `obs.redaction.sensitive_keys` extends the canonical default with all app-specific PII keys.
 - [ ] No module reads `context.data` for authorization decisions (grep your codebase).

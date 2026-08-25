@@ -248,7 +248,7 @@ Normative behavioral contract. All SDK implementations MUST satisfy these guaran
 
 ### Inputs
 
-- `module_id`: string, required. Validated at method entry via `validate_module_id(allow_reserved=true)` -- reserved prefixes permitted so that `sys.*` invocation is legal. Empty / over-length / malformed IDs MUST be rejected before the pipeline context is constructed.
+- `module_id`: string, required. Validated at method entry via `validate_module_id(allow_reserved=true)`. `system` is a reserved first segment ([PROTOCOL_SPEC §2.5](../spec/protocol-spec.md#25-reserved-words)), so the bypass is what makes `system.*` invocation legal; every other validation (empty, pattern, length) still applies. Empty / over-length / malformed IDs MUST be rejected before the pipeline context is constructed.
 - `inputs`: object, required. Payload conforming to the module's input schema.
 - `options`: object, optional. Call-site overrides (identity, trace_parent, per-call timeout).
 

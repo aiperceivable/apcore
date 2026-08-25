@@ -134,7 +134,7 @@ for (const tc of cases.test_cases) {
 
 ### Guards
 
-Four scripts protect the seam between the fixtures and the SDKs. Each fails on a NEW violation while accepting a recorded backlog, so they can be switched on before the backlog is closed:
+Five scripts protect the seam between the fixtures, the docs and the SDKs. Each fails on a NEW violation while accepting a recorded backlog, so they can be switched on before the backlog is closed:
 
 | Script | What it catches |
 |---|---|
@@ -142,6 +142,7 @@ Four scripts protect the seam between the fixtures and the SDKs. Each fails on a
 | `check_expected_keys_read.py` | A top-level `expected` key that **no driver reads**. Such a key reads as covered in the fixture, in review and in every inventory, while nothing is asserted on any SDK. This is the guard that would have caught `wrapped_in` — declared by `pipeline_step_middleware.json`, read by nobody, which let the `MiddlewareChainError` wrapping be removed from two SDKs with every test still green. |
 | `check_doc_examples.py` | A documentation example importing a symbol that does not exist in the SDK. |
 | `generate_config_key_governance.py` | An SDK default or constraint outside the key surface the canonical schemas declare. |
+| `check_module_namespace.py` | `sys.` written as a module-ID namespace. The control plane is `system.*` and `sys` is not reserved, so `sys.control.*` names nothing — in prose that misnames a module, in an ACL rule it is a pattern that matches nothing and is skipped in silence. Excludes host-language `sys.path` / `sys.exit` and the `sys.modules.*` Config Bus key path by construction; anything else needs an allowlist entry with a reason. |
 
 Both fixture guards keep a baseline plus an allowlist. Allowlist entries require a reason and are reported **STALE** once the exemption is no longer needed, so a landed fix surfaces its own cleanup rather than leaving a permanent exemption behind.
 

@@ -318,7 +318,7 @@ The framework defines error subclasses grouped by domain. Each subclass sets an 
 |---|---|---|---|
 | `ModuleIdConflictError` | `MODULE_ID_CONFLICT` | — | Two modules resolved to the same Canonical ID during discovery |
 | `ModuleReloadConflictError` | `MODULE_RELOAD_CONFLICT` | Yes | Hot-reload skipped because the module is in flight; safe to retry |
-| `SystemModuleRegistrationFailedError` | `SYS_MODULE_REGISTRATION_FAILED` | — | A `sys.*` module failed to register at framework startup |
+| `SystemModuleRegistrationFailedError` | `SYS_MODULE_REGISTRATION_FAILED` | — | A `system.*` module failed to register at framework startup |
 
 > **Cross-language ergonomic note (D1-002 — intentional, language-idiomatic).**
 > Re-registering an already-registered module ID raises the error **code**

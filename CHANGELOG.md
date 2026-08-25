@@ -9,7 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`conformance/check_module_namespace.py` — a guard on the `sys.` module-ID namespace (#98).** The control plane is `system.*`; `sys` is not reserved. Host-language spellings (`sys.path`, `sys.exit`) and the `sys.modules.*` Config Bus key path are excluded by construction; anything else needs an allowlist entry with a reason, reported STALE once it stops matching. Wired into the `conformance-integrity` workflow.
+
+### Changed
+
 ### Fixed
+
+- **The system modules are `system.*`, not `sys.*` — six occurrences, and one of them described the reserved-word mechanism backwards (#98).** `sys` is not a reserved word: PROTOCOL_SPEC §2.5 reserves eight (`system`, `internal`, `core`, `apcore`, `plugin`, `schema`, `acl`, `ephemeral`) and the three SDKs reserve the first seven, so `sys.control.reload_module` is an ordinary ID anyone can register, naming a module that does not exist.
+
+  - `docs/features/index.md` and `docs/features/error-system.md` — wrong namespace in a navigation title and an error-table description. The error **code** `SYS_MODULE_REGISTRATION_FAILED` is deliberately unchanged; renaming a stable error code is a breaking change.
+  - `docs/features/core-executor.md` — stated that reserved prefixes are permitted "so that `sys.*` invocation is legal", which is backwards in both halves. Rewritten to say what the bypass actually does: `system` is the reserved first segment, so the bypass is what makes `system.*` invocation legal, and every other validation still applies.
+  - `docs/spec/security-considerations.md` — **three further occurrences the issue did not count**, and the worst of them. The §2.1 mitigation claimed Algorithm A01 rejects IDs beginning with `sys.`, `system.` or `apcore.`, "verified by fixture `normalize_id`". A01 (`directory_to_canonical_id`) performs no reserved-word check at all — that is §2.6 `detect_id_conflicts` step 2 — `sys` is not reserved, and `normalize_id` covers Algorithm A02 with no reserved-word case in its 16. Three wrong claims in one security mitigation, now corrected, with the absence of fixture coverage recorded rather than papered over. The §3.2 audit checklist told operators to check for ACL rules targeting `sys.control.*` — a pattern that matches no module and enforces nothing, which is the same silent failure mode as [apcore-mcp#14](https://github.com/aiperceivable/apcore-mcp/issues/14), reproduced inside the security document itself.
 
 - **`docs/spec/conformance.md` §8.1 fixture inventory was three ways out of date, and CI was red on it.** `preflight_disclosure` (4 cases) was absent entirely, `schema_keyword_parity` was recorded as 119 against an actual 122, and the Total read **664 / 60 fixtures** against an actual **671 / 61**. The `conformance-integrity` workflow verifies all three, so `main` had been failing since 019eaa4 and every PR touching `docs/`, `schemas/` or `conformance/` inherited the failure.
 
