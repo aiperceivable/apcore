@@ -265,8 +265,11 @@ Built-in strategies and authoring custom ones are described in [Pipeline Hardeni
 | `builtin_acl_gate_wired` | Does the **running strategy** contain the built-in ACL gate (matched by type, never by step name)? |
 | `approval_handler_configured` | Is an `ApprovalHandler` attached? |
 | `builtin_approval_gate_wired` | Does the running strategy contain the built-in approval gate? |
-| `policy_strict` | Is `ExecutionPolicy(strict=true)` set — the approval gate failing closed with no handler? |
-| `unprotected_control_surface` | Derived: control modules are registered and no recognised built-in gate is both configured **and** wired. |
+| `policy_strict` | Is `ExecutionPolicy(strict=true)` set — the approval gate failing closed **on a call it engages on**? |
+| `all_control_modules_require_approval` | Does **every** registered `system.control.*` module declare `requires_approval`? |
+| `unprotected_control_surface` | Derived: control modules are registered and no recognised built-in gate is configured, wired **and actually engaged** for them. |
+
+**The two gates are not symmetric.** `acl_check` evaluates every call, so "configured + wired" really does mean the gate stands in front of `system.control.*`. `approval_gate` resolves per module and returns immediately when the module does not need approval — so a wired gate with a handler attached, or with `strict=true`, gates *nothing* for a control module that never declares `requires_approval`, and §6.7 makes that annotation a SHOULD. That is why `all_control_modules_require_approval` is a separate observation and a required conjunct of the derived flag ([§6.6.5.1.1](../spec/protocol-spec.md#66511-why-the-two-gates-are-not-symmetric)).
 
 === "Python"
     ```python
@@ -278,6 +281,11 @@ Built-in strategies and authoring custom ones are described in [Pipeline Hardeni
     # The distinction the flag exists for: an attached ACL that no step consults.
     if state.acl_configured and not state.builtin_acl_gate_wired:
         print("ACL attached but the running strategy has no acl_check step")
+
+    # An approval handler that the gate never reaches, because the control
+    # modules do not declare requires_approval (a SHOULD, not a MUST).
+    if state.approval_handler_configured and not state.all_control_modules_require_approval:
+        print("approval handler attached but some system.control.* module is ungated")
 
     if state.unprotected_control_surface:
         print("system.control.* is registered with no recognised gate in front of it")
