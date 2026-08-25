@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://apcore.dev/schemas/sys-usage-summary.schema.json",
+  "title": "system.usage.summary Output",
+  "description": "Output schema for the system.usage.summary module (PROTOCOL_SPEC 6.7.1). Every statistic below is computed over the requested `period` window, never over the full retained history.",
+  "type": "object",
+  "required": ["period", "total_calls", "total_errors", "modules"],
+  "additionalProperties": false,
+  "properties": {
+    "period": {
+      "type": "string",
+      "description": "The requested time window, echoed back. Matches ^[1-9][0-9]*[hd]$ (PROTOCOL_SPEC 6.7.1.1); every statistic in this document is computed over [now - period, now].",
+      "pattern": "^[1-9][0-9]*[hd]$"
+    },
+    "total_calls": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Total calls across all modules within the period."
+    },
+    "total_errors": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Total failed calls across all modules within the period."
+    },
+    "modules": {
+      "type": "array",
+      "description": "Per-module usage entries within the period, sorted by call_count descending.",
+      "items": {
+        "type": "object",
+        "description": "Usage statistics for one module over the period.",
+        "additionalProperties": false,
+        "required": ["module_id", "call_count", "error_count", "avg_latency_ms", "unique_callers", "trend"],
+        "properties": {
+          "module_id": {
+            "type": "string",
+            "description": "Canonical module ID."
+          },
+          "call_count": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Calls to this module within the period."
+          },
+          "error_count": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Failed calls to this module within the period."
+          },
+          "avg_latency_ms": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Mean latency in milliseconds across the calls in the period. 0 when there are no calls."
+          },
+          "unique_callers": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Number of distinct caller_id values within the period. Calls with no caller identity are attributed to the literal 'unknown' and count as one such caller (PROTOCOL_SPEC 6.7.1.4)."
+          },
+          "trend": {
+            "type": "string",
+            "description": "Direction of change against the immediately preceding window of equal length, per the normative table in PROTOCOL_SPEC 6.7.1.5.",
+            "enum": ["stable", "inactive", "new", "rising", "declining"]
+          }
+        }
+      }
+    }
+  }
+}

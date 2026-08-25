@@ -1,0 +1,334 @@
+{
+  "description": "system.usage.* value semantics that no JSON Schema can assert (PROTOCOL_SPEC 6.7.1). The two schemas sys-usage-summary/sys-usage-module lock the SHAPE; a full-history call_count and an off-by-one p99_latency_ms are both well-typed numbers in the right field, so they need fixed inputs and expected outputs instead. Cases 1-3 pin the p99 disagreement (apcore-python returned sorted[rank] where apcore-typescript and apcore-rust returned sorted[rank-1]); cases 4-6 pin that `period` filters rather than being echoed (apcore-rust echoed it and computed over the full retained history); cases 7-9 pin the period grammar at the input-validation boundary; case 10 pins the hour-key format and the 24-entry invariant; case 11 pins the unattributed caller_id.",
+  "driver_contract": {
+    "path": "MUST drive the real UsageCollector and the real system.usage.* modules through Executor.call() \u2014 not the collector's internal accessors directly. Every divergence this fixture pins lives in the sys-module layer's choice of accessor (apcore-rust called get_all_summaries() where a period-aware variant existed), so a driver that calls get_summary_for_period() itself asserts the layer that was never wrong.",
+    "clock": "`now` is fixed per case. The driver MUST inject it \u2014 a frozen clock, a seam, or records backdated relative to a captured `now`. Any case whose expectation depends on wall-clock time is not reproducible and this fixture has none.",
+    "p99_is_not_a_schema_assertion": "Cases 1-3 supply the exact latency list and the exact expected value. Asserting `type(p99) == number` passes against every implementation including the wrong ones. Assert the VALUE.",
+    "period_rejection_is_a_wire_code": "Cases 7-9 expect SCHEMA_VALIDATION_ERROR from input validation, NOT a language-native ValueError/Error from a private parser. A driver asserting only 'it raised' would be green against all three of today's mutually incompatible behaviours."
+  },
+  "test_cases": [
+    {
+      "id": "p99_hundred_increasing_samples",
+      "module": "system.usage.module",
+      "latencies_ms": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19,
+        20,
+        21,
+        22,
+        23,
+        24,
+        25,
+        26,
+        27,
+        28,
+        29,
+        30,
+        31,
+        32,
+        33,
+        34,
+        35,
+        36,
+        37,
+        38,
+        39,
+        40,
+        41,
+        42,
+        43,
+        44,
+        45,
+        46,
+        47,
+        48,
+        49,
+        50,
+        51,
+        52,
+        53,
+        54,
+        55,
+        56,
+        57,
+        58,
+        59,
+        60,
+        61,
+        62,
+        63,
+        64,
+        65,
+        66,
+        67,
+        68,
+        69,
+        70,
+        71,
+        72,
+        73,
+        74,
+        75,
+        76,
+        77,
+        78,
+        79,
+        80,
+        81,
+        82,
+        83,
+        84,
+        85,
+        86,
+        87,
+        88,
+        89,
+        90,
+        91,
+        92,
+        93,
+        94,
+        95,
+        96,
+        97,
+        98,
+        99,
+        100
+      ],
+      "expected": {
+        "p99_latency_ms": 99.0
+      },
+      "note": "N=100, rank=ceil(99.0)=99, index=98 \u2192 99. apcore-python returned 100 (sorted[rank])."
+    },
+    {
+      "id": "p99_single_sample",
+      "module": "system.usage.module",
+      "latencies_ms": [
+        42.0
+      ],
+      "expected": {
+        "p99_latency_ms": 42.0
+      },
+      "note": "N=1, rank=ceil(0.99)=1, index=0. The clamp is what keeps this in range."
+    },
+    {
+      "id": "p99_empty_sample_set",
+      "module": "system.usage.module",
+      "latencies_ms": [],
+      "expected": {
+        "p99_latency_ms": 0.0
+      },
+      "note": "0, not null \u2014 the field is required and typed number in the canonical schema."
+    },
+    {
+      "id": "period_filters_summary_totals",
+      "module": "system.usage.summary",
+      "now": "2026-03-08T12:00:00Z",
+      "records": [
+        {
+          "module_id": "math.add",
+          "caller_id": "orchestrator.main",
+          "at": "2026-03-08T11:30:00Z",
+          "latency_ms": 10.0,
+          "success": true
+        },
+        {
+          "module_id": "math.add",
+          "caller_id": "orchestrator.main",
+          "at": "2026-03-06T11:30:00Z",
+          "latency_ms": 10.0,
+          "success": true
+        }
+      ],
+      "inputs": {
+        "period": "24h"
+      },
+      "expected": {
+        "period": "24h",
+        "total_calls": 1,
+        "total_errors": 0
+      },
+      "note": "The 2026-03-06 record is outside the 24h window. An implementation covering the full history answers 2."
+    },
+    {
+      "id": "period_filters_module_detail",
+      "module": "system.usage.module",
+      "now": "2026-03-08T12:00:00Z",
+      "records": [
+        {
+          "module_id": "math.add",
+          "caller_id": "a",
+          "at": "2026-03-08T11:30:00Z",
+          "latency_ms": 10.0,
+          "success": true
+        },
+        {
+          "module_id": "math.add",
+          "caller_id": "b",
+          "at": "2026-03-01T11:30:00Z",
+          "latency_ms": 500.0,
+          "success": false
+        }
+      ],
+      "inputs": {
+        "module_id": "math.add",
+        "period": "24h"
+      },
+      "expected": {
+        "call_count": 1,
+        "error_count": 0,
+        "avg_latency_ms": 10.0,
+        "p99_latency_ms": 10.0,
+        "callers": [
+          {
+            "caller_id": "a",
+            "call_count": 1,
+            "error_count": 0,
+            "avg_latency_ms": 10.0
+          }
+        ]
+      },
+      "note": "callers[] and p99 must be period-filtered too, not only the top-level counts. The out-of-window record would move p99 to 500 and add a second caller."
+    },
+    {
+      "id": "period_widens_to_include_older_record",
+      "module": "system.usage.module",
+      "now": "2026-03-08T12:00:00Z",
+      "records": [
+        {
+          "module_id": "math.add",
+          "caller_id": "a",
+          "at": "2026-03-08T11:30:00Z",
+          "latency_ms": 10.0,
+          "success": true
+        },
+        {
+          "module_id": "math.add",
+          "caller_id": "b",
+          "at": "2026-03-01T11:30:00Z",
+          "latency_ms": 500.0,
+          "success": false
+        }
+      ],
+      "inputs": {
+        "module_id": "math.add",
+        "period": "30d"
+      },
+      "expected": {
+        "call_count": 2,
+        "error_count": 1
+      },
+      "note": "The control case for the two above. Without it, an implementation that returns nothing at all passes the filtering cases for the wrong reason."
+    },
+    {
+      "id": "period_zero_hours_rejected",
+      "module": "system.usage.summary",
+      "inputs": {
+        "period": "0h"
+      },
+      "expected": {
+        "error_code": "SCHEMA_VALIDATION_ERROR"
+      },
+      "note": "Leading [1-9] is normative. apcore-python accepted this and returned an all-zero report that reads as 'no traffic'."
+    },
+    {
+      "id": "period_negative_rejected",
+      "module": "system.usage.summary",
+      "inputs": {
+        "period": "-5d"
+      },
+      "expected": {
+        "error_code": "SCHEMA_VALIDATION_ERROR"
+      },
+      "note": "apcore-python accepted this (int('-5')); apcore-typescript's anchored regex rejected it."
+    },
+    {
+      "id": "period_uppercase_unit_rejected",
+      "module": "system.usage.summary",
+      "inputs": {
+        "period": "24H"
+      },
+      "expected": {
+        "error_code": "SCHEMA_VALIDATION_ERROR"
+      },
+      "note": "Units are lowercase h/d only."
+    },
+    {
+      "id": "hourly_distribution_shape",
+      "module": "system.usage.module",
+      "now": "2026-03-08T12:00:00Z",
+      "records": [
+        {
+          "module_id": "math.add",
+          "caller_id": "a",
+          "at": "2026-03-08T10:15:00Z",
+          "latency_ms": 5.0,
+          "success": true
+        }
+      ],
+      "inputs": {
+        "module_id": "math.add",
+        "period": "24h"
+      },
+      "expected": {
+        "hourly_distribution_length": 24,
+        "hourly_distribution_first_hour": "2026-03-07T13",
+        "hourly_distribution_last_hour": "2026-03-08T12",
+        "hourly_distribution_nonzero": [
+          {
+            "hour": "2026-03-08T10",
+            "call_count": 1,
+            "error_count": 0
+          }
+        ]
+      },
+      "note": "Keys are YYYY-MM-DDTHH. apcore-rust emitted 2026-03-08T10:00:00Z. Exactly 24 entries covering now-23h..now, ascending, gaps zero-filled \u2014 the two-entry array the docs used to show was never a valid response."
+    },
+    {
+      "id": "unattributed_caller_is_literal_unknown",
+      "module": "system.usage.module",
+      "now": "2026-03-08T12:00:00Z",
+      "records": [
+        {
+          "module_id": "math.add",
+          "caller_id": null,
+          "at": "2026-03-08T11:00:00Z",
+          "latency_ms": 5.0,
+          "success": true
+        }
+      ],
+      "inputs": {
+        "module_id": "math.add",
+        "period": "24h"
+      },
+      "expected": {
+        "callers": [
+          {
+            "caller_id": "unknown",
+            "call_count": 1,
+            "error_count": 0,
+            "avg_latency_ms": 5.0
+          }
+        ]
+      },
+      "note": "Not null, not omitted, and not '@external' \u2014 that is an ACL matching token and reusing it would make an unattributed call indistinguishable from an externally-attributed one."
+    }
+  ]
+}

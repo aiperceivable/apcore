@@ -375,9 +375,19 @@ W3C interoperability across Python, TypeScript, and Rust SDKs.
 | `record(module_id, caller_id, latency_ms, success)` | Record a usage event |
 | `get_summary(period="24h") → list[ModuleUsageSummary]` | Aggregated summary for all modules |
 | `UsageCollector.get_module(module_id, period="24h") → ModuleUsageDetail` | Detailed usage with caller breakdown and hourly distribution |
-| `get_latencies(module_id) → list[float]` | Raw latency values for p99 computation |
+| `get_latencies(module_id, period="24h") → list[float]` | Raw latency values within the period, for p99 computation |
 
 **UsageMiddleware** records usage in `before()` (start timestamp), `after()` (success + latency), and `on_error()` (failure + latency) hooks.
+
+**Normative output semantics.** The collector is the source of the values `system.usage.summary` and `system.usage.module` report, so its bucket key, its period filter and its percentile are all pinned by [PROTOCOL_SPEC §6.7.1](../spec/protocol-spec.md#671-usage-module-output-contract):
+
+| Concern | Rule |
+|---|---|
+| Hourly bucket key | `YYYY-MM-DDTHH` (UTC), e.g. `2026-03-08T14`. Emitted verbatim as `hourly_distribution[].hour` — the sys-module layer MUST NOT reformat it. |
+| `period` | `^[1-9][0-9]*[hd]$`. Every accessor that takes one MUST filter to `[now − period, now]`; an accessor that ignores it while the module echoes it back is a silent conformance failure. |
+| p99 | Nearest-rank: `sorted[min(ceil(0.99·N), N) − 1]`, no interpolation, `0` for an empty sample set. |
+| Unattributed call | Recorded under the literal `caller_id` `"unknown"`. |
+| Trend thresholds | `> 1.2` rising, `< 0.8` declining, zero-cases first (§6.7.1.5). |
 
 ## UsageExporter (push-style)
 

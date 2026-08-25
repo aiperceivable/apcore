@@ -1,0 +1,116 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://apcore.dev/schemas/sys-usage-module.schema.json",
+  "title": "system.usage.module Output",
+  "description": "Output schema for the system.usage.module module (PROTOCOL_SPEC 6.7.1). Every statistic below is computed over the requested `period` window, never over the full retained history; the sole exception is the fixed 24-entry span of hourly_distribution, whose per-bucket counts are still period-filtered (6.7.1.2).",
+  "type": "object",
+  "required": [
+    "module_id",
+    "period",
+    "call_count",
+    "error_count",
+    "avg_latency_ms",
+    "p99_latency_ms",
+    "trend",
+    "callers",
+    "hourly_distribution"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "module_id": {
+      "type": "string",
+      "description": "Canonical ID of the module this report covers, echoed from the input."
+    },
+    "period": {
+      "type": "string",
+      "description": "The requested time window, echoed back. Matches ^[1-9][0-9]*[hd]$ (PROTOCOL_SPEC 6.7.1.1).",
+      "pattern": "^[1-9][0-9]*[hd]$"
+    },
+    "call_count": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Calls to this module within the period."
+    },
+    "error_count": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Failed calls to this module within the period."
+    },
+    "avg_latency_ms": {
+      "type": "number",
+      "minimum": 0,
+      "description": "Mean latency in milliseconds across the calls in the period. 0 when there are no calls."
+    },
+    "p99_latency_ms": {
+      "type": "number",
+      "minimum": 0,
+      "description": "Nearest-rank 99th percentile latency in milliseconds over the period: sorted[min(ceil(0.99 * N), N) - 1], with 0 when there are no samples. No interpolation (PROTOCOL_SPEC 6.7.1.3)."
+    },
+    "trend": {
+      "type": "string",
+      "description": "Direction of change against the immediately preceding window of equal length, per the normative table in PROTOCOL_SPEC 6.7.1.5.",
+      "enum": ["stable", "inactive", "new", "rising", "declining"]
+    },
+    "callers": {
+      "type": "array",
+      "description": "Per-caller breakdown of the calls in the period.",
+      "items": {
+        "type": "object",
+        "description": "Usage statistics for one caller of this module over the period.",
+        "additionalProperties": false,
+        "required": ["caller_id", "call_count", "error_count", "avg_latency_ms"],
+        "properties": {
+          "caller_id": {
+            "type": "string",
+            "description": "Caller identity. A call recorded with no caller identity is attributed to the literal string 'unknown' — never null, never omitted, and never the ACL token '@external' (PROTOCOL_SPEC 6.7.1.4).",
+            "minLength": 1
+          },
+          "call_count": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Calls from this caller within the period."
+          },
+          "error_count": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Failed calls from this caller within the period."
+          },
+          "avg_latency_ms": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Mean latency in milliseconds for this caller's calls in the period."
+          }
+        }
+      }
+    },
+    "hourly_distribution": {
+      "type": "array",
+      "description": "The 24 hourly buckets ending at the current hour (now-23h .. now), zero-filled across gaps and sorted ascending by hour. The 24-entry span is fixed and is NOT widened or narrowed by `period` (PROTOCOL_SPEC 6.7.1.2).",
+      "minItems": 24,
+      "maxItems": 24,
+      "items": {
+        "type": "object",
+        "description": "One hourly bucket.",
+        "additionalProperties": false,
+        "required": ["hour", "call_count", "error_count"],
+        "properties": {
+          "hour": {
+            "type": "string",
+            "description": "UTC hourly bucket key in the format YYYY-MM-DDTHH, e.g. 2026-03-08T14. This is the key UsageCollector produces; a module layer MUST NOT reformat it (PROTOCOL_SPEC 6.7.1.2).",
+            "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}$"
+          },
+          "call_count": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Calls recorded in this hourly bucket, filtered by the requested period."
+          },
+          "error_count": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Failed calls recorded in this hourly bucket, filtered by the requested period."
+          }
+        }
+      }
+    }
+  }
+}

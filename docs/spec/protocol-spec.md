@@ -1,15 +1,15 @@
 ---
-description: "The canonical, normative apcore protocol specification (RFC 2119, v1.13.0): module, schema, naming, ACL, approval, error, config, and observability requirements for all conforming SDKs."
+description: "The canonical, normative apcore protocol specification (RFC 2119, v1.14.0): module, schema, naming, ACL, approval, error, config, and observability requirements for all conforming SDKs."
 ---
 
 # apcore — AI-Perceivable Core Standard Specification
 
 > **Canonical Specification** - This document is the authoritative specification for the apcore protocol
 
-> Version: 1.13.0
+> Version: 1.14.0
 > Status: Draft Specification (RFC 2119 Conformant)
 > Stability: Specification content is stable, pending reference implementation verification
-> Last Updated: 2026-08-17
+> Last Updated: 2026-08-25
 
 ---
 
@@ -3830,6 +3830,92 @@ This section documents the canonical `system.*` module catalogue. Conformant SDK
 6. **`system.control.toggle_feature`** state **MUST** persist via the configured `OverridesStore` so toggle state survives process restart; without persistence, toggle decisions revert to the registered defaults on reload.
 
 **Conformance note:** SDKs declaring Level 1 conformance (§ ./conformance.md §3) MUST register the 6 read modules. SDKs declaring Level 2 MUST additionally register the 3 control modules. Implementations MAY register additional modules under `system.<vendor>.*` namespaces — these are NOT covered by this canonical catalogue and MUST NOT collide with the names above.
+
+#### 6.7.1 Usage Module Output Contract
+
+> **Added in v1.14.0.** Governance: [apcore#96](https://github.com/aiperceivable/apcore/issues/96).
+
+§6.7 requires `system.usage.summary` and `system.usage.module` to ship with "equivalent input/output schemas" and defers the field contract to each SDK's source. That deferral is why three implementations of it diverged in four ways without any of them becoming non-conformant: the catalogue named the modules, and nothing said what their fields mean. This section states the parts an SDK cannot infer, and `../../schemas/sys-usage-summary.schema.json` and `../../schemas/sys-usage-module.schema.json` are the canonical shape.
+
+Two of the requirements below are **value** semantics that no JSON Schema can assert — a wrong `p99_latency_ms` and a full-history `call_count` are both a `number` in the right place. Those are pinned by fixture (§6.7.1.6), not by schema.
+
+##### 6.7.1.1 `period` is a filter, not an echo
+
+Both modules accept a `period` input, default `"24h"`.
+
+**Grammar.** `period` **MUST** match `^[1-9][0-9]*[hd]$` — a positive integer followed by `h` (hours) or `d` (days). Implementations **MUST** declare this `pattern` in the module's `input_schema` so a malformed value is rejected by input validation (§12.3 Step 7) with `SCHEMA_VALIDATION_ERROR`, uniformly, rather than by an implementation-private parser that raises a language-native error in one SDK and silently accepts in another.
+
+The leading `[1-9]` is normative: `"0h"` is **MUST**-reject. A zero-width window is not a meaningful query, and accepting it produces an all-zero report that reads as "no traffic" rather than as "bad input". Signs (`"+3h"`, `"-5d"`), fractions (`"1.5h"`) and uppercase units (`"24H"`) are likewise rejected.
+
+**Semantics.** The window is `[now − period, now]` in UTC. **Every** statistic in the output **MUST** be computed over that window:
+
+| Module | Fields that MUST honour `period` |
+|---|---|
+| `system.usage.summary` | `total_calls`, `total_errors`, and every entry of `modules[]` — `call_count`, `error_count`, `avg_latency_ms`, `unique_callers`, `trend` |
+| `system.usage.module` | `call_count`, `error_count`, `avg_latency_ms`, `p99_latency_ms`, `trend`, every entry of `callers[]`, and `hourly_distribution` |
+
+An implementation **MUST NOT** echo `period` in its output while computing any statistic over the full retained history. That failure mode is silent by construction — the response names the window it did not apply — and it is the shape all three SDKs must be checked against rather than assumed clear of.
+
+`trend` compares the requested window against the immediately preceding window of equal length (`[now − 2·period, now − period]`), per §6.7.1.5.
+
+##### 6.7.1.2 `hourly_distribution`
+
+Emitted by `system.usage.module` only.
+
+1. **Key format.** `hour` **MUST** be the UTC hourly bucket key `YYYY-MM-DDTHH` — e.g. `2026-03-08T14`. This is the key `UsageCollector` already produces in all three SDKs; a module layer that reformats it (to `2026-03-08T14:00:00Z`, or to anything else) **MUST NOT** do so. One serialization, one place.
+2. **Cardinality.** The array **MUST** contain exactly 24 entries, covering the 24 hourly buckets ending at the current hour (`now − 23h .. now`). Gaps **MUST** be zero-filled (`call_count: 0`, `error_count: 0`) rather than omitted, so a consumer can index the array positionally without reconciling missing keys.
+3. **Order.** Entries **MUST** be sorted ascending by `hour`.
+4. **Relationship to `period`.** The 24-entry window is fixed and is **not** widened or narrowed by `period`; only the counts inside each bucket are filtered by it. A `period` shorter than 24h therefore yields leading zero buckets, and a longer one does not add entries. This is stated because it is the one place where "every statistic honours `period`" (§6.7.1.1) would otherwise read as licence to change the array length.
+
+##### 6.7.1.3 `p99_latency_ms`
+
+`p99_latency_ms` **MUST** be the **nearest-rank** 99th percentile of the latency samples in the window, computed as:
+
+```
+Algorithm: p99(latencies)
+
+Input:  latencies — list of latency samples in ms, in any order
+Output: p99       — number
+
+Steps:
+  1. If latencies is empty → Return 0
+  2. sorted ← ascending sort of latencies
+  3. N      ← length(sorted)
+  4. rank   ← ceil(0.99 × N)          // 1-based rank
+  5. index  ← min(rank, N) − 1        // clamp, then convert to 0-based
+  6. Return sorted[index]
+```
+
+Implementations **MUST NOT** interpolate between adjacent samples, and **MUST NOT** return the element after `index`.
+
+**Worked example, normative.** For `latencies = [1, 2, …, 100]` (N = 100): `rank = ceil(99.0) = 99`, `index = 98`, so `p99 = 99`. An implementation returning `100` has read one element past the rank it computed. For N = 1 the result is the single sample; for N = 0 it is `0`.
+
+The empty-input result is `0` and not `null`: the field is `required` and typed `number` in `sys-usage-module.schema.json`, so a module with no samples in the window still emits a well-formed report.
+
+##### 6.7.1.4 `caller_id` in `callers[]`
+
+A call recorded with no caller identity **MUST** be attributed to the literal string `"unknown"`. Implementations **MUST NOT** omit the entry, use `null`, or substitute `@external` — `@external` is an ACL matching token (§6.2) and reusing it here would make an unattributed call indistinguishable from an externally-attributed one in a usage report.
+
+##### 6.7.1.5 `trend`
+
+`trend` **MUST** be one of `stable`, `rising`, `declining`, `new`, `inactive`, decided by comparing the call count in the requested window (`current`) against the count in the immediately preceding window of equal length (`previous`):
+
+| Condition | `trend` |
+|---|---|
+| `current == 0` and `previous == 0` | `stable` |
+| `current == 0` and `previous > 0` | `inactive` |
+| `previous == 0` and `current > 0` | `new` |
+| `current / previous > 1.2` | `rising` |
+| `current / previous < 0.8` | `declining` |
+| otherwise | `stable` |
+
+The thresholds are normative so that the same traffic does not read as `rising` in one SDK and `stable` in another. The order of the rows is normative too — the zero cases are decided before the ratio, which is what keeps the ratio from dividing by zero.
+
+##### 6.7.1.6 `output_schema` and conformance
+
+1. Both modules' `output_schema()` **MUST** declare the full field contract — `type`, `properties` and `required` — matching the canonical schemas. A bare `{"type": "object"}` is **MUST**-reject: it satisfies §6.7's "equivalent output schemas" only in the sense that any two such declarations are equivalent to each other, which is precisely the divergence this section closes.
+2. Output from every conformant SDK **MUST** validate against `sys-usage-summary.schema.json` / `sys-usage-module.schema.json`. Both declare `additionalProperties: false`: a field one SDK emits and the others do not is a parity gap, and failing loudly is the intended behaviour.
+3. **Schemas cannot assert §6.7.1.1 or §6.7.1.3.** A full-history `call_count` and an off-by-one `p99_latency_ms` are both well-typed values in the right field. Those two, and only those two, are pinned by `../../conformance/fixtures/usage_contract.json` with fixed inputs and expected outputs.
 
 ---
 
@@ -8016,4 +8102,5 @@ Each language SDK **SHOULD** provide idiomatic module definition syntax. The fol
 | 1.10.0 | 2026-08-13 | **§12.2 `Interface: Registry` gains `register` (#90).** The normative component interface declared `discover`, `get`, `list` and `describe` — not `register`, the most-used entry point on the component and the one every SDK exposes with a four-argument signature. `register(module_id, module, version?, metadata?)` is now stated, and when an implementation accepts `metadata`, a `dependencies` entry (a list of `{module_id, version?, optional?}`) **MUST** reach the registered module's descriptor so `get_definition(module_id).dependencies` returns what the caller declared. That requirement existed nowhere: all three SDKs lost it independently and all three fixed it independently (apcore-python `ad2998d`, apcore-typescript#35, apcore-rust `71295e1`), because discovery-time sorting reads its own parse and keeps working — `resolve_dependencies` looks healthy while the accessor is empty and reload order degrades to its sort's seed order, which is alphabetical and therefore plausible. `version` is stated as an OPTIONAL parameter only: all three SDKs accept it, only apcore-python resolves by it, and §5.4 continues to govern multi-version coexistence as optional — making resolution normative would put a requirement into the spec that two of three implementations do not provide, which is the shape 1.9.0 spent a release removing. `get(module_id)` keeps its single-argument normative form for the same reason. No SDK behaviour change: all three already satisfy the requirement. Governance: apcore#90. |
 | 1.11.0 | 2026-08-14 | **§12.2 `Interface: Executor` — cross-executor rebind is a MUST (#92).** `features/core-executor.md` stated it as *SHOULD raise `ContextBindingError`*, with *"SDKs that choose to accept silently instead MUST document the deviation prominently"* as the escape hatch. All three SDKs raise, so the deviation was permitted for nobody — and the alternative had a cost: `conformance/fixtures/context_create.json` had to express it as `expected_one_of: [raise, silent_accept]`, which no driver can assert without deciding its own branch. All three hardcoded `raise` and read the alternation only in a comment, so mutating the entire expectation left every suite green. The rule is now stated normatively with the wire code `CONTEXT_BINDING_ERROR`, the fixture carries a single `expected`, and the feature page records the withdrawal. **No SDK behaviour change.** Governance: apcore#92. |
 | 1.12.0 | 2026-08-14 | **§11 type-mapping — the library-level coercion knob's behaviour is normative when the knob exists (#95).** Offering the switch stays a MAY; an SDK that offers one **MUST** coerce exactly `string→integer`, `string→number`, and `string→boolean` limited to `"true"` / `"false"` case-sensitive, and **MUST NOT** coerce anything else. Previously the paragraph constrained only *where* the knob could be used — not on the module path, not from configuration, default off — and said nothing about what it does, so apcore-rust and apcore-typescript shipped a twelve-spelling case-insensitive dialect (`"yes"`, `"on"`, `"y"`, `"t"`, `"1"`, `"0"` and negatives) while apcore-python coerced no string to a boolean at all, and both were conforming. `"0"` → `false` sat directly against R5, which makes the number `0` a MUST-reject for `boolean`. `conformance/fixtures/schema_validation.json` had pinned the coercing mode cross-SDK in exactly one case, on `integer` — the one axis where all three agreed — which is why it never fired. Governance: apcore#95. |
-| 1.13.0 | 2026-08-17 | **§12.8.5.1 — a failed `acl` check withholds module-level introspection (#96).** `validate()` looked the module up at Step 3 and ran `preflight()` and `preview()` at Check 7 on the strength of that lookup alone, so a caller the ACL had just denied still made module-authored code run and still received what it returned. For a command-wrapping module that is the resolved binary and its argv; for a writer it is the target of the side effect. All three SDKs did this — apcore-python `executor.py`, apcore-typescript `executor.ts`, apcore-rust `executor.rs` — each guarding only on "module lookup succeeded", and `apcore-mcp-rust` had already grown a string-matched disclosure filter over the top of it (`async_task_bridge.rs`), which is the evidence the gap was reachable in a shipped product rather than theoretical. `validate()` **MUST NOT** now invoke either hook, emit a `module_preflight` / `module_preview` check, or populate `predicted_changes` when `acl` failed; the failed `acl` check itself is still reported and no other check is suppressed, because the rule is about authorization and not about validity — a malformed input from a permitted caller still gets the module's own account of what would happen. §12.8.1 gains principle 5, §12.4 gains the test, and `conformance/fixtures/preflight_disclosure.json` pins it. **§4.15** additionally gains the two `format` rows its edge-case table never carried, so that `schema_hardening_formats.json`'s long-standing §4.15 citation resolves to something; [type-mapping §11.1](./type-mapping.md#111-format-keyword) remains the authority. Governance: apcore#96. |
+| 1.13.0 | 2026-08-17 | **§12.8.5.1 — a failed `acl` check withholds module-level introspection (#96).** `validate()` looked the module up at Step 3 and ran `preflight()` and `preview()` at Check 7 on the strength of that lookup alone, so a caller the ACL had just denied still made module-authored code run and still received what it returned. For a command-wrapping module that is the resolved binary and its argv; for a writer it is the target of the side effect. All three SDKs did this — apcore-python `executor.py`, apcore-typescript `executor.ts`, apcore-rust `executor.rs` — each guarding only on "module lookup succeeded", and `apcore-mcp-rust` had already grown a string-matched disclosure filter over the top of it (`async_task_bridge.rs`), which is the evidence the gap was reachable in a shipped product rather than theoretical. `validate()` **MUST NOT** now invoke either hook, emit a `module_preflight` / `module_preview` check, or populate `predicted_changes` when `acl` failed; the failed `acl` check itself is still reported and no other check is suppressed, because the rule is about authorization and not about validity — a malformed input from a permitted caller still gets the module's own account of what would happen. §12.8.1 gains principle 5, §12.4 gains the test, and `conformance/fixtures/preflight_disclosure.json` pins it. **§4.15** additionally gains the two `format` rows its edge-case table never carried, so that `schema_hardening_formats.json`'s long-standing §4.15 citation resolves to something; [type-mapping §11.1](./type-mapping.md#111-format-keyword) remains the authority. Governance: maintainer approval per GOVERNANCE.md § Decision Making; **no tracking issue was opened.** The `apcore#96` cited when this row was written was a reserved number that issue #96 has since been assigned to for an unrelated change (`system.usage.*` schemas) — the citation is withdrawn rather than repointed, because inventing a link is worse than recording that there is none. |
+| 1.14.0 | 2026-08-25 | **§6.7.1 Usage Module Output Contract (new) — the `system.usage.*` field contract is stated, not deferred (#96).** §6.7 required "equivalent input/output schemas" and pointed at each SDK's source as the schema source of truth. That deferral is why three implementations diverged in five ways without any becoming non-conformant. Now normative: `period` **MUST** match `^[1-9][0-9]*[hd]$`, declared as a `pattern` in `input_schema` so a malformed value fails uniformly with `SCHEMA_VALIDATION_ERROR` rather than through an implementation-private parser (apcore-python accepted `"0h"`, `"-5d"` and `"+3h"`; apcore-typescript rejected all three; apcore-rust parsed no period at all), and **every** statistic in both outputs MUST be computed over `[now − period, now]` — apcore-rust echoed `period` back while `get_all_summaries()` / `get_module_summary()` covered the full retained history. `hourly_distribution[].hour` **MUST** be the collector's own key `YYYY-MM-DDTHH`; apcore-rust reformatted it to `%Y-%m-%dT%H:00:00Z` behind a constant whose comment claimed the two matched, and **this specification's own example in `features/system-modules.md` showed the reformatted spelling**, so the divergent implementation was the one following the docs. Exactly 24 entries, ascending, zero-filled. `p99_latency_ms` **MUST** be nearest-rank `sorted[min(ceil(0.99·N), N) − 1]` with no interpolation — apcore-python computed that index and then returned `sorted[rank]`, one element higher, contradicting its own comment; for 100 samples it answered 100 where the other two answered 99. Unattributed calls are the literal `caller_id` `"unknown"`. `output_schema()` **MUST** declare `properties` and `required`; apcore-rust returned a bare `{"type": "object"}` for both modules. `schemas/sys-usage-summary.schema.json` and `schemas/sys-usage-module.schema.json` are added as the canonical shape — both with `additionalProperties: false`, and the `hour` pattern deliberately rejects the current apcore-rust output. **This is an SDK behaviour change in apcore-rust (all six points) and apcore-python (p99, period grammar).** Governance: apcore#96. |

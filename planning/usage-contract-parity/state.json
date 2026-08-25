@@ -1,0 +1,9 @@
+{
+  "feature": "usage-contract-parity",
+  "status": "spec_landed_sdk_pending",
+  "spec_version": "1.14.0",
+  "issue": "96",
+  "blocked_on": "SDK implementation + conformance drivers in apcore-python, apcore-typescript, apcore-rust",
+  "held_artifacts": ["fixtures/"],
+  "updated": "2026-08-25"
+}

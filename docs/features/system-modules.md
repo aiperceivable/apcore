@@ -206,7 +206,7 @@ Usage overview with trend detection across all modules.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `period` | string | "24h" | Time period |
+| `period` | string | "24h" | Time window, `^[1-9][0-9]*[hd]$` (e.g. `1h`, `24h`, `7d`). Declared as a `pattern` in `input_schema`, so a malformed value fails input validation with `SCHEMA_VALIDATION_ERROR`. |
 
 **Output:**
 
@@ -230,7 +230,9 @@ Usage overview with trend detection across all modules.
 
 Modules sorted by `call_count` descending.
 
-**Trend values:** `stable`, `rising`, `declining`, `new`, `inactive`
+**Trend values:** `stable`, `rising`, `declining`, `new`, `inactive` — decided by the normative threshold table in [PROTOCOL_SPEC §6.7.1.5](../spec/protocol-spec.md#6715-trend), comparing the requested window against the preceding window of equal length.
+
+> **`period` is a filter, not an echo.** `total_calls`, `total_errors` and every field of every `modules[]` entry MUST be computed over `[now − period, now]`. Echoing `period` back while computing over the full retained history is a conformance failure — and a silent one, because the response names the window it did not apply. See [PROTOCOL_SPEC §6.7.1.1](../spec/protocol-spec.md#6711-period-is-a-filter-not-an-echo); canonical shape in [`schemas/sys-usage-summary.schema.json`](https://github.com/aiperceivable/apcore/blob/main/schemas/sys-usage-summary.schema.json).
 
 ---
 
@@ -245,7 +247,7 @@ Detailed usage for a single module with caller breakdown.
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `module_id` | string | *(required)* | Module to query |
-| `period` | string | "24h" | Time period |
+| `period` | string | "24h" | Time window, `^[1-9][0-9]*[hd]$`. Same grammar and same filter semantics as `system.usage.summary`. |
 
 **Output:**
 
@@ -267,13 +269,25 @@ Detailed usage for a single module with caller breakdown.
     }
   ],
   "hourly_distribution": [
-    { "hour": "2026-03-08T10:00:00Z", "call_count": 200, "error_count": 0 },
-    { "hour": "2026-03-08T11:00:00Z", "call_count": 350, "error_count": 1 }
+    { "hour": "2026-03-08T00", "call_count": 0,   "error_count": 0 },
+    "... 21 more buckets, one per hour, none omitted ...",
+    { "hour": "2026-03-08T10", "call_count": 200, "error_count": 0 },
+    { "hour": "2026-03-08T11", "call_count": 350, "error_count": 1 }
   ]
 }
 ```
 
-Hourly distribution padded with zeros for gaps.
+**`hourly_distribution` invariants** ([PROTOCOL_SPEC §6.7.1.2](../spec/protocol-spec.md#6712-hourly_distribution)):
+
+- `hour` is the UTC bucket key `YYYY-MM-DDTHH` — **not** `YYYY-MM-DDTHH:00:00Z`. This is the key `UsageCollector` produces in every SDK; the module layer MUST NOT reformat it.
+- Exactly **24** entries, covering `now−23h .. now`, ascending by `hour`, gaps zero-filled rather than omitted — so a consumer can index positionally. The two-entry array this example previously showed was not a valid response.
+- The 24-entry span is fixed. `period` filters the counts inside each bucket; it does not change the array length.
+
+**`p99_latency_ms`** is the nearest-rank 99th percentile — `sorted[min(ceil(0.99·N), N) − 1]`, no interpolation, `0` when there are no samples. For 100 samples `1..100` the answer is **99**, not 100 ([PROTOCOL_SPEC §6.7.1.3](../spec/protocol-spec.md#6713-p99_latency_ms)).
+
+**`callers[].caller_id`** is the literal `"unknown"` for a call recorded with no caller identity — never `null`, never omitted, never `@external`.
+
+Canonical shape: [`schemas/sys-usage-module.schema.json`](https://github.com/aiperceivable/apcore/blob/main/schemas/sys-usage-module.schema.json).
 
 ---
 
