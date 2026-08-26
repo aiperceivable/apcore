@@ -1,5 +1,10 @@
 # system.usage.* parity — issue #96
 
+> **LANDED #96, 2026-08-26.** Spec, schemas, all three SDK implementations, the
+> conformance drivers and the fixture are in. The fixture moved from
+> `fixtures/` here to `conformance/fixtures/`; this file is kept as the record of
+> the landing order and of the decisions that were rejected on the way.
+
 **Internal planning. Not published to the doc site.**
 
 Spec side landed: PROTOCOL_SPEC §6.7.1, `schemas/sys-usage-summary.schema.json`,

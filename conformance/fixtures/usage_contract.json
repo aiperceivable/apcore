@@ -2,9 +2,11 @@
   "description": "system.usage.* value semantics that no JSON Schema can assert (PROTOCOL_SPEC 6.7.1). The two schemas sys-usage-summary/sys-usage-module lock the SHAPE; a full-history call_count and an off-by-one p99_latency_ms are both well-typed numbers in the right field, so they need fixed inputs and expected outputs instead. Cases 1-3 pin the p99 disagreement (apcore-python returned sorted[rank] where apcore-typescript and apcore-rust returned sorted[rank-1]); cases 4-6 pin that `period` filters rather than being echoed (apcore-rust echoed it and computed over the full retained history); cases 7-9 pin the period grammar at the input-validation boundary; case 10 pins the hour-key format and the 24-entry invariant; case 11 pins the unattributed caller_id.",
   "driver_contract": {
     "path": "MUST drive the real UsageCollector and the real system.usage.* modules through Executor.call() \u2014 not the collector's internal accessors directly. Every divergence this fixture pins lives in the sys-module layer's choice of accessor (apcore-rust called get_all_summaries() where a period-aware variant existed), so a driver that calls get_summary_for_period() itself asserts the layer that was never wrong.",
-    "clock": "`now` is fixed per case. The driver MUST inject it \u2014 a frozen clock, a seam, or records backdated relative to a captured `now`. Any case whose expectation depends on wall-clock time is not reproducible and this fixture has none.",
+    "clock": "`records[].at_offset` is relative to the moment the driver runs: '-2h' means two hours ago. Every SDK can inject that -- apcore-python and apcore-typescript take an optional `timestamp` on `record()`, apcore-rust has `record_at()`. A driver that ignores the offset and records everything at `now` cannot distinguish a period-filtering implementation from one that summarises all of history, which is the divergence this fixture exists to pin.",
     "p99_is_not_a_schema_assertion": "Cases 1-3 supply the exact latency list and the exact expected value. Asserting `type(p99) == number` passes against every implementation including the wrong ones. Assert the VALUE.",
-    "period_rejection_is_a_wire_code": "Cases 7-9 expect SCHEMA_VALIDATION_ERROR from input validation, NOT a language-native ValueError/Error from a private parser. A driver asserting only 'it raised' would be green against all three of today's mutually incompatible behaviours."
+    "period_rejection_is_a_wire_code": "Cases 7-9 expect SCHEMA_VALIDATION_ERROR from input validation, NOT a language-native ValueError/Error from a private parser. A driver asserting only 'it raised' would be green against all three of today's mutually incompatible behaviours.",
+    "module_id_is_opaque": "`module_id` is an opaque identifier the driver registers as a no-op module. The detail module looks it up in the registry before reporting, so it must exist.",
+    "unattributed_caller": "`caller_id: null` MUST be produced through the SDK's own usage-recording path for a call whose Context carries no caller identity -- i.e. UsageMiddleware, or whatever records usage in that SDK. It MUST NOT be produced by handing a null/None straight to UsageCollector.record(): apcore-python and apcore-typescript type that parameter as a string and substitute 'unknown' in the middleware, while apcore-rust takes Option<&str> and substitutes in the breakdown. Driving the collector directly therefore tests three different APIs and fails on two of them for a reason that has nothing to do with the contract."
   },
   "test_cases": [
     {
@@ -140,19 +142,16 @@
     {
       "id": "period_filters_summary_totals",
       "module": "system.usage.summary",
-      "now": "2026-03-08T12:00:00Z",
       "records": [
         {
-          "module_id": "math.add",
+          "at_offset": "-2h",
           "caller_id": "orchestrator.main",
-          "at": "2026-03-08T11:30:00Z",
           "latency_ms": 10.0,
           "success": true
         },
         {
-          "module_id": "math.add",
+          "at_offset": "-48h",
           "caller_id": "orchestrator.main",
-          "at": "2026-03-06T11:30:00Z",
           "latency_ms": 10.0,
           "success": true
         }
@@ -165,24 +164,22 @@
         "total_calls": 1,
         "total_errors": 0
       },
-      "note": "The 2026-03-06 record is outside the 24h window. An implementation covering the full history answers 2."
+      "note": "The 2026-03-06 record is outside the 24h window. An implementation covering the full history answers 2.",
+      "module_id": "math.add"
     },
     {
       "id": "period_filters_module_detail",
       "module": "system.usage.module",
-      "now": "2026-03-08T12:00:00Z",
       "records": [
         {
-          "module_id": "math.add",
+          "at_offset": "-2h",
           "caller_id": "a",
-          "at": "2026-03-08T11:30:00Z",
           "latency_ms": 10.0,
           "success": true
         },
         {
-          "module_id": "math.add",
+          "at_offset": "-168h",
           "caller_id": "b",
-          "at": "2026-03-01T11:30:00Z",
           "latency_ms": 500.0,
           "success": false
         }
@@ -205,24 +202,22 @@
           }
         ]
       },
-      "note": "callers[] and p99 must be period-filtered too, not only the top-level counts. The out-of-window record would move p99 to 500 and add a second caller."
+      "note": "callers[] and p99 must be period-filtered too, not only the top-level counts. The out-of-window record would move p99 to 500 and add a second caller.",
+      "module_id": "math.add"
     },
     {
       "id": "period_widens_to_include_older_record",
       "module": "system.usage.module",
-      "now": "2026-03-08T12:00:00Z",
       "records": [
         {
-          "module_id": "math.add",
+          "at_offset": "-2h",
           "caller_id": "a",
-          "at": "2026-03-08T11:30:00Z",
           "latency_ms": 10.0,
           "success": true
         },
         {
-          "module_id": "math.add",
+          "at_offset": "-168h",
           "caller_id": "b",
-          "at": "2026-03-01T11:30:00Z",
           "latency_ms": 500.0,
           "success": false
         }
@@ -235,7 +230,8 @@
         "call_count": 2,
         "error_count": 1
       },
-      "note": "The control case for the two above. Without it, an implementation that returns nothing at all passes the filtering cases for the wrong reason."
+      "note": "The control case for the two above. Without it, an implementation that returns nothing at all passes the filtering cases for the wrong reason.",
+      "module_id": "math.add"
     },
     {
       "id": "period_zero_hours_rejected",
@@ -273,12 +269,10 @@
     {
       "id": "hourly_distribution_shape",
       "module": "system.usage.module",
-      "now": "2026-03-08T12:00:00Z",
       "records": [
         {
-          "module_id": "math.add",
+          "at_offset": "-2h",
           "caller_id": "a",
-          "at": "2026-03-08T10:15:00Z",
           "latency_ms": 5.0,
           "success": true
         }
@@ -289,28 +283,20 @@
       },
       "expected": {
         "hourly_distribution_length": 24,
-        "hourly_distribution_first_hour": "2026-03-07T13",
-        "hourly_distribution_last_hour": "2026-03-08T12",
-        "hourly_distribution_nonzero": [
-          {
-            "hour": "2026-03-08T10",
-            "call_count": 1,
-            "error_count": 0
-          }
-        ]
+        "hourly_distribution_key_format": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}$",
+        "hourly_distribution_total_calls": 1,
+        "hourly_distribution_sorted_ascending": true
       },
-      "note": "Keys are YYYY-MM-DDTHH. apcore-rust emitted 2026-03-08T10:00:00Z. Exactly 24 entries covering now-23h..now, ascending, gaps zero-filled \u2014 the two-entry array the docs used to show was never a valid response."
+      "note": "Keys are YYYY-MM-DDTHH -- apcore-rust emitted 2026-03-08T10:00:00Z, and this repository's own docs showed that spelling. Exactly 24 entries covering now-23h..now, ascending, gaps zero-filled. The concrete keys depend on when the suite runs, so the driver asserts the FORMAT and the invariants, not literal hour strings.",
+      "module_id": "math.add"
     },
     {
       "id": "unattributed_caller_is_literal_unknown",
       "module": "system.usage.module",
-      "now": "2026-03-08T12:00:00Z",
       "records": [
         {
-          "module_id": "math.add",
+          "at_offset": "-1h",
           "caller_id": null,
-          "at": "2026-03-08T11:00:00Z",
-          "latency_ms": 5.0,
           "success": true
         }
       ],
@@ -319,16 +305,12 @@
         "period": "24h"
       },
       "expected": {
-        "callers": [
-          {
-            "caller_id": "unknown",
-            "call_count": 1,
-            "error_count": 0,
-            "avg_latency_ms": 5.0
-          }
+        "caller_ids": [
+          "unknown"
         ]
       },
-      "note": "Not null, not omitted, and not '@external' \u2014 that is an ACL matching token and reusing it would make an unattributed call indistinguishable from an externally-attributed one."
+      "note": "PROTOCOL_SPEC 6.7.1.4. `caller_id: null` means a CALL WITH NO CALLER IDENTITY, not a literal null passed to the collector: the SDKs place the substitution at different layers -- apcore-python and apcore-typescript in UsageMiddleware, apcore-rust in the caller breakdown, since its record() takes Option<&str>. The observable contract is the same and that is what is asserted; see driver_contract.unattributed_caller. Only caller_ids is asserted: the recording path measures real elapsed time, so a latency this fixture chose would be unassertable through it.",
+      "module_id": "math.add"
     }
   ]
 }

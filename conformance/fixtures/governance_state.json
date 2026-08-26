@@ -1,0 +1,344 @@
+{
+  "description": "Executor.governance_state() -- configured vs. actually wired (PROTOCOL_SPEC 6.6.5). `acl != null` means an ACL object is attached, NOT that ACL evaluation runs: the gates are pipeline steps, and the `internal` / `testing` / `minimal` presets remove them. Every field, the derived flag included, MUST be identical across the three SDKs for every case. The accessor is a pure read -- a case that changes executor state has been driven wrong. v1.16.0: the approval half of the derived flag requires all_control_modules_require_approval, because approval_gate is per-module conditional while acl_check is not (6.6.5.1.1).",
+  "driver_contract": {
+    "path": "MUST call the real accessor on a real Executor whose strategy, ACL, handler and policy were set through the public API. Reconstructing the nine booleans in the driver asserts the driver's arithmetic, not the SDK's.",
+    "setup": "`setup.control_modules` names the system.control.* modules to register and whether each declares requires_approval; register them through the privileged internal path, since the public register() rejects the reserved `system` prefix. `setup.read_modules` true means at least one read-only system.* module. `setup.strategy` is `standard` (both gates present), `internal` (both removed), or `lookalike_acl_check` -- a strategy containing a step whose NAME is `acl_check` and which is NOT the built-in gate.",
+    "derived_flag_is_asserted_not_recomputed": "`expected.unprotected_control_surface` MUST be compared against what the SDK returned. A driver that recomputes it from the other eight fields is green against an implementation that never computes it at all.",
+    "the_lookalike_case_is_the_point": "`custom_step_named_acl_check_is_not_the_builtin` requires actually building that strategy. A driver that skips it because building one is awkward has removed the only case that distinguishes a type/capability test from a name test.",
+    "approval_gate_is_conditional": "The driver MUST control whether the registered control modules declare requires_approval. A driver that registers only annotated control modules cannot distinguish the corrected formula from the v1.15.0 one that shipped wrong.",
+    "purity": "For at least one case the driver MUST call the accessor twice and assert the two results are equal, and MUST assert the approval handler is never invoked. 6.6.5.3 forbids the accessor from enforcing, warning, throwing or mutating.",
+    "liveness": "For at least one case the driver MUST call the accessor, attach an ACL, and call again -- the second result MUST reflect the change. A cached value passes every static case."
+  },
+  "test_cases": [
+    {
+      "id": "no_system_modules",
+      "note": "Nothing registered, nothing to gate.",
+      "setup": {
+        "control_modules": [],
+        "read_modules": false,
+        "strategy": "standard",
+        "acl_attached": false,
+        "approval_handler_attached": false,
+        "policy_strict": false
+      },
+      "expected": {
+        "control_modules_registered": false,
+        "read_modules_registered": false,
+        "acl_configured": false,
+        "builtin_acl_gate_wired": true,
+        "approval_handler_configured": false,
+        "builtin_approval_gate_wired": true,
+        "policy_strict": false,
+        "all_control_modules_require_approval": false,
+        "unprotected_control_surface": false
+      }
+    },
+    {
+      "id": "read_modules_only",
+      "note": "Read-only modules with no ACL is an information-disclosure question, not a control-plane one. The flag MUST NOT fire on a configuration with no write surface at all.",
+      "setup": {
+        "control_modules": [],
+        "read_modules": true,
+        "strategy": "standard",
+        "acl_attached": false,
+        "approval_handler_attached": false,
+        "policy_strict": false
+      },
+      "expected": {
+        "control_modules_registered": false,
+        "read_modules_registered": true,
+        "acl_configured": false,
+        "builtin_acl_gate_wired": true,
+        "approval_handler_configured": false,
+        "builtin_approval_gate_wired": true,
+        "policy_strict": false,
+        "all_control_modules_require_approval": false,
+        "unprotected_control_surface": false
+      }
+    },
+    {
+      "id": "control_modules_no_gates",
+      "note": "All gates absent. The condition the flag exists to report.",
+      "setup": {
+        "control_modules": [
+          {
+            "module_id": "system.control.reload_module",
+            "requires_approval": true
+          }
+        ],
+        "read_modules": true,
+        "strategy": "standard",
+        "acl_attached": false,
+        "approval_handler_attached": false,
+        "policy_strict": false
+      },
+      "expected": {
+        "control_modules_registered": true,
+        "read_modules_registered": true,
+        "acl_configured": false,
+        "builtin_acl_gate_wired": true,
+        "approval_handler_configured": false,
+        "builtin_approval_gate_wired": true,
+        "policy_strict": false,
+        "all_control_modules_require_approval": true,
+        "unprotected_control_surface": true
+      }
+    },
+    {
+      "id": "acl_configured_and_wired",
+      "note": "ACL attached to a strategy that contains acl_check.",
+      "setup": {
+        "control_modules": [
+          {
+            "module_id": "system.control.reload_module",
+            "requires_approval": true
+          }
+        ],
+        "read_modules": true,
+        "strategy": "standard",
+        "acl_attached": true,
+        "approval_handler_attached": false,
+        "policy_strict": false
+      },
+      "expected": {
+        "control_modules_registered": true,
+        "read_modules_registered": true,
+        "acl_configured": true,
+        "builtin_acl_gate_wired": true,
+        "approval_handler_configured": false,
+        "builtin_approval_gate_wired": true,
+        "policy_strict": false,
+        "all_control_modules_require_approval": true,
+        "unprotected_control_surface": false
+      }
+    },
+    {
+      "id": "acl_configured_but_no_acl_step",
+      "note": "THE case the accessor exists for: set_acl() on an executor running `internal`, which removes acl_check. `acl != null` reports this as protected; it is not.",
+      "setup": {
+        "control_modules": [
+          {
+            "module_id": "system.control.reload_module",
+            "requires_approval": true
+          }
+        ],
+        "read_modules": true,
+        "strategy": "internal",
+        "acl_attached": true,
+        "approval_handler_attached": false,
+        "policy_strict": false
+      },
+      "expected": {
+        "control_modules_registered": true,
+        "read_modules_registered": true,
+        "acl_configured": true,
+        "builtin_acl_gate_wired": false,
+        "approval_handler_configured": false,
+        "builtin_approval_gate_wired": false,
+        "policy_strict": false,
+        "all_control_modules_require_approval": true,
+        "unprotected_control_surface": true
+      }
+    },
+    {
+      "id": "custom_step_named_acl_check_is_not_the_builtin",
+      "note": "A step whose NAME is acl_check and whose TYPE/capability is not the built-in gate. builtin_acl_gate_wired MUST be false. This is the case that decides whether an implementation detects gates by type/capability or by name, and a name-based one fails it in the direction that reports a gate that is not there.",
+      "setup": {
+        "control_modules": [
+          {
+            "module_id": "system.control.reload_module",
+            "requires_approval": true
+          }
+        ],
+        "read_modules": true,
+        "strategy": "lookalike_acl_check",
+        "acl_attached": true,
+        "approval_handler_attached": false,
+        "policy_strict": false
+      },
+      "expected": {
+        "control_modules_registered": true,
+        "read_modules_registered": true,
+        "acl_configured": true,
+        "builtin_acl_gate_wired": false,
+        "approval_handler_configured": false,
+        "builtin_approval_gate_wired": false,
+        "policy_strict": false,
+        "all_control_modules_require_approval": true,
+        "unprotected_control_surface": true
+      }
+    },
+    {
+      "id": "handler_wired_but_control_modules_unannotated",
+      "note": "Gate wired and a handler attached, but the control modules do not declare requires_approval, so the gate returns before consulting the handler and nothing is gated. MUST be true. The spec v1.15.0 formula answered false.",
+      "setup": {
+        "control_modules": [
+          {
+            "module_id": "system.control.custom_thing",
+            "requires_approval": false
+          }
+        ],
+        "read_modules": true,
+        "strategy": "standard",
+        "acl_attached": false,
+        "approval_handler_attached": true,
+        "policy_strict": false
+      },
+      "expected": {
+        "control_modules_registered": true,
+        "read_modules_registered": true,
+        "acl_configured": false,
+        "builtin_acl_gate_wired": true,
+        "approval_handler_configured": true,
+        "builtin_approval_gate_wired": true,
+        "policy_strict": false,
+        "all_control_modules_require_approval": false,
+        "unprotected_control_surface": true
+      }
+    },
+    {
+      "id": "strict_policy_control_modules_unannotated",
+      "note": "The same hole via the other branch: strict never fires on a call the gate does not engage on. MUST be true.",
+      "setup": {
+        "control_modules": [
+          {
+            "module_id": "system.control.custom_thing",
+            "requires_approval": false
+          }
+        ],
+        "read_modules": true,
+        "strategy": "standard",
+        "acl_attached": false,
+        "approval_handler_attached": false,
+        "policy_strict": true
+      },
+      "expected": {
+        "control_modules_registered": true,
+        "read_modules_registered": true,
+        "acl_configured": false,
+        "builtin_acl_gate_wired": true,
+        "approval_handler_configured": false,
+        "builtin_approval_gate_wired": true,
+        "policy_strict": true,
+        "all_control_modules_require_approval": false,
+        "unprotected_control_surface": true
+      }
+    },
+    {
+      "id": "handler_wired_and_control_modules_annotated",
+      "note": "Positive control for the two above \u2014 annotation present, so the handler is genuinely consulted. MUST be false.",
+      "setup": {
+        "control_modules": [
+          {
+            "module_id": "system.control.reload_module",
+            "requires_approval": true
+          }
+        ],
+        "read_modules": true,
+        "strategy": "standard",
+        "acl_attached": false,
+        "approval_handler_attached": true,
+        "policy_strict": false
+      },
+      "expected": {
+        "control_modules_registered": true,
+        "read_modules_registered": true,
+        "acl_configured": false,
+        "builtin_acl_gate_wired": true,
+        "approval_handler_configured": true,
+        "builtin_approval_gate_wired": true,
+        "policy_strict": false,
+        "all_control_modules_require_approval": true,
+        "unprotected_control_surface": false
+      }
+    },
+    {
+      "id": "some_control_modules_unannotated",
+      "note": "Partial coverage is a hole, not partial protection: one ungated system.control.* module is reachable without approval.",
+      "setup": {
+        "control_modules": [
+          {
+            "module_id": "system.control.reload_module",
+            "requires_approval": true
+          },
+          {
+            "module_id": "system.control.custom_thing",
+            "requires_approval": false
+          }
+        ],
+        "read_modules": true,
+        "strategy": "standard",
+        "acl_attached": false,
+        "approval_handler_attached": true,
+        "policy_strict": false
+      },
+      "expected": {
+        "control_modules_registered": true,
+        "read_modules_registered": true,
+        "acl_configured": false,
+        "builtin_acl_gate_wired": true,
+        "approval_handler_configured": true,
+        "builtin_approval_gate_wired": true,
+        "policy_strict": false,
+        "all_control_modules_require_approval": false,
+        "unprotected_control_surface": true
+      }
+    },
+    {
+      "id": "strict_policy_no_handler_all_annotated",
+      "note": "ExecutionPolicy(strict=true) with no handler: the gate engages (all annotated) and fails closed, so the surface is gated even though approval_handler_configured is false.",
+      "setup": {
+        "control_modules": [
+          {
+            "module_id": "system.control.reload_module",
+            "requires_approval": true
+          }
+        ],
+        "read_modules": true,
+        "strategy": "standard",
+        "acl_attached": false,
+        "approval_handler_attached": false,
+        "policy_strict": true
+      },
+      "expected": {
+        "control_modules_registered": true,
+        "read_modules_registered": true,
+        "acl_configured": false,
+        "builtin_acl_gate_wired": true,
+        "approval_handler_configured": false,
+        "builtin_approval_gate_wired": true,
+        "policy_strict": true,
+        "all_control_modules_require_approval": true,
+        "unprotected_control_surface": false
+      }
+    },
+    {
+      "id": "both_gates_configured_and_wired",
+      "note": "Fully gated. Without this an implementation hardcoding true passes most of the cases above.",
+      "setup": {
+        "control_modules": [
+          {
+            "module_id": "system.control.reload_module",
+            "requires_approval": true
+          }
+        ],
+        "read_modules": true,
+        "strategy": "standard",
+        "acl_attached": true,
+        "approval_handler_attached": true,
+        "policy_strict": false
+      },
+      "expected": {
+        "control_modules_registered": true,
+        "read_modules_registered": true,
+        "acl_configured": true,
+        "builtin_acl_gate_wired": true,
+        "approval_handler_configured": true,
+        "builtin_approval_gate_wired": true,
+        "policy_strict": false,
+        "all_control_modules_require_approval": true,
+        "unprotected_control_surface": false
+      }
+    }
+  ]
+}

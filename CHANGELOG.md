@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`conformance/fixtures/usage_contract.json` (11 cases) and `governance_state.json` (12 cases), driven by all three SDKs (#96, #97).** The two sections that were marked PENDING now cite landed fixtures, and `docs/features/core-executor.md` drops its not-implemented banner: `governance_state()` ships in apcore-python, apcore-typescript and apcore-rust.
+
+  `usage_contract.json` pins the two value semantics no JSON Schema can assert — a full-history `call_count` and an off-by-one `p99_latency_ms` are both well-typed numbers in the right field. `governance_state.json` includes the lookalike case (a custom step *named* `acl_check`) and the three cases that discriminate the corrected v1.16.0 derived flag from the unsound one published in v1.15.0.
+
+  Both were verified against a mutated fixture before landing: flipping the discriminating governance case to the v1.15.0 answer, and the p99 worked example to 100, reds exactly those two cases in all three SDKs. A case that cannot go red is not coverage.
+
+  Two adjustments the drivers forced, recorded in each fixture's `driver_contract`. Backdated records are expressed as `at_offset` (`"-2h"`) rather than absolute instants, because the SDKs window against the real clock and a fixed date would put every record outside every window — the period cases would pass for the wrong reason. And the unattributed-caller case must be recorded through the SDK's own usage-recording path, not by handing a null to `UsageCollector.record()`: apcore-python and apcore-typescript substitute `"unknown"` in `UsageMiddleware` while apcore-rust does it in the caller breakdown, so driving the collector directly tests a different API in each SDK.
+
 ### Fixed
 
 - **`unprotected_control_surface` as published in spec v1.15.0 was unsound; corrected in v1.16.0 (#97).** The formula treated a wired approval gate plus either a handler or `ExecutionPolicy(strict=true)` as sufficient to conclude that a gate stands in front of `system.control.*`. It is not, because the two gates are not symmetric: `acl_check` evaluates every call, while `approval_gate` resolves per module and returns **before** consulting the handler when the module does not need approval — all three SDKs short-circuit there (apcore-typescript `builtin-steps.ts:401`, apcore-python `builtin_steps.py:453`, apcore-rust `builtin_steps.rs:623`). Since §6.7 makes `requires_approval` on control modules a **SHOULD**, an ordinary conformant deployment can register `system.control.*` modules that the gate never engages on, and the published flag reported that as gated. A false `false` — the one direction §6.6.5.2 declares the flag must never fail in, written into the formula by the same change that declared it forbidden. Adds a ninth field `all_control_modules_require_approval` as a required conjunct, new §6.6.5.1.1 explaining the asymmetry, and four fixture cases of which three discriminate the corrected formula from the published one. No SDK had implemented `governance_state()`, so nothing shipped the wrong behaviour.
