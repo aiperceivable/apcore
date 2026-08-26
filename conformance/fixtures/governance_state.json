@@ -141,6 +141,34 @@
       }
     },
     {
+      "id": "handler_configured_but_no_approval_step",
+      "note": "A handler is attached to an executor running `internal`, which removes approval_gate. The handler is configured and never reachable -- the mirror of `acl_configured_but_no_acl_step` on the approval side, and the case the #97 acceptance list names as 'control modules with handler but no approval step'.",
+      "setup": {
+        "control_modules": [
+          {
+            "module_id": "system.control.reload_module",
+            "requires_approval": true
+          }
+        ],
+        "read_modules": true,
+        "strategy": "internal",
+        "acl_attached": false,
+        "approval_handler_attached": true,
+        "policy_strict": false
+      },
+      "expected": {
+        "control_modules_registered": true,
+        "read_modules_registered": true,
+        "acl_configured": false,
+        "builtin_acl_gate_wired": false,
+        "approval_handler_configured": true,
+        "builtin_approval_gate_wired": false,
+        "policy_strict": false,
+        "all_control_modules_require_approval": true,
+        "unprotected_control_surface": true
+      }
+    },
+    {
       "id": "custom_step_named_acl_check_is_not_the_builtin",
       "note": "A step whose NAME is acl_check and whose TYPE/capability is not the built-in gate. builtin_acl_gate_wired MUST be false. This is the case that decides whether an implementation detects gates by type/capability or by name, and a name-based one fails it in the direction that reports a gate that is not there.",
       "setup": {
