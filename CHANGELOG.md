@@ -49,6 +49,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   Governance: maintainer approval per GOVERNANCE.md § Decision Making; no tracking issue was opened.
 
+- **`sys-health-*.schema.json` rejected the output every SDK emits.** The `status` enum was `["healthy", "degraded", "unhealthy"]`. All three SDKs classify as `healthy` / `degraded` / `error` / `unknown` and emit `unhealthy` nowhere; neither does any page under `docs/`, `conformance/` or `README.md`. `system-modules.md`'s own classification table lists the four the SDKs use. Corrected to those four, along with `sys-health-summary.schema.json`'s `unhealthy` COUNT field, which splits into `error` and `unknown` for the same reason.
+
+  Two adjacent gaps surfaced while validating real output against the corrected file: the summary's `modules[]` items declared only `module_id` and `status` under `additionalProperties: false`, while all three SDKs also emit `error_rate` and a `top_error` object — so the schema rejected a conforming payload on two counts, not one. Both are now declared, `top_error` with the `{code, message, ai_guidance, count}` shape the three SDKs build identically.
+
+  Verified by validating apcore-python's live `system.health.summary` / `system.health.module` output and the worked example in `docs/features/system-modules.md` against the corrected schemas, and by confirming the previous version rejects both.
+
 - **§9.14's unknown-key walk is recursive, and was specified as one level (spec v1.19.0).** `schemas/apcore-config.schema.json` and its siblings are `additionalProperties: false` at every level, not only at the section root: `observability.tracing`, `acl.audit`, `validation.binding` and `obs.redaction` are each closed in their own right. `reject_unknown_framework_keys` iterated only a section's direct children, so strict mode was blind exactly where a typo is hardest to spot — `observability.tracing.sampling_rat` passed the check because its parent `tracing` is declared, while the canonical schema rejects it, and the misspelled sampling rate fell back to its default with no error and no log line.
 
   The pseudocode was the outlier, not the schema. apcore-typescript already walked the full depth; apcore-python and apcore-rust matched the one-level pseudocode and are corrected. This is the specification catching up to a closedness it already declared, so it is a MINOR bump rather than a new requirement: `strict` still defaults to `false`, and no configuration changes behaviour unless its author opted in.

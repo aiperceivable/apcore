@@ -39,9 +39,13 @@
           "type": "integer",
           "description": "Number of degraded modules."
         },
-        "unhealthy": {
+        "error": {
           "type": "integer",
-          "description": "Number of unhealthy modules."
+          "description": "Number of modules in the `error` tier."
+        },
+        "unknown": {
+          "type": "integer",
+          "description": "Number of modules that have recorded no calls yet."
         }
       }
     },
@@ -58,8 +62,39 @@
           },
           "status": {
             "type": "string",
-            "description": "Health status: healthy, degraded, or unhealthy.",
-            "enum": ["healthy", "degraded", "unhealthy"]
+            "description": "Health status. `unknown` means the module has recorded no calls yet; `error` is the top tier, above `degraded`.",
+            "enum": ["healthy", "degraded", "error", "unknown"]
+          },
+          "error_rate": {
+            "type": "number",
+            "description": "Failed calls over total calls, 0.0-1.0. Zero when the module has recorded no calls.",
+            "minimum": 0.0,
+            "maximum": 1.0
+          },
+          "top_error": {
+            "type": ["object", "null"],
+            "description": "The module's most frequent recorded error, or null when it has none.",
+            "additionalProperties": false,
+            "required": ["code", "message", "count"],
+            "properties": {
+              "code": {
+                "type": "string",
+                "description": "Canonical error code."
+              },
+              "message": {
+                "type": "string",
+                "description": "Error message."
+              },
+              "ai_guidance": {
+                "type": ["string", "null"],
+                "description": "Remediation guidance for an AI caller, when the error carries one."
+              },
+              "count": {
+                "type": "integer",
+                "description": "How many times this error was recorded.",
+                "minimum": 1
+              }
+            }
           }
         }
       }

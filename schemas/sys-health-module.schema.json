@@ -13,8 +13,8 @@
     },
     "status": {
       "type": "string",
-      "description": "Health status: healthy, degraded, or unhealthy.",
-      "enum": ["healthy", "degraded", "unhealthy"]
+      "description": "Health status. `unknown` means the module has recorded no calls yet; `error` is the top tier, above `degraded`.",
+      "enum": ["healthy", "degraded", "error", "unknown"]
     },
     "total_calls": {
       "type": "integer",
