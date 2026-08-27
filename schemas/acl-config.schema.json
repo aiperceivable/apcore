@@ -4,7 +4,9 @@
   "title": "apcore ACL Configuration Schema",
   "description": "JSON Schema for validating ACL YAML configuration files. Based on PROTOCOL_SPEC Section 6.",
   "type": "object",
-  "required": ["rules"],
+  "required": [
+    "rules"
+  ],
   "additionalProperties": false,
   "properties": {
     "$schema": {
@@ -14,19 +16,25 @@
     },
     "version": {
       "type": "string",
-      "description": "ACL configuration version.",
-      "pattern": "^\\d+\\.\\d+\\.\\d+(-[a-zA-Z0-9.]+)?(\\+[a-zA-Z0-9.]+)?$",
-      "examples": ["1.0.0"]
+      "description": "ACL configuration version. MAJOR.MINOR or MAJOR.MINOR.PATCH. The PATCH component is optional because every documented ACL example in this repository uses the two-part form `\"1.0\"` (docs/features/acl-system.md, docs/guides/acl-configuration.md, examples/acl/agent-tool-governance.yaml) — a full-semver pattern rejected the repository's own shipped example. No SDK reads this field.",
+      "pattern": "^\\d+\\.\\d+(\\.\\d+)?(-[a-zA-Z0-9.]+)?(\\+[a-zA-Z0-9.]+)?$",
+      "examples": [
+        "1.0",
+        "1.0.0"
+      ]
     },
     "default_effect": {
       "type": "string",
       "description": "Default effect when no rule matches a caller/target pair. MUST be 'allow' or 'deny'. Defaults to 'deny' for security.",
-      "enum": ["allow", "deny"],
+      "enum": [
+        "allow",
+        "deny"
+      ],
       "default": "deny"
     },
     "rules": {
       "type": "array",
-      "description": "Ordered list of ACL rules. Rules are evaluated by priority (higher first), then by definition order. For same priority, deny takes precedence over allow.",
+      "description": "Ordered list of ACL rules. Rules are evaluated in DEFINITION ORDER using a first-match-wins strategy — the first rule whose caller and target patterns both match determines the decision (PROTOCOL_SPEC §6.3). They are NOT sorted by priority, and there is no deny-over-allow precedence at equal priority.",
       "items": {
         "$ref": "#/$defs/ACLRule"
       }
@@ -39,15 +47,23 @@
     "ACLRule": {
       "type": "object",
       "description": "A single ACL rule that matches callers against targets and applies an effect.",
-      "required": ["callers", "targets", "effect"],
+      "required": [
+        "callers",
+        "targets",
+        "effect"
+      ],
       "additionalProperties": false,
       "properties": {
         "id": {
           "type": "string",
-          "description": "Optional unique identifier for this rule, used for logging and debugging.",
+          "description": "RESERVED — not evaluated by any implementation. PROTOCOL_SPEC §6.3 states that `id`, `actions` and `priority` are reserved for future specification versions and SHOULD NOT be used. Retained so existing files still validate; the logging/debugging identifier has no effect on rule evaluation.",
           "pattern": "^[a-z][a-z0-9_]*$",
           "maxLength": 64,
-          "examples": ["api_to_orchestrator", "deny_executor_to_api"]
+          "examples": [
+            "api_to_orchestrator",
+            "deny_executor_to_api"
+          ],
+          "deprecated": true
         },
         "callers": {
           "type": "array",
@@ -58,7 +74,20 @@
             "maxLength": 192
           },
           "minItems": 1,
-          "examples": [["orchestrator.*"], ["api.handler.task_submit"], ["@external"], ["*"]]
+          "examples": [
+            [
+              "orchestrator.*"
+            ],
+            [
+              "api.handler.task_submit"
+            ],
+            [
+              "@external"
+            ],
+            [
+              "*"
+            ]
+          ]
         },
         "targets": {
           "type": "array",
@@ -69,29 +98,53 @@
             "maxLength": 192
           },
           "minItems": 1,
-          "examples": [["executor.*"], ["common.*"], ["*"]]
+          "examples": [
+            [
+              "executor.*"
+            ],
+            [
+              "common.*"
+            ],
+            [
+              "*"
+            ]
+          ]
         },
         "actions": {
           "type": "array",
-          "description": "List of actions this rule applies to. If omitted, defaults to ['*'] (all actions).",
+          "description": "RESERVED — not evaluated by any implementation. PROTOCOL_SPEC §6.3 states that `id`, `actions` and `priority` are reserved for future specification versions and SHOULD NOT be used. Retained so existing files still validate; the action list has no effect on rule evaluation.",
           "items": {
             "type": "string",
-            "enum": ["execute", "validate", "describe", "*"]
+            "enum": [
+              "execute",
+              "validate",
+              "describe",
+              "*"
+            ]
           },
-          "default": ["*"],
-          "examples": [["execute"], ["execute", "validate"]]
+          "examples": [
+            [
+              "execute"
+            ],
+            [
+              "execute",
+              "validate"
+            ]
+          ],
+          "deprecated": true
         },
         "effect": {
           "type": "string",
           "description": "The effect to apply when this rule matches. 'allow' permits the call, 'deny' rejects it.",
-          "enum": ["allow", "deny"]
+          "enum": [
+            "allow",
+            "deny"
+          ]
         },
         "priority": {
           "type": "integer",
-          "description": "Rule priority. Higher numbers mean higher priority (evaluated first). At the same priority level, deny takes precedence over allow.",
-          "minimum": 0,
-          "maximum": 1000,
-          "default": 0
+          "description": "RESERVED — not evaluated by any implementation. PROTOCOL_SPEC §6.3 states that `id`, `actions` and `priority` are reserved for future specification versions and SHOULD NOT be used. Retained so existing files still validate; the priority ordering has no effect on rule evaluation.",
+          "deprecated": true
         },
         "description": {
           "type": "string",
@@ -113,18 +166,37 @@
           "description": "Only match when the caller's identity type is one of these values.",
           "items": {
             "type": "string",
-            "enum": ["user", "service", "agent", "api_key", "system"]
+            "minLength": 1,
+            "description": "An identity type. PROTOCOL_SPEC §5 declares this a free-form string; the well-known values are shown in examples. conformance/fixtures/acl_agent_scoping.json uses `ai`, which a closed enum rejected.",
+            "examples": [
+              "user",
+              "service",
+              "agent",
+              "api_key",
+              "system",
+              "ai"
+            ]
           },
-          "examples": [["user", "agent"]]
+          "examples": [
+            [
+              "user",
+              "agent"
+            ]
+          ]
         },
-        "identity_roles": {
+        "roles": {
           "type": "array",
-          "description": "Only match when the caller has at least one of these roles.",
+          "description": "Only match when the caller has at least one of these roles. Named `roles` per PROTOCOL_SPEC §6.3; the schema previously called this `identity_roles`, a name that appears in no document, example or fixture.",
           "items": {
             "type": "string",
             "minLength": 1
           },
-          "examples": [["admin", "super_admin"]]
+          "examples": [
+            [
+              "admin",
+              "super_admin"
+            ]
+          ]
         },
         "time_window": {
           "type": "object",
@@ -150,6 +222,31 @@
           "description": "Only match when call chain depth does not exceed this value.",
           "minimum": 1,
           "maximum": 100
+        },
+        "$or": {
+          "type": "array",
+          "description": "Compound: passes if ANY sub-condition object passes; each sub-object's keys are AND-ed internally. Sub-objects MAY nest further compound operators. PROTOCOL_SPEC §6.3.",
+          "items": {
+            "$ref": "#/$defs/RuleConditions"
+          },
+          "examples": [
+            [
+              {
+                "roles": [
+                  "admin"
+                ]
+              },
+              {
+                "identity_types": [
+                  "system"
+                ]
+              }
+            ]
+          ]
+        },
+        "$not": {
+          "$ref": "#/$defs/RuleConditions",
+          "description": "Compound: passes if the wrapped condition object FAILS. An empty object MUST evaluate to false (fail-closed). PROTOCOL_SPEC §6.3."
         }
       }
     },
@@ -166,7 +263,13 @@
         "log_level": {
           "type": "string",
           "description": "Audit log level.",
-          "enum": ["trace", "debug", "info", "warn", "error"],
+          "enum": [
+            "trace",
+            "debug",
+            "info",
+            "warn",
+            "error"
+          ],
           "default": "info"
         },
         "include_denied": {

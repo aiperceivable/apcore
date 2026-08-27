@@ -622,7 +622,7 @@ _config:
 observability:
   tracing:
     enabled: true
-    samplingRate: 1.0
+    sampling_rate: 1.0
 
 my-plugin:
   timeout: 10000
