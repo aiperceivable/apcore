@@ -99,7 +99,7 @@ Normative behavioral contract. All SDK implementations MUST satisfy these guaran
 
 - `module_id`: string, required. Must pass module-ID validation (see Schema System). Empty, malformed, or reserved IDs MUST be rejected before any mutation of the registry.
 - `module`: Module instance, required. Must implement the module protocol (`description`, `input_schema`, `output_schema`, `execute`).
-- `metadata`: mapping, optional. When an implementation accepts it, a `dependencies` entry — a list of `{module_id, version?, optional?}` objects — reaches the registered module's descriptor, so `get_definition(module_id).dependencies` returns what the caller declared. All three SDKs behave this way.
+- `metadata`: mapping, optional. When an implementation accepts it, a `dependencies` entry — a list of `{module_id, version?, optional?}` objects — reaches the registered module's descriptor as a **parsed** field, so `get_definition(module_id).dependencies` returns what the caller declared in the SDK's dependency type.
 
 !!! info "Normative as of spec v1.10.0"
 
@@ -108,6 +108,10 @@ Normative behavioral contract. All SDK implementations MUST satisfy these guaran
     That gap is why each of the three lost it at least once and each was fixed independently (apcore-python `ad2998d`, apcore-typescript#35, apcore-rust#35). The loss is quiet by construction: discovery-time dependency sorting reads its own parse and keeps working, so `resolve_dependencies` looks healthy, while the post-registration accessor returns nothing and a dependency-ordered reload degrades to the sort's seed order — usually alphabetical, therefore plausible, therefore not reported.
 
     The ordered side effects, the in-flight reservation and the visibility rule stay on this page; §12.2 carries the signature and the data-survival requirement. Governance: [apcore#90](https://github.com/aiperceivable/apcore/issues/90).
+
+    **Correction (spec v1.18.0).** The v1.10.0 version-history row closed with "No SDK behaviour change: all three already satisfy the requirement." That was true of the DATA surviving and false of the accessor this section names. Only apcore-rust carried a parsed `dependencies` field on the descriptor: apcore-python surfaced the unparsed list nested under `descriptor.metadata`, and apcore-typescript surfaced it on neither — `system.manifest.*` consequently reported `dependencies: []` for every module that declared them, while apcore-python reported the real list over the same wire contract.
+
+    §12.2's rationale was wrong in its specifics too. It read "Reload ordering reads that accessor", which holds only for apcore-rust; apcore-python and apcore-typescript order reloads from `get_module_metadata()`. That is the sole reason the missing field never surfaced as a bug — and it left a trap, because refactoring either reload path onto the more natural-looking `get_definition()` would have silently degraded ordering to alphabetical. Both SDKs now carry the parsed field, and §12.2 states the invariant that actually holds rather than a mechanism that does not.
 
 !!! info "Multi-version registration (optional, Phase B)"
     SDKs MAY accept additional `version` and `metadata` parameters to support [§5.4 Multi-version Coexistence](../spec/protocol-spec.md#54-multi-version-coexistence). When supported, the same `module_id` MAY be registered with multiple distinct versions, and `Registry.get(module_id, version_hint=...)` resolves via semantic-version range matching.
@@ -545,6 +549,7 @@ Normative behavioral contract. All SDK implementations MUST satisfy these guaran
 | `examples` | object[] | `ModuleExample[]`; empty list if absent |
 | `metadata` | object | Arbitrary extension metadata; `{}` if absent |
 | `sunset_date` | string \| null | ISO 8601 date or null |
+| `dependencies` | object[] | Parsed `{module_id, version?, optional?}` records; `[]` if none declared. Structural data the framework consumes for load/reload ordering — NOT part of `metadata`, which this table defines as arbitrary extension data |
 
 - On success (not found): `None` (Python), `null` (TypeScript).
 

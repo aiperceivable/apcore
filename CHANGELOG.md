@@ -13,6 +13,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.28.0] - 2026-08-27
 
+### Changed
+
+- **`dependencies` is now a parsed field on the module descriptor in all three SDKs (spec v1.18.0, #90 follow-up).** PROTOCOL_SPEC §12.2 has required since v1.10.0 that a `dependencies` entry in `metadata` reach the registered module's descriptor "so that `get_definition(module_id).dependencies` returns what the caller declared", and the v1.10.0 row closed with "No SDK behaviour change: all three already satisfy the requirement."
+
+  That was true of the data surviving and false of the accessor. Only apcore-rust carried a parsed `Vec<DependencyInfo>`. apcore-python surfaced the unparsed list nested under `descriptor.metadata`, so `hasattr(descriptor, "dependencies")` was False. apcore-typescript surfaced it on neither `getDefinition().dependencies` nor `descriptor.metadata` — `mergeModuleMetadata` extracts `dependencies` as a canonical field, so it never landed in the metadata bag either.
+
+  That had a shipping consequence: `system.manifest.*` in apcore-typescript read `descriptor.metadata['dependencies']` and therefore reported `dependencies: []` for **every** module that declared them, while apcore-python reported the real list over the same wire contract. Verified before and after; the two now emit identical payloads.
+
+  The requirement is restated as a **parsed** field because the distinction is the point. `metadata` is defined by the `get_definition` Returns table as arbitrary extension data — the `x-` layer of the three-layer model — while dependencies are structural data the framework itself consumes for load and reload ordering. Carried in the extension bag, the `{module_id, version?, optional?}` parse falls on every consumer: `sys_modules/control.py` imported `parse_dependencies` inside its reload function to do exactly that.
+
+  §12.2's rationale is corrected alongside. It read "Reload ordering reads that accessor", which holds only for apcore-rust — apcore-python and apcore-typescript order reloads from `get_module_metadata()`. That is the sole reason the missing field never surfaced as a bug, and it left a trap: refactoring either reload path onto the more natural-looking `get_definition()` would have silently degraded ordering to its sort's alphabetical seed order. Tests in both SDKs now assert the two accessors agree.
+
+  `features/registry-system.md`'s `get_definition` Returns table gains the `dependencies` row it never declared — the table listed twelve fields while the register Contract on the same page referenced a thirteenth.
+
+  `display` and `enabled`, which apcore-rust also carries on its descriptor and the table also omits, are deliberately left open rather than bundled: `display` is accepted as a parameter by all three but promoted only by Rust and is named nowhere in the specification, and `enabled` is not a shared concept — Rust has a registry-level flag mutated by `Registry::enable/disable` while the other two route enable/disable through `ToggleState` (`system.control.toggle_feature`). Unifying that means deciding which enable/disable mechanism is canonical, which this change has no business answering.
+
+  Governance: maintainer approval per GOVERNANCE.md § Decision Making; no tracking issue was opened.
+
 ### Fixed
 
 - **PROTOCOL_SPEC §9.15.3 declared the `sys_modules` activation flags `True` while citing a schema that says `false` (spec v1.17.0).** The `Config.register_namespace("sys_modules", ...)` block passes `schema="schemas/sys-modules.schema.json"` and then, four lines below, declares `defaults={"enabled": True, ..., "events": {"enabled": True, ...}}`. That schema declares both keys `default: false`. So does §6.6.3 of the same document, which states the 0 / 6 / 9 activation ladder in terms of exactly those two flags; so does `conformance/fixtures/config_defaults.json`; and so do all three SDKs. §9.15.3 was the only dissenting authority, and it dissented from a file it names on the preceding line.
