@@ -49,6 +49,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   Governance: maintainer approval per GOVERNANCE.md § Decision Making; no tracking issue was opened.
 
+- **`check_expected_keys_read.py` reported "0 unread" partly by accident.** Its `is_read()` searched a key literal across EVERY test file in each SDK repo, with no association to the fixture that declared it. Measured on the current tree: `stream_aggregation`'s `b` matched in 124 unrelated files, `schema_strict_conversion`'s `type` in 108, `properties` in 57. The visible symptom was the reverse direction — it reported the live allowlist entry `redaction_config.json: amount` as stale on the strength of one unrelated schema-coercion test in apcore-typescript.
+
+  Scoping the search to a fixture's own drivers, the way `check_driver_coverage.py` already resolves that relationship, then exposed the opposite failure: the BEST-written drivers name no key at all. `usage_contract`'s three drivers each end in a loop over `expected` comparing every entry, and were reported as leaving five keys unasserted. So the checker now also recognises a driver that iterates or deep-equals the whole `expected` map, in each language's idiom.
+
+  Two allowlist entries were removed rather than kept: `sensitive_keys_default.json` and `redaction_config.json` were exempted for exactly the reason the checker now detects. `approval_gate.json`'s stays — no SDK exposes the code-to-HTTP mapping it names.
+
+  Verified by removing the wholesale assertion from all three `usage_contract` drivers at once: the checker reports its five keys, and reports nothing when only one of the three is removed, which is the correct reading of "no driver asserts it".
+
 - **The documented config `version:` was an SDK release number in nine places.** `apcore-config.schema.json` describes that field as "Configuration version" and offers `1.0.0` as its example. PROTOCOL_SPEC §9.6 filled it with `0.14.0` across seven blocks, `config-bus.md` with `0.15.0`, and apcore-typescript's README with `0.26.0` — three different values for one field, none of them a configuration version, every one stale the moment the next release shipped. §9.1's own example, on the same field, uses `1.0.0`.
 
   Not cosmetic: a reader copies the block, and the number they copy looks like something to keep in step with their dependency. The same misreading seeded apcore-rust's default table, which carried `version: "0.16.0"` as "the frozen baseline spec version" while both peers supplied no default at all.

@@ -49,9 +49,29 @@ SDKS = {
 }
 
 
-def driver_text(sdk_root: Path) -> dict[str, str]:
-    """All test source per SDK, concatenated once."""
+def _fixture_pattern(fixture_stem: str) -> re.Pattern[str]:
+    """A quoted mention of `<stem>` or `<stem>.json` — how a loader names one.
+
+    Same rule as `check_driver_coverage.py`: quotes only, never backticks, so a
+    fixture named in a docstring does not read as a load.
+    """
+    return re.compile(r"""["']{re}(?:\.json)?["']""".format(re=re.escape(fixture_stem)))
+
+
+def drivers_for(sdk_root: Path, fixture_stem: str) -> dict[str, str]:
+    """Source of the test files that load `<fixture_stem>.json`, per SDK.
+
+    Scoping the search to a fixture's OWN drivers is the whole point. This used
+    to concatenate every test file in each repo and ask whether the key appeared
+    anywhere in it, so a key counted as read if any unrelated test happened to
+    contain the same short string: `stream_aggregation`'s `b` matched in 124
+    files, `schema_strict_conversion`'s `type` in 108. The check reported "0 read
+    by no driver" partly by accident, and reported a live allowlist entry as
+    stale on the strength of one unrelated schema-coercion test
+    (sync finding B-004).
+    """
     out: dict[str, str] = {}
+    pattern = _fixture_pattern(fixture_stem)
     for sdk, (repo, suffix) in SDKS.items():
         base = sdk_root / repo / "tests"
         if not base.is_dir():
@@ -59,18 +79,56 @@ def driver_text(sdk_root: Path) -> dict[str, str]:
         chunks = []
         for path in base.rglob(f"*{suffix}"):
             try:
-                chunks.append(path.read_text())
+                text = path.read_text()
             except (UnicodeDecodeError, OSError):
                 continue
+            if pattern.search(text):
+                chunks.append(text)
         out[sdk] = "\n".join(chunks)
     return out
 
 
-def is_read(key: str, text: dict[str, str]) -> bool:
-    """True when any driver names `key` as a string literal or subscript.
+def available_sdks(sdk_root: Path) -> list[str]:
+    """Which SDK checkouts are present — the script needs all three to be honest."""
+    return [sdk for sdk, (repo, _) in SDKS.items() if (sdk_root / repo / "tests").is_dir()]
 
-    Quote/bracket delimited so a key that merely appears inside prose does not
-    count — the same reason check_driver_coverage.py excludes backticks.
+
+#: How a driver asserts EVERY key of `expected` without naming any of them.
+#:
+#: This is the well-written form — iterate the expected map and compare each
+#: entry, or deep-equal the whole thing — and it contains no key literals at
+#: all. A literal search therefore reports the best drivers as asserting
+#: nothing: `usage_contract`'s Rust driver ends in
+#: `for (name, want) in expected { assert_eq!(&result[name], want) }` and was
+#: reported as leaving five keys unasserted (sync finding B-004).
+WHOLESALE_PATTERNS = [
+    # Python
+    r"\bexpected(?:\[[^\]]+\])?\.items\(\)",
+    r'\bcase\["expected"\]\.items\(\)',
+    r"==\s*case\[.expected.\]",
+    # TypeScript
+    r"toEqual\(\s*\w+\.expected",
+    r"toMatchObject\(\s*\w+\.expected",
+    r"Object\.entries\(\s*\w+\.expected",
+    r"Object\.entries\(\s*expected",
+    # Rust
+    r"for\s*\(\s*\w+\s*,\s*\w+\s*\)\s*in\s*(?:&)?expected",
+    r"for\s*\(\s*\w+\s*,\s*\w+\s*\)\s*in\s*case\[.expected.\]",
+]
+_WHOLESALE_RE = re.compile("|".join(WHOLESALE_PATTERNS))
+
+
+def asserts_wholesale(text: dict[str, str]) -> bool:
+    """True when any driver compares the whole `expected` map rather than named keys."""
+    return any(_WHOLESALE_RE.search(t) for t in text.values())
+
+
+def is_read(key: str, text: dict[str, str]) -> bool:
+    """True when a driver of this fixture names `key` as a literal or subscript.
+
+    Quote/bracket delimited so a key that merely appears in prose does not count
+    — the same reason `check_driver_coverage.py` excludes backticks. `text` must
+    already be scoped to the fixture's own drivers; see `drivers_for`.
     """
     pattern = re.compile(r"""["'\[]{k}["'\]]""".format(k=re.escape(key)))
     return any(pattern.search(t) for t in text.values())
@@ -103,10 +161,10 @@ def main() -> int:
     ap.add_argument("--write-baseline", action="store_true")
     args = ap.parse_args()
 
-    text = driver_text(args.sdk_root)
-    if len(text) < 3:
+    present = available_sdks(args.sdk_root)
+    if len(present) < 3:
         print(f"Need all three SDK checkouts under {args.sdk_root} "
-              f"(found: {', '.join(text) or 'none'}) — skipping.")
+              f"(found: {', '.join(present) or 'none'}) — skipping.")
         return 0
 
     allow = load_allowlist()
@@ -117,12 +175,16 @@ def main() -> int:
     for path in sorted(FIXTURES.glob("*.json")):
         stem = path.name
         fixture = json.loads(path.read_text())
+        # Scoped per fixture: only the files that load THIS one may vouch for
+        # its keys.
+        text = drivers_for(args.sdk_root, path.stem)
         keys = top_level_expected_keys(fixture)
+        wholesale = asserts_wholesale(text)
         total_keys += len(keys)
         allowed = allow.get(stem, set())
-        missing = sorted(k for k in keys if not is_read(k, text))
+        missing = [] if wholesale else sorted(k for k in keys if not is_read(k, text))
         for k in sorted(allowed & set(keys)):
-            if is_read(k, text):
+            if wholesale or is_read(k, text):
                 stale_allow.append(f"{stem}: {k}")
         flagged = [k for k in missing if k not in allowed]
         if flagged:
