@@ -163,12 +163,35 @@ Normative behavioral contract. All SDK implementations MUST satisfy these guaran
 
 ### Returns
 
-- On success: `None` (Python), `void` (TypeScript), `Ok(())` (Rust).
+- On success: `None` (Python), `Promise<void>` (TypeScript), `Ok(())` (Rust).
 - On failure: raises (Python/TypeScript) / returns `Err` (Rust).
+
+!!! info "Why TypeScript returns a promise (spec v1.20.0)"
+
+    `on_load` is **synchronous** in apcore-python and apcore-rust — the Rust
+    trait signature enforces it — so `register` completes the whole registration
+    before returning. apcore-typescript additionally accepts an **async**
+    `onLoad`, and returns a promise that resolves once it has run. Registration
+    is still synchronous for everything else: ID validation, the duplicate check
+    and every other error throw synchronously, and a module with no `onLoad` or
+    a synchronous one is visible before the promise resolves.
+
+    The two shapes are not interchangeable for a module author. A module written
+    with `async def on_load` and registered through apcore-python used to be
+    published and callable with none of its initialisation having run — the
+    coroutine was created, never awaited, and discarded, leaving only a
+    `RuntimeWarning` at the next garbage collection. As of apcore-python 0.28.0
+    that is refused with `MODULE_LOAD_ERROR` and the module is not published,
+    which is the same outcome any other failing `on_load` gets.
+
+    An SDK whose `register` awaits an async load hook **MUST** keep the module
+    invisible until it completes, and **MUST NOT** publish a module whose load
+    hook it cannot run.
 
 ### Properties
 
-- `async`: `false`.
+- `async`: `false` — with the TypeScript exception above: the operation is
+  synchronous, and the promise exists only to await an async `onLoad`.
 - `thread_safe`: `true` -- reentrant lock held during mutation. Single-threaded language runtimes (e.g., JavaScript) MAY treat the lock as a no-op.
 - `pure`: `false` -- mutates the internal store; may trigger external `on_load` side effects.
 - `idempotent`: `false` -- duplicate registration is an error, not a no-op.
