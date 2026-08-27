@@ -669,6 +669,34 @@ The APCore interface follows each language's idioms while maintaining functional
 ### Inputs
 - `middleware` (Middleware instance, required) — the exact middleware object to remove; identity comparison (`is`) is used, not equality (`==`); pass the same object reference returned or stored when originally calling `use()`, `use_before()`, or `use_after()`
 
+!!! info "Rust removes by handle, for a reason that is not about trait objects (spec v1.21.0)"
+
+    Identity removal needs the caller to still hold the thing it registered.
+    apcore-python and apcore-typescript do: `use()` borrows the object and the
+    caller keeps its reference. Rust's `use_middleware` **consumes** the `Box`,
+    so by the time a caller wants to remove one it has no pointer left to
+    compare against — the obstacle is ownership, not comparison. (`Arc::ptr_eq`
+    has ignored vtable metadata since Rust 1.76, below the crate's MSRV, so a
+    doc comment claiming trait objects cannot be compared by identity was
+    wrong, and wrong in the direction that made the gap look unfixable.)
+
+    So `use_middleware` returns a `MiddlewareHandle`, and `remove_handle(handle)`
+    removes exactly that registration. That is the identity this contract
+    requires, in the form the language allows, and it mirrors
+    `EventEmitter::subscribe` → `unsubscribe_handle`, which exists for the same
+    reason on the event bus.
+
+    `APCore::remove(name)` and `remove_middleware(&dyn Middleware)` remain, and
+    both resolve by `name()` — they remove the FIRST match in pipeline order.
+    That is not equivalent to identity removal: duplicate registration only
+    warns and always succeeds, so two instances answering one name is a
+    reachable state, and the name-based forms then drop whichever comes first
+    rather than the one the caller meant.
+
+    An SDK that cannot take the middleware object back **MUST** provide a token
+    issued at registration that removes exactly one registration, and **MUST
+    NOT** present a name-based removal as satisfying this contract.
+
 ### Errors
 - No errors raised under normal operation
 
