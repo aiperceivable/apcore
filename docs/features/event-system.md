@@ -950,6 +950,27 @@ Normative behavioral contract. All SDK implementations MUST satisfy these guaran
 
 - `subscriber` (EventSubscriber/EventSubscriber/&dyn EventSubscriber, required) — the subscriber instance to remove; MUST be the same object reference that was passed to `subscribe`.
 
+!!! note "Rust removes by handle, because ownership makes the reference rule unreachable"
+    apcore-python (`list.remove`) and apcore-typescript (`indexOf`) honour the
+    reference rule directly: the caller keeps its reference because those
+    runtimes pass objects by reference. apcore-rust's `subscribe` takes a
+    `Box<dyn EventSubscriber>` and therefore consumes it, so the caller has no
+    reference left to pass back — the rule as written cannot be satisfied.
+
+    `EventEmitter::subscribe` returns a `SubscriberHandle`, and
+    `unsubscribe_handle(handle)` removes exactly that subscription. The
+    `unsubscribe(&dyn EventSubscriber)` form is retained and approximates
+    identity by `subscriber_id()`, whose trait default is the literal
+    `"default"` — so two subscribers that do not override it are
+    indistinguishable and the first is removed. That case now warns rather than
+    removing the wrong one silently. Callers needing precise removal use the
+    handle, or assign each subscriber a unique id.
+
+    This is the same shape as `APCore.remove` in
+    [apcore-client.md](apcore-client.md): a by-instance contract that Rust's
+    ownership model cannot express, resolved with a stable identifier rather
+    than by pretending the reference survives.
+
 ### Errors
 
 - None. If `subscriber` is not currently registered, the call is a no-op. Implementations MUST NOT raise or panic on an unregistered subscriber.
