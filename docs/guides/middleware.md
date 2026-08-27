@@ -1198,21 +1198,24 @@ apcore provides a built-in `RetryMiddleware` with configurable backoff strategie
 
 === "Rust"
 
+    <!-- apcore-example: fragment -->
     ```rust
     use apcore::middleware::{RetryConfig, RetryMiddleware};
 
     // Default: 3 retries, exponential backoff, jitter enabled
     executor.use_middleware(Box::new(RetryMiddleware::new(RetryConfig::default())))?;
 
-    // Custom configuration
-    executor.use_middleware(Box::new(RetryMiddleware::new(RetryConfig {
-        max_retries: 5,
-        strategy: "fixed".to_string(), // "exponential" (default) or "fixed"
-        base_delay_ms: 200,            // Base delay between retries (default: 100)
-        max_delay_ms: 10_000,          // Cap for exponential growth (default: 5000)
-        jitter: true,                  // Add 0.5-1.5x random multiplier (default: true)
-        ..RetryConfig::default()
-    })))?;
+    // Custom configuration. `RetryConfig` is `#[non_exhaustive]`, so a downstream
+    // crate builds it from `Default::default()` and assigns fields — a struct
+    // literal, with or without `..RetryConfig::default()`, is E0639. See
+    // spec/api-surface-conventions.md §9.1.
+    let mut config = RetryConfig::default();
+    config.max_retries = 5;
+    config.strategy = "fixed".to_string(); // "exponential" (default) or "fixed"
+    config.base_delay_ms = 200;            // Base delay between retries (default: 100)
+    config.max_delay_ms = 10_000;          // Cap for exponential growth (default: 5000)
+    config.jitter = true;                  // Add 0.5-1.5x random multiplier (default: true)
+    executor.use_middleware(Box::new(RetryMiddleware::new(config)))?;
     ```
 
 **`RetryConfig` fields:**
@@ -1906,19 +1909,23 @@ In addition to class-based middleware, you can directly register functions using
 
 === "Rust"
 
+    <!-- apcore-example: fragment -->
     ```rust
     use apcore::executor::Executor;
     use apcore::middleware::{RetryConfig, RetryMiddleware};
 
     // Chain middleware (Rust uses sequential calls — `use_middleware`
-    // returns `Result<(), ModuleError>`, not `&Self`).
+    // returns `Result<MiddlewareHandle, ModuleError>`, not `&Self`; the handle
+    // identifies exactly this registration for `remove_handle`, and `?;`
+    // discards it when you do not need removal).
     executor.use_middleware(Box::new(LoggingMiddleware::default()))?;
     executor.use_middleware(Box::new(MetricsMiddleware::default()))?;
     executor.use_middleware(Box::new(CacheMiddleware::new(60.0)))?;
-    executor.use_middleware(Box::new(RetryMiddleware::new(RetryConfig {
-        max_retries: 3,
-        ..RetryConfig::default()
-    })))?;
+
+    // `RetryConfig` is `#[non_exhaustive]` — see spec/api-surface-conventions.md §9.1.
+    let mut retry = RetryConfig::default();
+    retry.max_retries = 3;
+    executor.use_middleware(Box::new(RetryMiddleware::new(retry)))?;
     ```
 
 ### 7.3 Conditional Middleware

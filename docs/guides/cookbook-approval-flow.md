@@ -197,43 +197,95 @@ The simplest case: the handler blocks until a human/policy returns a decision. U
 
 === "Rust"
     ```rust
-    use apcore::{APCore, ApprovalRequest, ApprovalResult, CallbackApprovalHandler,
-                 Config, Executor, Registry};
+    use apcore::{APCore, ApprovalHandler, ApprovalRequest, ApprovalResult,
+                 Config, Executor, ModuleError, Registry};
+    use async_trait::async_trait;
     use std::sync::Arc;
 
-    // Build the handler. CallbackApprovalHandler::new takes a closure
-    // returning a Future. Construct ApprovalResult by listing every field
-    // explicitly — there is no Default impl.
-    let handler = CallbackApprovalHandler::new(|req: ApprovalRequest| async move {
-        let amount = req.arguments["amount_cents"].as_i64().unwrap_or(0);
-        if amount > 100_00 {
-            let verdict = slack::ask_approval(&req).await?;
-            Ok(ApprovalResult {
-                status: if verdict.ok { "approved" } else { "rejected" }.into(),
-                approved_by: Some(verdict.user_email),
-                reason: Some(verdict.reason),
-                approval_id: None,
-                metadata: None,
-            })
-        } else {
-            Ok(ApprovalResult {
-                status: "approved".into(),
-                approved_by: Some("auto:policy".into()),
-                reason: Some("under threshold".into()),
-                approval_id: None,
-                metadata: None,
+    // The Python and TypeScript tabs call an undefined `slack` helper; Rust needs
+    // it to resolve at compile time, so it is stubbed here.
+    mod slack {
+        use apcore::{ApprovalRequest, ModuleError};
+
+        pub struct Verdict {
+            pub ok: bool,
+            pub user_email: String,
+            pub reason: String,
+        }
+
+        pub async fn ask_approval(_req: &ApprovalRequest) -> Result<Verdict, ModuleError> {
+            Ok(Verdict {
+                ok: true,
+                user_email: "reviewer@example.com".to_string(),
+                reason: "approved in #finance-approvals".to_string(),
             })
         }
-    });
+    }
+
+    // Rust's `CallbackApprovalHandler` takes a SYNCHRONOUS closure
+    // (`impl Fn(&ApprovalRequest) -> ApprovalResult`), so it cannot perform the
+    // Slack round-trip the Python and TypeScript tabs do. For an async decision,
+    // implement `ApprovalHandler` directly. See the note below this example.
+    #[derive(Debug)]
+    struct PolicyCheck;
+
+    #[async_trait]
+    impl ApprovalHandler for PolicyCheck {
+        async fn request_approval(
+            &self,
+            req: &ApprovalRequest,
+        ) -> Result<ApprovalResult, ModuleError> {
+            // Fields you can branch on: req.module_id, req.arguments, req.context
+            let amount = req.arguments["amount_cents"].as_i64().unwrap_or(0);
+
+            // `ApprovalResult` is `#[non_exhaustive]`: a downstream crate builds one
+            // from `Default::default()` and assigns fields. A struct literal — with
+            // or without `..Default::default()` — is E0639. See
+            // spec/api-surface-conventions.md §9.1.
+            let mut result = ApprovalResult::default();
+            if amount > 100_00 {
+                let verdict = slack::ask_approval(req).await?;
+                result.status = if verdict.ok { "approved" } else { "rejected" }.to_string();
+                result.approved_by = Some(verdict.user_email);
+                result.reason = Some(verdict.reason);
+            } else {
+                result.status = "approved".to_string();
+                result.approved_by = Some("auto:policy".to_string());
+                result.reason = Some("under threshold".to_string());
+            }
+            Ok(result)
+        }
+
+        async fn check_approval(
+            &self,
+            _approval_id: &str,
+        ) -> Result<ApprovalResult, ModuleError> {
+            let mut result = ApprovalResult::default();
+            result.status = "rejected".to_string();
+            result.reason = Some("Phase B not supported by this handler".to_string());
+            Ok(result)
+        }
+    }
 
     // APCore exposes only `executor()` (immutable), so to attach an
     // approval handler we construct the Executor up front and pass it via
     // APCore::with_options.
     let registry = Arc::new(Registry::default());
     let mut executor = Executor::new(registry.clone(), Arc::new(Config::default()));
-    executor.set_approval_handler(Box::new(handler));
+    executor.set_approval_handler(Box::new(PolicyCheck));
     let client = APCore::with_options(None, Some(executor), None, None);
     ```
+
+!!! warning "`CallbackApprovalHandler` is async in Python and TypeScript, synchronous in Rust"
+    `apcore-python` and `apcore-typescript` accept an async callback
+    (`Callable[[ApprovalRequest], Coroutine[..., ApprovalResult]]` and
+    `(request: ApprovalRequest) => Promise<ApprovalResult>` respectively), so the
+    convenience handler is enough for a decision that performs I/O.
+    `apcore-rust`'s `CallbackApprovalHandler::new` takes
+    `impl Fn(&ApprovalRequest) -> ApprovalResult` — synchronous, borrowing, and
+    not `Result`-returning — so it suits only decisions computable in-process.
+    Implement `ApprovalHandler` directly for anything else. Tracked as a
+    cross-language divergence in issue #104.
 
 ## 3. Phase B — async resume via `_approval_token`
 

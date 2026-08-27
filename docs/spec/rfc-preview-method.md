@@ -184,42 +184,61 @@ PreflightResult:
     Detection mirrors `preflight?`: `typeof module.preview === 'function'`.
 
 === "Rust"
+    <!-- apcore-example: fragment -->
     ```rust
     use apcore::{Module, Context, PreviewResult, Change};
 
     impl Module for DeleteUser {
         // ... existing input_schema, output_schema, execute() ...
 
-        fn preview(&self, inputs: &serde_json::Value, ctx: Option<&Context>)
-            -> Option<PreviewResult>
-        {
+        fn preview(
+            &self,
+            inputs: &serde_json::Value,
+            _ctx: Option<&Context<serde_json::Value>>,
+        ) -> Option<PreviewResult> {
             let user = self.repo.get_user(inputs["user_id"].as_str()?)?;
-            Some(PreviewResult {
-                changes: vec![Change {
-                    action: "delete".into(),
-                    target: format!("users.{}", user.id),
-                    summary: format!("Permanently delete user {}", user.email),
-                    before: Some(serde_json::json!({
-                        "id": user.id, "email": user.email, "tier": user.tier
-                    })),
-                    after: None,
-                }],
-            })
+
+            // `Change` and `PreviewResult` are `#[non_exhaustive]`, so a downstream
+            // crate builds them from `Default::default()` and assigns fields. A
+            // struct literal — with or without `..Default::default()` — is E0639.
+            // See "Migration pattern for downstream Rust consumers" below.
+            let mut change = Change::default();
+            change.action = "delete".into();
+            change.target = format!("users.{}", user.id);
+            change.summary = format!("Permanently delete user {}", user.email);
+            change.before = Some(serde_json::json!({
+                "id": user.id, "email": user.email, "tier": user.tier
+            }));
+
+            let mut preview = PreviewResult::default();
+            preview.changes = vec![change];
+            Some(preview)
         }
     }
     ```
     Default impl on the `Module` trait returns `None`, matching the existing
     `preflight()` / `stream()` pattern (no separate sub-trait needed).
 
-## Pre-conditions (Rust struct hygiene) — **blocking pre-req for Stage 2 implementation**
+## Pre-conditions (Rust struct hygiene) — **resolved**
 
-`apcore-rust`'s `PreflightResult` and `PreflightCheckResult` are currently defined as plain `pub struct {...}` with no `#[non_exhaustive]` attribute (see `apcore-rust/src/module.rs:296,312`). Adding a new field (`predicted_changes`) **will hard-break** any downstream Rust consumer that constructs these structs via struct-literal syntax (e.g. `PreflightResult { valid: true, checks: vec![], requires_approval: false }`).
+!!! success "Landed — this section is retained as rationale"
+    The attribute change described below shipped with the RFC's implementation.
+    `PreflightResult`, `PreflightCheckResult`, `PreviewResult` and `Change` all
+    carry `#[non_exhaustive]` in `apcore-rust/src/module.rs` today, and all four
+    derive `Default`. The migration pattern below is therefore the **current**
+    construction rule for downstream crates, not a future one. It is stated
+    normatively in
+    [API Surface & Naming Conventions §9](./api-surface-conventions.md#9-constructing-sdk-owned-data-types).
 
-**Before** Stage 2 SDK work proceeds:
+As originally written: `apcore-rust`'s `PreflightResult` and `PreflightCheckResult` were defined as plain `pub struct {...}` with no `#[non_exhaustive]` attribute. Adding a new field (`predicted_changes`) **would hard-break** any downstream Rust consumer that constructs these structs via struct-literal syntax (e.g. `PreflightResult { valid: true, checks: vec![], requires_approval: false }`).
 
-1. Open a tracking issue against `apcore-rust` titled "Mark spec-derived public structs `#[non_exhaustive]`".
-2. List `PreflightResult`, `PreflightCheckResult`, and any other spec-derived public struct that may be extended.
-3. Land the attribute change as a single commit in `apcore-rust` minor bump (v0.21.0 of the SDK is acceptable).
+The three steps this section required before Stage 2 SDK work could proceed have all been carried out — they are recorded here as history, not as outstanding work:
+
+1. ~~Open a tracking issue against `apcore-rust`~~ — opened as [apcore-rust#24](https://github.com/aiperceivable/apcore-rust/issues/24).
+2. ~~List `PreflightResult`, `PreflightCheckResult`, and any other spec-derived public struct that may be extended~~ — the attribute now covers those two plus `PreviewResult`, `Change`, `ModuleExample`, `ValidationResult`, `ApprovalRequest`, `ApprovalResult`, three types in `async_task.rs`, two in `config.rs`, and `middleware::RetryConfig`.
+3. ~~Land the attribute change in an `apcore-rust` minor bump~~ — shipped.
+
+Nothing in this section remains to be done.
 
 ### Migration pattern for downstream Rust consumers — **important: not what you'd guess**
 

@@ -472,20 +472,25 @@ async_task:
     );
     ```
 === "Rust"
+    <!-- apcore-example: fragment -->
     ```rust
     use apcore::async_task::{AsyncTaskManager, RetryConfig};
 
     let manager = AsyncTaskManager::new(executor, store);
 
+    // `RetryConfig` is `#[non_exhaustive]`: a downstream crate builds it from
+    // `Default::default()` and assigns fields. A struct literal — with or without
+    // `..Default::default()` — is E0639. See spec/api-surface-conventions.md §9.1.
+    let mut retry = RetryConfig::default();
+    retry.max_retries = 3;
+    retry.retry_delay_ms = 500;
+    retry.backoff_multiplier = 2.0;
+    retry.max_retry_delay_ms = 30000;
+
     let task_id = manager.submit(
         "data.process_batch",
         serde_json::json!({"items": large_list}),
-        Some(RetryConfig {
-            max_retries: 3,
-            retry_delay_ms: 500,
-            backoff_multiplier: 2.0,
-            max_retry_delay_ms: 30000,
-        }),
+        Some(retry),
     ).await?;
     ```
 

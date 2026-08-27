@@ -127,8 +127,8 @@ The approval gate is inserted between ACL Enforcement (Step 4) and Middleware Be
 === "Rust"
     ```rust
     #[async_trait]
-    pub trait ApprovalHandler: Send + Sync {
-        async fn request_approval(&self, request: ApprovalRequest) -> Result<ApprovalResult, ModuleError>;
+    pub trait ApprovalHandler: Send + Sync + std::fmt::Debug {
+        async fn request_approval(&self, request: &ApprovalRequest) -> Result<ApprovalResult, ModuleError>;
         async fn check_approval(&self, approval_id: &str) -> Result<ApprovalResult, ModuleError>;
     }
     ```
@@ -178,7 +178,21 @@ Note: The status value `"rejected"` maps to error code `APPROVAL_DENIED` — the
 |---------|----------|----------|
 | `AlwaysDenyHandler` | Always returns `rejected` | Safe default when approval enforcement is desired without a specific handler |
 | `AutoApproveHandler` | Always returns `approved` | Testing and development |
-| `CallbackApprovalHandler` | Delegates to a user-provided async callback | Custom approval logic |
+| `CallbackApprovalHandler` | Delegates to a user-provided callback — **async** in Python/TypeScript, **synchronous** in Rust (see below) | Custom approval logic |
+
+!!! warning "`CallbackApprovalHandler`'s callback shape differs by language (#104)"
+    | SDK | Accepted callback |
+    |---|---|
+    | apcore-python | `Callable[[ApprovalRequest], Coroutine[Any, Any, ApprovalResult]]` — awaited |
+    | apcore-typescript | `(request: ApprovalRequest) => Promise<ApprovalResult>` |
+    | apcore-rust | `impl Fn(&ApprovalRequest) -> ApprovalResult` — synchronous, borrowing, not `Result`-returning |
+
+    An approval decision that performs I/O fits the convenience handler in Python
+    and TypeScript, and does not fit apcore-rust's. **This limits the convenience
+    wrapper, not the SDK**: the `ApprovalHandler` trait is async in all three, so
+    apcore-rust expresses an async decision by implementing it directly — see the
+    Rust tab of the [approval-flow cookbook](../guides/cookbook-approval-flow.md).
+    Tracked in [#104](https://github.com/aiperceivable/apcore/issues/104).
 
 ### Protocol Bridge Handlers
 
@@ -285,50 +299,63 @@ These handlers are provided by the respective bridge packages, not by apcore cor
     ```
 === "Rust"
     ```rust
-    use apcore::APCore;
-    use apcore::approval::{ApprovalHandler, ApprovalRequest, ApprovalResult, AutoApproveHandler};
-    use apcore::errors::ModuleError;
+    use apcore::{APCore, ApprovalHandler, ApprovalRequest, ApprovalResult,
+                 AutoApproveHandler, Config, Executor, ModuleError, Registry};
     use async_trait::async_trait;
+    use std::sync::Arc;
 
-    // Use the built-in auto-approve handler (for testing)
-    let mut client = APCore::new();
-    // `APCore` exposes only `executor() -> &Executor`, and set_approval_handler
-    // needs &mut — build the Executor directly to attach a handler.
-    let mut executor = Executor::new(registry.clone(), config.clone());
-    executor.set_approval_handler(Box::new(AutoApproveHandler));
-
-    // Custom approval handler
+    // The trait requires Debug (`ApprovalHandler: Send + Sync + Debug`), so derive it.
+    #[derive(Debug)]
     struct SlackApprovalHandler;
 
     #[async_trait]
     impl ApprovalHandler for SlackApprovalHandler {
         async fn request_approval(
             &self,
-            request: ApprovalRequest,
+            request: &ApprovalRequest,
         ) -> Result<ApprovalResult, ModuleError> {
-            // Ask human via Slack
+            // Ask a human — stubbed here so the example stands alone.
             let approved = ask_slack(&request.module_id, &request.arguments).await;
-            Ok(ApprovalResult {
-                status: if approved { "approved" } else { "rejected" }.to_string(),
-                approved_by: Some("slack_user".to_string()),
-                reason: None,
-                approval_id: None,
-                metadata: None,
-            })
+
+            // `ApprovalResult` is `#[non_exhaustive]`, so a downstream crate cannot
+            // use a struct literal — not even with `..Default::default()` (E0639).
+            // Start from `Default::default()` and assign fields.
+            // See spec/api-surface-conventions.md §9.1.
+            let mut result = ApprovalResult::default();
+            result.status = if approved { "approved" } else { "rejected" }.to_string();
+            result.approved_by = Some("slack_user".to_string());
+            Ok(result)
         }
 
         async fn check_approval(
             &self,
             _approval_id: &str,
         ) -> Result<ApprovalResult, ModuleError> {
-            Ok(ApprovalResult { status: "rejected".to_string(), ..Default::default() })
+            let mut result = ApprovalResult::default();
+            result.status = "rejected".to_string();
+            result.reason = Some("Phase B not supported by this handler".to_string());
+            Ok(result)
         }
     }
 
-    // `APCore` exposes only `executor() -> &Executor`, and set_approval_handler
-    // needs &mut — build the Executor directly to attach a handler.
+    async fn ask_slack(_module_id: &str, _arguments: &serde_json::Value) -> bool {
+        // Replace with a real Slack round-trip.
+        true
+    }
+
+    // `APCore` exposes only `executor() -> &Executor`, and `set_approval_handler`
+    // needs `&mut` — build the Executor first, then hand it to APCore.
+    let registry = Arc::new(Registry::default());
+    let config = Arc::new(Config::default());
+
+    // Built-in auto-approve handler (for testing):
+    let mut test_executor = Executor::new(registry.clone(), config.clone());
+    test_executor.set_approval_handler(Box::new(AutoApproveHandler));
+
+    // Custom handler:
     let mut executor = Executor::new(registry.clone(), config.clone());
     executor.set_approval_handler(Box::new(SlackApprovalHandler));
+    let client = APCore::with_options(None, Some(executor), None, None);
     ```
 
 ## Dependencies

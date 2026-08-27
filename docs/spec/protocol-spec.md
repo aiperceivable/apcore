@@ -1,12 +1,12 @@
 ---
-description: "The canonical, normative apcore protocol specification (RFC 2119, v1.21.0): module, schema, naming, ACL, approval, error, config, and observability requirements for all conforming SDKs."
+description: "The canonical, normative apcore protocol specification (RFC 2119, v1.24.0): module, schema, naming, ACL, approval, error, config, and observability requirements for all conforming SDKs."
 ---
 
 # apcore — AI-Perceivable Core Standard Specification
 
 > **Canonical Specification** - This document is the authoritative specification for the apcore protocol
 
-> Version: 1.21.0
+> Version: 1.24.0
 > Status: Draft Specification (RFC 2119 Conformant)
 > Stability: Specification content is stable, pending reference implementation verification
 > Last Updated: 2026-08-27
@@ -21,7 +21,9 @@ description: "The canonical, normative apcore protocol specification (RFC 2119, 
 - [4. Schema Specification](#4-schema-specification)
 - [5. Module Specification](#5-module-specification)
 - [6. ACL Specification](#6-acl-specification)
+  - [6.1.1 Unevaluable Conditions](#611-unevaluable-conditions-v1220-100)
   - [6.6 System Module Permissions](#66-system-module-permissions)
+  - [6.8 ACL Introspection](#68-acl-introspection-v1230-101)
 - [7. Approval System](#7-approval-system)
 - [8. Error Handling Specification](#8-error-handling-specification)
 - [9. Configuration Specification](#9-configuration-specification)
@@ -3605,7 +3607,87 @@ audit:
 | `$or` | `list[object]` | Compound: passes if **any** sub-condition object passes (each sub-object's keys are AND-ed internally). Sub-objects **MAY** contain further compound operators. |
 | `$not` | `object` | Compound: passes if the wrapped condition object **fails**. An empty object **MUST** evaluate to false (fail-closed). |
 
-**Compound operators and async sub-conditions.** Implementations **MUST** evaluate `$or` / `$not` sub-conditions using the same evaluator mode (sync or async) as the enclosing call. An async-only sub-condition under a sync evaluator **MUST** fail closed and **SHOULD** emit a warning. Handlers **SHOULD** therefore be registered for both sync and async paths.
+**Compound operators and async sub-conditions.** Implementations **MUST** evaluate `$or` / `$not` sub-conditions using the same evaluator mode (sync or async) as the enclosing call. An async-only sub-condition under a sync evaluator **MUST** be treated as **unevaluable** per §6.1.1 — *not* as unsatisfied — and **SHOULD** emit a warning. Handlers **SHOULD** therefore be registered for both sync and async paths.
+
+> **Changed in v1.22.0.** This clause previously read "**MUST** fail closed", which was ambiguous once §6.1.1 distinguished the two outcomes: on an `allow` rule, not-matching *is* failing closed, but on a `deny` rule it is failing **open**. §6.1.1 now names the direction explicitly for each `effect`.
+
+The table above lists the conditions every implementation provides. It is **not** a closed set: implementations **MUST** expose a registration API (`register_condition` / `registerCondition` and their async counterparts) so a deployment can add its own condition keys. A key outside the table is therefore not invalid by construction — it is valid exactly when a handler has been registered for it, which is a runtime property, not a document property.
+
+#### 6.1.1 Unevaluable conditions (v1.22.0, #100)
+
+A condition that **is false** and a condition that **cannot be evaluated** are different outcomes and **MUST NOT** be represented the same way.
+
+- A condition **is false** when a registered handler ran to completion and returned false. This is an ordinary non-match: the rule does not apply to this call, and evaluation continues with the next rule.
+- A condition is **unevaluable** when the implementation could not obtain an answer at all. Exactly three situations qualify:
+    1. the condition key has **no registered handler**;
+    2. the handler **raised, threw, or panicked**;
+    3. the handler was **asynchronous and could not be resolved** on the synchronous `check()` path (§ sync handler resolution).
+
+Treating an unevaluable condition as a plain non-match is unsafe, and unsafe asymmetrically. A rule's `effect` decides which direction "does not match" points:
+
+| Rule `effect` | Condition is false | Condition is unevaluable |
+|---|---|---|
+| `allow` | rule does not match → continue | rule does not match → continue (**MUST NOT** grant) |
+| `deny` | rule does not match → continue | rule **MUST** take effect → the call is **denied** |
+
+Stated normatively:
+
+1. When a rule's conditions are unevaluable, the implementation **MUST** resolve the rule toward refusing access: a `deny` rule **MUST** match and deny; an `allow` rule **MUST NOT** match and **MUST NOT** grant.
+2. The implementation **MUST** record the failure in the audit entry: `handler_error` (§6.3.1) **MUST** be non-null and **MUST** name the offending condition key and the reason. "Unevaluable" means **actually reached by the evaluator**: a condition the evaluator legitimately skipped by short-circuiting (below) was never evaluated, is not unevaluable, and **MUST NOT** appear in `handler_error`. When more than one condition in a single `check()` is unevaluable, `handler_error` **MUST** report every one of them, ordered **lexicographically by condition key** and separated by `"; "`. Lexicographic order is required rather than evaluation order because the two are not the same across languages: `serde_json`'s map is ordered, while Python `dict` and JavaScript objects preserve insertion order, so "the first one encountered" would put a different key in the audit log for the same rule in different SDKs.
+3. The implementation **MUST** emit a warning naming the condition key, the rule's index, and the rule's `effect`. The `effect` is required in the message because a misconfigured `deny` rule is the consequential case.
+4. An unevaluable condition **MUST NOT** raise out of `check()`. §6.3's return contract is unchanged: `check()` returns a boolean.
+
+**Propagation through AND and the compound operators.** A `conditions` object combines its keys with AND, and `$or` / `$not` nest further objects, so the three outcomes need composition rules. They are three-valued (Kleene) logic, and they are normative — without them the same rule set resolves differently in different SDKs:
+
+| Combination | Result |
+|---|---|
+| AND (a `conditions` object's keys) — any child UNSATISFIED | UNSATISFIED (an outright "no" wins, even if a sibling was unevaluable) |
+| AND — no child UNSATISFIED, at least one UNEVALUABLE | UNEVALUABLE |
+| AND — every child SATISFIED | SATISFIED |
+| `$or` — any child SATISFIED | SATISFIED (an outright "yes" wins, even if a sibling was unevaluable) |
+| `$or` — no child SATISFIED, at least one UNEVALUABLE | UNEVALUABLE |
+| `$or` — every child UNSATISFIED | UNSATISFIED |
+| `$not` — child SATISFIED | UNSATISFIED |
+| `$not` — child UNSATISFIED | SATISFIED |
+| `$not` — child UNEVALUABLE | **UNEVALUABLE** |
+
+`$not` of an unevaluable condition **MUST NOT** yield SATISFIED. Negating "no answer" into "yes" would let a misspelled key inside a `$not` satisfy the very rule it was meant to gate — the bypass this section exists to close, reintroduced one nesting level down.
+
+An implementation **MAY** short-circuit AND on the first UNSATISFIED child and `$or` on the first SATISFIED child, and is then not required to evaluate the remaining children. It **MUST NOT** short-circuit on UNEVALUABLE: the remaining children may still produce the decisive outcome.
+
+A child skipped by a legitimate short-circuit was **not evaluated**, so it is not unevaluable even if it would have been: it **MUST NOT** set `handler_error`, and it **MUST NOT** change the outcome. A `conditions` block of `{"roles": ["admin"], "mispelled": true}` evaluated for a caller with no `admin` role is therefore UNSATISFIED with a null `handler_error` if the implementation reached `roles` first, and UNSATISFIED with a non-null `handler_error` if it reached `mispelled` first — both are conformant, because the **decision** is identical either way. Only the diagnostic differs, and §6.1.2's load-time warning is what makes the misspelling visible regardless of iteration order. An implementation that wants deterministic diagnostics **MAY** evaluate every child rather than short-circuit.
+
+!!! danger "Why a misspelled key used to be invisible"
+    Before v1.22.0 an unevaluable condition made the rule *not match*, so `deny` rules were the ones that failed open: a single misspelled key — `role:` for `roles:` — turned a rule its author believed was blocking into decoration, and the call fell through to the next rule or to `default_effect`. §7.9.4(4) has required since v1.9.0 that a typo cannot silently disable an execution policy. This section extends the same guarantee to ACL rules.
+
+#### 6.1.2 Load-time validation of condition keys (v1.22.0, #100)
+
+Condition handlers are registered at **runtime** into a process-wide registry, and an ACL can legitimately be loaded before a deployment registers its custom handlers — configuration-driven discovery (§6.1 `acl.root`) commonly runs during framework bootstrap, ahead of application code. Load-time validation therefore **MUST NOT** be fatal:
+
+1. Loading or constructing an ACL **MUST NOT** fail because a rule references a condition key that has no registered handler at that moment.
+2. Loading or constructing an ACL **MUST** emit a warning for each such key, naming the rule index, the key, and the rule's `effect`.
+3. Implementations **MUST** provide an explicit validation entry point that reports every rule referencing a condition key that does not resolve to a handler, so a deployment can assert on the result once registration is complete. It **MUST NOT** mutate the ACL, and **MUST** report, per finding, at least: rule index, condition key, rule `effect`, and the two registry flags of §6.1.3.
+4. Every ACL entry point that accepts rules is covered — file loading, direct construction, and runtime rule insertion alike. An implementation **MUST NOT** validate only the file-loading path.
+
+#### 6.1.3 Sync and async handler registries (v1.22.0, #100)
+
+"Registered" is not one property. Implementations keep **two** condition-handler registries, and `async_check()` consults the async registry first and then falls back to the sync one, while `check()` consults only the sync registry. The asymmetry is therefore one-directional:
+
+| Registered as | `check()` (sync) | `async_check()` |
+|---|---|---|
+| sync only — the built-in `identity_types`, `roles`, `max_call_depth` | resolves | resolves (falls back) |
+| both — the built-in `$or`, `$not` | resolves | resolves |
+| **async only** | **does not resolve → UNEVALUABLE (§6.1.1)** | resolves |
+| neither | UNEVALUABLE | UNEVALUABLE |
+
+An async-only key is thus a live rule on one path and an unevaluable condition on the other. Two consequences are normative:
+
+1. §6.1.2's validator **MUST** report `sync_registered` and `async_registered` as separate flags per finding, and **MUST NOT** collapse them into a single boolean. Without this, the same ACL validates differently depending on which registry an SDK happened to consult, and an operator cannot tell an unregistered key from a key that is merely unusable on the path their application calls.
+2. A finding **MUST** be emitted whenever `sync_registered` is false, including when `async_registered` is true — an application calling `check()` has a condition it cannot evaluate. A caller that only ever uses `async_check()` may choose to ignore such a finding; that choice belongs to the caller, not to the validator.
+
+A key that resolves on both paths is not a finding.
+
+This is diagnostics, not enforcement. The guarantee that a broken `deny` rule cannot silently pass traffic is §6.1.1's, and holds whether or not anyone calls the validator.
 
 **Special patterns:**
 
@@ -3707,12 +3789,41 @@ Steps:
           If match_pattern(pattern, target) → target_matched ← true; break
      c. If caller_matched and target_matched:
         If rule.conditions is not empty:
-          If not evaluate_conditions(rule.conditions, context) → continue
+          verdict ← evaluate_conditions(rule.conditions, context)
+              // verdict ∈ { SATISFIED, UNSATISFIED, UNEVALUABLE }   (§6.1.1)
+          If verdict is UNSATISFIED → continue
+          If verdict is UNEVALUABLE:
+            record handler_error on the audit entry and warn (§6.1.1)
+            If rule.effect == "deny" → Return { effect: "deny", matched_rule: rule }
+            Else                     → continue          // an allow rule MUST NOT grant
         → Return { effect: rule.effect, matched_rule: rule }
   3. Return { effect: default_effect, matched_rule: null }
 
 Complexity: O(R × P), where R is number of rules, P is average patterns per rule
 ```
+
+`evaluate_conditions` returns three outcomes, not two. `UNSATISFIED` means a handler answered "no"; `UNEVALUABLE` means no answer was obtainable — see §6.1.1 for the exhaustive list of the three situations that produce it. An implementation whose evaluator returns a plain boolean **MUST** carry the distinction some other way (a sentinel, an out-parameter, a typed result); collapsing the two is the defect §6.1.1 exists to prevent.
+
+#### 6.3.1 Audit Entry
+
+Every `check()` **MUST** emit exactly one audit entry through the configured audit logger, whatever the decision. The wire format is `snake_case` per §6.3; SDK surfaces **MAY** use idiomatic field names (`callerId` in TypeScript).
+
+| Field | Type | Description |
+|---|---|---|
+| `timestamp` | `string` | ISO 8601 timestamp of the decision |
+| `caller_id` | `string` | Effective caller (`@external` when the call had none) |
+| `target_id` | `string` | Module ID being accessed |
+| `decision` | `"allow" \| "deny"` | The returned decision |
+| `reason` | `"rule_match" \| "default_effect" \| "no_rules"` | Which branch of §6.3 produced the decision |
+| `matched_rule` | `string \| null` | The matched rule's `description`, snapshotted |
+| `matched_rule_index` | `integer \| null` | Index of the matched rule in definition order |
+| `identity_type` | `string \| null` | Identity type from the context, when present |
+| `roles` | `list[string]` | Identity roles from the context; empty when absent |
+| `call_depth` | `integer \| null` | Length of `context.call_chain`, when present |
+| `trace_id` | `string \| null` | Trace ID from the context, when present |
+| `handler_error` | `string \| null` | Non-null **if and only if** a condition was unevaluable (§6.1.1). **MUST** name the condition key and the reason. |
+
+`handler_error` is what makes §6.1.1's two outcomes distinguishable after the fact: a rule that did not match because a handler said "no" leaves it null; a rule that did not match — or that denied — because no answer was obtainable leaves it set. An implementation **MUST NOT** set it for an ordinary `UNSATISFIED` condition.
 
 ### 6.4 Pattern Specificity Scoring
 
@@ -3745,8 +3856,26 @@ Steps:
 | `caller_id` is null | Treat as `@external` | **MUST** |
 | `rules` is empty | Use `default_effect` | **MUST** |
 | `callers` or `targets` in rule is empty array | Rule never matches | **MUST** |
-| Conditions present but no context provided | Rule does not match | **MUST** |
+| Conditions present but no context provided | Rule does not match; **SHOULD** warn (see below) | **MUST** |
+| Condition key has no registered handler | Unevaluable → §6.1.1 | **MUST** |
+| Condition handler raises / throws / panics | Unevaluable → §6.1.1 | **MUST** |
+| Async condition handler unresolvable on sync `check()` | Unevaluable → §6.1.1 | **MUST** |
 | Module calls itself | Perform ACL check normally | **MUST** |
+
+!!! warning "A conditional `deny` rule does not fire for a call that carries no context"
+    "Conditions present but no context provided → rule does not match" is **not** an
+    §6.1.1 unevaluable condition, and deliberately so: calling with no context is a
+    legitimate, expected shape for external entry points, not a misconfiguration.
+    Treating it as an evaluation failure would flip the decision for every
+    `@external` call that meets a conditional `deny` rule.
+
+    The consequence still has to be designed around. A rule such as
+    `effect: deny` + `conditions: {identity_types: [contractor]}` blocks nothing at
+    all when the caller supplies no identity — it is not a backstop. Express a
+    backstop as an unconditional `deny` rule, or as `default_effect: deny`, and use
+    conditional rules to carve exceptions **out** of it. Implementations **SHOULD**
+    warn the first time a conditional rule is skipped for want of a context,
+    naming the rule index and its `effect`.
 
 ### 6.6 System Module Permissions
 
@@ -4056,6 +4185,24 @@ The thresholds are normative so that the same traffic does not read as `rising` 
 2. Output from every conformant SDK **MUST** validate against `sys-usage-summary.schema.json` / `sys-usage-module.schema.json`. Both declare `additionalProperties: false`: a field one SDK emits and the others do not is a parity gap, and failing loudly is the intended behaviour.
 3. **Schemas cannot assert §6.7.1.1 or §6.7.1.3.** A full-history `call_count` and an off-by-one `p99_latency_ms` are both well-typed values in the right field. Those two, and only those two, are pinned by `../../conformance/fixtures/usage_contract.json` with fixed inputs and expected outputs, driven by all three SDKs.
 
+### 6.8 ACL Introspection (v1.23.0, #101)
+
+> Placed at §6.8 rather than beside §6.1 because §6.2–§6.7 anchors are linked from outside this repository and **MUST NOT** be renumbered.
+
+An ACL enforces two things: an ordered rule list and a `default_effect`. Both are decisions an operator made, and both **MUST** be readable back from the loaded object.
+
+| Accessor | Returns | Level |
+|---|---|---|
+| `default_effect` | The effective default, `"allow"` or `"deny"` | **MUST** |
+| `rules` | The current rule list, in definition order | **MUST** |
+
+1. Both **MUST** be reachable from application code through a documented public path. A field that is `private`, `#`-prefixed, or non-`pub` does not satisfy this, and neither does a leading-underscore name (see [API Surface & Naming Conventions §3](./api-surface-conventions.md)).
+2. Both **MUST** be pure reads: they **MUST NOT** emit an audit event, mutate state, or acquire a lock the caller must release.
+3. `rules` **MUST NOT** hand out a reference through which the caller can mutate the ACL's own list. Return an immutable view or a copy, taken under the same snapshot discipline `check()` uses (§6.3).
+4. After `reload()`, both accessors **MUST** reflect the reloaded file. They read the live object, never a cached parse.
+
+**Why this is normative rather than left to each SDK.** Without it, tooling that reports or audits the enforced policy — an admin surface, a preflight report, a linter for the rules §6.1.2 flags — must re-read and re-parse the ACL file to recover a value the loaded object already holds. That second copy can drift from the object across `reload()`, and where the field is `private` or non-`pub`, re-parsing is not merely wasteful but the only option available.
+
 ---
 
 ## 7. Approval System
@@ -4265,7 +4412,24 @@ Implementations **SHOULD** provide these built-in handlers:
 |---------|----------|----------|
 | `AlwaysDenyHandler` | Always returns `rejected` | Default safe behavior when no handler configured but enforcement desired |
 | `AutoApproveHandler` | Always returns `approved` | Testing and development |
-| `CallbackApprovalHandler` | Delegates to a user-provided async callback | Custom approval logic |
+| `CallbackApprovalHandler` | Delegates to a user-provided callback | Custom approval logic |
+
+!!! warning "`CallbackApprovalHandler` is not capability-equivalent across SDKs (#104)"
+    The callback it accepts is **asynchronous** in apcore-python
+    (`Callable[[ApprovalRequest], Coroutine[..., ApprovalResult]]`) and
+    apcore-typescript (`(request) => Promise<ApprovalResult>`), and
+    **synchronous** in apcore-rust
+    (`impl Fn(&ApprovalRequest) -> ApprovalResult`). An approval decision that
+    performs I/O — ask a human, call a policy service — therefore fits the
+    convenience handler in two SDKs and not in the third.
+
+    This is a limit of the **convenience wrapper only**. The `ApprovalHandler`
+    contract itself is async in all three (§7.2), so an async decision is always
+    expressible in apcore-rust by implementing the trait directly. Whether the
+    convenience wrapper should be capability-equivalent is open in
+    [#104](https://github.com/aiperceivable/apcore/issues/104); until it is
+    decided, this table states a **SHOULD**-provided handler whose accepted
+    callback shape is per-language.
 
 ### 7.7 Protocol Bridge Handlers
 
@@ -4304,7 +4468,7 @@ An **Execution Policy** is a declarative, execution-time governance layer that o
 #### 7.9.1 Attach Point and Precedence
 
 1. A policy **MUST** attach at the **Executor** and be consulted by the Approval Gate (Step 5, §7.4).
-2. A policy is a set of **pattern rules**. Each rule matches a module ID using the ACL wildcard semantics (Algorithm A08, §6) and carries optional overrides for `requires_approval` and `destructive` (each `null`/absent = "do not override").
+2. A policy is a set of **pattern rules**. Each rule matches a module ID using the ACL wildcard semantics (Algorithm A08, §6) and carries optional overrides for `requires_approval` and `destructive` (each `null`/absent = "do not override"). Rule matching consults the module ID and nothing else; the call's arguments reach resolution but never a rule (§7.9.6).
 3. Rule selection **MUST** use ACL specificity scoring (Algorithm A10, §6): the most specific matching rule wins. On a specificity tie, the more **restrictive** rule wins (a rule that forces `requires_approval = true` outranks one that clears it).
 4. A matched rule's non-null override **MUST** take precedence over the module's own declared or scanned annotation. This is deliberate: external governance is the platform's word over the module author's.
 5. A policy decision **MUST** be recorded in the audit trail. When a policy changes a module's effective governance, the Executor **MUST** emit `apcore.policy.override` (§9.16.2) when an event emitter is configured.
@@ -4332,6 +4496,25 @@ A misconfigured or unreachable governance control **MUST NOT** silently allow. C
 #### 7.9.5 Preflight
 
 `Executor.validate()` (§12.2) **MUST** report the policy-effective `requires_approval` — i.e. the same verdict the gate will enforce, including a `gate_destructive`-driven or rule-forced approval. The `apcore.acl.denied` and governance decision events **MUST NOT** be emitted during a dry-run `validate()`.
+
+#### 7.9.6 Call-site inputs to policy resolution (v1.24.0, #102)
+
+Through v1.23.0 a policy could see only *which* module was being called, never *what it was being called with*: resolution took a module ID and the module's annotations, and a rule carried a module-ID pattern plus the two boolean overrides. Governance keyed on the module alone forces an operator to gate every call to a module in order to gate some of them, which produces audit noise and weakens `requires_approval` from "this needs approval" to "this might".
+
+The pipeline already holds the missing data at the point of the decision — the gate is Step 5 and the invocation's arguments and `Context` are in scope there — so this section opens the input, without yet introducing a declarative predicate over it.
+
+1. Policy resolution **MUST** receive the call site: the invocation `arguments` and the `Context`, alongside the module ID and annotations it already receives.
+2. The built-in pattern rules of §7.9.1 **MUST NOT** consult the call site. A rule set's verdict **MUST** be a function of the module ID and the annotations alone, so that it stays statically auditable and reproducible from the policy document.
+3. The call site exists so that (a) an implementation can carry it into the audit trail and the `apcore.policy.override` event (§9.16.2), and (b) a **host-supplied** policy implementation can decide on arguments.
+4. The `arguments` handed to policy resolution have **NOT** been schema-validated: the approval gate is Step 5 and input validation is Step 7 (§12.8). An implementation **MUST** document this, and a host-supplied policy **MUST NOT** assume its inputs are well-formed, present, or of the declared type.
+5. Adding the call site **MUST NOT** change the verdict any existing policy produces. An implementation **MAY** expose it as an overload, an additional method, or an options object where extending the existing signature would break its public API.
+
+!!! note "A declarative argument predicate on `PolicyRule` is deliberately not specified here"
+    ACL rules already discriminate on caller, target, identity type, roles and call
+    depth (§6.1); policy rules on module ID alone. Adding an argument predicate to
+    only one of the two would grow a second condition language over the same
+    decision point. If one is specified, it is to be designed jointly with ACL
+    conditions — see #100 and #102.
 
 ### 7.10 Conformance
 
@@ -8307,3 +8490,6 @@ Each language SDK **SHOULD** provide idiomatic module definition syntax. The fol
 | 1.19.0 | 2026-08-27 | **§9.14 — the unknown-key walk is recursive; it was specified as one level.** `schemas/apcore-config.schema.json` and its siblings are `additionalProperties: false` at EVERY level, not only at the section root: `observability.tracing`, `acl.audit`, `validation.binding` and `obs.redaction` are each closed in their own right. `reject_unknown_framework_keys` iterated a section's direct children and stopped, so `_config.strict: true` was blind exactly where a typo is hardest to spot — `observability.tracing.sampling_rat` passed the check because its parent `tracing` IS declared, while the canonical schema rejects it, and the misspelled sampling rate then fell back to its default with no error and no log line. The pseudocode was the outlier, not the schema: apcore-typescript already walked the full depth; apcore-python and apcore-rust matched the one-level pseudocode and are corrected. An undeclared subtree is reported ONCE, at the point it stops being declared, rather than once per key beneath it — a misspelled section otherwise produces an error per leaf and buries its own cause. MINOR rather than a breaking change because this is the specification catching up to a closedness it already declared: `strict` still defaults to `false`, and no configuration changes behaviour unless its author opted in. Governance: maintainer approval per GOVERNANCE.md § Decision Making; **no tracking issue was opened.** |
 | 1.20.0 | 2026-08-27 | **`Contract: Registry.register` — `async: false` and `void (TypeScript)` described an API apcore-typescript does not have.** `register` there returns `Promise<void>`: `on_load` is synchronous in apcore-python and apcore-rust — the Rust trait signature enforces it — while apcore-typescript additionally accepts an async `onLoad` and resolves once it has run. Registration is synchronous for everything else in all three: ID validation, the duplicate check and every other error still throw synchronously, and a module with no `onLoad` or a synchronous one is visible before the promise resolves. The contract now states that shape rather than a uniformity that does not hold. It matters to a module author, not just to a reader: a module written with `async def on_load` and registered through apcore-python was published and callable with NONE of its initialisation having run — the coroutine was created, never awaited, and discarded, leaving only a `RuntimeWarning` at the next garbage collection, attributed to whatever code was running then. That is precisely the half-initialised module the deferred-publish design exists to prevent, reached through the one path that skipped the check. Two normative statements are added: an SDK whose `register` awaits an async load hook **MUST** keep the module invisible until it completes, and **MUST NOT** publish a module whose load hook it cannot run. **This IS an SDK change** in apcore-python, which now refuses an awaitable `on_load` with `MODULE_LOAD_ERROR` and does not publish the module — the same outcome any other failing `on_load` already gets. Nothing can depend on the previous behaviour, since an `async def on_load` has never once run. apcore-typescript and apcore-rust are unaffected. Governance: maintainer approval per GOVERNANCE.md § Decision Making; **no tracking issue was opened.** |
 | 1.21.0 | 2026-08-27 | **`Contract: APCore.remove` required an identity removal apcore-rust could not provide, for a reason it had recorded wrongly.** The contract removes by IDENTITY — apcore-python and apcore-typescript take the middleware object back and compare with `is` / `===`. apcore-rust exposed `remove(&str)` and a `remove_middleware(&dyn Middleware)` that resolved to `remove(middleware.name())`, and a doc comment explained the divergence as "trait objects do not support identity comparison". That is false, and false in the direction that made the gap look unfixable: `Arc::ptr_eq` has ignored vtable metadata since Rust 1.76, below the crate's MSRV. The real obstacle is ownership — `use_middleware` **consumes** the `Box`, so by the time a caller wants to remove one it holds no pointer to compare against. The reason determines the fix, which is why the wrong one mattered. It is reachable, not theoretical: duplicate registration only WARNS and always succeeds, so two instances answering one `name()` coexist and the name-based form removes whichever comes first in pipeline order — verified against the pre-fix code, where a caller holding the second of two `"audit"` middlewares removed the first. `use_middleware` now returns a `MiddlewareHandle` and `remove_handle(handle)` removes exactly that registration, mirroring `EventEmitter::subscribe` → `unsubscribe_handle`, which exists for the same reason on the event bus. Two normative statements are added: an SDK that cannot take the middleware object back **MUST** provide a token issued at registration that removes exactly one registration, and **MUST NOT** present a name-based removal as satisfying this contract. **This IS an SDK change** in apcore-rust, and a backward-compatible one — the added return value is discarded by every existing `?;` call site, and both name-based forms remain. apcore-python and apcore-typescript are unaffected. Governance: maintainer approval per GOVERNANCE.md § Decision Making; **no tracking issue was opened.** |
+| 1.22.0 | 2026-08-27 | **§6.1.1 / §6.1.2 (new) — an ACL condition that could not be evaluated disabled the `deny` rule that carried it (#100).** `evaluate_conditions` returned a plain boolean, so "a handler answered no" and "no answer was obtainable" arrived at the rule loop identically, and both meant *this rule does not match*. That is safe in one direction only. An `allow` rule that cannot evaluate its condition does not grant — correct. A `deny` rule that cannot evaluate its condition does not block: evaluation continues to the next rule and then to `default_effect`, so a single misspelled key (`role:` for `roles:`) turned a rule its author believed was blocking into decoration. Verified in all three SDKs — apcore-python `acl.py`, apcore-typescript `acl.ts`, apcore-rust `acl.rs` — each of which logs a warning and records `handler_error` before returning false, so the diagnostics were already right and only the decision was wrong; reproduced end-to-end with `effect: deny` + a misspelled key + `default_effect: allow`, where `check()` returned `true`. §6.1.1 now names the three situations that make a condition **unevaluable** (no registered handler; handler raised/threw/panicked; async handler unresolvable on the sync path) and requires the rule to resolve toward refusing access: a `deny` rule takes effect, an `allow` rule still does not grant. §6.3's algorithm is restated over three outcomes rather than two, §6.5 gains the three rows, and §6.3.1 (new) documents the `AuditEntry` all three SDKs already emit — including `handler_error`, which no section had ever defined despite `conformance/fixtures/acl_handler_error.json` asserting on it. §6.1.2 handles discovery without breaking bootstrap order: because `register_condition` is a runtime global registry and `acl.root` discovery commonly runs before application code, loading **MUST NOT** fail on an unregistered key, but **MUST** warn (naming rule index, key and `effect`) and implementations **MUST** provide an explicit validator to call once registration is complete — covering direct construction and runtime insertion, not only file loading. `schemas/acl-config.schema.json` is corrected in the same change: `RuleConditions` was `additionalProperties: false`, which contradicted the documented `register_condition` extension point, and it listed `time_window` as though it were built in when no SDK registers such a handler and `guides/acl-configuration.md` presents it as a *custom* handler example — a reader copying that guide got a schema-valid file whose `deny` rule never fired. **This IS an SDK change** in all three, and it changes a decision: a `deny` rule whose condition cannot be evaluated now denies. `conformance/fixtures/acl_handler_error.json` pinned the opposite behaviour under the name `throwing_handler_does_not_flip_default_allow_to_deny_unsafely` and is corrected here. Deliberately **out of scope**: §6.5's "conditions present but no context provided", which stays a non-match — calling with no context is a legitimate shape for external entry points, not a misconfiguration, and treating it as a failure would flip the decision for every `@external` call meeting a conditional `deny` rule; it gains a warning and an explicit note on the consequence instead. Precedent: §7.9.4(4) has required since v1.9.0 that a typo cannot silently disable an execution policy; this extends the same guarantee to ACL rules. Governance: maintainer approval per GOVERNANCE.md § Decision Making; tracking issue #100. |
+| 1.23.0 | 2026-08-27 | **§6.8 (new) — an ACL's `default_effect` could not be read back from the loaded object (#101).** `default_effect` is the single most consequential value in an ACL — §6.1 carries a `danger` admonition about setting it to `allow` — and no SDK exposed it: apcore-rust keeps a private field whose only public reader is `rules()`, apcore-typescript declares `private _defaultEffect` with no getter, and apcore-python's `acl.py` defines no `@property` at all, so neither `rules` nor `default_effect` has a public reader there. The specification was the origin: `features/acl-system.md` defined a Contract for `check`, `load`, `discover`, `add_rule`, `remove_rule` and `reload`, and no read-only surface at all, so there was nothing for an SDK to implement. §6.8 makes both accessors **MUST**, requires them to be pure reads reachable through a documented public path, forbids `rules` from handing out a mutable reference into the ACL's own list, and requires both to reflect a `reload()`. Consequence of the gap: tooling that reports or audits the enforced policy had to re-read and re-parse the ACL file to recover a value the object already held, and that copy could drift across `reload()` — while on TypeScript and Rust the private field made re-parsing not merely wasteful but the only option. Numbered §6.8 rather than placed beside §6.1 because §6.2–§6.7 anchors are linked from outside this repository. **This IS an SDK change** in all three, and an additive, backward-compatible one. Governance: maintainer approval per GOVERNANCE.md § Decision Making; tracking issue #101. |
+| 1.24.0 | 2026-08-27 | **§7.9.6 (new) — policy resolution could not see the call's arguments (#102).** Governance decided on *which* module was being called and never on *what it was being called with*: resolution took a module ID and the module's annotations, and a `PolicyRule` carried a module-ID pattern plus two boolean overrides — the shape §7.9.1(2) mandates, and identical in all three SDKs (`policy.py`, `policy.ts`, `policy.rs`). This is a protocol-level gap rather than an SDK omission, and the data was never missing: the approval gate is Step 5 and the invocation's arguments and `Context` are in scope at the call site, which passed only the module ID. The practical cost is that an operator who needs to gate *some* calls to a module must gate *all* of them, producing audit noise and weakening `requires_approval` from "this needs approval" to "this might" — the distinction §7.9.3 exists to preserve. §7.9.6 requires resolution to receive the call site, while forbidding the built-in pattern rules from consulting it, so a rule set's verdict stays a function of module ID and annotations alone and remains reproducible from the policy document. Two constraints are stated explicitly: those `arguments` have **NOT** been schema-validated, because the gate is Step 5 and input validation is Step 7 (§12.8), so a host-supplied policy must not assume them well-formed; and adding the call site **MUST NOT** change the verdict any existing policy produces, with implementations free to expose it as an overload where extending a signature would break their public API. A declarative argument predicate on `PolicyRule` is deliberately **not** specified: ACL rules already discriminate on caller, target, identity type, roles and call depth while policy rules discriminate on module ID alone, and adding a predicate to only one would grow a second condition language over the same decision point — if one is specified it is to be designed jointly with ACL conditions (#100). **This IS an SDK change** in all three, additive and backward-compatible. Governance: maintainer approval per GOVERNANCE.md § Decision Making; tracking issue #102. |

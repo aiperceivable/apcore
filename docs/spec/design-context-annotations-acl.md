@@ -20,6 +20,15 @@ description: "Historical design document (superseded by PROTOCOL_SPEC 4.4.1) for
 >   Rust pattern. This approach is now FORBIDDEN by §4.4.1 producer rule 2;
 >   the canonical wire format is a nested `"extra"` object. apcore-rust
 >   v0.18.0 fixed this and removed the `flatten` attribute.
+> - **§3.6** shows condition evaluation returning `False` — commented
+>   `# fail-closed` — for an unknown condition key and for an async handler on
+>   the sync path. Both are now **unevaluable** outcomes, not `False`, and
+>   §6.1.1 requires them to resolve toward refusing access: a `deny` rule takes
+>   effect, an `allow` rule does not grant. Returning `False` was fail-closed
+>   only on `allow` rules; on `deny` rules it failed **open**, which is the
+>   defect [PROTOCOL_SPEC §6.1.1](./protocol-spec.md#611-unevaluable-conditions-v1220-100)
+>   (v1.22.0) exists to close. The pseudocode below is retained as the original
+>   design, not as current behaviour.
 >
 > Read this document for design rationale and historical context only. For
 > current normative behavior, always consult PROTOCOL_SPEC.

@@ -31,6 +31,14 @@ Lightweight `docs/spec/protocol-spec.md` patch drafts that haven't been picked u
 
 These do not have `state.json` files; they are pre-feature design notes.
 
+## Specification drafted, SDK rollout pending
+
+Spec text is written and verified but **not yet committed** — check `git status` before assuming it is
+in `HEAD`. Once it is, no SDK implements it, so these become **known** divergences between the
+specification and every implementation until the rollout completes.
+
+- [acl-unevaluable-conditions](./acl-unevaluable-conditions/overview.md) — spec v1.22.0 / v1.23.0 / v1.24.0, issues [#100](https://github.com/aiperceivable/apcore/issues/100) / [#101](https://github.com/aiperceivable/apcore/issues/101) / [#102](https://github.com/aiperceivable/apcore/issues/102). Unevaluable ACL conditions resolve toward denial (§6.1.1–§6.1.2, §6.3.1); ACL read-only accessors (§6.8); call-site inputs to policy resolution (§7.9.6). Carries a **staged** conformance fixture that must not move into `conformance/fixtures/` until all three drivers land — see that overview for why.
+
 ## Upcoming
 
 In-flight RFC drafts live under `docs/spec/`, with planning artifacts under `planning/`:

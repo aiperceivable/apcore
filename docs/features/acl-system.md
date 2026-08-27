@@ -68,12 +68,40 @@ When a rule has a `conditions` dict, all specified conditions must be satisfied 
 - `roles`: At least one of the context identity's roles must overlap with the condition's role list (set intersection).
 - `max_call_depth`: The length of `context.call_chain` must not exceed the threshold.
 
-If no context is provided but conditions are present, the rule does not match.
+These three are the built-ins. The set is open: `register_condition()` adds a condition key at runtime, and a rule may reference any key a handler has been registered for.
+
+If no context is provided but conditions are present, the rule does not match. See the warning in [PROTOCOL_SPEC §6.5](../spec/protocol-spec.md#65-edge-case-handling) — a conditional `deny` rule is therefore not a backstop for context-less callers.
+
+#### Unevaluable Conditions
+
+A condition that is **false** and a condition that **cannot be evaluated** are different outcomes, and the difference decides what a `deny` rule does.
+
+- **False** — a registered handler ran and returned false. Ordinary non-match; evaluation continues to the next rule.
+- **Unevaluable** — no answer could be obtained at all. Exactly three cases: the condition key has no registered handler; the handler raised/threw/panicked; the handler was async and could not be resolved on the synchronous `check()` path.
+
+When a condition is unevaluable the rule MUST resolve toward refusing access:
+
+| Rule `effect` | Condition false | Condition unevaluable |
+|---|---|---|
+| `allow` | does not match → continue | does not match → continue (MUST NOT grant) |
+| `deny` | does not match → continue | **rule takes effect → the call is denied** |
+
+`AuditEntry.handler_error` MUST be non-null for an unevaluable condition and MUST be null for a merely-false one — it is what makes the two distinguishable after the fact. Normative text: [PROTOCOL_SPEC §6.1.1](../spec/protocol-spec.md#611-unevaluable-conditions-v1220-100).
+
+The three outcomes compose through AND and the compound operators by three-valued logic: an outright "no" wins an AND, an outright "yes" wins an `$or`, and anything else with an unevaluable child is unevaluable. `$not` of an unevaluable condition is **unevaluable**, never satisfied — negating "no answer" into "yes" would let a misspelled key inside a `$not` satisfy the rule it was meant to gate. Full table: [PROTOCOL_SPEC §6.1.1](../spec/protocol-spec.md#611-unevaluable-conditions-v1220-100).
+
+!!! danger "A misspelled condition key used to make a `deny` rule inert"
+    Before spec v1.22.0 an unevaluable condition made the rule *not match*, so
+    `deny` rules failed open: `role:` written for `roles:` produced a rule that
+    blocked nothing, and the call fell through to the next rule or to
+    `default_effect`. Warnings were emitted the whole time — the diagnostics were
+    right and only the decision was wrong.
 
 ### Components
 
 - **`ACLRule`** -- Dataclass with fields: `callers` (list of patterns), `targets` (list of patterns), `effect` ("allow" or "deny"), optional `description`, and optional `conditions` dict.
-- **`ACL`** -- Main class managing an ordered rule list. Provides `check()`, `add_rule()`, `remove_rule()`, `reload()`, and the `ACL.load()` classmethod for YAML loading. All public methods are protected by a lock for thread safety.
+- **`ACL`** -- Main class managing an ordered rule list. Provides `check()`, `add_rule()`, `remove_rule()`, `reload()`, the read-only accessors `default_effect` and `rules`, the diagnostic `validate_conditions()`, and the `ACL.load()` classmethod for YAML loading. All mutating methods are protected by a lock for thread safety.
+- **`AuditEntry`** -- Structured record of one `check()` decision, emitted through the configured audit logger on every call. Field contract: [PROTOCOL_SPEC §6.3.1](../spec/protocol-spec.md#631-audit-entry).
 - **`match_pattern()`** -- Wildcard pattern matcher in `utils/pattern.py`. Supports `*` as a wildcard matching any character sequence. Handles prefix, suffix, and infix wildcards via segment splitting.
 
 ### Thread Safety
@@ -151,12 +179,13 @@ Normative behavioral contract. All SDK implementations MUST satisfy these guaran
 1. Acquire ACL lock.
 2. Snapshot the rule list and `default_effect` under the lock.
 3. Release the ACL lock.
-4. Evaluate rules in order (first-match-wins).
-5. Emit an audit event carrying the decision (via the finalize path).
+4. Evaluate rules in order (first-match-wins). A rule's conditions resolve to one of three outcomes — satisfied, unsatisfied, or unevaluable — and an unevaluable condition resolves the rule toward refusing access (§ Unevaluable Conditions above).
+5. Emit an audit event carrying the decision (via the finalize path). When a condition was unevaluable, `handler_error` on that entry MUST be non-null and MUST name the condition key and the reason.
 
 ### Errors
 
 - None under normal operation. `check` MUST NOT raise to indicate a deny; it MUST return `false`. Raising is reserved for unrecoverable internal failures (e.g., a corrupted rule list) that the host language's idioms require be surfaced as exceptions.
+- An unevaluable condition is NOT such a failure: it MUST NOT propagate out of `check()`. A handler that raises, throws, or panics MUST be caught, recorded in `handler_error`, and resolved per § Unevaluable Conditions.
 
 ### Returns
 
@@ -172,14 +201,20 @@ Normative behavioral contract. All SDK implementations MUST satisfy these guaran
 !!! info "Sync handler resolution (cross-language)"
     When a registered condition handler returns a Future / coroutine / Promise from sync `check()`:
 
-    - **If the awaitable completes without suspending** (e.g., an `async def` whose body never reaches an `await`, or a Promise that resolves synchronously on Rust), `check()` MUST use the resolved value.
-    - **If the awaitable genuinely suspends** (Pending on first poll, or Promise that resolves later), `check()` MUST treat the condition as unsatisfied. Callers requiring true async handlers MUST use `async_check()`.
+    - **If the awaitable completes without suspending** (e.g., an `async def` whose body never reaches an `await`, or a Promise that resolves synchronously on Rust), `check()` MUST use the resolved value — SATISFIED or UNSATISFIED as the value says.
+    - **If the awaitable genuinely suspends** (Pending on first poll, or a Promise that resolves later), `check()` MUST treat the condition as **UNEVALUABLE**, not as unsatisfied. Per § Unevaluable Conditions that means a `deny` rule takes effect and an `allow` rule does not grant, and `handler_error` MUST be set. Callers requiring true async handlers MUST use `async_check()`.
 
     Implementation:
 
-    - **apcore-python** advances the coroutine one step via `coroutine.send(None)` and captures `StopIteration.value` for sync-only bodies.
-    - **apcore-rust** polls the future once with a noop `Waker`; `Poll::Ready(v)` uses `v`, `Poll::Pending` denies.
-    - **apcore-typescript** can NOT inspect a Promise synchronously; if the handler returns a `Promise`, sync `check()` treats it as unsatisfied. Use `asyncCheck()` to support Promise-returning handlers.
+    - **apcore-python** advances the coroutine one step via `coroutine.send(None)` and captures `StopIteration.value` for sync-only bodies; a coroutine that suspends is closed and reported UNEVALUABLE.
+    - **apcore-rust** polls the future once with a noop `Waker`; `Poll::Ready(v)` uses `v`, `Poll::Pending` is UNEVALUABLE.
+    - **apcore-typescript** can NOT inspect a Promise synchronously; if the handler returns a `Promise`, sync `check()` reports UNEVALUABLE. Use `asyncCheck()` to support Promise-returning handlers.
+
+    !!! warning "Changed in spec v1.22.0"
+        Through v1.21.0 this case was specified as "treated as unsatisfied", which
+        made a `deny` rule guarded by an async-only handler **inert** on the sync
+        path — the same failure mode as a misspelled key. It is now one of §6.1.1's
+        three unevaluable situations.
 
 ## Contract: ACL.load
 
@@ -205,11 +240,13 @@ Normative behavioral contract. All SDK implementations MUST satisfy these guaran
 - The returned `ACL` instance has `_yaml_path` set to `yaml_path`.
 - `default_effect` is `"deny"` if not explicitly specified in the file.
 - Rules are ordered identically to their order in the YAML file.
+- A warning is emitted for every rule that references a condition key with no handler registered **at load time**, naming the rule index, the key, and the rule's `effect`. The load still succeeds — see Errors below.
 
 ### Errors
 
 - `ConfigNotFoundError(config_path=yaml_path)` — file does not exist at `yaml_path`.
 - `ACLRuleError` — YAML parse failure, top-level value is not a mapping, `rules` key is absent, `rules` value is not a list, any rule entry is not a mapping, any rule is missing a required key (`callers`, `targets`, or `effect`), `effect` value is not `"allow"` or `"deny"`, or `callers`/`targets` value is not a list.
+- **NOT** an error: a rule referencing an unregistered condition key. `register_condition()` writes to a runtime, process-wide registry, and `acl.root` discovery commonly runs before application code has registered anything, so failing here would reject valid configurations on ordering alone. Loading warns; [`validate_conditions()`](#contract-aclvalidate_conditions) is the deterministic check to run once registration is complete; and [§6.1.1](../spec/protocol-spec.md#611-unevaluable-conditions-v1220-100) guarantees the rule cannot silently pass traffic either way.
 
 ### Returns
 
@@ -347,11 +384,13 @@ acl:
 1. Acquire the ACL lock.
 2. Insert the rule at index 0 of the internal rule list (highest priority).
 3. Release the ACL lock.
+4. If the rule carries `conditions`, check each key — including keys nested inside `$or` / `$not` — against the handler registries, and emit a warning for every key that does not resolve on the sync path. The warning MUST name the rule index (`0`), the key, and the rule's `effect`. Insertion still succeeds: this is the same warn-never-fail contract [`load()`](#contract-aclload) has, for the same reason ([PROTOCOL_SPEC §6.1.2](../spec/protocol-spec.md#612-load-time-validation-of-condition-keys-v1220-100) rule 4 makes runtime insertion an entry point that MUST be covered).
 
 ### Postconditions
 
 - The rule is the first entry in the rule list; all prior rules shift up by one index.
 - Any subsequent `check()` call evaluates the new rule before all previously inserted rules.
+- A warning has been emitted for each unresolvable condition key the rule references. No exception is raised for one.
 
 ### Errors
 
@@ -452,6 +491,160 @@ _(none — operates on the YAML path stored during `ACL.load`)_
 - `pure`: `false` — reads from the filesystem and mutates internal state
 - `idempotent`: `true` — repeated calls with the same file content produce the same rule list
 - `reentrant`: `false` — acquires the internal lock
+
+## Contract: ACL.default_effect
+
+Normative behavioral contract ([PROTOCOL_SPEC §6.8](../spec/protocol-spec.md#68-acl-introspection-v1230-101)). Read-only accessor for the effect applied when no rule matches.
+
+### Inputs
+
+- None.
+
+### Preconditions
+
+- None. Valid on any constructed `ACL`, including one with an empty rule list.
+
+### Side Effects (ordered)
+
+- None. This is a pure read: it MUST NOT emit an audit event and MUST NOT mutate state.
+
+### Postconditions
+
+- The returned value is `"allow"` or `"deny"` and equals the effect `check()` would apply when no rule matches.
+- After `reload()`, the value reflects the reloaded file.
+
+### Errors
+
+- None.
+
+### Returns
+
+- On success: `string` — `"allow"` or `"deny"`.
+
+### Properties
+
+- `async`: `false`.
+- `thread_safe`: `true`.
+- `pure`: `true`.
+- `idempotent`: `true`.
+- `reentrant`: `true` — MUST NOT acquire a lock the caller has to release.
+
+## Contract: ACL.rules
+
+Normative behavioral contract ([PROTOCOL_SPEC §6.8](../spec/protocol-spec.md#68-acl-introspection-v1230-101)). Read-only accessor for the current rule list.
+
+### Inputs
+
+- None.
+
+### Preconditions
+
+- None.
+
+### Side Effects (ordered)
+
+- None. Pure read, as for `default_effect`.
+
+### Postconditions
+
+- Rules are returned in definition order — the same order `check()` evaluates them in.
+- The returned value MUST NOT be a mutable reference into the ACL's own list. Return an immutable view or a copy, taken under the same snapshot discipline `check()` uses.
+- After `reload()`, the list reflects the reloaded file.
+
+### Errors
+
+- None.
+
+### Returns
+
+- On success: an ordered, immutable sequence of `ACLRule`.
+
+### Properties
+
+- `async`: `false`.
+- `thread_safe`: `true`.
+- `pure`: `true`.
+- `idempotent`: `true`.
+- `reentrant`: `true`.
+
+## Contract: ACL.validate_conditions
+
+Normative behavioral contract ([PROTOCOL_SPEC §6.1.2](../spec/protocol-spec.md#612-load-time-validation-of-condition-keys-v1220-100)). Reports every rule that references a condition key with no registered handler.
+
+Condition handlers are registered at runtime into a process-wide registry, and an ACL may legitimately be loaded before a deployment registers its custom handlers — `acl.root` discovery commonly runs during framework bootstrap, ahead of application code. Loading therefore does not fail on an unregistered key. This method is the deterministic check to run **after** registration is complete.
+
+### Inputs
+
+- None. Operates on the ACL's current rule list and the process-wide handler registry as it stands at call time.
+
+### Preconditions
+
+- None. Calling before any handler is registered is valid and simply reports every non-built-in key.
+
+### Side Effects (ordered)
+
+- None. MUST NOT mutate the ACL, MUST NOT register handlers, and MUST NOT emit an audit event.
+
+### Postconditions
+
+- Every rule whose `conditions` reference a key that does not resolve on the **sync** path is reported, including keys nested inside `$or` / `$not` sub-objects.
+- Each finding carries at least: the rule's index in definition order, the condition key, the rule's `effect`, and `sync_registered` / `async_registered`.
+- A rule with no `conditions` is never reported.
+- An empty result means every referenced key currently resolves on both paths. It is not a guarantee about the future: a later `add_rule()` can introduce a new one.
+
+!!! warning "Sync and async registries are separate — a key can resolve on one path only"
+    SDKs keep two condition-handler registries. `async_check()` consults the async
+    registry and falls back to the sync one; `check()` consults only the sync
+    registry. So a key registered **only** as an async handler is a working
+    condition under `async_check()` and an *unevaluable* one under `check()` —
+    which, per § Unevaluable Conditions, makes a `deny` rule deny and an `allow`
+    rule not grant on the sync path.
+
+    That is why a finding reports two flags rather than one boolean. A finding is
+    emitted whenever `sync_registered` is false, **including** when
+    `async_registered` is true. An application that only ever calls `async_check()`
+    may choose to ignore those; that judgement belongs to the caller, not to the
+    validator. Full table:
+    [PROTOCOL_SPEC §6.1.3](../spec/protocol-spec.md#613-sync-and-async-handler-registries-v1220-100).
+
+    The built-ins are not symmetric either: `identity_types`, `roles` and
+    `max_call_depth` are sync-registered (and so resolve on both paths via the
+    fallback), while `$or` and `$not` are registered in both.
+
+### Errors
+
+- None. Findings are returned, not raised — a caller decides whether an unregistered key is fatal for its deployment.
+
+### Returns
+
+- On success: a possibly-empty ordered collection of findings. Each finding carries five fields:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `rule_index` | `integer` | Index of the offending rule in definition order |
+| `condition_key` | `string` | The condition key that does not resolve |
+| `effect` | `"allow" \| "deny"` | The rule's effect — a finding on a `deny` rule is the consequential one |
+| `sync_registered` | `boolean` | Whether the key resolves for `check()` |
+| `async_registered` | `boolean` | Whether the key resolves for `async_check()` |
+
+  `sync_registered` and `async_registered` MUST be reported separately and MUST NOT be collapsed into one boolean ([PROTOCOL_SPEC §6.1.3](../spec/protocol-spec.md#613-sync-and-async-handler-registries-v1220-100)). A finding with `sync_registered: false, async_registered: true` is an async-only handler: usable under `async_check()`, unevaluable under `check()`.
+
+### Properties
+
+- `async`: `false`.
+- `thread_safe`: `true`.
+- `pure`: `true`.
+- `idempotent`: `true` — for a fixed rule list and registry.
+- `reentrant`: `true`.
+
+!!! tip "Fail the deployment, not the load"
+    The intended shape is to call this once bootstrap has finished registering
+    handlers, and to treat any finding on a `deny` rule as a startup error. The
+    guarantee that a broken `deny` rule cannot silently pass traffic does not
+    depend on anyone calling it — that is
+    [§6.1.1](../spec/protocol-spec.md#611-unevaluable-conditions-v1220-100)'s job.
+    This method exists so the problem is found at deploy time rather than in an
+    audit log.
 
 ## Usage
 

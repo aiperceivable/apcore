@@ -158,8 +158,7 @@
     },
     "RuleConditions": {
       "type": "object",
-      "description": "Additional conditions for rule matching (beyond caller/target patterns).",
-      "additionalProperties": false,
+      "description": "Additional conditions for rule matching (beyond caller/target patterns). All keys are AND-ed. The properties below are the conditions every SDK provides; the set is OPEN because `register_condition()` (PROTOCOL_SPEC §6.1) lets a deployment add its own condition keys at runtime, so a key not listed here is valid exactly when a handler has been registered for it. An unregistered key is not a schema error — it is an unevaluable condition at check time, which denies on a `deny` rule and never grants on an `allow` rule (PROTOCOL_SPEC §6.1.1). `time_window` was listed here as though it were built in; no SDK registers such a handler and docs/guides/acl-configuration.md presents it as a custom-handler example, so it is now validated as any other custom key.",
       "properties": {
         "identity_types": {
           "type": "array",
@@ -197,25 +196,6 @@
               "super_admin"
             ]
           ]
-        },
-        "time_window": {
-          "type": "object",
-          "description": "Only match during specific time windows.",
-          "additionalProperties": false,
-          "properties": {
-            "start_hour": {
-              "type": "integer",
-              "description": "Start hour (0-23, UTC).",
-              "minimum": 0,
-              "maximum": 23
-            },
-            "end_hour": {
-              "type": "integer",
-              "description": "End hour (0-23, UTC).",
-              "minimum": 0,
-              "maximum": 23
-            }
-          }
         },
         "max_call_depth": {
           "type": "integer",

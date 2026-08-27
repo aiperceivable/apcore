@@ -1241,7 +1241,7 @@ As an ergonomic alternative to subscribing to `apcore.event.delivery_failed`, SD
             attempt_count: int,
         ) -> None:
             await pager.alert(
-                f"Permanent delivery failure: {event.name} "
+                f"Permanent delivery failure: {event.event_type} "
                 f"after {attempt_count} attempts: {error}"
             )
 
@@ -1266,7 +1266,7 @@ As an ergonomic alternative to subscribing to `apcore.event.delivery_failed`, SD
             attemptCount: number,
         ): Promise<void> {
             await pager.alert(
-                `Permanent delivery failure: ${event.name} ` +
+                `Permanent delivery failure: ${event.eventType} ` +
                 `after ${attemptCount} attempts: ${error.message}`
             );
         }
@@ -1276,9 +1276,10 @@ As an ergonomic alternative to subscribing to `apcore.event.delivery_failed`, SD
     emitter.subscribe(new HealthAlertSubscriber());
     ```
 === "Rust"
+    <!-- apcore-example: fragment -->
     ```rust
     use apcore::errors::ModuleError;
-    use apcore::events::{ApCoreEvent, EventEmitter, EventSubscriber, RetryConfig};
+    use apcore::events::{ApCoreEvent, EventEmitter, EventRetryConfig, EventSubscriber};
     use async_trait::async_trait;
 
     #[derive(Debug)]
@@ -1289,8 +1290,11 @@ As an ergonomic alternative to subscribing to `apcore.event.delivery_failed`, SD
         fn subscriber_id(&self) -> &str { "health-alert" }
         fn event_pattern(&self) -> &str { "apcore.health.*" }
 
-        fn retry(&self) -> RetryConfig {
-            RetryConfig { max_attempts: 5, initial_backoff_ms: 250, ..Default::default() }
+        // `EventRetryConfig` is NOT `#[non_exhaustive]`, so struct-update syntax
+        // is available here. It is the exception among apcore-rust config types —
+        // see spec/api-surface-conventions.md §9.1.
+        fn retry(&self) -> EventRetryConfig {
+            EventRetryConfig { max_attempts: 5, initial_backoff_ms: 250, ..Default::default() }
         }
 
         async fn on_event(&self, event: &ApCoreEvent) -> Result<(), ModuleError> {
@@ -1305,7 +1309,7 @@ As an ergonomic alternative to subscribing to `apcore.event.delivery_failed`, SD
         ) {
             pager::alert(&format!(
                 "Permanent delivery failure: {} after {} attempts: {}",
-                event.name, attempt_count, error,
+                event.event_type, attempt_count, error,
             ));
         }
     }

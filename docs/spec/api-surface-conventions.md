@@ -314,11 +314,106 @@ When diffing public surfaces across SDKs, normalize before reporting, so the rec
 
 ---
 
-## 9. References
+## 9. Constructing SDK-owned Data Types
+
+Visibility governs whether foreign code can *name* a type. This section governs whether it can *build* one. The two diverge in Rust, and the divergence has produced documentation in this repository that does not compile (issue #103).
+
+### 9.1 The Rust `#[non_exhaustive]` rule
+
+apcore-rust marks most of its plain-data contract types `#[non_exhaustive]` so that a later specification revision can add a field without a major version bump. The attribute achieves that by **removing struct-expression construction for every crate except the defining one**.
+
+This includes functional record update. From a downstream crate:
+
+```rust
+// DOES NOT COMPILE — E0639: cannot create non-exhaustive struct using struct expression
+let result = ApprovalResult {
+    status: "approved".to_string(),
+    ..Default::default()
+};
+```
+
+`..Default::default()` is not an exemption; it is a struct expression. The working cross-crate form starts from a value the defining crate produced and mutates it:
+
+```rust
+let mut result = ApprovalResult::default();
+result.status = "approved".to_string();
+result.approved_by = Some("slack_user".to_string());
+```
+
+!!! warning "Do not recommend `..Default::default()` for a `#[non_exhaustive]` type"
+    The attribute exists precisely to break downstream struct literals — that is the mechanism by which adding a field stays non-breaking. Documentation that describes it as preserving "downstream struct-literal construction" has the causality backwards, and any snippet using `..Default::default()` on such a type will fail for every reader outside the crate.
+
+Note also that `clippy::field_reassign_with_default` — on by default — fires on the `Default::default()` + assignment form for local types but **not** for an external `#[non_exhaustive]` type. The correct workaround is therefore not lint-penalised, but it also gets no lint assistance, which is why §9.2 exists.
+
+### 9.2 Normative rules for SDK authors
+
+1. An SDK **MUST NOT** document a construction form its own compiler rejects for downstream crates. Where a language restricts construction across a package boundary, the doc comment **MUST** show the form that works from outside.
+2. An SDK that restricts construction of a public data type **MUST** provide at least one construction path usable from a foreign package. A `Default` implementation plus public fields satisfies this; so does a constructor or builder.
+3. An SDK **MUST NOT** cite a builder that does not exist. If the intended ergonomic path has not been written, the doc comment **MUST** describe the path that is actually available.
+4. A data type carrying required semantic fields (for example `ApprovalResult.status`, or `Change`'s `action`/`target`/`summary`) **SHOULD** expose a semantic constructor that sets them — `ApprovalResult::approved(by)`, `ApprovalResult::rejected(reason)`, `Change::new(action, target, summary)` — so that a caller cannot produce a default-constructed value that is structurally valid and semantically empty.
+5. A code block presented as a **complete example** — one a reader is meant to copy and run — **MUST** compile as written for the language it is tabbed under, including its `use` / `import` statements and trait bounds. A block that is deliberately a **fragment** (an `impl` body shown without its type, a signature sketch, a snippet assuming an `executor` from earlier prose) **MUST** be marked as one per §9.4, and **MUST** still be correct in every line it does show: real signatures, real field names, and the construction form that actually compiles. An unmarked fragment that silently does not compile is the failure mode this section exists to prevent — worse than either a complete example or an honest one.
+
+### 9.3 Per-language summary
+
+| Concern | Python | TypeScript | Rust |
+|---|---|---|---|
+| Cross-package construction of a contract data type | keyword arguments on the dataclass | object literal against the exported interface | `Default::default()` + field assignment, or a constructor — **never** a struct literal on a `#[non_exhaustive]` type |
+| Forward-compatible field addition | new field with a default | optional property | `#[non_exhaustive]` |
+| Required-field ergonomics | `__init__` positional/required args | required interface properties | semantic constructor (§9.2 rule 4) |
+
+Python and TypeScript place no equivalent restriction on construction, so a snippet valid in those tabs is not evidence that the Rust tab is valid.
+
+---
+
+### 9.4 Marking a fragment
+
+A fragment is declared by an HTML comment on the line immediately before its fence:
+
+````markdown
+<!-- apcore-example: fragment -->
+```rust
+impl Module for DeleteUser {
+    fn preview(&self, inputs: &serde_json::Value, /* … */) -> Option<PreviewResult> { … }
+}
+```
+````
+
+The marker is machine-readable on purpose: it is what lets a compile harness skip a block without guessing, and it makes the absence of a marker mean "this is claimed to compile" rather than "nobody said". Rules:
+
+1. The marker applies to the **single** fence that follows it. It **MUST NOT** be placed inside the fence, where it would render as code.
+2. A block with no marker is a complete example and is subject to rule 5's compile requirement.
+3. The marker exempts a block from *compiling*. It exempts nothing else: rule 5's "correct in every line it does show" applies to fragments in full.
+4. Inside a tabbed section the marker is indented to the tab's content level, like the fence it precedes.
+
+!!! warning "Rule 5 is not mechanically enforced, and the existing checker is narrower than it looks"
+    `conformance/check_doc_examples.py` does **not** type-check anything, and its
+    per-language reach is uneven:
+
+    | Language | What is actually checked |
+    |---|---|
+    | Python | `from apcore… import …`, submodules included — the module path and every imported name |
+    | TypeScript | `import { … } from 'apcore-js'` and the declared subpath exports |
+    | Rust | `use apcore::{ … }` — **crate-root brace form only** — plus `ErrorCode::Variant` names |
+
+    A nested Rust import such as `use apcore::events::{EventRetryConfig}` matches
+    nothing and is not checked at all. At the time of writing the Rust docs carry
+    56 crate-root brace imports and 56 nested ones, so roughly half of the apcore
+    imports in Rust examples are invisible to it — which is why
+    `features/event-system.md` could import a `RetryConfig` that `apcore::events`
+    does not export, and pass. That was found by hand, not by the checker.
+
+    A compile harness, a fragment-marker sweep across the 253 Rust blocks, and a
+    widened import check are tracked in
+    [#105](https://github.com/aiperceivable/apcore/issues/105). Until then rule 5
+    and §9.4 are reviewed by hand, and blocks carry the marker only where a
+    reviewer has actually established the block's status.
+
+## 10. References
 
 - [Core Executor §Contract: Executor binding to Context](../features/core-executor.md#contract-executor-binding-to-context)
 - [Context Object](../features/context-object.md)
 - [Canonical Protocol Spec](./protocol-spec.md)
 - [Cross-language Type Mapping](./type-mapping.md)
+- [Approval System](../features/approval-system.md)
 </content>
 </invoke>
