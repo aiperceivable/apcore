@@ -49,6 +49,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   Governance: maintainer approval per GOVERNANCE.md § Decision Making; no tracking issue was opened.
 
+- **§9.14's unknown-key walk is recursive, and was specified as one level (spec v1.19.0).** `schemas/apcore-config.schema.json` and its siblings are `additionalProperties: false` at every level, not only at the section root: `observability.tracing`, `acl.audit`, `validation.binding` and `obs.redaction` are each closed in their own right. `reject_unknown_framework_keys` iterated only a section's direct children, so strict mode was blind exactly where a typo is hardest to spot — `observability.tracing.sampling_rat` passed the check because its parent `tracing` is declared, while the canonical schema rejects it, and the misspelled sampling rate fell back to its default with no error and no log line.
+
+  The pseudocode was the outlier, not the schema. apcore-typescript already walked the full depth; apcore-python and apcore-rust matched the one-level pseudocode and are corrected. This is the specification catching up to a closedness it already declared, so it is a MINOR bump rather than a new requirement: `strict` still defaults to `false`, and no configuration changes behaviour unless its author opted in.
+
+  An undeclared subtree is reported once, at the point it stops being declared, rather than once per key beneath it — a misspelled section otherwise produces an error per leaf and buries its own cause.
+
+  Both SDKs' key surfaces moved from a `section -> direct child names` map to the flat dot-path list apcore-typescript already used, since the map shape could not express nested closedness and so could not guard it. Their drift guards moved with it and now compare full paths at every depth. Two follow-on gaps surfaced from that: apcore-rust's load-path coverage guard read the section table and therefore never noticed that `$schema` — a top-level key an operator can write and the schema accepts — had no load-path coverage at all, and apcore-rust had no equivalent of apcore-python's guard that every section enforced as closed is closed upstream. Both added.
+
+  Governance: maintainer approval per GOVERNANCE.md § Decision Making; no tracking issue was opened.
+
 ### Fixed
 
 - **PROTOCOL_SPEC §9.15.3 declared the `sys_modules` activation flags `True` while citing a schema that says `false` (spec v1.17.0).** The `Config.register_namespace("sys_modules", ...)` block passes `schema="schemas/sys-modules.schema.json"` and then, four lines below, declares `defaults={"enabled": True, ..., "events": {"enabled": True, ...}}`. That schema declares both keys `default: false`. So does §6.6.3 of the same document, which states the 0 / 6 / 9 activation ladder in terms of exactly those two flags; so does `conformance/fixtures/config_defaults.json`; and so do all three SDKs. §9.15.3 was the only dissenting authority, and it dissented from a file it names on the preceding line.

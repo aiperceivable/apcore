@@ -1,12 +1,12 @@
 ---
-description: "The canonical, normative apcore protocol specification (RFC 2119, v1.18.0): module, schema, naming, ACL, approval, error, config, and observability requirements for all conforming SDKs."
+description: "The canonical, normative apcore protocol specification (RFC 2119, v1.19.0): module, schema, naming, ACL, approval, error, config, and observability requirements for all conforming SDKs."
 ---
 
 # apcore — AI-Perceivable Core Standard Specification
 
 > **Canonical Specification** - This document is the authoritative specification for the apcore protocol
 
-> Version: 1.18.0
+> Version: 1.19.0
 > Status: Draft Specification (RFC 2119 Conformant)
 > Stability: Specification content is stable, pending reference implementation verification
 > Last Updated: 2026-08-27
@@ -6084,11 +6084,25 @@ Steps:
   1. If meta_config.strict != true:
        → Return (the key is retained and readable; see below)
 
-  2. declared ← union of the canonical config schemas (see below)
+  2. declared ← union of the canonical config schemas, as a set of full
+     dot-paths (see below). Every object in those schemas is
+     `additionalProperties: false`, at EVERY level — not only at the section
+     root — so the walk is recursive:
+
+     walk(data, prefix):
+       For each (key, value) in data:
+         path ← prefix + "." + key
+         If path is not a declared prefix of any entry in `declared`:
+           Collect error: "Unknown key '{path}' (strict mode enabled)"
+           Continue          (do not descend into an undeclared subtree)
+         If value is an object AND path names a declared CONTAINER:
+           walk(value, path)
+         (a declared leaf ends the walk whatever its value is; a declared
+          container holding a non-object is a type error Algorithm A12's
+          constraint table owns, not an undeclared key)
+
      For each framework section in declared:
-       For each key present in apcore_data[section]:
-         If declared[section] does not contain the key:
-           Collect error: "Unknown key '{section}.{key}' (strict mode enabled)"
+       walk(apcore_data[section], section)
 
   3. If any errors collected → throw CONFIG_INVALID with ALL of them
 ```
@@ -6096,6 +6110,23 @@ Steps:
 **Unknown keys inside the `apcore` namespace.** Every framework section in
 `schemas/apcore-config.schema.json` is `additionalProperties: false`. That
 closedness is now enforced — but **only** under `_config.strict: true`.
+
+!!! warning "The walk is recursive, and was specified as one level until v1.19.0"
+    `additionalProperties: false` holds at every level of those schemas, not
+    just at the section root — `observability.tracing`, `acl.audit`,
+    `validation.binding` and `obs.redaction` are each closed in their own right.
+    The sub-algorithm above previously iterated only `apcore_data[section]`'s
+    direct children, which left strict mode blind exactly where a typo is
+    hardest to spot: `observability.tracing.sampling_rat` passed the one-level
+    check (its parent `tracing` is declared) while the canonical schema rejects
+    it, and the misspelled sampling rate silently fell back to its default.
+
+    apcore-typescript already walked the full depth; apcore-python and
+    apcore-rust matched the one-level pseudocode. The pseudocode was the
+    outlier, not the schema — this is the specification catching up to a
+    closedness it already declared, not a new requirement. `strict` still
+    defaults to `false`, so no configuration changes behaviour unless its
+    author opted in.
 
 - **Default (`strict: false`).** An unknown key inside a framework section
   **MUST** be retained and readable through `get()`. Implementations **MUST NOT**
