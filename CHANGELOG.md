@@ -9,6 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+---
+
+## [0.28.0] - 2026-08-27
+
+### Fixed
+
+- **PROTOCOL_SPEC §9.15.3 declared the `sys_modules` activation flags `True` while citing a schema that says `false` (spec v1.17.0).** The `Config.register_namespace("sys_modules", ...)` block passes `schema="schemas/sys-modules.schema.json"` and then, four lines below, declares `defaults={"enabled": True, ..., "events": {"enabled": True, ...}}`. That schema declares both keys `default: false`. So does §6.6.3 of the same document, which states the 0 / 6 / 9 activation ladder in terms of exactly those two flags; so does `conformance/fixtures/config_defaults.json`; and so do all three SDKs. §9.15.3 was the only dissenting authority, and it dissented from a file it names on the preceding line.
+
+  Read literally it told implementers to register the six read modules in every project that never asked for them, and — through `events.enabled` — the three `system.control.*` **write** modules, which are the approval-gated control plane. Both activation flags are now `False`. The per-module sub-flags (`health`, `manifest`, `usage`, `control`) stay `True`: they select *which* modules register once activation has happened rather than activating anything themselves, and `sys-modules.schema.json` declares them `true` for the same reason. Only the two keys the schema disagreed with were touched.
+
+  **No behaviour change**: no SDK, schema or fixture moves. It does explain a real cross-language divergence found in the same sync — apcore-rust's `Config::namespace()` merges registration defaults on every call in both config modes, so in legacy mode it reported `sys_modules.enabled = true` sourced from this block while apcore-python and apcore-typescript reported the schema's `false`. Rust was faithfully implementing one half of a self-contradictory specification; correcting §9.15.3 removes the contradiction at its origin rather than papering over it in an SDK.
+
+  Governance: maintainer approval per GOVERNANCE.md § Decision Making; no tracking issue was opened, recorded here rather than pointed at an invented number (the precedent set by the 1.13.0 row).
+
+- **`docs/spec/algorithms.md` A20 `guard_call_chain()` contradicted `conformance/fixtures/call_chain.json` on 8 of its 11 cases.** The pseudocode assumed `call_chain` EXCLUDES the module being called, while `docs/features/call-chain-guard.md` states it "already includes `module_id` at the end, as set by `Context.child()`" and the fixture pins that reading. Under the published algorithm the ordinary chain `[a, b, c]` calling `c` raised `CIRCULAR_CALL`, a single-element chain raised `CIRCULAR_CALL`, and a 32-element chain at the default limit of 32 raised `CALL_DEPTH_EXCEEDED`. An implementer following `algorithms.md` — which the index marks **MUST** — could not pass the conformance suite.
+
+  Corrected on four axes, each verified against all 11 fixture cases: the depth and frequency comparisons are strict (`>`), so a chain sitting exactly on a limit passes; cycle detection scans the *prior* chain for a last occurrence with entries after it, so `[a, a]` is a self-call and `[a, b, a]` is a cycle; the limit floors (`max_call_depth < 1`, `max_module_repeat < 1`) are rejected before the chain is inspected at all; and the parameter is named `max_call_depth`, matching the feature doc and all three SDKs rather than the algorithm's `max_depth`. The fixture's `INVALID_LIMIT` label is documented as a fixture-level expectation, not a wire code — each SDK raises its own idiomatic invalid-input error there (divergence T-B-005).
+
+- **`README.md`'s component-version table was stale in five of its six rows.** Protocol specification read 1.12.0 against an actual 1.17.0; the core SDK line read 0.26.0 against 0.27.0; apcore-mcp 0.17.2 against 0.18.1; apcore-a2a 0.4.4 against 0.6.0; apcore-cli 0.10.4 against 0.10.5. Verified against each repository's own build config (`pyproject.toml` / `package.json` / `Cargo.toml`), and all four adapter families carry the same version across their three languages. Only apcore-toolkit (0.10.1) was already correct. Nothing checks this table, so it drifts silently while reading as the authoritative release inventory.
+
+- **`docs/spec/algorithms.md` A24.1 `deep_merge_chunks` discarded data at the depth cap, contradicting its own Properties note.** Step 1 of the helper was `If depth >= max_depth → Return`, a bare return that drops the override sub-object — while the Properties block twelve lines below states "the truncation point loses no data", `docs/features/streaming.md` states "the right value replaces the left at that level", and `conformance/fixtures/stream_aggregation.json` pins right-value-wins as `deep_merge_depth_cap_right_wins`. The pseudocode encoded the exact bug that fixture tracks as divergence T-B-002, so an implementer fixing apcore-python or apcore-typescript against `algorithms.md` would have reintroduced it. The cap now assigns the override wholesale and stops recursing. The inline case count for that fixture was also stale (9 against an actual 10).
+
 ### Added
 
 - **`conformance/fixtures/usage_contract.json` (11 cases) and `governance_state.json` (12 cases), driven by all three SDKs (#96, #97).** The two sections that were marked PENDING now cite landed fixtures, and `docs/features/core-executor.md` drops its not-implemented banner: `governance_state()` ships in apcore-python, apcore-typescript and apcore-rust.

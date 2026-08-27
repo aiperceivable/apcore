@@ -450,11 +450,11 @@ version lines and declare their supported core range in their package metadata.
 
 | Component | Version | Notes |
 |---|---|---|
-| **Protocol specification** | 1.12.0 | `docs/spec/protocol-spec.md` |
-| apcore Python / TypeScript / Rust | 0.26.0 | Core SDK release line |
-| apcore-mcp Python / TypeScript / Rust | 0.17.2 | MCP surface adapters |
-| apcore-a2a Python / TypeScript / Rust | 0.4.4 | A2A surface adapters |
-| apcore-cli Python / TypeScript / Rust | 0.10.4 | CLI surface adapters |
+| **Protocol specification** | 1.17.0 | `docs/spec/protocol-spec.md` |
+| apcore Python / TypeScript / Rust | 0.27.0 | Core SDK release line |
+| apcore-mcp Python / TypeScript / Rust | 0.18.1 | MCP surface adapters |
+| apcore-a2a Python / TypeScript / Rust | 0.6.0 | A2A surface adapters |
+| apcore-cli Python / TypeScript / Rust | 0.10.5 | CLI surface adapters |
 | apcore-toolkit Python / TypeScript / Rust | 0.10.1 | Adapter-building utilities |
 
 ## Configuration Requirements

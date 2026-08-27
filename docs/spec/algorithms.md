@@ -1352,10 +1352,10 @@ Steps:
 
 | Parameter | Type | Description |
 |------|------|------|
-| `module_id` | `String` | Target module ID to be called |
-| `call_chain` | `List<String>` | Call chain in current Context |
-| `max_depth` | `Integer` | Maximum call depth (default 32) |
-| `max_module_repeat` | `Integer` | Maximum occurrences of same module (default 3) |
+| `module_id` | `String` | Target module ID being called |
+| `call_chain` | `List<String>` | Call chain in current Context, **already including `module_id` as its last element** (appended by `Context.child()`) |
+| `max_call_depth` | `Integer` | Maximum call depth (default 32). **MUST** be >= 1 |
+| `max_module_repeat` | `Integer` | Maximum occurrences of same module (default 3). **MUST** be >= 1 |
 
 **Output:**
 
@@ -1370,37 +1370,61 @@ Steps:
 
 **Postconditions:**
 
-- If no exception thrown, `module_id` can be safely appended to `call_chain` and executed
+- If no exception thrown, the call described by `call_chain` may proceed
 - If exception thrown, call chain is not modified
+
+!!! warning "The chain includes the target"
+    `call_chain` arrives with `module_id` already appended, so a well-formed
+    single call has `call_chain[-1] == module_id`. Treating the chain as
+    *excluding* the target inverts every check: `[a, b, c]` with
+    `module_id = "c"` would read as a cycle, and a 32-element chain would
+    exceed a limit of 32. `conformance/fixtures/call_chain.json` pins the
+    correct reading in `valid_chain`, `single_element`,
+    `self_call_not_circular` and `default_depth_32_ok`.
 
 **Pseudocode:**
 
 ```
-Algorithm: guard_call_chain(module_id, call_chain, max_depth, max_module_repeat)
+Algorithm: guard_call_chain(module_id, call_chain, max_call_depth, max_module_repeat)
+
+Precondition: call_chain[-1] == module_id (appended by Context.child())
 
 Steps:
+  0. Limit floors (before inspecting the chain):
+     If max_call_depth < 1 OR max_module_repeat < 1:
+       → reject as invalid input
+     Each SDK raises its own idiomatic invalid-input error here rather than a
+     shared wire code — Python ValueError, TypeScript Error, Rust
+     ModuleError(GENERAL_INVALID_INPUT). Recorded as divergence T-B-005;
+     call_chain.json labels the expectation INVALID_LIMIT, which is a fixture
+     label and NOT a wire code.
+
   1. Depth check:
-     If len(call_chain) >= max_depth:
+     If len(call_chain) > max_call_depth:
        → throw CALL_DEPTH_EXCEEDED {
            module_id: module_id,
            current_depth: len(call_chain),
-           max_depth: max_depth,
+           max_depth: max_call_depth,
            call_chain: call_chain
          }
+     Note the comparison is strict: a chain of exactly max_call_depth passes.
 
-  2. Cycle detection (strict cycle):
-     If module_id ∈ call_chain:
-       → throw CIRCULAR_CALL {
-           module_id: module_id,
-           call_chain: call_chain,
-           cycle_start: call_chain.index(module_id)
-         }
+  2. Cycle detection:
+     prior ← call_chain[0 .. len(call_chain)-2]   // everything but the target
+     If module_id ∈ prior:
+       i ← last index of module_id in prior
+       If i < len(prior) - 1:                     // other modules called since
+         → throw CIRCULAR_CALL {
+             module_id: module_id,
+             call_chain: call_chain,
+             cycle_start: i
+           }
+     A repeat with nothing in between is a self-call, not a cycle: [a, a] is
+     permitted, [a, b, a] is not.
 
   3. Frequency detection:
-     repeat_count ← 0
-     For each id ∈ call_chain:
-       If id == module_id → repeat_count += 1
-     If repeat_count >= max_module_repeat:
+     repeat_count ← count of module_id in call_chain   // full chain
+     If repeat_count > max_module_repeat:
        → throw CALL_FREQUENCY_EXCEEDED {
            module_id: module_id,
            count: repeat_count,
@@ -1420,9 +1444,10 @@ Steps:
 
 **Implementation Notes:**
 
-- Execution order of three checks **MUST** be: depth → cycle → frequency (depth check is cheapest, should execute first)
+- Execution order of the three checks **MUST** be: depth → cycle → frequency (depth check is cheapest, should execute first). The step 0 limit floors precede all of them.
 - `max_module_repeat` default value is 3, configurable via `apcore.yaml`'s `executor.max_module_repeat`, range `[1, 100]`
-- Step 2 cycle detection covers direct cycle (A→B→A) and indirect cycle (A→B→C→A)
+- Step 2 cycle detection covers direct cycle (A→B→A) and indirect cycle (A→B→C→A). It does **not** flag an immediate self-repeat (A→A), which step 3 governs instead
+- Both step 1 and step 3 compare strictly (`>`), so a chain sitting exactly on a limit passes. `default_depth_32_ok` and `frequency_within_limit` in `conformance/fixtures/call_chain.json` pin this boundary
 - Step 3 frequency detection covers non-cycle repeated calls (e.g., same module called multiple times in parallel orchestration then re-entered)
 - If step 2 already threw `CIRCULAR_CALL`, step 3 won't execute (short-circuit)
 - For modules with legitimate multiple call needs (e.g., retry logic), can configure `max_repeat_override` in module metadata to override default limit
@@ -1953,7 +1978,7 @@ additionalProperties: false
 
 **Purpose.** Aggregate the chunks yielded by a streaming module's `stream()` generator into the final output dict that the executor validates against `output_schema`.
 
-**Source section.** PROTOCOL_SPEC §5 streaming semantics. Verified by `conformance/fixtures/stream_aggregation.json` (9 cases).
+**Source section.** PROTOCOL_SPEC §5 streaming semantics. Verified by `conformance/fixtures/stream_aggregation.json` (10 cases).
 
 ```
 Algorithm: deep_merge_chunks(chunks, max_depth=32)
@@ -1972,7 +1997,14 @@ Steps:
   3. Return result
 
 Helper: deep_merge(base, override, depth, max_depth)
-  1. If depth >= max_depth → Return  (do not recurse further; truncate)
+  1. If depth >= max_depth:
+       For each (key, value) in override:
+         base[key] ← value        (assign wholesale; do NOT recurse further)
+       Return
+     A bare `Return` here would DISCARD the override at the cap, contradicting
+     both the Properties note below and streaming.md — "If nesting exceeds this
+     limit, the right value replaces the left at that level". The truncation
+     stops traversal; it does not drop data.
   2. For each (key, value) in override:
        a. If key NOT in base:
             base[key] ← value
@@ -1985,8 +2017,12 @@ Properties:
   - Arrays are replaced (not concatenated) at matching keys.
   - null overwrites (does not delete) the previous value.
   - Recursion is depth-capped to prevent stack exhaustion via adversarial input.
-  - Beyond the depth cap, sub-objects are kept as-is from the override
-    (the truncation point loses no data, only stops further traversal).
+  - Beyond the depth cap, sub-objects are assigned wholesale from the override
+    (the truncation point loses no data, only stops further traversal). Pinned
+    by `deep_merge_depth_cap_right_wins` in
+    `conformance/fixtures/stream_aggregation.json`, which records divergence
+    T-B-002: apcore-rust implements this, apcore-python and apcore-typescript
+    currently drop the override at the cap.
 ```
 
 **Reference implementations:**

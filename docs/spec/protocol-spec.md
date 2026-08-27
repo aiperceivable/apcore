@@ -1,15 +1,15 @@
 ---
-description: "The canonical, normative apcore protocol specification (RFC 2119, v1.16.0): module, schema, naming, ACL, approval, error, config, and observability requirements for all conforming SDKs."
+description: "The canonical, normative apcore protocol specification (RFC 2119, v1.17.0): module, schema, naming, ACL, approval, error, config, and observability requirements for all conforming SDKs."
 ---
 
 # apcore — AI-Perceivable Core Standard Specification
 
 > **Canonical Specification** - This document is the authoritative specification for the apcore protocol
 
-> Version: 1.16.0
+> Version: 1.17.0
 > Status: Draft Specification (RFC 2119 Conformant)
 > Stability: Specification content is stable, pending reference implementation verification
-> Last Updated: 2026-08-25
+> Last Updated: 2026-08-27
 
 ---
 
@@ -6440,7 +6440,11 @@ Config.register_namespace(
     schema="schemas/sys-modules.schema.json",
     env_prefix="APCORE_SYS",
     defaults={
-        "enabled": True,
+        # The two activation flags default to False, matching
+        # schemas/sys-modules.schema.json and §6.6.3. The per-module sub-flags
+        # below stay True: they select WHICH modules register once activation
+        # has happened, they do not activate anything on their own.
+        "enabled": False,
         "health":   {"enabled": True},
         "manifest": {"enabled": True},
         "usage": {
@@ -6450,7 +6454,7 @@ Config.register_namespace(
         },
         "control":  {"enabled": True},
         "events": {
-            "enabled": True,
+            "enabled": False,
             "thresholds": {
                 "error_rate": 0.1,
                 "latency_p99_ms": 5000.0,
@@ -6459,6 +6463,19 @@ Config.register_namespace(
     },
 )
 ```
+
+!!! warning "These defaults are off, and §6.6.3 is the reason"
+    `enabled` and `events.enabled` are the two flags §6.6.3 describes as the
+    0 / 6 / 9 activation ladder, and both default to **false**. Registering
+    this namespace with `enabled: True` would stand the system modules up in
+    every project that never asked for them, and `events.enabled: True` would
+    additionally stand up the three `system.control.*` **write** modules —
+    the approval-gated control plane — by default.
+
+    Until spec v1.17.0 this block declared both as `True`, contradicting
+    `schemas/sys-modules.schema.json` (which it cites on the line above),
+    §6.6.3 in this same document, `conformance/fixtures/config_defaults.json`,
+    and all three SDKs.
 
 **Migration:** `register_sys_modules()` **MUST** prefer `config.namespace("sys_modules")` in namespace mode, falling back to `config.get("sys_modules.*")` in legacy mode. No breaking change.
 
@@ -8241,3 +8258,4 @@ Each language SDK **SHOULD** provide idiomatic module definition syntax. The fol
 | 1.14.0 | 2026-08-25 | **§6.7.1 Usage Module Output Contract (new) — the `system.usage.*` field contract is stated, not deferred (#96).** §6.7 required "equivalent input/output schemas" and pointed at each SDK's source as the schema source of truth. That deferral is why three implementations diverged in five ways without any becoming non-conformant. Now normative: `period` **MUST** match `^[1-9][0-9]*[hd]$`, declared as a `pattern` in `input_schema` so a malformed value fails uniformly with `SCHEMA_VALIDATION_ERROR` rather than through an implementation-private parser (apcore-python accepted `"0h"`, `"-5d"` and `"+3h"`; apcore-typescript rejected all three; apcore-rust parsed no period at all), and **every** statistic in both outputs MUST be computed over `[now − period, now]` — apcore-rust echoed `period` back while `get_all_summaries()` / `get_module_summary()` covered the full retained history. `hourly_distribution[].hour` **MUST** be the collector's own key `YYYY-MM-DDTHH`; apcore-rust reformatted it to `%Y-%m-%dT%H:00:00Z` behind a constant whose comment claimed the two matched, and **this specification's own example in `features/system-modules.md` showed the reformatted spelling**, so the divergent implementation was the one following the docs. Exactly 24 entries, ascending, zero-filled. `p99_latency_ms` **MUST** be nearest-rank `sorted[min(ceil(0.99·N), N) − 1]` with no interpolation — apcore-python computed that index and then returned `sorted[rank]`, one element higher, contradicting its own comment; for 100 samples it answered 100 where the other two answered 99. Unattributed calls are the literal `caller_id` `"unknown"`. `output_schema()` **MUST** declare `properties` and `required`; apcore-rust returned a bare `{"type": "object"}` for both modules. `schemas/sys-usage-summary.schema.json` and `schemas/sys-usage-module.schema.json` are added as the canonical shape — both with `additionalProperties: false`, and the `hour` pattern deliberately rejects the current apcore-rust output. **This is an SDK behaviour change in apcore-rust (all six points) and apcore-python (p99, period grammar).** Governance: apcore#96. |
 | 1.15.0 | 2026-08-25 | **§6.6.5 Governance State Query (new), §6.6.3 rewritten — *configured* and *enforced* are separate facts (#97).** Nothing exposed what is actually gating a registry: apcore-rust leaked `acl` / `approval_handler` / `policy` as public struct fields with no defined semantics, apcore-typescript and apcore-python exposed nothing, and none of the three answered the useful question — because `acl != null` means an ACL is attached, not that ACL evaluation runs. The gates are pipeline **steps**, and three of the four strategies this specification itself defines (`internal`, `testing`, `minimal`) remove `acl_check`, so an adapter reading `acl.is_some()` reports "protected" in precisely the configuration `set_acl()` already warns about. §6.6.5 requires a read-only `governance_state()` returning seven observations plus one derived flag, with normative field names across the three SDKs; `builtin_acl_gate_wired` / `builtin_approval_gate_wired` **MUST** be determined by step type or capability, **never** by step name, because `StrategyInfo` carries names only and a custom step named `acl_check` would otherwise report a gate that is not there — the one direction the flag must never fail in. `unprotected_control_surface` is defined exactly, and is explicitly **not** a security verdict: it reports the absence of a recognised gate, never the presence of protection, and an `is_secure`-shaped field is forbidden. §6.6.3 additionally states what was previously only implied: Layer 1 registers **0 / 6 / 9** modules across two config flags, not one; and Layers 2 and 3 are **inactive by absence** — a missing `acl/` path attaches nothing and **MUST NOT** synthesize an empty default-deny ACL, a missing `ApprovalHandler` warns and continues unless `ExecutionPolicy(strict)` is set. **No default changes and no behaviour changes**; the accessor is purely additive, and apcore-rust's existing public fields are untouched. Governance: apcore#97. |
 | 1.16.0 | 2026-08-25 | **§6.6.5.1 — `unprotected_control_surface` as published in 1.15.0 was unsound and is corrected (#97).** The formula treated `builtin_approval_gate_wired && (approval_handler_configured || policy_strict)` as sufficient to conclude a gate stands in front of `system.control.*`. It is not. `acl_check` evaluates **every** call, so for the ACL half "configured and wired" does mean gated; `approval_gate` resolves **per module** and returns before consulting the handler when the module does not need approval (apcore-typescript `builtin-steps.ts:401`, apcore-python `builtin_steps.py:453`, apcore-rust `builtin_steps.rs:623` — all three short-circuit ahead of both the handler and the `strict` branch). A wired gate with a handler attached, or with `strict = true`, therefore gates nothing at all for a control module that does not declare `requires_approval` — and §6.7 cross-cutting requirement 3 makes that annotation a **SHOULD**, while §6.6.5.1 already notes control modules can be registered internally or manually. So the flag answered `false` — *a gate is standing there* — for an ordinary conformant deployment with an entirely ungated write surface. That is a false `false`, the one direction §6.6.5.2 declares the flag must never fail in, written into the formula by the same change that declared it forbidden. A ninth field `all_control_modules_require_approval` is added as a required conjunct of the approval half, new §6.6.5.1.1 states why the two gates are not symmetric, and §6.6.5.4 gains four cases of which three discriminate the corrected formula from the published one. The field reads the annotation only: resolving an `ExecutionPolicy` that forces approval on an unannotated module would make the accessor evaluate policy, which emits audit events in all three implementations and would break the pure-read requirement of §6.6.5.3 — so a policy-forced gate stays invisible, failing in the conservative direction. **No implementation is affected**: no SDK had shipped `governance_state()` when 1.15.0 published, which is why this is a correction and not a breaking change. Governance: apcore#97. |
+| 1.17.0 | 2026-08-27 | **§9.15.3 — the `sys_modules` namespace registration declared its two activation flags as `True`, contradicting its own cited schema.** The `Config.register_namespace("sys_modules", ...)` block declared `defaults={"enabled": True, ..., "events": {"enabled": True, ...}}` while citing `schemas/sys-modules.schema.json` on the line directly above it — and that schema declares both keys `default: false`. §6.6.3 of this same document states the 0 / 6 / 9 activation ladder in terms of those two flags being false by default, `conformance/fixtures/config_defaults.json` pins false, and all three SDKs implement false. §9.15.3 was the sole dissenting authority. Read literally it instructed implementers to stand up the six read modules in every project that never asked for them, and — via `events.enabled` — the three `system.control.*` **write** modules, the approval-gated control plane, by default. The two activation flags are now `False`; the per-module sub-flags (`health`, `manifest`, `usage`, `control`) stay `True` because they select which modules register once activation has happened rather than activating anything themselves, which is also what the schema declares. **This is a correction, not a behaviour change: no SDK, schema or fixture is affected, and nothing normative is added or weakened.** It does resolve a real cross-language divergence though — apcore-rust's `Config::namespace()` merges registration defaults on every call in both modes, so it was faithfully reporting `sys_modules.enabled = true` in legacy mode from this block while apcore-python and apcore-typescript reported the schema default `false`. Governance: maintainer approval per GOVERNANCE.md § Decision Making; **no tracking issue was opened** — recorded rather than pointed at an invented number, per the precedent set in the 1.13.0 row. |
