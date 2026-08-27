@@ -601,7 +601,7 @@ Falls back to `Config.from_defaults()` if nothing is found.
 Standard flat YAML — backward compatible with all previous apcore versions:
 
 ```yaml
-version: "0.15.0"
+version: "1.0.0"
 executor:
   default_timeout: 30000
 extensions:
@@ -614,7 +614,7 @@ Activated by the presence of a top-level `apcore:` key:
 
 ```yaml
 apcore:
-  version: "0.15.0"
+  version: "1.0.0"
 
 _config:
   strict: true   # Reject unknown namespace keys

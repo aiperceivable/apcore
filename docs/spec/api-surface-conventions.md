@@ -300,7 +300,7 @@ The error-taxonomy difference is concrete:
 This is the line between §8.1's namespace-depth divergence (fine) and a genuine break:
 
 - `apcore.observability.PrometheusExporter` — **fine**: `observability` is a public sub-package with its own `__all__`; the import path is one a caller is meant to use.
-- `apcore.registry.registry.MAX_MODULE_ID_LENGTH` — **break**: `registry.registry` is the *implementation module* inside the `registry` package. The constant is absent from both the `apcore` root and the `apcore.registry` package export list, so the only working import reaches into an internal path — while the same constant is root-public in TypeScript and Rust. (Tracked in the `apcore-python` repo.)
+- `apcore.registry.registry.MAX_MODULE_ID_LENGTH` — **the break this rule was written for, since fixed.** `registry.registry` is the *implementation module* inside the `registry` package. The constant was absent from both the `apcore` root and the `apcore.registry` package export list, so the only working import reached into an internal path — while the same constant was root-public in TypeScript and Rust. As of apcore-python 0.27.0 it is exported from both `apcore` and `apcore.registry`, and each names it in `__all__`, so the shallowest public path now matches the two peers. Kept here as the worked example because it is what the rule looks like when it fires, not because it is outstanding.
 
 Quick test: *if the only import path that works names a module callers were never meant to import from, the symbol is private by accident — re-export it through a public path.*
 

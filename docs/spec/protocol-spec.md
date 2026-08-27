@@ -5331,7 +5331,7 @@ Steps:
 
 ```yaml
 # apcore.yaml — legacy mode (no "apcore:" key)
-version: "0.14.0"
+version: "1.0.0"
 extensions:
   root: ./extensions
 executor:
@@ -5343,7 +5343,7 @@ executor:
 ```yaml
 # project.yaml — namespace mode ("apcore:" key present)
 apcore:
-  version: "0.14.0"
+  version: "1.0.0"
   extensions:
     root: ./extensions
 
@@ -5398,7 +5398,7 @@ _config:
 
 ```yaml
 # apcore.yaml — unchanged from pre-9.4 era
-version: "0.14.0"
+version: "1.0.0"
 extensions:
   root: ./extensions
 schema:
@@ -5415,7 +5415,7 @@ project:
 ```yaml
 # project.yaml
 apcore:
-  version: "0.14.0"
+  version: "1.0.0"
   extensions:
     root: ./extensions
   schema:
@@ -5459,7 +5459,7 @@ apcore-cli:
 ```yaml
 # apcore.yaml — only apcore's own config
 apcore:
-  version: "0.14.0"
+  version: "1.0.0"
   extensions:
     root: ./extensions
   project:
@@ -5481,7 +5481,7 @@ _config:
   strict: true
 
 apcore:
-  version: "0.14.0"
+  version: "1.0.0"
   extensions:
     root: ./extensions
   project:
@@ -5500,7 +5500,7 @@ apcore-mcp:
 ```yaml
 # project.yaml — framework integration registers its own namespace automatically
 apcore:
-  version: "0.14.0"
+  version: "1.0.0"
   extensions:
     root: ./extensions
   project:

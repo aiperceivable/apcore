@@ -163,6 +163,14 @@ jobs:
         # any tooling generated from it wrong.
         run: python3 conformance/check_examples_against_schemas.py
 
+      - name: Documented config `version:` is a format version, not an SDK release
+        # §9.6 carried 0.14.0 across seven blocks, config-bus.md 0.15.0, and
+        # apcore-typescript's README 0.26.0 — three values for one field, none
+        # of them a configuration version, each stale the moment the next
+        # release shipped. A reader copies the number and takes it for
+        # something they must keep in step with their dependency.
+        run: python3 conformance/check_config_version_examples.py --sdk-root ..
+
       - name: config_key_governance.json is in sync with schemas/
         run: python3 conformance/generate_config_key_governance.py
 

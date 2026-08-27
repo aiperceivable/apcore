@@ -49,6 +49,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   Governance: maintainer approval per GOVERNANCE.md § Decision Making; no tracking issue was opened.
 
+- **The documented config `version:` was an SDK release number in nine places.** `apcore-config.schema.json` describes that field as "Configuration version" and offers `1.0.0` as its example. PROTOCOL_SPEC §9.6 filled it with `0.14.0` across seven blocks, `config-bus.md` with `0.15.0`, and apcore-typescript's README with `0.26.0` — three different values for one field, none of them a configuration version, every one stale the moment the next release shipped. §9.1's own example, on the same field, uses `1.0.0`.
+
+  Not cosmetic: a reader copies the block, and the number they copy looks like something to keep in step with their dependency. The same misreading seeded apcore-rust's default table, which carried `version: "0.16.0"` as "the frozen baseline spec version" while both peers supplied no default at all.
+
+  All nine now read `1.0.0`. `conformance/check_config_version_examples.py` guards it, reading the sanctioned set out of the schema's own `examples` rather than a second copy of it, and skipping ACL policy blocks — `acl-config.schema.json` owns its own `version` and accepts the two-part form its examples use. Wired into `conformance-integrity.yml`.
+
+- **The §8.2 reachability rule taught itself with a resolved example.** `api-surface-conventions.md` presented `apcore.registry.registry.MAX_MODULE_ID_LENGTH` as a live break "tracked in the apcore-python repo". Verified against apcore-python 0.27.0: the constant is exported from both `apcore` and `apcore.registry`, and named in both `__all__`s. Kept as the worked example — it is what the rule looks like when it fires — but marked as fixed rather than outstanding.
+
 - **`sys-health-*.schema.json` rejected the output every SDK emits.** The `status` enum was `["healthy", "degraded", "unhealthy"]`. All three SDKs classify as `healthy` / `degraded` / `error` / `unknown` and emit `unhealthy` nowhere; neither does any page under `docs/`, `conformance/` or `README.md`. `system-modules.md`'s own classification table lists the four the SDKs use. Corrected to those four, along with `sys-health-summary.schema.json`'s `unhealthy` COUNT field, which splits into `error` and `unknown` for the same reason.
 
   Two adjacent gaps surfaced while validating real output against the corrected file: the summary's `modules[]` items declared only `module_id` and `status` under `additionalProperties: false`, while all three SDKs also emit `error_rate` and a `top_error` object — so the schema rejected a conforming payload on two counts, not one. Both are now declared, `top_error` with the `{code, message, ai_guidance, count}` shape the three SDKs build identically.
