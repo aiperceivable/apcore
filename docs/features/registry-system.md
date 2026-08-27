@@ -69,8 +69,18 @@ The following module ID prefixes are reserved for framework use and specific run
 | `system.*` | Built-in introspection & control | Only via `register_internal()` |
 | `internal.*` | Framework-private modules | Only via `register_internal()` |
 | `core.*` | Core protocol primitives | Only via `register_internal()` |
-| `apcore.*` | Protocol-defined extensions | Only via `register_internal()` |
+| `apcore.*` | Protocol-defined extensions | Reserved — no current use |
+| `plugin.*` | Reserved for a future plugin surface | Reserved — no current use |
+| `schema.*` | Reserved for schema-namespace modules | Reserved — no current use |
+| `acl.*` | Reserved for ACL-namespace modules | Reserved — no current use |
 | `ephemeral.*` | Runtime-synthesized modules | Only via `register()`; MUST NOT be discovered from disk |
+
+This table lists all eight prefixes PROTOCOL_SPEC §2.5 reserves; it previously
+listed five, omitting `plugin.*`, `schema.*` and `acl.*`, and described
+`apcore.*` as `register_internal()`-only where §2.5 records it as reserved with
+no current use. The three SDKs enforce the first seven as `RESERVED_WORDS`;
+`ephemeral.*` is enforced separately by prefix, because its rule is about which
+registration path may create it rather than about forbidding the name.
 
 Modules in the `ephemeral.*` namespace are permitted to bypass filesystem validation and are intended for agent-synthesized tools or on-the-fly composition. See [RFC: Ephemeral Modules](../spec/rfc-ephemeral-modules.md).
 

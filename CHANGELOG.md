@@ -13,6 +13,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.28.0] - 2026-08-27
 
+### Fixed
+
+- **Seven specification passages that no implementation satisfied, or that contradicted another passage.** Each was verified against the three SDKs before editing; none required an SDK change.
+
+  - `Contract: SubscriberCircuitBreaker.on_failure` described an API nobody implements. It declared a required `subscriber_id` input — the breaker is per-subscriber and already knows which one it guards, and no SDK accepts the argument — and declared `CircuitState` as the return, where apcore-python (`circuit_breaker.py:125`), apcore-typescript (`circuit-breaker.ts:107`) and apcore-rust all return the optional lifecycle `ApCoreEvent`. Both corrected to the shape all three ship.
+
+  - `apcore.event.delivery_failed`'s payload was declared two ways. PROTOCOL_SPEC §7's event table listed `event_type`, `reason`, `subscriber_id`; `features/event-system.md` § Dead-Letter Queue lists `subscriber_type`, `subscriber_id`, `original_event`, `error`, `attempt_count`, `timestamp`. The two overlap on one key. All three SDKs implement the feature-page shape, so the spec table — what a consumer building from the normative document would follow — was the wrong one. It now defers to the feature page.
+
+  - `bindings.files` was a **MUST** nothing could satisfy. No SDK implements it, `BindingsConfig` is `additionalProperties: false` over `{dir, pattern}` so the key is schema-invalid, and `config_key_governance.json` allows only those two. Withdrawn, with the reason recorded, rather than left standing as an unmet requirement.
+
+  - The reserved error-code prefix list named four (`MODULE_`/`SCHEMA_`/`ACL_`/`GENERAL_`) inside a normative block. The canonical set is fourteen, stated in `features/error-system.md` and matching `FRAMEWORK_ERROR_CODE_PREFIXES` in all three SDKs. A module author reading only the specification would pick `CONFIG_*` or `BINDING_*` and be rejected by every implementation.
+
+  - §12.8.5 cited "`call()` Step 6" for the schema validation `validate()` reuses. Step 6 has been the Middleware Before Chain since v0.18; input validation is Step 7, which §12.8's own opening already said.
+
+  - `registry-system.md`'s reserved-namespace table listed five of the eight prefixes §2.5 reserves, omitting `plugin.*`, `schema.*` and `acl.*`, and described `apcore.*` as `register_internal()`-only where §2.5 records it as reserved with no current use. All eight are now listed, with a note on why `ephemeral.*` is enforced by prefix rather than as a reserved word.
+
+  - `core-executor.md` described `GovernanceState` as "eight booleans" directly above a table listing nine. PROTOCOL_SPEC §6.6.5 has it right ("eight observations plus one derived flag"); v1.16.0 added the ninth field without updating the prose.
+
 ### Changed
 
 - **`dependencies` is now a parsed field on the module descriptor in all three SDKs (spec v1.18.0, #90 follow-up).** PROTOCOL_SPEC §12.2 has required since v1.10.0 that a `dependencies` entry in `metadata` reach the registered module's descriptor "so that `get_definition(module_id).dependencies` returns what the caller declared", and the v1.10.0 row closed with "No SDK behaviour change: all three already satisfy the requirement."

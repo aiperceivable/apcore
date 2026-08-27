@@ -253,7 +253,7 @@ Built-in strategies and authoring custom ones are described in [Pipeline Hardeni
 
 | Surface | Type | Description |
 |---------|------|-------------|
-| `executor.governance_state()` | instance method | Returns the current `GovernanceState` — eight booleans, computed live |
+| `executor.governance_state()` | instance method | Returns the current `GovernanceState` — nine booleans (eight observations plus the derived `unprotected_control_surface`), computed live |
 
 | Field | Answers |
 |---|---|

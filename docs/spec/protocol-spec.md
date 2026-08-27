@@ -2955,15 +2955,19 @@ Binding file discovery is controlled via `apcore.yaml` configuration:
 # apcore.yaml
 bindings:
   dir: "./bindings"          # Default scan directory
-  files:                      # Or specify file list
-    - "./bindings/email.binding.yaml"
-    - "./bindings/payment.binding.yaml"
   pattern: "*.binding.yaml"  # File matching pattern (default)
 ```
 
 - If `bindings.dir` is configured, implementations **MUST** scan files matching `pattern` in that directory
-- If `bindings.files` is configured, implementations **MUST** load specified file list
-- If neither configured, implementations **SHOULD** default to scanning `bindings/` directory
+- If neither is configured, implementations **SHOULD** default to scanning `bindings/` directory
+
+!!! note "`bindings.files` was withdrawn"
+    An explicit `files:` list was previously declared here as a **MUST**. No SDK
+    implements it, `schemas/apcore-config.schema.json`'s `BindingsConfig` is
+    `additionalProperties: false` over `{dir, pattern}` so the key is
+    schema-invalid, and `conformance/fixtures/config_key_governance.json` allows
+    only those two. It was a requirement nothing satisfied and nothing could
+    express — withdrawn rather than left as an unmet MUST.
 
 #### 5.12.7 Validation Rules
 
@@ -4691,7 +4695,7 @@ custom_error_codes:
 
   # Framework error code priority
   priority:
-    - "Framework error codes (MODULE_/SCHEMA_/ACL_/GENERAL_) **MUST** be reserved, modules **MUST NOT** use them"
+    - "Framework error code prefixes **MUST** be reserved and modules **MUST NOT** use them. The canonical set is the fourteen listed in [features/error-system.md](../features/error-system.md) § Error Code Constants — `ACL_`, `APPROVAL_`, `BINDING_`, `CALL_`, `CIRCULAR_`, `CONFIG_`, `DEPENDENCY_`, `ERROR_CODE_`, `FUNC_`, `GENERAL_`, `MIDDLEWARE_`, `MODULE_`, `SCHEMA_`, `VERSION_` — matching `FRAMEWORK_ERROR_CODE_PREFIXES` in all three SDKs. This line previously named only four, so a module author reading the specification alone would pick `CONFIG_*` or `BINDING_*` and be rejected by every implementation."
     - "Module custom error codes **MUST NOT** conflict with framework error codes"
 
   # Collision detection algorithm
@@ -6539,7 +6543,7 @@ The following are the canonical event type names, payload keys, and severity for
 | `apcore.circuit.closed` | *(new — v1.9.0, documents existing emit)* | `info` | `CircuitBreakerMiddleware` | `module_id`, `caller_id`, `error_rate` |
 | `apcore.subscriber.circuit_opened` | *(new — v1.9.0, documents existing emit)* | `warn` | Event delivery (per-subscriber breaker) | `subscriber_id`, `subscriber_type`, `consecutive_failures` |
 | `apcore.subscriber.circuit_closed` | *(new — v1.9.0, documents existing emit)* | `info` | Event delivery (per-subscriber breaker) | `subscriber_id`, `subscriber_type` |
-| `apcore.event.delivery_failed` | *(new — v1.9.0, documents existing DLQ emit; see §9.16 dead-letter)* | `error` | Event bus (dead-letter path) | `event_type`, `reason`, `subscriber_id` |
+| `apcore.event.delivery_failed` | *(new — v1.9.0, documents existing DLQ emit; see §9.16 dead-letter)* | `error` | Event bus (dead-letter path) | `subscriber_type`, `subscriber_id`, `original_event`, `error`, `attempt_count`, `timestamp` — the full payload is specified in [features/event-system.md](../features/event-system.md) § Dead-Letter Queue, which is authoritative |
 
 > **Governance events (v1.9.0, #76/#77).** `apcore.approval.decision`, `apcore.policy.override`, and `apcore.acl.denied` make the governance chain (ACL → policy → approval) observable on the event bus. They are emitted **only** when an event emitter is configured, are best-effort side channels (execution outcome **MUST NOT** depend on their delivery), and follow the skip contract: the approval gate emits `apcore.approval.decision` only when it actually adjudicates (never on a skipped gate), and `apcore.acl.denied` is **NOT** emitted during a dry-run `validate()` preflight. See §7.9 (Execution Policy) for the policy layer that drives `apcore.policy.override`.
 >
@@ -7884,7 +7888,7 @@ Each check in validate() calls the same helper functions used by the `call()` pi
 
 #### 12.8.5 Schema Validation
 
-validate() Check 6 (schema) reuses the same JSON Schema validation that `call()` Step 6 already performs.
+validate() Check 6 (schema) reuses the same JSON Schema validation that `call()` Step 7 already performs.
 No additional schema library is required beyond what the SDK already uses.
 
 #### 12.8.5.1 Module-Level Preflight (Check 7)

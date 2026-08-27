@@ -927,14 +927,28 @@ subscribers:
 ## Contract: SubscriberCircuitBreaker.on_failure
 
 ### Inputs
-- `subscriber_id` (str/string/&str, required) — unique identifier for the subscriber instance
-- `error` (Exception/Error/Box<dyn Error>, required) — the delivery error
+- `error` (Exception/Error/&str, required) — the delivery error that just occurred
+
+The breaker instance is per-subscriber, so it already knows which subscriber it
+guards; no `subscriber_id` is passed. This section previously declared one as a
+required input, which no SDK accepts.
 
 ### Errors
 - None (circuit breaker MUST NOT raise; it records state internally)
 
 ### Returns
-- On success: `CircuitState` — the new state (`OPEN`, `CLOSED`, or `HALF_OPEN`)
+- On success: the lifecycle `ApCoreEvent` to emit when the call changed the
+  circuit's state (`apcore.subscriber.circuit_opened` /
+  `apcore.subscriber.circuit_closed`), or the language's empty value when the
+  state did not change: `ApCoreEvent | None` (Python), `ApCoreEvent | null`
+  (TypeScript), `Option<ApCoreEvent>` (Rust).
+
+  This section previously declared `CircuitState` — the new state — as the
+  return. No SDK returns it: apcore-python `_on_failure` (circuit_breaker.py:125),
+  apcore-typescript `_onFailure` (circuit-breaker.ts:107) and apcore-rust
+  `on_failure` (circuit_breaker.rs) all return the optional lifecycle event, and
+  callers read state through the breaker's own accessor. The current state is
+  still observable — it is simply not this method's return value.
 
 ### Properties
 - async: false
@@ -995,7 +1009,26 @@ Normative behavioral contract. All SDK implementations MUST satisfy these guaran
 
 ### Inputs
 
-- `timeout` (float/number/f64, optional, default `5.0`) — maximum seconds to wait for all in-flight deliveries to complete. MUST be a positive finite number.
+- `timeout` (optional, default 5 seconds) — maximum time to wait for all in-flight deliveries to complete. MUST be a positive finite number.
+
+!!! warning "The unit is per-SDK and is carried by the parameter name"
+    apcore-python takes **seconds** (`flush(timeout: float = 5.0)`);
+    apcore-typescript and apcore-rust take **milliseconds**
+    (`flush(timeoutMs = 5000)`, `flush(timeout_ms: u64)`). Each SDK is internally
+    consistent — `shutdown` uses the same unit as `flush` in all three — and the
+    millisecond forms name the unit in the parameter itself, so `flush(5)` cannot
+    be misread as five seconds there.
+
+    This section previously declared seconds outright, which made two of the three
+    implementations non-conformant on a point no conformance fixture covers and no
+    caller can trip over, given the parameter names. The unit is therefore recorded
+    rather than mandated. **Portable code should not pass a bare number across
+    SDKs**; read the parameter name.
+
+    `0` is likewise per-SDK and is NOT a portable sentinel: apcore-python returns
+    immediately (`future.result(timeout=0)` raises `TimeoutError`, which the
+    swallow-all handler turns into an instant return), while apcore-typescript and
+    apcore-rust treat it as wait-indefinitely. Callers MUST pass a positive value.
 
 ### Errors
 
