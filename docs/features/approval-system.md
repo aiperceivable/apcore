@@ -180,19 +180,18 @@ Note: The status value `"rejected"` maps to error code `APPROVAL_DENIED` — the
 | `AutoApproveHandler` | Always returns `approved` | Testing and development |
 | `CallbackApprovalHandler` | Delegates to a user-provided callback — **async** in Python/TypeScript, **synchronous** in Rust (see below) | Custom approval logic |
 
-!!! warning "`CallbackApprovalHandler`'s callback shape differs by language (#104)"
-    | SDK | Accepted callback |
+!!! info "The callback is asynchronous and fallible in every SDK (#104, spec v1.25.0)"
+    | SDK | Callback |
     |---|---|
-    | apcore-python | `Callable[[ApprovalRequest], Coroutine[Any, Any, ApprovalResult]]` — awaited |
-    | apcore-typescript | `(request: ApprovalRequest) => Promise<ApprovalResult>` |
-    | apcore-rust | `impl Fn(&ApprovalRequest) -> ApprovalResult` — synchronous, borrowing, not `Result`-returning |
+    | apcore-python | `Callable[[ApprovalRequest], Coroutine[Any, Any, ApprovalResult]]` — awaited, may raise |
+    | apcore-typescript | `(request: ApprovalRequest) => Promise<ApprovalResult>` — may reject |
+    | apcore-rust | `Fn(ApprovalRequest) -> impl Future<Output = Result<ApprovalResult, ModuleError>>` |
 
-    An approval decision that performs I/O fits the convenience handler in Python
-    and TypeScript, and does not fit apcore-rust's. **This limits the convenience
-    wrapper, not the SDK**: the `ApprovalHandler` trait is async in all three, so
-    apcore-rust expresses an async decision by implementing it directly — see the
-    Rust tab of the [approval-flow cookbook](../guides/cookbook-approval-flow.md).
-    Tracked in [#104](https://github.com/aiperceivable/apcore/issues/104).
+    [PROTOCOL_SPEC §7.6.1](../spec/protocol-spec.md#761-the-callbackapprovalhandler-callback-v1250-104) requires
+    the callback to be async and to be able to fail, because the `ApprovalHandler` contract
+    it wraps is both. apcore-rust additionally offers `new_sync` for decisions computable
+    in-process; the asynchronous form keeps the `new` name so that the identifier means the
+    same thing in all three SDKs.
 
 ### Protocol Bridge Handlers
 

@@ -38,7 +38,13 @@ jobs:
           python-version: "3.11"
 
       - name: Install validator
-        run: pip install --quiet jsonschema referencing
+        # `pyyaml` is not optional: check_examples_against_schemas.py parses
+        # examples/acl/*.yaml, and without it the step exits 1 with
+        # "missing dependency: No module named 'yaml'". That guard was added to
+        # catch schema-vs-example drift and had never once run in CI, because
+        # this line listed only the two packages the script's own import guard
+        # already assumed ("CI installs both").
+        run: pip install --quiet jsonschema referencing pyyaml
 
       - name: Every schema is valid Draft 2020-12
         run: |

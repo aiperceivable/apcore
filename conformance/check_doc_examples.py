@@ -121,6 +121,44 @@ def typescript_surface(sdk: Path) -> set[str]:
     return names
 
 
+def rust_modules(sdk: Path) -> dict[str, set[str] | None]:
+    """Public symbol map for every module under `src/`.
+
+    `src/foo.rs` and `src/foo/mod.rs` both map to `foo`; `src/foo/bar.rs` to
+    `foo::bar`. A module that glob-re-exports (`pub use x::*`) maps to `None`,
+    meaning "exists, contents not enumerable" — its symbols are not checked,
+    because a glob can legitimately supply anything and guessing would produce
+    false positives in the one direction this checker must never produce them.
+    """
+    src_root = sdk / "src"
+    mods: dict[str, set[str] | None] = {}
+    if not src_root.is_dir():
+        return mods
+    for f in sorted(src_root.rglob("*.rs")):
+        rel = f.relative_to(src_root)
+        if rel.name == "lib.rs":
+            continue
+        parts = list(rel.parts[:-1]) + ([] if rel.name == "mod.rs" else [rel.stem])
+        if not parts:
+            continue
+        key = "::".join(parts)
+        text = f.read_text()
+        if re.search(r"^\s*pub use [\w:]+::\*\s*;", text, re.M):
+            mods[key] = None
+            continue
+        names: set[str] = set(mods.get(key) or set())
+        names |= set(re.findall(r"pub (?:struct|enum|trait|type|const|static|fn|mod) (\w+)", text))
+        names |= set(re.findall(r"pub async fn (\w+)", text))
+        for blk in re.findall(r"pub use [\w:]+::\{([^}]*)\};", text, re.S):
+            for item in blk.split(","):
+                item = item.strip().split(" as ")[-1].strip()
+                if re.fullmatch(r"[A-Za-z_]\w*", item or ""):
+                    names.add(item)
+        names |= set(re.findall(r"pub use [\w:]+::(\w+)\s*;", text))
+        mods[key] = names
+    return mods
+
+
 def rust_surface(sdk: Path) -> tuple[set[str], set[str]]:
     """(crate-root re-exports, ErrorCode variants)."""
     lib = sdk / "src" / "lib.rs"
@@ -213,6 +251,49 @@ def check_typescript(blocks, exports: set[str], out: list[Violation]) -> None:
                     out.append((loc, line, f"`apcore-js` does not export `{name}`"))
 
 
+def check_rust_nested(blocks, mods: dict, out: list[Violation]) -> None:
+    """Resolve `use apcore::a::b::{X}` and `use apcore::a::B;` against the SDK's
+    module tree.
+
+    `check_rust` below only sees the crate-root brace form `use apcore::{...}`.
+    In the current docs that is half the apcore imports in Rust examples; the
+    other half are nested and were never examined, which is how
+    `apcore::errors::PipelineStepError` — a type that does not exist — survived
+    a green CI (#105).
+    """
+    if not mods:
+        return
+    brace = re.compile(r"use\s+apcore::([\w:]+)::\{([^}]*)\}\s*;", re.S)
+    single = re.compile(r"use\s+apcore::([\w:]+)::(\w+)\s*;")
+    for path, fence_line, lang, body in blocks:
+        if lang != "rust":
+            continue
+        seen: set[tuple[int, str]] = set()
+        for m in list(brace.finditer(body)) + list(single.finditer(body)):
+            modpath = m.group(1)
+            names = ([n.strip().split(" as ")[-1].strip() for n in m.group(2).split(",")]
+                     if m.re is brace else [m.group(2)])
+            line = fence_line + body[: m.start()].count("\n") + 1
+            loc = f"{path.relative_to(REPO)}:{line}"
+            if modpath not in mods:
+                # A trailing segment may be the item itself: `use apcore::acl::ACL;`
+                # is caught by `single` with modpath="acl"; but `use apcore::a::b::C`
+                # where `a::b` is unknown is a genuine miss.
+                key = (line, modpath)
+                if key not in seen:
+                    seen.add(key)
+                    out.append((loc, line, f"`apcore` has no module `{modpath}`"))
+                continue
+            known = mods[modpath]
+            if known is None:
+                continue
+            for name in names:
+                if not name or name == "self" or not re.fullmatch(r"[A-Za-z_]\w*", name):
+                    continue
+                if name not in known:
+                    out.append((loc, line, f"`apcore::{modpath}` does not export `{name}`"))
+
+
 def check_rust(blocks, exports: set[str], variants: set[str], out: list[Violation]) -> None:
     if not variants:
         return
@@ -263,6 +344,7 @@ def main() -> int:
     check_typescript(blocks, typescript_surface(ts_sdk), out)
     exports, variants = rust_surface(rs_sdk)
     check_rust(blocks, exports, variants, out)
+    check_rust_nested(blocks, rust_modules(rs_sdk), out)
 
     langs = {b[2] for b in blocks}
     print(f"checked {len(blocks)} code blocks ({', '.join(sorted(langs))}) "

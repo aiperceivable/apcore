@@ -2,11 +2,11 @@
 
 ## Status
 
-**Specification drafted in the working tree — not committed.** `HEAD` is still at spec
-v1.21.0; the v1.22.0 / v1.23.0 / v1.24.0 text exists only as uncommitted changes in this workspace.
-SDK work not started.
+**Specification merged.** The v1.22.0 / v1.23.0 / v1.24.0 text landed on `main` as `f201ec7` and is
+pushed. SDK work is in progress on branches in the three SDK repositories; nothing is pushed there.
 
-"Spec ✅" in the table below means the text is written and verified, not that it is merged.
+Until those land, all three SDKs **knowingly** diverge from the specification. That is expected for
+the length of the rollout and should not be reported as a fresh audit finding.
 
 | Item | Issue | Spec | State |
 |---|---|---|---|
@@ -32,7 +32,7 @@ way round.
 
 ## Landing order
 
-1. **Spec** — written and verified; awaiting review and commit.
+1. **Spec** — merged as `f201ec7`.
 2. **apcore-python** — implement §6.1.1 three-outcome evaluation, §6.1.2 warn + validator, §6.8
    accessors, §7.9.6 call site. Keep the old fixture passing by leaving
    `conformance/fixtures/` untouched; add SDK-local tests for the new behaviour.

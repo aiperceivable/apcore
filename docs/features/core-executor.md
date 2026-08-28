@@ -693,7 +693,7 @@ When `ignore_errors: true` is set on a step, a failure logs a WARN and execution
     //       ignore_errors: true
 
     use apcore::{APCore, Config};
-    use apcore::errors::PipelineStepError;
+    use apcore::errors::ErrorCode;
     use serde_json::json;
 
     #[tokio::main]
@@ -706,10 +706,15 @@ When `ignore_errors: true` is set on a step, a failure logs a WARN and execution
 
         // Step WITHOUT ignore_errors — fail fast
         match client.call("demo.process", json!({"unexpected_key": true})).await {
-            Err(e) if e.is::<PipelineStepError>() => {
-                let pse = e.downcast_ref::<PipelineStepError>().unwrap();
-                println!("{}", pse.step_name);  // "input_validation"
-                println!("{:?}", pse.cause);    // original SchemaValidationError
+            // A step failure is a `ModuleError` carrying ErrorCode::PipelineStepError,
+            // not a distinct type — so this is a code check, not a downcast. The
+            // step name and the original error live in `details`.
+            Err(e) if e.is_pipeline_step_error() => {
+                println!("{:?}", e.details.get("step_name"));  // "input_validation"
+                if let Some(cause) = e.unwrap_pipeline_step_error() {
+                    println!("{:?}", cause.code);             // SchemaValidationError
+                }
+                assert_eq!(e.code, ErrorCode::PipelineStepError);
             }
             _ => {}
         }

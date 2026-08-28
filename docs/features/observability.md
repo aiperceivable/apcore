@@ -152,7 +152,7 @@ Integration with `Context.create()`:
 === "Rust"
     ```rust
     use apcore::context::Context;
-    use apcore::observability::TraceContext;
+    use apcore::TraceContext;
 
     // Extract trace parent from incoming request
     let trace_parent = TraceContext::extract(&request.headers)?;
@@ -292,7 +292,9 @@ W3C interoperability across Python, TypeScript, and Rust SDKs.
 === "Rust"
     ```rust
     use apcore::context::Context;
-    use apcore::trace_context::{TraceContext, TraceContextError};
+    use apcore::errors::ErrorCode;
+    use apcore::TraceContext;
+    use serde_json::Value;
     use std::collections::HashMap;
 
     // Case-insensitive extract preserves tracestate order and flags
@@ -321,9 +323,11 @@ W3C interoperability across Python, TypeScript, and Rust SDKs.
     let headers = TraceContext::inject(&context, Some("aaaaaaaaaaaaaaaa"));
     assert_eq!(headers["traceparent"].split('-').nth(2).unwrap(), "aaaaaaaaaaaaaaaa");
 
-    // Malformed override returns an error
-    match TraceContext::try_inject(&context, Some("ZZZZ")) {
-        Err(TraceContextError::InvalidParentId) => {}
+    // Malformed override returns an error. There is no `TraceContextError` type:
+    // the checked form is `inject_checked`, and it fails with a `ModuleError`
+    // carrying `ErrorCode::InvalidParentId` (wire code `INVALID_PARENT_ID`, D-51).
+    match TraceContext::inject_checked(&context, Some("ZZZZ")) {
+        Err(e) if e.code == ErrorCode::InvalidParentId => {}
         _ => panic!("expected INVALID_PARENT_ID"),
     }
     ```
@@ -485,24 +489,29 @@ The `UsageExporter` interface lets you **push** periodic `UsageCollector` summar
     use apcore::observability::{
         UsageCollector,
         UsageExporter,
-        UsageSummary,
         NoopUsageExporter,
         PeriodicUsageExporter,
     };
+    use apcore::errors::ModuleError;
     use async_trait::async_trait;
+    use serde_json::Value;
 
     pub struct HttpUsageExporter {
         url: String,
     }
 
+    // The snapshot arrives as a `serde_json::Value`, not a typed collection:
+    // `PeriodicUsageExporter` hands over
+    // `serde_json::to_value(&UsageCollector::get_all_summaries())`, so an
+    // exporter forwards it without needing to know the summary's shape.
     #[async_trait]
     impl UsageExporter for HttpUsageExporter {
-        async fn export(&self, _summary: Vec<UsageSummary>) -> apcore::Result<()> {
+        async fn export(&self, _summary: &Value) -> Result<(), ModuleError> {
             // POST to self.url; user-implemented.
             Ok(())
         }
 
-        async fn shutdown(&self) -> apcore::Result<()> {
+        async fn shutdown(&self) -> Result<(), ModuleError> {
             // Close pooled connections.
             Ok(())
         }

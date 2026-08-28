@@ -1458,8 +1458,7 @@ config.reload_from_disk()?;
 === "Rust"
 
     ```rust
-    use apcore::sys_modules::registration::register_sys_modules;
-    use apcore::sys_modules::errors::SysModuleError;
+    use apcore::sys_modules::{register_sys_modules, SysModuleError};
 
     // register_sys_modules always returns Result — caller MUST handle it
     let context = register_sys_modules(&registry, &executor, &config)?;

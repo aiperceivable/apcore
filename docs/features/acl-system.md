@@ -70,14 +70,14 @@ When a rule has a `conditions` dict, all specified conditions must be satisfied 
 
 These three are the built-ins. The set is open: `register_condition()` adds a condition key at runtime, and a rule may reference any key a handler has been registered for.
 
-If no context is provided but conditions are present, the rule does not match. See the warning in [PROTOCOL_SPEC §6.5](../spec/protocol-spec.md#65-edge-case-handling) — a conditional `deny` rule is therefore not a backstop for context-less callers.
+If no context is provided but conditions are present, the rule does not match — **provided the rule passes the precheck below**. A malformed rule is unevaluable first, context or no context. See the warning in [PROTOCOL_SPEC §6.5](../spec/protocol-spec.md#65-edge-case-handling) — a *well-formed* conditional `deny` rule is not a backstop for context-less callers.
 
 #### Unevaluable Conditions
 
 A condition that is **false** and a condition that **cannot be evaluated** are different outcomes, and the difference decides what a `deny` rule does.
 
-- **False** — a registered handler ran and returned false. Ordinary non-match; evaluation continues to the next rule.
-- **Unevaluable** — no answer could be obtained at all. Exactly three cases: the condition key has no registered handler; the handler raised/threw/panicked; the handler was async and could not be resolved on the synchronous `check()` path.
+- **False** — a registered handler ran and returned false, having understood the value it was given. Ordinary non-match; evaluation continues to the next rule.
+- **Unevaluable** — the implementation cannot answer the condition **as written**. This is a principle, not a closed list. The cases every implementation meets: the key has no handler resolvable on the path in use; the handler raised/threw/panicked; the handler was async and unresolvable on the synchronous `check()` path; **the value is malformed for its key** (`$or` that is not a list, `$not` that is not an object); **`conditions` itself is not a mapping**. An implementation that meets an unlisted case classifies it by the principle, never by defaulting to false.
 
 When a condition is unevaluable the rule MUST resolve toward refusing access:
 
@@ -90,6 +90,30 @@ When a condition is unevaluable the rule MUST resolve toward refusing access:
 
 The three outcomes compose through AND and the compound operators by three-valued logic: an outright "no" wins an AND, an outright "yes" wins an `$or`, and anything else with an unevaluable child is unevaluable. `$not` of an unevaluable condition is **unevaluable**, never satisfied — negating "no answer" into "yes" would let a misspelled key inside a `$not` satisfy the rule it was meant to gate. Full table: [PROTOCOL_SPEC §6.1.1](../spec/protocol-spec.md#611-unevaluable-conditions-v1220-100).
 
+#### The precheck: structure and registry, before any handler runs
+
+Before evaluating a rule's conditions, the implementation walks the **whole** `conditions` tree — every branch inside `$or` and `$not` — checking only structure and the handler registries. It supplies no context and runs no handler. Normative text: [PROTOCOL_SPEC §6.1.4](../spec/protocol-spec.md#614-structural-and-registry-precheck-v1250-100).
+
+Two things follow, and both matter:
+
+**It runs before the no-context check.** A rule that fails the precheck is unevaluable whether or not the call supplied a context — otherwise `conditions: {mispelled: true}` on a `deny` rule would pass traffic simply because the caller carried no identity. A rule that **passes** the precheck and then finds no context still takes the § Conditional Rules path and does not match: `roles` is answerable in principle, and this caller merely supplied no input for it. The line is between *a question this caller did not answer* and *a question nobody can answer*.
+
+**It does not widen a rule's reach.** The precheck says whether a rule can be evaluated, never which calls it applies to. Pattern-field structure is checked first; a rule whose *well-formed* `callers` or `targets` fails to match simply does not apply to this call, and a fault in its `conditions` is neither consulted nor allowed to change the decision — otherwise one typo in a rule scoped to `api.*` would decide calls from `worker.*`. A *malformed* pattern field is different: the rule's scope is unknowable, so the rule is unevaluable. Faults in out-of-scope rules are still real and still reported — by `validate_rules()`, which looks at every rule and no call. Full ordering: [PROTOCOL_SPEC §6.1.4](../spec/protocol-spec.md#614-structural-and-registry-precheck-v1250-100) rule 4.
+
+**Its diagnostics are deterministic.** Because the precheck is context-free, handler-free and exhaustive, its findings are a pure function of the rule, so every SDK reports the same set in the same order. Diagnostics that come from running a handler — one that throws, or an async one on the sync path — carry no such guarantee, because handler execution MAY short-circuit. Configuration mistakes are always reported identically; runtime failures are reported as encountered.
+
+Findings name a **condition path**, not just a key, since a key can occur at several positions in a nested tree:
+
+| Position | Path |
+|---|---|
+| `k` at the root of `conditions` | `k` |
+| `k` in the *i*-th `$or` branch (0-based) | `$or[i].k` |
+| `k` inside `$not` | `$not.k` |
+| the `conditions` object itself | `$` |
+| the rule's `callers` / `targets` | `callers` / `targets` |
+
+Paths nest — `$or[1].$not.k`. `handler_error` and `validate_rules()` both order by path.
+
 !!! danger "A misspelled condition key used to make a `deny` rule inert"
     Before spec v1.22.0 an unevaluable condition made the rule *not match*, so
     `deny` rules failed open: `role:` written for `roles:` produced a rule that
@@ -100,7 +124,7 @@ The three outcomes compose through AND and the compound operators by three-value
 ### Components
 
 - **`ACLRule`** -- Dataclass with fields: `callers` (list of patterns), `targets` (list of patterns), `effect` ("allow" or "deny"), optional `description`, and optional `conditions` dict.
-- **`ACL`** -- Main class managing an ordered rule list. Provides `check()`, `add_rule()`, `remove_rule()`, `reload()`, the read-only accessors `default_effect` and `rules`, the diagnostic `validate_conditions()`, and the `ACL.load()` classmethod for YAML loading. All mutating methods are protected by a lock for thread safety.
+- **`ACL`** -- Main class managing an ordered rule list. Provides `check()`, `add_rule()`, `remove_rule()`, `reload()`, the read-only accessors `default_effect` and `rules`, the diagnostic `validate_rules()`, and the `ACL.load()` classmethod for YAML loading. All mutating methods are protected by a lock for thread safety.
 - **`AuditEntry`** -- Structured record of one `check()` decision, emitted through the configured audit logger on every call. Field contract: [PROTOCOL_SPEC §6.3.1](../spec/protocol-spec.md#631-audit-entry).
 - **`match_pattern()`** -- Wildcard pattern matcher in `utils/pattern.py`. Supports `*` as a wildcard matching any character sequence. Handles prefix, suffix, and infix wildcards via segment splitting.
 
@@ -246,7 +270,7 @@ Normative behavioral contract. All SDK implementations MUST satisfy these guaran
 
 - `ConfigNotFoundError(config_path=yaml_path)` — file does not exist at `yaml_path`.
 - `ACLRuleError` — YAML parse failure, top-level value is not a mapping, `rules` key is absent, `rules` value is not a list, any rule entry is not a mapping, any rule is missing a required key (`callers`, `targets`, or `effect`), `effect` value is not `"allow"` or `"deny"`, or `callers`/`targets` value is not a list.
-- **NOT** an error: a rule referencing an unregistered condition key. `register_condition()` writes to a runtime, process-wide registry, and `acl.root` discovery commonly runs before application code has registered anything, so failing here would reject valid configurations on ordering alone. Loading warns; [`validate_conditions()`](#contract-aclvalidate_conditions) is the deterministic check to run once registration is complete; and [§6.1.1](../spec/protocol-spec.md#611-unevaluable-conditions-v1220-100) guarantees the rule cannot silently pass traffic either way.
+- **NOT** an error: a rule referencing an unregistered condition key. `register_condition()` writes to a runtime, process-wide registry, and `acl.root` discovery commonly runs before application code has registered anything, so failing here would reject valid configurations on ordering alone. Loading warns; [`validate_rules()`](#contract-aclvalidate_rules) is the deterministic check to run once registration is complete; and [§6.1.1](../spec/protocol-spec.md#611-unevaluable-conditions-v1220-100) guarantees the rule cannot silently pass traffic either way.
 
 ### Returns
 
@@ -567,9 +591,9 @@ Normative behavioral contract ([PROTOCOL_SPEC §6.8](../spec/protocol-spec.md#68
 - `idempotent`: `true`.
 - `reentrant`: `true`.
 
-## Contract: ACL.validate_conditions
+## Contract: ACL.validate_rules
 
-Normative behavioral contract ([PROTOCOL_SPEC §6.1.2](../spec/protocol-spec.md#612-load-time-validation-of-condition-keys-v1220-100)). Reports every rule that references a condition key with no registered handler.
+Normative behavioral contract ([PROTOCOL_SPEC §6.1.2](../spec/protocol-spec.md#612-load-time-validation-of-condition-keys-v1220-100)). Reports every rule that fails the [precheck](#the-precheck-structure-and-registry-before-any-handler-runs): a condition key with no resolvable handler, a value malformed for its key, a `conditions` that is not a mapping, or a `callers`/`targets` that is not a list of strings. Named `validate_rules` and not `validate_conditions` because of the last of those.
 
 Condition handlers are registered at runtime into a process-wide registry, and an ACL may legitimately be loaded before a deployment registers its custom handlers — `acl.root` discovery commonly runs during framework bootstrap, ahead of application code. Loading therefore does not fail on an unregistered key. This method is the deterministic check to run **after** registration is complete.
 
@@ -587,10 +611,11 @@ Condition handlers are registered at runtime into a process-wide registry, and a
 
 ### Postconditions
 
-- Every rule whose `conditions` reference a key that does not resolve on the **sync** path is reported, including keys nested inside `$or` / `$not` sub-objects.
-- Each finding carries at least: the rule's index in definition order, the condition key, the rule's `effect`, and `sync_registered` / `async_registered`.
+- Every rule whose `conditions` tree fails the precheck is reported — an unresolvable key on the **sync** path, a malformed compound value, or a non-mapping `conditions` — including faults nested inside `$or` / `$not`.
+- Each finding carries at least: the rule's index in definition order, the condition path, the condition key, the rule's `effect`, and `sync_resolvable` / `async_resolvable`.
 - A rule with no `conditions` is never reported.
-- An empty result means every referenced key currently resolves on both paths. It is not a guarantee about the future: a later `add_rule()` can introduce a new one.
+- An empty result means every rule currently passes the precheck. It is not a guarantee about the future: a later `add_rule()` can introduce a fault, and a handler can be unregistered.
+- Faults are reported for **every** rule, independently of any call. A rule scoped to `callers: ["api.*"]` is reported even though no `worker.*` call would ever reach its conditions — [§6.1.4](../spec/protocol-spec.md#614-structural-and-registry-precheck-v1250-100) rule 4 deliberately keeps such a rule out of an unrelated call's decision, so this validator is the only place its typo surfaces.
 
 !!! warning "Sync and async registries are separate — a key can resolve on one path only"
     SDKs keep two condition-handler registries. `async_check()` consults the async
@@ -601,8 +626,8 @@ Condition handlers are registered at runtime into a process-wide registry, and a
     rule not grant on the sync path.
 
     That is why a finding reports two flags rather than one boolean. A finding is
-    emitted whenever `sync_registered` is false, **including** when
-    `async_registered` is true. An application that only ever calls `async_check()`
+    emitted whenever `sync_resolvable` is false, **including** when
+    `async_resolvable` is true. An application that only ever calls `async_check()`
     may choose to ignore those; that judgement belongs to the caller, not to the
     validator. Full table:
     [PROTOCOL_SPEC §6.1.3](../spec/protocol-spec.md#613-sync-and-async-handler-registries-v1220-100).
@@ -622,12 +647,15 @@ Condition handlers are registered at runtime into a process-wide registry, and a
 | Field | Type | Meaning |
 |---|---|---|
 | `rule_index` | `integer` | Index of the offending rule in definition order |
-| `condition_key` | `string` | The condition key that does not resolve |
+| `condition_path` | `string` | Where the fault sits — `roles`, `$or[1].mispelled`, `$or[0]` for a malformed branch, `$` for a non-mapping `conditions`, `callers` / `targets` for a malformed pattern field |
+| `condition_key` | `string \| null` | The key itself, or **null** for a fault that has no key (a malformed pattern field, a non-mapping `conditions`, a malformed `$or` element) |
 | `effect` | `"allow" \| "deny"` | The rule's effect — a finding on a `deny` rule is the consequential one |
-| `sync_registered` | `boolean` | Whether the key resolves for `check()` |
-| `async_registered` | `boolean` | Whether the key resolves for `async_check()` |
+| `sync_resolvable` | `boolean` | Whether the condition resolves for `check()`; **false** for a keyless structural fault |
+| `async_resolvable` | `boolean` | Whether it resolves for `async_check()`; **false** for a keyless structural fault |
 
-  `sync_registered` and `async_registered` MUST be reported separately and MUST NOT be collapsed into one boolean ([PROTOCOL_SPEC §6.1.3](../spec/protocol-spec.md#613-sync-and-async-handler-registries-v1220-100)). A finding with `sync_registered: false, async_registered: true` is an async-only handler: usable under `async_check()`, unevaluable under `check()`.
+  Findings are ordered by `rule_index`, then lexicographically by `condition_path` — by path and not by key, because a nested `$or` may carry the same key at several positions, which leaves ordering by key undefined.
+
+  The two flags MUST be reported separately and MUST NOT be collapsed into one boolean ([PROTOCOL_SPEC §6.1.3](../spec/protocol-spec.md#613-sync-and-async-handler-registries-v1220-100)). They mean **resolvable on that path**, not "present in that registry": since `async_check()` falls back to the sync registry, `async_resolvable` is the union of both, and every built-in leaf handler is resolvable on both paths. A finding with `sync_resolvable: false, async_resolvable: true` is an async-only handler — usable under `async_check()`, unevaluable under `check()`.
 
 ### Properties
 

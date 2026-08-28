@@ -254,7 +254,7 @@ The accessor methods are defined on the **key**, not on the context (see [PROTOC
 === "Rust"
 
     ```rust
-    use apcore::context::{Context, ContextKey};
+    use apcore::{Context, ContextKey};
     use serde_json::Value;
 
     pub static RETRY_COUNT: ContextKey<u32> = ContextKey::new("ext.myapp.retry.count");

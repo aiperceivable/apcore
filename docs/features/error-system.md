@@ -487,7 +487,7 @@ The `ErrorFormatterRegistry` enables adapters (MCP, OpenAI, etc.) to register cu
     ```
 === "Rust"
     ```rust
-    use apcore::errors::{ErrorFormatterRegistry, ModuleError};
+    use apcore::{ErrorFormatterRegistry, ModuleError};
 
     // Register a formatter for an adapter
     ErrorFormatterRegistry::register("mcp", Box::new(McpFormatter))?;

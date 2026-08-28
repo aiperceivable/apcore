@@ -1,5 +1,5 @@
 {
-  "description": "ACL condition evaluation failure — cross-language SECURITY golden test (spec v1.22.0, #100). A condition that CANNOT BE EVALUATED is not the same as a condition that is FALSE, and the rule's `effect` decides what the difference means. An unevaluable condition — no registered handler, a handler that raises/throws/panics, or an async handler unresolvable on the sync path — MUST resolve the rule toward refusing access: a `deny` rule takes effect and the call is DENIED; an `allow` rule does not match and MUST NOT grant. The emitted AuditEntry MUST carry a non-null `handler_error` in both directions. Locks PROTOCOL_SPEC §6.1.1 and §6.3.1, and sync findings A-D-011 / A-D-012. Driver contract: before evaluation, register a built-in test condition handler under the key named by `throwing_condition_key` whose evaluate() raises/throws/panics; do NOT register anything for the key named by `unknown_condition_key`. Build an ACL from `rules` with the given `default_effect`, wire an audit sink, call check(caller_id, target_id). Assert the decision equals `expected` and that the captured AuditEntry's handler_error is non-null when `expected_audit_handler_error_present` is true.",
+  "description": "ACL condition evaluation failure — cross-language SECURITY golden test (spec v1.22.0 / v1.25.0, #100). A condition that CANNOT BE EVALUATED is not the same as a condition that is FALSE, and the rule's `effect` decides what the difference means: an unevaluable condition MUST resolve the rule toward refusing access — a `deny` rule takes effect and the call is DENIED; an `allow` rule does not match and MUST NOT grant. \"Unevaluable\" is a PRINCIPLE, not a closed list (§6.1.1): no resolvable handler, a handler that raises/throws/panics, an async handler unresolvable on the sync path, a value malformed for its key, or a `conditions` that is not a mapping. §6.1.4's precheck is context-independent and runs BEFORE §6.5's no-context check, so a malformed rule is unevaluable even for a caller that supplied no context. Driver contract: register a handler under `throwing_condition_key` whose evaluate() raises/throws/panics; register NOTHING for `unknown_condition_key`. Build an ACL from `rules` with the given `default_effect`, wire an audit sink, call check(caller_id, target_id) — passing a context only when `with_context` is true — and when it is true, the context MUST carry exactly the identity given by that case's `context_identity` (id, type, roles). Several cases turn on whether a `roles` condition is SATISFIED, so a driver that supplies a bare identity-less context will get the wrong decision and the failure will look like over-gating when it is not. Assert the decision equals `expected`, that AuditEntry.handler_error is non-null when `expected_audit_handler_error_present` is true, and — where `expected_handler_error_paths` is present — that handler_error names exactly those condition paths, in that order (§6.1.1 rule 2 orders by path). Cases whose rule carries `callers_raw` / `targets_raw` supply that value in place of the normal list, to exercise §6.1.4.1: a driver in a language where the malformed value is not representable (apcore-rust's `Vec<String>`) MUST skip those cases and say so, rather than reporting them as passing.",
   "throwing_condition_key": "__test_throwing_condition__",
   "test_cases": [
     {
@@ -23,6 +23,14 @@
       "caller_id": "user",
       "target_id": "service.operation",
       "expected": false,
+      "with_context": true,
+      "context_identity": {
+        "id": "user",
+        "type": "user",
+        "roles": [
+          "dev"
+        ]
+      },
       "expected_audit_handler_error_present": true
     },
     {
@@ -46,6 +54,14 @@
       "caller_id": "user",
       "target_id": "service.operation",
       "expected": false,
+      "with_context": true,
+      "context_identity": {
+        "id": "user",
+        "type": "user",
+        "roles": [
+          "dev"
+        ]
+      },
       "expected_audit_handler_error_present": true
     },
     {
@@ -69,6 +85,14 @@
       "caller_id": "user",
       "target_id": "service.operation",
       "expected": false,
+      "with_context": true,
+      "context_identity": {
+        "id": "user",
+        "type": "user",
+        "roles": [
+          "dev"
+        ]
+      },
       "expected_audit_handler_error_present": true
     },
     {
@@ -92,7 +116,394 @@
       "caller_id": "user",
       "target_id": "service.operation",
       "expected": false,
+      "with_context": true,
+      "context_identity": {
+        "id": "user",
+        "type": "user",
+        "roles": [
+          "dev"
+        ]
+      },
       "expected_audit_handler_error_present": true
+    },
+    {
+      "id": "malformed_or_value_on_deny_rule_denies",
+      "note": "§6.1.1 case 4. All three SDKs classified this UNSATISFIED before v1.25.0, leaving a deny rule with `$or: \"typo\"` inert — the v1.22.0 defect through a second door.",
+      "rules": [
+        {
+          "callers": [
+            "*"
+          ],
+          "targets": [
+            "*"
+          ],
+          "effect": "deny",
+          "conditions": {
+            "$or": "not-a-list"
+          }
+        }
+      ],
+      "default_effect": "allow",
+      "caller_id": "user",
+      "target_id": "service.operation",
+      "with_context": true,
+      "context_identity": {
+        "id": "user",
+        "type": "user",
+        "roles": [
+          "dev"
+        ]
+      },
+      "expected": false,
+      "expected_audit_handler_error_present": true,
+      "expected_handler_error_paths": [
+        "$or"
+      ]
+    },
+    {
+      "id": "malformed_not_value_on_deny_rule_denies",
+      "note": "§6.1.1 case 4, the `$not` half. A non-object `$not` cannot be negated into anything meaningful.",
+      "rules": [
+        {
+          "callers": [
+            "*"
+          ],
+          "targets": [
+            "*"
+          ],
+          "effect": "deny",
+          "conditions": {
+            "$not": 3
+          }
+        }
+      ],
+      "default_effect": "allow",
+      "caller_id": "user",
+      "target_id": "service.operation",
+      "with_context": true,
+      "context_identity": {
+        "id": "user",
+        "type": "user",
+        "roles": [
+          "dev"
+        ]
+      },
+      "expected": false,
+      "expected_audit_handler_error_present": true,
+      "expected_handler_error_paths": [
+        "$not"
+      ]
+    },
+    {
+      "id": "non_mapping_conditions_on_deny_rule_denies",
+      "note": "§6.1.1 case 5. Reachable through direct construction and add_rule(), which bypass the YAML parser. Produced a three-way divergence before v1.25.0: Python raised out of check(), TypeScript denied, Rust went inert.",
+      "rules": [
+        {
+          "callers": [
+            "*"
+          ],
+          "targets": [
+            "*"
+          ],
+          "effect": "deny",
+          "conditions": "oops"
+        }
+      ],
+      "default_effect": "allow",
+      "caller_id": "user",
+      "target_id": "service.operation",
+      "with_context": true,
+      "context_identity": {
+        "id": "user",
+        "type": "user",
+        "roles": [
+          "dev"
+        ]
+      },
+      "expected": false,
+      "expected_audit_handler_error_present": true,
+      "expected_handler_error_paths": [
+        "$"
+      ]
+    },
+    {
+      "id": "unknown_condition_key_on_deny_rule_denies_without_context",
+      "note": "§6.1.4 ordering. The precheck is context-independent and runs before §6.5, so a misspelled key on a deny rule denies even for a caller that supplied no context. All three SDKs returned true here before v1.25.0.",
+      "rules": [
+        {
+          "callers": [
+            "*"
+          ],
+          "targets": [
+            "*"
+          ],
+          "effect": "deny",
+          "conditions": {
+            "__test_unregistered_condition__": true
+          }
+        }
+      ],
+      "default_effect": "allow",
+      "caller_id": "user",
+      "target_id": "service.operation",
+      "with_context": false,
+      "expected": false,
+      "expected_audit_handler_error_present": true,
+      "expected_handler_error_paths": [
+        "__test_unregistered_condition__"
+      ]
+    },
+    {
+      "id": "well_formed_conditional_deny_still_skipped_without_context",
+      "note": "§6.1.4 rule 2 — the control for unknown_condition_key_on_deny_rule_denies_without_context. `roles` is registered and well-formed, so the rule PASSES the precheck and then takes §6.5's no-context path: it does not match, and the call is allowed. A registered, context-dependent condition is NOT unevaluable merely because this caller sent no context. This case MUST NOT set handler_error. If it fails, the precheck is over-reaching.",
+      "rules": [
+        {
+          "callers": [
+            "*"
+          ],
+          "targets": [
+            "*"
+          ],
+          "effect": "deny",
+          "conditions": {
+            "roles": [
+              "admin"
+            ]
+          }
+        }
+      ],
+      "default_effect": "allow",
+      "caller_id": "user",
+      "target_id": "service.operation",
+      "with_context": false,
+      "expected": true,
+      "expected_audit_handler_error_present": false
+    },
+    {
+      "id": "two_unevaluable_conditions_report_both_ordered_by_path",
+      "note": "§6.1.1 rule 2 + §6.1.4 determinism. Two precheck faults in one rule: handler_error MUST name BOTH, ordered lexicographically by condition path, regardless of map iteration order or short-circuiting. This is the case that pins diagnostics across languages.",
+      "rules": [
+        {
+          "callers": [
+            "*"
+          ],
+          "targets": [
+            "*"
+          ],
+          "effect": "deny",
+          "conditions": {
+            "$or": [
+              {
+                "__test_unregistered_condition__": true
+              },
+              {
+                "zzz___test_unregistered_condition__": true
+              }
+            ]
+          }
+        }
+      ],
+      "default_effect": "allow",
+      "caller_id": "user",
+      "target_id": "service.operation",
+      "with_context": true,
+      "context_identity": {
+        "id": "user",
+        "type": "user",
+        "roles": [
+          "dev"
+        ]
+      },
+      "expected": false,
+      "expected_audit_handler_error_present": true,
+      "expected_handler_error_paths": [
+        "$or[0].__test_unregistered_condition__",
+        "$or[1].zzz___test_unregistered_condition__"
+      ]
+    },
+    {
+      "id": "string_callers_on_allow_rule_must_not_grant",
+      "note": "§6.1.4.1 — the fail-open case. A bare string is iterable, so `admin.*` is read character by character and its `*` matches everything; measured in apcore-python this granted an unrelated caller under default_effect: deny. The rule is malformed, so it is unevaluable: an allow rule MUST NOT grant.",
+      "rules": [
+        {
+          "callers_raw": "admin.*",
+          "targets": [
+            "*"
+          ],
+          "effect": "allow"
+        }
+      ],
+      "default_effect": "deny",
+      "caller_id": "attacker",
+      "target_id": "service.operation",
+      "with_context": true,
+      "context_identity": {
+        "id": "user",
+        "type": "user",
+        "roles": [
+          "dev"
+        ]
+      },
+      "expected": false,
+      "expected_audit_handler_error_present": true,
+      "expected_handler_error_paths": [
+        "callers"
+      ],
+      "skip_if_unrepresentable": true
+    },
+    {
+      "id": "scalar_callers_on_deny_rule_denies_without_raising",
+      "note": "§6.1.4.1 + Contract: ACL.check § Errors. A non-subscriptable scalar raised TypeError out of check() in apcore-python and TypeError in apcore-typescript. check() MUST NOT raise; the rule is unevaluable and a deny rule takes effect.",
+      "rules": [
+        {
+          "callers_raw": 5,
+          "targets": [
+            "*"
+          ],
+          "effect": "deny"
+        }
+      ],
+      "default_effect": "allow",
+      "caller_id": "attacker",
+      "target_id": "service.operation",
+      "with_context": true,
+      "context_identity": {
+        "id": "user",
+        "type": "user",
+        "roles": [
+          "dev"
+        ]
+      },
+      "expected": false,
+      "expected_audit_handler_error_present": true,
+      "expected_handler_error_paths": [
+        "callers"
+      ],
+      "skip_if_unrepresentable": true
+    },
+    {
+      "id": "structural_fault_gates_even_when_an_or_sibling_is_satisfied",
+      "note": "§6.1.4 rule 1 vs §6.1.1's $or table — the case that discriminates gating from composition. The caller HAS role `dev`, so the second branch is SATISFIED and the composition table alone would make the whole $or SATISFIED. A structural fault found by the precheck GATES the rule instead: it is unevaluable, and the deny takes effect. The $or table governs outcomes among conditions that were evaluable; it does not rescue a malformed rule. Without this case all three SDKs can pass every other case while disagreeing here.",
+      "rules": [
+        {
+          "callers": [
+            "*"
+          ],
+          "targets": [
+            "*"
+          ],
+          "effect": "deny",
+          "conditions": {
+            "$or": [
+              {
+                "__test_unregistered_condition__": true
+              },
+              {
+                "roles": [
+                  "dev"
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "default_effect": "allow",
+      "caller_id": "user",
+      "target_id": "service.operation",
+      "with_context": true,
+      "context_identity": {
+        "id": "user",
+        "type": "user",
+        "roles": [
+          "dev"
+        ]
+      },
+      "expected": false,
+      "expected_audit_handler_error_present": true,
+      "expected_handler_error_paths": [
+        "$or[0].__test_unregistered_condition__"
+      ]
+    },
+    {
+      "id": "execution_fault_does_not_gate_when_an_or_sibling_is_satisfied",
+      "note": "The counterpart to the case above, and the reason the split is not simply 'gate everything'. `__test_throwing_condition__` is REGISTERED, so the precheck passes; it only throws when run, which is execution-origin. §6.1.1's $or table therefore applies and the satisfied `roles` branch wins: the $or is SATISFIED, the ALLOW rule matches, and the call is granted. An implementation that gates on execution-origin faults too would deny here and fail this case.",
+      "rules": [
+        {
+          "callers": [
+            "*"
+          ],
+          "targets": [
+            "*"
+          ],
+          "effect": "allow",
+          "conditions": {
+            "$or": [
+              {
+                "__test_throwing_condition__": true
+              },
+              {
+                "roles": [
+                  "dev"
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "default_effect": "deny",
+      "caller_id": "user",
+      "target_id": "service.operation",
+      "with_context": true,
+      "context_identity": {
+        "id": "user",
+        "type": "user",
+        "roles": [
+          "dev"
+        ]
+      },
+      "expected": true,
+      "expected_audit_handler_error_present": true
+    },
+    {
+      "id": "non_mapping_or_element_is_a_fault_not_a_skip",
+      "note": "§6.1.1 case 4 extended by the principle: an $or ELEMENT that is not a condition object is a fault at $or[i], not a branch to skip silently. Both apcore-python and apcore-typescript reached this independently. Skipping would make `$or: [\"typo\"]` on a deny rule inert — the same defect one level down.",
+      "rules": [
+        {
+          "callers": [
+            "*"
+          ],
+          "targets": [
+            "*"
+          ],
+          "effect": "deny",
+          "conditions": {
+            "$or": [
+              "typo",
+              {
+                "roles": [
+                  "dev"
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "default_effect": "allow",
+      "caller_id": "user",
+      "target_id": "service.operation",
+      "with_context": true,
+      "context_identity": {
+        "id": "user",
+        "type": "user",
+        "roles": [
+          "dev"
+        ]
+      },
+      "expected": false,
+      "expected_audit_handler_error_present": true,
+      "expected_handler_error_paths": [
+        "$or[0]"
+      ]
     }
   ],
   "unknown_condition_key": "__test_unregistered_condition__"

@@ -85,7 +85,7 @@ Count occurrences of `module_id` in the full call chain. If `count > max_module_
     ```
 === "Rust"
     ```rust
-    use apcore::utils::call_chain::guard_call_chain;
+    use apcore::guard_call_chain;
 
     pub fn guard_call_chain(
         module_id: &str,

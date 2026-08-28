@@ -75,7 +75,7 @@ The annotation is what triggers the gate. Without `requires_approval=true` the e
     ```rust
     use apcore::{APCore, Context, Module, ModuleAnnotations};
     use apcore::errors::ModuleError;
-    use apcore::module::{ModuleDescriptor, DependencyInfo};
+    use apcore::registry::{ModuleDescriptor, DependencyInfo};
     use async_trait::async_trait;
     use serde_json::{json, Value};
     use std::collections::HashMap;

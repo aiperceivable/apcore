@@ -128,7 +128,7 @@ On Error (if MW3.before fails):
 === "Rust"
     ```rust
     use apcore::APCore;
-    use apcore::middleware::{Middleware, MiddlewareContext};
+    use apcore::middleware::Middleware;
     use apcore::context::Context;
     use apcore::errors::ModuleError;
     use async_trait::async_trait;

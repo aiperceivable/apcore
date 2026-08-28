@@ -286,7 +286,7 @@ Immutable by design (Python uses `frozen=True`; TypeScript uses `readonly`; Rust
 === "Rust"
 
     ```rust
-    use apcore::events::{A2AAuth, A2ASubscriber};
+    use apcore::events::subscribers::{A2AAuth, A2ASubscriber};
     use std::collections::HashMap;
 
     pub enum A2AAuth {
