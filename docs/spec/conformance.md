@@ -610,7 +610,7 @@ The repository ships **43 cross-language fixture files** under `conformance/fixt
 |---------|------:|----------------|
 | [`acl_agent_scoping`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/acl_agent_scoping.json) | 19 | Agent-scoped ACL governance: per-agent caller patterns and scoping rules (spec §6) |
 | [`acl_evaluation`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/acl_evaluation.json) | 21 | ACL rule evaluation, first-match-wins (spec §6) |
-| [`acl_handler_error`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/acl_handler_error.json) | 2 | ACL condition-handler error capture — `AuditEntry.handler_error` (spec §6.1) |
+| [`acl_handler_error`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/acl_handler_error.json) | 15 | An unevaluable ACL condition resolves toward refusing access; `handler_error` names the condition path (spec §6.1.1 / §6.1.4 / §6.1.4.1) |
 | [`acl_root_discovery`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/acl_root_discovery.json) | 10 | `ACL.discover()` config-driven `acl.root` resolution; missing path MUST attach nothing (spec §6) |
 | [`annotations_extra_round_trip`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/annotations_extra_round_trip.json) | 8 | `ModuleAnnotations.extra` wire-format round-trip (spec §4.4) |
 | [`approval_gate`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/approval_gate.json) | 5 | Approval gate enforcement at Executor Step 5 |
@@ -671,7 +671,7 @@ The repository ships **43 cross-language fixture files** under `conformance/fixt
 | [`usage_contract`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/usage_contract.json) | 11 | `system.usage.*` value semantics no schema can assert (spec §6.7.1) |
 | [`usage_exporter`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/usage_exporter.json) | 3 | `UsageExporter` push interface (#45 §3, D-55) |
 | [`version_negotiation`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/version_negotiation.json) | 10 | Version negotiation (Algorithm A14) |
-| **Total** | **695** | **63 fixtures** |
+| **Total** | **708** | **63 fixtures** |
 
 ### 8.2 Loading Fixtures from a Test Runner
 
