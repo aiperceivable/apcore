@@ -19,6 +19,7 @@ SDK conformance runners **must** load `.json` files with a JSON parser. The `.ya
 | `pattern_matching.json` | A09 | Wildcard pattern matching rules |
 | `specificity.json` | A10 | ACL rule specificity scoring |
 | `normalize_id.json` | A02 | Cross-language module ID normalization |
+| `id_conflict_reserved_words.json` | A02 | Reserved-word ID conflicts are detected on the FIRST SEGMENT only; later segments are unrestricted (spec §2.6 step 2, v1.26.0, #99) |
 | `call_chain.json` | A20 | Call chain safety (depth, frequency, circularity) |
 | `error_codes.json` | A17 | Error code registry collision detection; canonical 14 reserved prefixes + exact-framework-code rejection for one-off codes (sync A-D-006/A-D-007) |
 | `version_negotiation.json` | A14 | SDK/module version compatibility |

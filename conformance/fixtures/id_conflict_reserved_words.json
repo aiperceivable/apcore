@@ -1,0 +1,71 @@
+{
+  "description": "Reserved-word detection in `detect_id_conflicts` (PROTOCOL_SPEC §2.6 step 2, Algorithm A02 family). A reserved word claims a NAMESPACE, not a token, so step 2 tests the FIRST SEGMENT ONLY and segments after the first are unrestricted even when they equal a reserved word. Narrowed in spec v1.26.0 (#99): the algorithm previously read \"for each segment\", which no SDK implemented and which would make ordinary IDs such as `executor.schema.validate` illegal. Driver contract: for each case, run the SDK's public `register()` path — NOT `register_internal()`, which skips the reserved check by design — with `new_id`, having first registered every id in `existing_ids` (absent means none). `expected` is null when registration succeeds, otherwise the conflict `type`. Assert the outcome and, on a conflict, the reported type. `reserved_words` is the canonical set below; a driver MUST read it from the fixture rather than from its own SDK, so a divergent local list fails the case instead of silently agreeing with itself.",
+  "reserved_words": [
+    "system",
+    "internal",
+    "core",
+    "apcore",
+    "plugin",
+    "schema",
+    "acl"
+  ],
+  "test_cases": [
+    {
+      "id": "first_segment_reserved_is_rejected",
+      "note": "§2.6 step 2 — the first segment owns the namespace, so this is the case the rule exists for.",
+      "new_id": "system.custom_module",
+      "expected": "reserved_word"
+    },
+    {
+      "id": "bare_reserved_word_is_rejected",
+      "note": "An ID with no dot is entirely its own first segment.",
+      "new_id": "schema",
+      "expected": "reserved_word"
+    },
+    {
+      "id": "middle_segment_reserved_is_allowed",
+      "note": "THE DISCRIMINATING CASE. Legal in all three SDKs and illegal under the pre-v1.26.0 text; nothing had ever pinned it either way, which is why the divergence survived. `foo.system.bar` is not in the `system` namespace and impersonates nothing.",
+      "new_id": "foo.system.bar",
+      "expected": null
+    },
+    {
+      "id": "last_segment_reserved_is_allowed",
+      "note": "`schema` is reserved. A per-segment test makes this ordinary ID illegal for no security gain — one of the three examples §2.6 now names explicitly so the narrowing is not reverted.",
+      "new_id": "executor.schema.validate",
+      "expected": null
+    },
+    {
+      "id": "middle_segment_core_is_allowed",
+      "note": "`core` is reserved and is among the most common words in module naming.",
+      "new_id": "orchestrator.core.dispatch",
+      "expected": null
+    },
+    {
+      "id": "middle_segment_acl_is_allowed",
+      "note": "`acl` is reserved; an api-layer module checking ACL state claims nothing.",
+      "new_id": "api.acl.check",
+      "expected": null
+    },
+    {
+      "id": "reserved_word_as_substring_is_allowed",
+      "note": "Matching is per whole segment, not substring: `systems` is not `system`.",
+      "new_id": "systems.report",
+      "expected": null
+    },
+    {
+      "id": "first_segment_reserved_case_insensitive_is_rejected",
+      "note": "Canonical IDs are lowercase (§2.2); a driver whose reserved check is case-sensitive would let this through. If an SDK rejects this earlier as a validation error rather than a conflict, that is conformant — assert only that registration does not succeed.",
+      "new_id": "System.custom_module",
+      "expected": "reserved_word"
+    },
+    {
+      "id": "duplicate_id_outranks_nothing_here",
+      "note": "Step 1 precedes step 2. The same id that is legal above is a duplicate when already registered, and the reported type must be the duplicate, not the reserved word.",
+      "new_id": "foo.system.bar",
+      "existing_ids": [
+        "foo.system.bar"
+      ],
+      "expected": "duplicate_id"
+    }
+  ]
+}
