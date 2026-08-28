@@ -31,13 +31,9 @@ Lightweight `docs/spec/protocol-spec.md` patch drafts that haven't been picked u
 
 These do not have `state.json` files; they are pre-feature design notes.
 
-## Specification merged, SDK rollout pending
+## Recently completed
 
-Spec text is on `main`; no SDK implements it yet. Until the rollout completes these are **known**
-divergences between the specification and every implementation, and should not be reported as fresh
-audit findings.
-
-- [acl-unevaluable-conditions](./acl-unevaluable-conditions/overview.md) — spec v1.22.0 / v1.23.0 / v1.24.0, issues [#100](https://github.com/aiperceivable/apcore/issues/100) / [#101](https://github.com/aiperceivable/apcore/issues/101) / [#102](https://github.com/aiperceivable/apcore/issues/102). Unevaluable ACL conditions resolve toward denial (§6.1.1–§6.1.2, §6.3.1); ACL read-only accessors (§6.8); call-site inputs to policy resolution (§7.9.6). Carries a **staged** conformance fixture that must not move into `conformance/fixtures/` until all three drivers land — see that overview for why.
+- [acl-unevaluable-conditions](./acl-unevaluable-conditions/overview.md) — spec v1.22.0–v1.25.0, issues [#100](https://github.com/aiperceivable/apcore/issues/100) / [#101](https://github.com/aiperceivable/apcore/issues/101) / [#102](https://github.com/aiperceivable/apcore/issues/102) / [#104](https://github.com/aiperceivable/apcore/issues/104) / [#106](https://github.com/aiperceivable/apcore/issues/106). Unevaluable ACL conditions resolve toward denial; ACL read-only accessors; call-site inputs to policy resolution; the `CallbackApprovalHandler` callback contract; malformed `callers`/`targets`. Spec, all three SDKs, and the conformance fixture have landed.
 
 ## Upcoming
 

@@ -23,7 +23,7 @@ SDK conformance runners **must** load `.json` files with a JSON parser. The `.ya
 | `error_codes.json` | A17 | Error code registry collision detection; canonical 14 reserved prefixes + exact-framework-code rejection for one-off codes (sync A-D-006/A-D-007) |
 | `version_negotiation.json` | A14 | SDK/module version compatibility |
 | `acl_evaluation.json` | — | ACL rule evaluation with first-match-wins |
-| `acl_handler_error.json` | — | ACL condition-handler error fails closed + surfaces handler_error in audit (sync A-D-011/A-D-012) |
+| `acl_handler_error.json` | A08 | An unevaluable ACL condition resolves toward refusing access — a `deny` rule takes effect, an `allow` rule does not grant — and `handler_error` names the condition path (spec §6.1.1/§6.1.4, #100/#106) |
 | `acl_root_discovery.json` | D-64 / Issue #74 | Config-driven ACL discovery: `acl.root` activation, unified `./acl` default, directory `global_acl.yaml` convention, caller-supplied-executor skip, and the missing-path-no-op invariant (missing path attaches NO ACL — never a synthesized default-deny) |
 | `error_serialization.json` | — | ModuleError serialization uses snake_case wire keys (sync A-D-008) |
 | `error_recovery_metadata.json` | — | Default AI error-recovery metadata (retryable, user_fixable) resolved per error code; user_fixable=true when caller can fix by changing input/config |

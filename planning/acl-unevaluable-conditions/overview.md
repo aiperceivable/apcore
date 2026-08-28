@@ -2,30 +2,22 @@
 
 ## Status
 
-**Specification merged.** The v1.22.0 / v1.23.0 / v1.24.0 text landed on `main` as `f201ec7` and is
-pushed. SDK work is in progress on branches in the three SDK repositories; nothing is pushed there.
+**Complete.** Specification merged on `apcore` main; apcore-python, apcore-typescript and
+apcore-rust all merged and pushed; the corrected conformance fixture has moved into
+`conformance/fixtures/` and all three drivers pass against it — Python 15/15, TypeScript 15/15
+plus a presence guard, Rust 13 executed with 2 skipped as unrepresentable (`ACLRule.callers` is
+`Vec<String>`, so the two malformed-pattern-field cases cannot be built).
 
-Until those land, all three SDKs **knowingly** diverge from the specification. That is expected for
-the length of the rollout and should not be reported as a fresh audit finding.
-
-| Item | Issue | Spec | State |
-|---|---|---|---|
-| Unevaluable conditions resolve toward denial | [#100](https://github.com/aiperceivable/apcore/issues/100) | §6.1.1, §6.1.2, §6.3, §6.3.1, §6.5 (v1.22.0) | spec ✅ · fixture staged · SDKs ❌ |
-| ACL read-only accessors | [#101](https://github.com/aiperceivable/apcore/issues/101) | §6.8 (v1.23.0) | spec ✅ · SDKs ❌ |
-| Call-site inputs to policy resolution | [#102](https://github.com/aiperceivable/apcore/issues/102) | §7.9.6 (v1.24.0) | spec ✅ · SDKs ❌ |
-| Rust construction docs | [#103](https://github.com/aiperceivable/apcore/issues/103) | api-surface-conventions §9 | docs ✅ · apcore-rust doc comments ❌ |
-| `CallbackApprovalHandler` async divergence | [#104](https://github.com/aiperceivable/apcore/issues/104) | — | undecided |
-
-## Why the fixture is staged here rather than committed to `conformance/`
+## Why the fixture was staged here rather than committed to `conformance/` (resolved)
 
 `conformance/fixtures/acl_handler_error.json` currently pins the **old** behaviour, under a case named
 `throwing_handler_does_not_flip_default_allow_to_deny_unsafely` that expects a `deny` rule with a
 crashing condition handler to let the call through. §6.1.1 reverses that.
 
 Committing the corrected fixture before the SDK drivers land turns CI red in all three SDK
-repositories simultaneously, for as long as the rollout takes. The corrected file therefore lives at
-`staged-fixtures/acl_handler_error.json` and moves into `conformance/fixtures/` as the **last** step
-of the rollout.
+repositories simultaneously, for as long as the rollout takes. The corrected file therefore lived at `staged-fixtures/acl_handler_error.json` until all three
+drivers had landed. It has since moved into `conformance/fixtures/`, which was the last step of
+the rollout; `staged-fixtures/` no longer exists.
 
 Do not "fix" the red by reverting the spec: the fixture is wrong relative to v1.22.0, not the other
 way round.

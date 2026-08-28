@@ -635,6 +635,17 @@ The `_config` reserved namespace controls validation behavior. `strict: true` ca
 
 `validate()` enforces the same required-field set and value constraints in **all three SDKs**, in both legacy and namespace mode. Any violation is reported as `ConfigError(code=CONFIG_INVALID)`. (Prior to this contract each SDK enforced a different subset, so the same config could pass in one SDK and fail in another — implementations MUST converge on the set below.)
 
+### Inputs
+
+- None. `validate()` takes no parameters; it reads the instance it is called on.
+
+Two views of that instance are read, and the distinction is load-bearing:
+
+- the **declared** document (`Config.get_declared()` / `getDeclared()`) — the parsed file before the default table is merged. Required-field checks read this one, for the reason given below.
+- the **effective** document (the merged view) — value constraints read this one, so a constraint applies to the value that will actually be used.
+
+In namespace mode the registered namespaces are read as well, since each may carry a JSON Schema the corresponding subtree must satisfy.
+
 ### Required fields
 
 A key is required **only when it has no canonical default** (PROTOCOL_SPEC §9.1). Exactly two qualify — absence of either MUST be rejected with `CONFIG_INVALID`:
@@ -674,6 +685,46 @@ Out-of-range values MUST be rejected with `CONFIG_INVALID`:
 > **This applies to the value-constraint table above, not to the required-field set.** Every constraint listed is enforced by all three SDKs; an implementation missing one aligns **up**, and dropping a constraint weakens the configuration gate.
 >
 > The required-field set is governed by a different rule and was deliberately narrowed — see above. It is anchored to PROTOCOL_SPEC §9.1 ("required only when no canonical default exists"), **not** to any reference SDK. An earlier revision of this contract anchored it to `apcore-python` as "the superset"; that was a mistake, because Python's required-field check was unreachable dead code — it merged its defaults in before checking. Deferring to whichever SDK enforces the most is only sound when that SDK's enforcement actually runs.
+
+### Errors
+
+A violation of any rule above is reported with error code **`CONFIG_INVALID`**. The carrier differs by language and the contract is on the **code**, not the type name:
+
+| SDK | On failure |
+|---|---|
+| apcore-python | raises `ConfigError`, whose constructor fixes `code="CONFIG_INVALID"` |
+| apcore-typescript | throws `ConfigError`, same code |
+| apcore-rust | returns `Err(ModuleError)` carrying the equivalent code — there is **no** `ConfigError` type in apcore-rust |
+
+An implementation **MUST NOT** report a validation failure under any other code, and **MUST NOT** report the first violation only when several are present if its host language can carry a list — the value of `validate()` is telling an operator everything that is wrong in one pass.
+
+### Returns
+
+On success the method yields nothing. The shape is the language's idiomatic "nothing", not a shared type:
+
+| SDK | Signature |
+|---|---|
+| apcore-python | `def validate(self) -> None` |
+| apcore-typescript | `validate(): void` |
+| apcore-rust | `pub fn validate(&self) -> Result<(), ModuleError>` — success is `Ok(())` |
+
+Rust returns a `Result` because it signals failure by return value rather than by unwinding; Python and TypeScript signal by raising. Both satisfy this contract. An SDK **MUST NOT** return a boolean or a "list of problems" in place of raising or returning an error — a caller that forgets to inspect it gets a silently invalid configuration, which is the failure mode this method exists to prevent.
+
+### Properties
+
+- `async`: `false` in all three SDKs. Validation reads in-memory state and performs no I/O.
+- `thread_safe`: `true` — a pure read of the instance.
+- `pure`: `true` — no mutation, no event emission, no logging required.
+- `idempotent`: `true` — repeated calls on an unchanged `Config` yield the same outcome.
+- `reentrant`: `true`.
+
+!!! warning "A defaults-only `Config` MUST fail validation"
+    `Config.from_defaults()` declares nothing, so the required-field check — which
+    reads the **declared** view — finds neither `version` nor `project.name`. That
+    is intended, and it is the observable difference between "the framework can
+    run with defaults" and "this configuration was written down". The no-config
+    bootstrap path is unaffected: `Config.load()` with no discoverable file
+    returns the defaults **without** validating them.
 
 ## Introspection
 
