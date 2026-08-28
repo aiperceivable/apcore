@@ -26,6 +26,7 @@ SDK conformance runners **must** load `.json` files with a JSON parser. The `.ya
 | `acl_evaluation.json` | — | ACL rule evaluation with first-match-wins |
 | `acl_handler_error.json` | A08 | An unevaluable ACL condition resolves toward refusing access — a `deny` rule takes effect, an `allow` rule does not grant — and `handler_error` names the condition path (spec §6.1.1/§6.1.4, #100/#106) |
 | `acl_root_discovery.json` | D-64 / Issue #74 | Config-driven ACL discovery: `acl.root` activation, unified `./acl` default, directory `global_acl.yaml` convention, caller-supplied-executor skip, and the missing-path-no-op invariant (missing path attaches NO ACL — never a synthesized default-deny) |
+| `acl_rule_key_closure.json` | — | ACL rule keys are a closed set; an unknown or reserved key fails the load (spec §6.1, #107) |
 | `error_serialization.json` | — | ModuleError serialization uses snake_case wire keys (sync A-D-008) |
 | `error_recovery_metadata.json` | — | Default AI error-recovery metadata (retryable, user_fixable) resolved per error code; user_fixable=true when caller can fix by changing input/config |
 | `async_task_cancellation.json` | Issue #34 | Over-capacity submit raises TASK_LIMIT_EXCEEDED; cancel during backoff stops further retries (sync A-D-003/A-D-004) |

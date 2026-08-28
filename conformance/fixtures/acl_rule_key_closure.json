@@ -1,0 +1,158 @@
+{
+  "description": "ACL rule keys are a CLOSED set (PROTOCOL_SPEC §6.1, spec v1.27.0, #107). Loading a rule that carries any key outside `callers`, `targets`, `effect`, `description`, `conditions` MUST fail with ACLRuleError. A key nothing evaluates is otherwise dropped in silence, which widens an `allow` rule with no warning — the §6.1.1 defect class on the pattern side. `id`, `actions` and `priority` were reserved in earlier revisions and are evaluated by no implementation; they are rejected like any other unknown key, and an implementation SHOULD name them as reserved. Driver contract: build an ACL FILE containing `rule` under `rules:` with the given `default_effect`, load it through the SDK's file-loading entry point, and assert that loading succeeds when `expected_load` is \"ok\" and raises/returns an ACL rule error when it is \"reject\". Where the SDK exposes the message, assert it names the offending key.",
+  "closed_rule_keys": [
+    "callers",
+    "targets",
+    "effect",
+    "description",
+    "conditions"
+  ],
+  "reserved_rule_keys": [
+    "id",
+    "actions",
+    "priority"
+  ],
+  "test_cases": [
+    {
+      "id": "minimal_rule_loads",
+      "note": "Control: the closed set itself must still load.",
+      "rule": {
+        "callers": [
+          "agent.*"
+        ],
+        "targets": [
+          "orders.*"
+        ],
+        "effect": "allow"
+      },
+      "default_effect": "deny",
+      "expected_load": "ok"
+    },
+    {
+      "id": "description_and_conditions_load",
+      "note": "Both optional members of the closed set.",
+      "rule": {
+        "callers": [
+          "agent.*"
+        ],
+        "targets": [
+          "orders.*"
+        ],
+        "effect": "allow",
+        "description": "x",
+        "conditions": {
+          "roles": [
+            "admin"
+          ]
+        }
+      },
+      "default_effect": "deny",
+      "expected_load": "ok"
+    },
+    {
+      "id": "reserved_actions_is_rejected",
+      "note": "THE ESCALATION CASE. An operator writing `actions: [\"describe\"]` intends introspection only; before v1.27.0 the key was dropped and the rule granted execute on orders.* to every agent.* caller, with no warning. Being a schema-DECLARED property is why `additionalProperties: false` could not catch it — it is removed from the schema in the same change.",
+      "rule": {
+        "callers": [
+          "agent.*"
+        ],
+        "targets": [
+          "orders.*"
+        ],
+        "effect": "allow",
+        "actions": [
+          "describe"
+        ]
+      },
+      "default_effect": "deny",
+      "expected_load": "reject"
+    },
+    {
+      "id": "reserved_id_is_rejected",
+      "note": "Reserved alongside `actions` and `priority`.",
+      "rule": {
+        "callers": [
+          "agent.*"
+        ],
+        "targets": [
+          "orders.*"
+        ],
+        "effect": "allow",
+        "id": "r1"
+      },
+      "default_effect": "deny",
+      "expected_load": "reject"
+    },
+    {
+      "id": "reserved_priority_is_rejected",
+      "note": "Reserved; note the schema documented it as having no effect on rule ordering, which first-match-wins already fixes.",
+      "rule": {
+        "callers": [
+          "agent.*"
+        ],
+        "targets": [
+          "orders.*"
+        ],
+        "effect": "allow",
+        "priority": 10
+      },
+      "default_effect": "deny",
+      "expected_load": "reject"
+    },
+    {
+      "id": "unknown_key_is_rejected",
+      "note": "A key from a proposal that has not landed. Silently dropping it would degrade the rule to a bare `allow` — which is why closing the set is a prerequisite for adding any new rule field.",
+      "rule": {
+        "callers": [
+          "agent.*"
+        ],
+        "targets": [
+          "orders.*"
+        ],
+        "effect": "allow",
+        "approval": "required"
+      },
+      "default_effect": "deny",
+      "expected_load": "reject"
+    },
+    {
+      "id": "typo_of_a_real_key_is_rejected",
+      "note": "`conditons` for `conditions`. Dropped silently before v1.27.0, so the rule granted unconditionally — the same shape as the misspelled-condition-key defect §6.1.2 closed, one level up.",
+      "rule": {
+        "callers": [
+          "agent.*"
+        ],
+        "targets": [
+          "orders.*"
+        ],
+        "effect": "allow",
+        "conditons": {
+          "roles": [
+            "admin"
+          ]
+        }
+      },
+      "default_effect": "deny",
+      "expected_load": "reject"
+    },
+    {
+      "id": "multiple_unknown_keys_are_all_reported",
+      "note": "A reserved key and an unrecognised one together; the message should account for both rather than stopping at the first.",
+      "rule": {
+        "callers": [
+          "agent.*"
+        ],
+        "targets": [
+          "orders.*"
+        ],
+        "effect": "allow",
+        "actions": [
+          "describe"
+        ],
+        "approval": "required"
+      },
+      "default_effect": "deny",
+      "expected_load": "reject"
+    }
+  ]
+}

@@ -46,7 +46,7 @@
   "$defs": {
     "ACLRule": {
       "type": "object",
-      "description": "A single ACL rule that matches callers against targets and applies an effect.",
+      "description": "A single ACL rule. The property set is CLOSED (`additionalProperties: false`) and PROTOCOL_SPEC §6.1 requires an unrecognised key to be rejected at load with `ACLRuleError`: a key nothing evaluates is silently dropped otherwise, which widens an `allow` rule with no warning. `id`, `actions` and `priority` were reserved here for future versions and are evaluated by no implementation; they are removed from this list rather than left declared, because a declared property is exactly what `additionalProperties: false` cannot catch — which is how `actions: [\"describe\"]` came to grant `execute` (#107).",
       "required": [
         "callers",
         "targets",
@@ -54,17 +54,6 @@
       ],
       "additionalProperties": false,
       "properties": {
-        "id": {
-          "type": "string",
-          "description": "RESERVED — not evaluated by any implementation. PROTOCOL_SPEC §6.3 states that `id`, `actions` and `priority` are reserved for future specification versions and SHOULD NOT be used. Retained so existing files still validate; the logging/debugging identifier has no effect on rule evaluation.",
-          "pattern": "^[a-z][a-z0-9_]*$",
-          "maxLength": 64,
-          "examples": [
-            "api_to_orchestrator",
-            "deny_executor_to_api"
-          ],
-          "deprecated": true
-        },
         "callers": {
           "type": "array",
           "description": "List of caller module ID patterns. Supports wildcards: '*' matches any characters. Special values: '@external' for top-level/external calls, '@system' for internal system calls.",
@@ -110,29 +99,6 @@
             ]
           ]
         },
-        "actions": {
-          "type": "array",
-          "description": "RESERVED — not evaluated by any implementation. PROTOCOL_SPEC §6.3 states that `id`, `actions` and `priority` are reserved for future specification versions and SHOULD NOT be used. Retained so existing files still validate; the action list has no effect on rule evaluation.",
-          "items": {
-            "type": "string",
-            "enum": [
-              "execute",
-              "validate",
-              "describe",
-              "*"
-            ]
-          },
-          "examples": [
-            [
-              "execute"
-            ],
-            [
-              "execute",
-              "validate"
-            ]
-          ],
-          "deprecated": true
-        },
         "effect": {
           "type": "string",
           "description": "The effect to apply when this rule matches. 'allow' permits the call, 'deny' rejects it.",
@@ -140,11 +106,6 @@
             "allow",
             "deny"
           ]
-        },
-        "priority": {
-          "type": "integer",
-          "description": "RESERVED — not evaluated by any implementation. PROTOCOL_SPEC §6.3 states that `id`, `actions` and `priority` are reserved for future specification versions and SHOULD NOT be used. Retained so existing files still validate; the priority ordering has no effect on rule evaluation.",
-          "deprecated": true
         },
         "description": {
           "type": "string",
