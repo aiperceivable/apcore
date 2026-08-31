@@ -1,5 +1,5 @@
 {
-  "description": "Argument-scoped approval — PROTOCOL_SPEC §6.1.6 / §6.1.7 / §6.1.8 / §6.8.1 (spec v1.28.0, apcore#108). Authorization and approval requirement are two orthogonal results: `effect` carries the first, the orthogonal optional `approval` field the second, and the built-in structure-only `arguments` condition decides whether a rule matches THIS call.\n\nDriver contract. Build an ACL from `rules` in order with the given `default_effect`. Supply a governance projection derived from `arguments` (key set, optionally types — never values, §6.1.8 rule 2) by whatever route the SDK uses; §6.1.8 rule 4 leaves that idiomatic. `arguments: null` means supply NO PROJECTION AT ALL, which is a different case from an empty one. Call the STRUCTURED accessor with caller_id/target_id and assert `access`, the approval requirement, and `expected_matched_rule_index` (null when the decision came from `default_effect`). Separately assert the LEGACY boolean returns `expected_legacy_check`: §6.8.1 makes it fail closed on an approval requirement, so allow+required reads as false. Assert the AuditEntry's `handler_error` is non-null exactly where `expected_audit_handler_error_present` says so — §6.3.1 makes it the if-and-only-if marker of an unevaluable condition, which is what keeps 'the handler said no' and 'no answer was obtainable' tellable apart after the fact. Where `expected_validation_finding_path` is non-null, assert `validate_rules()` reports a finding for rule 0 at that condition path — §6.1.8 descends to `arguments.<predicate>` where one predicate is at fault and stops at `arguments` where none can be named.\n\nTwo cases use `default_effect: allow` against the house rule, and say so in their notes: a `deny` rule TAKING EFFECT under §6.1.1 is not observable against a `deny` default, because not-matching produces the same answer.\n\nLesson recorded from the #107 fixture: it reached for `approval` as its example of a rule key 'from a proposal that has not landed', and v1.28.0 landed that proposal, so the case asserted the opposite of the spec. Do not draw negative examples from live proposals.",
+  "description": "Argument-scoped approval — PROTOCOL_SPEC §6.1.6 / §6.1.7 / §6.1.8 / §6.8.1 (spec v1.28.0, apcore#108). Authorization and approval requirement are two orthogonal results: `effect` carries the first, the orthogonal optional `approval` field the second, and the built-in structure-only `arguments` condition decides whether a rule matches THIS call.\n\nDriver contract. Build an ACL from `rules` in order with the given `default_effect`. Supply a governance projection derived from `arguments` (key set, optionally types — never values, §6.1.8 rule 2) by whatever route the SDK uses; §6.1.8 rule 4 leaves that idiomatic. `arguments: null` means supply NO PROJECTION AT ALL, which is a different case from an empty one. Call the STRUCTURED accessor with caller_id/target_id and assert `access`, the approval requirement, and `expected_matched_rule_index` (null when the decision came from `default_effect`). Separately assert the LEGACY boolean returns `expected_legacy_check`: §6.8.1 makes it fail closed on an approval requirement, so allow+required reads as false. Assert the AuditEntry's `handler_error` is non-null exactly where `expected_audit_handler_error_present` says so — §6.3.1 makes it the if-and-only-if marker of an unevaluable condition, which is what keeps 'the handler said no' and 'no answer was obtainable' tellable apart after the fact. Where `expected_validation_finding_path` is non-null, assert `validate_rules()` reports a finding for rule 0 at that condition path — §6.1.8 descends to `arguments.<predicate>` where one predicate is at fault and stops at `arguments` where none can be named. Where `expected_validation_finding_paths` is non-null, assert the rule's findings are EXACTLY those paths in that order — §6.1.8 rule 3 requires every faulty predicate to be reported, not just the first.\n\nTwo cases use `default_effect: allow` against the house rule, and say so in their notes: a `deny` rule TAKING EFFECT under §6.1.1 is not observable against a `deny` default, because not-matching produces the same answer.\n\nLesson recorded from the #107 fixture: it reached for `approval` as its example of a rule key 'from a proposal that has not landed', and v1.28.0 landed that proposal, so the case asserted the opposite of the spec. Do not draw negative examples from live proposals.",
   "test_cases": [
     {
       "id": "force_flag_present_requires_approval",
@@ -44,7 +44,8 @@
       "expected_legacy_check": false,
       "expected_matched_rule_index": 0,
       "expected_audit_handler_error_present": false,
-      "expected_validation_finding_path": null
+      "expected_validation_finding_path": null,
+      "expected_validation_finding_paths": null
     },
     {
       "id": "force_flag_absent_does_not_require_approval",
@@ -88,7 +89,8 @@
       "expected_legacy_check": true,
       "expected_matched_rule_index": 1,
       "expected_audit_handler_error_present": false,
-      "expected_validation_finding_path": null
+      "expected_validation_finding_path": null,
+      "expected_validation_finding_paths": null
     },
     {
       "id": "approval_absent_means_not_required",
@@ -122,7 +124,8 @@
       "expected_legacy_check": true,
       "expected_matched_rule_index": 0,
       "expected_audit_handler_error_present": false,
-      "expected_validation_finding_path": null
+      "expected_validation_finding_path": null,
+      "expected_validation_finding_paths": null
     },
     {
       "id": "rule_without_conditions_still_carries_approval",
@@ -150,7 +153,8 @@
       "expected_legacy_check": false,
       "expected_matched_rule_index": 0,
       "expected_audit_handler_error_present": false,
-      "expected_validation_finding_path": null
+      "expected_validation_finding_path": null,
+      "expected_validation_finding_paths": null
     },
     {
       "id": "has_all_keys_needs_every_named_key",
@@ -186,7 +190,8 @@
       "expected_legacy_check": false,
       "expected_matched_rule_index": null,
       "expected_audit_handler_error_present": false,
-      "expected_validation_finding_path": null
+      "expected_validation_finding_path": null,
+      "expected_validation_finding_paths": null
     },
     {
       "id": "has_all_keys_matches_when_every_key_is_present",
@@ -223,7 +228,8 @@
       "expected_legacy_check": false,
       "expected_matched_rule_index": 0,
       "expected_audit_handler_error_present": false,
-      "expected_validation_finding_path": null
+      "expected_validation_finding_path": null,
+      "expected_validation_finding_paths": null
     },
     {
       "id": "has_none_of_matches_when_none_present",
@@ -259,7 +265,8 @@
       "expected_legacy_check": false,
       "expected_matched_rule_index": 0,
       "expected_audit_handler_error_present": false,
-      "expected_validation_finding_path": null
+      "expected_validation_finding_path": null,
+      "expected_validation_finding_paths": null
     },
     {
       "id": "has_none_of_unsatisfied_when_one_is_present",
@@ -295,7 +302,8 @@
       "expected_legacy_check": false,
       "expected_matched_rule_index": null,
       "expected_audit_handler_error_present": false,
-      "expected_validation_finding_path": null
+      "expected_validation_finding_path": null,
+      "expected_validation_finding_paths": null
     },
     {
       "id": "empty_predicate_array_is_vacuous_not_malformed",
@@ -328,7 +336,8 @@
       "expected_legacy_check": false,
       "expected_matched_rule_index": 0,
       "expected_audit_handler_error_present": false,
-      "expected_validation_finding_path": null
+      "expected_validation_finding_path": null,
+      "expected_validation_finding_paths": null
     },
     {
       "id": "has_key_empty_array_is_unsatisfied",
@@ -361,7 +370,8 @@
       "expected_legacy_check": false,
       "expected_matched_rule_index": null,
       "expected_audit_handler_error_present": false,
-      "expected_validation_finding_path": null
+      "expected_validation_finding_path": null,
+      "expected_validation_finding_paths": null
     },
     {
       "id": "no_projection_must_not_grant_via_an_empty_stand_in",
@@ -394,7 +404,8 @@
       "expected_legacy_check": false,
       "expected_matched_rule_index": null,
       "expected_audit_handler_error_present": true,
-      "expected_validation_finding_path": null
+      "expected_validation_finding_path": null,
+      "expected_validation_finding_paths": null
     },
     {
       "id": "no_projection_makes_a_deny_rule_take_effect",
@@ -426,7 +437,8 @@
       "expected_legacy_check": false,
       "expected_matched_rule_index": 0,
       "expected_audit_handler_error_present": true,
-      "expected_validation_finding_path": null
+      "expected_validation_finding_path": null,
+      "expected_validation_finding_paths": null
     },
     {
       "id": "empty_arguments_object_is_a_precheck_fault",
@@ -457,7 +469,8 @@
       "expected_legacy_check": false,
       "expected_matched_rule_index": null,
       "expected_audit_handler_error_present": true,
-      "expected_validation_finding_path": "arguments"
+      "expected_validation_finding_path": "arguments",
+      "expected_validation_finding_paths": null
     },
     {
       "id": "unknown_predicate_name_is_a_precheck_fault",
@@ -492,7 +505,8 @@
       "expected_legacy_check": false,
       "expected_matched_rule_index": null,
       "expected_audit_handler_error_present": true,
-      "expected_validation_finding_path": "arguments.has_keys"
+      "expected_validation_finding_path": "arguments.has_keys",
+      "expected_validation_finding_paths": null
     },
     {
       "id": "unknown_predicate_gates_a_deny_rule_into_effect",
@@ -526,7 +540,8 @@
       "expected_legacy_check": false,
       "expected_matched_rule_index": 0,
       "expected_audit_handler_error_present": true,
-      "expected_validation_finding_path": "arguments.has_keys"
+      "expected_validation_finding_path": "arguments.has_keys",
+      "expected_validation_finding_paths": null
     },
     {
       "id": "malformed_predicate_value_is_a_precheck_fault",
@@ -559,7 +574,48 @@
       "expected_legacy_check": false,
       "expected_matched_rule_index": null,
       "expected_audit_handler_error_present": true,
-      "expected_validation_finding_path": "arguments.has_key"
+      "expected_validation_finding_path": "arguments.has_key",
+      "expected_validation_finding_paths": null
+    },
+    {
+      "id": "every_faulty_predicate_in_one_block_is_reported",
+      "note": "§6.1.8 rule 3 — the walk MUST NOT stop at the first fault. This block carries a malformed VALUE on a known predicate (`has_key: \"force\"`) and an unrecognised NAME (`zzz`), so an implementation that checks names before values reports `arguments.zzz` while one that walks predicate by predicate reports `arguments.has_key` — two readings, both defensible, neither a pure function of the rule. Reporting BOTH removes the question rather than answering it. Measured divergence, not a hypothetical: Python and TypeScript disagreed on 2 of 3 probe inputs before this case existed.",
+      "default_effect": "deny",
+      "rules": [
+        {
+          "callers": [
+            "*"
+          ],
+          "targets": [
+            "cli.git_push"
+          ],
+          "effect": "allow",
+          "approval": "required",
+          "conditions": {
+            "arguments": {
+              "has_key": "force",
+              "zzz": [
+                "a"
+              ]
+            }
+          }
+        }
+      ],
+      "caller_id": "agent.planner",
+      "target_id": "cli.git_push",
+      "arguments": {
+        "force": true
+      },
+      "expected_access": "deny",
+      "expected_approval_required": false,
+      "expected_legacy_check": false,
+      "expected_matched_rule_index": null,
+      "expected_audit_handler_error_present": true,
+      "expected_validation_finding_path": null,
+      "expected_validation_finding_paths": [
+        "arguments.has_key",
+        "arguments.zzz"
+      ]
     },
     {
       "id": "misspelled_arguments_key_is_an_unknown_condition",
@@ -594,7 +650,8 @@
       "expected_legacy_check": false,
       "expected_matched_rule_index": null,
       "expected_audit_handler_error_present": true,
-      "expected_validation_finding_path": "argument"
+      "expected_validation_finding_path": "argument",
+      "expected_validation_finding_paths": null
     },
     {
       "id": "approval_survives_an_or_branch",
@@ -640,7 +697,8 @@
       "expected_legacy_check": false,
       "expected_matched_rule_index": 0,
       "expected_audit_handler_error_present": false,
-      "expected_validation_finding_path": null
+      "expected_validation_finding_path": null,
+      "expected_validation_finding_paths": null
     },
     {
       "id": "approval_token_is_excluded_from_the_projection",
@@ -676,7 +734,8 @@
       "expected_legacy_check": false,
       "expected_matched_rule_index": 0,
       "expected_audit_handler_error_present": false,
-      "expected_validation_finding_path": null
+      "expected_validation_finding_path": null,
+      "expected_validation_finding_paths": null
     }
   ]
 }

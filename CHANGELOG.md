@@ -21,7 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   **§6.8.1 and §6.3.1.** The structured accessor returns `access` and the approval requirement separately; the legacy boolean fails closed on an approval requirement, because a boolean can only be read as "let it through" and letting it through would run a call the ACL said needed a human. `AuditEntry` gains `approval_required` **beside** `decision` rather than widening it — `decision` is a string downstream consumers parse, and a third value would break every existing parser.
 
-  Landed with `conformance/fixtures/acl_argument_scoped_approval.json` (19 cases) and drivers in all three SDKs.
+  Landed with `conformance/fixtures/acl_argument_scoped_approval.json` (20 cases) and drivers in all three SDKs. Writing the fixture is what settled the last two questions: an `arguments` fault's condition path descends to `arguments.<predicate>`, and **every** faulty predicate in one block is reported rather than the first — apcore-rust already did both, and the divergence between the other two was measured, not hypothesised.
 
 ### Changed
 

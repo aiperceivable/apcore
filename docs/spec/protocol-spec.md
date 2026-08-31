@@ -3869,10 +3869,11 @@ Empty predicate *arrays* are well-formed and carry ordinary set semantics: `has_
 **The condition path of an `arguments` fault descends to the offending predicate.** §6.1.4 already descends into structure — a fault beneath `$or` is reported at `$or[1].k`, not at `$or` — and the reason carries over unchanged: `arguments: { has_key: ["a"], has_keys: ["b"] }` has one bad predicate among good ones, and a finding that says only `arguments` does not say which.
 
 1. A fault attributable to one predicate — an unrecognised name (case 3) or a malformed value (case 4) — **MUST** be reported at `arguments.<predicate>`, using the name **as written**: `arguments.has_keys` for the misspelling, so the finding names the string the author typed and can be searched for.
-2. A fault with no predicate to name — a non-mapping `arguments` value, or the empty object of case 2 — **MUST** be reported at `arguments`.
-3. Both forms compose under `$or` / `$not` exactly as any other path does: `$or[1].arguments.has_keys`.
+2. A fault with no predicate to name — a non-mapping `arguments` value, or the empty object of case 2 — **MUST** be reported at `arguments`. These two are terminal: a value that is not a mapping of predicates has no predicates to walk.
+3. **Every** faulty predicate in one `arguments` block **MUST** be reported, one finding each, and the walk **MUST NOT** stop at the first. §6.1.4 already requires the precheck to walk the whole rule structure so that a fault is "always found and always reported"; a block is part of that structure. Reporting only the first also makes the *choice* of which one to report observable, and there is no reading of §6.1.4 under which "the first" is a pure function of the rule: `{ has_key: "force", zzz: [...] }` has both a malformed value and an unrecognised name, and an implementation that checks names before values reports a different path from one that walks predicate by predicate. Reporting both removes the question rather than answering it.
+4. Both forms compose under `$or` / `$not` exactly as any other path does: `$or[1].arguments.has_keys`.
 
-This is a path rule, not a message rule. Findings order by path (§6.1.4), so descending also keeps that order total where a single `arguments` block carries more than one fault.
+This is a path rule, not a message rule. Findings order by path (§6.1.4), which orders a block's own findings by predicate name.
 
 **`_approval_token` is excluded from the projection.** It is framework-owned protocol machinery, not caller input — §7.9.6 rule 5 already strips it before policy resolution for the same reason. Including it would make a Phase B resume present a different argument shape to governance than the original call, so `has_none_of` would decide differently on the two halves of one logical call.
 
