@@ -1,5 +1,5 @@
 {
-  "description": "Argument-scoped approval — PROTOCOL_SPEC §6.1.1 / §6.1.6 / §6.1.7 / §6.1.8 / §6.8.1 / §6.9 (spec v1.28.0 apcore#108, extended v1.29.0 apcore#109). Authorization and approval requirement are two orthogonal results: `effect` carries the first, the orthogonal optional `approval` field the second, and the built-in structure-only `arguments` condition decides whether a rule matches THIS call.\n\n**Every case runs TWICE.** The `arguments` condition can only be answered when a governance projection is available, and §6.1.8 case 1 makes `check()` a public entry point that may be called without one — so the same rules and the same call have two well-defined answers, and both are contracts. Run 1 supplies a projection derived from `arguments` (key set, optionally types — never values, §6.1.8 rule 2) by whatever route the SDK uses; §6.1.8 rule 4 leaves that idiomatic. Run 2 supplies NO PROJECTION AT ALL. `arguments: null` means the case has no projection to supply in either run, so the two runs coincide and both columns hold the same values.\n\nDriver contract. Build an ACL from `rules` in order with the given `default_effect`. For each run call the STRUCTURED accessor with caller_id/target_id and assert `access`, the approval requirement and `matched_rule_index` (null when the decision came from `default_effect`); assert the LEGACY boolean; and assert the AuditEntry's `handler_error` is non-null exactly where the run's column says so — §6.3.1 makes it the if-and-only-if marker of an unevaluable condition, which is what keeps 'the handler said no' and 'no answer was obtainable' tellable apart after the fact. Keys ending `_no_projection` belong to run 2; the unsuffixed ones to run 1.\n\n**An SDK whose legacy boolean cannot receive a projection asserts run 2's `expected_legacy_check_no_projection` and skips only `expected_legacy_check`.** apcore-rust is that SDK: `ACL::check(caller_id, target_id, ctx)` has no parameter for one and passes `None` to `check_access` internally, which is conforming — §6.1.8 rule 4 fixes only that the condition sees the projection, and §6.1.8 case 1 contemplates `check()` being called without one. Both structured columns remain fully assertable there via `check_access(..., Some(&projection))` and `check_access(..., None)`. This split replaces a driver-side skip. The skip was honest and reconciled against the fixture, but it left 17 of 20 cases unverified on one SDK, and #109 — an unevaluable `allow` rule discarding the `approval: required` it carried, so a broader rule granted the call unapproved — was sitting in exactly those cases. A skip justified as 'this SDK is being asked a different question' still owes the other question an answer, because the difference may itself be the bug.\n\nWhere `expected_validation_finding_path` is non-null, assert `validate_rules()` reports a finding at that condition path — §6.1.8 descends to `arguments.<predicate>` where one predicate is at fault and stops at `arguments` where none can be named. Where `expected_validation_finding_paths` is non-null, assert the rule's findings are EXACTLY those paths in that order — §6.1.8 rule 3 requires every faulty predicate to be reported, not just the first. Validation is context-free, so it has one column, not two.\n\n`callers_raw` carries a deliberately malformed pattern field, which a statically typed SDK cannot represent; those cases carry `skip_if_unrepresentable`.\n\nThree cases use `default_effect: allow` against the house rule, and say so in their notes: a `deny` rule TAKING EFFECT under §6.1.1, and a pending approval requirement riding through the default under §6.1.1 rule 5, are not observable against a `deny` default, because not-granting produces the same answer.\n\nLesson recorded from the #107 fixture: it reached for `approval` as its example of a rule key 'from a proposal that has not landed', and v1.28.0 landed that proposal, so the case asserted the opposite of the spec. Do not draw negative examples from live proposals.",
+  "description": "Argument-scoped approval — PROTOCOL_SPEC §6.1.1 / §6.1.6 / §6.1.7 / §6.1.8 / §6.8.1 / §6.9 (spec v1.28.0 apcore#108, extended v1.29.0 apcore#109). Authorization and approval requirement are two orthogonal results: `effect` carries the first, the orthogonal optional `approval` field the second, and the built-in structure-only `arguments` condition decides whether a rule matches THIS call.\n\n**Every case runs TWICE.** The `arguments` condition can only be answered when a governance projection is available, and §6.1.8 case 1 makes `check()` a public entry point that may be called without one — so the same rules and the same call have two well-defined answers, and both are contracts. Run 1 supplies a projection derived from `arguments` (key set, optionally types — never values, §6.1.8 rule 2) by whatever route the SDK uses; §6.1.8 rule 4 leaves that idiomatic. Run 2 supplies NO PROJECTION AT ALL. `arguments: null` means the case has no projection to supply in either run, so the two runs coincide and both columns hold the same values.\n\nDriver contract. Build an ACL from `rules` in order with the given `default_effect`. For each run call the STRUCTURED accessor with caller_id/target_id and assert `access`, the approval requirement and `matched_rule_index` (null when the decision came from `default_effect`); assert the LEGACY boolean; and assert the AuditEntry's `handler_error` is non-null exactly where the run's column says so — §6.3.1 makes it the if-and-only-if marker of an unevaluable condition, which is what keeps 'the handler said no' and 'no answer was obtainable' tellable apart after the fact. Keys ending `_no_projection` belong to run 2; the unsuffixed ones to run 1.\n\n**An SDK whose legacy boolean cannot receive a projection asserts run 2's `expected_legacy_check_no_projection` and skips only `expected_legacy_check`.** apcore-rust is that SDK: `ACL::check(caller_id, target_id, ctx)` has no parameter for one and passes `None` to `check_access` internally, which is conforming — §6.1.8 rule 4 fixes only that the condition sees the projection, and §6.1.8 case 1 contemplates `check()` being called without one. Both structured columns remain fully assertable there via `check_access(..., Some(&projection))` and `check_access(..., None)`. This split replaces a driver-side skip. The skip was honest and reconciled against the fixture, but it left 17 of 20 cases unverified on one SDK, and #109 — an unevaluable `allow` rule discarding the `approval: required` it carried, so a broader rule granted the call unapproved — was sitting in exactly those cases. A skip justified as 'this SDK is being asked a different question' still owes the other question an answer, because the difference may itself be the bug.\n\nWhere `expected_validation_finding_path` is non-null, assert `validate_rules()` reports a finding at that condition path — §6.1.8 descends to `arguments.<predicate>` where one predicate is at fault and stops at `arguments` where none can be named. Where `expected_validation_finding_paths` is non-null, assert the rule's findings are EXACTLY those paths in that order — §6.1.8 rule 3 requires every faulty predicate to be reported, not just the first. Validation is context-free, so it has one column, not two.\n\n`callers_raw` / `targets_raw` carry a deliberately malformed pattern field in place of the well-formed key, which a statically typed SDK cannot represent; those cases carry `skip_if_unrepresentable`. Both fields are covered because §6.1.1 rule 5's malformed-scope clause names both and they are separate code paths.\n\nThree cases use `default_effect: allow` against the house rule, and say so in their notes: a `deny` rule TAKING EFFECT under §6.1.1, and a pending approval requirement riding through the default under §6.1.1 rule 5, are not observable against a `deny` default, because not-granting produces the same answer.\n\nLesson recorded from the #107 fixture: it reached for `approval` as its example of a rule key 'from a proposal that has not landed', and v1.28.0 landed that proposal, so the case asserted the opposite of the spec. Do not draw negative examples from live proposals.",
   "test_cases": [
     {
       "id": "force_flag_present_requires_approval",
@@ -972,6 +972,49 @@
       "expected_validation_finding_path": "callers",
       "expected_validation_finding_paths": null,
       "note": "§6.1.1 rule 5, the one point where a requirement attaches without a demonstrated pattern match: a malformed `callers` is unevaluable before any pattern is read (§6.1.4.1), so the rule's SCOPE cannot be read and it cannot be shown not to apply here. Same posture the field already produces under `deny`, where an unreadable scope denies every call. `callers_raw` because a typed SDK cannot represent it — skip_if_unrepresentable."
+    },
+    {
+      "id": "malformed_targets_field_raises_the_pending_requirement",
+      "default_effect": "deny",
+      "rules": [
+        {
+          "callers": [
+            "*"
+          ],
+          "targets_raw": "cli.git_push",
+          "effect": "allow",
+          "approval": "required"
+        },
+        {
+          "callers": [
+            "*"
+          ],
+          "targets": [
+            "cli.git_push"
+          ],
+          "effect": "allow"
+        }
+      ],
+      "caller_id": "agent.planner",
+      "target_id": "cli.git_push",
+      "arguments": {
+        "remote": "origin",
+        "force": true
+      },
+      "skip_if_unrepresentable": true,
+      "expected_access": "allow",
+      "expected_approval_required": true,
+      "expected_matched_rule_index": 1,
+      "expected_legacy_check": false,
+      "expected_audit_handler_error_present": true,
+      "expected_access_no_projection": "allow",
+      "expected_approval_required_no_projection": true,
+      "expected_matched_rule_index_no_projection": 1,
+      "expected_legacy_check_no_projection": false,
+      "expected_audit_handler_error_present_no_projection": true,
+      "expected_validation_finding_path": "targets",
+      "expected_validation_finding_paths": null,
+      "note": "§6.1.1 rule 5's malformed-scope clause names `callers` AND `targets`, and the two are separate code paths in every SDK — the sibling case above pins the first, this one the second. §6.1.4.1 prechecks both before any pattern is read, so a rule whose `targets` cannot be parsed has an unreadable scope exactly as one whose `callers` cannot, and cannot be shown not to apply to this call. `targets_raw` because a typed SDK cannot represent it — skip_if_unrepresentable. Added after the #109 review noted the clause had coverage on one field only, which is how a clause ends up half-implemented in one SDK and nobody finds out."
     },
     {
       "id": "an_out_of_scope_approval_rule_raises_nothing",
