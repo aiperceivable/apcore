@@ -107,6 +107,15 @@
             "deny"
           ]
         },
+        "approval": {
+          "type": "string",
+          "enum": [
+            "required",
+            "not_required"
+          ],
+          "default": "not_required",
+          "description": "Whether a call matching this rule must be put to a human before it runs (PROTOCOL_SPEC §6.1.6). Orthogonal to `effect`: authorization and approval requirement are two independent results, and folding them into one enumeration would make \"denied and needs approval\" representable. Absent means `not_required`, so every rule written before v1.28.0 keeps its meaning. `required` on a `deny` rule MUST be rejected at load — the combination means nothing, and acting on half of a governance rule is the failure §6.1.5 exists to end."
+        },
         "description": {
           "type": "string",
           "description": "Human-readable description of the rule's purpose.",
@@ -188,6 +197,38 @@
         "$not": {
           "$ref": "#/$defs/RuleConditions",
           "description": "Compound: passes if the wrapped condition object FAILS. An empty object MUST evaluate to false (fail-closed). PROTOCOL_SPEC §6.3."
+        },
+        "arguments": {
+          "type": "object",
+          "additionalProperties": false,
+          "minProperties": 1,
+          "description": "Structure-only predicates over the call's argument KEYS (PROTOCOL_SPEC §6.1.7). No predicate reads a value: redaction is driven by the module's input schema, so a module without one gets none, and the ACL runs at Step 4 while input validation runs at Step 7 — key presence is the only question well-defined on what is available. Reads the governance projection of §6.1.8, never the raw arguments and never `redacted_inputs`.",
+          "properties": {
+            "has_key": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              },
+              "description": "Passes when ANY named key is present in the call's arguments."
+            },
+            "has_all_keys": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              },
+              "description": "Passes when EVERY named key is present."
+            },
+            "has_none_of": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              },
+              "description": "Passes when NONE of the named keys is present."
+            }
+          }
         }
       }
     },

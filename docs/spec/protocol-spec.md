@@ -1,12 +1,12 @@
 ---
-description: "The canonical, normative apcore protocol specification (RFC 2119, v1.27.0): module, schema, naming, ACL, approval, error, config, and observability requirements for all conforming SDKs."
+description: "The canonical, normative apcore protocol specification (RFC 2119, v1.28.0): module, schema, naming, ACL, approval, error, config, and observability requirements for all conforming SDKs."
 ---
 
 # apcore — AI-Perceivable Core Standard Specification
 
 > **Canonical Specification** - This document is the authoritative specification for the apcore protocol
 
-> Version: 1.27.0
+> Version: 1.28.0
 > Status: Draft Specification (RFC 2119 Conformant)
 > Stability: Specification content is stable, pending reference implementation verification
 > Last Updated: 2026-08-27
@@ -3783,9 +3783,9 @@ The failure this closes is not hypothetical and it fails **open**. A bare string
 | `@system` | Matches calls where identity type is `system` |
 | `*` | Wildcard, matches all module IDs |
 
-#### 6.1.4 (cont.) The rule key set is closed (v1.27.0, #107)
+#### 6.1.5 The rule key set is closed (v1.27.0, #107)
 
-`callers`, `targets`, `effect`, `description` and `conditions` are the **complete** set of keys an ACL rule may carry. Loading a rule with any other key **MUST** fail with `ACLRuleError`, naming the rule index and the offending key.
+`callers`, `targets`, `effect`, `approval`, `description` and `conditions` are the **complete** set of keys an ACL rule may carry (`approval` joined the set in v1.28.0, §6.1.6). Loading a rule with any other key **MUST** fail with `ACLRuleError`, naming the rule index and the offending key.
 
 This is the same principle §6.1.2 applies to condition keys, in the other half of the rule, and it can be stricter: an unknown **condition** key cannot fail the load, because `register_condition` writes to a runtime registry that discovery may legitimately precede. A rule **key** has no such excuse — the set is fixed by this section and by `schemas/acl-config.schema.json`, which already declares `additionalProperties: false` on a rule. Nothing was enforcing it, because no implementation validates an ACL file against the schema at load time.
 
@@ -3798,6 +3798,83 @@ This is the same principle §6.1.2 applies to condition keys, in the other half 
     nothing evaluates — on the pattern side rather than the condition side.
 
 **Reserved names.** `id`, `actions` and `priority` were reserved here for future specification versions and are evaluated by no implementation. They are **rejected at load like any other unknown key**, and an implementation **SHOULD** name them as reserved in the error rather than merely unknown, because an operator who wrote `actions: ["describe"]` intended a restriction and deserves to be told the key does not exist yet rather than that they mistyped something. They are removed from the schema's property list in the same change: leaving them declared meant `additionalProperties: false` could never catch them, which is precisely how `actions` came to grant `execute` on a rule that said `describe`.
+
+#### 6.1.6 Authorization and approval are two results, not one (v1.28.0, #108)
+
+An ACL rule answers **two** independent questions, and folding them into one enumeration makes a meaningless state representable while forcing a real one to be spelled badly.
+
+- **Authorization** — may this caller reach this target at all? `allow` / `deny`.
+- **Approval requirement** — must *this particular call* be put to a human before it runs? `true` / `false`.
+
+"Denied **and** needs approval" is not a state that means anything, and "allowed **but** ask first" is not a third kind of denial. A rule therefore carries `effect` as it always has, plus an orthogonal optional field:
+
+```yaml
+rules:
+  - callers: ["*"]
+    targets: ["cli.git_push"]
+    effect: allow
+    approval: required          # required | not_required (default)
+    conditions:
+      arguments: { has_key: ["force"] }
+```
+
+1. `approval` is optional; its absence means `not_required`, so every rule written before this section keeps its meaning exactly.
+2. `approval: required` on a `deny` rule **MUST** be rejected at load with `ACLRuleError`. The combination has no meaning, and silently ignoring one half of a governance rule is the failure mode §6.1.5 was written to end.
+3. The combination **MUST** be rejected at **every** entry point that accepts a rule — file loading, direct construction, and runtime insertion. `add_rule` returns nothing by its own contract in all three SDKs, which is not an exemption: an implementation **MUST** either provide a fallible variant beside it or fail loudly, in whatever way that language already signals an unconstructable value. A `deny` rule never reaches the approval gate, so a requirement attached to one can only ever mislead the operator who wrote it, and accepting it through one door while rejecting it at two is worse than either.
+4. Adding this field was only safe once §6.1.5 closed the rule key set (v1.27.0). An SDK that still dropped unknown keys would read a `deny`-with-`approval` rule as a bare rule and act on half of what the operator wrote.
+
+**Why this cannot be expressed with the tools that already exist.** The ACL can refuse on arguments today. `ApprovalHandler` can wave a call through on arguments. Neither can *ask* on arguments, and asking is the entire purpose of the approval gate — a refusal is not a question. Every decision point that can read a call's arguments is unable to escalate it to a human, and the one point that decides whether to ask a human (§7.9's policy resolution) is forbidden by rule 2 of §7.9.6 from consulting them.
+
+#### 6.1.7 The `arguments` condition (v1.28.0, #108)
+
+One **built-in** condition key, added to the language §6.1 already defines rather than beside it:
+
+| Predicate | Passes when |
+|---|---|
+| `has_key` | **any** of the named keys is present in the call's arguments |
+| `has_all_keys` | **every** named key is present |
+| `has_none_of` | **none** of the named keys is present |
+
+**No predicate reads a value, and that is a design constraint rather than a first cut.** Three reasons, in order of weight:
+
+1. The argument view available here is **not reliably redacted**. Redaction is driven by `x-sensitive` markers in the module's input schema; a module with no input schema gets no field redaction at all, and only the `_secret_` key-prefix rule still applies. A value-reading predicate would pull potentially secret-bearing data into the governance decision path and into `handler_error` diagnostics.
+2. The arguments are **unvalidated**. The ACL check is Step 4 and input schema validation is Step 7, so a value may be absent, of the wrong type, or malformed. Key presence is the one question that is well-defined on unvalidated input.
+3. Key presence answers the driving requirement. "Did this call carry `--force`?" is a presence question.
+
+Value-level predicates (`equals`, `matches`, ordering comparisons) are deliberately **not** specified. If they are added later they **MUST** carry a precondition that the module declares an `input_schema`, or resolve as unevaluable under §6.1.1.
+
+**It is built-in and requires no registration.** `register_condition` writes runtime code into a process-wide registry; a deployment-registered argument handler would be exactly the unauditable host code §7.9.6 rule 2 exists to keep out of a governance verdict. A fixed vocabulary keeps the decision reproducible from the ACL document. This says the condition needs no registration, not that `register_condition` is forbidden from replacing it: that call can already replace `roles`, which is equally consequential, and special-casing one built-in would be arbitrary. A deployment that replaces a built-in condition owns the consequence, as it always has. Being built-in also means §6.1.4's precheck covers it for free: `argument:` written for `arguments:` is an unregistered condition key, so the rule is unevaluable rather than silently inert.
+
+#### 6.1.8 The governance projection (v1.28.0, #108)
+
+The `arguments` condition reads a **governance projection** of the call's arguments, not the arguments themselves and not `redacted_inputs`.
+
+1. Implementations **MUST** compute the projection during module lookup (Step 3) and make it available to the ACL check (Step 4). The ordering is normative here rather than an implementation detail that happens to hold.
+2. The projection **MUST** carry the argument **key set**, and **MAY** carry each key's JSON type. It **MUST NOT** carry any argument value. A projection that structurally cannot hold a value cannot leak one, whatever a future predicate does with it.
+3. The projection **MUST** be computed by the framework and **MUST NOT** be accepted from caller-supplied input. Where an implementation carries it on a context object that is also deserialized from the wire, the field **MUST** be transient — excluded from serialization and ignored on deserialization. A caller that could supply its own projection could satisfy `has_none_of` for a call whose arguments say otherwise, which turns the condition into a caller-controlled switch.
+4. How the projection reaches the condition is **idiomatic** and unconstrained: carrying it on the execution context and passing it as an argument to the check are both conforming, as long as rules 1–3 hold. What is fixed is that the condition sees it and that a caller cannot forge it.
+5. Implementations **MUST NOT** substitute `redacted_inputs`. Its documented contract is safe *logging*; it is a raw copy when the module has no input schema; and one field serving both "safe to log" and "input to a security decision" will eventually break one of them in a change made for the other.
+
+**Well-formedness and availability (v1.28.0, #108).** Four cases, all resolving to UNEVALUABLE under §6.1.1's principle rather than to a boolean. The direction matters: every one of them is a shape where "false" would be safe on a `deny` rule and **fail open on an `allow` rule**, which is the defect class §6.1.1 exists to close.
+
+1. **No projection available.** `check()` is public API and a caller that is not the Executor may invoke it without one. The condition is UNEVALUABLE. It **MUST NOT** be evaluated against an empty stand-in: `has_none_of` over an empty key set is *satisfied*, so an `allow` rule would grant for a call whose arguments were never seen.
+2. **`arguments: {}`** — an empty predicate object. UNEVALUABLE, not vacuously satisfied, for the same reason §6.1's table already gives for an empty `$not`.
+3. **An unrecognised predicate name** inside `arguments` (`has_keys` for `has_all_keys`). UNEVALUABLE. The predicate vocabulary is closed exactly as the rule key set is (§6.1.5), and for the same reason: a name nothing evaluates would otherwise be dropped and leave the rule wider than written.
+4. **A malformed predicate value** — not a list of strings. UNEVALUABLE, per §6.1.1 case 4.
+
+Empty predicate *arrays* are well-formed and carry ordinary set semantics: `has_key: []` is unsatisfied, `has_all_keys: []` and `has_none_of: []` are satisfied. They are not misconfigurations, merely vacuous.
+
+**§6.1.4's precheck covers the predicate structure**, not only the `arguments` key's registry status. Cases 2–4 are decidable without a context and without running a handler, so they are precheck faults and `validate_rules()` **MUST** report them — which is what makes a malformed predicate visible at deploy time rather than at the first call that trips it.
+
+**The condition path of an `arguments` fault descends to the offending predicate.** §6.1.4 already descends into structure — a fault beneath `$or` is reported at `$or[1].k`, not at `$or` — and the reason carries over unchanged: `arguments: { has_key: ["a"], has_keys: ["b"] }` has one bad predicate among good ones, and a finding that says only `arguments` does not say which.
+
+1. A fault attributable to one predicate — an unrecognised name (case 3) or a malformed value (case 4) — **MUST** be reported at `arguments.<predicate>`, using the name **as written**: `arguments.has_keys` for the misspelling, so the finding names the string the author typed and can be searched for.
+2. A fault with no predicate to name — a non-mapping `arguments` value, or the empty object of case 2 — **MUST** be reported at `arguments`.
+3. Both forms compose under `$or` / `$not` exactly as any other path does: `$or[1].arguments.has_keys`.
+
+This is a path rule, not a message rule. Findings order by path (§6.1.4), so descending also keeps that order total where a single `arguments` block carries more than one fault.
+
+**`_approval_token` is excluded from the projection.** It is framework-owned protocol machinery, not caller input — §7.9.6 rule 5 already strips it before policy resolution for the same reason. Including it would make a Phase B resume present a different argument shape to governance than the original call, so `has_none_of` would decide differently on the two halves of one logical call.
 
 ### 6.2 Rule Matching
 
@@ -3922,6 +3999,7 @@ Every `check()` **MUST** emit exactly one audit entry through the configured aud
 | `call_depth` | `integer \| null` | Length of `context.call_chain`, when present |
 | `trace_id` | `string \| null` | Trace ID from the context, when present |
 | `handler_error` | `string \| null` | Non-null **if and only if** a condition was unevaluable (§6.1.1). **MUST** name the condition key and the reason. |
+| `approval_required` | `boolean` | Whether the matched rule required this call to be put to a human (§6.1.6). `false` when no rule matched or the matched rule required none. **Added** beside `decision` rather than widening it — `decision` is a string downstream consumers parse, and a third value would break every existing parser. |
 
 `handler_error` is what makes §6.1.1's two outcomes distinguishable after the fact: a rule that did not match because a handler said "no" leaves it null; a rule that did not match — or that denied — because no answer was obtainable leaves it set. An implementation **MUST NOT** set it for an ordinary `UNSATISFIED` condition.
 
@@ -4317,6 +4395,41 @@ An ACL enforces two things: an ordered rule list and a `default_effect`. Both ar
 4. After `reload()`, both accessors **MUST** reflect the reloaded file. They read the live object, never a cached parse.
 
 **Why this is normative rather than left to each SDK.** Without it, tooling that reports or audits the enforced policy — an admin surface, a preflight report, a linter for the rules §6.1.2 flags — must re-read and re-parse the ACL file to recover a value the loaded object already holds. That second copy can drift from the object across `reload()`, and where the field is `private` or non-`pub`, re-parsing is not merely wasteful but the only option available.
+#### 6.8.1 `AccessDecision` — the structured result (v1.28.0, #108)
+
+`check()` returns a boolean, which can carry authorization but not the second axis of §6.1.6. Implementations **MUST** provide a structured accessor alongside it, sync and async:
+
+| Member | Meaning |
+|---|---|
+| `access` | `allow` / `deny` — unchanged semantics from today's boolean |
+| `approval_required` | whether **this call** must be put to a human before it runs |
+| `matched_rule_index` | existing diagnostic, unchanged |
+| `reason` | existing diagnostic, unchanged |
+
+The noun is fixed across SDKs; the shape is idiomatic per [API Surface & Naming Conventions §4](./api-surface-conventions.md). The existing boolean entry points are **kept**.
+
+**The legacy boolean MUST fail closed on an approval requirement.** A rule resolving to `allow` with `approval_required: true` **MUST** make `check()` return `false`.
+
+`check()` is public API consumed by callers that are not the Executor — tooling, preflight helpers, third-party integrations — and such a caller can only read a boolean as "let it through / do not". Returning `true` would let it execute a call the ACL said needed a human. Returning `false` is wrong in the benign direction: the caller sees a refusal where the truth was "ask first". The Executor uses the structured API and is unaffected, and a legacy caller only meets this at all once an operator has authored a rule carrying `approval`.
+
+### 6.9 Governance precedence (v1.28.0, #108)
+
+Approval requirements now have more than one source. The composition is normative, not per-SDK.
+
+| # | Interaction | Rule |
+|---|---|---|
+| 1 | Rule matching | Unchanged, first match wins. The matched rule determines **both** `access` and the approval requirement |
+| 2 | `default_effect` | Unchanged — `allow` / `deny` only. There is no default approval requirement; no match means `false` |
+| 3 | ACL requirement **+** module `annotations.requires_approval` | **Union.** Either source may require a human; neither may cancel the other |
+| 4 | ACL requirement **+** `ExecutionPolicy` override | **A policy may add a requirement and MUST NOT remove one the ACL set.** A policy `requires_approval: false` overrides the module's *annotation*, never the ACL's decision |
+| 5 | `gate_destructive` (§7.9.2) | Unchanged; contributes to the union of #3 |
+| 6 | Preflight (§7.9.5) | `validate()` **MUST** report the union of #3–#5 for the given call site |
+| 7 | Audit (§6.3.1) | `decision` stays `"allow"` / `"deny"`; the requirement is a **separate field** |
+
+**Rule 4 is the one that is not obvious.** The ACL is a **caller-scoped** authorization layer; `ExecutionPolicy` is a **module-scoped** platform override. Letting a module-scoped override cancel a caller-scoped decision is a privilege escalation: a policy rule written for `orders.*` would silently strip an approval requirement an ACL author attached to one untrusted caller. Union is the only safe composition.
+
+**Rule 7 is a compatibility constraint, not a modelling preference.** `AuditEntry.decision` is a string that downstream consumers parse. A third value breaks every existing parser; a new field beside it does not.
+
 
 ---
 
@@ -4481,6 +4594,14 @@ Behavior:
        "pending"  → THROW ApprovalPendingError(result)
 ```
 
+**The ACL's approval requirement reaches Step 5 (v1.28.0, #108).** §6.1.6 lets a rule require approval for a specific call, so Step 4 now produces two results and Step 5 **MUST** consult both:
+
+1. The gate fires when the module's `annotations.requires_approval` is true **or** the ACL decision for this call carried `approval_required` **or** `gate_destructive` applies — the union of §6.9 rows 3–5.
+2. An `ExecutionPolicy` override **MUST NOT** clear a requirement the ACL set (§6.9 row 4).
+3. The `ApprovalRequest` handed to the handler **MUST** carry the effective annotations, as §7.9.3 already requires; an ACL-sourced requirement makes `requires_approval` effectively true for that call.
+
+An implementation that reads only the annotation silently ignores every rule carrying `approval` — the rule loads, matches, and does nothing. That is the failure §6.1.1 and §6.1.5 were both written to end, arriving through a third door.
+
 **Key behaviors:**
 - When no `ApprovalHandler` is configured, Step 5 is **skipped** for backward compatibility — but per the fail-loud principle (§7.9.4) a module that needs approval **MUST** produce a warning on skip, and an `ExecutionPolicy` with `strict` (§7.9) turns this skip into a fail-closed `ApprovalDeniedError` instead.
 - When an `ExecutionPolicy` (§7.9) is attached, the gate consults it first: the policy may force approval on a module that does not declare `requires_approval`, or (with `gate_destructive`) gate a `destructive` module.
@@ -4603,7 +4724,7 @@ A misconfigured or unreachable governance control **MUST NOT** silently allow. C
 
 #### 7.9.5 Preflight
 
-`Executor.validate()` (§12.2) **MUST** report the policy-effective `requires_approval` — i.e. the same verdict the gate will enforce, including a `gate_destructive`-driven or rule-forced approval. The `apcore.acl.denied` and governance decision events **MUST NOT** be emitted during a dry-run `validate()`.
+`Executor.validate()` (§12.2) **MUST** report the **governance-effective** `requires_approval` — the union of §6.9 rows 3–5 for the given call site, which since v1.28.0 includes an ACL rule carrying `approval` (§6.1.6). Reporting only the policy-effective value would tell a caller no approval is needed for a call the gate will stop. That union is by construction the same verdict the gate will enforce, including a `gate_destructive`-driven or rule-forced approval. The `apcore.acl.denied` and governance decision events **MUST NOT** be emitted during a dry-run `validate()`.
 
 #### 7.9.6 Call-site inputs to policy resolution (v1.24.0, #102)
 
@@ -8608,3 +8729,4 @@ Each language SDK **SHOULD** provide idiomatic module definition syntax. The fol
 | 1.25.0 | 2026-08-28 | **Four corrections to v1.22.0–v1.24.0, found by implementing them in all three SDKs (#100, #102).** **§6.1.1 — the closed list of three unevaluable situations was wrong, and wrong in the direction the section exists to prevent.** All three SDKs independently classified a malformed compound value (`$or: "not-a-list"`, `$not: 3`) as UNSATISFIED, and all three independently flagged that choice as suspect, because §6.1.1 said "exactly three situations qualify" and a handler handed a malformed value does run to completion. The result was that a `deny` rule carrying `$or: "typo"` stayed inert — the v1.22.0 defect, reached through a door v1.22.0 left open. A non-mapping `conditions` produced a three-way divergence on the same input: apcore-python raised `AttributeError` out of `check()` (violating its own contract that `check` MUST NOT raise), apcore-typescript denied, apcore-rust went inert. "Unevaluable" is now a **principle** — the implementation cannot answer the condition **as written** — with five non-exhaustive examples, and an implementation meeting an unlisted case **MUST** classify it by the principle rather than defaulting it to UNSATISFIED. **§6.1.4 (new) — a context-independent structural and registry precheck, which resolves two problems at once.** §6.1.1 rule 2 wanted deterministic `handler_error` while the composition rules permitted short-circuiting, and §6.5 kept "no context supplied" a non-match, which let a misspelled key on a context-less call escape §6.1.1 entirely — verified in all three SDKs. The precheck walks the whole `conditions` tree without a context and without running a handler, runs **before** §6.5's context check, and closes the bypass; a rule that *passes* the precheck and then finds no context still takes §6.5's path, so a registered, context-dependent condition such as `roles` is **not** unevaluable merely because this caller supplied no identity. Because the precheck is exhaustive and handler-free its findings are a pure function of the rule, so precheck-origin diagnostics are identical across implementations while execution-origin ones may still vary with short-circuiting — stated explicitly rather than left to a `SHOULD NOT` that pinned neither. §6.1.4 also defines **condition paths** (`$or[1].$not.k`), and `handler_error` and the §6.1.2 validator now order by path rather than by key, because a nested `$or` may carry one key at several positions and ordering by key is then undefined. **§6.1.3 — `sync_registered` / `async_registered` renamed to `sync_resolvable` / `async_resolvable`.** The flags always meant "resolvable on that evaluation path", and since `async_check()` falls back to the sync registry, `async_resolvable` is the union of both — so `async_registered` read as a registry lookup and would be false for every built-in leaf handler, which resolves on both paths. **§7.9.6 — rule 3(b) withdrawn.** It promised that "a host-supplied policy implementation can decide on arguments"; `ExecutionPolicy` is a concrete class in apcore-python and apcore-typescript and a concrete `struct` in apcore-rust, and `set_policy` takes that concrete type in all three, so no host can supply one. Making it pluggable is deliberately not specified. Rule 5 (now 7) is restated as a **capability** requirement rather than an API shape — an explicit, backward-compatible call-site-aware entry point, in whatever form is idiomatic — after the three SDKs produced three reasonable shapes; and a new rule requires `_approval_token` to be stripped **before** policy resolution, which §7.4's existing "before passing to subsequent steps" does not reach, since resolution happens inside Step 5. **§6.8** clarifies rather than relaxes: an accessor **MAY** acquire the ACL lock internally, copy, and release before returning; what is forbidden is returning a value whose validity depends on a lock the caller must release. **§6.3.1** records that `handler_error` is per-`check()` while `matched_rule_index` is per-rule, so one audit entry may legitimately describe two different rules. **This IS an SDK change** in all three, and a behavioural one for cases 4 and 5 of §6.1.1. Governance: maintainer approval per GOVERNANCE.md § Decision Making; tracking issues #100 and #102. |
 | 1.26.0 | 2026-08-28 | **§2.6 step 2 — reserved-word detection is narrowed to the first segment (#99).** The algorithm read "For each segment of `new_id` (split by `.`)". No SDK implemented it: apcore-python, apcore-typescript and apcore-rust all tested the first segment only, each saying so in a comment beside the check. Which side was wrong is the substance of the change, and it is the specification. A reserved word claims a **namespace**, not a token — §2.5 frames `system.*` / `internal.*` / `apcore.*` as namespaces and §6.6.1 restricts registration of IDs *prefixed* `system.`, and only the first segment can assert a prefix. The reserved set is `system`, `internal`, `core`, `apcore`, `plugin`, `schema`, `acl`, so the literal per-segment reading makes `executor.schema.validate`, `orchestrator.core.dispatch` and `api.acl.check` illegal: ordinary IDs that claim nothing, shadow nothing, and cost a large part of the natural naming space to reject. Three independent implementations converging on the first-segment reading, against the literal text, is evidence about intent; the text was the outlier. **This is a narrowing, so no SDK behaviour changes and nothing that validated before stops validating** — IDs legal in every implementation but illegal on paper are now legal on paper. §2.6 additionally states *positively* that later segments are unrestricted, so the per-segment form is not restored by a future reader who finds the omission suspicious. The security property is untouched: threat T8 is impersonation of `system.*`, which requires the first segment, so first-segment enforcement was always sufficient for it — `security-considerations.md` §2.1 drops the "tracked separately" pointer it carried while this was open. `conformance/fixtures/id_conflict_reserved_words.json` pins the decision in all three SDKs, including the `foo.system.bar` case that neither behaviour had ever covered. Governance: maintainer approval per GOVERNANCE.md § Decision Making; tracking issue #99. |
 | 1.27.0 | 2026-08-28 | **§6.1 — an unknown or reserved ACL rule key was dropped in silence, widening an `allow` rule (#107).** `callers`, `targets`, `effect`, `description`, `conditions` is the complete key set, and `schemas/acl-config.schema.json` already declared `additionalProperties: false` on a rule — but no implementation validates an ACL file against the schema at load time, so nothing enforced it. Reproduced in all three SDKs: a rule carrying `actions: ["describe"]`, written by an operator to mean introspection only, loaded cleanly and granted **execute** on `orders.*` to every `agent.*` caller. On a `deny` rule a dropped key is over-broad and therefore safe; on an `allow` rule it is a privilege escalation, and a silent one. This is the §6.1.1 defect class — a fail-open produced by a key nothing evaluates — on the pattern side rather than the condition side, and the loader already carried the mirror-image rule: a **missing** `callers`/`targets` is rejected loudly so an omission cannot render a rule inert, while an **unknown** key was dropped in silence. Loading now fails with `ACLRuleError` naming the rule index and the offending key. The rule can be stricter than §6.1.2's treatment of condition keys, which must warn rather than fail because `register_condition` is a runtime registry that discovery may legitimately precede: a rule key set is fixed by this section, so there is no ordering excuse. `id`, `actions` and `priority`, reserved in earlier revisions and evaluated by nothing, are rejected like any other unknown key — with a message naming them as reserved, since an operator who wrote `actions` intended a restriction and deserves to be told the key does not exist yet — and are **removed from the schema's property list**, because a declared property is exactly what `additionalProperties: false` cannot catch, which is how `actions` came to grant `execute` on a rule that said `describe`. **This IS an SDK change** in all three, and a deliberately breaking one for a configuration that was never doing what it said. `conformance/fixtures/acl_rule_key_closure.json` pins it with 8 cases. Governance: maintainer approval per GOVERNANCE.md § Decision Making; tracking issue #107. |
+| 1.28.0 | 2026-08-28 | **§6.1.6–§6.1.8, §6.8.1, §6.9 — governance could not ask a human about what a call carried (#108).** Every decision point that can read a call's arguments was unable to escalate it to approval, and the one point that decides whether to ask a human is forbidden by §7.9.6 rule 2 from consulting them. The ACL could **refuse** on arguments and `ApprovalHandler` could **wave through** on arguments; nothing could **ask**, and a refusal is not a question — so an operator who needed `git push --force` reviewed had to gate every `git push`, which dilutes `requires_approval` from "this needs approval" to "this might" and floods the audit trail. §6.1.6 splits the two results: `effect` keeps authorization, an orthogonal optional `approval` field carries the requirement, and `approval: required` on a `deny` rule is rejected at load because the combination means nothing. §6.1.7 adds ONE built-in condition key, `arguments`, to the language §6.1 already defines rather than beside it — `has_key` / `has_all_keys` / `has_none_of`, and **no predicate reads a value**: redaction is schema-driven so a module without an input schema gets none, and the ACL runs at Step 4 while validation runs at Step 7, so key presence is the only question well-defined on what is available. It is built-in with no registration point, because a deployment-registered argument handler is precisely the unauditable host code §7.9.6 rule 2 keeps out of a verdict. §6.1.8 gives the condition a **governance projection** computed at Step 3 — key set, optionally types, never values — rather than `redacted_inputs`, whose contract is safe logging and which is a raw copy when no schema exists. §6.8.1 adds the structured `AccessDecision` beside the boolean, and requires the legacy `check()` to **fail closed** on an approval requirement: a non-Executor caller can only read a boolean as "let it through", and returning true would run a call the ACL said needed a human. §6.9 pins the precedence, of which one row is not obvious — a module-scoped `ExecutionPolicy` override may ADD an approval requirement and **MUST NOT** remove one the caller-scoped ACL set, or a policy written for `orders.*` silently strips a requirement an author attached to one untrusted caller. §6.3.1 gains `approval_required` beside `decision` rather than widening it, since `decision` is a string downstream consumers parse. §7.4 and §7.9.5 consume the union. **Deliberately NOT specified:** an argument predicate on `PolicyRule` (a second condition language over one decision point), a pluggable `ExecutionPolicy` (withdrawn as rule 3(b) in v1.25.0 for the same reason), and value-level argument predicates. This was only safe once v1.27.0 closed the rule key set: an SDK that still dropped unknown keys would read a rule carrying `approval` as a bare rule and act on half of what its author wrote. **This IS an SDK change** in all three. Governance: maintainer approval per GOVERNANCE.md § Decision Making; tracking issue #108. |

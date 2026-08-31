@@ -1,9 +1,10 @@
 {
-  "description": "ACL rule keys are a CLOSED set (PROTOCOL_SPEC §6.1, spec v1.27.0, #107). Loading a rule that carries any key outside `callers`, `targets`, `effect`, `description`, `conditions` MUST fail with ACLRuleError. A key nothing evaluates is otherwise dropped in silence, which widens an `allow` rule with no warning — the §6.1.1 defect class on the pattern side. `id`, `actions` and `priority` were reserved in earlier revisions and are evaluated by no implementation; they are rejected like any other unknown key, and an implementation SHOULD name them as reserved. Driver contract: build an ACL FILE containing `rule` under `rules:` with the given `default_effect`, load it through the SDK's file-loading entry point, and assert that loading succeeds when `expected_load` is \"ok\" and raises/returns an ACL rule error when it is \"reject\". Where the SDK exposes the message, assert it names the offending key.",
+  "description": "ACL rule keys are a CLOSED set (PROTOCOL_SPEC §6.1, spec v1.27.0, #107). Loading a rule that carries any key outside `callers`, `targets`, `effect`, `approval`, `description`, `conditions` MUST fail with ACLRuleError. (`approval` joined the set in spec v1.28.0, §6.1.6; this fixture originally used it as its example of an unrecognised key, which stopped being true the moment #108 landed — an example must be chosen so that it cannot become valid later.) A key nothing evaluates is otherwise dropped in silence, which widens an `allow` rule with no warning — the §6.1.1 defect class on the pattern side. `id`, `actions` and `priority` were reserved in earlier revisions and are evaluated by no implementation; they are rejected like any other unknown key, and an implementation SHOULD name them as reserved. Driver contract: build an ACL FILE containing `rule` under `rules:` with the given `default_effect`, load it through the SDK's file-loading entry point, and assert that loading succeeds when `expected_load` is \"ok\" and raises/returns an ACL rule error when it is \"reject\". Where the SDK exposes the message, assert it names the offending key.",
   "closed_rule_keys": [
     "callers",
     "targets",
     "effect",
+    "approval",
     "description",
     "conditions"
   ],
@@ -101,7 +102,7 @@
     },
     {
       "id": "unknown_key_is_rejected",
-      "note": "A key from a proposal that has not landed. Silently dropping it would degrade the rule to a bare `allow` — which is why closing the set is a prerequisite for adding any new rule field.",
+      "note": "An invented key. Silently dropping it would degrade the rule to a bare `allow` — which is why closing the set is a prerequisite for adding any new rule field. NOTE: this case used `approval` until v1.28.0 made that key real; a \"does not exist\" example must be one that cannot later become valid.",
       "rule": {
         "callers": [
           "agent.*"
@@ -110,7 +111,7 @@
           "orders.*"
         ],
         "effect": "allow",
-        "approval": "required"
+        "deny_reason": "audit"
       },
       "default_effect": "deny",
       "expected_load": "reject"
@@ -137,7 +138,7 @@
     },
     {
       "id": "multiple_unknown_keys_are_all_reported",
-      "note": "A reserved key and an unrecognised one together; the message should account for both rather than stopping at the first.",
+      "note": "A reserved key and an invented one together; the message should account for both rather than stopping at the first.",
       "rule": {
         "callers": [
           "agent.*"
@@ -149,9 +150,41 @@
         "actions": [
           "describe"
         ],
+        "deny_reason": "audit"
+      },
+      "default_effect": "deny",
+      "expected_load": "reject"
+    },
+    {
+      "id": "approval_field_loads",
+      "note": "§6.1.6 (spec v1.28.0) — `approval` is a member of the closed set, so a rule carrying it must load. Guards against an SDK that closed the key set in v1.27.0 and never reopened it for the new field.",
+      "rule": {
+        "callers": [
+          "*"
+        ],
+        "targets": [
+          "cli.git_push"
+        ],
+        "effect": "allow",
         "approval": "required"
       },
       "default_effect": "deny",
+      "expected_load": "ok"
+    },
+    {
+      "id": "approval_required_on_deny_rule_is_rejected",
+      "note": "§6.1.6 rule 2 — `approval: required` on a `deny` rule is meaningless and MUST be rejected at load. Acting on half of a governance rule is the failure §6.1.5 exists to end.",
+      "rule": {
+        "callers": [
+          "*"
+        ],
+        "targets": [
+          "orders.*"
+        ],
+        "effect": "deny",
+        "approval": "required"
+      },
+      "default_effect": "allow",
       "expected_load": "reject"
     }
   ]
