@@ -65,7 +65,7 @@ Behavior annotations help AI/LLM callers make invocation decisions. All fields a
 | `readonly` | `False` | Does not modify any state |
 | `destructive` | `False` | May delete or overwrite data |
 | `idempotent` | `False` | Repeated calls have no additional side effects |
-| `requires_approval` | `False` | Requires human confirmation before execution. Enforced at runtime by [Approval System](./approval-system.md). |
+| `requires_approval` | `False` | Whether **this module** requires human confirmation before execution. Enforced at runtime by [Approval System](./approval-system.md). `False` does **not** mean no approval will be required — an ACL rule, an `ExecutionPolicy` override or `gate_destructive` may require one for a particular call (spec §6.9 rows 3-5). Get the call's effective value from `validate()`. |
 | `open_world` | `True` | Connects to external systems |
 | `discoverable` | `True` | Whether the module appears in manifests and tool discovery. When `false`, it remains callable by ID but is hidden from discovery. |
 | `streaming` | `False` | Supports chunk-by-chunk output via `stream()` |

@@ -264,7 +264,7 @@
         },
         "requires_approval": {
           "type": "boolean",
-          "description": "Whether human approval is required before invocation. true = AI must ask for user consent before calling.",
+          "description": "Whether THIS MODULE requires human approval before invocation. A module-level declaration, not the governance-effective value: true = always ask; false = this module does not itself require approval, which does NOT mean none will be required, since an ACL rule, an ExecutionPolicy override or gate_destructive may require one for a particular call (spec §6.9 rows 3-5). The effective value is call-site dependent — obtain it from Executor.validate() (§7.9.5).",
           "default": false
         },
         "open_world": {

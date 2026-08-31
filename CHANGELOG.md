@@ -46,6 +46,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`requires_approval: false` was documented as "no consent needed", which v1.28.0 made untrue (spec v1.29.0, [#110](https://github.com/aiperceivable/apcore/issues/110)).** The JSON Schemas said *"true = AI must ask for user consent before calling"*, §3's table said *"Whether requires human approval before execution"*, and §3's AI reading guide listed only the `true` case. Read literally, `false` told a client no consent was needed. Since v1.28.0 the annotation is **one source among several** and §6.9 rows 3–5 compose them by union, so an ACL rule carrying `approval: required`, an `ExecutionPolicy` override, or `gate_destructive` can require approval for a particular call on a module whose annotation says `false`.
+
+  Nothing was unsafe: the approval gate still fails closed and asks the human at execution time. What was lost is the client's ability to say *in advance* that a call will need approval — which is the whole reason the annotation is read before calling. Demonstrated against apcore-python: a module declaring `requires_approval=False` with the driving §6.1.7 ACL shape reports `validate(..., {remote, force: True}).requires_approval == True` and `validate(..., {remote}).requires_approval == False`, while the static annotation stays `False` in both.
+
+  The annotation describes the **module**; `validate()` (§7.9.5) describes the **call**. Both JSON Schemas, §3's annotation table, §3's reading guide and `docs/features/module-interface.md` now say so.
+
+  **Deliberately NOT specified: a `conditional` tri-state.** The module author cannot know the answer — it depends on the ACL the *deployment* loads and the policy it configures, neither visible when the annotation is written. A third value would have to be computed by the framework from the loaded governance config rather than declared, which is `validate()` with extra steps and a breaking change to a field every consumer reads as a boolean.
+
+  No behaviour change and no SDK change.
+
 - **An unevaluable approval rule stepped aside and the call was granted without approval (spec v1.29.0, [#109](https://github.com/aiperceivable/apcore/issues/109)).** The shape §6.1.7 was written for is a narrow approval rule ahead of a broad allow — `git push --force` needs a human, `git push` does not. When the narrow rule's condition could not be evaluated, §6.1.1 resolved it to "does not match, MUST NOT grant" and scanning continued; the broad rule then granted, carrying no requirement of its own. The result was `allow` with `approval_required: false` on exactly the call the operator gated, with `matched_rule_index` naming a rule that never mentioned approval. Reproduced in all three SDKs.
 
   **The root cause is a section that outlived its assumptions.** §6.1.1 was written in v1.22.0, when a rule carried one axis. "An `allow` rule MUST NOT grant" was a complete instruction then: it means the rule steps aside, and stepping aside was harmless because whatever granted next also said `allow`. v1.28.0 gave rules a second axis and did not revisit it, so "does not grant" began silently discarding the approval requirement too.
