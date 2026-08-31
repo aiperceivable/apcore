@@ -602,7 +602,7 @@ Implementations declaring conformance **MUST** list any of these deviations that
 
 ## 8. Conformance Test Fixtures
 
-The repository ships **43 cross-language fixture files** under `conformance/fixtures/` covering **370 test cases**. Each fixture is a JSON document of shape `{ "description": "...", "test_cases": [...] }` consumed by all three SDK test runners (apcore-python, apcore-typescript, apcore-rust). A SDK declaring a conformance level **MUST** pass every fixture whose tested feature is required at that level (see §2 Level 0, §3 Level 1, §4 Level 2 for the per-feature breakdown).
+The repository ships **66 cross-language fixture files** under `conformance/fixtures/` covering **747 test cases**. These two numbers are checked against the fixtures themselves by `conformance-integrity`, together with §8.1's per-fixture counts and its Total row — a count nobody verifies reads as coverage in every review and every inventory built from it. Each fixture is a JSON document of shape `{ "description": "...", "test_cases": [...] }` consumed by all three SDK test runners (apcore-python, apcore-typescript, apcore-rust). A SDK declaring a conformance level **MUST** pass every fixture whose tested feature is required at that level (see §2 Level 0, §3 Level 1, §4 Level 2 for the per-feature breakdown).
 
 ### 8.1 Fixture Inventory
 
@@ -753,6 +753,31 @@ The repository ships **43 cross-language fixture files** under `conformance/fixt
         }
     }
     ```
+
+#### 8.2.1 Locating the fixtures (normative)
+
+The examples above hardcode a relative path for brevity. No SDK can: the fixtures live in the **spec repo**, the SDK lives in its own repo, and CI checks the spec repo out somewhere the SDK cannot guess. Every SDK therefore resolves the directory at run time, and because all three do it, the resolution order is a **cross-SDK contract** rather than three private conventions.
+
+An SDK's conformance runner **MUST** resolve `conformance/fixtures/` in this order, taking the first that exists:
+
+| # | Source | Names | Meaning |
+|---|---|---|---|
+| 1 | Environment | `CONFORMANCE_FIXTURES` | A `conformance/fixtures` **directory**, used directly |
+| 2 | Environment | `CONFORMANCE_SPEC_REPO` | The spec repo **root**; `conformance/fixtures` is appended |
+| 3 | Filesystem | — | `../apcore/conformance/fixtures` beside the SDK repo |
+
+1. `CONFORMANCE_FIXTURES` **MUST** take precedence over `CONFORMANCE_SPEC_REPO`. It names a directory of fixture files with no repository around it, which is what makes it useful: a driver can be run against a **synthesised** fixture set — an older shape, a single edited case, a mutation — without producing a whole spec repo to hold it. An SDK that supports only the repo-root form forces that verification to fabricate a repo, and in practice means it is not done.
+2. A variable that is set but does not resolve **MUST** fail loudly, naming the variable **that was actually set**. Falling through to the next source would silently test against different fixtures than the operator named, which is worse than not running.
+3. `APCORE_FIXTURES` and `APCORE_SPEC_REPO` are **transitional** fallbacks for 1 and 2 (apcore#86 / apcore#88). They are not the canonical names and **MUST NOT** be documented to users: PROTOCOL_SPEC §9.2 makes every `APCORE_*` variable a configuration override, so `APCORE_SPEC_REPO=/path` injected `spec.repo` into the config document §9.1's required-field check runs against. A test locator is infrastructure, not configuration.
+4. Resolution for **other** spec-repo subdirectories — `schemas/`, most importantly — **MUST NOT** consult `CONFORMANCE_FIXTURES`. It names one directory, not a repo, so there is nothing to append to.
+
+!!! warning "Drivers land before fixtures, so a driver MUST tolerate the older fixture"
+
+    A new fixture turns CI red in all three SDK repositories until every driver exists, so the landing order is **drivers first, fixture last** (§8.3). A driver therefore runs against a fixture that predates the keys it reads, and **MUST** degrade rather than fail: an absent expectation key means "this case does not pin that property", never "compare against nothing".
+
+    This cannot be verified from a working tree, which already holds the newer fixture — it is exactly what `CONFORMANCE_FIXTURES` is for. Point it at a copy with the new keys removed and the suite **MUST** still pass. Measured: a strict `!== null` check on a key absent from the older fixture failed 19 of 20 cases in apcore-typescript, green locally and red in CI.
+
+    A fixture that pins a **shared constant** rather than new behaviour inverts the order: it **MUST** land *before* the SDKs. `acl_rule_key_closure.json` carries the closed ACL rule-key set, so an SDK that adds a key before the fixture lists it goes red against the set it is meant to agree with.
 
 ### 8.3 Adding a New Fixture
 
