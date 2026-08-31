@@ -1,0 +1,202 @@
+{
+  "description": "An ACL rule's `effect` value is a CLOSED set, at every entry point (PROTOCOL_SPEC §6.1.5, spec v1.30.0, #111). `allow` and `deny` are the only legal values — §6.1's field table has always said **MUST** and `schemas/acl-config.schema.json` has always declared the enum — and a rule carrying anything else **MUST** be rejected with `ACLRuleError` naming the rule index and the offending value.\n\n**The entry point is the substance of this fixture, not a detail.** #107 closed the rule KEY set; this closes a legal key's VALUE, and it was found because the check already existed and was reachable from only one of three doors. Drivers **MUST** exercise each door in `entry_points` that the SDK exposes: `load` (an ACL file), `construct` (building the ACL/rule directly in code) and `add_rule` (runtime insertion). §6.1.6 rule 3 is the governing text — accepting a rule through one door while rejecting it at two is worse than either — and an SDK whose `add_rule` returns nothing by its own contract provides a fallible variant beside it or fails loudly in whatever way that language signals an unconstructable value.\n\n`expected_load: ok` means the rule is accepted at every listed door; `reject` means it is rejected at every listed door. There is deliberately no per-door expectation: a value legal through one entry point and illegal through another is the defect, so the fixture cannot have a shape that can express it.\n\n**An unrecognised `effect` MUST NOT be resolved to a decision.** Reading it as `deny` looks safe and is not: under `default_effect: allow` a rule written to permit becomes one that denies everything it matches, and on a `deny` rule the fallback is only accidentally right — correct until someone revisits which way it points. Where a case is rejected there is no access decision to assert, which is the point.\n\n`default_effect` is closed on the same terms. All three SDKs already validated it at every door before v1.30.0, which is what made a rule's `effect` guarding only the file path an internal inconsistency as well as a cross-language one; `default_effect` cases are pinned here so that behaviour stops being correct-by-convention.",
+  "test_cases": [
+    {
+      "id": "effect_allow_loads",
+      "note": "Control: the closed set itself must still be accepted, at every door.",
+      "rule": {
+        "callers": [
+          "agent.*"
+        ],
+        "targets": [
+          "orders.*"
+        ],
+        "effect": "allow"
+      },
+      "default_effect": "deny",
+      "entry_points": [
+        "load",
+        "construct",
+        "add_rule"
+      ],
+      "expected_load": "ok"
+    },
+    {
+      "id": "effect_deny_loads",
+      "note": "Control: the other legal value.",
+      "rule": {
+        "callers": [
+          "agent.*"
+        ],
+        "targets": [
+          "orders.*"
+        ],
+        "effect": "deny"
+      },
+      "default_effect": "deny",
+      "entry_points": [
+        "load",
+        "construct",
+        "add_rule"
+      ],
+      "expected_load": "ok"
+    },
+    {
+      "id": "capitalised_allow_is_rejected",
+      "note": "THE DRIVING CASE. `Allow` is what an operator writes by hand, and it is the value that measurably split the SDKs: apcore-python and apcore-typescript rejected it from `ACL.load()` and accepted it through direct construction and `add_rule()`, while apcore-rust rejected it at all three. The value set is closed at EVERY entry point (§6.1.5, §6.1.6 rule 3).",
+      "rule": {
+        "callers": [
+          "agent.*"
+        ],
+        "targets": [
+          "orders.*"
+        ],
+        "effect": "Allow"
+      },
+      "default_effect": "deny",
+      "entry_points": [
+        "load",
+        "construct",
+        "add_rule"
+      ],
+      "expected_load": "reject"
+    },
+    {
+      "id": "uppercase_deny_is_rejected",
+      "note": "The `deny` side of the same mistake. It must fail for the same reason rather than survive because a non-`allow` string happens to land on the fallback that was already going to deny.",
+      "rule": {
+        "callers": [
+          "agent.*"
+        ],
+        "targets": [
+          "orders.*"
+        ],
+        "effect": "DENY"
+      },
+      "default_effect": "deny",
+      "entry_points": [
+        "load",
+        "construct",
+        "add_rule"
+      ],
+      "expected_load": "reject"
+    },
+    {
+      "id": "misspelled_effect_is_rejected",
+      "note": "A typo rather than a case error, so no normalisation rule could rescue it.",
+      "rule": {
+        "callers": [
+          "agent.*"
+        ],
+        "targets": [
+          "orders.*"
+        ],
+        "effect": "alow"
+      },
+      "default_effect": "deny",
+      "entry_points": [
+        "load",
+        "construct",
+        "add_rule"
+      ],
+      "expected_load": "reject"
+    },
+    {
+      "id": "empty_effect_is_rejected",
+      "note": "An empty string is not a shorter way of saying `deny`; it says nothing.",
+      "rule": {
+        "callers": [
+          "agent.*"
+        ],
+        "targets": [
+          "orders.*"
+        ],
+        "effect": ""
+      },
+      "default_effect": "deny",
+      "entry_points": [
+        "load",
+        "construct",
+        "add_rule"
+      ],
+      "expected_load": "reject"
+    },
+    {
+      "id": "unknown_effect_is_rejected_against_default_allow",
+      "note": "The same rule under `default_effect: allow`, which is where reading an unknown effect as `deny` is visibly WRONG rather than merely silent: the rule the operator wrote to permit would deny everything it matches, flipping those calls with no error. Uses `default_effect: allow` against the house rule deliberately — the damage is not observable against a deny default.",
+      "rule": {
+        "callers": [
+          "agent.*"
+        ],
+        "targets": [
+          "orders.*"
+        ],
+        "effect": "Allow"
+      },
+      "default_effect": "allow",
+      "entry_points": [
+        "load",
+        "construct",
+        "add_rule"
+      ],
+      "expected_load": "reject"
+    },
+    {
+      "id": "invalid_default_effect_is_rejected",
+      "note": "`default_effect` is the same two values one field up, and all three SDKs already rejected an out-of-enum value here at every door before v1.30.0 — which is exactly what made a rule's `effect` guarding only the file path an INTERNAL inconsistency, not merely a cross-language one. Pinned so it stops being correct-by-convention. `add_rule` is not listed: it does not accept a default_effect.",
+      "rule": {
+        "callers": [
+          "agent.*"
+        ],
+        "targets": [
+          "orders.*"
+        ],
+        "effect": "allow"
+      },
+      "default_effect": "Allow",
+      "entry_points": [
+        "load",
+        "construct"
+      ],
+      "expected_load": "reject"
+    },
+    {
+      "id": "empty_default_effect_is_rejected",
+      "note": "The empty string is not a shorter way of saying `deny`, one field up either.",
+      "rule": {
+        "callers": [
+          "agent.*"
+        ],
+        "targets": [
+          "orders.*"
+        ],
+        "effect": "allow"
+      },
+      "default_effect": "",
+      "entry_points": [
+        "load",
+        "construct"
+      ],
+      "expected_load": "reject"
+    },
+    {
+      "id": "default_effect_allow_loads",
+      "note": "Control for the pair above: `allow` as a default_effect is legal and must stay loadable. It is the value the house rule warns about (§ ACL default-deny), not an invalid one.",
+      "rule": {
+        "callers": [
+          "agent.*"
+        ],
+        "targets": [
+          "orders.*"
+        ],
+        "effect": "allow"
+      },
+      "default_effect": "allow",
+      "entry_points": [
+        "load",
+        "construct"
+      ],
+      "expected_load": "ok"
+    }
+  ]
+}
