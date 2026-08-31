@@ -83,8 +83,12 @@ When a condition is unevaluable the rule MUST resolve toward refusing access:
 
 | Rule `effect` | Condition false | Condition unevaluable |
 |---|---|---|
-| `allow` | does not match → continue | does not match → continue (MUST NOT grant) |
+| `allow` | does not match → continue | does not match → continue (MUST NOT grant); a carried `approval: required` becomes **pending** |
 | `deny` | does not match → continue | **rule takes effect → the call is denied** |
+
+**An unevaluable `allow` rule does not take its approval requirement with it (spec v1.29.0).** "Does not grant" means the rule steps aside, and a rule now carries two axes. If it carried `approval: required`, the requirement is recorded as **pending** and composed by disjunction with whatever grants later — a subsequent `allow` rule, or `default_effect: allow`. A final `deny` clears it, and `matched_rule_index` keeps naming the rule that actually decided. A rule whose `callers`/`targets` do not match this call raises nothing; a rule whose pattern field is itself malformed does, because its scope cannot be read and so cannot be shown not to apply here.
+
+Without this, the shape the `arguments` condition exists for — a narrow approval rule ahead of a broad allow — fails open: the narrow rule steps aside, the broad one grants, and `git push --force` runs with no human asked. Normative text: [PROTOCOL_SPEC §6.1.1](../spec/protocol-spec.md#611-unevaluable-conditions-v1220-100) rule 5.
 
 `AuditEntry.handler_error` MUST be non-null for an unevaluable condition and MUST be null for a merely-false one — it is what makes the two distinguishable after the fact. Normative text: [PROTOCOL_SPEC §6.1.1](../spec/protocol-spec.md#611-unevaluable-conditions-v1220-100).
 

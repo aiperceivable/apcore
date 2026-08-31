@@ -1,9 +1,8 @@
 {
-  "description": "Argument-scoped approval — PROTOCOL_SPEC §6.1.6 / §6.1.7 / §6.1.8 / §6.8.1 (spec v1.28.0, apcore#108). Authorization and approval requirement are two orthogonal results: `effect` carries the first, the orthogonal optional `approval` field the second, and the built-in structure-only `arguments` condition decides whether a rule matches THIS call.\n\nDriver contract. Build an ACL from `rules` in order with the given `default_effect`. Supply a governance projection derived from `arguments` (key set, optionally types — never values, §6.1.8 rule 2) by whatever route the SDK uses; §6.1.8 rule 4 leaves that idiomatic. `arguments: null` means supply NO PROJECTION AT ALL, which is a different case from an empty one. Call the STRUCTURED accessor with caller_id/target_id and assert `access`, the approval requirement, and `expected_matched_rule_index` (null when the decision came from `default_effect`). Separately assert the LEGACY boolean returns `expected_legacy_check`: §6.8.1 makes it fail closed on an approval requirement, so allow+required reads as false. Assert the AuditEntry's `handler_error` is non-null exactly where `expected_audit_handler_error_present` says so — §6.3.1 makes it the if-and-only-if marker of an unevaluable condition, which is what keeps 'the handler said no' and 'no answer was obtainable' tellable apart after the fact. Where `expected_validation_finding_path` is non-null, assert `validate_rules()` reports a finding for rule 0 at that condition path — §6.1.8 descends to `arguments.<predicate>` where one predicate is at fault and stops at `arguments` where none can be named. Where `expected_validation_finding_paths` is non-null, assert the rule's findings are EXACTLY those paths in that order — §6.1.8 rule 3 requires every faulty predicate to be reported, not just the first.\n\nTwo cases use `default_effect: allow` against the house rule, and say so in their notes: a `deny` rule TAKING EFFECT under §6.1.1 is not observable against a `deny` default, because not-matching produces the same answer.\n\nLesson recorded from the #107 fixture: it reached for `approval` as its example of a rule key 'from a proposal that has not landed', and v1.28.0 landed that proposal, so the case asserted the opposite of the spec. Do not draw negative examples from live proposals.",
+  "description": "Argument-scoped approval — PROTOCOL_SPEC §6.1.1 / §6.1.6 / §6.1.7 / §6.1.8 / §6.8.1 / §6.9 (spec v1.28.0 apcore#108, extended v1.29.0 apcore#109). Authorization and approval requirement are two orthogonal results: `effect` carries the first, the orthogonal optional `approval` field the second, and the built-in structure-only `arguments` condition decides whether a rule matches THIS call.\n\n**Every case runs TWICE.** The `arguments` condition can only be answered when a governance projection is available, and §6.1.8 case 1 makes `check()` a public entry point that may be called without one — so the same rules and the same call have two well-defined answers, and both are contracts. Run 1 supplies a projection derived from `arguments` (key set, optionally types — never values, §6.1.8 rule 2) by whatever route the SDK uses; §6.1.8 rule 4 leaves that idiomatic. Run 2 supplies NO PROJECTION AT ALL. `arguments: null` means the case has no projection to supply in either run, so the two runs coincide and both columns hold the same values.\n\nDriver contract. Build an ACL from `rules` in order with the given `default_effect`. For each run call the STRUCTURED accessor with caller_id/target_id and assert `access`, the approval requirement and `matched_rule_index` (null when the decision came from `default_effect`); assert the LEGACY boolean; and assert the AuditEntry's `handler_error` is non-null exactly where the run's column says so — §6.3.1 makes it the if-and-only-if marker of an unevaluable condition, which is what keeps 'the handler said no' and 'no answer was obtainable' tellable apart after the fact. Keys ending `_no_projection` belong to run 2; the unsuffixed ones to run 1.\n\n**An SDK whose legacy boolean cannot receive a projection asserts run 2's `expected_legacy_check_no_projection` and skips only `expected_legacy_check`.** apcore-rust is that SDK: `ACL::check(caller_id, target_id, ctx)` has no parameter for one and passes `None` to `check_access` internally, which is conforming — §6.1.8 rule 4 fixes only that the condition sees the projection, and §6.1.8 case 1 contemplates `check()` being called without one. Both structured columns remain fully assertable there via `check_access(..., Some(&projection))` and `check_access(..., None)`. This split replaces a driver-side skip. The skip was honest and reconciled against the fixture, but it left 17 of 20 cases unverified on one SDK, and #109 — an unevaluable `allow` rule discarding the `approval: required` it carried, so a broader rule granted the call unapproved — was sitting in exactly those cases. A skip justified as 'this SDK is being asked a different question' still owes the other question an answer, because the difference may itself be the bug.\n\nWhere `expected_validation_finding_path` is non-null, assert `validate_rules()` reports a finding at that condition path — §6.1.8 descends to `arguments.<predicate>` where one predicate is at fault and stops at `arguments` where none can be named. Where `expected_validation_finding_paths` is non-null, assert the rule's findings are EXACTLY those paths in that order — §6.1.8 rule 3 requires every faulty predicate to be reported, not just the first. Validation is context-free, so it has one column, not two.\n\n`callers_raw` carries a deliberately malformed pattern field, which a statically typed SDK cannot represent; those cases carry `skip_if_unrepresentable`.\n\nThree cases use `default_effect: allow` against the house rule, and say so in their notes: a `deny` rule TAKING EFFECT under §6.1.1, and a pending approval requirement riding through the default under §6.1.1 rule 5, are not observable against a `deny` default, because not-granting produces the same answer.\n\nLesson recorded from the #107 fixture: it reached for `approval` as its example of a rule key 'from a proposal that has not landed', and v1.28.0 landed that proposal, so the case asserted the opposite of the spec. Do not draw negative examples from live proposals.",
   "test_cases": [
     {
       "id": "force_flag_present_requires_approval",
-      "note": "THE DRIVING CASE, in its deployment shape: a narrow approval rule ahead of a plain allow. `git push --force` is authorized and must still be put to a human. Before v1.28.0 the only way to express this was to mark the whole module requires_approval and stand down inside the handler, which floods the audit trail and dilutes the annotation.",
       "default_effect": "deny",
       "rules": [
         {
@@ -41,15 +40,20 @@
       },
       "expected_access": "allow",
       "expected_approval_required": true,
-      "expected_legacy_check": false,
       "expected_matched_rule_index": 0,
+      "expected_legacy_check": false,
       "expected_audit_handler_error_present": false,
+      "expected_access_no_projection": "allow",
+      "expected_approval_required_no_projection": true,
+      "expected_matched_rule_index_no_projection": 1,
+      "expected_legacy_check_no_projection": false,
+      "expected_audit_handler_error_present_no_projection": true,
       "expected_validation_finding_path": null,
-      "expected_validation_finding_paths": null
+      "expected_validation_finding_paths": null,
+      "note": "THE DRIVING CASE, in its deployment shape: a narrow approval rule ahead of a plain allow. `git push --force` is authorized and must still be put to a human. Before v1.28.0 the only way to express this was to mark the whole module requires_approval and stand down inside the handler, which floods the audit trail and dilutes the annotation."
     },
     {
       "id": "force_flag_absent_does_not_require_approval",
-      "note": "The other half, and the reason the ceiling-then-stand-down workaround was costly: a benign `git push` matches the plain rule and produces no approval record at all. First-match ordering (§6.2) is what separates the two.",
       "default_effect": "deny",
       "rules": [
         {
@@ -86,15 +90,20 @@
       },
       "expected_access": "allow",
       "expected_approval_required": false,
-      "expected_legacy_check": true,
       "expected_matched_rule_index": 1,
+      "expected_legacy_check": true,
       "expected_audit_handler_error_present": false,
+      "expected_access_no_projection": "allow",
+      "expected_approval_required_no_projection": true,
+      "expected_matched_rule_index_no_projection": 1,
+      "expected_legacy_check_no_projection": false,
+      "expected_audit_handler_error_present_no_projection": true,
       "expected_validation_finding_path": null,
-      "expected_validation_finding_paths": null
+      "expected_validation_finding_paths": null,
+      "note": "The other half, and the reason the ceiling-then-stand-down workaround was costly: a benign `git push` matches the plain rule and produces no approval record at all. First-match ordering (§6.2) is what separates the two."
     },
     {
       "id": "approval_absent_means_not_required",
-      "note": "§6.1.6 rule 1 — the field is optional and its absence means not_required, so every rule written before v1.28.0 keeps its meaning.",
       "default_effect": "deny",
       "rules": [
         {
@@ -121,15 +130,20 @@
       },
       "expected_access": "allow",
       "expected_approval_required": false,
-      "expected_legacy_check": true,
       "expected_matched_rule_index": 0,
+      "expected_legacy_check": true,
       "expected_audit_handler_error_present": false,
+      "expected_access_no_projection": "deny",
+      "expected_approval_required_no_projection": false,
+      "expected_matched_rule_index_no_projection": null,
+      "expected_legacy_check_no_projection": false,
+      "expected_audit_handler_error_present_no_projection": true,
       "expected_validation_finding_path": null,
-      "expected_validation_finding_paths": null
+      "expected_validation_finding_paths": null,
+      "note": "§6.1.6 rule 1 — the field is optional and its absence means not_required, so every rule written before v1.28.0 keeps its meaning."
     },
     {
       "id": "rule_without_conditions_still_carries_approval",
-      "note": "`approval` is orthogonal to `conditions` (§6.1.6): a rule with no conditions at all still requires approval for everything it matches.",
       "default_effect": "deny",
       "rules": [
         {
@@ -150,15 +164,20 @@
       },
       "expected_access": "allow",
       "expected_approval_required": true,
-      "expected_legacy_check": false,
       "expected_matched_rule_index": 0,
+      "expected_legacy_check": false,
       "expected_audit_handler_error_present": false,
+      "expected_access_no_projection": "allow",
+      "expected_approval_required_no_projection": true,
+      "expected_matched_rule_index_no_projection": 0,
+      "expected_legacy_check_no_projection": false,
+      "expected_audit_handler_error_present_no_projection": false,
       "expected_validation_finding_path": null,
-      "expected_validation_finding_paths": null
+      "expected_validation_finding_paths": null,
+      "note": "`approval` is orthogonal to `conditions` (§6.1.6): a rule with no conditions at all still requires approval for everything it matches."
     },
     {
       "id": "has_all_keys_needs_every_named_key",
-      "note": "`remote` is missing, so the condition is UNSATISFIED — an ordinary no, distinct from unevaluable. The rule does not match and the `deny` default decides.",
       "default_effect": "deny",
       "rules": [
         {
@@ -187,15 +206,20 @@
       },
       "expected_access": "deny",
       "expected_approval_required": false,
-      "expected_legacy_check": false,
       "expected_matched_rule_index": null,
+      "expected_legacy_check": false,
       "expected_audit_handler_error_present": false,
+      "expected_access_no_projection": "deny",
+      "expected_approval_required_no_projection": false,
+      "expected_matched_rule_index_no_projection": null,
+      "expected_legacy_check_no_projection": false,
+      "expected_audit_handler_error_present_no_projection": true,
       "expected_validation_finding_path": null,
-      "expected_validation_finding_paths": null
+      "expected_validation_finding_paths": null,
+      "note": "`remote` is missing, so the condition is UNSATISFIED — an ordinary no, distinct from unevaluable. The rule does not match and the `deny` default decides."
     },
     {
       "id": "has_all_keys_matches_when_every_key_is_present",
-      "note": "The satisfied half of the same predicate.",
       "default_effect": "deny",
       "rules": [
         {
@@ -225,15 +249,20 @@
       },
       "expected_access": "allow",
       "expected_approval_required": true,
-      "expected_legacy_check": false,
       "expected_matched_rule_index": 0,
+      "expected_legacy_check": false,
       "expected_audit_handler_error_present": false,
+      "expected_access_no_projection": "deny",
+      "expected_approval_required_no_projection": false,
+      "expected_matched_rule_index_no_projection": null,
+      "expected_legacy_check_no_projection": false,
+      "expected_audit_handler_error_present_no_projection": true,
       "expected_validation_finding_path": null,
-      "expected_validation_finding_paths": null
+      "expected_validation_finding_paths": null,
+      "note": "The satisfied half of the same predicate."
     },
     {
       "id": "has_none_of_matches_when_none_present",
-      "note": "Inverse predicate: the rule matches precisely because neither dangerous key is present.",
       "default_effect": "deny",
       "rules": [
         {
@@ -262,15 +291,20 @@
       },
       "expected_access": "allow",
       "expected_approval_required": true,
-      "expected_legacy_check": false,
       "expected_matched_rule_index": 0,
+      "expected_legacy_check": false,
       "expected_audit_handler_error_present": false,
+      "expected_access_no_projection": "deny",
+      "expected_approval_required_no_projection": false,
+      "expected_matched_rule_index_no_projection": null,
+      "expected_legacy_check_no_projection": false,
+      "expected_audit_handler_error_present_no_projection": true,
       "expected_validation_finding_path": null,
-      "expected_validation_finding_paths": null
+      "expected_validation_finding_paths": null,
+      "note": "Inverse predicate: the rule matches precisely because neither dangerous key is present."
     },
     {
       "id": "has_none_of_unsatisfied_when_one_is_present",
-      "note": "One named key present is enough to falsify `has_none_of`.",
       "default_effect": "deny",
       "rules": [
         {
@@ -299,15 +333,20 @@
       },
       "expected_access": "deny",
       "expected_approval_required": false,
-      "expected_legacy_check": false,
       "expected_matched_rule_index": null,
+      "expected_legacy_check": false,
       "expected_audit_handler_error_present": false,
+      "expected_access_no_projection": "deny",
+      "expected_approval_required_no_projection": false,
+      "expected_matched_rule_index_no_projection": null,
+      "expected_legacy_check_no_projection": false,
+      "expected_audit_handler_error_present_no_projection": true,
       "expected_validation_finding_path": null,
-      "expected_validation_finding_paths": null
+      "expected_validation_finding_paths": null,
+      "note": "One named key present is enough to falsify `has_none_of`."
     },
     {
       "id": "empty_predicate_array_is_vacuous_not_malformed",
-      "note": "§6.1.8 closing paragraph — empty predicate ARRAYS are well-formed and carry ordinary set semantics; `has_none_of: []` is satisfied. Distinct from the empty predicate OBJECT below, which is a fault. No validation finding.",
       "default_effect": "deny",
       "rules": [
         {
@@ -333,15 +372,20 @@
       },
       "expected_access": "allow",
       "expected_approval_required": true,
-      "expected_legacy_check": false,
       "expected_matched_rule_index": 0,
+      "expected_legacy_check": false,
       "expected_audit_handler_error_present": false,
+      "expected_access_no_projection": "deny",
+      "expected_approval_required_no_projection": false,
+      "expected_matched_rule_index_no_projection": null,
+      "expected_legacy_check_no_projection": false,
+      "expected_audit_handler_error_present_no_projection": true,
       "expected_validation_finding_path": null,
-      "expected_validation_finding_paths": null
+      "expected_validation_finding_paths": null,
+      "note": "§6.1.8 closing paragraph — empty predicate ARRAYS are well-formed and carry ordinary set semantics; `has_none_of: []` is satisfied. Distinct from the empty predicate OBJECT below, which is a fault. No validation finding."
     },
     {
       "id": "has_key_empty_array_is_unsatisfied",
-      "note": "The other half of the same paragraph: `has_key: []` is vacuously UNSATISFIED, still not a fault.",
       "default_effect": "deny",
       "rules": [
         {
@@ -367,15 +411,20 @@
       },
       "expected_access": "deny",
       "expected_approval_required": false,
-      "expected_legacy_check": false,
       "expected_matched_rule_index": null,
+      "expected_legacy_check": false,
       "expected_audit_handler_error_present": false,
+      "expected_access_no_projection": "deny",
+      "expected_approval_required_no_projection": false,
+      "expected_matched_rule_index_no_projection": null,
+      "expected_legacy_check_no_projection": false,
+      "expected_audit_handler_error_present_no_projection": true,
       "expected_validation_finding_path": null,
-      "expected_validation_finding_paths": null
+      "expected_validation_finding_paths": null,
+      "note": "The other half of the same paragraph: `has_key: []` is vacuously UNSATISFIED, still not a fault."
     },
     {
       "id": "no_projection_must_not_grant_via_an_empty_stand_in",
-      "note": "§6.1.8 availability rule 1 — THE FAIL-OPEN GUARD, and the case that actually discriminates. `check()` is public API and may be called with no projection. An implementation that substitutes an EMPTY KEY SET finds `has_none_of` SATISFIED, matches the rule and returns allow. UNEVALUABLE is the only reading that refuses. Pass `arguments: null` as NO PROJECTION AT ALL — not an empty object, which is a different case (§6.1.8 rule 2).",
       "default_effect": "deny",
       "rules": [
         {
@@ -401,15 +450,20 @@
       "arguments": null,
       "expected_access": "deny",
       "expected_approval_required": false,
-      "expected_legacy_check": false,
       "expected_matched_rule_index": null,
+      "expected_legacy_check": false,
       "expected_audit_handler_error_present": true,
+      "expected_access_no_projection": "deny",
+      "expected_approval_required_no_projection": false,
+      "expected_matched_rule_index_no_projection": null,
+      "expected_legacy_check_no_projection": false,
+      "expected_audit_handler_error_present_no_projection": true,
       "expected_validation_finding_path": null,
-      "expected_validation_finding_paths": null
+      "expected_validation_finding_paths": null,
+      "note": "§6.1.8 availability rule 1 — THE FAIL-OPEN GUARD, and the case that actually discriminates. `check()` is public API and may be called with no projection. An implementation that substitutes an EMPTY KEY SET finds `has_none_of` SATISFIED, matches the rule and returns allow. UNEVALUABLE is the only reading that refuses. Pass `arguments: null` as NO PROJECTION AT ALL — not an empty object, which is a different case (§6.1.8 rule 2)."
     },
     {
       "id": "no_projection_makes_a_deny_rule_take_effect",
-      "note": "The opposite direction, and the reason this fixture uses `default_effect: allow` here despite the house rule: a `deny` rule TAKING EFFECT is only observable against a permissive default. An empty stand-in leaves `has_key` UNSATISFIED, so the deny rule would not match and the call would be allowed; §6.1.1 makes an unevaluable `deny` rule take effect. Together with the case above, the two bracket the empty-stand-in bug from both sides.",
       "default_effect": "allow",
       "rules": [
         {
@@ -434,15 +488,20 @@
       "arguments": null,
       "expected_access": "deny",
       "expected_approval_required": false,
-      "expected_legacy_check": false,
       "expected_matched_rule_index": 0,
+      "expected_legacy_check": false,
       "expected_audit_handler_error_present": true,
+      "expected_access_no_projection": "deny",
+      "expected_approval_required_no_projection": false,
+      "expected_matched_rule_index_no_projection": 0,
+      "expected_legacy_check_no_projection": false,
+      "expected_audit_handler_error_present_no_projection": true,
       "expected_validation_finding_path": null,
-      "expected_validation_finding_paths": null
+      "expected_validation_finding_paths": null,
+      "note": "The opposite direction, and the reason this fixture uses `default_effect: allow` here despite the house rule: a `deny` rule TAKING EFFECT is only observable against a permissive default. An empty stand-in leaves `has_key` UNSATISFIED, so the deny rule would not match and the call would be allowed; §6.1.1 makes an unevaluable `deny` rule take effect. Together with the case above, the two bracket the empty-stand-in bug from both sides."
     },
     {
       "id": "empty_arguments_object_is_a_precheck_fault",
-      "note": "§6.1.8 availability rule 2 — an empty predicate object is UNEVALUABLE, not vacuously satisfied, for the reason §6.1 already gives for an empty `$not`. Decidable with no context and no handler, so §6.1.4's precheck MUST report it and `validate_rules()` MUST surface it at deploy time.",
       "default_effect": "deny",
       "rules": [
         {
@@ -466,15 +525,20 @@
       },
       "expected_access": "deny",
       "expected_approval_required": false,
-      "expected_legacy_check": false,
       "expected_matched_rule_index": null,
+      "expected_legacy_check": false,
       "expected_audit_handler_error_present": true,
+      "expected_access_no_projection": "deny",
+      "expected_approval_required_no_projection": false,
+      "expected_matched_rule_index_no_projection": null,
+      "expected_legacy_check_no_projection": false,
+      "expected_audit_handler_error_present_no_projection": true,
       "expected_validation_finding_path": "arguments",
-      "expected_validation_finding_paths": null
+      "expected_validation_finding_paths": null,
+      "note": "§6.1.8 availability rule 2 — an empty predicate object is UNEVALUABLE, not vacuously satisfied, for the reason §6.1 already gives for an empty `$not`. Decidable with no context and no handler, so §6.1.4's precheck MUST report it and `validate_rules()` MUST surface it at deploy time."
     },
     {
       "id": "unknown_predicate_name_is_a_precheck_fault",
-      "note": "§6.1.8 availability rule 3 — `has_keys` written for `has_all_keys`. The predicate vocabulary is closed exactly as the rule key set is (§6.1.5), and for the same reason: a name nothing evaluates would leave the rule wider than written. The finding descends to the offending predicate (§6.1.8): `arguments` alone would not say which predicate of several is at fault, and the name is reported AS WRITTEN so it can be searched for.",
       "default_effect": "deny",
       "rules": [
         {
@@ -502,15 +566,20 @@
       },
       "expected_access": "deny",
       "expected_approval_required": false,
-      "expected_legacy_check": false,
       "expected_matched_rule_index": null,
+      "expected_legacy_check": false,
       "expected_audit_handler_error_present": true,
+      "expected_access_no_projection": "deny",
+      "expected_approval_required_no_projection": false,
+      "expected_matched_rule_index_no_projection": null,
+      "expected_legacy_check_no_projection": false,
+      "expected_audit_handler_error_present_no_projection": true,
       "expected_validation_finding_path": "arguments.has_keys",
-      "expected_validation_finding_paths": null
+      "expected_validation_finding_paths": null,
+      "note": "§6.1.8 availability rule 3 — `has_keys` written for `has_all_keys`. The predicate vocabulary is closed exactly as the rule key set is (§6.1.5), and for the same reason: a name nothing evaluates would leave the rule wider than written. The finding descends to the offending predicate (§6.1.8): `arguments` alone would not say which predicate of several is at fault, and the name is reported AS WRITTEN so it can be searched for."
     },
     {
       "id": "unknown_predicate_gates_a_deny_rule_into_effect",
-      "note": "The gating direction of the same fault. §6.1.4: a precheck fault gates the rule rather than composing into it, so the `deny` rule takes effect. An implementation that dropped the misspelled predicate would find nothing left to check and let the call through. The finding descends to the offending predicate (§6.1.8): `arguments` alone would not say which predicate of several is at fault, and the name is reported AS WRITTEN so it can be searched for.",
       "default_effect": "allow",
       "rules": [
         {
@@ -537,15 +606,20 @@
       },
       "expected_access": "deny",
       "expected_approval_required": false,
-      "expected_legacy_check": false,
       "expected_matched_rule_index": 0,
+      "expected_legacy_check": false,
       "expected_audit_handler_error_present": true,
+      "expected_access_no_projection": "deny",
+      "expected_approval_required_no_projection": false,
+      "expected_matched_rule_index_no_projection": 0,
+      "expected_legacy_check_no_projection": false,
+      "expected_audit_handler_error_present_no_projection": true,
       "expected_validation_finding_path": "arguments.has_keys",
-      "expected_validation_finding_paths": null
+      "expected_validation_finding_paths": null,
+      "note": "The gating direction of the same fault. §6.1.4: a precheck fault gates the rule rather than composing into it, so the `deny` rule takes effect. An implementation that dropped the misspelled predicate would find nothing left to check and let the call through. The finding descends to the offending predicate (§6.1.8): `arguments` alone would not say which predicate of several is at fault, and the name is reported AS WRITTEN so it can be searched for."
     },
     {
       "id": "malformed_predicate_value_is_a_precheck_fault",
-      "note": "§6.1.8 availability rule 4 — a bare string where a list of strings belongs. A string is iterable, so an implementation that skipped the type check would silently test for the keys 'f', 'o', 'r', 'c', 'e'. The finding descends to the offending predicate (§6.1.8): `arguments` alone would not say which predicate of several is at fault, and the name is reported AS WRITTEN so it can be searched for.",
       "default_effect": "deny",
       "rules": [
         {
@@ -571,15 +645,20 @@
       },
       "expected_access": "deny",
       "expected_approval_required": false,
-      "expected_legacy_check": false,
       "expected_matched_rule_index": null,
+      "expected_legacy_check": false,
       "expected_audit_handler_error_present": true,
+      "expected_access_no_projection": "deny",
+      "expected_approval_required_no_projection": false,
+      "expected_matched_rule_index_no_projection": null,
+      "expected_legacy_check_no_projection": false,
+      "expected_audit_handler_error_present_no_projection": true,
       "expected_validation_finding_path": "arguments.has_key",
-      "expected_validation_finding_paths": null
+      "expected_validation_finding_paths": null,
+      "note": "§6.1.8 availability rule 4 — a bare string where a list of strings belongs. A string is iterable, so an implementation that skipped the type check would silently test for the keys 'f', 'o', 'r', 'c', 'e'. The finding descends to the offending predicate (§6.1.8): `arguments` alone would not say which predicate of several is at fault, and the name is reported AS WRITTEN so it can be searched for."
     },
     {
       "id": "every_faulty_predicate_in_one_block_is_reported",
-      "note": "§6.1.8 rule 3 — the walk MUST NOT stop at the first fault. This block carries a malformed VALUE on a known predicate (`has_key: \"force\"`) and an unrecognised NAME (`zzz`), so an implementation that checks names before values reports `arguments.zzz` while one that walks predicate by predicate reports `arguments.has_key` — two readings, both defensible, neither a pure function of the rule. Reporting BOTH removes the question rather than answering it. Measured divergence, not a hypothetical: Python and TypeScript disagreed on 2 of 3 probe inputs before this case existed.",
       "default_effect": "deny",
       "rules": [
         {
@@ -608,18 +687,23 @@
       },
       "expected_access": "deny",
       "expected_approval_required": false,
-      "expected_legacy_check": false,
       "expected_matched_rule_index": null,
+      "expected_legacy_check": false,
       "expected_audit_handler_error_present": true,
+      "expected_access_no_projection": "deny",
+      "expected_approval_required_no_projection": false,
+      "expected_matched_rule_index_no_projection": null,
+      "expected_legacy_check_no_projection": false,
+      "expected_audit_handler_error_present_no_projection": true,
       "expected_validation_finding_path": null,
       "expected_validation_finding_paths": [
         "arguments.has_key",
         "arguments.zzz"
-      ]
+      ],
+      "note": "§6.1.8 rule 3 — the walk MUST NOT stop at the first fault. This block carries a malformed VALUE on a known predicate (`has_key: \"force\"`) and an unrecognised NAME (`zzz`), so an implementation that checks names before values reports `arguments.zzz` while one that walks predicate by predicate reports `arguments.has_key` — two readings, both defensible, neither a pure function of the rule. Reporting BOTH removes the question rather than answering it. Measured divergence, not a hypothetical: Python and TypeScript disagreed on 2 of 3 probe inputs before this case existed."
     },
     {
       "id": "misspelled_arguments_key_is_an_unknown_condition",
-      "note": "§6.1.7's 'covered for free' claim, made checkable: `argument:` written for `arguments:` is an unregistered CONDITION key, so §6.1.4's existing precheck reports it at the misspelled key's own path. The rule is unevaluable rather than silently inert.",
       "default_effect": "deny",
       "rules": [
         {
@@ -647,15 +731,20 @@
       },
       "expected_access": "deny",
       "expected_approval_required": false,
-      "expected_legacy_check": false,
       "expected_matched_rule_index": null,
+      "expected_legacy_check": false,
       "expected_audit_handler_error_present": true,
+      "expected_access_no_projection": "deny",
+      "expected_approval_required_no_projection": false,
+      "expected_matched_rule_index_no_projection": null,
+      "expected_legacy_check_no_projection": false,
+      "expected_audit_handler_error_present_no_projection": true,
       "expected_validation_finding_path": "argument",
-      "expected_validation_finding_paths": null
+      "expected_validation_finding_paths": null,
+      "note": "§6.1.7's 'covered for free' claim, made checkable: `argument:` written for `arguments:` is an unregistered CONDITION key, so §6.1.4's existing precheck reports it at the misspelled key's own path. The rule is unevaluable rather than silently inert."
     },
     {
       "id": "approval_survives_an_or_branch",
-      "note": "The built-in composes through §6.1.1's table like any other condition: one satisfied `$or` branch matches the rule and the approval requirement attaches.",
       "default_effect": "deny",
       "rules": [
         {
@@ -694,15 +783,20 @@
       },
       "expected_access": "allow",
       "expected_approval_required": true,
-      "expected_legacy_check": false,
       "expected_matched_rule_index": 0,
+      "expected_legacy_check": false,
       "expected_audit_handler_error_present": false,
+      "expected_access_no_projection": "deny",
+      "expected_approval_required_no_projection": false,
+      "expected_matched_rule_index_no_projection": null,
+      "expected_legacy_check_no_projection": false,
+      "expected_audit_handler_error_present_no_projection": true,
       "expected_validation_finding_path": null,
-      "expected_validation_finding_paths": null
+      "expected_validation_finding_paths": null,
+      "note": "The built-in composes through §6.1.1's table like any other condition: one satisfied `$or` branch matches the rule and the approval requirement attaches."
     },
     {
       "id": "approval_token_is_excluded_from_the_projection",
-      "note": "§6.1.8 closing paragraph. `_approval_token` is framework-owned protocol machinery, stripped from the projection exactly as §7.9.6 rule 5 strips it before policy resolution. An implementation that projected it would find `has_none_of` UNSATISFIED here and deny — so a Phase B resume would present a different argument shape to governance than the original call did.",
       "default_effect": "deny",
       "rules": [
         {
@@ -731,11 +825,204 @@
       },
       "expected_access": "allow",
       "expected_approval_required": true,
-      "expected_legacy_check": false,
       "expected_matched_rule_index": 0,
+      "expected_legacy_check": false,
       "expected_audit_handler_error_present": false,
+      "expected_access_no_projection": "deny",
+      "expected_approval_required_no_projection": false,
+      "expected_matched_rule_index_no_projection": null,
+      "expected_legacy_check_no_projection": false,
+      "expected_audit_handler_error_present_no_projection": true,
       "expected_validation_finding_path": null,
-      "expected_validation_finding_paths": null
+      "expected_validation_finding_paths": null,
+      "note": "§6.1.8 closing paragraph. `_approval_token` is framework-owned protocol machinery, stripped from the projection exactly as §7.9.6 rule 5 strips it before policy resolution. An implementation that projected it would find `has_none_of` UNSATISFIED here and deny — so a Phase B resume would present a different argument shape to governance than the original call did."
+    },
+    {
+      "id": "pending_approval_survives_default_effect_allow",
+      "default_effect": "allow",
+      "rules": [
+        {
+          "callers": [
+            "*"
+          ],
+          "targets": [
+            "cli.git_push"
+          ],
+          "effect": "allow",
+          "approval": "required",
+          "conditions": {
+            "arguments": {
+              "has_key": [
+                "force"
+              ]
+            }
+          }
+        }
+      ],
+      "caller_id": "agent.planner",
+      "target_id": "cli.git_push",
+      "arguments": {
+        "remote": "origin",
+        "force": true
+      },
+      "expected_access": "allow",
+      "expected_approval_required": true,
+      "expected_matched_rule_index": 0,
+      "expected_legacy_check": false,
+      "expected_audit_handler_error_present": false,
+      "expected_access_no_projection": "allow",
+      "expected_approval_required_no_projection": true,
+      "expected_matched_rule_index_no_projection": null,
+      "expected_legacy_check_no_projection": false,
+      "expected_audit_handler_error_present_no_projection": true,
+      "expected_validation_finding_path": null,
+      "expected_validation_finding_paths": null,
+      "note": "§6.1.1 rule 5, the boundary a 'later rule grants' reading misses: there IS no later rule. The gate is unevaluable and `default_effect: allow` grants, so the requirement must ride through the default or it is lost with nothing to carry it. Pins the newly legal combination `approval_required: true` with `matched_rule_index: null`. Uses `default_effect: allow` against the house rule because the fall-through is not observable against a deny default."
+    },
+    {
+      "id": "misspelled_predicate_does_not_drop_the_approval_requirement",
+      "default_effect": "deny",
+      "rules": [
+        {
+          "callers": [
+            "*"
+          ],
+          "targets": [
+            "cli.git_push"
+          ],
+          "effect": "allow",
+          "approval": "required",
+          "conditions": {
+            "arguments": {
+              "has_keys": [
+                "force"
+              ]
+            }
+          }
+        },
+        {
+          "callers": [
+            "*"
+          ],
+          "targets": [
+            "cli.git_push"
+          ],
+          "effect": "allow"
+        }
+      ],
+      "caller_id": "agent.planner",
+      "target_id": "cli.git_push",
+      "arguments": {
+        "remote": "origin",
+        "force": true
+      },
+      "expected_access": "allow",
+      "expected_approval_required": true,
+      "expected_matched_rule_index": 1,
+      "expected_legacy_check": false,
+      "expected_audit_handler_error_present": true,
+      "expected_access_no_projection": "allow",
+      "expected_approval_required_no_projection": true,
+      "expected_matched_rule_index_no_projection": 1,
+      "expected_legacy_check_no_projection": false,
+      "expected_audit_handler_error_present_no_projection": true,
+      "expected_validation_finding_path": "arguments.has_keys",
+      "expected_validation_finding_paths": null,
+      "note": "§6.1.1 rule 5 on the EXECUTOR path — the projection is present and the rule is still unevaluable, because `has_keys` is not a predicate name (§6.1.8 case 3). Before v1.29.0 the gate stepped aside and rule 1 granted with `approval_required: false`: one typo turned 'ask a human' into 'do not ask'. validate_rules() reports it, but §6.1.2 makes an unregistered key a warning rather than a load failure, so deploy-time validation is not a mitigation that can be assumed."
+    },
+    {
+      "id": "malformed_pattern_field_raises_the_pending_requirement",
+      "default_effect": "deny",
+      "rules": [
+        {
+          "callers_raw": "*",
+          "targets": [
+            "cli.git_push"
+          ],
+          "effect": "allow",
+          "approval": "required"
+        },
+        {
+          "callers": [
+            "*"
+          ],
+          "targets": [
+            "cli.git_push"
+          ],
+          "effect": "allow"
+        }
+      ],
+      "caller_id": "agent.planner",
+      "target_id": "cli.git_push",
+      "arguments": {
+        "remote": "origin",
+        "force": true
+      },
+      "skip_if_unrepresentable": true,
+      "expected_access": "allow",
+      "expected_approval_required": true,
+      "expected_matched_rule_index": 1,
+      "expected_legacy_check": false,
+      "expected_audit_handler_error_present": true,
+      "expected_access_no_projection": "allow",
+      "expected_approval_required_no_projection": true,
+      "expected_matched_rule_index_no_projection": 1,
+      "expected_legacy_check_no_projection": false,
+      "expected_audit_handler_error_present_no_projection": true,
+      "expected_validation_finding_path": "callers",
+      "expected_validation_finding_paths": null,
+      "note": "§6.1.1 rule 5, the one point where a requirement attaches without a demonstrated pattern match: a malformed `callers` is unevaluable before any pattern is read (§6.1.4.1), so the rule's SCOPE cannot be read and it cannot be shown not to apply here. Same posture the field already produces under `deny`, where an unreadable scope denies every call. `callers_raw` because a typed SDK cannot represent it — skip_if_unrepresentable."
+    },
+    {
+      "id": "an_out_of_scope_approval_rule_raises_nothing",
+      "default_effect": "deny",
+      "rules": [
+        {
+          "callers": [
+            "*"
+          ],
+          "targets": [
+            "cli.deploy"
+          ],
+          "effect": "allow",
+          "approval": "required",
+          "conditions": {
+            "arguments": {
+              "has_key": [
+                "force"
+              ]
+            }
+          }
+        },
+        {
+          "callers": [
+            "*"
+          ],
+          "targets": [
+            "cli.git_push"
+          ],
+          "effect": "allow"
+        }
+      ],
+      "caller_id": "agent.planner",
+      "target_id": "cli.git_push",
+      "arguments": {
+        "remote": "origin",
+        "force": true
+      },
+      "expected_access": "allow",
+      "expected_approval_required": false,
+      "expected_matched_rule_index": 1,
+      "expected_legacy_check": true,
+      "expected_audit_handler_error_present": false,
+      "expected_access_no_projection": "allow",
+      "expected_approval_required_no_projection": false,
+      "expected_matched_rule_index_no_projection": 1,
+      "expected_legacy_check_no_projection": true,
+      "expected_audit_handler_error_present_no_projection": false,
+      "expected_validation_finding_path": null,
+      "expected_validation_finding_paths": null,
+      "note": "§6.1.1 rule 5's containment, and the case that keeps the fix from over-reaching: rule 0 targets `cli.deploy`, so it does not apply to this call at all. Its conditions are never consulted (§6.1.4 rule 4) and it raises NO pending requirement — a rule written about one target must not attach a human to calls it was never written about. Without this case, an implementation that sets pending before matching patterns passes every other case in this fixture."
     }
   ]
 }
