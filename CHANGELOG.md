@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+---
+
+## [0.28.0] - Unreleased
+
 ### Added
 
 - **The ACL could refuse on a call's arguments, and could not ask about them (spec v1.28.0, [#108](https://github.com/aiperceivable/apcore/issues/108)).** `git push` and `git push --force` are one module, and the only way to gate the dangerous half was to mark the whole module `requires_approval` and stand down inside the handler — which floods the audit trail with approvals for calls nobody needed to see and weakens the annotation from "this needs approval" to "this might". Every decision point that can read a call's arguments was unable to escalate it to a human, and the one point that decides whether to ask a human (§7.9's policy resolution) is forbidden by §7.9.6 rule 2 from consulting them.
