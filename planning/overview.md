@@ -28,6 +28,7 @@ Lightweight `docs/spec/protocol-spec.md` patch drafts that haven't been picked u
 
 - [acl-compound-operators-spec-patch](./acl-compound-operators-spec-patch/overview.md) — proposed ACL compound-operators extension
 - [validate-step-count-spec-patch](./validate-step-count-spec-patch/overview.md) — proposed `validate()` step-count clarification
+- [acl-pattern-arity](./acl-pattern-arity/overview.md) — proposed spec v1.31.0, issue [#112](https://github.com/aiperceivable/apcore/issues/112). A `callers`/`targets` array with no operands (`[]`, `["$or"]`, `["$not"]`) can never match, so a `deny` rule loads clean, validates clean and — under `default_effect: allow` — permits the call it names. Closes the array's **shape** at every entry point (arity, empty pattern strings, reserved tokens outside index 0) and states that pattern arrays are FLAT — no nesting, no precedence — which §6.2.1 never said while the same tokens nest freely in `conditions`. Adds a second, validator-only tier for arrays that are well-formed and still match nothing (`["$not", "*"]`). Also replaces §6.2.1's `["$not", p1, p2, …]` implementation-defined row, which grants the second excluded target on an `allow` rule. Includes the full patch text, worked YAML examples, and a staged 41-case fixture; **not applied** — awaiting maintainer approval, and sequenced after apcore-rust #38.
 
 These do not have `state.json` files; they are pre-feature design notes.
 

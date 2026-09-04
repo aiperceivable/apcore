@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **A pattern list with no operands made an ACL rule inert, and under `default_effect: allow` that permitted the call the rule named (spec v1.31.0, [#112](https://github.com/aiperceivable/apcore/issues/112)).** `callers` / `targets` of `[]`, `["$or"]` or `["$not"]` can never match; all three SDKs returned `false` from the matcher and `validate_rules()` reported nothing, so a `deny` rule an operator wrote, loaded and validated contributed nothing to the decision. Reached from a plain YAML file — `ACL.load` rejects an *omitted* `callers` / `targets` and permits an *empty* one.
+
+  **The array's shape is now closed at every entry point** (§6.2.1): at least one element, every element a non-empty string, `$or` with at least one operand, `$not` with exactly one, and `$or` / `$not` nowhere but index 0 — rejected with `ACLRuleError` at file loading, direct construction and runtime insertion alike. `schemas/acl-config.schema.json` had declared `minItems: 1` and `minLength: 1` on both fields since the file existed, enforced by nothing: the same shape as [#107](https://github.com/aiperceivable/apcore/issues/107) and [#111](https://github.com/aiperceivable/apcore/issues/111), where the constraint was in the schema and no door enforced it, because no implementation validates an ACL file against the schema at load time.
+
+  **Three normative statements are replaced, not reinterpreted.** §6.5's edge-case table required an empty list to make the rule "never match". §6.2.1 required `["$not"]` to "evaluate to false (fail-closed)" — a label that predates §6.1.1 (v1.22.0) and is wrong, because a non-match is fail-closed on an `allow` rule and fail-**open** on a `deny` one. And `["$not", p1, p2, …]` was *implementation-defined*: consult `p1`, drop the rest, which every SDK did, so `targets: ["$not", "secrets.a", "secrets.b"]` on an `allow` rule **granted** `secrets.b` — the second target the operator excluded.
+
+  **§6.2.1 also says for the first time that a pattern array is flat** — the operators do not nest and there is no precedence, unlike the same two tokens inside `conditions` — and gains the worked examples it never had. A reserved token away from index 0 is now rejected, which makes the section's own long-unenforced "**MUST NOT** match a literal module ID equal to `$or`" hold by construction; measured beforehand, all three SDKs matched a module literally named `$not`.
+
+  **A second, validator-only tier** reports arrays that are well-formed and still match nothing — `["$not", "*"]` has legal arity, exactly one operand, and matches nothing, producing the identical fail-open. Those keep loading and change no decision. Stated as a criterion with a MUST-detect minimum rather than an enumeration, because the predicate cannot be closed without freezing the pattern language, and an incomplete predicate at a door would mean the same ACL file loads in one language and fails in another.
+
+  **Two orderings are pinned** because implementing this in three SDKs produced two answers to each: `add_rule` **MUST** re-validate the rule it is handed, including one mutated after construction (a closed `effect` is never read again, a pattern array is); and validation order is `effect` → `approval` → `callers` / `targets` with **rule index dominating all three**, the pattern fields counting as one axis in which the §6.1.4.1 type fault precedes the shape closure and `callers` precedes `targets`. Three implementations produced three different axis orders, and one produced two different answers through two of its own doors because `load` validated rule by rule while direct construction swept axis by axis. §6.1.6 was cited for this ordering in an early draft and states none; §6.2.1 states it for the first time.
+
+  **BREAKING for any deployment carrying one of these shapes** — which is exactly the population that believes it has a rule and does not. `targets: []` meaning "everything" becomes `["*"]`; meaning "nothing" means the rule should be deleted. The multi-operand `$not` is the one shape with **no mechanical migration**: `["$not", p1]` preserves what the rule has actually been doing, but if `NOT (p1 OR p2)` was intended, a leading `deny` is *not* equivalent — a non-matching rule lets evaluation continue to later rules and a `deny` ends it — so that rewrite has to be done by hand against the rule's position. Migration tooling **MUST NOT** apply it automatically.
+
+  New conformance fixture `conformance/fixtures/acl_pattern_arity.json` (41 cases). `acl_evaluation.json` drops `empty_callers_matches_none` and `empty_targets_matches_none`, which asserted the replaced reading.
+
 ---
 
 ## [0.28.0] - 2026-08-31

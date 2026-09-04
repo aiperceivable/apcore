@@ -183,8 +183,54 @@ rules:
    - Within a single `conditions` block all keys are AND-ed; nest `$or` to express OR.
 
 2. **As the first element of `callers` or `targets` pattern arrays** — combine ID patterns.
-   - `["$or", p1, p2, ...]`: matches if **any** of `p1, p2, …` match the module ID. (This is observably equivalent to a flat list, which is already OR-ed; the explicit form documents intent.)
-   - `["$not", p]`: matches if `p` does **not** match the module ID. An empty `$not` array (`["$not"]`, no subsequent pattern) MUST evaluate to false (fail-closed). All current SDKs consult only `patterns[1]` and silently ignore any further elements; authors SHOULD therefore supply exactly one pattern after `$not` and treat additional patterns as undefined behavior.
+   - `["$or", p1, p2, ...]`: matches if **any** of `p1, p2, …` match the module ID. (This is observably equivalent to a flat list, which is already OR-ed; the explicit form documents intent.) At least one operand.
+   - `["$not", p]`: matches if `p` does **not** match the module ID. **Exactly one** operand.
+
+**Only the first form nests.** A pattern array is **flat**: there is one operator position — index 0 — and every element after it is a plain pattern string, never a nested array and never another operator. `["$or", "$not", "a"]` is *not* or-of-not, and `["api.*", "$not", "cli.*"]` is *not* "api.* but not cli.*"; both are rejected. This is the difference that catches people out, because the same two tokens nest arbitrarily inside `conditions` (`$or[1].$not.k` is a defined path there — [PROTOCOL_SPEC §6.1.4](../spec/protocol-spec.md#614-structural-and-registry-precheck-v1250-100)).
+
+**The array's shape is a closed set, rejected with `ACLRuleError` at every entry point** — file loading, direct construction and runtime insertion ([PROTOCOL_SPEC §6.2.1](../spec/protocol-spec.md#621-compound-operators-in-pattern-arrays)): at least one element, every element a non-empty string, `$or` with at least one operand, `$not` with exactly one, and `$or` / `$not` nowhere but index 0. Before v1.31.0 each of these made the rule match nothing instead — which is harmless on an `allow` rule and, on a `deny` rule under `default_effect: allow`, permits the call the rule was written to block.
+
+```yaml
+# ---- legal ----
+targets: ["executor.*"]                       # one pattern
+targets: ["api.*", "worker.*"]                # OR, implicitly
+targets: ["$or", "api.*", "worker.*"]         # OR, explicitly - same meaning, states intent
+targets: ["$not", "executor.secrets.*"]       # "anything that is not executor.secrets.*"
+
+# ---- rejected: shape ----
+targets: []                                   # no operands - matches nothing, so the rule is no rule
+targets: ["$or"]                              # OR over nothing
+targets: ["$not"]                             # negation of nothing
+targets: [""]                                 # the empty pattern matches no legal module ID
+targets: ["$not", "a", "b"]                   # $not takes EXACTLY one operand
+targets: ["$or", "$not", "a"]                 # no nesting - this was an OR of two literals
+targets: ["api.*", "$not", "cli.*"]           # no such form exists
+
+# ---- legal, but validate_rules() reports it as matching nothing ----
+targets: ["$not", "*"]                        # "not everything" is well-formed and matches nothing
+```
+
+`NOT (a OR b)` has **no single-array form** — `$not` takes one operand and the array's own combinator is OR. Use a glob when the excluded patterns share a prefix, and otherwise first-match-wins with two rules:
+
+```yaml
+rules:
+  - callers: ["*"]
+    targets: ["$or", "executor.secrets.a", "executor.secrets.b"]
+    effect: deny
+    description: "Excluded targets, refused first"
+  - callers: ["*"]
+    targets: ["*"]
+    effect: allow
+    description: "Everything else"
+default_effect: deny
+```
+
+!!! warning "That two-rule form is not a drop-in replacement inside an existing rule list"
+    `["$not", p]` makes the rule **not match** `p`, so evaluation **continues** and a later
+    rule may still decide the call. A leading `deny` on `p` **ends** the scan. They agree
+    only when nothing after the rule could have matched `p` and `default_effect` would have
+    refused it anyway — true of the complete policy above, not true in general. Rewriting a
+    rule into this form changes the policy's order, not just one field.
 
 **Async sub-conditions:** `$or`/`$not` evaluate their children using the same evaluator mode (sync or async) as the outer call. Implementations register both sync and async compound handlers; mixing an async handler under a sync evaluator MUST fail closed with a warning. See `docs/spec/design-context-annotations-acl.md` §"Compound + async limitation" for the rationale.
 
@@ -273,7 +319,7 @@ Normative behavioral contract. All SDK implementations MUST satisfy these guaran
 ### Errors
 
 - `ConfigNotFoundError(config_path=yaml_path)` — file does not exist at `yaml_path`.
-- `ACLRuleError` — YAML parse failure, top-level value is not a mapping, `rules` key is absent, `rules` value is not a list, any rule entry is not a mapping, any rule is missing a required key (`callers`, `targets`, or `effect`), `effect` value is not `"allow"` or `"deny"`, or `callers`/`targets` value is not a list.
+- `ACLRuleError` — YAML parse failure, top-level value is not a mapping, `rules` key is absent, `rules` value is not a list, any rule entry is not a mapping, any rule is missing a required key (`callers`, `targets`, or `effect`), `effect` value is not `"allow"` or `"deny"`, `callers`/`targets` value is not a list, or a `callers`/`targets` array's shape is outside [§6.2.1](../spec/protocol-spec.md#621-compound-operators-in-pattern-arrays)'s closure (empty, an empty element, `$or` with no operands, `$not` with none or more than one, or a reserved token away from index 0).
 - **NOT** an error: a rule referencing an unregistered condition key. `register_condition()` writes to a runtime, process-wide registry, and `acl.root` discovery commonly runs before application code has registered anything, so failing here would reject valid configurations on ordering alone. Loading warns; [`validate_rules()`](#contract-aclvalidate_rules) is the deterministic check to run once registration is complete; and [§6.1.1](../spec/protocol-spec.md#611-unevaluable-conditions-v1220-100) guarantees the rule cannot silently pass traffic either way.
 
 ### Returns
@@ -405,7 +451,7 @@ acl:
 
 ### Preconditions
 
-- `rule` is a well-formed `ACLRule` (callers + targets non-empty, effect ∈ {"allow", "deny"}).
+- `rule` is a well-formed `ACLRule` (callers + targets non-empty, effect ∈ {"allow", "deny"}). Since spec v1.31.0 this is **enforced, not assumed**: `add_rule` re-validates the rule it is handed — including one that was well-formed when constructed and has since had `callers` or `targets` assigned — and raises `ACLRuleError` ([§6.2.1](../spec/protocol-spec.md#621-compound-operators-in-pattern-arrays)). Validation order within a rule is `effect` → `approval` → `callers` / `targets`.
 
 ### Side Effects (ordered)
 

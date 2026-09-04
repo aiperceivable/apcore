@@ -1,0 +1,1263 @@
+{
+  "description": "A `callers` / `targets` pattern array's ARITY is closed (PROTOCOL_SPEC §6.2.1, spec v1.31.0, #112). An array MUST carry at least one operand: the array itself MUST NOT be empty, `$or` at index 0 MUST be followed by at least one pattern, and `$not` at index 0 MUST be followed by exactly one. Anything else is rejected with `ACLRuleError` at EVERY entry point that accepts a rule — file loading, direct construction and runtime insertion — on §6.1.6 rule 3's reasoning.\n\n**Why rejection and not a non-match.** Through v1.30.0 all three SDKs returned `false` from the matcher for `[]`, `[\"$or\"]` and `[\"$not\"]`, so the rule was inert: the outcome tracked `default_effect` exactly and `validate_rules()` reported nothing. On an `allow` rule that is merely useless. On a `deny` rule under `default_effect: allow` the call the operator wrote the rule to block is PERMITTED. Two normative statements required that reading and are replaced rather than reinterpreted: §6.5's edge-case table required an empty list to make the rule \"never match\", and §6.2.1's table called `[\"$not\"]` \"fail-closed\" — true of an `allow` rule and false of a `deny` one, a label predating §6.1.1 (v1.22.0) naming the asymmetry.\n\n**`$not` takes exactly one operand.** §6.2.1 previously made `[\"$not\", p1, p2, …]` implementation-defined — consult `p1`, ignore the rest. All three SDKs do exactly that, so the form is consistent across implementations and consistently WIDER THAN WRITTEN: `targets: [\"$not\", \"secrets.a\", \"secrets.b\"]` on an `allow` rule reads as \"anything but secrets.a\", and `secrets.b` is granted. Measured in apcore-python 0.28.\n\n**A pattern array is FLAT: the operators do not nest and there is no precedence.** `$or` / `$not` nest arbitrarily in `conditions` and not at all here, and the specification never said so, so `[\"$or\", \"$not\", \"a\"]` reads to an author as or-of-not and was in fact an OR of two literals — matching `a`, and also matching a module literally named `$not`, which §6.2.1's own reserved-token clause forbids. All three SDKs route a non-index-0 element straight to the glob matcher, so all three violate that clause. A reserved token outside index 0 is now rejected, which makes the clause hold by construction.\n\n**Two tiers, and they are not the same mechanism.** TIER 1 is structural — length, element types, token positions — a finite predicate, already declared by the schema, rejected at every door. TIER 2 is semantic: an array that is well-formed under every tier-1 rule and still matches no legal module ID, of which `[\"$not\", \"*\"]` is the sharpest example — legal arity, exactly one operand, matches nothing, identical fail-open. Tier 2 is reported by `validate_rules()` and **MUST NOT** be rejected or change any decision, because its predicate cannot be closed without freezing the pattern language, and an incomplete predicate at a door means the same ACL file loads in one language and fails in another. The criterion is normative and the listed shapes are a MUST-detect minimum, not a closed set — enumerating where a principle belonged is the mistake §6.1.1 corrected in v1.25.0.\n\n**Two case shapes, discriminated by `kind`.**\n\n`kind: \"closure\"` — build the rule and offer it at each door listed in `entry_points` that the SDK exposes: `load` (an ACL file), `construct` (building the ACL/rule directly in code) and `add_rule` (runtime insertion). `expected_load: \"ok\"` means accepted at every listed door, `\"reject\"` means rejected at every listed door. There is deliberately no per-door expectation: a shape legal through one entry point and illegal through another is the defect, so the fixture cannot express it. Where a case is rejected there is no access decision to assert, which is the point. A `closure` case that also carries `expected_validation_finding_paths` is a tier-2 case: it MUST load, and `validate_rules()` MUST then report exactly those paths.\n\n`kind: \"backstop\"` — the one route no constructor intercepts. Build the rule with the WELL-FORMED value in `rule`, then assign the value in `mutate` to the named field on the already-constructed rule (every SDK's rule type permits this: a non-frozen dataclass, a mutable interface, `pub` fields) and only then call `check(caller_id, target_id)`. The arity fault is now a §6.1.4.1 precheck fault: the rule is UNEVALUABLE and §6.1.1's effect table decides — a `deny` rule takes effect, an `allow` rule does not grant. **Two decision surfaces, and they can diverge.** `expected_access` binds to the STRUCTURED accessor's `access` field and is the string `\"allow\"` / `\"deny\"`; `expected_legacy_check` binds to the legacy boolean `check()`. They differ whenever access is `allow` with `approval_required: true`, because §6.8.1 makes the boolean fail-closed there — `mutated_empty_targets_on_approval_rule_raises_pending_requirement` is that case, and a driver that reads the boolean as if it were `access` fails it alone and passes every other backstop case. This is the same two-key convention `acl_argument_scoped_approval.json` uses. Assert `access` on the structured accessor and the boolean separately, that the audit entry's `handler_error` is non-null when `expected_audit_handler_error_present` is true, that the reported paths equal `expected_handler_error_paths`, and that `validate_rules()` reports exactly `expected_validation_finding_paths` — each finding carrying a NULL key and BOTH resolvability flags false (§6.1.3 rule 3's keyless structural fault).\n\n**Validation order is pinned by `expected_refused_axis` and `expected_refused_rule_index`.** A rule bad on more than one axis MUST be refused for the first of `effect` -> `approval` -> `callers` / `targets`, and a rule SET with more than one bad rule MUST be refused for the lowest-indexed bad rule — the index chooses the rule, then the axis order chooses the fault inside it. `expected_load` sees neither, so where a case carries these keys the driver MUST additionally assert that the raised error names that axis and that rule index. `expected_refused_axis` takes `effect`, `approval`, `callers`, `targets` or `default_effect`: the first two name axes, the next two name a FIELD within the single pattern axis (so `callers` also asserts the pattern axis fired), and `default_effect` is not a rule axis at all — it is judged before any rule. \"Axis\" is not limited to the ones this fixture names: it is every per-rule check a door performs, which for a loader includes the rule key set (§6.1.5) and the missing-field and value-type checks. A driver MUST fail on an axis value it does not recognise rather than skip the case. Three implementations produced three different axis orders before v1.31.0, and one produced two different answers through two of its own doors because its loader validated rule by rule while its constructor swept axis by axis.\\n\\n**A case carries either `rule` (one) or `rules` (an ordered list).** The `rules` form exists for the cross-rule half above and is offered at the `load` and `construct` doors only, since `add_rule` takes one rule at a time and cannot express it.\n\n**Both fields, deliberately, and the mirror is complete.** §6.2.1 constrains `callers` and `targets` identically, and an implementation that validates only `targets` would otherwise pass nearly every reject case here. Tier 2 is mirrored too — `[\"$not\", \"*\"]` matches nothing on either field. All EIGHT structural shapes rejected on `targets` are therefore also rejected on `callers`: empty array, `$or` with no operand, `$not` with no operand, multi-operand `$not`, empty element, empty element under `$or`, reserved token after an operator, reserved token in a flat list. A `*_in_callers_is_rejected` case mirrors its `targets` twin and carries the rationale by reference rather than repeating it. A driver MUST NOT collapse a mirrored pair — two of them are reachable by no other case: `empty_pattern_string_under_or_in_callers_is_rejected` fails only if a `$or`'s OPERANDS are scanned on the `callers` side, and `reserved_token_after_operator_in_callers_is_rejected` fails only if positions are still checked AFTER a leading operator is consumed.\n\n**Every `closure` case is representable in every SDK.** apcore-rust's `Vec<String>` makes §6.1.4.1's TYPE fault unbuildable but places no constraint on length or element content, so every shape in the closure set is constructible in all three. There is no `skip_if_unrepresentable` on a closure case and a driver MUST NOT introduce one.\n\n**The `backstop` cases need one route an SDK may legitimately not have, and the answer is NOT a skip.** They require mutating a rule that is ALREADY INSTALLED in an ACL. apcore-python (non-frozen dataclass reachable through its rule list) and apcore-typescript (mutable interface) have that route. **apcore-rust does not**: `ACL.rules` is a private field, `ACL::rules()` returns `&[ACLRule]`, there is no `rules_mut`, and `ACL` derives nothing — the rule's FIELDS are public and the SHAPE is constructible, but the mutated rule cannot be INSTALLED. That is a stronger position than the fixture asks for, not a gap in it.\n\nAn SDK in that position satisfies these cases **by construction** and MUST assert the closure rather than skip: that its rule accessor hands back an immutable view with no mutable counterpart, and that offering the already-mutated rule to `add_rule` is **rejected** at the door by tier 1. It MUST report those assertions as passing, never as skipped — \"N skipped\" and \"N satisfied by construction\" are different claims, and only the second one is evidence. The backstop BEHAVIOUR is still required of such an SDK and MUST be covered by its own in-crate/internal tests, because this section constrains what a conformance driver can reach, not what the implementation must do.",
+  "test_cases": [
+    {
+      "id": "flat_single_pattern_loads",
+      "kind": "closure",
+      "note": "Control. The overwhelmingly common form must still be accepted, at every door.",
+      "rule": {
+        "callers": [
+          "api.*"
+        ],
+        "targets": [
+          "executor.*"
+        ],
+        "effect": "allow"
+      },
+      "default_effect": "deny",
+      "entry_points": [
+        "load",
+        "construct",
+        "add_rule"
+      ],
+      "expected_load": "ok"
+    },
+    {
+      "id": "flat_multi_pattern_loads",
+      "kind": "closure",
+      "note": "Control. The default OR-of-patterns form with more than one operand.",
+      "rule": {
+        "callers": [
+          "api.*",
+          "worker.*"
+        ],
+        "targets": [
+          "executor.*"
+        ],
+        "effect": "allow"
+      },
+      "default_effect": "deny",
+      "entry_points": [
+        "load",
+        "construct",
+        "add_rule"
+      ],
+      "expected_load": "ok"
+    },
+    {
+      "id": "or_with_two_operands_loads",
+      "kind": "closure",
+      "note": "Control. The explicit `$or` form documenting intent; observably equivalent to the flat list.",
+      "rule": {
+        "callers": [
+          "$or",
+          "admin",
+          "moderator"
+        ],
+        "targets": [
+          "*"
+        ],
+        "effect": "allow"
+      },
+      "default_effect": "deny",
+      "entry_points": [
+        "load",
+        "construct",
+        "add_rule"
+      ],
+      "expected_load": "ok"
+    },
+    {
+      "id": "or_with_one_operand_loads",
+      "kind": "closure",
+      "note": "Control, and the boundary. `$or` requires AT LEAST one operand, not at least two — a one-operand `$or` is a degenerate but meaningful OR and MUST be accepted. An implementation that rejects it has read the rule as `minItems: 2` on the array rather than as an arity rule on the operator.",
+      "rule": {
+        "callers": [
+          "$or",
+          "admin"
+        ],
+        "targets": [
+          "*"
+        ],
+        "effect": "allow"
+      },
+      "default_effect": "deny",
+      "entry_points": [
+        "load",
+        "construct",
+        "add_rule"
+      ],
+      "expected_load": "ok"
+    },
+    {
+      "id": "not_with_one_operand_loads",
+      "kind": "closure",
+      "note": "Control. The only legal `$not` arity.",
+      "rule": {
+        "callers": [
+          "$not",
+          "banned.*"
+        ],
+        "targets": [
+          "*"
+        ],
+        "effect": "allow"
+      },
+      "default_effect": "deny",
+      "entry_points": [
+        "load",
+        "construct",
+        "add_rule"
+      ],
+      "expected_load": "ok"
+    },
+    {
+      "id": "token_lookalike_pattern_loads",
+      "kind": "closure",
+      "note": "Control against over-rejection, and the one that pins EQUALITY rather than prefix or substring. `$orders.*` is an ordinary pattern that merely begins with the same character as a reserved token; it MUST load. An implementation testing `p.startswith('$')` passes every reject case in this fixture and fails here.",
+      "rule": {
+        "callers": [
+          "api.*",
+          "$orders.*"
+        ],
+        "targets": [
+          "*"
+        ],
+        "effect": "allow"
+      },
+      "default_effect": "deny",
+      "entry_points": [
+        "load",
+        "construct",
+        "add_rule"
+      ],
+      "expected_load": "ok"
+    },
+    {
+      "id": "reserved_token_at_index_one_in_callers_is_rejected",
+      "kind": "closure",
+      "note": "A reserved token at index 1 of `callers`. Through v1.30.0 §6.2.1 required it to be `treated as a literal pattern string` while also forbidding a literal module ID equal to `$or` from being matched — i.e. a pattern the specification guarantees can never match, carried in a security policy. v1.31.0 rejects it, which makes the reserved-token clause hold by construction. This case previously asserted `ok` in this fixture, as a control against over-rejection; that control was written before the reserved-token closure and contradicted it. `token_lookalike_pattern_loads` above is the control that survives.",
+      "rule": {
+        "callers": [
+          "api.*",
+          "$or"
+        ],
+        "targets": [
+          "*"
+        ],
+        "effect": "allow"
+      },
+      "default_effect": "deny",
+      "entry_points": [
+        "load",
+        "construct",
+        "add_rule"
+      ],
+      "expected_load": "reject"
+    },
+    {
+      "id": "empty_callers_is_rejected",
+      "kind": "closure",
+      "note": "`schemas/acl-config.schema.json` has always declared `minItems: 1` on this field and nothing validated against it at load, which is #107 and #111's shape exactly: the normative artefact said it, no door enforced it. §6.5's edge-case table said the opposite — `Rule never matches`, level MUST — and that row is replaced in the same change. apcore-rust's loader documents the permissive choice explicitly (`only OMISSION is rejected`), so a YAML file reaches this, not only direct construction.",
+      "rule": {
+        "callers": [],
+        "targets": [
+          "*"
+        ],
+        "effect": "allow"
+      },
+      "default_effect": "deny",
+      "entry_points": [
+        "load",
+        "construct",
+        "add_rule"
+      ],
+      "expected_load": "reject"
+    },
+    {
+      "id": "empty_targets_is_rejected",
+      "kind": "closure",
+      "note": "The same fault on the other field. Both fields are checked; an implementation MUST NOT check one and infer the other.",
+      "rule": {
+        "callers": [
+          "*"
+        ],
+        "targets": [],
+        "effect": "allow"
+      },
+      "default_effect": "deny",
+      "entry_points": [
+        "load",
+        "construct",
+        "add_rule"
+      ],
+      "expected_load": "reject"
+    },
+    {
+      "id": "both_fields_empty_are_rejected",
+      "kind": "closure",
+      "note": "Both faults at once. One rejection is enough — the error names at least one field — but the rule MUST NOT be accepted.",
+      "rule": {
+        "callers": [],
+        "targets": [],
+        "effect": "allow"
+      },
+      "default_effect": "deny",
+      "entry_points": [
+        "load",
+        "construct",
+        "add_rule"
+      ],
+      "expected_load": "reject"
+    },
+    {
+      "id": "empty_targets_on_deny_rule_under_default_allow_is_rejected",
+      "kind": "closure",
+      "note": "THE DRIVING CASE of #112, and the reason the resolution is a rejection rather than a runtime tightening. Written as YAML this loaded clean, `validate_rules()` returned zero findings, and `check(None, \"cli.rm\", None)` returned ALLOW — the operator has a rule that says `block everything dangerous` and a deployment that blocks nothing. Rejecting at the door turns a silent runtime fail-open into a boot-time failure naming the field.",
+      "rule": {
+        "callers": [
+          "*"
+        ],
+        "targets": [],
+        "effect": "deny",
+        "description": "block everything dangerous"
+      },
+      "default_effect": "allow",
+      "entry_points": [
+        "load",
+        "construct",
+        "add_rule"
+      ],
+      "expected_load": "reject"
+    },
+    {
+      "id": "or_with_no_operands_is_rejected",
+      "kind": "closure",
+      "note": "A one-element array that passes `minItems: 1` and is still an OR over the empty set. The schema cannot catch this with a length bound alone, which is why §6.2.1 states arity per operator and the schema carries the matching `if`/`then`.",
+      "rule": {
+        "callers": [
+          "*"
+        ],
+        "targets": [
+          "$or"
+        ],
+        "effect": "deny"
+      },
+      "default_effect": "allow",
+      "entry_points": [
+        "load",
+        "construct",
+        "add_rule"
+      ],
+      "expected_load": "reject"
+    },
+    {
+      "id": "not_with_no_operands_is_rejected",
+      "kind": "closure",
+      "note": "§6.2.1 through v1.30.0 required this form to `evaluate to false (fail-closed)`. The parenthetical was wrong: a `deny` rule that never matches refuses nothing, and under `default_effect: allow` the blocked call is permitted. The MUST is replaced rather than reinterpreted — see the version-history entry for v1.31.0.",
+      "rule": {
+        "callers": [
+          "*"
+        ],
+        "targets": [
+          "$not"
+        ],
+        "effect": "deny"
+      },
+      "default_effect": "allow",
+      "entry_points": [
+        "load",
+        "construct",
+        "add_rule"
+      ],
+      "expected_load": "reject"
+    },
+    {
+      "id": "not_with_two_operands_is_rejected",
+      "kind": "closure",
+      "note": "THE SECOND DEFECT, and the one that is not inert. §6.2.1 called this implementation-defined — consult `p1`, ignore the rest — and all three SDKs do exactly that, so the form is uniform across implementations and uniformly wider than written. On an `allow` rule it is a silent privilege escalation: the operator excluded two targets and the second one is granted. `SHOULD NOT rely on this form` is not a guard; nothing reported it. Rejecting also keeps the option open for a future version to define it as NOT (p1 OR p2 …), which leaving it implementation-defined does not.",
+      "rule": {
+        "callers": [
+          "*"
+        ],
+        "targets": [
+          "$not",
+          "secrets.a",
+          "secrets.b"
+        ],
+        "effect": "allow"
+      },
+      "default_effect": "deny",
+      "entry_points": [
+        "load",
+        "construct",
+        "add_rule"
+      ],
+      "expected_load": "reject"
+    },
+    {
+      "id": "not_with_two_operands_on_deny_rule_is_rejected",
+      "kind": "closure",
+      "note": "The same arity fault on a `deny` rule, where the current reading is over-broad rather than escalating. It MUST fail for the same reason rather than survive because this effect happens to land on the safe side — the fallback is only accidentally right, and right only until someone flips the effect.",
+      "rule": {
+        "callers": [
+          "*"
+        ],
+        "targets": [
+          "$not",
+          "secrets.a",
+          "secrets.b"
+        ],
+        "effect": "deny"
+      },
+      "default_effect": "deny",
+      "entry_points": [
+        "load",
+        "construct",
+        "add_rule"
+      ],
+      "expected_load": "reject"
+    },
+    {
+      "id": "empty_pattern_string_is_rejected",
+      "kind": "closure",
+      "note": "`schemas/acl-config.schema.json` has always declared `minLength: 1` on the array's items, enforced by nothing — the same declared-but-unenforced story as `minItems`. An empty pattern matches only the empty module ID, which is not a legal module ID, so the array is structurally never-matching rather than semantically so, and belongs at the door rather than in the validator.",
+      "rule": {
+        "callers": [
+          "*"
+        ],
+        "targets": [
+          ""
+        ],
+        "effect": "deny"
+      },
+      "default_effect": "allow",
+      "entry_points": [
+        "load",
+        "construct",
+        "add_rule"
+      ],
+      "expected_load": "reject"
+    },
+    {
+      "id": "empty_pattern_string_under_or_is_rejected",
+      "kind": "closure",
+      "note": "The same fault as an operand rather than as the whole array. An implementation that checks only `patterns[0]` passes the case above and fails this one.",
+      "rule": {
+        "callers": [
+          "*"
+        ],
+        "targets": [
+          "$or",
+          ""
+        ],
+        "effect": "deny"
+      },
+      "default_effect": "allow",
+      "entry_points": [
+        "load",
+        "construct",
+        "add_rule"
+      ],
+      "expected_load": "reject"
+    },
+    {
+      "id": "reserved_token_after_operator_is_rejected",
+      "kind": "closure",
+      "note": "THE NESTING CASE. A pattern array is FLAT — the operators do not nest and there is no precedence — but nothing in the specification said so before v1.31.0, while `$or` / `$not` DO nest arbitrarily in `conditions`. An operator who learned the condition grammar writes `[\"$or\", \"$not\", \"a\"]` expecting or-of-not and gets neither: through v1.30.0 the `$not` was a literal pattern, so the array matched `a` — and also matched a module literally named `$not`, which §6.2.1's own reserved-token clause says MUST NOT happen. Measured in apcore-python: matches `['a', '$not']`. All three SDKs route a non-index-0 element straight to the glob matcher with no reserved-token check, so all three violate that clause.",
+      "rule": {
+        "callers": [
+          "*"
+        ],
+        "targets": [
+          "$or",
+          "$not",
+          "a"
+        ],
+        "effect": "allow"
+      },
+      "default_effect": "deny",
+      "entry_points": [
+        "load",
+        "construct",
+        "add_rule"
+      ],
+      "expected_load": "reject"
+    },
+    {
+      "id": "reserved_token_in_flat_list_is_rejected",
+      "kind": "closure",
+      "note": "`[\"api.*\", \"$not\", \"cli.*\"]` is not `api.* but not cli.*` — no such form exists. Through v1.30.0 it was an OR of three literals, one of which the specification guarantees can never match. Rejecting the token outside index 0 makes §6.2.1's `MUST NOT match a literal module ID equal to $or or $not` hold by construction instead of by a check no implementation performs.",
+      "rule": {
+        "callers": [
+          "*"
+        ],
+        "targets": [
+          "api.*",
+          "$not",
+          "cli.*"
+        ],
+        "effect": "allow"
+      },
+      "default_effect": "deny",
+      "entry_points": [
+        "load",
+        "construct",
+        "add_rule"
+      ],
+      "expected_load": "reject"
+    },
+    {
+      "id": "or_with_no_operands_in_callers_is_rejected",
+      "kind": "closure",
+      "note": "FIELD PARITY. §6.2.1 constrains `callers` and `targets` identically, and an implementation that validates only `targets` passes almost every other reject case in this fixture. The four cases below mirror the `targets` shapes onto `callers` so that asymmetry cannot pass. Rationale for the shape itself is on the `targets` twin.",
+      "rule": {
+        "callers": [
+          "$or"
+        ],
+        "targets": [
+          "*"
+        ],
+        "effect": "deny"
+      },
+      "default_effect": "allow",
+      "entry_points": [
+        "load",
+        "construct",
+        "add_rule"
+      ],
+      "expected_load": "reject"
+    },
+    {
+      "id": "not_with_no_operands_in_callers_is_rejected",
+      "kind": "closure",
+      "note": "Field parity — see `not_with_no_operands_is_rejected` for the shape's rationale.",
+      "rule": {
+        "callers": [
+          "$not"
+        ],
+        "targets": [
+          "*"
+        ],
+        "effect": "deny"
+      },
+      "default_effect": "allow",
+      "entry_points": [
+        "load",
+        "construct",
+        "add_rule"
+      ],
+      "expected_load": "reject"
+    },
+    {
+      "id": "not_with_two_operands_in_callers_is_rejected",
+      "kind": "closure",
+      "note": "Field parity — see `not_with_two_operands_is_rejected`. On `callers` the pre-v1.31.0 reading granted every caller except `admin.*`, so an `allow` rule written to exclude two caller families excluded one.",
+      "rule": {
+        "callers": [
+          "$not",
+          "admin.*",
+          "ops.*"
+        ],
+        "targets": [
+          "*"
+        ],
+        "effect": "allow"
+      },
+      "default_effect": "deny",
+      "entry_points": [
+        "load",
+        "construct",
+        "add_rule"
+      ],
+      "expected_load": "reject"
+    },
+    {
+      "id": "empty_pattern_string_in_callers_is_rejected",
+      "kind": "closure",
+      "note": "Field parity — see `empty_pattern_string_is_rejected`. `schemas/acl-config.schema.json` declares `minLength: 1` on both fields' items.",
+      "rule": {
+        "callers": [
+          ""
+        ],
+        "targets": [
+          "*"
+        ],
+        "effect": "deny"
+      },
+      "default_effect": "allow",
+      "entry_points": [
+        "load",
+        "construct",
+        "add_rule"
+      ],
+      "expected_load": "reject"
+    },
+    {
+      "id": "empty_pattern_string_under_or_in_callers_is_rejected",
+      "kind": "closure",
+      "note": "Field parity — see `empty_pattern_string_under_or_is_rejected`. Not a duplicate of the case above: this one fails only if the implementation scans the OPERANDS of a `$or` on the `callers` side. An implementation that validates `callers[0]` and then walks operands on the `targets` branch alone passes both `empty_pattern_string_in_callers_is_rejected` and `empty_pattern_string_under_or_is_rejected`, and fails only here.",
+      "rule": {
+        "callers": [
+          "$or",
+          ""
+        ],
+        "targets": [
+          "*"
+        ],
+        "effect": "deny"
+      },
+      "default_effect": "allow",
+      "entry_points": [
+        "load",
+        "construct",
+        "add_rule"
+      ],
+      "expected_load": "reject"
+    },
+    {
+      "id": "reserved_token_after_operator_in_callers_is_rejected",
+      "kind": "closure",
+      "note": "Field parity — see `reserved_token_after_operator_is_rejected`. Distinct from `reserved_token_at_index_one_in_callers_is_rejected`, where index 0 is an ordinary pattern: here index 0 is an OPERATOR, so an implementation that stops checking positions once it has consumed a leading `$or` passes that case and fails this one. This completes the mirror set — every structural shape rejected on `targets` is now rejected on `callers` too.",
+      "rule": {
+        "callers": [
+          "$or",
+          "$not",
+          "admin"
+        ],
+        "targets": [
+          "*"
+        ],
+        "effect": "allow"
+      },
+      "default_effect": "deny",
+      "entry_points": [
+        "load",
+        "construct",
+        "add_rule"
+      ],
+      "expected_load": "reject"
+    },
+    {
+      "id": "effect_is_reported_before_a_pattern_fault",
+      "kind": "closure",
+      "note": "VALIDATION ORDER, axis half (§6.2.1 point 2). The rule is bad on two axes at once. `effect` precedes `callers` / `targets`, so the refusal names the EFFECT. Measured before v1.31.0: one SDK named the effect, one named the patterns, and a third ran effect -> patterns -> approval — all three conformant because nothing said otherwise. `expected_load` cannot express which fault is named, so a driver MUST additionally assert that the error names the offending `effect` value and not a pattern field.",
+      "rule": {
+        "callers": [],
+        "targets": [],
+        "effect": "Allow"
+      },
+      "default_effect": "deny",
+      "entry_points": [
+        "load",
+        "construct",
+        "add_rule"
+      ],
+      "expected_load": "reject",
+      "expected_refused_axis": "effect"
+    },
+    {
+      "id": "approval_is_reported_before_a_pattern_fault",
+      "kind": "closure",
+      "note": "VALIDATION ORDER, the middle axis. `approval: required` on a `deny` rule (§6.1.6 rule 2) AND a malformed pattern field. `approval` precedes the pattern fields, so the refusal names the approval combination. This is the pair that caught apcore-typescript, whose order was effect -> patterns -> approval.",
+      "rule": {
+        "callers": [
+          "*"
+        ],
+        "targets": [],
+        "effect": "deny",
+        "approval": "required"
+      },
+      "default_effect": "deny",
+      "entry_points": [
+        "load",
+        "construct",
+        "add_rule"
+      ],
+      "expected_load": "reject",
+      "expected_refused_axis": "approval"
+    },
+    {
+      "id": "callers_is_reported_before_targets",
+      "kind": "closure",
+      "note": "VALIDATION ORDER, within the pattern axis. Both fields are bad; `callers` is named.",
+      "rule": {
+        "callers": [],
+        "targets": [],
+        "effect": "deny"
+      },
+      "default_effect": "deny",
+      "entry_points": [
+        "load",
+        "construct",
+        "add_rule"
+      ],
+      "expected_load": "reject",
+      "expected_refused_axis": "callers"
+    },
+    {
+      "id": "lowest_indexed_bad_rule_wins_over_axis_order",
+      "kind": "closure",
+      "note": "THE CROSS-RULE HALF of §6.2.1 point 2, and the discriminating case. Rule 0 is bad only on its patterns, rule 1 only on its `effect`. Axis order alone would name the `effect`; rule index dominates, so the refusal names RULE 0's pattern fault. An implementation that sweeps one axis across every rule before looking at the next axis fails here and passes every single-rule case in this fixture — measured in apcore-typescript, whose `ACL.load` validated rule by rule while its constructor ran three passes over the list, so one file produced two different errors through two doors of the same SDK.",
+      "rules": [
+        {
+          "callers": [],
+          "targets": [
+            "*"
+          ],
+          "effect": "allow"
+        },
+        {
+          "callers": [
+            "*"
+          ],
+          "targets": [
+            "*"
+          ],
+          "effect": "Allow"
+        }
+      ],
+      "default_effect": "deny",
+      "entry_points": [
+        "load",
+        "construct"
+      ],
+      "expected_load": "reject",
+      "expected_refused_rule_index": 0,
+      "expected_refused_axis": "callers"
+    },
+    {
+      "id": "lowest_indexed_bad_rule_wins_with_the_axes_swapped",
+      "kind": "closure",
+      "note": "The same pair in the other order: rule 0 bad on `effect`, rule 1 bad on its patterns. The refusal still names rule 0. Together with the case above this pins that the INDEX chooses the rule — one order alone is also satisfied by an implementation that simply always reports the `effect` axis first across the whole list.",
+      "rules": [
+        {
+          "callers": [
+            "*"
+          ],
+          "targets": [
+            "*"
+          ],
+          "effect": "Allow"
+        },
+        {
+          "callers": [],
+          "targets": [
+            "*"
+          ],
+          "effect": "allow"
+        }
+      ],
+      "default_effect": "deny",
+      "entry_points": [
+        "load",
+        "construct"
+      ],
+      "expected_load": "reject",
+      "expected_refused_rule_index": 0,
+      "expected_refused_axis": "effect"
+    },
+    {
+      "id": "axis_order_applies_inside_the_chosen_rule",
+      "kind": "closure",
+      "note": "The two halves composing. Rule 0 is bad on BOTH `effect` and its patterns; rule 1 is bad on its `effect`. The index picks rule 0, and only then does the axis order pick the fault inside it — so the refusal names rule 0's `effect`, not its patterns and not rule 1.",
+      "rules": [
+        {
+          "callers": [],
+          "targets": [
+            "*"
+          ],
+          "effect": "Allow"
+        },
+        {
+          "callers": [
+            "*"
+          ],
+          "targets": [
+            "*"
+          ],
+          "effect": "Allow"
+        }
+      ],
+      "default_effect": "deny",
+      "entry_points": [
+        "load",
+        "construct"
+      ],
+      "expected_load": "reject",
+      "expected_refused_rule_index": 0,
+      "expected_refused_axis": "effect"
+    },
+    {
+      "id": "a_good_rule_ahead_of_a_bad_one_does_not_shield_it",
+      "kind": "closure",
+      "note": "Control against reading `lowest-indexed BAD rule` as `rule 0 must be the bad one`. Rule 0 is fine; rule 1 is not; the set is still refused, naming rule 1. An implementation that only ever validates the head of the list passes the three cases above and fails here.",
+      "rules": [
+        {
+          "callers": [
+            "api.*"
+          ],
+          "targets": [
+            "executor.*"
+          ],
+          "effect": "allow"
+        },
+        {
+          "callers": [],
+          "targets": [
+            "*"
+          ],
+          "effect": "allow"
+        }
+      ],
+      "default_effect": "deny",
+      "entry_points": [
+        "load",
+        "construct"
+      ],
+      "expected_load": "reject",
+      "expected_refused_rule_index": 1,
+      "expected_refused_axis": "callers"
+    },
+    {
+      "id": "two_good_rules_load",
+      "kind": "closure",
+      "note": "Control. A multi-rule set with nothing wrong must load through both doors, so the cases above cannot be passed by an implementation that refuses any rule list of length two.",
+      "rules": [
+        {
+          "callers": [
+            "api.*"
+          ],
+          "targets": [
+            "executor.*"
+          ],
+          "effect": "allow"
+        },
+        {
+          "callers": [
+            "worker.*"
+          ],
+          "targets": [
+            "$not",
+            "cli.*"
+          ],
+          "effect": "deny"
+        }
+      ],
+      "default_effect": "deny",
+      "entry_points": [
+        "load",
+        "construct"
+      ],
+      "expected_load": "ok"
+    },
+    {
+      "id": "default_effect_is_judged_before_any_rule",
+      "kind": "closure",
+      "note": "§6.2.1 point 2, the `default_effect` clause. `default_effect` is not a rule and has no index, so the rule ordering does not reach it, yet a file wrong in both is exactly the one-file-one-error case. It is judged FIRST, so this is refused for `default_effect` and not for rule 0's patterns. Unstated before v1.31.0, and implementations differed.",
+      "rules": [
+        {
+          "callers": [],
+          "targets": [
+            "*"
+          ],
+          "effect": "allow"
+        }
+      ],
+      "default_effect": "Allow",
+      "entry_points": [
+        "load",
+        "construct"
+      ],
+      "expected_load": "reject",
+      "expected_refused_axis": "default_effect"
+    },
+    {
+      "id": "lowest_indexed_bad_rule_wins_over_a_loader_only_axis",
+      "kind": "closure",
+      "note": "THE CASE THAT CAUGHT apcore-rust. A loader has per-rule axes the other doors cannot have — here #107's rule-key closure — and the sweep prohibition binds those too, not only `effect` / `approval` / patterns. Rule 0 is bad on `effect`, rule 1 carries an unknown key. Measured before the fix: apcore-rust's `load` closed the key set across the WHOLE file before `try_new` read any rule's `effect`, and refused for rule 1. `load` only: an unknown key is not constructible in a typed rule.",
+      "rules": [
+        {
+          "callers": [
+            "*"
+          ],
+          "targets": [
+            "*"
+          ],
+          "effect": "Allow"
+        },
+        {
+          "callers": [
+            "*"
+          ],
+          "targets": [
+            "*"
+          ],
+          "effect": "allow",
+          "priority": 3
+        }
+      ],
+      "default_effect": "deny",
+      "entry_points": [
+        "load"
+      ],
+      "expected_load": "reject",
+      "expected_refused_rule_index": 0,
+      "expected_refused_axis": "effect"
+    },
+    {
+      "id": "not_of_wildcard_loads_and_is_reported",
+      "kind": "closure",
+      "note": "TIER 2, and the case that proves the two tiers are distinct. `[\"$not\", \"*\"]` has perfectly legal arity — exactly one operand — and matches NOTHING, producing the identical fail-open the arity shapes produce. It is well-formed, so it MUST load; it protects nothing, so `validate_rules()` MUST report it; and it MUST NOT change any decision. A driver that rejects this case has collapsed the tiers.",
+      "rule": {
+        "callers": [
+          "*"
+        ],
+        "targets": [
+          "$not",
+          "*"
+        ],
+        "effect": "deny"
+      },
+      "default_effect": "allow",
+      "entry_points": [
+        "load",
+        "construct",
+        "add_rule"
+      ],
+      "expected_load": "ok",
+      "expected_validation_finding_paths": [
+        "targets"
+      ]
+    },
+    {
+      "id": "not_of_double_wildcard_loads_and_is_reported",
+      "kind": "closure",
+      "note": "`**` is universal too, so `$not` of it matches nothing. The MUST-detect minimum is `any pattern consisting only of wildcards`, not the single literal `*` — an implementation that string-compares against `\"*\"` passes the case above and fails this one.",
+      "rule": {
+        "callers": [
+          "*"
+        ],
+        "targets": [
+          "$not",
+          "**"
+        ],
+        "effect": "deny"
+      },
+      "default_effect": "allow",
+      "entry_points": [
+        "load",
+        "construct",
+        "add_rule"
+      ],
+      "expected_load": "ok",
+      "expected_validation_finding_paths": [
+        "targets"
+      ]
+    },
+    {
+      "id": "external_sentinel_as_target_loads_and_is_reported",
+      "kind": "closure",
+      "note": "TIER 2, field-specific. `@external` is the caller-side sentinel §6.5 substitutes for a null `caller_id`; no module ID is `@external`, so as a TARGET pattern it matches nothing. The same token in `callers` is entirely legal and is what it exists for — see the control below. A finding that fires on both fields has read the rule as being about the token rather than about the field.",
+      "rule": {
+        "callers": [
+          "*"
+        ],
+        "targets": [
+          "@external"
+        ],
+        "effect": "deny"
+      },
+      "default_effect": "allow",
+      "entry_points": [
+        "load",
+        "construct",
+        "add_rule"
+      ],
+      "expected_load": "ok",
+      "expected_validation_finding_paths": [
+        "targets"
+      ]
+    },
+    {
+      "id": "external_sentinel_as_caller_loads_clean",
+      "kind": "closure",
+      "note": "Control for the case above. `@external` in `callers` is the documented way to write a rule about top-level entry points and MUST produce no finding.",
+      "rule": {
+        "callers": [
+          "@external"
+        ],
+        "targets": [
+          "*"
+        ],
+        "effect": "deny"
+      },
+      "default_effect": "allow",
+      "entry_points": [
+        "load",
+        "construct",
+        "add_rule"
+      ],
+      "expected_load": "ok",
+      "expected_validation_finding_paths": []
+    },
+    {
+      "id": "not_of_narrow_pattern_loads_clean",
+      "kind": "closure",
+      "note": "Control against tier 2 over-firing. `[\"$not\", \"cli.*\"]` matches every module outside `cli.`, which is the form's whole purpose. An implementation that reports every `$not` has confused `negation` with `matches nothing`.",
+      "rule": {
+        "callers": [
+          "*"
+        ],
+        "targets": [
+          "$not",
+          "cli.*"
+        ],
+        "effect": "deny"
+      },
+      "default_effect": "allow",
+      "entry_points": [
+        "load",
+        "construct",
+        "add_rule"
+      ],
+      "expected_load": "ok",
+      "expected_validation_finding_paths": []
+    },
+    {
+      "id": "not_of_wildcard_in_callers_loads_and_is_reported",
+      "kind": "closure",
+      "note": "TIER 2 FIELD PARITY. `[\"$not\", \"*\"]` matches nothing on `callers` exactly as it does on `targets`, and tier 2 is otherwise exercised on `targets` alone — the same one-field blind spot the `*_in_callers_is_rejected` mirrors close for tier 1. An implementation whose never-matches predicate is reached only from the `targets` branch passes every other tier-2 case and fails here.",
+      "rule": {
+        "callers": [
+          "$not",
+          "*"
+        ],
+        "targets": [
+          "*"
+        ],
+        "effect": "deny"
+      },
+      "default_effect": "allow",
+      "entry_points": [
+        "load",
+        "construct",
+        "add_rule"
+      ],
+      "expected_load": "ok",
+      "expected_validation_finding_paths": [
+        "callers"
+      ]
+    },
+    {
+      "id": "unmatchable_operand_beside_a_matchable_one_loads_clean",
+      "kind": "closure",
+      "note": "TIER 2 IS JUDGED ON THE WHOLE ARRAY, never element by element. The criterion is that THE ARRAY matches no legal module ID, so a flat or `$or` array is reported only when EVERY operand is unmatchable. Here `@external` can match no target but `api.*` can, so the rule works and MUST NOT be reported. The MUST-detect minimum names whole-array shapes and is otherwise readable as `report any occurrence of the token`, which would flag a working rule — both apcore-python and apcore-typescript flagged this as a coin flip when implementing it.",
+      "rule": {
+        "callers": [
+          "*"
+        ],
+        "targets": [
+          "api.*",
+          "@external"
+        ],
+        "effect": "deny"
+      },
+      "default_effect": "allow",
+      "entry_points": [
+        "load",
+        "construct",
+        "add_rule"
+      ],
+      "expected_load": "ok",
+      "expected_validation_finding_paths": []
+    },
+    {
+      "id": "not_of_wildcard_does_not_change_the_decision",
+      "kind": "backstop",
+      "note": "The other half of tier 2: reported, and inert BY DESIGN. The rule matches nothing, so `cli.rm` falls through to `default_effect: allow` exactly as it did before v1.31.0. This is the case that pins `MUST NOT change any access decision` — a driver that denies here has implemented tier 2 as a rejection or as an UNEVALUABLE fault, and has thereby made a well-formed rule deny every call.",
+      "rule": {
+        "callers": [
+          "*"
+        ],
+        "targets": [
+          "$not",
+          "*"
+        ],
+        "effect": "deny"
+      },
+      "default_effect": "allow",
+      "caller_id": "api.gateway",
+      "target_id": "cli.rm",
+      "expected_access": "allow",
+      "expected_legacy_check": true,
+      "expected_audit_handler_error_present": false,
+      "expected_handler_error_paths": [],
+      "expected_validation_finding_paths": [
+        "targets"
+      ],
+      "mutation_route": "installed_rule"
+    },
+    {
+      "id": "mutated_empty_targets_on_deny_rule_denies",
+      "kind": "backstop",
+      "note": "The backstop. Every entry point now rejects, so the only route left is assigning the field on an already-constructed rule, which no constructor can intercept and — unlike an unrecognised `effect`, which is never read again — the matcher WILL consult. §6.1.4.1 classifies the arity fault exactly as it classifies the type fault: the scope is unreadable, the rule is UNEVALUABLE, and §6.1.1's effect table decides. A `deny` rule takes effect.",
+      "rule": {
+        "callers": [
+          "*"
+        ],
+        "targets": [
+          "*"
+        ],
+        "effect": "deny"
+      },
+      "mutate": {
+        "field": "targets",
+        "value": []
+      },
+      "default_effect": "allow",
+      "caller_id": "api.gateway",
+      "target_id": "cli.rm",
+      "expected_access": "deny",
+      "expected_legacy_check": false,
+      "expected_audit_handler_error_present": true,
+      "expected_handler_error_paths": [
+        "targets"
+      ],
+      "expected_validation_finding_paths": [
+        "targets"
+      ],
+      "mutation_route": "installed_rule"
+    },
+    {
+      "id": "mutated_empty_targets_on_allow_rule_does_not_grant",
+      "kind": "backstop",
+      "note": "The other half of §6.1.1's effect table. An unevaluable `allow` rule does not match and MUST NOT grant, so the decision falls to `default_effect: deny`. The observable outcome is unchanged from v1.30.0 — an inert `allow` rule also failed to grant — but the audit entry and the validator finding are new, and they are what tells the operator the rule is broken rather than merely unmatched.",
+      "rule": {
+        "callers": [
+          "*"
+        ],
+        "targets": [
+          "*"
+        ],
+        "effect": "allow"
+      },
+      "mutate": {
+        "field": "targets",
+        "value": []
+      },
+      "default_effect": "deny",
+      "caller_id": "api.gateway",
+      "target_id": "cli.rm",
+      "expected_access": "deny",
+      "expected_legacy_check": false,
+      "expected_audit_handler_error_present": true,
+      "expected_handler_error_paths": [
+        "targets"
+      ],
+      "expected_validation_finding_paths": [
+        "targets"
+      ],
+      "mutation_route": "installed_rule"
+    },
+    {
+      "id": "mutated_or_with_no_operands_on_deny_rule_denies",
+      "kind": "backstop",
+      "note": "`$or` over the empty set, reached by mutation. An implementation that special-cases only the empty array will pass the case above and fail this one.",
+      "rule": {
+        "callers": [
+          "*"
+        ],
+        "targets": [
+          "*"
+        ],
+        "effect": "deny"
+      },
+      "mutate": {
+        "field": "targets",
+        "value": [
+          "$or"
+        ]
+      },
+      "default_effect": "allow",
+      "caller_id": "api.gateway",
+      "target_id": "cli.rm",
+      "expected_access": "deny",
+      "expected_legacy_check": false,
+      "expected_audit_handler_error_present": true,
+      "expected_handler_error_paths": [
+        "targets"
+      ],
+      "expected_validation_finding_paths": [
+        "targets"
+      ],
+      "mutation_route": "installed_rule"
+    },
+    {
+      "id": "mutated_not_with_no_operands_on_deny_rule_denies",
+      "kind": "backstop",
+      "note": "`$not` with nothing to negate, on the `callers` field — the fault is per field, and an implementation that checks only `targets` fails here.",
+      "rule": {
+        "callers": [
+          "*"
+        ],
+        "targets": [
+          "*"
+        ],
+        "effect": "deny"
+      },
+      "mutate": {
+        "field": "callers",
+        "value": [
+          "$not"
+        ]
+      },
+      "default_effect": "allow",
+      "caller_id": "api.gateway",
+      "target_id": "cli.rm",
+      "expected_access": "deny",
+      "expected_legacy_check": false,
+      "expected_audit_handler_error_present": true,
+      "expected_handler_error_paths": [
+        "callers"
+      ],
+      "expected_validation_finding_paths": [
+        "callers"
+      ],
+      "mutation_route": "installed_rule"
+    },
+    {
+      "id": "mutated_not_with_two_operands_on_allow_rule_does_not_grant",
+      "kind": "backstop",
+      "note": "The escalation case at runtime. Through v1.30.0 this returned ALLOW for `secrets.b` — the second target the operator excluded — because the matcher read `p1` and dropped the rest. Under §6.2.1's arity rule the field is malformed, the rule is unevaluable, and the `allow` rule does not grant. This case is the regression guard for the defect: a driver that reports `true` here has the pre-v1.31.0 matcher.",
+      "rule": {
+        "callers": [
+          "*"
+        ],
+        "targets": [
+          "*"
+        ],
+        "effect": "allow"
+      },
+      "mutate": {
+        "field": "targets",
+        "value": [
+          "$not",
+          "secrets.a",
+          "secrets.b"
+        ]
+      },
+      "default_effect": "deny",
+      "caller_id": "api.gateway",
+      "target_id": "secrets.b",
+      "expected_access": "deny",
+      "expected_legacy_check": false,
+      "expected_audit_handler_error_present": true,
+      "expected_handler_error_paths": [
+        "targets"
+      ],
+      "expected_validation_finding_paths": [
+        "targets"
+      ],
+      "mutation_route": "installed_rule"
+    },
+    {
+      "id": "mutated_both_fields_report_both_paths",
+      "kind": "backstop",
+      "note": "§6.1.4 rule 3 — the precheck MUST NOT short-circuit, so both fields are examined and both faults reported. Ordered lexicographically by path (§6.1.1 rule 2), which puts `callers` before `targets`. This mirrors the existing `test_both_fields_are_reported_without_short_circuiting` guard that §6.1.4.1's TYPE fault already carries.",
+      "rule": {
+        "callers": [
+          "*"
+        ],
+        "targets": [
+          "*"
+        ],
+        "effect": "deny"
+      },
+      "mutate": [
+        {
+          "field": "callers",
+          "value": [
+            "$not"
+          ]
+        },
+        {
+          "field": "targets",
+          "value": []
+        }
+      ],
+      "default_effect": "allow",
+      "caller_id": "api.gateway",
+      "target_id": "cli.rm",
+      "expected_access": "deny",
+      "expected_legacy_check": false,
+      "expected_audit_handler_error_present": true,
+      "expected_handler_error_paths": [
+        "callers",
+        "targets"
+      ],
+      "expected_validation_finding_paths": [
+        "callers",
+        "targets"
+      ],
+      "mutation_route": "installed_rule"
+    },
+    {
+      "id": "mutated_empty_targets_on_approval_rule_raises_pending_requirement",
+      "kind": "backstop",
+      "note": "§6.1.1 rule 5, `Unknowable scope counts as scope`. A rule unevaluable because its own pattern field is malformed MUST raise a pending approval requirement, because its scope cannot be read and so cannot be shown not to apply here. An arity fault is a malformed pattern field like any other — §6.1.4.1 has no partially-readable tier, and inventing one would put back the per-implementation judgement call that produced three different answers in #100. The requirement composes onto the grant from `default_effect: allow`, so `matched_rule_index` is null and `approval_required` is true — the legal combination §6.1.1 rule 5 names explicitly. The two surfaces DIVERGE here and that is the point: `access` is `allow` while the legacy boolean `check()` is `false`, because §6.8.1 makes the boolean fail-closed for allow-with-approval-required. A driver that asserts the boolean as if it were `access` fails this case alone and passes the other eight.",
+      "rule": {
+        "callers": [
+          "*"
+        ],
+        "targets": [
+          "*"
+        ],
+        "effect": "allow",
+        "approval": "required"
+      },
+      "mutate": {
+        "field": "targets",
+        "value": []
+      },
+      "default_effect": "allow",
+      "caller_id": "api.gateway",
+      "target_id": "cli.rm",
+      "expected_access": "allow",
+      "expected_legacy_check": false,
+      "expected_approval_required": true,
+      "expected_matched_rule_index": null,
+      "expected_audit_handler_error_present": true,
+      "expected_handler_error_paths": [
+        "targets"
+      ],
+      "expected_validation_finding_paths": [
+        "targets"
+      ],
+      "mutation_route": "installed_rule"
+    },
+    {
+      "id": "well_formed_rule_raises_no_finding",
+      "kind": "backstop",
+      "note": "Control. A rule that is never mutated decides normally and produces no finding and no `handler_error`. Without it, an implementation that reports every rule as faulty passes every other backstop case in this fixture.",
+      "rule": {
+        "callers": [
+          "*"
+        ],
+        "targets": [
+          "cli.*"
+        ],
+        "effect": "deny"
+      },
+      "default_effect": "allow",
+      "caller_id": "api.gateway",
+      "target_id": "cli.rm",
+      "expected_access": "deny",
+      "expected_legacy_check": false,
+      "expected_audit_handler_error_present": false,
+      "expected_handler_error_paths": [],
+      "expected_validation_finding_paths": [],
+      "mutation_route": "installed_rule"
+    }
+  ]
+}

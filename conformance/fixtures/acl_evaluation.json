@@ -206,28 +206,6 @@
       "expected": false
     },
     {
-      "id": "empty_callers_matches_none",
-      "description": "Empty callers array never matches any caller",
-      "rules": [
-        {"callers": [], "targets": ["*"], "effect": "allow"}
-      ],
-      "default_effect": "deny",
-      "caller_id": "anyone",
-      "target_id": "anything",
-      "expected": false
-    },
-    {
-      "id": "empty_targets_matches_none",
-      "description": "Empty targets array never matches any target",
-      "rules": [
-        {"callers": ["*"], "targets": [], "effect": "allow"}
-      ],
-      "default_effect": "deny",
-      "caller_id": "anyone",
-      "target_id": "anything",
-      "expected": false
-    },
-    {
       "id": "at_system_pattern",
       "description": "@system matches calls where identity type is system",
       "rules": [

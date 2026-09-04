@@ -3624,8 +3624,8 @@ audit:
 
 | Field | Required | Type | Description |
 |-------|----------|------|-------------|
-| `callers` | **MUST** | `list[string]` | Caller patterns (OR logic: any match is sufficient) |
-| `targets` | **MUST** | `list[string]` | Target patterns (OR logic: any match is sufficient) |
+| `callers` | **MUST** | `list[string]` | Caller patterns, at least one (OR logic: any match is sufficient). Arity is closed — §6.2.1. |
+| `targets` | **MUST** | `list[string]` | Target patterns, at least one (OR logic: any match is sufficient). Arity is closed — §6.2.1. |
 | `effect` | **MUST** | `"allow" \| "deny"` | Access decision |
 | `description` | **SHOULD** | `string` | Human-readable rule description |
 | `conditions` | **MAY** | `object` | Additional conditions (all must pass, AND logic) |
@@ -3822,11 +3822,13 @@ Paths nest, so a key inside `$not` inside the second `$or` branch is `$or[1].$no
 
 ##### 6.1.4.1 Malformed `callers` / `targets` (v1.25.0, #106)
 
-`callers` and `targets` are **lists of patterns**. A value that is not a list of strings is a malformed rule, and the precheck **MUST** classify it as unevaluable — resolving per §6.1.1's effect table, so an `allow` rule does not grant and a `deny` rule takes effect. It **MUST NOT** raise out of `check()`, and it **MUST NOT** be treated as a pattern set.
+`callers` and `targets` are **lists of patterns**, and both the element type and the **arity** are constrained (§6.2.1). A value that is not a list of strings, or a list whose shape is outside §6.2.1's closure, is a malformed rule, and the precheck **MUST** classify it as unevaluable — resolving per §6.1.1's effect table, so an `allow` rule does not grant and a `deny` rule takes effect. It **MUST NOT** raise out of `check()`, and it **MUST NOT** be treated as a pattern set.
 
 The failure this closes is not hypothetical and it fails **open**. A bare string is iterable in several host languages, so `callers: "admin.*"` written where `callers: ["admin.*"]` was meant iterates the string **character by character**; the `*` character is a valid pattern that matches everything, so an `allow` rule carrying that typo grants access to **every caller**. Measured in apcore-python: `callers: "admin.*"` and `callers: "*"` both returned `true` for an unrelated caller under `default_effect: deny`. Whether a given typo is dangerous depends only on whether the mistyped string happens to contain a `*` — `"api.gateway"` returns false by luck, not by design.
 
 `ACL.load` already rejects a non-list `callers`/`targets`, so a YAML file cannot reach this. Direct construction and runtime rule insertion can, which is the same door §6.1.1 case 5 exists for. An implementation whose type system makes the value unrepresentable (apcore-rust's `Vec<String>`) satisfies this clause by construction and needs no runtime check.
+
+The **shape** half is not disposed of the same way. `ACL.load` deliberately permits an empty `callers` / `targets` — only omission is rejected — so a YAML file reaches it, and a `Vec<String>` constrains the element type while placing no constraint on length or on element content, so no implementation is exempt by construction. §6.2.1 therefore closes every entry point against it, and what remains for this precheck is the value assigned onto an already-constructed rule, which no constructor intercepts and the matcher still reads.
 
 **Special patterns:**
 
@@ -3850,7 +3852,7 @@ This is the same principle §6.1.2 applies to condition keys, in the other half 
     This is the §6.1.1 defect class — a silent fail-open produced by a key
     nothing evaluates — on the pattern side rather than the condition side.
 
-**The `effect` value set is closed too, at every entry point (v1.30.0, #111).** `effect` accepts `"allow"` and `"deny"` and nothing else — §6.1's field table already says **MUST** and `schemas/acl-config.schema.json` already declares the enum. A rule carrying any other value **MUST** be rejected with `ACLRuleError` naming the offending value, and the rule index wherever the entry point has one — a rule under construction has no position yet, and an implementation **MUST NOT** invent one; it names the value alone. It **MUST** be rejected at **every** entry point that accepts a rule — file loading, direct construction, and runtime insertion — on §6.1.6 rule 3's reasoning, which applies here unchanged. `default_effect` is closed on the same terms, at every door that accepts one; its rejection names the offending value, there being no rule index to name.
+**The `effect` value set is closed too, at every entry point (v1.30.0, #111).** `effect` accepts `"allow"` and `"deny"` and nothing else — §6.1's field table already says **MUST** and `schemas/acl-config.schema.json` already declares the enum. A rule carrying any other value **MUST** be rejected with `ACLRuleError` naming the offending value, and the rule index wherever the entry point has one — a rule under construction has no position yet, and an implementation **MUST NOT** invent one; it names the value alone. It **MUST** be rejected at **every** entry point that accepts a rule — file loading, direct construction, and runtime insertion — on §6.1.6 rule 3's reasoning, which applies here unchanged. `default_effect` is closed on the same terms, at every door that accepts one; its rejection names the offending value, there being no rule index to name. §6.2.1 closes a third door on the same reasoning in v1.31.0: a pattern array's **shape**. The three instances are one pattern — an unknown rule **key** dropped in silence (#107), a legal key's **value** dropped in silence (#111), and a legal value's **shape** read as a scope decision (#112) — and in all three the constraint was already declared in `schemas/acl-config.schema.json` and enforced by no entry point, because no implementation validates an ACL file against the schema at load time.
 
 An implementation **MUST NOT** resolve an unrecognised `effect` to a decision, nor pass it through as one. **Closing the doors is the mechanism**; once every entry point rejects, no evaluation-time branch for an unrecognised value is reachable through any API this specification defines, and the decision read becomes total over the closed set rather than a fallback with a default arm. A value that arrives by some route outside those doors — assigning the field on an already-constructed rule, which no constructor can intercept — is outside what this section can require: an implementation **MAY** guard it and **MUST NOT** silently normalise it. Reading an unrecognised value as `deny` is a fallback that looks safe and is not: under `default_effect: allow` a rule the operator wrote to permit becomes a rule that **denies everything it matches**, flipping the decision for those calls with no error and no warning, and the reading is only ever *accidentally* right on a `deny` rule — correct until someone revisits which way the fallback points. This is §6.1.5's own defect class one level down: there the key was unknown and dropped, here the key is legal and its value is dropped, and the silence is identical.
 
@@ -4003,16 +4005,218 @@ rule_matching:
 
 ### 6.2.1 Compound Operators in Pattern Arrays
 
-The `callers` and `targets` pattern arrays **MAY** use the compound operators `$or` and `$not` as the **first element** to alter the default OR-of-patterns semantics.
+The `callers` and `targets` pattern arrays **MAY** use the compound operators `$or` and
+`$not` as the **first element** to alter the default OR-of-patterns semantics.
 
-| Form                          | Semantics                                                                                                  |
-|-------------------------------|------------------------------------------------------------------------------------------------------------|
-| `["$or", p1, p2, ...]`        | **MUST** match the module ID if any of `p1, p2, …` matches. Observably equivalent to a flat list (which is also OR-ed) but documents intent explicitly. |
-| `["$not", p]`                 | **MUST** match the module ID if `p` does **not** match.                                                    |
-| `["$not"]` (no pattern)       | **MUST** evaluate to false (fail-closed).                                                                  |
-| `["$not", p1, p2, ...]`       | Implementation-defined: SDKs **MUST** consult `p1` and **MAY** ignore subsequent patterns. Authors **SHOULD NOT** rely on this form. |
+| Form | Operands | Semantics |
+|---|---|---|
+| `[p1, p2, ...]` | at least 1 | The default. **MUST** match the module ID if any of `p1, p2, …` matches. |
+| `["$or", p1, p2, ...]` | at least 1 | **MUST** match the module ID if any of `p1, p2, …` matches. Observably equivalent to a flat list (which is also OR-ed) but documents intent explicitly. |
+| `["$not", p]` | exactly 1 | **MUST** match the module ID if `p` does **not** match. |
 
-When `$or` or `$not` appear at any position other than index 0 of a pattern array, implementations **MUST** treat them as literal pattern strings (no special semantics). Implementations **MUST NOT** match a literal module ID equal to `"$or"` or `"$not"` under default-deny semantics — these tokens are reserved for compound-operator use.
+**A pattern array is FLAT. The operators do not nest and there is no precedence
+(v1.31.0, #112).** An operand is always a plain pattern string, never a nested array and
+never another operator. There is exactly one operator position — index 0 — and everything
+after it is an operand. `$or` and `$not` therefore have **two different grammars** in this
+specification, and only one of them nests:
+
+| | in `conditions` (§6.1.1) | in a pattern array (this section) |
+|---|---|---|
+| operand | a condition **object** | a pattern **string** |
+| nesting | arbitrary — `$or[1].$not.k` is a defined path (§6.1.4) | **none** |
+| how many operators per expression | any number, at any depth | exactly one, at index 0 |
+
+A reserved token at any index other than 0 is therefore **not** a nested operator and
+**not** a usable pattern: `["$or", "$not", "a"]` is not "or-of-not", and
+`["a", "$not", "b"]` is not "a, but not b". Both are rejected — see the closure below.
+Through v1.30.0 this section instead required such a token to be *"treated as a literal
+pattern string"* while also requiring that a literal module ID equal to `"$or"` or `"$not"`
+**MUST NOT** be matched, which is a pattern the specification guarantees can never match
+anything: dead weight in a security policy, and the two clauses together were honoured by no
+implementation. Rejecting the token outside index 0 replaces both with one structural rule
+and makes the reserved-token guarantee hold by construction.
+
+**Not every intent is expressible in one pattern array, and that is deliberate.**
+`NOT (a OR b)` has no single-array form: `$not` takes exactly one operand and the array's
+own combinator is OR, so there is no way to write "neither `a` nor `b`" as one field. Use a
+glob when the excluded patterns share a prefix, and otherwise **first-match-wins with two
+rules**, which is the idiom §6.3 already provides:
+
+```yaml
+rules:
+  # "everything except executor.secrets.a and executor.secrets.b"
+  - callers: ["*"]
+    targets: ["$or", "executor.secrets.a", "executor.secrets.b"]
+    effect: deny
+    description: "Excluded targets, refused first"
+  - callers: ["*"]
+    targets: ["*"]
+    effect: allow
+    description: "Everything else"
+default_effect: deny
+```
+
+!!! warning "The two-rule form is not a drop-in replacement inside an existing rule list"
+    The two forms differ in what happens to the excluded calls. `["$not", p]` makes the
+    rule **not match** `p`, so evaluation **continues** and a later rule may still decide
+    it. A leading `deny` on `p` **ends** the scan for `p`. They agree only when nothing
+    after the rule could have matched `p` and `default_effect` would have refused it
+    anyway — which is true of the complete policy above and is **not** true in general.
+    Inserting a leading `deny` into an existing rule list changes the decision for every
+    call that a later rule was written to allow. Rewriting a rule into this form is a
+    change to the policy's order, not a local substitution.
+
+**Worked examples.** Every legal form, and every form that looks legal and is not:
+
+```yaml
+# ---- legal ----
+targets: ["executor.*"]                       # one pattern
+targets: ["api.*", "worker.*"]                # OR, implicitly
+targets: ["$or", "api.*", "worker.*"]         # OR, explicitly — same meaning, states intent
+targets: ["$or", "api.*"]                     # one operand under $or is legal, if pointless
+targets: ["$not", "executor.secrets.*"]       # "anything that is not executor.secrets.*"
+
+# ---- rejected: arity (§6.2.1 closure) ----
+targets: []                                   # no operands — matches nothing, so the rule is no rule
+targets: ["$or"]                              # OR over nothing
+targets: ["$not"]                             # negation of nothing
+targets: [""]                                 # the empty pattern matches no legal module ID
+targets: ["$not", "a", "b"]                   # $not takes EXACTLY one operand.
+                                              #   Before v1.31.0 this silently meant ["$not", "a"],
+                                              #   so an `allow` rule GRANTED "b" — write two rules.
+
+# ---- rejected: a reserved token outside index 0 (there is no nesting) ----
+targets: ["$or", "$not", "a"]                 # NOT "or-of-not". Before v1.31.0 the "$not" was a
+                                              #   literal pattern and the array matched "a" and a
+                                              #   module literally named "$not".
+targets: ["api.*", "$not", "cli.*"]           # NOT "api.* but not cli.*". No such form exists.
+
+# ---- legal, but reported by validate_rules() as matching nothing (§6.2.1 tier 2) ----
+targets: ["$not", "*"]                        # "not everything" is well-formed and matches nothing
+```
+
+**Arity is part of the form, and the set of arities is closed (v1.31.0, #112).** A pattern
+array **MUST** carry at least one operand and every element **MUST** be a non-empty string:
+`callers` and `targets` **MUST NOT** be empty, no element **MUST** be the empty string,
+`$or` at index 0 **MUST** be followed by at least one pattern, `$not` at index 0 **MUST**
+be followed by exactly one, and `$or` / `$not` **MUST NOT** appear at any index other
+than 0. A rule violating any of these **MUST** be rejected
+with `ACLRuleError`, naming the field (`callers` / `targets`) and the rule index wherever
+the entry point has one — a rule under construction has no position yet, and an
+implementation **MUST NOT** invent one (§6.1.5). It **MUST** be rejected at **every** entry
+point that accepts a rule — file loading, direct construction, and runtime insertion — on
+§6.1.6 rule 3's reasoning, which applies here unchanged. **Closing the doors is the
+mechanism**, exactly as it is for the `effect` value set: `schemas/acl-config.schema.json`
+has always declared `minItems: 1` on both fields and §6.1's field table has always required
+a list of patterns, and nothing enforced either, because no implementation validates an ACL
+file against the schema at load time.
+
+!!! danger "A pattern array with no operands is not a narrow rule; it is no rule"
+    Through v1.30.0 all three implementations returned `false` from the matcher for `[]`,
+    `["$or"]` and `["$not"]`, reading an arity fault as a scope decision. The rule was
+    then inert: with one rule in the ACL, the decision tracked `default_effect` exactly
+    across all twelve combinations of the three shapes, both effects and both defaults,
+    and `validate_rules()` reported nothing in any of them. On an `allow` rule that is
+    merely useless. On a `deny` rule under `default_effect: allow` it is a **fail-open**:
+    the call the operator wrote the rule to block is permitted, by a rule that loaded
+    without error and a validator that called it clean.
+
+    Reached from a YAML file, not only from direct construction. `ACL.load` rejects an
+    **omitted** `callers` / `targets` and permits an **empty** one; combined with the
+    matcher, `targets: []` under `effect: deny` produced a rule that loads clean and does
+    nothing.
+
+    This section's previous form called `["$not"]` "fail-closed". That is true of an
+    `allow` rule and false of a `deny` one, and the label predates §6.1.1 (v1.22.0)
+    naming the asymmetry: which direction "does not match" points is decided by the
+    rule's `effect`, so no single non-match can be called fail-closed. The **MUST** it
+    carried — "MUST evaluate to false" — is replaced rather than reinterpreted.
+
+**`$not` takes exactly one operand.** Through v1.30.0 this section made
+`["$not", p1, p2, …]` *implementation-defined*: SDKs **MUST** consult `p1` and **MAY**
+ignore subsequent patterns, with authors told they **SHOULD NOT** rely on the form. All
+three implementations consult `p1` and drop the rest, so the form is consistent across
+implementations and consistently **wider than written**. `targets: ["$not", "secrets.a",
+"secrets.b"]` on an `allow` rule reads as "anything but `secrets.a`", and `secrets.b` — the
+second target the operator excluded — is **granted**; measured in apcore-python at 0.28.
+An under-specified form whose only observable behaviour is a silent privilege escalation is
+not a form, and `SHOULD NOT rely on this` is not a guard: nothing reported it and nothing
+rejected it. A future version **MAY** define the multi-operand form as `NOT (p1 OR p2 …)`,
+which is the reading an operator writing it already has; rejecting it now is what keeps
+that option open, because nothing can come to depend on the present reading in the
+meantime.
+
+**A well-formed array that can still match nothing is reported, not rejected (v1.31.0,
+#112).** Closing the arities above does not exhaust the shapes that make a rule inert, and
+an implementation **MUST NOT** read the closure as though it did. A pattern array that is
+well-formed under every rule above and that **matches no legal module ID for any input** is
+a rule that protects nothing, and `validate_rules()` (§6.1.2) **MUST** report it — with the
+same finding shape as a structural fault: path `callers` / `targets`, a **null** key, and
+both resolvability flags `false`. It **MUST NOT** be rejected and **MUST NOT** change any
+access decision.
+
+The criterion is normative and the list is a **minimum**, not a closed set — the mistake
+§6.1.1 corrected in v1.25.0 was enumerating where it should have stated a principle. Every
+implementation **MUST** detect at least:
+
+- `["$not", p]` where `p` matches every module ID — `*`, `**`, or any pattern consisting
+  only of wildcards. `!true` is false for every input, so the rule fires for nothing.
+- `["@external"]` as a **`targets`** pattern. `@external` is the caller-side sentinel §6.5
+  substitutes for a null `caller_id`; no module ID is `@external`, so as a target pattern it
+  matches nothing. It remains entirely legal in `callers`, which is what it is for.
+
+The array is judged **as a whole**, never element by element. The criterion is that *the
+array* matches no legal module ID, so a flat or `$or` array is reported only when **every**
+operand is unmatchable: `targets: ["@external"]` is reported and
+`targets: ["api.*", "@external"]` is **not**, because `api.*` still matches. The MUST-detect
+list above names whole-array shapes and would otherwise be readable as "report any
+occurrence of the token", which would report a rule that works.
+
+An implementation **MAY** report further shapes it can prove match nothing. Divergence in
+this finding set between implementations is **acceptable and expected**, and is the reason
+this is a validator finding rather than a rejection: §6.1.4's determinism guarantee binds
+precheck-origin diagnostics because they feed `handler_error` and the decision, and tier-2
+findings feed neither. A rejection whose predicate differed between SDKs would mean the same
+ACL file loads in one language and fails in another, which is the cross-language split
+§6.1.5 exists to prevent. §6.1.3's sentence governs: *this is diagnostics, not enforcement.*
+
+**The backstop, for the route no door covers.** A value that arrives outside the entry
+points — assigning `callers` or `targets` on an already-constructed rule, which every
+implementation's rule type permits and no constructor can intercept — is outside what a
+rejection reaches. Unlike an unrecognised `effect`, which once the doors are closed is
+never read again, a mutated pattern array **is** read: the matcher consults it on the next
+`check()`. A pattern array that reaches evaluation violating any clause of the closure above
+is therefore a **precheck fault** under §6.1.4.1, on the same terms as a malformed type:
+the rule's scope is unreadable, the rule is UNEVALUABLE, and §6.1.1's effect table decides
+— a `deny` rule takes effect and denies, an `allow` rule does not match and **MUST NOT**
+grant. `validate_rules()` (§6.1.2) **MUST** report it as §6.1.3 rule 3's keyless structural
+fault: path `callers` / `targets`, a **null** key, and both resolvability flags `false`.
+
+An arity fault is a malformed pattern field like any other, with no partially-readable
+tier. In particular §6.1.1 rule 5's "unknowable scope counts as scope" applies unchanged:
+a rule carrying `approval: required` whose pattern field is malformed **MUST** raise the
+pending requirement. `targets: []` is legible as an empty scope in a way `targets: 3` is
+not, and an implementation **MUST NOT** act on that difference — deciding per fault kind
+whether a field is "readable enough" is the per-implementation judgement call that
+produced three different answers in #100, and the direction it would resolve is toward
+asking a human less often.
+
+**Two points of order, so three implementations cannot answer them three ways (v1.31.0, #112).**
+
+1. **`add_rule` re-validates the rule it is handed.** A rule offered to runtime insertion **MUST** be validated at that moment, whatever its history — including a rule that was well-formed when constructed and has since had `callers` or `targets` assigned. An implementation **MUST NOT** rely on the rule type's own construction-time check to cover this door. §6.1.5's v1.30.0 text leaves mutation-then-use to a **MAY** for `effect`, which is sound there because a closed `effect` is never read again; a pattern array **is** read, by the matcher, on the next `check()`. Measured while implementing this: two of three implementations re-validated and one did not, and §8's fixture cannot express the difference, because `entry_points` deliberately carries no per-door expectation.
+2. **Validation order is `effect` -> `approval` -> `callers` / `targets`, and rule index dominates all three.** A rule that is bad on more than one axis **MUST** be refused for the first axis it fails, and a rule set with more than one bad rule **MUST** be refused for the **lowest-indexed** bad rule — an implementation **MUST NOT** sweep one axis across every rule before looking at the next axis. **"Axis" here means every per-rule check the door performs, not only the three named above.** A loader has others that the other doors cannot have — the rule key set (§6.1.5), a missing `callers` / `targets`, the value types — and each is an axis for this purpose. Measured: one implementation's loader swept the rule-key closure across the whole file before any rule's `effect` was read, so a file carrying `effect: "Allow"` on rule 0 and an unknown key on rule 1 was refused for **rule 1**. Both halves are required for the same reason: so one file produces one error, whichever door it arrives through and whichever implementation reads it.
+
+    The pattern fields are **one axis**, covering §6.1.4.1's type fault and this section's shape closure together, and `callers` precedes `targets` throughout. Within the axis the type fault comes first — a value must be a list of strings before its arity means anything — **wherever both can surface**, which is a loader (it rejects both) and the precheck (it reports both). A door that accepts an already-built rule object rejects the shape fault and leaves the type fault to §6.1.4.1's precheck; that asymmetry is deliberate and unchanged, and is why this sentence is scoped rather than absolute.
+
+    This ordering is stated here for the first time. §6.1.6 rule 2 *implies* that `effect` is read before `approval`, since judging "`deny` plus `approval: required`" requires knowing the effect, but it states no order and an implementer reading §6.1.6 alone will not find one.
+
+    **`default_effect` is judged before any rule.** It is not a rule and has no index, so the ordering above does not reach it — yet a file wrong in both `default_effect` and a rule is precisely the "one file, one error" case this paragraph exists for, and would otherwise name the rule at one door and `default_effect` at another. It **MUST** be validated first, at every door that accepts one — **first meaning ahead of the file-level checks on the `rules` collection itself**, not merely ahead of the individual rules. A document that is both missing `rules` and carrying an unrecognised `default_effect` is refused for the `default_effect`. That boundary is stated because it is the one place "first" is genuinely ambiguous, and a doubly malformed document is refused either way — only the message differs, which is exactly what this paragraph exists to make deterministic.
+
+    Measured while implementing this, on rules that differ only in which axis is bad: `{callers: [], targets: [], effect: "Allow"}` was refused for its `effect` in one implementation and for its patterns in another; a third ran `effect` -> patterns -> `approval`; and within one implementation `ACL.load` reported the lower-indexed rule's pattern fault while direct construction reported a higher-indexed rule's `effect` fault, because one validated rule by rule and the other swept axis by axis. Every one of those was conformant before this paragraph.
+
+**Reporting order is unchanged, and is not the same question.** `validate_rules()` (§6.1.2 rule 3) still orders findings by rule index, then **lexicographically by path**, so a pattern fault **interleaves** with condition faults - `$or[0].k` before `callers` before `roles` before `targets` - rather than being grouped ahead of them. Point 2 above governs which single refusal a *rejecting* entry point raises; it does not regroup what a *reporting* validator returns.
+
+**At most one finding per field, and the closure wins.** A field that fails the closure above is reported for that failure and **MUST NOT** also be reported as never-matching: the never-matching criterion presumes a well-formed array, so evaluating it against a malformed one is meaningless. Without this, implementations agree on every decision and disagree on finding *counts*.
 
 ### 6.3 Rule Evaluation Algorithm
 
@@ -4120,7 +4324,7 @@ Steps:
 |------|------|------|
 | `caller_id` is null | Treat as `@external` | **MUST** |
 | `rules` is empty | Use `default_effect` | **MUST** |
-| `callers` or `targets` in rule is an empty **list** | Rule never matches | **MUST** |
+| `callers` or `targets` shape is outside §6.2.1 — empty, an empty element, `$or` with no operands, `$not` with none or more than one, or a reserved token away from index 0 | Rejected with `ACLRuleError` at every entry point (§6.2.1); unevaluable → §6.1.4.1 if assigned onto a constructed rule | **MUST** |
 | Conditions present but no context provided | Rule does not match; **SHOULD** warn (see below) | **MUST** |
 | `callers` or `targets` is not a list of strings | Unevaluable → §6.1.4.1 — **MUST NOT** be read as a pattern set | **MUST** |
 | Condition key has no registered handler | Unevaluable → §6.1.1 | **MUST** |
@@ -8814,3 +9018,4 @@ Each language SDK **SHOULD** provide idiomatic module definition syntax. The fol
 | 1.28.0 | 2026-08-28 | **§6.1.6–§6.1.8, §6.8.1, §6.9 — governance could not ask a human about what a call carried (#108).** Every decision point that can read a call's arguments was unable to escalate it to approval, and the one point that decides whether to ask a human is forbidden by §7.9.6 rule 2 from consulting them. The ACL could **refuse** on arguments and `ApprovalHandler` could **wave through** on arguments; nothing could **ask**, and a refusal is not a question — so an operator who needed `git push --force` reviewed had to gate every `git push`, which dilutes `requires_approval` from "this needs approval" to "this might" and floods the audit trail. §6.1.6 splits the two results: `effect` keeps authorization, an orthogonal optional `approval` field carries the requirement, and `approval: required` on a `deny` rule is rejected at load because the combination means nothing. §6.1.7 adds ONE built-in condition key, `arguments`, to the language §6.1 already defines rather than beside it — `has_key` / `has_all_keys` / `has_none_of`, and **no predicate reads a value**: redaction is schema-driven so a module without an input schema gets none, and the ACL runs at Step 4 while validation runs at Step 7, so key presence is the only question well-defined on what is available. It is built-in with no registration point, because a deployment-registered argument handler is precisely the unauditable host code §7.9.6 rule 2 keeps out of a verdict. §6.1.8 gives the condition a **governance projection** computed at Step 3 — key set, optionally types, never values — rather than `redacted_inputs`, whose contract is safe logging and which is a raw copy when no schema exists. §6.8.1 adds the structured `AccessDecision` beside the boolean, and requires the legacy `check()` to **fail closed** on an approval requirement: a non-Executor caller can only read a boolean as "let it through", and returning true would run a call the ACL said needed a human. §6.9 pins the precedence, of which one row is not obvious — a module-scoped `ExecutionPolicy` override may ADD an approval requirement and **MUST NOT** remove one the caller-scoped ACL set, or a policy written for `orders.*` silently strips a requirement an author attached to one untrusted caller. §6.3.1 gains `approval_required` beside `decision` rather than widening it, since `decision` is a string downstream consumers parse. §7.4 and §7.9.5 consume the union. **Deliberately NOT specified:** an argument predicate on `PolicyRule` (a second condition language over one decision point), a pluggable `ExecutionPolicy` (withdrawn as rule 3(b) in v1.25.0 for the same reason), and value-level argument predicates. This was only safe once v1.27.0 closed the rule key set: an SDK that still dropped unknown keys would read a rule carrying `approval` as a bare rule and act on half of what its author wrote. **This IS an SDK change** in all three. Governance: maintainer approval per GOVERNANCE.md § Decision Making; tracking issue #108. |
 | 1.29.0 | 2026-08-31 | **§6.1.1, §6.8.1, §6.9 — an unevaluable approval rule stepped aside and the call was granted without approval (#109).** §6.1.1 was written in v1.22.0, when a rule carried one axis, and "an `allow` rule MUST NOT grant" was then a complete instruction: it means the rule steps aside, and stepping aside was harmless because whatever granted next also said `allow`. v1.28.0 gave rules a **second** axis and §6.1.1 was not revisited for it, so "does not grant" silently discarded the `approval: required` the rule carried and handed the decision to a rule that never carried one. On the shape §6.1.7 was written for — a narrow approval rule ahead of a broad allow, which is the driving case of `acl_argument_scoped_approval.json` — the result was `allow` with `approval_required: false` on exactly the call the operator gated, with `matched_rule_index` naming a rule that never mentioned approval. Reproduced in all three SDKs. **It is not confined to the legacy boolean**: the trigger is an unevaluable approval rule, and §6.1.1 is the path §6.1.2's warn-don't-fail registration ordering, a misspelled predicate and a handler failure all take, so a misspelled `has_keys` or an unregistered condition key reaches it **with a projection present**, on the ordinary Executor pipeline. `default_effect: allow` reaches it with no second rule at all. `validate_rules()` is not a mitigation: it cannot see the projection-absent route, and §6.1.2 makes an unregistered condition key a warning rather than a load failure. §6.1.1 rule 5 makes the requirement **pending** rather than discarded — recorded when the unevaluable `allow` rule's patterns match, composed by disjunction with whatever later grants including `default_effect: allow`, cleared by a denial, and **not** raised by a rule whose patterns do not match, so a rule written about one caller cannot attach a human to calls it was never written about. A rule whose own `callers`/`targets` field is malformed does raise it: its scope cannot be read, so it cannot be shown not to apply, which is the same posture that field already produces under `deny`, where it denies every call. Requiring a human rather than denying is deliberate — the condition that could not be evaluated is the one that decides whether *this* call is the dangerous one, so refusing would turn every ordinary `git push` into the hard failure §6.1.7 exists to eliminate. §6.9 rows 1 and 2 are amended: the requirement may originate in a rule that did not match, and `default_effect: allow` carries it, which makes `approval_required: true` with `matched_rule_index: null` a legal combination. §6.8.1's fail-closed rule is restated as a property of the **decision** rather than of the matched rule. §6.1.6 rule 1 additionally states that `not_required` is the **absence** of a requirement and never the suppression of one, so writing it explicitly on a broad rule does not cancel a pending one — there is deliberately no way to spell "and cancel anything else" on a rule, for the reason §6.9 rule 4 refuses that power to a policy. **Backward compatible for correct configurations:** across all 20 cases of `acl_argument_scoped_approval.json` with a projection present, no decision changes; without one, two change, both `approval_required: false` → `true`, which also flips the legacy `check()` boolean to `false` on those calls — visible to any tooling reading it, and intended. **This IS an SDK change** in all three. Folded into this same unreleased version: **§3's `requires_approval` definition said `false` meant no consent was needed (#110)**, which v1.28.0 made untrue — the annotation is one source among several and §6.9 rows 3-5 union them, so a call on a module declaring `false` can still require approval. The definition, both JSON Schemas and §3's AI reading guide now say the annotation describes the MODULE while `validate()` (§7.9.5) describes the CALL. **Deliberately NOT specified:** a `conditional` tri-state on the annotation — the module author cannot know the answer, since it depends on the ACL and policy the deployment loads, so a third value would have to be computed by the framework rather than declared, which is `validate()` with extra steps and a breaking change to a field every consumer reads as a boolean. No behaviour change and no SDK change for #110. Governance: maintainer approval per GOVERNANCE.md § Decision Making; tracking issues #109 and #110. |
 | 1.30.0 | 2026-08-31 | **§6.1.5 — a rule's `effect` accepted any string outside the YAML loader and was silently read as `deny` (#111).** v1.27.0 closed the rule **key** set because an unknown key was dropped in silence and widened an `allow` rule. The same silence sat one level down on a legal key's **value**: §6.1's field table says `effect` **MUST** be `allow | deny` and `schemas/acl-config.schema.json` declares the enum, but nothing enforced it away from the file path. Measured across the SDKs on `effect: "Allow"` — apcore-python and apcore-typescript rejected it from `ACL.load()` and **accepted** it through direct construction and `add_rule()`; apcore-rust rejected it at `load` and at construction and **accepted** it at `add_rule()`, whose validation covered §6.1.6's `deny` + `approval` combination and nothing else. **All three implementations had a hole and merely had different ones**, which is why the closure is stated per entry point rather than per implementation. All three emit the identical loader message, so the check existed everywhere and simply was not reached from every door. Every implementation meanwhile validated **`default_effect`** — the same two values one field up — at every door it reaches, so the inconsistency was internal as well as cross-language. §6.1.6 rule 3 already requires rejection at file loading, direct construction and runtime insertion, and had never been applied to the field it is named after. **Not a privilege escalation** — no unknown value grants — but a silent functional break, and in two distinct shapes. Where the value is normalised toward `deny`, a rule written to permit denies everything it matches under `default_effect: allow`, and the reading is only accidentally right on a `deny` rule. Where it is not inspected at all, as in apcore-rust, the raw string reached `AccessDecision.access` and the audit `decision` field — `effect: "Allow"` produced `access: "Allow"`, a verdict no consumer parses — and the same literal comparison silently dropped any `approval: required` the rule carried, re-entering §6.1.1 rule 5's defect class through a typo in another field. An implementation **MUST NOT** resolve an unrecognised `effect` to a decision, nor pass it through as one. `default_effect` is stated on the same terms rather than left correct-by-convention, naming the offending value since it has no rule index. **This IS an SDK change** in all three. Governance: maintainer approval per GOVERNANCE.md § Decision Making; tracking issue #111. |
+| 1.31.0 | 2026-09-04 | **§6.2.1 — a pattern array with no operands was read as a scope decision, and made the rule inert (#112).** `callers` / `targets` of `[]`, `["$or"]` or `["$not"]` can never match, and all three SDKs agreed on returning `false` from the matcher, so the rule contributed nothing: with one rule in the ACL the decision tracked `default_effect` exactly across all twelve combinations of the three shapes, both effects and both defaults, and `validate_rules()` reported nothing in any of them. On a `deny` rule under `default_effect: allow` that is a **fail-open** — the call the operator wrote the rule to block is permitted, by a rule that loaded without error and a validator that called it clean — and it is reachable from a plain YAML file, because `ACL.load` rejects an omitted `callers` / `targets` and permits an empty one. Arity is now **closed at every entry point** on §6.1.5's mechanism: at least one operand, `$or` at least one pattern, `$not` exactly one, rejected with `ACLRuleError` at file loading, direct construction and runtime insertion alike. `schemas/acl-config.schema.json` has declared `minItems: 1` on both fields since the file existed and nothing enforced it — the third instance of #107's and #111's shape, in which the constraint was declared in the schema and no door enforced it, because no implementation validates an ACL file against the schema at load time. **Three MUSTs are replaced, not reinterpreted.** §6.5's edge-case table required an empty list to make the rule "never match", which is the behaviour this entry describes as a fail-open, stated one row above the row that already routes the *type* fault to §6.1.4.1. §6.2.1 required `["$not"]` (no pattern) to "evaluate to false (fail-closed)"; the parenthetical predates §6.1.1 (v1.22.0) and is wrong — a non-match is fail-closed on an `allow` rule and fail-**open** on a `deny` one. And `["$not", p1, p2, …]` was *implementation-defined*, consult `p1` and ignore the rest: all three SDKs do exactly that, so the form was uniform across implementations and uniformly **wider than written**, granting `secrets.b` from `targets: ["$not", "secrets.a", "secrets.b"]` on an `allow` rule — a silent privilege escalation from a form the specification blessed with `SHOULD NOT rely on this`. A future version MAY define the multi-operand form as `NOT (p1 OR p2 …)`; rejecting it now is what keeps that option open. **A pattern array is also stated to be FLAT** — the operators do not nest and there is no precedence — which this section never said, while `$or` / `$not` nest arbitrarily in `conditions`: an operator who learned the condition grammar and wrote `["$or", "$not", "a"]` got an OR of two literals that matched `a` and also matched a module literally named `$not`, violating this section's own reserved-token **MUST NOT**, which no implementation honoured. A reserved token outside index 0 is now rejected, which makes that clause hold by construction, and the section gains the worked examples it never had. **A second, validator-only tier is added**, because closing the arities does not exhaust the inert class: `["$not", "*"]` has legal arity, exactly one operand, and matches nothing, producing the identical fail-open. Such an array loads, is reported by `validate_rules()`, and changes no decision — stated as a criterion with a MUST-detect minimum rather than an enumeration, because its predicate cannot be closed without freezing the pattern language, and an incomplete predicate at a door would mean the same ACL file loads in one language and fails in another. §6.1.4.1 is extended from the field's type to its type **and** shape, as the backstop for the one route no door covers — assigning the field on an already-constructed rule, which no constructor can intercept and which, unlike an unrecognised `effect`, the matcher still reads. **This IS an SDK change** in all three, and a **breaking** one for any deployment currently carrying one of these shapes — which is exactly the population that believes it has a rule and does not. Governance: maintainer approval per GOVERNANCE.md § Decision Making; tracking issue #112. |

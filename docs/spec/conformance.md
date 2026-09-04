@@ -602,18 +602,19 @@ Implementations declaring conformance **MUST** list any of these deviations that
 
 ## 8. Conformance Test Fixtures
 
-The repository ships **67 cross-language fixture files** under `conformance/fixtures/` covering **762 test cases**. These two numbers are checked against the fixtures themselves by `conformance-integrity`, together with §8.1's per-fixture counts and its Total row — a count nobody verifies reads as coverage in every review and every inventory built from it. Each fixture is a JSON document of shape `{ "description": "...", "test_cases": [...] }` consumed by all three SDK test runners (apcore-python, apcore-typescript, apcore-rust). A SDK declaring a conformance level **MUST** pass every fixture whose tested feature is required at that level (see §2 Level 0, §3 Level 1, §4 Level 2 for the per-feature breakdown).
+The repository ships **68 cross-language fixture files** under `conformance/fixtures/` covering **811 test cases**. These two numbers are checked against the fixtures themselves by `conformance-integrity`, together with §8.1's per-fixture counts and its Total row — a count nobody verifies reads as coverage in every review and every inventory built from it. Each fixture is a JSON document of shape `{ "description": "...", "test_cases": [...] }` consumed by all three SDK test runners (apcore-python, apcore-typescript, apcore-rust). A SDK declaring a conformance level **MUST** pass every fixture whose tested feature is required at that level (see §2 Level 0, §3 Level 1, §4 Level 2 for the per-feature breakdown).
 
 ### 8.1 Fixture Inventory
 
 | Fixture | Cases | Tested feature |
 |---------|------:|----------------|
 | [`acl_agent_scoping`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/acl_agent_scoping.json) | 19 | Agent-scoped ACL governance: per-agent caller patterns and scoping rules (spec §6) |
-| [`acl_evaluation`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/acl_evaluation.json) | 21 | ACL rule evaluation, first-match-wins (spec §6) |
+| [`acl_evaluation`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/acl_evaluation.json) | 19 | ACL rule evaluation, first-match-wins (spec §6) |
 | [`acl_handler_error`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/acl_handler_error.json) | 15 | An unevaluable ACL condition resolves toward refusing access; `handler_error` names the condition path (spec §6.1.1 / §6.1.4 / §6.1.4.1) |
 | [`acl_argument_scoped_approval`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/acl_argument_scoped_approval.json) | 25 | Authorization and approval requirement are two orthogonal results; the built-in `arguments` condition scopes a rule to this call; an unevaluable rule's requirement is pending, not discarded (spec §6.1.1/§6.1.6/§6.1.7/§6.1.8/§6.9) |
 | [`acl_rule_key_closure`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/acl_rule_key_closure.json) | 10 | ACL rule keys are a closed set; an unknown or reserved key fails the load (spec §6.1) |
 | [`acl_effect_value_closure`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/acl_effect_value_closure.json) | 10 | A rule's `effect` value is a closed set at every entry point — file loading, direct construction and runtime insertion; `default_effect` on the same terms (spec §6.1.5) |
+| [`acl_pattern_arity`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/acl_pattern_arity.json) | 51 | A `callers` / `targets` pattern array's shape is a closed set at every entry point, plus a validator-only tier for well-formed arrays that match nothing (spec §6.2.1) |
 | [`acl_root_discovery`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/acl_root_discovery.json) | 10 | `ACL.discover()` config-driven `acl.root` resolution; missing path MUST attach nothing (spec §6) |
 | [`annotations_extra_round_trip`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/annotations_extra_round_trip.json) | 8 | `ModuleAnnotations.extra` wire-format round-trip (spec §4.4) |
 | [`approval_gate`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/approval_gate.json) | 5 | Approval gate enforcement at Executor Step 5 |
@@ -675,7 +676,7 @@ The repository ships **67 cross-language fixture files** under `conformance/fixt
 | [`usage_contract`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/usage_contract.json) | 11 | `system.usage.*` value semantics no schema can assert (spec §6.7.1) |
 | [`usage_exporter`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/usage_exporter.json) | 3 | `UsageExporter` push interface (#45 §3, D-55) |
 | [`version_negotiation`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/version_negotiation.json) | 10 | Version negotiation (Algorithm A14) |
-| **Total** | **762** | **67 fixtures** |
+| **Total** | **811** | **68 fixtures** |
 
 ### 8.2 Loading Fixtures from a Test Runner
 

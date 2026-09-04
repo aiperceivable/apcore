@@ -55,14 +55,8 @@
       "additionalProperties": false,
       "properties": {
         "callers": {
-          "type": "array",
+          "$ref": "#/$defs/PatternArray",
           "description": "List of caller module ID patterns. Supports wildcards: '*' matches any characters. Special values: '@external' for top-level/external calls, '@system' for internal system calls.",
-          "items": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 192
-          },
-          "minItems": 1,
           "examples": [
             [
               "orchestrator.*"
@@ -79,14 +73,8 @@
           ]
         },
         "targets": {
-          "type": "array",
+          "$ref": "#/$defs/PatternArray",
           "description": "List of target module ID patterns. Supports wildcards: '*' matches any characters.",
-          "items": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 192
-          },
-          "minItems": 1,
           "examples": [
             [
               "executor.*"
@@ -260,6 +248,60 @@
           "default": true
         }
       }
+    },
+    "PatternArray": {
+      "type": "array",
+      "description": "A `callers` or `targets` pattern array. The array is FLAT - the operators do not nest, there is no precedence, and an operand is always a plain pattern string. Shape is CLOSED (PROTOCOL_SPEC §6.2.1): at least one non-empty element; `$or` at index 0 followed by at least one pattern; `$not` at index 0 followed by exactly one; and `$or` / `$not` nowhere but index 0, because a reserved token elsewhere is a pattern the specification guarantees can never match. A shape that can never match makes the rule inert - and under `default_effect: allow` an inert `deny` rule permits the call it was written to block (#112).",
+      "minItems": 1,
+      "prefixItems": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 192
+        }
+      ],
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 192,
+        "not": {
+          "enum": [
+            "$or",
+            "$not"
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "type": "array",
+            "minItems": 1,
+            "prefixItems": [
+              {
+                "const": "$or"
+              }
+            ]
+          },
+          "then": {
+            "minItems": 2
+          }
+        },
+        {
+          "if": {
+            "type": "array",
+            "minItems": 1,
+            "prefixItems": [
+              {
+                "const": "$not"
+              }
+            ]
+          },
+          "then": {
+            "minItems": 2,
+            "maxItems": 2
+          }
+        }
+      ]
     }
   }
 }
