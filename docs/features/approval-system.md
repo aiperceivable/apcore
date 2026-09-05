@@ -397,5 +397,24 @@ These handlers are provided by the respective bridge packages, not by apcore cor
 ### Properties
 - async: true (approval may require human interaction or external service call)
 - thread_safe: true
+
+## Contract: ApprovalHandler.check_approval
+
+### Inputs
+- `approval_id` (str/string/&str, required) — the token returned in a prior `ApprovalResult.approval_id` for a `pending` decision (Phase B)
+
+### Errors
+- `ApprovalDeniedError(code=APPROVAL_DENIED)` — approval was explicitly denied by the handler
+- `ApprovalTimeoutError(code=APPROVAL_TIMEOUT)` — approval was not received within the deadline
+- `ApprovalPendingError(code=APPROVAL_PENDING)` — the decision is still outstanding; the caller MUST retry later with the same `_approval_token`
+
+### Returns
+- On success (approved): `ApprovalResult` with `status="approved"`
+- Default/no-op implementation: `ApprovalResult` with `status="rejected"` — a handler that does not implement Phase B SHOULD return `rejected` rather than raise, per the `ApprovalHandler` protocol definition above
+
+### Properties
+- async: true (Phase B resume may itself require a round-trip to an external approval store)
+- thread_safe: true
+- pure: false — for handlers that implement Phase B, the call typically reads (and, on a terminal decision, clears) persisted approval state keyed by `approval_id`
 - pure: false (may emit notifications or persist state)
 - idempotent: false

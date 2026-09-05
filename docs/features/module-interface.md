@@ -498,6 +498,50 @@ For YAML-based bindings and decorator details, see [Decorator & YAML Bindings](.
 - Sync/async dispatch tests cover both `def` and `async def` modules invoked through `call()` and `call_async()`.
 - Function-based form tests verify schema generation parity with class form.
 
+## Contract: Module.preview
+
+Optional method. A module that does not implement it is conformant; the framework treats its absence as "no preview available" and never synthesizes one.
+
+### Inputs
+- `inputs` (dict/object/Value, required) — the same call arguments `execute()` would receive
+- `context` (`Context`, required) — the per-call context
+
+### Errors
+- No errors are defined by this contract. A preview is advisory: an implementation that cannot produce one SHOULD decline by not implementing the method, rather than raising from it.
+
+### Returns
+- On success: `dict`/object/`Value` — a **low-fidelity** result an AI agent can use to verify its plan before committing to execution. It is not required to equal what `execute()` would return, and callers MUST NOT treat it as an authoritative result.
+- Surfaced through `Executor.validate()` as the optional `module_preview` check, appended only when the target module implements this hook (see [Contract: APCore.validate](./apcore-client.md#contract-apcorevalidate)).
+
+### Properties
+- async: language-dependent, matching the module's own `execute()` dispatch model
+- thread_safe: true — MUST tolerate concurrent invocation, since preview runs on the same pipeline as any other call
+- pure: **true — this is the defining constraint.** `preview()` MUST NOT perform the side effects `execute()` would. A preview that writes, sends, charges, or deletes defeats the only reason the hook exists.
+- idempotent: true — a consequence of the purity requirement
+
+## Contract: Module.as_streaming
+
+**SDK Scope:** Rust only. Python and TypeScript resolve the streaming surface structurally — a `@runtime_checkable` Protocol and a `Symbol.for("apcore.streaming")` marker respectively — so neither needs an accessor to obtain a typed handle. See [Streaming Module Interface](./streaming.md#streaming-module-interface-issue-62).
+
+### Inputs
+- No inputs (a `&self` accessor on the base `Module` trait)
+
+### Errors
+- No errors raised. Absence of a streaming surface is reported as `None`, not as a failure.
+
+### Returns
+- On success: `Option<&dyn StreamingModule>` — `Some(self)` for a module that streams, `None` otherwise. The default trait implementation returns `None`, so a non-streaming module inherits correct behavior without writing anything.
+
+### Properties
+- async: false
+- thread_safe: true
+- pure: true — a type-level accessor; it MUST NOT begin a stream, allocate a buffer, or otherwise observe or mutate module state
+- idempotent: true
+
+### Consistency requirement
+
+`as_streaming()` and [`Module::stream()`](#optional-methods) MUST agree for every module: both return `Some(_)`, or both return `None`. A module answering `Some` here while `stream()` returns `None` hands adapter code a typed handle to a surface that then refuses to produce anything — and the reverse hides a working stream from every bridge that resolves it through this accessor.
+
 ## Mapping to AI Protocols
 
 | Standard apcore field | Anthropic | A2A | MCP |

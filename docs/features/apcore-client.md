@@ -158,13 +158,14 @@ The APCore interface follows each language's idioms while maintaining functional
 | `use()` | `use_middleware()` | `use` is a reserved keyword |
 | `use_before()` | `use_before()` | Accepts `Box<dyn BeforeMiddleware>`, returns `Result<&mut Self, ModuleError>` |
 | `use_after()` | `use_after()` | Accepts `Box<dyn AfterMiddleware>`, returns `Result<&mut Self, ModuleError>` |
-| `on()` | `on()` | Returns `String` (subscriber ID) instead of an `EventSubscriber` object |
-| `off()` | `off()` | Accepts `&str` (subscriber ID) instead of an `EventSubscriber` object |
+| `on()` | `on()` | Returns `Result<String, ModuleError>` — a subscriber ID instead of an `EventSubscriber` object, wrapped in `Result` because the disabled-events error below is common to all three SDKs |
+| `off()` | `off()` | Accepts `&str` (subscriber ID) instead of an `EventSubscriber` object; returns `Result<bool, ModuleError>`, where the `bool` reports whether a matching subscriber was found. Python/TypeScript return void; the extra bit distinguishes "no such subscriber" from "events are off", which the error covers. |
 | `stream()` | `stream()` | Returns `Stream<Item = Result<Value, ModuleError>>` (true incremental streaming) |
 | `disable()` | `disable()` | Returns `Result<Value, ModuleError>`; `reason` is `Option<&str>` |
 | `enable()` | `enable()` | Returns `Result<Value, ModuleError>`; `reason` is `Option<&str>` |
 | Constructor | `APCore::new()`, `APCore::with_config(config)`, `APCore::from_path(path)` | Three construction forms |
-| `module()` | N/A | Rust has no decorators; use `impl Module` + `register()` |
+| `module()` | `module()` | Rust has no decorators, so this is a direct-registration convenience rather than an attribute macro: it builds a `FunctionModule` from an explicit metadata list — `module_id`, `description`, `input_schema`, `output_schema`, `documentation`, `tags`, `version`, `metadata`, `examples`, `display`, `handler` — and registers it in one call, mirroring the Python/TypeScript `module()` helper. `impl Module` + `register()` remains the route for a module type that needs more than a handler closure. |
+| `policy` constructor input | N/A | Python (`APCore(policy=...)`) and TypeScript (`new APCore({ policy })`) accept an `ExecutionPolicy` at construction; Rust does not. Build the `Executor` with the policy attached and pass it via `APCore::with_options(None, Some(executor), …)` — the same route both other SDKs document for a caller-supplied executor, where their own `policy` argument is likewise not applied. |
 | `events` property | `events()` method | Accessor methods instead of properties |
 | `registry` property | `registry()` method | Accessor methods instead of properties |
 | `executor` property | `executor()` method | Accessor methods instead of properties |
@@ -175,7 +176,7 @@ The APCore interface follows each language's idioms while maintaining functional
 |--------|---------|
 | `with_components(registry, config)` | Build client from a pre-configured Registry |
 | `with_options(registry, executor, config, metrics_collector)` | Full constructor with all optional parameters |
-| `reload()` | Reload config and re-discover modules |
+| `reload()` | Reload `Config` from its source file on disk. Does **not** re-discover modules — call `discover()` separately for that. |
 
 ## Usage
 
@@ -406,8 +407,28 @@ The APCore interface follows each language's idioms while maintaining functional
 - `context` (Context, optional) — execution context used for ACL and call-chain checks; auto-created when absent
 
 ### Errors
-- No errors are raised for validation failures — failures are captured in the returned `PreflightResult`
-- `InvalidInputError(code=INVALID_MODULE_ID)` — raised if `module_id` is empty or malformed (before pipeline begins)
+- No errors are raised — **including** for an empty or malformed `module_id`. Every failure, that one included, is captured in the returned `PreflightResult`.
+
+!!! note "This contract previously declared an `InvalidInputError` for malformed IDs; no SDK raises one"
+    The earlier text carried both "no errors are raised for validation failures" and
+    "`InvalidInputError(code=INVALID_MODULE_ID)` — raised if `module_id` is empty or
+    malformed (before pipeline begins)". The second was wrong, and contradicted this
+    contract's own Returns section, which lists `module_id` as the **first** of the
+    preflight checks — a check that can only report a result if the malformed case
+    reaches it rather than raising past it.
+
+    The implementations are unanimous: apcore-python's `Executor._validate_async`
+    catches the `InvalidInputError` its `_validate_module_id` raises and returns
+    `PreflightResult(valid=False, checks=[PreflightCheckResult(check="module_id",
+    passed=False, error=...)])`. That is the point of a preflight surface — a caller
+    asking "would this call work?" gets one answer shape for every reason it would not,
+    and does not have to wrap the question in a try/except to learn that the ID was
+    malformed.
+
+    Note the deliberate contrast with [Contract: Executor.call](./core-executor.md#contract-executorcall),
+    where the same malformed ID **does** raise `InvalidInputError(code=INVALID_MODULE_ID)`
+    at the entry guard. `call()` executes and must refuse; `validate()` reports and must
+    not.
 
 ### Returns
 - On success: `PreflightResult` — an object with:
@@ -677,3 +698,68 @@ The APCore interface follows each language's idioms while maintaining functional
 - thread_safe: true (MiddlewareManager holds an internal lock during removal)
 - pure: false (mutates the executor's middleware chain)
 - idempotent: true (calling `remove()` on a middleware not in the chain returns `False` without error; calling it again after a successful removal also returns `False` safely)
+
+## Contract: APCore.with_components
+
+**SDK Scope:** Rust only (see the "Rust-only methods" table above, under [Language-Specific Adaptations](#language-specific-adaptations)).
+
+### Inputs
+- `registry` (`Registry`, required) — pre-configured Registry to build the client around
+- `config` (`Config`, required) — framework configuration
+
+### Errors
+- No errors raised by `with_components` itself — it is a thin wrapper delegating to `with_options(Some(registry), None, Some(config), None)`, which does not return a `Result`. ACL-discovery and system-module-registration failures follow `with_options`'s error behavior below (caught and logged, not propagated).
+
+### Returns
+- On success: a fully initialized `APCore` instance built around the given `registry`, with a new `Executor` constructed over it and the given `config`
+
+### Properties
+- async: false
+- thread_safe: false — do not share a partially-constructed instance across threads
+- pure: false — constructs an Executor and, when `config`'s `sys_modules.enabled` is true, registers system modules and discovers/attaches an ACL as side effects
+- idempotent: false
+
+## Contract: APCore.with_options
+
+**SDK Scope:** Rust only. Python and TypeScript accept the same four options (`registry`, `executor`, `config`, `metricsCollector`) but only at `APCore.__init__` — see [Contract: APCore.__init__](#contract-apcoreinit) — not as a separately named constructor.
+
+### Inputs
+- `registry` (`Option<Registry>`, positional 1) — pre-built Registry. Ignored when `executor` is also provided (the executor's own registry is used instead); otherwise a fresh default `Registry` is created when absent.
+- `executor` (`Option<Executor>`, positional 2) — pre-built Executor. When provided, its existing ACL wiring and event-emitter wiring are respected as-is, and the config-driven ACL discovery and event-emitter attachment described below are both skipped for it.
+- `config` (`Option<Config>`, positional 3) — framework configuration; a default `Config` is used when absent
+- `metrics_collector` (`Option<MetricsCollector>`, positional 4) — observability collector; consulted only if system modules end up enabled (`config`'s `sys_modules.enabled = true`)
+
+### Errors
+- No errors raised by `with_options` itself (it does not return a `Result`). ACL discovery failures and system-module registration failures are caught internally, logged at ERROR level, and the client continues without that component — mirroring the lenient default documented under [Contract: APCore.\_\_init\_\_](#contract-apcoreinit).
+
+### Returns
+- On success: a fully initialized `APCore` instance
+
+### Properties
+- async: false
+- thread_safe: false
+- pure: false — constructs a Registry/Executor when not supplied, optionally discovers and attaches an ACL, and optionally registers system modules
+- idempotent: false
+
+## Contract: APCore.reload
+
+**SDK Scope:** Rust only — Python and TypeScript expose config reload only on the `Config` object itself (`config.reload()`), not on the client facade.
+
+### Inputs
+- No inputs
+
+### Errors
+- `ModuleError(code=RELOAD_FAILED)` — the client's `Config` was not loaded from a file (e.g., built via defaults, or via `with_options`/`with_components` with no file-backed `config`), so there is no stored path to re-read
+- `ModuleError(code=MODULE_RELOAD_CONFLICT)` — the config's internal generation counter changed during the reload (concurrent mutation detected)
+- Any error `Config::load` would raise on the same file (parse or validation failure) propagates unchanged
+
+### Returns
+- On success: `Result<(), ModuleError>` — `Ok(())`
+
+### Properties
+- async: false
+- thread_safe: false — takes `&mut self`; not safe to call concurrently with other config access on the same instance
+- pure: false — replaces the client's in-memory `Config` with a freshly re-read and re-validated copy (mounted namespaces are preserved and replayed on top of the reloaded file)
+- idempotent: true when the underlying file is unchanged between calls
+
+**Does not re-discover modules.** `reload()` only refreshes `Config`; it does not re-run module discovery. Call `APCore.discover()` afterward for that.

@@ -242,6 +242,41 @@ for info in executor.list_strategies():
 
 Built-in strategies and authoring custom ones are described in [Pipeline Hardening](#pipeline-hardening-issue-33) below.
 
+## Contract: Executor.register_strategy
+
+### Inputs
+- `name` (str/string, required) — identifier the strategy is registered under; resolvable later via `strategy=name` at Executor construction
+- `strategy` (ExecutionStrategy instance, required) — the strategy to register
+
+### Errors
+- Not normatively specified. No conformance fixture pins the duplicate-`name` case; do not assume one SDK's behavior (overwrite vs. raise) generalizes to the others.
+
+### Returns
+- On success: void/None/()
+
+### Properties
+- async: false
+- thread_safe: implementation-defined — this is a **class-level** registration (`Executor.register_strategy`, called on the class/module, not an instance — see the Rust signature `pub fn register_strategy(name: impl Into<String>, strategy: ExecutionStrategy)`, which takes no `self`), so it mutates state shared by every Executor in the process
+- pure: false — mutates the process-global named-strategy registry
+- idempotent: not specified (see Errors)
+
+## Contract: Executor.list_strategies
+
+### Inputs
+- No inputs
+
+### Errors
+- No errors raised
+
+### Returns
+- On success: `list[StrategyInfo]`/`StrategyInfo[]`/`Vec<StrategyInfo>` — one entry for the executor's current strategy plus one for every strategy registered via `register_strategy` (built-in or custom). Each `StrategyInfo` carries `name`, `step_count`, `step_names`, `description` ([design-execution-pipeline.md §2.6](../spec/design-execution-pipeline.md#26-strategyinfo)) — names only, no gate-type information (see `governance_state()` below for why that distinction matters).
+
+### Properties
+- async: false
+- thread_safe: true
+- pure: true — read-only introspection; MUST NOT mutate the executor or the strategy registry
+- idempotent: true
+
 ### Governance State API
 
 > **Added in spec v1.15.0** ([PROTOCOL_SPEC §6.6.5](../spec/protocol-spec.md#665-governance-state-query), issue #97).
@@ -327,6 +362,25 @@ Built-in strategies and authoring custom ones are described in [Pipeline Hardeni
 **What `unprotected_control_surface` does not say.** It reports the *absence of a gate*, never the presence of protection: a wired ACL that permits every call still yields `false`. And a `true` does not mean the call will succeed — a deployment may enforce through a custom step, custom middleware, or an upstream gateway, none of which this accessor can see. Do not surface it as a security verdict, and do not add an `is_secure`-shaped inverse.
 
 **Consumers.** `apcore-mcp` ([apcore-mcp#15](https://github.com/aiperceivable/apcore-mcp/issues/15)) and `apcore-a2a` ([apcore-a2a#5](https://github.com/aiperceivable/apcore-a2a/issues/5)) specify startup warnings over exactly this condition; both should call this accessor rather than re-derive it from `describe_pipeline()` output, which carries step **names** only and cannot tell a built-in gate from a look-alike.
+
+## Contract: Executor.governance_state
+
+Normative behavioral contract. See [PROTOCOL_SPEC §6.6.5](../spec/protocol-spec.md#665-governance-state-query) for the full field-by-field specification and the `unprotected_control_surface` formula.
+
+### Inputs
+- No inputs
+
+### Errors
+- No errors raised — `governance_state()` MUST NOT enforce, warn, throw, or mutate ([§6.6.5.3](../spec/protocol-spec.md#6653-constraints), constraint 1)
+
+### Returns
+- On success: `GovernanceState` — eight observation booleans (`control_modules_registered`, `read_modules_registered`, `acl_configured`, `builtin_acl_gate_wired`, `approval_handler_configured`, `builtin_approval_gate_wired`, `policy_strict`, `all_control_modules_require_approval`) plus the derived `unprotected_control_surface`. MUST NOT expose the ACL object, the `ApprovalHandler`, the `ExecutionPolicy`, or any rule content ([§6.6.5.3](../spec/protocol-spec.md#6653-constraints), constraint 2).
+
+### Properties
+- async: false
+- thread_safe: true
+- pure: true — a live read of current executor state, never cached ([§6.6.5.3](../spec/protocol-spec.md#6653-constraints), constraint 4)
+- idempotent: true — repeated calls with no intervening state change return an identical value
 
 ## Contract: Executor.call
 
@@ -465,7 +519,26 @@ This section unifies the previously separate "re-inject after deserialize" requi
 
 The binding method is a **cross-boundary contract member** — the Executor calls it, and a bridge's duck-typed `Context` MUST implement it — so it MUST be public-named in every SDK (no leading-underscore / `private` / non-`pub`). See [API Surface & Naming Conventions](../spec/api-surface-conventions.md) for the visibility-vs-discoverability rules and the worked example.
 
-## Contract: Distributed cancellation
+### Inputs
+- `executor` (Executor instance, required) — the Executor instance to bind; passed to the Context's binding method (`bind_executor` in Python/Rust, `withExecutor` in TypeScript — see [API Surface & Naming Conventions §5](../spec/api-surface-conventions.md#5-worked-example-executor-binding-to-context))
+
+### Preconditions
+- Invoked by the Executor itself, before pipeline step 1, only when `context.executor` is null at call entry (Rule 1 — Bind)
+
+### Errors
+- `CONTEXT_BINDING_ERROR` — the Executor MUST raise this when `context.executor` is non-null and refers to a **different** Executor instance (Rule 4 — Cross-executor conflict); normative as of v1.11.0
+
+### Returns
+- Python / Rust (`bind_executor`, in-place mutation): void/None/() — `context.executor` is set as a side effect
+- TypeScript (`withExecutor`, copy-on-write over `readonly` fields): a new `Context` instance with `executor` populated; the original instance is left unchanged
+
+### Properties
+- async: false
+- thread_safe: not separately specified; once bound, `context.executor` MUST NOT change for the remainder of the call chain (Rule 2 — Stability)
+- pure: false — Python/Rust mutate the Context in place; the TypeScript form does not mutate its input, but still produces a bound `Context` that downstream pipeline steps observe
+- idempotent: true when re-binding the **same** Executor instance to an already-bound Context — the Executor MUST NOT raise (Rule 3 — Same-executor idempotency); NOT idempotent across distinct Executor instances, which raise rather than overwrite (Rule 4)
+
+## Distributed Cancellation Semantics
 
 `cancel_token` is runtime-only and MUST NOT serialize (per PROTOCOL_SPEC §5.7). On the receiving node of a deserialized Context:
 
@@ -474,7 +547,7 @@ The binding method is a **cross-boundary contract member** — the Executor call
 
 The `cancel_token` parameter on `Context.create()` exists solely for **in-process cooperation** — a request handler binding the HTTP/RPC request's abort signal to the call tree it spawns locally.
 
-## Contract: `global_deadline` distributed semantics
+## `global_deadline` Distributed Semantics
 
 `global_deadline` is runtime-only and MUST NOT serialize. When a deserialized Context arrives at a remote node:
 

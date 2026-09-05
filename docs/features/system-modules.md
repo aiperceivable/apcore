@@ -91,6 +91,25 @@ Aggregated health overview of all registered modules.
 | error | error rate >= 10% |
 | unknown | No calls recorded |
 
+## Contract: system.health.summary
+
+### Inputs
+- `error_rate_threshold`: float, optional, default `0.01`
+- `include_healthy`: bool, optional, default `true`
+
+### Errors
+- No errors under normal operation — standard input-schema validation applies to malformed field types
+
+### Returns
+- On success: `dict` — `{project, summary, modules[]}` per the Output shape above
+
+### Properties
+- idempotent: true (declared via `annotations.idempotent=true`)
+- thread_safe: true — read-only aggregation over already-collected call statistics
+- async: false
+- pure: true — no state mutation
+- reentrant: true
+
 ---
 
 ### system.health.module
@@ -130,6 +149,26 @@ Detailed health information for a single module.
 }
 ```
 
+## Contract: system.health.module
+
+### Inputs
+- `module_id`: string, required
+  - reject_with: `ModuleNotFoundError` if `module_id` is not registered
+- `error_limit`: int, optional, default `10`
+
+### Errors
+- `ModuleNotFoundError` — `module_id` is not registered
+
+### Returns
+- On success: `dict` — per the Output shape above
+
+### Properties
+- idempotent: true
+- thread_safe: true
+- async: false
+- pure: true — read-only lookup over already-collected call statistics
+- reentrant: true
+
 ---
 
 ### system.manifest.module
@@ -167,6 +206,25 @@ Full manifest for a single registered module.
 }
 ```
 
+## Contract: system.manifest.module
+
+### Inputs
+- `module_id`: string, required
+  - reject_with: `ModuleNotFoundError` if `module_id` is not registered
+
+### Errors
+- `ModuleNotFoundError` — `module_id` is not registered
+
+### Returns
+- On success: `dict` — per the Output shape above
+
+### Properties
+- idempotent: true
+- thread_safe: true
+- async: false
+- pure: true — read-only lookup over registry metadata
+- reentrant: true
+
 ---
 
 ### system.manifest.full
@@ -193,6 +251,27 @@ Complete system manifest with filtering.
   "modules": [ ... ]
 }
 ```
+
+## Contract: system.manifest.full
+
+### Inputs
+- `include_schemas`: bool, optional, default `true`
+- `include_source_paths`: bool, optional, default `true`
+- `prefix`: string, optional — filters by module ID prefix
+- `tags`: list[string], optional — filters by tags; all listed tags must match
+
+### Errors
+- No errors under normal operation
+
+### Returns
+- On success: `dict` — `{project_name: str, module_count: int, modules: [...]}`
+
+### Properties
+- idempotent: true
+- thread_safe: true
+- async: false
+- pure: true — read-only lookup over registry metadata
+- reentrant: true
 
 ---
 
@@ -233,6 +312,26 @@ Modules sorted by `call_count` descending.
 **Trend values:** `stable`, `rising`, `declining`, `new`, `inactive` — decided by the normative threshold table in [PROTOCOL_SPEC §6.7.1.5](../spec/protocol-spec.md#6715-trend), comparing the requested window against the preceding window of equal length.
 
 > **`period` is a filter, not an echo.** `total_calls`, `total_errors` and every field of every `modules[]` entry MUST be computed over `[now − period, now]`. Echoing `period` back while computing over the full retained history is a conformance failure — and a silent one, because the response names the window it did not apply. See [PROTOCOL_SPEC §6.7.1.1](../spec/protocol-spec.md#6711-period-is-a-filter-not-an-echo); canonical shape in [`schemas/sys-usage-summary.schema.json`](https://github.com/aiperceivable/apcore/blob/main/schemas/sys-usage-summary.schema.json).
+
+## Contract: system.usage.summary
+
+### Inputs
+- `period`: string, optional, default `"24h"`
+  - validation: MUST match `^[1-9][0-9]*[hd]$`
+  - reject_with: `SCHEMA_VALIDATION_ERROR` — malformed value fails `input_schema` pattern validation
+
+### Errors
+- `SCHEMA_VALIDATION_ERROR` — `period` does not match the required pattern
+
+### Returns
+- On success: `dict` — per the Output shape above; every field computed over `[now − period, now]`, never over full retained history ([PROTOCOL_SPEC §6.7.1.1](../spec/protocol-spec.md#6711-period-is-a-filter-not-an-echo))
+
+### Properties
+- idempotent: true
+- thread_safe: true
+- async: false
+- pure: true — reads already-collected usage data and computes trend classification; no mutation
+- reentrant: true
 
 ---
 
@@ -288,6 +387,29 @@ Detailed usage for a single module with caller breakdown.
 **`callers[].caller_id`** is the literal `"unknown"` for a call recorded with no caller identity — never `null`, never omitted, never `@external`.
 
 Canonical shape: [`schemas/sys-usage-module.schema.json`](https://github.com/aiperceivable/apcore/blob/main/schemas/sys-usage-module.schema.json).
+
+## Contract: system.usage.module
+
+### Inputs
+- `module_id`: string, required
+  - reject_with: `ModuleNotFoundError` if `module_id` is not registered
+- `period`: string, optional, default `"24h"`
+  - validation: MUST match `^[1-9][0-9]*[hd]$` — same grammar and filter semantics as `system.usage.summary`
+  - reject_with: `SCHEMA_VALIDATION_ERROR`
+
+### Errors
+- `ModuleNotFoundError` — `module_id` is not registered
+- `SCHEMA_VALIDATION_ERROR` — `period` does not match the required pattern
+
+### Returns
+- On success: `dict` — per the Output shape above, including the fixed 24-entry `hourly_distribution` and nearest-rank `p99_latency_ms`
+
+### Properties
+- idempotent: true
+- thread_safe: true
+- async: false
+- pure: true — read-only over already-collected usage data
+- reentrant: true
 
 ---
 
@@ -948,6 +1070,40 @@ Wiring during APCore construction:
     ```
 
 `FileOverridesStore` MUST treat a missing `path` on first run as an empty store (no error) — the file is created lazily on the first `save()` call. This makes first-run, fresh-install, and ephemeral CI environments behave identically to long-lived installations.
+
+## Contract: OverridesStore.load
+
+### Inputs
+- No inputs
+
+### Errors
+- No error for a missing backing file/path — `FileOverridesStore` treats that as an empty store (see above). Other failure modes (malformed backing data, a remote-backend connection failure) are implementation-defined and not pinned by `conformance/fixtures/overrides_store.json`.
+
+### Returns
+- On success: mapping/dict/`HashMap` — the full stored overrides map; empty when the store has never been saved to
+
+### Properties
+- async: SDK-specific (see the `OverridesStore` protocol/interface/trait table above)
+- thread_safe: not separately specified — a custom backend SHOULD document its own concurrency guarantees
+- pure: true against a stable backing store — reads whatever the most recent `save()` wrote, without mutating it
+- idempotent: true
+
+## Contract: OverridesStore.save
+
+### Inputs
+- `mapping` (mapping/dict/`HashMap`, required) — the **entire** overrides map to persist. The surface is the whole map, not a single key: a caller changing one key MUST read the current map via `load()`, modify it, and `save()` the result (decision **D-47**).
+
+### Errors
+- Not normatively pinned beyond the D-47 surface fixed by `conformance/fixtures/overrides_store.json`; a backend-specific failure (disk write error, remote-backend connection failure) is implementation-defined
+
+### Returns
+- On success: void/None/() — `FileOverridesStore` creates the backing file lazily on the first `save()` call if it did not already exist
+
+### Properties
+- async: SDK-specific
+- thread_safe: not separately specified
+- pure: false — replaces the entire persisted overrides map
+- idempotent: true — saving the same `mapping` twice produces the same persisted state
 
 ---
 

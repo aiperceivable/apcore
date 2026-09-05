@@ -829,55 +829,55 @@ A tracing-style `StepMiddleware` that logs the wall-clock duration of each step:
     let executor = Executor::with_strategy(Registry::new(), Config::from_defaults(), strategy);
     ```
 
-### Contract: StepMiddleware.before_step
+## Contract: StepMiddleware.before_step
 
-#### Inputs
+### Inputs
 - `step_name` (str/string/&str, required) — pipeline step name (e.g., `input_validation`)
 - `state` (PipelineState, required) — the step name, the outputs produced so far, and the pipeline context
 
 There is **no** `inputs` parameter. A Step is `execute(ctx)`; it reads what it needs off the context, so there is nothing for a middleware to be handed or to replace.
 
-#### Errors
+### Errors
 - Any error raised aborts the step body and triggers `on_step_error` callbacks of already-executed step middlewares (mirrors `MiddlewareChainError` for the module-level chain)
 
-#### Returns
+### Returns
 - None/void. `before_step` is an **observation** hook: any value returned is discarded and MUST NOT change what the step body sees. Input rewriting is the module-level `Middleware.before` contract.
 
-#### Properties
+### Properties
 - async: language-dependent (Python sync or async; TypeScript and Rust MUST be async)
 - thread_safe: true
 - pure: false (may mutate the context reachable through `state`)
 
-### Contract: StepMiddleware.after_step
+## Contract: StepMiddleware.after_step
 
-#### Inputs
+### Inputs
 - `step_name`, `state` (same as `before_step`)
 - `result` (StepResult/unknown/&Value, required) — snapshot of the output the step produced
 
-#### Errors
+### Errors
 - Behavior is SDK-defined (see Middleware.after for parity rule)
 
-#### Returns
+### Returns
 - None/void. `after_step` observes; it does not replace the step output.
 
-#### Properties
+### Properties
 - async: language-dependent
 - thread_safe: true
 
-### Contract: StepMiddleware.on_step_error
+## Contract: StepMiddleware.on_step_error
 
-#### Inputs
+### Inputs
 - `step_name`, `state` (same as `before_step`)
 - `error` (ModuleError, required) — the error raised by the step body
 
-#### Errors
+### Errors
 - on_step_error MUST NOT raise; exceptions inside the handler MUST be logged and iteration continues with the next handler
 
-#### Returns
+### Returns
 - On success with recovery: dict/object/Value — replacement output, short-circuits remaining handlers
 - On pass-through: null/None/None — error continues propagating
 
-#### Properties
+### Properties
 - async: language-dependent
 - thread_safe: true
 

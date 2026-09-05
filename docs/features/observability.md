@@ -314,23 +314,85 @@ W3C interoperability across Python, TypeScript, and Rust SDKs.
     // Build a context that carries the propagated trace + state
     let context = Context::create(None, Some(trace_parent), None, None, Value::Null, None);
 
-    // Inject with default (auto-derived) parent_id
-    let headers = TraceContext::inject(&context, None);
+    // Inject with default (auto-derived) parent_id. Note: plain `inject` takes
+    // ONLY `context` in this SDK — there is no 2-arg `inject(context, parent_id)`
+    // overload here, unlike Python/TypeScript.
+    let headers = TraceContext::inject(&context);
     // headers["traceparent"] -> "00-4bf92f3577b34da6a3ce929d0e0e4736-<auto>-00"
     // headers["tracestate"]  -> "vendor1=opaque1,vendor2=opaque2"
 
-    // Optional override: pin the outgoing parent_id
-    let headers = TraceContext::inject(&context, Some("aaaaaaaaaaaaaaaa"));
+    // Optional override: pin the outgoing parent_id via `inject_with_options`
+    // (parent_id, trace_flags, tracestate).
+    let headers = TraceContext::inject_with_options(&context, Some("aaaaaaaaaaaaaaaa"), None, None);
     assert_eq!(headers["traceparent"].split('-').nth(2).unwrap(), "aaaaaaaaaaaaaaaa");
 
-    // Malformed override returns an error. There is no `TraceContextError` type:
-    // the checked form is `inject_checked`, and it fails with a `ModuleError`
-    // carrying `ErrorCode::InvalidParentId` (wire code `INVALID_PARENT_ID`, D-51).
-    match TraceContext::inject_checked(&context, Some("ZZZZ")) {
+    // Malformed override: `inject_with_options` silently falls back to a fresh
+    // random parent_id instead of raising (kept for backward compatibility).
+    // To reject a malformed override, use `inject_checked`, which fails with a
+    // `ModuleError` carrying `ErrorCode::InvalidParentId` (wire code
+    // `INVALID_PARENT_ID`, D-51). It takes the same four arguments.
+    match TraceContext::inject_checked(&context, Some("ZZZZ"), None, None) {
         Err(e) if e.code == ErrorCode::InvalidParentId => {}
         _ => panic!("expected INVALID_PARENT_ID"),
     }
     ```
+
+## Contract: TraceContext.inject
+
+### Inputs
+- `context` (Context, required) — apcore Context carrying the `trace_id` (and, when present, inbound `trace_flags`/`tracestate`) to serialize into outbound headers
+- `parent_id` (str, optional) — 16-lowercase-hex override for the outbound parent span id
+  - **Cross-language note:** Python's `inject(context, parent_id=None)` and TypeScript's `inject(context, parentId?)` accept this as a second argument directly. Rust's `inject(context)` takes **only** `context` — the parent_id/trace_flags/tracestate overrides live on a separate method, `inject_with_options(context, parent_id, trace_flags, tracestate)`, and its validating counterpart `inject_checked` (same four arguments) — see Errors.
+
+### Errors
+- `InvalidParentIdError` / `INVALID_PARENT_ID` (Python: `InvalidParentIdError`, a `ValueError` subclass; TypeScript: `Error` with `code = "INVALID_PARENT_ID"`) — `parent_id` is provided and does not match `^[0-9a-f]{16}$`
+- Rust's `inject` / `inject_with_options` do **not** raise on a malformed `parent_id` — they silently fall back to a fresh random one, preserved for backward compatibility. Only `inject_checked` returns `Err(ModuleError(code=InvalidParentId))` for a malformed override. This is a real cross-language behavioral difference, not merely a naming one: code relying on rejection of bad input is not portable to Rust's plain `inject`/`inject_with_options`.
+
+### Returns
+- On success: `dict[str, str]` / `Record<string, string>` / `HashMap<String, String>` — always contains `traceparent`; contains `tracestate` only when the context carries inbound vendor state (Rust: or when passed explicitly to `inject_with_options`/`inject_checked`)
+
+### Properties
+- async: false
+- thread_safe: true — pure computation over the given `context`'s already-populated fields
+- pure: false — an omitted `parent_id` is drawn from a random source, so the same `context` does not always produce the same output
+- idempotent: false when `parent_id` is omitted (a fresh parent id is generated per call); true when an explicit valid `parent_id` is supplied
+
+## Contract: TraceContext.extract
+
+### Inputs
+- `headers` (mapping/dict/Record/HashMap, required) — incoming request headers; `traceparent` (and, where supported, `tracestate`) are looked up **case-insensitively**
+
+### Errors
+- No errors raised. A missing or malformed `traceparent` header returns `None`/`null`, never raises.
+
+### Returns
+- On success: `TraceParent` — `version`, `trace_id`, `parent_id`, `trace_flags`, and `tracestate` (an ordered list of `(key, value)` pairs, capped at 32 entries). **Rust exception:** its `extract` populates `tracestate` as empty — the paired `tracestate` header is parsed only by the separate `extract_context`, which returns a `TraceContext` wrapping the same `TraceParent` with `tracestate` filled in.
+- On missing/malformed header: `None`/`null` — covers a missing key, a version byte of `ff`, an all-zero `trace_id`, or an all-zero `parent_id`
+
+### Properties
+- async: false
+- thread_safe: true
+- pure: true — depends only on `headers`
+- idempotent: true
+
+## Contract: TraceContext.from_traceparent
+
+**SDK Scope:** Python and TypeScript only. apcore-rust has no equivalent entry point — its `TraceContext::extract` returns `Option` rather than raising, and this SDK has no strict/raising parse function for a bare `traceparent` string.
+
+### Inputs
+- `traceparent` (str/string, required) — a single `traceparent` header **value** (not a headers map) to parse strictly
+
+### Errors
+- `ValueError` (Python) / `Error` (TypeScript) — the string does not match `{2-hex}-{32-hex}-{16-hex}-{2-hex}`, the version byte is `ff`, or `trace_id`/`parent_id` is all-zero. Deliberately a bare, codeless error — not `InvalidParentIdError`/`INVALID_PARENT_ID` — because D-51 reserves that code for one thing only: a caller-supplied `parent_id` override on `inject()`. A malformed inbound header is a different failure.
+
+### Returns
+- On success: `TraceParent` — same fields as a successful `TraceContext.extract`, but `tracestate` is not populated (this method parses only the `traceparent` string, not a headers map)
+
+### Properties
+- async: false
+- thread_safe: true
+- pure: true
+- idempotent: true
 
 ### Error History
 
@@ -363,6 +425,57 @@ W3C interoperability across Python, TypeScript, and Rust SDKs.
 
 **ErrorHistoryMiddleware** records `ModuleError` instances into `ErrorHistory` on every `on_error()` call. Generic exceptions (non-`ModuleError`) are ignored. The middleware never recovers from errors (always returns `None`).
 
+## Contract: ErrorHistory.record
+
+### Inputs
+- `error` (ModuleError, required) — the error instance to record
+
+### Errors
+- None documented — recording MUST NOT raise, since `ErrorHistoryMiddleware` calls this from every `on_error()` hook and an exception here would itself become an unhandled error inside error handling
+
+### Returns
+- On success: void/None/()
+
+### Properties
+- async: false
+- thread_safe: true (via locking, per the Architecture note above)
+- pure: false — mutates the ring buffer; deduplicates by `(code, message)`, incrementing `count` and updating `last_occurred` on a repeat rather than appending a new entry
+- idempotent: false — repeated calls change `count`/`last_occurred`, even for identical errors
+
+## Contract: ErrorHistory.get
+
+### Inputs
+- `module_id` (str, required) — module to query
+
+### Errors
+- None documented — a `module_id` with no recorded errors returns an empty list rather than raising
+
+### Returns
+- On success: `list[ErrorEntry]` — entries for `module_id`, newest first (by `last_occurred`)
+
+### Properties
+- async: false
+- thread_safe: true
+- pure: true — read-only
+- idempotent: true
+
+## Contract: ErrorHistory.get_all
+
+### Inputs
+- No inputs
+
+### Errors
+- None documented
+
+### Returns
+- On success: `list[ErrorEntry]` — all recorded entries across all modules, sorted by `last_occurred`
+
+### Properties
+- async: false
+- thread_safe: true
+- pure: true
+- idempotent: true
+
 ### Usage Collector
 
 `UsageCollector` is a thread-safe in-memory tracker for per-module call counting, latency measurement, and hourly trend data. It is automatically created and wired by `register_sys_modules()`.
@@ -392,6 +505,80 @@ W3C interoperability across Python, TypeScript, and Rust SDKs.
 | p99 | Nearest-rank: `sorted[min(ceil(0.99·N), N) − 1]`, no interpolation, `0` for an empty sample set. |
 | Unattributed call | Recorded under the literal `caller_id` `"unknown"`. |
 | Trend thresholds | `> 1.2` rising, `< 0.8` declining, zero-cases first (§6.7.1.5). |
+
+## Contract: UsageCollector.record
+
+### Inputs
+- `module_id` (str, required)
+- `caller_id` (str, required) — recorded as the literal `"unknown"` when the call had no caller identity; never `null` or omitted
+- `latency_ms` (float, required)
+- `success` (bool, required)
+
+### Errors
+- None documented — `UsageMiddleware` calls this from `before()`/`after()`/`on_error()`, all on the hot execution path, so recording MUST NOT raise
+
+### Returns
+- On success: void/None/()
+
+### Properties
+- async: false
+- thread_safe: true (via locking, per the Architecture note above)
+- pure: false — mutates hourly-bucketed storage (default `retention_hours=168`)
+- idempotent: false — each call adds one more data point
+
+## Contract: UsageCollector.get_summary
+
+### Inputs
+- `period` (str, optional, default `"24h"`) — MUST match `^[1-9][0-9]*[hd]$`
+
+### Errors
+- `SCHEMA_VALIDATION_ERROR` — `period` does not match the required pattern (enforced at the `system.usage.summary` module boundary; see [Contract: system.usage.summary](./system-modules.md#contract-systemusagesummary))
+
+### Returns
+- On success: `list[ModuleUsageSummary]` — one entry per module with recorded calls, every field computed over `[now − period, now]` — never over full retained history ([PROTOCOL_SPEC §6.7.1.1](../spec/protocol-spec.md#6711-period-is-a-filter-not-an-echo))
+
+### Properties
+- async: false
+- thread_safe: true
+- pure: true — read-only aggregation over already-recorded data
+- idempotent: not bitwise-stable across time — the window is relative to the caller's `now`, which advances between calls
+
+## Contract: UsageCollector.get_module
+
+### Inputs
+- `module_id` (str, required)
+- `period` (str, optional, default `"24h"`) — same grammar and filter semantics as `get_summary`
+
+### Errors
+- `SCHEMA_VALIDATION_ERROR` — `period` does not match the required pattern
+- No error documented for a `module_id` with no recorded calls — the "new" / "inactive" trend classifications and zero-filled `hourly_distribution` buckets exist precisely to represent that case without raising
+
+### Returns
+- On success: `ModuleUsageDetail` — caller breakdown and the fixed 24-entry `hourly_distribution`, filtered to `[now − period, now]`
+
+### Properties
+- async: false
+- thread_safe: true
+- pure: true
+- idempotent: not bitwise-stable across time (see `get_summary`)
+
+## Contract: UsageCollector.get_latencies
+
+### Inputs
+- `module_id` (str, required)
+- `period` (str, optional, default `"24h"`)
+
+### Errors
+- `SCHEMA_VALIDATION_ERROR` — `period` does not match the required pattern
+
+### Returns
+- On success: `list[float]` — raw latency values recorded for `module_id` within `period`; the caller (not this method) computes the nearest-rank p99 as `sorted[min(ceil(0.99·N), N) − 1]`, `0` for an empty set
+
+### Properties
+- async: false
+- thread_safe: true
+- pure: true
+- idempotent: not bitwise-stable across time
 
 ## UsageExporter (push-style)
 
@@ -530,6 +717,74 @@ The `UsageExporter` interface lets you **push** periodic `UsageCollector` summar
     // ... application runs ...
     periodic.stop().await?;  // awaits exporter.shutdown()
     ```
+
+## Contract: UsageExporter.export
+
+### Inputs
+- `summary` (list/`Record<string, unknown>`/`&Value`, required) — the `UsageCollector` summary snapshot to push to the sink. Rust hands over `serde_json::to_value(&UsageCollector::get_all_summaries())`, so an implementation forwards it without needing to know its shape ahead of time.
+
+### Errors
+- Implementation-defined. Rust's trait method returns `Result<(), ModuleError>`; a Python/TypeScript implementation may raise from user code. This contract does not pin specific error codes because the sink (HTTP, Kafka, ClickHouse, …) is entirely user-supplied — apcore ships no transport-bound exporter.
+
+### Returns
+- On success: void/None/() (Rust: `Ok(())`)
+
+### Properties
+- async: true — Python/TypeScript return a `Promise`/awaitable; Rust is `#[async_trait]`
+- thread_safe: implementation-defined (user-supplied sink)
+- pure: false — pushes to an external sink by definition
+- idempotent: implementation-defined
+
+## Contract: UsageExporter.shutdown
+
+### Inputs
+- No inputs
+
+### Errors
+- Implementation-defined (Rust: `Result<(), ModuleError>`)
+
+### Returns
+- On success: void/None/() (Rust: `Ok(())`)
+
+### Properties
+- async: true
+- thread_safe: implementation-defined
+- pure: false — releases resources (e.g., closes pooled connections)
+- idempotent: not specified for the interface itself; `PeriodicUsageExporter.stop()` calls it at most once per `stop()` call
+
+## Contract: PeriodicUsageExporter.start
+
+### Inputs
+- No inputs — `collector`, `exporter`, and `interval_seconds` (default `3600`) are supplied at construction
+
+### Errors
+- Not normatively specified
+
+### Returns
+- On success: void/None/() — Rust: `Result<(), ModuleError>` per the usage example's `?`
+
+### Properties
+- async: true
+- thread_safe: not separately specified
+- pure: false — spawns a background task/timer (Python `asyncio.Task` / TypeScript `setInterval` / Rust `tokio::task::spawn`) that polls `UsageCollector.summary()` at `interval_seconds` and calls `exporter.export(summary)` for each registered exporter
+- idempotent: not specified — calling `start()` a second time on an already-started instance is not documented as a no-op or an error
+
+## Contract: PeriodicUsageExporter.stop
+
+### Inputs
+- No inputs
+
+### Errors
+- Not normatively specified
+
+### Returns
+- On success: void/None/()
+
+### Properties
+- async: true — MUST await `exporter.shutdown()` for graceful drain before returning; in-flight `export()` calls MUST complete or be cancelled before `shutdown()` returns
+- thread_safe: not separately specified
+- pure: false — halts the background loop
+- idempotent: true — MUST be safe to call multiple times
 
 ### Platform Notify Middleware
 
@@ -1357,6 +1612,64 @@ The processor exposes three normative methods:
     processor.force_flush(None).await;
     processor.shutdown(None).await;
     ```
+
+## Contract: BatchSpanProcessor.on_end
+
+### Inputs
+- `span` (Span, required) — the span that just ended, to enqueue for asynchronous export
+
+### Errors
+- None — `on_end` MUST enqueue and return immediately; it MUST NOT raise when the queue is full (see Properties for drop behavior)
+
+### Returns
+- On success: void/None/() — always returns immediately regardless of queue state
+
+### Properties
+- async: false — non-blocking by construction; this is the property `BatchSpanProcessor` exists to provide over `SimpleSpanProcessor`
+- thread_safe: true
+- pure: false — enqueues into the internal buffer, or, when the queue is at `max_queue_size` (default 2048), drops the span and increments `spans_dropped` instead
+- idempotent: false — each call enqueues (or drops) one more span
+
+## Contract: BatchSpanProcessor.force_flush
+
+### Inputs
+- `timeout_ms` (int, optional) — deadline for draining the queue; an SDK-specific default applies when omitted
+
+### Errors
+- None documented — a timed-out flush is reported via the return value, not an exception
+
+### Returns
+- On success: `bool` — `true` if the queue was fully drained within the deadline, `false` otherwise
+
+### Properties
+- async: SDK-dependent (TypeScript/Rust return an awaitable per the usage examples above; the call does not block the caller's event loop/thread regardless)
+- thread_safe: true
+- pure: false — drains the internal queue by exporting its contents
+- idempotent: true — calling it again with nothing left to flush returns `true` without further side effects
+
+## Contract: BatchSpanProcessor.shutdown
+
+### Inputs
+- `timeout_ms` (int, optional) — deadline passed through to the internal `force_flush`; defaults to `export_timeout_ms` (default 30000) when omitted
+
+### Side Effects (ordered)
+1. Calls `force_flush` with `export_timeout_ms` (or the supplied `timeout_ms`)
+2. Stops the background worker (thread/task)
+
+### Errors
+- None documented
+
+### Returns
+- On success: void/None/()
+
+### Postconditions
+- After `shutdown` returns, `on_end` MUST treat further spans as dropped without enqueuing them
+
+### Properties
+- async: SDK-dependent (awaited in TypeScript/Rust per the usage examples above)
+- thread_safe: true
+- pure: false — flushes the queue and permanently stops the worker
+- idempotent: not specified for repeated `shutdown()` calls, but the post-shutdown drop behavior above holds regardless of how many times it is called
 
 ---
 

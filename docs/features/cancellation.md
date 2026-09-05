@@ -274,6 +274,23 @@ Modules performing long-running work **SHOULD** check the cancel token periodica
 - **Executor timeout tests** verify that timeout triggers `token.cancel()`, the grace period is respected, and `ModuleTimeoutError` is raised after grace expiry.
 - **Concurrent cancellation tests** verify thread-safety when `cancel()` is called from a timer thread while `check()` is called from the module thread.
 
+## Contract: CancelToken.is_cancelled
+
+### Inputs
+- No inputs
+
+### Errors
+- No errors raised
+
+### Returns
+- On success: bool/boolean/bool — `true` if `cancel()` has been called on this token, `false` otherwise
+
+### Properties
+- async: false
+- thread_safe: true
+- pure: true (reads internal cancelled state; no side effects)
+- idempotent: true (repeated reads are safe and do not change state)
+
 ## Contract: CancelToken.cancel
 
 ### Inputs
@@ -290,7 +307,9 @@ Modules performing long-running work **SHOULD** check the cancel token periodica
 - thread_safe: true
 - idempotent: true (multiple calls to cancel are safe; subsequent calls are no-ops)
 
-## Contract: CancelToken.raise_if_cancelled
+## Contract: CancelToken.check
+
+> This contract was previously published under the name `raise_if_cancelled`. No SDK exposes that name — the Python, TypeScript, and Rust examples above all call `check()` — so the heading is corrected here to match the public API. `check()` is not a second method layered on top of `raise_if_cancelled`; it is the one method, under its one real name.
 
 ### Inputs
 - No inputs
@@ -306,3 +325,22 @@ Modules performing long-running work **SHOULD** check the cancel token periodica
 - async: false
 - thread_safe: true
 - pure: true (no side effects; only checks internal cancelled state)
+
+## Contract: CancelToken.reset
+
+### Inputs
+- No inputs
+
+### Errors
+- No errors raised
+
+### Returns
+- On success: void/None/()
+
+### Properties
+- async: false
+- thread_safe: true
+- idempotent: true (multiple calls to reset are safe; the flag is simply set to `false` each time)
+
+!!! note "Intended for testing/reuse, not for cancellation cleanup mid-call"
+    `reset()` clears the cancelled flag on the existing token instance. Nothing observes the transition: a module that already raised `ExecutionCancelledError` from `check()` has already unwound, and the Executor does not re-poll a token after acting on cancellation. Resetting an in-flight token to "uncancel" a call in progress is not a supported pattern; `reset()` exists so a single `CancelToken` instance can be reused across independent test cases or task runs.
