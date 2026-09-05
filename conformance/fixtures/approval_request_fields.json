@@ -1,0 +1,28 @@
+{
+  "description": "ApprovalRequest carries `caller_id` and `action` (decision D-03, docs/spec/2026-05-decision-log.md — status quo: docs/features/approval-system.md's Contract block already required both; every SDK's ApprovalRequest carried neither). Populated by BuiltinApprovalGate at Executor Step 4.5, from the same Context and module_id already available at that call site: `caller_id = context.caller_id` (null for a top-level/external call, per PROTOCOL_SPEC §5.7 — Context.caller_id is None/null until Context.child() sets it), `action = module_id` (the target module being invoked, so a handler can read `request.action` without cross-referencing `request.module_id` under a second name). Both fields are additive on an already-`#[non_exhaustive]` (Rust) / already-keyword-constructed (Python, TypeScript) type, so no existing construction call breaks.\n\nA driver invokes the module named by `target_id` from the caller named by `caller_id` (or as a top-level call when `caller_id` is null), with an ApprovalHandler configured that records the `ApprovalRequest` it receives and returns `approved`, and asserts the recorded request's `caller_id` and `action` equal `expected_request_caller_id` and `expected_request_action`.",
+  "driver_contract": {
+    "how_to_invoke": "Register `target_id` as a module with `requires_approval: true` (or force it via the same `ExecutionPolicy(gate_destructive=true)` / ACL `approval: required` mechanism `approval_gate.json` and `acl_argument_scoped_approval.json` use — any path that reaches Step 4.5 with `requires_approval` true is equivalent for this fixture, since the field is populated once, upstream of which path triggered the gate). Configure a recording `ApprovalHandler` whose `request_approval` returns `approved` and captures the `ApprovalRequest` it was handed. When `caller_id` is non-null, invoke `target_id` from within a module of that ID (so `Context.child()` sets `caller_id`); when it is null, invoke `target_id` as a top-level call (a fresh `Context`, never passed through `child()`).",
+    "no_wire_assertion": "`caller_id` and `action` are read off the in-process `ApprovalRequest` object the handler receives, not off a serialized payload — Rust's `ApprovalRequest` skips `context` during serialization and neither field has a wire-format fixture elsewhere. A driver MUST assert on the object the handler's callback/trait method actually received, not a round-tripped copy.",
+    "no_phase_b_case": "A pending approval resumed via `_approval_token` (Phase B) never reaches `ApprovalRequest` construction at all — `check_approval(token)` is called instead of `request_approval(request)`. This fixture has no case for that path; there is no request object there for `caller_id`/`action` to be present on."
+  },
+  "test_cases": [
+    {
+      "id": "caller_id_and_action_populated_on_nested_call",
+      "description": "module.caller invokes module.target, which requires approval — the handler-visible request names both",
+      "caller_id": "module.caller",
+      "target_id": "module.target",
+      "expected_request_caller_id": "module.caller",
+      "expected_request_action": "module.target",
+      "note": "`action` equals `target_id`/`module_id`, not a separate free-text label — D-03's Action item pins the populating rule as `action = module_id`, not something a handler author supplies."
+    },
+    {
+      "id": "caller_id_null_on_top_level_call",
+      "description": "module.target is invoked directly (no caller module), requires approval — caller_id is null, action is still populated",
+      "caller_id": null,
+      "target_id": "module.target",
+      "expected_request_caller_id": null,
+      "expected_request_action": "module.target",
+      "note": "Mirrors PROTOCOL_SPEC §5.7: a top-level Context's caller_id is None/null, not the string \"@external\" ACL evaluation substitutes internally — ApprovalRequest.caller_id is read straight off Context.caller_id with no substitution."
+    }
+  ]
+}

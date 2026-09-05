@@ -526,8 +526,10 @@ async_task:
 
     manager = AsyncTaskManager(executor)
 
-    # Start the background reaper; returns a handle to stop it later
-    reaper_handle = await manager.start_reaper(
+    # Start the background reaper; returns a handle to stop it later.
+    # start_reaper() itself is synchronous — it schedules the sweep loop and
+    # returns immediately.
+    reaper_handle = manager.start_reaper(
         ttl_seconds=7200,
         sweep_interval_ms=600000,
     )
@@ -560,8 +562,10 @@ async_task:
 
     let manager = AsyncTaskManager::new(executor, store);
 
-    // Start the background reaper; returns a handle to stop it later
-    let reaper_handle = manager.start_reaper(7200.0, 600_000).await;
+    // Start the background reaper; returns a handle to stop it later.
+    // start_reaper() itself is synchronous — no `.await` here; only
+    // `reaper_handle.stop()` below needs one.
+    let reaper_handle = manager.start_reaper(7200.0, 600_000);
 
     // ... application runs ...
 
@@ -575,11 +579,13 @@ async_task:
 
 `start_reaper(ttl_seconds, sweep_interval_ms) -> ReaperHandle` is the canonical signature across **all three SDKs** (decision **D-11**). The two named arguments and the `ReaperHandle` return type are normative.
 
+**`start_reaper` itself is synchronous in every SDK, and that is by design, not a gap.** Starting the reaper is scheduling a background sweep loop — `asyncio.create_task` / a `Promise`-returning wrapper / `tokio::spawn` — which is itself a synchronous action in all three languages; none of the three has any `await`/`.await` inside `start_reaper` before the handle is returned. D-11 fixed the two argument names, their units, and the `ReaperHandle` return type; it never decided that the call **itself** must be awaited, and no implementation has ever made it genuinely awaitable (Python's own test suite documents this explicitly: `test_start_reaper_property_async` — "Python `start_reaper` itself returns the handle synchronously; the spawned loop is the async/background effect"). What every SDK's example previously showed as `await manager.start_reaper(...)` is corrected below to reflect that `start_reaper` returns the handle directly; only `handle.stop()` is genuinely awaitable, because stopping the reaper does have to wait for the in-flight sweep to drain.
+
 | SDK | Signature | Notes |
 |-----|-----------|-------|
-| Python | `await manager.start_reaper(ttl_seconds=3600.0, sweep_interval_ms=300_000) -> ReaperHandle` | Returns awaitable; `ReaperHandle.stop()` is async |
-| TypeScript | `await manager.startReaper({ ttlSeconds, sweepIntervalMs }) -> Promise<ReaperHandle>` | Object-style kwargs; `reaperHandle.stop()` is async |
-| Rust | `manager.start_reaper(ttl_seconds: f64, sweep_interval_ms: u64).await -> ReaperHandle` | `ReaperHandle::stop` is async |
+| Python | `manager.start_reaper(ttl_seconds=3600.0, sweep_interval_ms=300_000) -> ReaperHandle` | Synchronous; returns the handle directly. `ReaperHandle.stop()` is async |
+| TypeScript | `manager.startReaper({ ttlSeconds, sweepIntervalMs }) -> Promise<ReaperHandle>` | Object-style kwargs; returns a resolved `Promise` for type-level parity with `reaperHandle.stop()` below it, not because starting needs to wait on anything — `await` is harmless but optional. `reaperHandle.stop()` is async |
+| Rust | `manager.start_reaper(ttl_seconds: f64, sweep_interval_ms: u64) -> ReaperHandle` | Synchronous; returns the handle directly. `ReaperHandle::stop` is async |
 
 ### Python deprecation note
 
@@ -591,10 +597,10 @@ Pre-D-11 Python releases used `start_reaper(interval_seconds=..., max_age_second
 
 ```python
 # Deprecated form (still works, emits DeprecationWarning)
-handle = await manager.start_reaper(interval_seconds=600.0, max_age_seconds=7200.0)
+handle = manager.start_reaper(interval_seconds=600.0, max_age_seconds=7200.0)
 
-# Canonical form (D-11 alignment)
-handle = await manager.start_reaper(ttl_seconds=7200.0, sweep_interval_ms=600_000)
+# Canonical form (D-11 alignment) — synchronous, no await
+handle = manager.start_reaper(ttl_seconds=7200.0, sweep_interval_ms=600_000)
 ```
 
 ### Inputs
@@ -608,7 +614,7 @@ handle = await manager.start_reaper(ttl_seconds=7200.0, sweep_interval_ms=600_00
 - On success: `ReaperHandle` — a handle to stop the background task (call `.stop()` to cancel the Reaper)
 
 ### Properties
-- async: true (spawns background coroutine/task/thread)
+- async: false in Python and Rust (returns the handle directly); TypeScript returns a `Promise<ReaperHandle>` for type-level parity with `stop()`, resolved immediately — `await` is optional, not required. **`start_reaper` spawns a background coroutine/task/thread; it does not itself wait on one.**
 - thread_safe: true
 - pure: false (starts background process)
 - idempotent: false (calling twice starts two Reapers; implementations SHOULD guard against this)

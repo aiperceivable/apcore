@@ -52,6 +52,7 @@ SDK conformance runners **must** load `.json` files with a JSON parser. The `.ya
 | `config_defaults.json` | — | Canonical default values conformance across all SDKs |
 | `stream_aggregation.json` | — | Stream chunk deep-merge aggregation algorithm |
 | `approval_gate.json` | A05 | Approval gate Step 5: skip/fire conditions and all four result-status outcomes |
+| `approval_request_fields.json` | D-03 | `ApprovalRequest` carries `caller_id` (null for a top-level call) and `action` (= `module_id`) — fields the Contract text already required and no SDK's `ApprovalRequest` carried |
 | `preflight_disclosure.json` | §12.8.5.1 | `Executor.validate()` withholds module-level introspection from a caller the ACL denied: no `module_preflight` / `module_preview` check, empty `predicted_changes`, and the hooks themselves not invoked. Module lookup is Step 3 and the ACL check is Step 4, so all three SDKs gated these hooks on "lookup succeeded" alone and ran module-authored code for a denied caller. Scoped to AUTHORIZATION: a failed `schema` check does **not** suppress introspection. Drivers MUST run the real `validate()` against a real Registry and ACL, and MUST observe hook invocation from inside the hook bodies — see `driver_contract` |
 | `middleware_on_error_recovery.json` | A11 | After-middleware error recovery: first-dict-wins, null passthrough, success non-override |
 | `identity_system.json` | — | Identity construction, field access, and context propagation (AC-014, AC-015) |

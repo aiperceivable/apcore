@@ -2,7 +2,7 @@
 description: "Maintainer decision log of open cross-language alignment issues from the 2026-05 apcore-skills:sync run covering 20 modules, tracking spec/SDK discrepancies awaiting resolution."
 title: Cross-language alignment decision log (2026-05)
 date: 2026-05-02
-status: active — 51 resolved, 8 open (see "Resolution status")
+status: active — 52 resolved, 7 open (see "Resolution status")
 audience: maintainers + spec reviewers
 source: /apcore-skills:sync findings (2026-05-02 run, 20/20 modules covered)
 ---
@@ -796,16 +796,16 @@ the same fixture file.
 
 > **Authoritative current state** (updated 2026-05-05 after iter-9 doc-only follow-through round). Per-round narratives are preserved below in chronological addenda.
 
-- **Resolved** (51 items, no further action):
-  - D-01, D-02, D-05, D-06 (doc-side; TS arg drop tracked separately — see Open below), D-07, D-08, D-09, D-10, D-11, D-12, D-13, D-14, D-15, D-16, D-59, D-60, D-58, D-23, D-25, D-26, D-27, D-28, D-29, D-30, D-31, D-32, D-33, D-34, D-35, D-36, D-37, D-38, D-39, D-40, D-41, D-42, D-43, D-44, D-45, D-46, D-47, D-48, D-49, D-50, D-51, D-52, D-53, D-54, D-55, D-56, D-57
+- **Resolved** (52 items, no further action):
+  - D-01, D-02, D-03, D-05, D-06 (doc-side; TS arg drop tracked separately — see Open below), D-07, D-08, D-09, D-10, D-11, D-12, D-13, D-14, D-15, D-16, D-59, D-60, D-58, D-23, D-25, D-26, D-27, D-28, D-29, D-30, D-31, D-32, D-33, D-34, D-35, D-36, D-37, D-38, D-39, D-40, D-41, D-42, D-43, D-44, D-45, D-46, D-47, D-48, D-49, D-50, D-51, D-52, D-53, D-54, D-55, D-56, D-57
   - Notes on follow-through chains:
     - **D-08** closed via **D-49** (TS + Rust renamed to canonical `compute_delay_ms`).
     - **D-11** closed via **D-42** (Python `start_reaper` aliases + ms units).
     - **D-32** closed via **D-56** (TS `_filterIdConflicts` extracted).
   - **Doc-only follow-throughs landed in iter-9 (2026-05-05)**: D-01, D-07, D-09, D-16, D-59, D-60, D-26 — see addendum below.
+  - **D-03 resolved 2026-09-05** (during a cross-repo consistency audit, not the original iter rounds): `caller_id` and `action` added to `ApprovalRequest` in all 3 SDKs, populated at each SDK's existing `BuiltinApprovalGate` construction site. **The "target v0.21.0" note above was stale** — that version number had already shipped (2026-05-06, unrelated content) by the time this landed; all three SDKs landed it under their current in-progress version instead (apcore-python and apcore-typescript both already past v0.21.0 independently; apcore-rust likewise). `docs/spec/protocol-spec.md` §7.3.1's own schema was also out of sync with this decision — it never listed either field — corrected the same day as spec v1.32.0. Conformance: `conformance/fixtures/approval_request_fields.json`.
 
-- **Open — multi-SDK code fix** (3 items):
-  - **D-03** — `ApprovalRequest` to add `caller_id` and `action` fields in all 3 SDKs. (target v0.21.0)
+- **Open — multi-SDK code fix** (2 items):
   - **D-24** — `update_config` constraints registry + rollback in TS + Rust (Python already aligned). (target v0.21.0)
   - **D-64** — activate `acl.root` config-driven ACL discovery + unify default to `'./acl'` across all 3 SDKs. Tracking [#74](https://github.com/aiperceivable/apcore/issues/74).
 
@@ -826,7 +826,7 @@ the same fixture file.
 
 1. ✅ ~~Apply doc-only fixes as a single PR~~ — **completed in iter-9** (D-01, D-07, D-09, D-16, D-59, D-60, D-26).
 2. **D-06** spec cleanup — small follow-up PR; can ship with the next doc-cleanup round.
-3. **D-03** + **D-24** — batched into v0.21.0 multi-SDK release.
+3. ✅ ~~D-03~~ — **resolved 2026-09-05**, landed in all 3 SDKs' current in-progress version rather than the stale v0.21.0 target. **D-24** remains open, targeting v0.21.0 on its own.
 4. **D-04** — schedule a dedicated TS codemod PR session (1–2 hrs focused).
 5. **D-61** — apcore-rust local doc comment (out of scope for this repo).
 6. **D-62** / **D-63** — RFC + epic, target v0.22.0.

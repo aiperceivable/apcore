@@ -24,6 +24,7 @@ The APCore class is the recommended high-level entry point for the apcore framew
 - Support decorator-based module registration (`client.module()`), direct registration (`client.register()`), and auto-discovery (`client.discover()`).
 - Support module listing with optional tag and prefix filtering.
 - Support module description generation (`client.describe()`) for AI/LLM tool discovery.
+- There is no cross-language `start()` / `stop()` lifecycle contract (decision **D-09**, 2026-05-02 alignment review): the client needs no startup or shutdown phase beyond construction. Python **MAY** additionally provide `close()` as a Python-only convenience that releases the cached synchronous event loop inside the Executor; it is idempotent, raises no error under normal operation, and the same `APCore` instance remains usable afterward — a synchronous `call()` lazily allocates a fresh loop on next use. TypeScript and Rust have no equivalent because neither caches a loop of that kind.
 
 ### Execution
 - Provide synchronous (`call()`), asynchronous (`call_async()`), and streaming (`stream()`) execution methods that delegate to the underlying Executor.
@@ -337,38 +338,6 @@ The APCore interface follows each language's idioms while maintaining functional
 - pure: false (side-effects: span created, metrics emitted, middleware hooks invoked)
 - idempotent: false (module `execute` is not guaranteed idempotent)
 
-## Contract: APCore.start
-
-### Inputs
-- No required inputs (uses configuration from constructor)
-
-### Errors
-- `ConfigError(code=CONFIG_INVALID)` — if configuration validation fails on startup
-
-### Returns
-- On success: void/None/()
-
-### Properties
-- async: false in Python; async in TypeScript and Rust
-- thread_safe: false (call once before any concurrent usage)
-- idempotent: false
-
-## Contract: APCore.stop
-
-### Inputs
-- No required inputs
-
-### Errors
-- No errors raised under normal operation
-
-### Returns
-- On success: void/None/()
-
-### Properties
-- async: false in Python; async in TypeScript and Rust
-- thread_safe: false (do not call concurrently with active requests)
-- idempotent: true (multiple stops are safe)
-
 ## Contract: APCore.on
 
 ### Inputs
@@ -570,7 +539,7 @@ The APCore interface follows each language's idioms while maintaining functional
 - On success: `int` — count of modules successfully registered in this discovery pass (0 if no modules are found or all fail validation)
 
 ### Properties
-- async: false (synchronous in all languages; file-system I/O and module imports run on the calling thread)
+- async: **false in Python** (synchronous file-system scan and import, on the calling thread); **async in TypeScript and Rust**. Neither is a gap: TypeScript's discovery resolves each module's entry point via ESM dynamic `import()`, which has no synchronous form in Node — a discovery root containing an ESM module file structurally cannot be scanned without an `await` somewhere. Rust's `Registry::discover` takes a `discoverer: &dyn Discoverer` and awaits `discoverer.discover(...)` — the trait itself is `async`, not merely reserved for a hypothetical future implementation, mirroring TypeScript's `CustomDiscoverer` interface (which likewise may return a `Promise`) and Python's own `ApprovalHandler` pattern of an async, pluggable extension point. The cross-language contract is the **outcome**, not the calling convention: all three return the same `int`/`number`/`usize` count of newly-registered modules, raise the same categories of error (`CircularDependencyError`, `ConfigNotFoundError`), and silently skip-and-log the same per-file failures — a caller adapting to each language's native async idiom sees identical registry state afterward.
 - thread_safe: true (each `Registry.register` call inside discovery holds the registry's RLock)
 - pure: false (imports Python files, instantiates module classes, and mutates the registry)
 - idempotent: false (calling `discover()` twice on a directory that has not changed will attempt to re-register already-registered modules, raising `InvalidInputError` for duplicates; callers should guard with `list_modules()` or unregister first)
