@@ -626,6 +626,7 @@ The repository ships **69 cross-language fixture files** under `conformance/fixt
 | [`config_defaults`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/config_defaults.json) | 18 | Config default values cross-SDK identity |
 | [`config_env`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/config_env.json) | 13 | Env-var → Config path mapping (Algorithm A12-NS, spec §9.8) |
 | [`config_key_governance`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/config_key_governance.json) | 6 | Configuration key surface governance (§9.1 / §9.3 / §9.15.3) |
+| [`config_path_typed_keys`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/config_path_typed_keys.json) | 7 | Closed set of path-typed configuration keys (§9.2.1) |
 | [`context_create`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/context_create.json) | 15 | `Context.create()` canonical 6-parameter factory (Issue #66) |
 | [`context_serialization`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/context_serialization.json) | 8 | Context JSON round-trip (spec §5.7) |
 | [`context_trace_parent`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/context_trace_parent.json) | 10 | `Context.create` trace_parent input handling |
@@ -677,7 +678,7 @@ The repository ships **69 cross-language fixture files** under `conformance/fixt
 | [`usage_contract`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/usage_contract.json) | 11 | `system.usage.*` value semantics no schema can assert (spec §6.7.1) |
 | [`usage_exporter`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/usage_exporter.json) | 3 | `UsageExporter` push interface (#45 §3, D-55) |
 | [`version_negotiation`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/version_negotiation.json) | 10 | Version negotiation (Algorithm A14) |
-| **Total** | **813** | **69 fixtures** |
+| **Total** | **820** | **70 fixtures** |
 
 ### 8.2 Loading Fixtures from a Test Runner
 

@@ -13,6 +13,7 @@
       "properties": {
         "root": {
           "type": "string",
+          "x-apcore-path": true,
           "description": "Default extensions root directory path.",
           "default": "./extensions"
         },
@@ -40,6 +41,7 @@
       "properties": {
         "root": {
           "type": "string",
+          "x-apcore-path": true,
           "description": "Default schema files root directory path.",
           "default": "./schemas"
         },
@@ -62,6 +64,7 @@
       "properties": {
         "root": {
           "type": "string",
+          "x-apcore-path": true,
           "description": "Default ACL configuration files directory path.",
           "default": "./acl"
         },

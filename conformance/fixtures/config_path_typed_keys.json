@@ -1,0 +1,61 @@
+{
+  "description": "PROTOCOL_SPEC §9.2.1 — the closed set of path-typed configuration keys. A path-typed key is one whose value is a filesystem path; the set is declared by `\"x-apcore-path\": true` in schemas/apcore-config.schema.json (and mirrored in schemas/defaults.schema.json for the three keys that carry defaults there). This fixture exists because the set was previously undeclared, so every consumer that needed it built its own: apcore-cli hand-maintained SANDBOX_PATH_TYPED_VARS with a note that adding a key means editing three SDKs, and nothing detected drift between that list and the schemas. SCOPE: this fixture asserts WHICH keys are path-typed and that each SDK exposes the set. It asserts NOTHING about what a relative value resolves against — the resolution base is unspecified as of spec v1.34.0 and tracked in issue #113. A driver that starts asserting resolved absolute paths here is testing an undecided question.",
+  "canonical_sources": [
+    "schemas/apcore-config.schema.json",
+    "schemas/defaults.schema.json"
+  ],
+  "driver_contract": {
+    "accessor": "Each driver supplies its SDK's public path-typed key accessor (apcore-python `Config.path_typed_keys()`, apcore-typescript `Config.pathTypedKeys()`, apcore-rust `Config::path_typed_keys()`). The accessor MUST be public API — a private constant that happens to hold the right values does not satisfy §9.2.1 requirement 1, because the consumer this set exists for lives in another repository.",
+    "comparison": "Compare as a SET, not a sequence — ordering is not normative. Report the symmetric difference (missing keys AND extra keys) rather than a boolean: an SDK that omits one key and invents another passes any length check.",
+    "both_directions_required": "A driver MUST assert both directions. Asserting only 'every expected key is present' passes an implementation that marks every config key as path-typed, which is exactly as wrong as marking none and strictly harder to notice.",
+    "roots_element_form": "`extensions.roots` is list-valued and both element forms are path-typed (bare string, and the {root, namespace} object). Drivers report the key as `extensions.roots[]` regardless of which form a given element uses; an SDK that models only one form is reported as a violation of the `extensions.roots[]` entry, not as a separate key."
+  },
+  "path_typed_keys": [
+    "acl.root",
+    "bindings.dir",
+    "extensions.root",
+    "extensions.roots[]",
+    "schema.root"
+  ],
+  "test_cases": [
+    {
+      "id": "declared_set_matches_schemas",
+      "comment": "The projection of `x-apcore-path` markers out of the canonical schemas equals `path_typed_keys` above. This case guards the fixture itself against drifting from the schemas it claims to project.",
+      "expected": {"path_typed_keys": ["acl.root", "bindings.dir", "extensions.root", "extensions.roots[]", "schema.root"]}
+    },
+    {
+      "id": "sdk_accessor_matches_declared_set",
+      "comment": "Symmetric difference between the SDK accessor and the declared set MUST be empty.",
+      "expected": {"missing_from_sdk": [], "extra_in_sdk": []}
+    },
+    {
+      "id": "bindings_pattern_is_not_path_typed",
+      "comment": "DISCRIMINATING CASE. `bindings.pattern` sits in the same config section as `bindings.dir`, carries a filesystem-looking default (`*.binding.yaml`), and is the most likely key to be swept in by an implementation that classifies by section or by 'looks like a filename'. §9.2.1 requirement 4 states it is a glob matched against filenames WITHIN `bindings.dir`, never resolved as a path itself.",
+      "key": "bindings.pattern",
+      "expected": {"path_typed": false}
+    },
+    {
+      "id": "non_path_string_keys_are_not_path_typed",
+      "comment": "Second discriminating case: string-valued keys that are not paths. An implementation that marks every string key as path-typed fails here and passes every presence-only assertion.",
+      "keys": ["acl.default_effect", "schema.strategy", "logging.level", "observability.tracing.exporter", "project.name"],
+      "expected": {"path_typed": false}
+    },
+    {
+      "id": "extensions_roots_elements_are_path_typed",
+      "comment": "Both element forms of the list carry paths.",
+      "config": {"extensions": {"roots": ["./extensions", {"root": "./plugins", "namespace": "plugins"}]}},
+      "expected": {"path_typed": true, "reported_key": "extensions.roots[]"}
+    },
+    {
+      "id": "no_scalar_env_encoding_for_roots",
+      "comment": "§9.2.1 requirement 3 — an implementation MUST NOT invent a delimiter-separated scalar encoding for the list-valued key. Setting APCORE_EXTENSIONS_ROOTS MUST NOT produce a two-element roots list.",
+      "env": {"APCORE_EXTENSIONS_ROOTS": "./a:./b"},
+      "expected": {"roots_from_env": null}
+    },
+    {
+      "id": "accessor_is_stable_across_config_instances",
+      "comment": "The set is a property of the specification, not of a loaded document. A Config built from defaults and a Config loaded from a file that sets none of these keys MUST report the same set.",
+      "expected": {"same_set": true}
+    }
+  ]
+}

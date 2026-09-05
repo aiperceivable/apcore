@@ -115,6 +115,7 @@
           "properties": {
             "root": {
               "type": "string",
+              "x-apcore-path": true,
               "description": "Extensions root directory path. MUST be a valid directory.",
               "default": "./extensions",
               "examples": [
@@ -144,6 +145,7 @@
                 "oneOf": [
                   {
                     "type": "string",
+                    "x-apcore-path": true,
                     "description": "Directory path. Namespace is auto-derived from the last path segment (e.g., './extensions' → namespace 'extensions')."
                   },
                   {
@@ -155,6 +157,7 @@
                     "properties": {
                       "root": {
                         "type": "string",
+                        "x-apcore-path": true,
                         "description": "Extensions root directory path."
                       },
                       "namespace": {
@@ -233,6 +236,7 @@
       "properties": {
         "root": {
           "type": "string",
+          "x-apcore-path": true,
           "description": "Schema files root directory path.",
           "default": "./schemas",
           "examples": [
@@ -268,6 +272,7 @@
       "properties": {
         "root": {
           "type": "string",
+          "x-apcore-path": true,
           "description": "ACL configuration files directory path.",
           "default": "./acl",
           "examples": [
@@ -710,6 +715,7 @@
       "properties": {
         "dir": {
           "type": "string",
+          "x-apcore-path": true,
           "description": "Directory scanned for binding files.",
           "default": "./bindings",
           "examples": [
