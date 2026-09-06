@@ -13,7 +13,8 @@
     "scan_observation": "`scanned_dir` is the directory the loader actually enumerated and `loaded_module_ids` the module IDs it produced, sorted. Observe them from the loader's result and the filesystem layout, never from the config value the driver itself supplied.",
     "no_startup_scan": "The `no_auto_scan_at_init` case MUST construct the client (APCore / new APCore / APCore::with_options) and assert that NO directory enumeration occurred — by placing a well-formed binding file under the configured dir and asserting its module ID is absent from the registry. Asserting only that construction succeeded passes trivially.",
     "fs_values_name_a_descriptor": "Each `fs` value names a key in `binding_files`; write that descriptor to the given path. Never assume one shared descriptor — cases rely on distinct module_ids to tell which directory was scanned.",
-    "env_set_after_config_load": "When present, these variables MUST be set AFTER the Config object is constructed and BEFORE the loader is invoked. That ordering is the whole point of the clause-2 case: it separates a loader reading the merged Config from one reading the raw environment."
+    "env_set_after_config_load": "When present, these variables MUST be set AFTER the Config object is constructed and BEFORE the loader is invoked. That ordering is the whole point of the clause-2 case: it separates a loader reading the merged Config from one reading the raw environment.",
+    "decoy_descriptors": "A descriptor whose name ends in `_decoy` marks a file the implementation MUST NOT load. Drivers MUST assert `loaded_module_ids` exactly, not by membership: asserting 'greet is present' passes on an implementation that loaded the decoy too."
   },
   "test_cases": [
     {
@@ -145,7 +146,7 @@
     },
     {
       "id": "config_file_pattern_is_honoured",
-      "comment": "bindings.pattern comes from the same precedence chain as bindings.dir, not from a loader-signature default. The directory holds one file matching the configured pattern and one matching only the *.binding.yaml default, so an implementation that keeps the pattern in its signature loads the wrong file rather than none.",
+      "comment": "PROTOCOL_SPEC 5.12.6 clause 1: a configured `bindings.pattern` is honoured. The decoy carries a DISTINCT module id on purpose. With both files pointing at the same descriptor this case reported ['greet'] whichever file was picked up, so an implementation that ignored the configured pattern and fell back to the default `*.binding.yaml` — loading decoy.binding.yaml instead — still passed. The distinct id makes that failure visible as ['wrong_pattern_decoy'].",
       "config_file": {
         "path": "apcore.yaml",
         "content": {
@@ -159,7 +160,7 @@
       "explicit_dir": null,
       "fs": {
         "custom_bindings/greet.bind.yaml": "greet",
-        "custom_bindings/decoy.binding.yaml": "greet"
+        "custom_bindings/decoy.binding.yaml": "wrong_pattern_decoy"
       },
       "expected": {
         "scanned": true,
@@ -171,7 +172,7 @@
     },
     {
       "id": "default_pattern_when_key_absent",
-      "comment": "No bindings.pattern configured: the default *.binding.yaml applies, and a sibling file that does not match it is not loaded.",
+      "comment": "PROTOCOL_SPEC 5.12.6 clause 1: with `bindings.pattern` unset the default `*.binding.yaml` applies, so notes.yaml is not a candidate. Distinct module id on the decoy for the same reason as the case above: a shared id cannot tell 'matched only the right file' from 'matched everything'.",
       "config_file": {
         "path": "apcore.yaml",
         "content": {
@@ -184,7 +185,7 @@
       "explicit_dir": null,
       "fs": {
         "custom_bindings/greet.binding.yaml": "greet",
-        "custom_bindings/notes.yaml": "greet"
+        "custom_bindings/notes.yaml": "unmatched_suffix_decoy"
       },
       "expected": {
         "scanned": true,
@@ -238,7 +239,7 @@
     }
   ],
   "binding_files": {
-    "comment": "Named binding descriptors. An `fs` value names one of these; the descriptor's module_id is what `loaded_module_ids` reports. Distinct ids exist so a case that places files in two candidate directories can tell WHICH directory was scanned — a single shared id makes such a case pass whichever directory won, which is exactly the discriminating power those cases need. The field is `target`, per PROTOCOL_SPEC 5.12.2, schemas/binding.schema.json and all three SDKs.",
+    "comment": "Named binding descriptors. An `fs` value names one of these; the descriptor's module_id is what `loaded_module_ids` reports. Distinct ids exist so a case that places files in two candidate directories can tell WHICH directory was scanned — a single shared id makes such a case pass whichever directory won, which is exactly the discriminating power those cases need. The field is `target`, per PROTOCOL_SPEC 5.12.2, schemas/binding.schema.json and all three SDKs. The `*_decoy` descriptors exist so a case that plants a file the implementation MUST NOT load can prove it was not loaded: `loaded_module_ids` names the descriptor, so a wrong pick shows up as the decoy's id rather than silently matching the expected one.",
     "greet": {
       "bindings": [
         {
@@ -270,6 +271,24 @@
       "bindings": [
         {
           "module_id": "from_argument_side",
+          "auto_schema": true,
+          "target": "fixture_targets:greet"
+        }
+      ]
+    },
+    "wrong_pattern_decoy": {
+      "bindings": [
+        {
+          "module_id": "wrong_pattern_decoy",
+          "auto_schema": true,
+          "target": "fixture_targets:greet"
+        }
+      ]
+    },
+    "unmatched_suffix_decoy": {
+      "bindings": [
+        {
+          "module_id": "unmatched_suffix_decoy",
           "auto_schema": true,
           "target": "fixture_targets:greet"
         }
