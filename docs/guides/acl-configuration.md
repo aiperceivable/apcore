@@ -517,8 +517,8 @@ For deeper visibility, install an `audit_logger` that receives a structured `Aud
             entry.reason,
         )
 
-    acl = ACL.load("./acl/global_acl.yaml")
-    acl._audit_logger = log_audit  # supply via constructor in production
+    loaded = ACL.load("./acl/global_acl.yaml")
+    acl = ACL(loaded.rules, loaded.default_effect, audit_logger=log_audit)
     acl.debug = True  # enables verbose check() debug logging
     ```
 
