@@ -1,0 +1,208 @@
+{
+  "description": "PROTOCOL_SPEC §5.12.6 — the binding-directory resolution contract. Through v1.34.0 §5.12.6 carried a MUST with no subject and no trigger (\"if bindings.dir is configured, implementations MUST scan files matching pattern in that directory\"), and no SDK satisfied it: bindings.dir is registered in all three key surfaces and read by no code path, while BindingLoader is exported public API in all three and called from no internal one. v1.35.0 names both: a binding loader invoked WITHOUT an explicit directory argument MUST resolve the directory from bindings.dir under §9.2 precedence (env APCORE_BINDINGS_DIR > config file > default ./bindings) and MUST match files against bindings.pattern through the same chain (default *.binding.yaml); an explicit argument still wins; and implementations MUST NOT scan a binding directory automatically at client or framework initialisation. SCOPE: this fixture asserts WHICH directory and pattern a loader resolves, and WHETHER a scan happens. It asserts NOTHING about what a relative bindings.dir is resolved against — that base is governed by §9.2.2 and does not change in the 1.x line; see config_project_root.json.",
+  "spec_sections": [
+    "PROTOCOL_SPEC §5.12.6",
+    "PROTOCOL_SPEC §9.2",
+    "PROTOCOL_SPEC §9.2.1"
+  ],
+  "driver_contract": {
+    "entry_point": "Each driver calls its SDK's public binding-directory loader (apcore-python `load_binding_dir`, apcore-typescript `loadBindingDir`, apcore-rust `load_binding_dir`) — the same public entry point an application would call. A driver MUST NOT reach into a private resolution helper: §5.12.6's subject is the loader as invoked, and a private helper that computes the right directory while the public entry point ignores it satisfies nothing.",
+    "config_construction": "A case's `config_file` block MUST be written to a real configuration file on disk and loaded through the SDK's `Config` loader, not injected as an in-memory mapping. The requirement under test is that the FILE tier of bindings.dir reaches the loader; an in-memory Config bypasses the tier that is broken today.",
+    "env_isolation": "APCORE_BINDINGS_DIR and APCORE_BINDINGS_PATTERN MUST be explicitly unset for every case that does not list them in `env`. A driver that inherits an ambient APCORE_BINDINGS_DIR turns the discriminating case into the case that already passes.",
+    "no_explicit_argument": "Cases with `explicit_dir: null` MUST invoke the loader with the directory argument genuinely absent (omitted / None / null / Option::None), not with a directory the driver computed itself. Passing a computed directory is the one path that works under BOTH the pre-v1.35.0 and the corrected behaviour, which is why every pre-existing loader test in all three SDKs proves nothing here.",
+    "scan_observation": "`scanned_dir` is the directory the loader actually enumerated and `loaded_module_ids` the module IDs it produced, sorted. Observe them from the loader's result and the filesystem layout, never from the config value the driver itself supplied.",
+    "no_startup_scan": "The `no_auto_scan_at_init` case MUST construct the client (APCore / new APCore / APCore::with_options) and assert that NO directory enumeration occurred — by placing a well-formed binding file under the configured dir and asserting its module ID is absent from the registry. Asserting only that construction succeeded passes trivially."
+  },
+  "binding_file": {
+    "comment": "The binding descriptor written into each case's filesystem layout. Its module_id is what `loaded_module_ids` reports.",
+    "bindings": [
+      {
+        "module_id": "greet",
+        "target_id": "fixture_targets:greet",
+        "auto_schema": true
+      }
+    ]
+  },
+  "test_cases": [
+    {
+      "id": "config_file_dir_is_scanned_with_env_unset",
+      "comment": "DISCRIMINATING CASE. bindings.dir set in a config FILE, APCORE_BINDINGS_DIR unset, loader invoked with NO explicit directory argument. A scan MUST happen against the configured directory. This is the case no SDK passes before v1.35.0 and the only case that separates the corrected behaviour from the status quo: every existing loader test passes an explicit directory, which works either way, and TypeScript's pre-existing raw process.env read covers only the env tier.",
+      "config_file": {
+        "path": "apcore.yaml",
+        "content": {
+          "bindings": {
+            "dir": "./custom_bindings"
+          }
+        }
+      },
+      "env": {},
+      "explicit_dir": null,
+      "fs": {
+        "custom_bindings/greet.binding.yaml": "binding_file"
+      },
+      "expected": {
+        "scanned": true,
+        "scanned_dir": "custom_bindings",
+        "loaded_module_ids": ["greet"]
+      }
+    },
+    {
+      "id": "default_dir_when_key_absent",
+      "comment": "No bindings.dir anywhere and no explicit argument: the §9.1.1 default ./bindings applies and is scanned.",
+      "config_file": {
+        "path": "apcore.yaml",
+        "content": {}
+      },
+      "env": {},
+      "explicit_dir": null,
+      "fs": {
+        "bindings/greet.binding.yaml": "binding_file"
+      },
+      "expected": {
+        "scanned": true,
+        "scanned_dir": "bindings",
+        "loaded_module_ids": ["greet"]
+      }
+    },
+    {
+      "id": "env_overrides_config_file_dir",
+      "comment": "§9.2 precedence, top tier. APCORE_BINDINGS_DIR wins over the config file's bindings.dir. Both directories exist and each holds a binding file, so exactly one answer passes — a layout where only the env directory exists would pass on an implementation that ignores the env tier and simply finds nothing.",
+      "config_file": {
+        "path": "apcore.yaml",
+        "content": {
+          "bindings": {
+            "dir": "./from_file"
+          }
+        }
+      },
+      "env": {
+        "APCORE_BINDINGS_DIR": "./from_env"
+      },
+      "explicit_dir": null,
+      "fs": {
+        "from_file/file_side.binding.yaml": "binding_file",
+        "from_env/greet.binding.yaml": "binding_file"
+      },
+      "expected": {
+        "scanned": true,
+        "scanned_dir": "from_env",
+        "loaded_module_ids": ["greet"]
+      }
+    },
+    {
+      "id": "explicit_argument_wins_over_config",
+      "comment": "The explicit directory argument sits above the whole config chain: explicit > env > file > default. All three candidate directories exist and hold a binding file.",
+      "config_file": {
+        "path": "apcore.yaml",
+        "content": {
+          "bindings": {
+            "dir": "./from_file"
+          }
+        }
+      },
+      "env": {
+        "APCORE_BINDINGS_DIR": "./from_env"
+      },
+      "explicit_dir": "from_argument",
+      "fs": {
+        "from_file/file_side.binding.yaml": "binding_file",
+        "from_env/env_side.binding.yaml": "binding_file",
+        "from_argument/greet.binding.yaml": "binding_file"
+      },
+      "expected": {
+        "scanned": true,
+        "scanned_dir": "from_argument",
+        "loaded_module_ids": ["greet"]
+      }
+    },
+    {
+      "id": "config_file_pattern_is_honoured",
+      "comment": "bindings.pattern comes from the same precedence chain as bindings.dir, not from a loader-signature default. The directory holds one file matching the configured pattern and one matching only the *.binding.yaml default, so an implementation that keeps the pattern in its signature loads the wrong file rather than none.",
+      "config_file": {
+        "path": "apcore.yaml",
+        "content": {
+          "bindings": {
+            "dir": "./custom_bindings",
+            "pattern": "*.bind.yaml"
+          }
+        }
+      },
+      "env": {},
+      "explicit_dir": null,
+      "fs": {
+        "custom_bindings/greet.bind.yaml": "binding_file",
+        "custom_bindings/decoy.binding.yaml": "binding_file"
+      },
+      "expected": {
+        "scanned": true,
+        "scanned_dir": "custom_bindings",
+        "loaded_module_ids": ["greet"]
+      }
+    },
+    {
+      "id": "default_pattern_when_key_absent",
+      "comment": "No bindings.pattern configured: the default *.binding.yaml applies, and a sibling file that does not match it is not loaded.",
+      "config_file": {
+        "path": "apcore.yaml",
+        "content": {
+          "bindings": {
+            "dir": "./custom_bindings"
+          }
+        }
+      },
+      "env": {},
+      "explicit_dir": null,
+      "fs": {
+        "custom_bindings/greet.binding.yaml": "binding_file",
+        "custom_bindings/notes.yaml": "binding_file"
+      },
+      "expected": {
+        "scanned": true,
+        "scanned_dir": "custom_bindings",
+        "loaded_module_ids": ["greet"]
+      }
+    },
+    {
+      "id": "missing_configured_dir_is_not_an_error",
+      "comment": "A configured bindings.dir that does not exist yields an empty result, not a raised error. Discovery is opportunistic; the key carries a default that most projects never create.",
+      "config_file": {
+        "path": "apcore.yaml",
+        "content": {
+          "bindings": {
+            "dir": "./no_such_dir"
+          }
+        }
+      },
+      "env": {},
+      "explicit_dir": null,
+      "fs": {},
+      "expected": {
+        "scanned": true,
+        "scanned_dir": "no_such_dir",
+        "loaded_module_ids": [],
+        "error": null
+      }
+    },
+    {
+      "id": "no_auto_scan_at_init",
+      "comment": "§5.12.6 clause 3. Constructing a client MUST NOT scan a binding directory. The configured directory exists and holds a well-formed binding file that would load cleanly if anything scanned; after construction, and with no loader call, its module ID MUST be absent from the registry. This is the reading the pre-v1.35.0 wording invited, and adopting it would put filesystem I/O in every client's startup.",
+      "config_file": {
+        "path": "apcore.yaml",
+        "content": {
+          "bindings": {
+            "dir": "./custom_bindings"
+          }
+        }
+      },
+      "env": {},
+      "invoke_loader": false,
+      "fs": {
+        "custom_bindings/greet.binding.yaml": "binding_file"
+      },
+      "expected": {
+        "scanned": false,
+        "registered_module_ids": []
+      }
+    }
+  ]
+}

@@ -353,10 +353,29 @@ Config-driven activation of the `acl.root` key (decision D-64). `discover()` res
 ### Side Effects (ordered)
 
 1. Read `acl.root` from `config` (apply the `"./acl"` default if unset).
-2. Resolve the path: relative to the config file's directory when the `Config` knows its source path, else relative to the current working directory.
+2. Resolve the path: relative to the config file's directory when the `Config` knows its source path, else relative to the current working directory. **This is the current (1.x) behaviour and is superseded at 2.0** — see the note below.
 3. If the resolved path is a **directory**, target `<root>/global_acl.yaml` (the `acl/{scope}_acl.yaml` convention, PROTOCOL_SPEC §3.1); if it is a **file**, target it directly.
 4. If the target file exists, load it via `ACL.load()` and return the new `ACL`.
 5. If the resolved path / target file does not exist, return "no ACL" and attach nothing.
+
+!!! warning "Step 2's base is superseded at 2.0 by PROTOCOL_SPEC §9.2.2"
+    Step 2 records what `discover()` does **today**, and it is unchanged for the whole 1.x
+    line — implement it exactly as written. It is also the reason `acl.root` is the one
+    path-typed key (PROTOCOL_SPEC §9.2.1) whose base differs from its siblings: `schema.root`
+    and `extensions.root` resolve against the process CWD, unconditionally.
+
+    [PROTOCOL_SPEC §9.2.2 Path Resolution Base](../spec/protocol-spec.md#922-path-resolution-base)
+    declares the target rule and opens the deprecation window (spec v1.35.0, issue #113): from
+    2.0, every relative path-typed value resolves against a single **project root** — the
+    configuration file's directory when that file came from §9.14 discovery tiers 1-5, and the
+    process CWD when it came from the user-level tiers 6-7 or when no file was found.
+
+    For a project-local config (tiers 2-5) the two rules coincide and nothing changes. The
+    difference is the **user-level tiers**, where D-64's rule is actively wrong: a config at
+    `~/.config/apcore/config.yaml` carrying `acl.root: ./acl` loads its policy from
+    `~/.config/apcore/acl/` into every project that user runs, while the project's own `./acl/`
+    is ignored — the inverse of what a default-deny ACL is for. Do **not** change this
+    behaviour before 2.0; the §9.2.2 migration path is the supported route.
 
 ### Postconditions
 

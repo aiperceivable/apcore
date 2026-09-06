@@ -1,0 +1,254 @@
+{
+  "description": "PROTOCOL_SPEC §9.2.2 — the project root: the single base every relative path-typed value (§9.2.1) will resolve against from v2.0. project_root is the directory containing the configuration file when that file was selected by §9.14 discovery tiers 1-5 ($APCORE_CONFIG_FILE, or a project-local ./project.yaml|.yml|apcore.yaml|.yml), and the process CWD when it was selected by the user-level tiers 6-7 (~/.config/apcore/config.yaml, ~/.apcore/config.yaml), when no configuration file was found, or when the Config has no backing file at all. The DISCOVERY TIER is what selects the base, which is why this fixture carries one case per tier: tiers 2-5 are indistinguishable from CWD and prove nothing on their own, tier 1 is where a config file can sit outside CWD, and tiers 6-7 are where a file-relative base would be wrong — a user-level config's relative paths are per-project by intent and cannot mean 'beside the config file'. SCOPE, and it is narrow on purpose: v1.35.0 is the DEPRECATION phase. This fixture asserts the project_root ACCESSOR (required now, §9.2.2 requirement 1) and the deprecation-warning CONDITION (SHOULD, requirement 2). It MUST NOT be extended with assertions that relative path-typed values resolve against project_root — that is v2.0 behaviour, forbidden in the 1.x line by requirement 3, and the `v1x_current_bases_unchanged` case pins the opposite. Tracking issue #113.",
+  "spec_sections": [
+    "PROTOCOL_SPEC §9.2.2",
+    "PROTOCOL_SPEC §9.2.1",
+    "PROTOCOL_SPEC §9.14",
+    "PROTOCOL_SPEC §13.2"
+  ],
+  "driver_contract": {
+    "accessor": "Each driver supplies its SDK's public project-root accessor (apcore-python `Config.project_root`, apcore-typescript `Config.projectRoot()`, apcore-rust `Config::project_root()`). It MUST be public API: the consumers this value exists for — a CLI building a subprocess environment, a supervisor composing a container — live in other repositories, and a private field holding the right value satisfies nothing.",
+    "discovery_required": "Every tier case MUST reach the SDK through DISCOVERY — `Config.load()` with no path argument — not by handing the loader an explicit path. The tier is the input under test. An SDK that does not implement §9.14 discovery (a MAY-level feature) reports these cases as SKIPPED, never as passed.",
+    "cwd_must_differ": "For every case, the process CWD MUST be a directory that is NOT the configuration file's directory, and both MUST exist. When the two coincide, every candidate rule returns the same answer and the case proves nothing — the same discriminating-case requirement as issue #112.",
+    "home_isolation": "Tier 6/7 cases MUST run against a redirected home directory (HOME / XDG_CONFIG_HOME / USERPROFILE pointing at a fixture-owned temporary tree). A driver that reads the real user's home is testing the machine it runs on.",
+    "env_isolation": "APCORE_CONFIG_FILE MUST be explicitly unset for every case except `tier_1_explicit_env_config_file`. An inherited value silently converts every other case into tier 1.",
+    "comparison": "Compare project_root as a resolved absolute path, after symlink normalisation on both sides (macOS temporary directories are symlinked through /private, which produces spurious inequality).",
+    "warning_observation": "`deprecation_warning` cases MUST observe the SDK's real warning channel (logging / console / tracing), not a return value. Assert the warning's PRESENCE only — its text is not normative. Requirement 2 is a SHOULD: an SDK that emits no warning at all reports these cases as SKIPPED with a reason, but an SDK that emits one MUST match the condition, because a warning that fires outside it is the blanket warning §9.2.2 explicitly rejects."
+  },
+  "layout": {
+    "comment": "The directory tree shared by the tier cases. `project/` is the process CWD throughout; `elsewhere/` and the redirected home are the non-CWD locations a configuration file can come from.",
+    "cwd": "project",
+    "dirs": ["project", "elsewhere", "fakehome/.config/apcore", "fakehome/.apcore"]
+  },
+  "test_cases": [
+    {
+      "id": "tier_1_explicit_env_config_file",
+      "comment": "§9.14 tier 1, and the tier where the two candidate rules genuinely differ. $APCORE_CONFIG_FILE points at a file outside CWD; project_root is that file's directory. A path written next to a configuration file the operator explicitly pointed at means 'next to that file'.",
+      "tier": 1,
+      "cwd": "project",
+      "env": {
+        "APCORE_CONFIG_FILE": "elsewhere/apcore.yaml"
+      },
+      "fs": {
+        "elsewhere/apcore.yaml": "project: {name: fixture}"
+      },
+      "expected": {
+        "config_source_dir": "elsewhere",
+        "project_root": "elsewhere",
+        "project_root_equals_cwd": false
+      }
+    },
+    {
+      "id": "tier_2_project_yaml",
+      "comment": "§9.14 tier 2. Project-local ./project.yaml. project_root is the file's directory, which here IS CWD — tiers 2-5 are the overwhelmingly common case and nothing changes for them at v2.0.",
+      "tier": 2,
+      "cwd": "project",
+      "env": {},
+      "fs": {
+        "project/project.yaml": "project: {name: fixture}"
+      },
+      "expected": {
+        "config_source_dir": "project",
+        "project_root": "project",
+        "project_root_equals_cwd": true
+      }
+    },
+    {
+      "id": "tier_3_project_yml",
+      "comment": "§9.14 tier 3. The .yml spelling of tier 2; same base.",
+      "tier": 3,
+      "cwd": "project",
+      "env": {},
+      "fs": {
+        "project/project.yml": "project: {name: fixture}"
+      },
+      "expected": {
+        "config_source_dir": "project",
+        "project_root": "project",
+        "project_root_equals_cwd": true
+      }
+    },
+    {
+      "id": "tier_4_apcore_yaml",
+      "comment": "§9.14 tier 4. Project-local ./apcore.yaml; same base as tiers 2-3.",
+      "tier": 4,
+      "cwd": "project",
+      "env": {},
+      "fs": {
+        "project/apcore.yaml": "project: {name: fixture}"
+      },
+      "expected": {
+        "config_source_dir": "project",
+        "project_root": "project",
+        "project_root_equals_cwd": true
+      }
+    },
+    {
+      "id": "tier_5_apcore_yml",
+      "comment": "§9.14 tier 5. The .yml spelling of tier 4; the last tier whose base is the configuration file's directory.",
+      "tier": 5,
+      "cwd": "project",
+      "env": {},
+      "fs": {
+        "project/apcore.yml": "project: {name: fixture}"
+      },
+      "expected": {
+        "config_source_dir": "project",
+        "project_root": "project",
+        "project_root_equals_cwd": true
+      }
+    },
+    {
+      "id": "tier_6_user_level_xdg",
+      "comment": "§9.14 tier 6, and the case that makes the tier split necessary. The configuration file is the user's ~/.config/apcore/config.yaml, shared by every project that user runs, so project_root is CWD and NOT the file's directory. `extensions.root: ./extensions` in this file cannot mean ~/.config/apcore/extensions. Note that config_source_dir and project_root differ here — the driver MUST assert both, since asserting only the source directory passes an implementation that never applies the tier split.",
+      "tier": 6,
+      "cwd": "project",
+      "env": {},
+      "fs": {
+        "fakehome/.config/apcore/config.yaml": "project: {name: fixture}"
+      },
+      "expected": {
+        "config_source_dir": "fakehome/.config/apcore",
+        "project_root": "project",
+        "project_root_equals_cwd": true
+      }
+    },
+    {
+      "id": "tier_7_legacy_user_level",
+      "comment": "§9.14 tier 7. The legacy ~/.apcore/config.yaml is user-level on the same terms as tier 6: project_root is CWD.",
+      "tier": 7,
+      "cwd": "project",
+      "env": {},
+      "fs": {
+        "fakehome/.apcore/config.yaml": "project: {name: fixture}"
+      },
+      "expected": {
+        "config_source_dir": "fakehome/.apcore",
+        "project_root": "project",
+        "project_root_equals_cwd": true
+      }
+    },
+    {
+      "id": "no_config_file_found",
+      "comment": "Discovery found nothing, so Config.from_defaults() applies (§9.14). There is no file to be relative to; project_root is CWD.",
+      "tier": null,
+      "cwd": "project",
+      "env": {},
+      "fs": {},
+      "expected": {
+        "config_source_dir": null,
+        "project_root": "project",
+        "project_root_equals_cwd": true
+      }
+    },
+    {
+      "id": "config_without_backing_file",
+      "comment": "A Config constructed from an in-memory mapping, or from_defaults() called directly — no discovery ran and there is no source path. project_root is CWD.",
+      "tier": null,
+      "cwd": "project",
+      "env": {},
+      "config_from_mapping": {
+        "project": {
+          "name": "fixture"
+        }
+      },
+      "expected": {
+        "config_source_dir": null,
+        "project_root": "project",
+        "project_root_equals_cwd": true
+      }
+    },
+    {
+      "id": "deprecation_warning_fires_when_root_differs_and_value_is_relative",
+      "comment": "§9.2.2 requirement 2, the positive half. Tier 1 config outside CWD (project_root != CWD) AND a relative path-typed value present. This is the population whose resolution changes at v2.0 and the only population the warning is for.",
+      "tier": 1,
+      "cwd": "project",
+      "env": {
+        "APCORE_CONFIG_FILE": "elsewhere/apcore.yaml"
+      },
+      "fs": {
+        "elsewhere/apcore.yaml": "project: {name: fixture}\nschema: {root: ./schemas}"
+      },
+      "expected": {
+        "project_root": "elsewhere",
+        "project_root_equals_cwd": false,
+        "relative_path_typed_values_present": true,
+        "deprecation_warning": true
+      }
+    },
+    {
+      "id": "no_warning_when_root_equals_cwd",
+      "comment": "§9.2.2 requirement 2, first negative half. A project-local config with a relative schema.root: project_root == CWD, so nothing changes at v2.0 and warning here would fire for nearly every apcore project — the blanket warning the section explicitly rejects.",
+      "tier": 4,
+      "cwd": "project",
+      "env": {},
+      "fs": {
+        "project/apcore.yaml": "project: {name: fixture}\nschema: {root: ./schemas}"
+      },
+      "expected": {
+        "project_root": "project",
+        "project_root_equals_cwd": true,
+        "relative_path_typed_values_present": true,
+        "deprecation_warning": false
+      }
+    },
+    {
+      "id": "no_warning_when_all_path_values_absolute",
+      "comment": "§9.2.2 requirement 2, second negative half. project_root != CWD, but every path-typed value is absolute, so no value can re-root and there is nothing to warn about. BOTH conditions are required; a driver that asserts only the first negative case passes an implementation that warns on the project-root difference alone.",
+      "tier": 1,
+      "cwd": "project",
+      "env": {
+        "APCORE_CONFIG_FILE": "elsewhere/apcore.yaml"
+      },
+      "fs": {
+        "elsewhere/apcore.yaml": "project: {name: fixture}\nschema: {root: /abs/schemas}\nacl: {root: /abs/acl}"
+      },
+      "expected": {
+        "project_root": "elsewhere",
+        "project_root_equals_cwd": false,
+        "relative_path_typed_values_present": false,
+        "deprecation_warning": false
+      }
+    },
+    {
+      "id": "env_sourced_relative_value_counts_toward_the_warning",
+      "comment": "The warning condition asks whether a relative path-typed value is PRESENT in the merged configuration, not which tier supplied it. An APCORE_* override is exactly the population §9.2.2 changes — under the target rule APCORE_ACL_ROOT=./x resolves against the project root rather than CWD — so an implementation that inspects only file-declared values misses the operators most likely to be affected.",
+      "tier": 1,
+      "cwd": "project",
+      "env": {
+        "APCORE_CONFIG_FILE": "elsewhere/apcore.yaml",
+        "APCORE_ACL_ROOT": "./x"
+      },
+      "fs": {
+        "elsewhere/apcore.yaml": "project: {name: fixture}"
+      },
+      "expected": {
+        "project_root": "elsewhere",
+        "project_root_equals_cwd": false,
+        "relative_path_typed_values_present": true,
+        "deprecation_warning": true
+      }
+    },
+    {
+      "id": "v1x_current_bases_unchanged",
+      "comment": "§9.2.2 requirement 3 — the deprecation phase changes NO behaviour, and this case pins that. Under a tier-1 config outside CWD, acl.root still resolves against the configuration file's directory (D-64) and schema.root still resolves against CWD, exactly as through v1.34.0. `acl/` and `schemas/` exist under BOTH `project/` and `elsewhere/`, so exactly one semantics passes and an implementation that adopted the v2.0 rule early fails here. Delete this case at v2.0, not before; until then an SDK that passes the accessor cases and fails this one has shipped the migration ahead of its window.",
+      "tier": 1,
+      "cwd": "project",
+      "env": {
+        "APCORE_CONFIG_FILE": "elsewhere/apcore.yaml"
+      },
+      "fs": {
+        "elsewhere/apcore.yaml": "project: {name: fixture}\nacl: {root: ./acl}\nschema: {root: ./schemas}",
+        "elsewhere/acl/global_acl.yaml": "default_effect: deny\nrules: []",
+        "elsewhere/schemas/.keep": "",
+        "project/acl/global_acl.yaml": "default_effect: deny\nrules: []",
+        "project/schemas/.keep": ""
+      },
+      "expected": {
+        "project_root": "elsewhere",
+        "resolved_acl_root": "elsewhere/acl",
+        "resolved_schema_root": "project/schemas"
+      }
+    }
+  ]
+}

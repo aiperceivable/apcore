@@ -1,12 +1,12 @@
 ---
-description: "The canonical, normative apcore protocol specification (RFC 2119, v1.34.0): module, schema, naming, ACL, approval, error, config, and observability requirements for all conforming SDKs."
+description: "The canonical, normative apcore protocol specification (RFC 2119, v1.35.0): module, schema, naming, ACL, approval, error, config, and observability requirements for all conforming SDKs."
 ---
 
 # apcore — AI-Perceivable Core Standard Specification
 
 > **Canonical Specification** - This document is the authoritative specification for the apcore protocol
 
-> Version: 1.34.0
+> Version: 1.35.0
 > Status: Draft Specification (RFC 2119 Conformant)
 > Stability: Specification content is stable, pending reference implementation verification
 > Last Updated: 2026-09-06
@@ -2993,8 +2993,28 @@ bindings:
   pattern: "*.binding.yaml"  # File matching pattern (default)
 ```
 
-- If `bindings.dir` is configured, implementations **MUST** scan files matching `pattern` in that directory
-- If neither is configured, implementations **SHOULD** default to scanning `bindings/` directory
+**The subject of this requirement is the binding loader, and its trigger is an invocation that does not name a directory.** Discovery is a *user-invoked* operation, not a lifecycle event.
+
+1. When a binding loader (`load_binding_dir` / `loadBindingDir` / the equivalent public entry point) is invoked **without an explicit directory argument**, it **MUST** resolve the scan directory from `bindings.dir` following §9.2's precedence — environment variable (`APCORE_BINDINGS_DIR`) > configuration file > default `"./bindings"` — and it **MUST** match candidate files in that directory against `bindings.pattern`, resolved through the same precedence chain with the default `"*.binding.yaml"`.
+2. When a binding loader **is** given an explicit directory argument, that argument wins. The full order is: explicit argument > `bindings.dir` (env > file > default). `bindings.pattern` follows the same order against its own explicit argument. An implementation **MUST NOT** read `APCORE_BINDINGS_DIR` directly at the loader; the environment tier arrives through the ordinary `APCORE_*` override mechanism of §9.2, so that one precedence chain governs the key.
+3. Implementations **MUST NOT** scan a binding directory automatically as part of client or framework initialisation. Loading bindings is an action the application takes, and an implicit startup scan would add filesystem I/O to every client and change behaviour for every deployment that merely happens to have a `./bindings` directory.
+4. A relative `bindings.dir` is a path-typed value (§9.2.1); what it is resolved *against* is governed by §9.2.2 and is not decided here.
+
+!!! note "Why this requirement was restated in v1.35.0"
+    Through v1.34.0 this section read "If `bindings.dir` is configured, implementations
+    **MUST** scan files matching `pattern` in that directory" — a **MUST with no subject
+    and no trigger**. It never said *who* scans or *when*, and no SDK satisfied it:
+    `bindings.dir` is registered in all three key surfaces (`apcore-python config.py`,
+    `apcore-typescript config-key-surface.ts`, `apcore-rust config.rs`) and read by no
+    code path, while `BindingLoader` is exported public API in all three and called from
+    no internal one. That is a design, not an oversight. The two readings the old wording
+    permitted were "the framework scans at startup" (which nobody implements and which
+    clause 3 now forbids) and "a loader honours the key when invoked" (which clause 1 now
+    states, and which is a requirement that can be satisfied and tested). Naming the
+    subject does not weaken the MUST — it makes it enforceable for the first time.
+    TypeScript's pre-existing raw `process.env.APCORE_BINDINGS_DIR` read implemented the
+    *environment tier alone* of this key's precedence chain; clause 2 folds it into §9.2's
+    mechanism without breaking those users. Tracking issue #114.
 
 !!! note "`bindings.files` was withdrawn"
     An explicit `files:` list was previously declared here as a **MUST**. No SDK
@@ -5795,7 +5815,77 @@ A **path-typed** key is a configuration key whose value is a filesystem path. Th
 
 **Why the set is declared rather than inferred.** A consumer that forwards apcore configuration across a process boundary — a CLI spawning a worker, a supervisor building a container environment — has to know which `APCORE_*` variables carry paths, because a relative path that crosses a boundary where the working directory changes silently re-roots. With no declared set, each such consumer maintains its own by hand and drifts from the others; the marker moves that answer to the one place that already defines the key surface.
 
-**What this section does not decide.** It declares *which* keys carry paths. It does **not** define what a *relative* value in one of them is resolved against — the resolution base is unspecified as of v1.34.0 and is tracked separately. Two keys in this table are resolved against different bases by the reference implementations today, which is the defect that motivated declaring the set, not one this section repairs.
+**What this section does not decide.** It declares *which* keys carry paths. It does **not** define what a *relative* value in one of them is resolved against; that is §9.2.2's subject. Two keys in this table are resolved against different bases by the reference implementations today, which is the defect that motivated declaring the set, not one this section repairs.
+
+#### 9.2.2 Path Resolution Base
+
+!!! warning "Deprecation phase — no v1.x behaviour changes here"
+    This section declares the **target** semantics and opens the migration window. It
+    changes **no** behaviour required of a v1.x implementation: the current semantics are
+    recorded below and remain in force for the whole 1.x line. The target semantics take
+    effect at **v2.0**, which is the earliest §13.2 permits — "keep at least 2 minor
+    versions for deprecation period" (§13.2). Tracking issue #113.
+
+**The project root.** Every `Config` **MUST** have exactly **one** project root, determined once, when the configuration is loaded:
+
+```
+Algorithm: project_root(config)
+
+project_root =
+  the directory containing the configuration file
+      when that file was selected by §9.14 discovery tier 1-5:
+        1. $APCORE_CONFIG_FILE          (explicit, arbitrary path)
+        2. ./project.yaml
+        3. ./project.yml
+        4. ./apcore.yaml
+        5. ./apcore.yml
+
+  the process current working directory
+      when the file was selected by §9.14 tier 6-7:
+        6. ~/.config/apcore/config.yaml  (user-level, XDG)
+        7. ~/.apcore/config.yaml         (legacy user-level)
+      or when no configuration file was found at all
+      or when the Config was built without a backing file
+        (Config.from_defaults(), or construction from an in-memory mapping)
+```
+
+**The tier is what selects the base, and it has to be.** For tiers 2-5 the config file's directory *is* the process CWD, so the two candidate rules are indistinguishable — that is the overwhelmingly common case and it is unaffected either way. Tier 1 is where a config file can sit outside CWD, and there the file's own directory is the better answer: a path written next to a config file that was explicitly pointed at means "next to that file". Tiers 6-7 are where the file's directory is the **wrong** answer: `extensions.root: "./extensions"` in `~/.config/apcore/config.yaml` does not mean `~/.config/apcore/extensions`. A user-level configuration's relative paths are per-project by intent; they cannot mean "beside the config file", because the config file is shared by every project that user runs.
+
+**Target semantics (v2.0).** Every **relative** path-typed value — the closed set declared in §9.2.1 — **MUST** be resolved against the project root. This holds regardless of which tier supplied the *value*: file-declared, environment-sourced (`APCORE_*`), API-supplied at construction, and the §9.1.1 defaults alike. An absolute value is used as given and is never re-rooted.
+
+1. There is **one** base per `Config`. An implementation **MUST NOT** be required to record which precedence tier produced a given value in order to resolve it, and **MUST NOT** resolve two path-typed keys of the same `Config` against different bases.
+2. A relative default (`"./extensions"`, `"./schemas"`, `"./acl"`, `"./bindings"`) resolves against the project root exactly as an explicitly written value does. A default has the same home as everything else.
+3. `APCORE_ACL_ROOT=./x` set for a project run means "relative to this project", which is the project root — not the operator's working directory at the moment of launch, and not the directory of a configuration file the operator may never have seen.
+4. Resolution **SHOULD** be performed once, at load, rather than at each point of consumption. A `chdir()` between load and consumption otherwise leaves two consumers of one `Config` looking at two different directories.
+
+**Current semantics (v1.x — unchanged by this section).** What implementations do today, stated so that the divergence being repaired is on the record rather than inferred:
+
+| Key | Base in effect through v1.x | Where it is specified |
+|---|---|---|
+| `acl.root` | The configuration file's directory when the `Config` knows its source path, else CWD — **including for environment-sourced values, and including the user-level tiers 6-7** | `docs/features/acl-system.md` § *Contract: ACL.discover*, decision D-64 |
+| `schema.root` | Process CWD, unconditionally | Nothing normative; implementation behaviour only |
+| `extensions.root` | Process CWD, unconditionally | Nothing normative; implementation behaviour only |
+| `bindings.dir` | No consumer read the key before v1.35.0 (§5.12.6) | — |
+
+Two sibling keys, identical relative values, identical override syntax, different bases: that is the divergence §9.2.2 exists to repair, and it is why the target rule is stated before any implementation is asked to change.
+
+**The user-level tier is where today's behaviour is actively wrong.** `acl.root` is the one key that already resolves file-relative, and in tiers 6-7 that means a user-level configuration silently supplies an ACL policy — loaded from `~/.config/apcore/acl/` — to every project that user runs, while the project's own `./acl/` is ignored. For a default-deny, explicitly-granted authorization system that is the inverse of the intent, and the same load resolves `extensions.root` against CWD, so one configuration document produces two bases in a single load. The v2.0 rule makes tiers 6-7 resolve against CWD, which is a **bug fix** for this key rather than a regression.
+
+**Requirements in force now (v1.35.0):**
+
+1. Implementations **MUST** expose the project root through a public, readable accessor (`Config.project_root` / `config.projectRoot()` / `Config::project_root()`, or the language's equivalent), computed by the algorithm above. This is additive and carries no resolution behaviour: it lets an application, a CLI, or a conformance driver ask what the base *will* be before anything depends on it.
+2. Implementations **SHOULD** emit a deprecation warning when — and **only** when — **both** hold: the project root differs from the process CWD, **and** at least one path-typed value in the merged configuration is relative. A blanket warning is explicitly **NOT** wanted: it would fire for every project in tiers 2-5, where nothing changes at v2.0, which trains operators to ignore the one warning that matters.
+3. Implementations **MUST NOT** adopt the target semantics in a 1.x release. The 1.x line keeps the behaviour in the table above; changing it early would be exactly the silent re-rooting this section is written to prevent.
+
+**Migration, by discovery tier:**
+
+| §9.14 tier | Change at v2.0 |
+|---|---|
+| 2-5 (project-local; most projects) | **None.** `project_root` already equals CWD. |
+| 6-7 (user-level) | `acl.root` moves from the user-level directory to CWD — the bug fix described above. `schema.root`, `extensions.root` and `bindings.dir` are unaffected; they already resolve against CWD. |
+| 1 (`$APCORE_CONFIG_FILE` pointing outside CWD) | The one genuine break: `schema.root`, `extensions.root` and `bindings.dir` move from CWD to the config file's directory. This is the population the clause-2 warning is scoped to reach. |
+
+**Interaction with `include:` composition.** Adopting a single project root settles open question #1 of `docs/spec/rfc-config-include.md` — whether a path value declared *inside* an included fragment resolves relative to that fragment's directory or to the root file's. Under §9.2.2 the question does not arise: resolution has one base for the whole `Config`, so a fragment-relative reading would reintroduce exactly the per-value origin tracking clause 1 forbids. That RFC's Status is **Proposed** and it remains unratified; this section constrains the answer it may give, it does not adopt the RFC.
 
 ### 9.3 Configuration Validation Algorithm
 
@@ -9059,3 +9149,4 @@ Each language SDK **SHOULD** provide idiomatic module definition syntax. The fol
 | 1.32.0 | 2026-09-05 | **§7.3.1 — `ApprovalRequest`'s own schema never carried the two fields its feature doc already required (decision D-03).** `docs/features/approval-system.md`'s Contract block has said "MUST contain `module_id`, `caller_id`, and `action`" since the Contract blocks were added, and the 2026-05-02 alignment review recorded the same requirement as decision **D-03**, recommending both fields be added to `ApprovalRequest` in all three SDKs and populated from the same construction site that already exists: `caller_id = context.caller_id`, `action = module_id`. Neither ever reached this section's own YAML schema — `required` listed `[module_id, arguments, context, annotations]` and `properties` named neither field — so the single source of truth for the type was the one place in the ecosystem that had not caught up to a decision already approved and dated. `caller_id` is nullable, matching `Context.caller_id` on a top-level call (§5.7) — no `"@external"` substitution, which is an ACL-evaluation-only convention. `action` is a flat duplicate of `module_id`, not a separate free-text label, so a handler (a Slack approver, an audit log) can read `request.action` without cross-referencing `request.module_id` under a second name. Additive on an already-`#[non_exhaustive]` type in apcore-rust and additive-with-default in apcore-python and apcore-typescript, so no existing construction call breaks. **This IS an SDK change** in all three, and additive rather than breaking. `conformance/fixtures/approval_request_fields.json` is added. Governance: maintainer approval per GOVERNANCE.md § Decision Making (D-03, `docs/spec/2026-05-decision-log.md`); no GitHub tracking issue — the decision log is the record. |
 | 1.33.0 | 2026-09-05 | **§6.1.4.1 / §6.2.1 — "assigned onto an already-constructed rule" was ambiguous between two different rules, and the ambiguous reading was the one apcore-python implemented (#112 follow-up).** Both sections used that phrase to describe the one route no rejection reaches — a malformed pattern array left to §6.1.1's UNEVALUABLE backstop rather than raised — but never said whether "already-constructed" meant a rule already **installed inside a live `ACL`** and mutated afterward through a caller's own reference (the route no door runs again to intercept, because no further door is ever reached), or **any rule object currently holding a bad value**, regardless of whether it had ever been offered to a door at all. Measured: apcore-typescript and apcore-rust read it the first way — both validate every rule `ACL`'s own constructor is handed, rejecting a rule mutated before ever being passed to `ACL(rules=[...])` exactly as they reject one built with a bad value directly. apcore-python read it the second way — `ACL.__init__` runs no validation of its own, relying entirely on `ACLRule.__post_init__` (which a rule mutated after its own construction walks straight past) and the §6.1.1 backstop at `check()` time. Both readings are safe at `check()` — neither implementation lets a malformed rule grant access it should not — but they are not the same **observable** behaviour: the identical "build a rule, mutate a field, hand it straight to `ACL(rules=[...])`" call raises `ACLRuleError` at startup in two SDKs and succeeds silently in the third, deferring the same fault to the first `check()`. `ACL`'s own constructor **is** one of the three entry points §6.1.6 rule 3 names ("direct construction"), and a rule handed to it for the first time is being offered to a door for the first time regardless of what mutations happened to the rule object beforehand — a rule's construction history is not legible to the door receiving it and cannot be the thing that decides whether the door's own check runs. Both sections are corrected to name the actual, narrower boundary: the backstop covers a rule already installed inside a live `ACL` and mutated after the fact, through a reference the caller already holds — nothing else. `conformance/fixtures/acl_pattern_arity.json` gains a case built on exactly this sequence (build valid, mutate, hand to `ACL(rules=[...])` for the first time), expecting `reject` uniformly — apcore-typescript and apcore-rust already satisfy it; apcore-python does not yet. **This IS an SDK change** in apcore-python only. The existing "installed rule, mutated in place" backstop cases are unaffected — the fault they exercise happens strictly after their `ACL` has already been constructed from a well-formed rule, a sequence this correction does not touch. Governance: maintainer approval per GOVERNANCE.md § Decision Making; no GitHub tracking issue — found during a cross-repo consistency audit, recorded here rather than pointed at an invented number, per the precedent set in the 1.13.0 row. |
 | 1.34.0 | 2026-09-06 | **§9.2.1 Path-Typed Configuration Keys (new) — the specification never said which configuration values are filesystem paths, so every consumer that had to know maintained its own list (#113).** §9.1.1 gives four keys a relative default (`extensions.root`, `schema.root`, `acl.root`, `bindings.dir`) and §9.2 makes each of them environment-overridable, but nothing marked them as paths. A consumer forwarding apcore configuration across a process boundary — a CLI spawning a worker, a supervisor building a container environment — must know which `APCORE_*` variables carry paths, because a relative value re-roots silently wherever the working directory differs; `apcore-cli` had already hand-maintained exactly such a list (`SANDBOX_PATH_TYPED_VARS`) with a note that adding a key means editing three SDKs. The set is now **closed and declared at the source that already defines the key surface**: `schemas/apcore-config.schema.json` and `schemas/defaults.schema.json` carry `"x-apcore-path": true` on each path-valued property, implementations MUST expose the set through a public accessor, and a new path-valued key MUST carry the marker in the change that adds it. `bindings.pattern` is stated NOT to be path-typed (a glob matched within `dir`, never resolved itself), and `extensions.roots` is stated to be list-valued with no scalar env encoding — an implementation MUST NOT invent a delimiter-separated `APCORE_EXTENSIONS_ROOTS`. **Purely additive**: no key changes meaning, no default moves, and no resolution behaviour is defined here. The **resolution base remains unspecified** and is tracked in #113 — `acl.root` resolves against the config file's directory (`ACL.discover`, D-64) while `schema.root` resolves against the process CWD (`SchemaLoader`), and reconciling those two is a separate decision this entry deliberately does not pre-empt. New conformance fixture `conformance/fixtures/config_path_typed_keys.json`. Governance: maintainer approval per GOVERNANCE.md § Decision Making; tracking issue #113. |
+| 1.35.0 | 2026-09-06 | **§5.12.6 — a MUST with no subject, and §9.2.2 Path Resolution Base (new) — a relative path with no declared base (#114, #113).** **§5.12.6** required that "if `bindings.dir` is configured, implementations MUST scan files matching `pattern` in that directory" and never said *who* scans or *when*. No SDK satisfied it: `bindings.dir` is registered in all three key surfaces (`apcore-python config.py:217`, `apcore-typescript config-key-surface.ts:70`, `apcore-rust config.rs:213`) and read by no code path, while `BindingLoader` is exported public API in all three (`__init__.py:198`, `index.ts:277`, `lib.rs:66`) and called from no internal one — a design, not an oversight, since binding loading is a user-invoked tool. The two readings the old text permitted were "the framework scans at startup", which nobody implements and which would add filesystem I/O to every client's startup and change behaviour for every deployment that merely has a `./bindings` directory, and "a loader honours the key when invoked", which is nearly satisfied already. The requirement now names both: a binding loader invoked **without an explicit directory argument** MUST resolve the directory from `bindings.dir` under §9.2 precedence (env `APCORE_BINDINGS_DIR` > file > default `./bindings`) and MUST match files against `bindings.pattern` through the same chain (default `*.binding.yaml`); an explicit argument still wins; and implementations **MUST NOT** scan automatically at client initialisation. The MUST is not weakened — it is made enforceable and testable for the first time. TypeScript's pre-existing raw `process.env.APCORE_BINDINGS_DIR` read (`bindings.ts:163`) implemented the environment tier alone of this key's chain and is folded into §9.2's mechanism, so those users keep working. The `bindings.files` withdrawal note is retained: that key was schema-invalid and unimplementable; `bindings.dir` is declared by the canonical schema with a default and present in all three key surfaces, so the precedent does not transfer. **§9.2.2** answers the question §9.2.1 deliberately left open in v1.34.0: what a *relative* path-typed value is resolved against. Today `acl.root` resolves against the configuration file's directory (`ACL.discover`, D-64, `docs/features/acl-system.md`) while `schema.root` and `extensions.root` resolve against the process CWD — two sibling keys, identical relative values, identical override syntax, two bases, and no rule saying either is wrong. The **project root** is declared: the configuration file's directory when that file came from §9.14 discovery tiers 1-5 (`$APCORE_CONFIG_FILE`, or a project-local `./project.yaml|.yml|apcore.yaml|.yml`), and the process CWD when it came from the user-level tiers 6-7 or when no file was found. The tier is what selects the base and has to be: in tiers 2-5 the file's directory *is* CWD and the rules are indistinguishable; in tier 1 the file's directory is the better answer; in tiers 6-7 it is the wrong one, because `extensions.root: ./extensions` in `~/.config/apcore/config.yaml` cannot mean `~/.config/apcore/extensions`. That last case is live today in `acl.root` — a user-level config silently supplies an ACL policy to every project the user runs while the project's own `./acl/` is ignored, which for a default-deny system is the inverse of the intent, and the same load resolves `extensions.root` against CWD, so **one configuration document yields two bases**. From **v2.0**, every relative path-typed value (§9.2.1's closed set) resolves against the project root — file-declared, env-sourced, API-supplied and defaults alike — with **one base per `Config`** and **no per-key origin tracking**, which is what makes the rule implementable in three SDKs at once. **This version changes no behaviour.** It is the deprecation phase §13.2's two-minor floor requires: 1.x keeps the current semantics exactly, implementations MUST expose a `project_root` accessor (additive, no resolution attached), and SHOULD warn only when project root differs from CWD **and** a relative path-typed value is present — a blanket warning is explicitly not wanted, since it would fire for the tiers 2-5 majority where nothing changes. Adopting this also settles `docs/spec/rfc-config-include.md` open question #1 (fragment-relative vs root-relative path values), because one base for the whole `Config` leaves the fragment-relative reading no room. New conformance fixtures `conformance/fixtures/bindings_dir_resolution.json` and `conformance/fixtures/config_project_root.json`. Governance: maintainer approval per GOVERNANCE.md § Decision Making; tracking issues #114 and #113. |
