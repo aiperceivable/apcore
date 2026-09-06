@@ -11,17 +11,9 @@
     "env_isolation": "APCORE_BINDINGS_DIR and APCORE_BINDINGS_PATTERN MUST be explicitly unset for every case that does not list them in `env`. A driver that inherits an ambient APCORE_BINDINGS_DIR turns the discriminating case into the case that already passes.",
     "no_explicit_argument": "Cases with `explicit_dir: null` MUST invoke the loader with the directory argument genuinely absent (omitted / None / null / Option::None), not with a directory the driver computed itself. Passing a computed directory is the one path that works under BOTH the pre-v1.35.0 and the corrected behaviour, which is why every pre-existing loader test in all three SDKs proves nothing here.",
     "scan_observation": "`scanned_dir` is the directory the loader actually enumerated and `loaded_module_ids` the module IDs it produced, sorted. Observe them from the loader's result and the filesystem layout, never from the config value the driver itself supplied.",
-    "no_startup_scan": "The `no_auto_scan_at_init` case MUST construct the client (APCore / new APCore / APCore::with_options) and assert that NO directory enumeration occurred — by placing a well-formed binding file under the configured dir and asserting its module ID is absent from the registry. Asserting only that construction succeeded passes trivially."
-  },
-  "binding_file": {
-    "comment": "The binding descriptor written into each case's filesystem layout. Its module_id is what `loaded_module_ids` reports.",
-    "bindings": [
-      {
-        "module_id": "greet",
-        "target_id": "fixture_targets:greet",
-        "auto_schema": true
-      }
-    ]
+    "no_startup_scan": "The `no_auto_scan_at_init` case MUST construct the client (APCore / new APCore / APCore::with_options) and assert that NO directory enumeration occurred — by placing a well-formed binding file under the configured dir and asserting its module ID is absent from the registry. Asserting only that construction succeeded passes trivially.",
+    "fs_values_name_a_descriptor": "Each `fs` value names a key in `binding_files`; write that descriptor to the given path. Never assume one shared descriptor — cases rely on distinct module_ids to tell which directory was scanned.",
+    "env_set_after_config_load": "When present, these variables MUST be set AFTER the Config object is constructed and BEFORE the loader is invoked. That ordering is the whole point of the clause-2 case: it separates a loader reading the merged Config from one reading the raw environment."
   },
   "test_cases": [
     {
@@ -38,12 +30,14 @@
       "env": {},
       "explicit_dir": null,
       "fs": {
-        "custom_bindings/greet.binding.yaml": "binding_file"
+        "custom_bindings/greet.binding.yaml": "greet"
       },
       "expected": {
         "scanned": true,
         "scanned_dir": "custom_bindings",
-        "loaded_module_ids": ["greet"]
+        "loaded_module_ids": [
+          "greet"
+        ]
       }
     },
     {
@@ -56,17 +50,19 @@
       "env": {},
       "explicit_dir": null,
       "fs": {
-        "bindings/greet.binding.yaml": "binding_file"
+        "bindings/greet.binding.yaml": "greet"
       },
       "expected": {
         "scanned": true,
         "scanned_dir": "bindings",
-        "loaded_module_ids": ["greet"]
+        "loaded_module_ids": [
+          "greet"
+        ]
       }
     },
     {
       "id": "env_overrides_config_file_dir",
-      "comment": "§9.2 precedence, top tier. APCORE_BINDINGS_DIR wins over the config file's bindings.dir. Both directories exist and each holds a binding file, so exactly one answer passes — a layout where only the env directory exists would pass on an implementation that ignores the env tier and simply finds nothing.",
+      "comment": "PROTOCOL_SPEC 5.12.6 clause 1: the environment tier of `bindings.dir` beats the configuration file. The two candidate directories carry DIFFERENT module ids on purpose: with a shared id this case passed whichever directory the implementation scanned, so it could not detect an implementation that ignored the env tier.",
       "config_file": {
         "path": "apcore.yaml",
         "content": {
@@ -80,13 +76,43 @@
       },
       "explicit_dir": null,
       "fs": {
-        "from_file/file_side.binding.yaml": "binding_file",
-        "from_env/greet.binding.yaml": "binding_file"
+        "from_file/a.binding.yaml": "from_file_side",
+        "from_env/b.binding.yaml": "from_env_side"
       },
       "expected": {
         "scanned": true,
         "scanned_dir": "from_env",
-        "loaded_module_ids": ["greet"]
+        "loaded_module_ids": [
+          "from_env_side"
+        ]
+      }
+    },
+    {
+      "id": "env_var_must_not_be_read_directly_at_the_loader",
+      "comment": "PROTOCOL_SPEC 5.12.6 clause 2: the environment tier reaches the loader through the ordinary APCORE_* override mechanism of 9.2, never through a direct read at the loader. The variable is set AFTER the Config is loaded, so the Config's merged bindings.dir is the file value. A conforming loader scans from_file; a loader that reads APCORE_BINDINGS_DIR itself scans from_env. Without this case clause 2 has no coverage: an implementation that reads the raw variable satisfies every other case in this fixture, which is the defect apcore-typescript#36 was filed for.",
+      "config_file": {
+        "path": "apcore.yaml",
+        "content": {
+          "bindings": {
+            "dir": "./from_file"
+          }
+        }
+      },
+      "env": {},
+      "env_set_after_config_load": {
+        "APCORE_BINDINGS_DIR": "./from_env"
+      },
+      "explicit_dir": null,
+      "fs": {
+        "from_file/a.binding.yaml": "from_file_side",
+        "from_env/b.binding.yaml": "from_env_side"
+      },
+      "expected": {
+        "scanned": true,
+        "scanned_dir": "from_file",
+        "loaded_module_ids": [
+          "from_file_side"
+        ]
       }
     },
     {
@@ -105,14 +131,16 @@
       },
       "explicit_dir": "from_argument",
       "fs": {
-        "from_file/file_side.binding.yaml": "binding_file",
-        "from_env/env_side.binding.yaml": "binding_file",
-        "from_argument/greet.binding.yaml": "binding_file"
+        "from_file/a.binding.yaml": "from_file_side",
+        "from_env/b.binding.yaml": "from_env_side",
+        "from_argument/c.binding.yaml": "from_argument_side"
       },
       "expected": {
         "scanned": true,
         "scanned_dir": "from_argument",
-        "loaded_module_ids": ["greet"]
+        "loaded_module_ids": [
+          "from_argument_side"
+        ]
       }
     },
     {
@@ -130,13 +158,15 @@
       "env": {},
       "explicit_dir": null,
       "fs": {
-        "custom_bindings/greet.bind.yaml": "binding_file",
-        "custom_bindings/decoy.binding.yaml": "binding_file"
+        "custom_bindings/greet.bind.yaml": "greet",
+        "custom_bindings/decoy.binding.yaml": "greet"
       },
       "expected": {
         "scanned": true,
         "scanned_dir": "custom_bindings",
-        "loaded_module_ids": ["greet"]
+        "loaded_module_ids": [
+          "greet"
+        ]
       }
     },
     {
@@ -153,18 +183,20 @@
       "env": {},
       "explicit_dir": null,
       "fs": {
-        "custom_bindings/greet.binding.yaml": "binding_file",
-        "custom_bindings/notes.yaml": "binding_file"
+        "custom_bindings/greet.binding.yaml": "greet",
+        "custom_bindings/notes.yaml": "greet"
       },
       "expected": {
         "scanned": true,
         "scanned_dir": "custom_bindings",
-        "loaded_module_ids": ["greet"]
+        "loaded_module_ids": [
+          "greet"
+        ]
       }
     },
     {
-      "id": "missing_configured_dir_is_not_an_error",
-      "comment": "A configured bindings.dir that does not exist yields an empty result, not a raised error. Discovery is opportunistic; the key carries a default that most projects never create.",
+      "id": "missing_configured_dir_raises",
+      "comment": "PROTOCOL_SPEC 5.12.6 clause 5. A resolved directory that does not exist is an error, not an empty result. Binding loading is user-invoked, so a directory that is not there is a mistake; contrast ACL.discover (D-64), where discovery is automatic and a missing acl.root attaches nothing. All three SDKs already raise here.",
       "config_file": {
         "path": "apcore.yaml",
         "content": {
@@ -179,8 +211,8 @@
       "expected": {
         "scanned": true,
         "scanned_dir": "no_such_dir",
-        "loaded_module_ids": [],
-        "error": null
+        "error_code": "BINDING_FILE_INVALID",
+        "error_message_names_resolved_dir": true
       }
     },
     {
@@ -197,12 +229,51 @@
       "env": {},
       "invoke_loader": false,
       "fs": {
-        "custom_bindings/greet.binding.yaml": "binding_file"
+        "custom_bindings/greet.binding.yaml": "greet"
       },
       "expected": {
         "scanned": false,
         "registered_module_ids": []
       }
     }
-  ]
+  ],
+  "binding_files": {
+    "comment": "Named binding descriptors. An `fs` value names one of these; the descriptor's module_id is what `loaded_module_ids` reports. Distinct ids exist so a case that places files in two candidate directories can tell WHICH directory was scanned — a single shared id makes such a case pass whichever directory won, which is exactly the discriminating power those cases need. The field is `target`, per PROTOCOL_SPEC 5.12.2, schemas/binding.schema.json and all three SDKs.",
+    "greet": {
+      "bindings": [
+        {
+          "module_id": "greet",
+          "auto_schema": true,
+          "target": "fixture_targets:greet"
+        }
+      ]
+    },
+    "from_file_side": {
+      "bindings": [
+        {
+          "module_id": "from_file_side",
+          "auto_schema": true,
+          "target": "fixture_targets:greet"
+        }
+      ]
+    },
+    "from_env_side": {
+      "bindings": [
+        {
+          "module_id": "from_env_side",
+          "auto_schema": true,
+          "target": "fixture_targets:greet"
+        }
+      ]
+    },
+    "from_argument_side": {
+      "bindings": [
+        {
+          "module_id": "from_argument_side",
+          "auto_schema": true,
+          "target": "fixture_targets:greet"
+        }
+      ]
+    }
+  }
 }

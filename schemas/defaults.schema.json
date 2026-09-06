@@ -161,6 +161,24 @@
           "default": 32
         }
       }
+    },
+    "bindings": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Declarative binding-file discovery defaults (PROTOCOL_SPEC 5.12.6).",
+      "properties": {
+        "dir": {
+          "type": "string",
+          "x-apcore-path": true,
+          "description": "Default directory a binding loader scans when invoked without an explicit directory argument.",
+          "default": "./bindings"
+        },
+        "pattern": {
+          "type": "string",
+          "description": "Default glob binding files must match within `dir`. Not path-typed: matched against filenames, never resolved as a path.",
+          "default": "*.binding.yaml"
+        }
+      }
     }
   }
 }

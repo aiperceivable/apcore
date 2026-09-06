@@ -84,6 +84,8 @@
   "canonical_defaults": {
     "acl.default_effect": "deny",
     "acl.root": "./acl",
+    "bindings.dir": "./bindings",
+    "bindings.pattern": "*.binding.yaml",
     "executor.default_timeout": 30000,
     "executor.global_timeout": 60000,
     "executor.max_call_depth": 32,

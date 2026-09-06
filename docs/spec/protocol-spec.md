@@ -1,12 +1,12 @@
 ---
-description: "The canonical, normative apcore protocol specification (RFC 2119, v1.35.0): module, schema, naming, ACL, approval, error, config, and observability requirements for all conforming SDKs."
+description: "The canonical, normative apcore protocol specification (RFC 2119, v1.36.0): module, schema, naming, ACL, approval, error, config, and observability requirements for all conforming SDKs."
 ---
 
 # apcore — AI-Perceivable Core Standard Specification
 
 > **Canonical Specification** - This document is the authoritative specification for the apcore protocol
 
-> Version: 1.35.0
+> Version: 1.36.0
 > Status: Draft Specification (RFC 2119 Conformant)
 > Stability: Specification content is stable, pending reference implementation verification
 > Last Updated: 2026-09-06
@@ -2884,7 +2884,7 @@ Binding files **MUST** be in YAML format, containing a `bindings` array:
 # bindings/email.binding.yaml
 bindings:
   - module_id: "email.send"
-    target_id: "myapp.services.email:send_email"
+    target: "myapp.services.email:send_email"
     description: "Send email"
     input_schema:
       type: object
@@ -2908,7 +2908,7 @@ bindings:
           type: string
 
   - module_id: "email.send_template"
-    target_id: "myapp.services.email:EmailService.send_template"
+    target: "myapp.services.email:EmailService.send_template"
     description: "Send email using template"
     auto_schema: true  # Auto-generate Schema from type annotations
 ```
@@ -2918,7 +2918,7 @@ bindings:
 | Field | Type | Required | Description |
 |------|------|------|------|
 | `module_id` | string | **MUST** | Module Canonical ID |
-| `target_id` | string | **MUST** | Target callable (format: `module.path:callable_name`) |
+| `target` | string | **MUST** | Target callable (format: `module.path:callable_name`) |
 | `description` | string | **SHOULD** | Module description |
 | `input_schema` | object | Conditional | Input Schema (choose one with `auto_schema`) |
 | `output_schema` | object | Conditional | Output Schema (choose one with `auto_schema`) |
@@ -2931,7 +2931,7 @@ bindings:
 
 #### 5.12.3 Target Resolution Algorithm
 
-Implementations **MUST** resolve `target_id` field according to the following algorithm:
+Implementations **MUST** resolve `target` field according to the following algorithm:
 
 ```
 Algorithm: resolve_target(target_string)
@@ -2972,15 +2972,15 @@ Binding items **may** reference external Schema files via `schema_ref`, avoiding
 ```yaml
 bindings:
   - module_id: "email.send"
-    target_id: "myapp.services.email:send_email"
+    target: "myapp.services.email:send_email"
     schema_ref: "../schemas/email.send.schema.yaml"
 ```
 
 #### 5.12.5 `auto_schema` Mode
 
-When `auto_schema: true`, implementations **MUST** reuse the `generate_schema_from_function` algorithm from §5.11.4 to auto-generate Schema from target_id callable's type annotations.
+When `auto_schema: true`, implementations **MUST** reuse the `generate_schema_from_function` algorithm from §5.11.4 to auto-generate Schema from target callable's type annotations.
 
-If target_id callable lacks sufficient type information, **MUST** throw `BINDING_SCHEMA_INFERENCE_FAILED` error. (`BINDING_SCHEMA_MISSING` is the deprecated 0.19.0 alias, retained only for decoding older serialized payloads.)
+If target callable lacks sufficient type information, **MUST** throw `BINDING_SCHEMA_INFERENCE_FAILED` error. (`BINDING_SCHEMA_MISSING` is the deprecated 0.19.0 alias, retained only for decoding older serialized payloads.)
 
 #### 5.12.6 Discovery Mechanism
 
@@ -2999,6 +2999,20 @@ bindings:
 2. When a binding loader **is** given an explicit directory argument, that argument wins. The full order is: explicit argument > `bindings.dir` (env > file > default). `bindings.pattern` follows the same order against its own explicit argument. An implementation **MUST NOT** read `APCORE_BINDINGS_DIR` directly at the loader; the environment tier arrives through the ordinary `APCORE_*` override mechanism of §9.2, so that one precedence chain governs the key.
 3. Implementations **MUST NOT** scan a binding directory automatically as part of client or framework initialisation. Loading bindings is an action the application takes, and an implicit startup scan would add filesystem I/O to every client and change behaviour for every deployment that merely happens to have a `./bindings` directory.
 4. A relative `bindings.dir` is a path-typed value (§9.2.1); what it is resolved *against* is governed by §9.2.2 and is not decided here.
+5. When the resolved directory does not exist, the loader **MUST** fail, raising the implementation's binding-file error and naming the resolved directory in the message. It **MUST NOT** return an empty result. This holds whether the directory came from an explicit argument, from `bindings.dir`, or from the `"./bindings"` default.
+
+!!! note "Why a missing binding directory raises, when a missing `acl.root` does not"
+    §6's `ACL.discover` states the opposite invariant for `acl.root`: a missing path
+    attaches **nothing** and **MUST NOT** synthesize an empty default-deny ACL (D-64).
+    The two are not in tension, because the trigger differs. ACL discovery is
+    **automatic** — it runs for every client whether or not the operator has an ACL, so
+    a missing directory is the ordinary case and must be silent. Binding loading is
+    **user-invoked** (clause 3): an application that calls the loader has asserted that
+    it expects bindings, so a directory that is not there is a mistake, and returning
+    zero modules silently reproduces exactly the "configuration key that quietly does
+    nothing" defect this section was rewritten to remove. All three SDKs already raise
+    here, each with tests pinning it; this clause records that agreement rather than
+    changing any implementation.
 
 !!! note "Why this requirement was restated in v1.35.0"
     Through v1.34.0 this section read "If `bindings.dir` is configured, implementations
@@ -3029,7 +3043,7 @@ bindings:
 Implementations **MUST** perform the following validations when loading binding files:
 
 1. `module_id` conforms to Canonical ID format (§2.7)
-2. `target_id` can be resolved to valid callable
+2. `target` can be resolved to valid callable
 3. Schema is valid (explicitly defined or auto_schema can generate)
 4. `module_id` doesn't conflict with registered modules (§2.6)
 5. Binding file itself conforms to `binding.schema.json` (see `schemas/binding.schema.json`)
@@ -3038,9 +3052,9 @@ Implementations **MUST** perform the following validations when loading binding 
 
 | Error Code | Description | Trigger Condition |
 |--------|------|---------|
-| `BINDING_INVALID_TARGET` | target_id format invalid | target_id doesn't conform to `module.path:callable_name` format |
+| `BINDING_INVALID_TARGET` | target format invalid | target doesn't conform to `module.path:callable_name` format |
 | `BINDING_MODULE_NOT_FOUND` | Module path can't be imported | import module_path fails |
-| `BINDING_CALLABLE_NOT_FOUND` | Can't find target_id callable | Can't find specified function/method in module |
+| `BINDING_CALLABLE_NOT_FOUND` | Can't find target callable | Can't find specified function/method in module |
 | `BINDING_NOT_CALLABLE` | Target not callable | Resolved object is not callable |
 | `BINDING_SCHEMA_INFERENCE_FAILED` | Schema inference failed | No explicit Schema and auto_schema can't generate (deprecated alias: `BINDING_SCHEMA_MISSING`) |
 
@@ -3294,7 +3308,7 @@ Implementations **MUST** define a `ResolvedModule` type (or equivalent) that car
 ResolvedModule:
   # Canonical fields (from ScannedModule, unchanged)
   module_id: string                           # Canonical ID, used for registry key
-  target_id: string                              # Callable reference
+  target: string                              # Callable reference
   input_schema: object                        # JSON Schema
   output_schema: object                       # JSON Schema
   version: string
@@ -3464,7 +3478,7 @@ Implementations **MUST** generate `input_schema` from the function's parameter t
 ```python
 # commands/deploy.py
 def deploy(env: str, tag: str = "latest", replicas: int = 3) -> dict:
-    """Deploy application to target_id environment."""
+    """Deploy application to target environment."""
     ...
 ```
 
@@ -5264,16 +5278,16 @@ error_codes:
 
   # Binding-related (BINDING_*)
   BINDING_INVALID_TARGET:
-    description: "Binding target_id format invalid"
+    description: "Binding target format invalid"
     http_status: 500
   BINDING_MODULE_NOT_FOUND:
-    description: "Binding target_id module path can't be imported"
+    description: "Binding target module path can't be imported"
     http_status: 500
   BINDING_CALLABLE_NOT_FOUND:
-    description: "Binding target_id callable not found"
+    description: "Binding target callable not found"
     http_status: 500
   BINDING_NOT_CALLABLE:
-    description: "Binding target_id not callable"
+    description: "Binding target not callable"
     http_status: 500
   BINDING_SCHEMA_INFERENCE_FAILED:
     description: "Auto-schema inference failed: callable lacks usable type hints"
@@ -5505,9 +5519,9 @@ Implementations **MUST NOT** default retry failed module invocations. Retry beha
 | `FUNC_MISSING_TYPE_HINT` | **No** | Code-level issue, needs developer fix |
 | `FUNC_MISSING_RETURN_TYPE` | **No** | Code-level issue, needs developer fix |
 | `BINDING_INVALID_TARGET` | **No** | Binding format error, needs config fix |
-| `BINDING_MODULE_NOT_FOUND` | **No** | Binding target_id module missing, needs config fix |
-| `BINDING_CALLABLE_NOT_FOUND` | **No** | Binding target_id callable missing, needs code fix |
-| `BINDING_NOT_CALLABLE` | **No** | Binding target_id not callable, needs code fix |
+| `BINDING_MODULE_NOT_FOUND` | **No** | Binding target module missing, needs config fix |
+| `BINDING_CALLABLE_NOT_FOUND` | **No** | Binding target callable missing, needs code fix |
+| `BINDING_NOT_CALLABLE` | **No** | Binding target not callable, needs code fix |
 | `BINDING_SCHEMA_MISSING` | **No** | Schema missing for binding, needs code fix |
 | `BINDING_FILE_INVALID` | **No** | Binding file parse error, needs config fix |
 | `CIRCULAR_DEPENDENCY` | **No** | Module dependency cycle, needs architecture fix |
@@ -5549,9 +5563,9 @@ ModuleError (base error for all framework errors)
 ├── ACLRuleError                   # ACL_RULE_ERROR — ACL rule error
 ├── FuncMissingTypeHintError       # FUNC_MISSING_TYPE_HINT — Function parameter missing type annotation
 ├── FuncMissingReturnTypeError     # FUNC_MISSING_RETURN_TYPE — Function missing return type annotation
-├── BindingInvalidTargetError      # BINDING_INVALID_TARGET — target_id format invalid
+├── BindingInvalidTargetError      # BINDING_INVALID_TARGET — target format invalid
 ├── BindingModuleNotFoundError     # BINDING_MODULE_NOT_FOUND — Module path can't be imported
-├── BindingCallableNotFoundError   # BINDING_CALLABLE_NOT_FOUND — Can't find target_id callable
+├── BindingCallableNotFoundError   # BINDING_CALLABLE_NOT_FOUND — Can't find target callable
 ├── BindingNotCallableError        # BINDING_NOT_CALLABLE — Target not callable
 ├── BindingSchemaMissingError      # BINDING_SCHEMA_MISSING — Schema missing
 ├── BindingFileInvalidError        # BINDING_FILE_INVALID — Binding file parse error
@@ -5812,6 +5826,9 @@ A **path-typed** key is a configuration key whose value is a filesystem path. Th
 2. A key added to §9.1 whose value is a filesystem path **MUST** carry the `x-apcore-path` marker in the same change that adds it. A path-valued key without the marker is a specification defect, not an implicit exclusion.
 3. `extensions.roots` is list-valued: every element is path-typed, in both the bare-string form and the `{ root, namespace }` form. §9.2's scalar environment-override convention does not apply to it; an implementation **MUST NOT** invent a delimiter-separated `APCORE_EXTENSIONS_ROOTS` encoding.
 4. `bindings.pattern` is **NOT** path-typed. It is a glob matched against filenames *within* `bindings.dir` and is never resolved as a path in its own right. `id_map.overrides` keys and values are module IDs, not paths.
+5. **An empty string is not a path.** When a path-typed key resolves to `""` — most commonly because an `APCORE_*` variable is *set but empty*, which §9.2 still treats as an override — implementations **MUST NOT** use it as a directory. The empty value **MUST** be discarded and resolution **MUST** fall through to the next tier, exactly as if the variable had been unset. An implementation **MAY** log a warning naming the key.
+
+    This is stated because §9.2's override rule and shell ergonomics collide. `export APCORE_ACL_ROOT=` and a variable inherited empty from a container spec are both "set" to the tooling, so an unguarded implementation lets an empty string silently *blank out* a directory the configuration file correctly declared, and then resolves that empty path relative to the working directory — which is the working directory itself. The same shape is already recorded for `APCORE_CONFIG_FILE`, where an empty value injected a phantom `config.file` key. Path-typed keys are the population where the failure is silent rather than loud, because "" is a legal relative path to the filesystem API but never the one an operator meant.
 
 **Why the set is declared rather than inferred.** A consumer that forwards apcore configuration across a process boundary — a CLI spawning a worker, a supervisor building a container environment — has to know which `APCORE_*` variables carry paths, because a relative path that crosses a boundary where the working directory changes silently re-roots. With no declared set, each such consumer maintains its own by hand and drifts from the others; the marker moves that answer to the one place that already defines the key surface.
 
@@ -5875,6 +5892,19 @@ Two sibling keys, identical relative values, identical override syntax, differen
 
 1. Implementations **MUST** expose the project root through a public, readable accessor (`Config.project_root` / `config.projectRoot()` / `Config::project_root()`, or the language's equivalent), computed by the algorithm above. This is additive and carries no resolution behaviour: it lets an application, a CLI, or a conformance driver ask what the base *will* be before anything depends on it.
 2. Implementations **SHOULD** emit a deprecation warning when — and **only** when — **both** hold: the project root differs from the process CWD, **and** at least one path-typed value in the merged configuration is relative. A blanket warning is explicitly **NOT** wanted: it would fire for every project in tiers 2-5, where nothing changes at v2.0, which trains operators to ignore the one warning that matters.
+
+    **Cadence: once per configuration load, not once per process.** The warning is a
+    property of *the document being loaded*, so every load that satisfies both conditions
+    emits it, and a load that does not satisfy them emits nothing. Implementations
+    **MUST NOT** suppress it with process-global state. Two reasons. First, a
+    once-per-process flag makes emission **order-dependent**: in a process that loads
+    several configurations, whichever load runs first consumes the warning, so a later
+    affected configuration is silent and the operator cannot tell which document
+    triggered it. Second, that same global is a test-isolation hazard — one test consumes
+    the warning another test needed, which is how the three SDKs came to disagree here in
+    the first place. De-duplication for log volume is the host logging layer's job, not
+    the SDK's; a reload that re-reads an edited file **SHOULD** re-evaluate and may
+    legitimately warn again.
 3. Implementations **MUST NOT** adopt the target semantics in a 1.x release. The 1.x line keeps the behaviour in the table above; changing it early would be exactly the silent re-rooting this section is written to prevent.
 
 **Migration, by discovery tier:**
@@ -5978,7 +6008,7 @@ Config.register_namespace(
 | `defaults` | MAY | Default configuration values for this namespace. Merged before file data (lowest priority). |
 | `env_style` | MAY | Controls how environment variable suffixes are converted to config keys. `"auto"` (default): matches the suffix against the `defaults` tree structure to determine the correct interpretation — flat keys match flat, nested paths match nested. When `defaults` is `nil`, falls back to `"nested"` behavior. `"nested"`: single `_` → `.` (section separator), double `__` → literal `_` — suitable for purely hierarchical config structures. `"flat"`: no conversion, suffix is lowercased as-is — suitable for purely flat snake_case config keys where `_` is part of the key name, not a hierarchy separator. When `nil`, defaults to `"auto"`. |
 | `max_depth` | MAY | Maximum nesting depth for environment variable key conversion. Applies to `"nested"` and `"auto"` styles; ignored for `"flat"`. After reaching `max_depth` levels, remaining `_` characters are preserved as literal underscores instead of being converted to `.` separators. Default: `5`. Example: `A_B_C_D_E_F_G` with `max_depth=5` → `a.b.c.d.e_f_g` (5 segments). |
-| `env_map` | MAY | Explicit mapping of bare (unprefixed) environment variable names to config keys within this namespace. Each key is an exact env var name (e.g., `"REDIS_URL"`), each value is the target_id config key (e.g., `"cache_url"`). Only explicitly listed env vars are captured. Same priority as `env_prefix` overrides. An env var name **MUST NOT** appear in more than one `env_map` (global or namespace) — duplicates raise `CONFIG_ENV_MAP_CONFLICT`. When `nil`, no bare env var mapping is applied. |
+| `env_map` | MAY | Explicit mapping of bare (unprefixed) environment variable names to config keys within this namespace. Each key is an exact env var name (e.g., `"REDIS_URL"`), each value is the target config key (e.g., `"cache_url"`). Only explicitly listed env vars are captured. Same priority as `env_prefix` overrides. An env var name **MUST NOT** appear in more than one `env_map` (global or namespace) — duplicates raise `CONFIG_ENV_MAP_CONFLICT`. When `nil`, no bare env var mapping is applied. |
 
 **Registration rules:**
 
@@ -7700,7 +7730,7 @@ extension_points:
     module_loader:
       description: "Custom module loading method"
       interface: "load(module_id: str) -> Module"
-      use_case: "Remote loading, dynamic compilation; Function-based module loading; Binding file target_id resolution and module loading"
+      use_case: "Remote loading, dynamic compilation; Function-based module loading; Binding file target resolution and module loading"
       default: "DirectoryModuleLoader"
 
     executor:
@@ -9150,3 +9180,4 @@ Each language SDK **SHOULD** provide idiomatic module definition syntax. The fol
 | 1.33.0 | 2026-09-05 | **§6.1.4.1 / §6.2.1 — "assigned onto an already-constructed rule" was ambiguous between two different rules, and the ambiguous reading was the one apcore-python implemented (#112 follow-up).** Both sections used that phrase to describe the one route no rejection reaches — a malformed pattern array left to §6.1.1's UNEVALUABLE backstop rather than raised — but never said whether "already-constructed" meant a rule already **installed inside a live `ACL`** and mutated afterward through a caller's own reference (the route no door runs again to intercept, because no further door is ever reached), or **any rule object currently holding a bad value**, regardless of whether it had ever been offered to a door at all. Measured: apcore-typescript and apcore-rust read it the first way — both validate every rule `ACL`'s own constructor is handed, rejecting a rule mutated before ever being passed to `ACL(rules=[...])` exactly as they reject one built with a bad value directly. apcore-python read it the second way — `ACL.__init__` runs no validation of its own, relying entirely on `ACLRule.__post_init__` (which a rule mutated after its own construction walks straight past) and the §6.1.1 backstop at `check()` time. Both readings are safe at `check()` — neither implementation lets a malformed rule grant access it should not — but they are not the same **observable** behaviour: the identical "build a rule, mutate a field, hand it straight to `ACL(rules=[...])`" call raises `ACLRuleError` at startup in two SDKs and succeeds silently in the third, deferring the same fault to the first `check()`. `ACL`'s own constructor **is** one of the three entry points §6.1.6 rule 3 names ("direct construction"), and a rule handed to it for the first time is being offered to a door for the first time regardless of what mutations happened to the rule object beforehand — a rule's construction history is not legible to the door receiving it and cannot be the thing that decides whether the door's own check runs. Both sections are corrected to name the actual, narrower boundary: the backstop covers a rule already installed inside a live `ACL` and mutated after the fact, through a reference the caller already holds — nothing else. `conformance/fixtures/acl_pattern_arity.json` gains a case built on exactly this sequence (build valid, mutate, hand to `ACL(rules=[...])` for the first time), expecting `reject` uniformly — apcore-typescript and apcore-rust already satisfy it; apcore-python does not yet. **This IS an SDK change** in apcore-python only. The existing "installed rule, mutated in place" backstop cases are unaffected — the fault they exercise happens strictly after their `ACL` has already been constructed from a well-formed rule, a sequence this correction does not touch. Governance: maintainer approval per GOVERNANCE.md § Decision Making; no GitHub tracking issue — found during a cross-repo consistency audit, recorded here rather than pointed at an invented number, per the precedent set in the 1.13.0 row. |
 | 1.34.0 | 2026-09-06 | **§9.2.1 Path-Typed Configuration Keys (new) — the specification never said which configuration values are filesystem paths, so every consumer that had to know maintained its own list (#113).** §9.1.1 gives four keys a relative default (`extensions.root`, `schema.root`, `acl.root`, `bindings.dir`) and §9.2 makes each of them environment-overridable, but nothing marked them as paths. A consumer forwarding apcore configuration across a process boundary — a CLI spawning a worker, a supervisor building a container environment — must know which `APCORE_*` variables carry paths, because a relative value re-roots silently wherever the working directory differs; `apcore-cli` had already hand-maintained exactly such a list (`SANDBOX_PATH_TYPED_VARS`) with a note that adding a key means editing three SDKs. The set is now **closed and declared at the source that already defines the key surface**: `schemas/apcore-config.schema.json` and `schemas/defaults.schema.json` carry `"x-apcore-path": true` on each path-valued property, implementations MUST expose the set through a public accessor, and a new path-valued key MUST carry the marker in the change that adds it. `bindings.pattern` is stated NOT to be path-typed (a glob matched within `dir`, never resolved itself), and `extensions.roots` is stated to be list-valued with no scalar env encoding — an implementation MUST NOT invent a delimiter-separated `APCORE_EXTENSIONS_ROOTS`. **Purely additive**: no key changes meaning, no default moves, and no resolution behaviour is defined here. The **resolution base remains unspecified** and is tracked in #113 — `acl.root` resolves against the config file's directory (`ACL.discover`, D-64) while `schema.root` resolves against the process CWD (`SchemaLoader`), and reconciling those two is a separate decision this entry deliberately does not pre-empt. New conformance fixture `conformance/fixtures/config_path_typed_keys.json`. Governance: maintainer approval per GOVERNANCE.md § Decision Making; tracking issue #113. |
 | 1.35.0 | 2026-09-06 | **§5.12.6 — a MUST with no subject, and §9.2.2 Path Resolution Base (new) — a relative path with no declared base (#114, #113).** **§5.12.6** required that "if `bindings.dir` is configured, implementations MUST scan files matching `pattern` in that directory" and never said *who* scans or *when*. No SDK satisfied it: `bindings.dir` is registered in all three key surfaces (`apcore-python config.py:217`, `apcore-typescript config-key-surface.ts:70`, `apcore-rust config.rs:213`) and read by no code path, while `BindingLoader` is exported public API in all three (`__init__.py:198`, `index.ts:277`, `lib.rs:66`) and called from no internal one — a design, not an oversight, since binding loading is a user-invoked tool. The two readings the old text permitted were "the framework scans at startup", which nobody implements and which would add filesystem I/O to every client's startup and change behaviour for every deployment that merely has a `./bindings` directory, and "a loader honours the key when invoked", which is nearly satisfied already. The requirement now names both: a binding loader invoked **without an explicit directory argument** MUST resolve the directory from `bindings.dir` under §9.2 precedence (env `APCORE_BINDINGS_DIR` > file > default `./bindings`) and MUST match files against `bindings.pattern` through the same chain (default `*.binding.yaml`); an explicit argument still wins; and implementations **MUST NOT** scan automatically at client initialisation. The MUST is not weakened — it is made enforceable and testable for the first time. TypeScript's pre-existing raw `process.env.APCORE_BINDINGS_DIR` read (`bindings.ts:163`) implemented the environment tier alone of this key's chain and is folded into §9.2's mechanism, so those users keep working. The `bindings.files` withdrawal note is retained: that key was schema-invalid and unimplementable; `bindings.dir` is declared by the canonical schema with a default and present in all three key surfaces, so the precedent does not transfer. **§9.2.2** answers the question §9.2.1 deliberately left open in v1.34.0: what a *relative* path-typed value is resolved against. Today `acl.root` resolves against the configuration file's directory (`ACL.discover`, D-64, `docs/features/acl-system.md`) while `schema.root` and `extensions.root` resolve against the process CWD — two sibling keys, identical relative values, identical override syntax, two bases, and no rule saying either is wrong. The **project root** is declared: the configuration file's directory when that file came from §9.14 discovery tiers 1-5 (`$APCORE_CONFIG_FILE`, or a project-local `./project.yaml|.yml|apcore.yaml|.yml`), and the process CWD when it came from the user-level tiers 6-7 or when no file was found. The tier is what selects the base and has to be: in tiers 2-5 the file's directory *is* CWD and the rules are indistinguishable; in tier 1 the file's directory is the better answer; in tiers 6-7 it is the wrong one, because `extensions.root: ./extensions` in `~/.config/apcore/config.yaml` cannot mean `~/.config/apcore/extensions`. That last case is live today in `acl.root` — a user-level config silently supplies an ACL policy to every project the user runs while the project's own `./acl/` is ignored, which for a default-deny system is the inverse of the intent, and the same load resolves `extensions.root` against CWD, so **one configuration document yields two bases**. From **v2.0**, every relative path-typed value (§9.2.1's closed set) resolves against the project root — file-declared, env-sourced, API-supplied and defaults alike — with **one base per `Config`** and **no per-key origin tracking**, which is what makes the rule implementable in three SDKs at once. **This version changes no behaviour.** It is the deprecation phase §13.2's two-minor floor requires: 1.x keeps the current semantics exactly, implementations MUST expose a `project_root` accessor (additive, no resolution attached), and SHOULD warn only when project root differs from CWD **and** a relative path-typed value is present — a blanket warning is explicitly not wanted, since it would fire for the tiers 2-5 majority where nothing changes. Adopting this also settles `docs/spec/rfc-config-include.md` open question #1 (fragment-relative vs root-relative path values), because one base for the whole `Config` leaves the fragment-relative reading no room. New conformance fixtures `conformance/fixtures/bindings_dir_resolution.json` and `conformance/fixtures/config_project_root.json`. Governance: maintainer approval per GOVERNANCE.md § Decision Making; tracking issues #114 and #113. |
+| 1.36.0 | 2026-09-06 | **Four corrections found by writing the first conformance drivers for v1.35.0's own fixtures — three SDKs reported the same defects independently (#113, #114, #115).** **§5.12.2 declared the binding field `target_id` a MUST; everything else in the ecosystem uses `target`** — `schemas/binding.schema.json`, `DECLARATIVE_CONFIG_SPEC` §3.2, both binding fixtures, and all three SDK loaders. The protocol spec was the sole outlier, and on a MUST, so a binding file written from the section that defines the binding-file format loaded in no SDK. Corrected throughout §5.12, and in the ten further places outside it (§5.13.9's `ResolvedModule`, §8.2/§8.6/§8.7's error descriptions, §5.14.6 and §9.15 prose) where a past over-applied rename had left `target_id` standing. No implementation changes: the population of files using `target_id` is empty, because such a file has never loaded. **§5.12.6 gains clause 5 — a resolved binding directory that does not exist MUST raise, naming the directory, and MUST NOT return an empty result.** v1.35.0 named the MUST's subject but left its failure mode unstated, and the fixture guessed the opposite of what all three SDKs do. The contrast with `ACL.discover`'s missing-path no-op (D-64) is now stated as deliberate: ACL discovery is automatic, so silence is right; binding loading is user-invoked, so an absent directory is a mistake. **§9.2.1 gains requirement 5 — an empty string is not a path.** §9.2 counts a *set but empty* `APCORE_*` variable as an override, so `export APCORE_ACL_ROOT=` silently blanked a directory the configuration file correctly declared and then resolved `""` to the working directory. The same shape is on record for `APCORE_CONFIG_FILE` (#88); path-typed keys are where it fails silently rather than loudly. Empty values MUST fall through to the next tier. **§9.2.2 fixes the deprecation warning's cadence at once per configuration load, never once per process.** v1.35.0 required the warning but not its cadence, and the three SDKs promptly invented three — Python deduplicated through the `warnings` filter, TypeScript held a module-global once-flag, Rust warned per load. A process-global flag makes emission order-dependent (the first load consumes the warning, so a later affected document is silent) and is a test-isolation hazard. De-duplication belongs to the host logging layer. **`schemas/defaults.schema.json` gains the `bindings` section** it never had, so `bindings.dir` / `bindings.pattern` finally have a home in the file that calls itself the single source of truth for defaults; until now the `./bindings` default existed only in `apcore-config.schema.json` and every SDK had to hardcode it at the loader, since `config_key_governance.json` pins the default tables to `defaults.schema.json`. `config_key_governance.json` regenerated (65 allowed keys, 20 canonical defaults). Fixture repairs: `bindings_dir_resolution` gains `env_var_must_not_be_read_directly_at_the_loader` (clause 2 had no case, so an implementation reading the raw variable — the exact apcore-typescript#36 defect — passed the whole fixture), its candidate directories now carry distinct module ids (a shared id made `env_overrides_config_file_dir` pass whichever directory was scanned), and `missing_configured_dir` now expects the raise; `config_project_root`'s tier-6/7 cases now name the TIER through tokens instead of hardcoding the POSIX spelling, which had made every driver fail on macOS, and `no_warning_when_all_path_values_absolute` now spells every §9.2.1 key absolutely, without which it was unsatisfiable against §9.2.2's own rule that defaults count. Governance: maintainer approval per GOVERNANCE.md; tracking issues #113, #114, #115. |
