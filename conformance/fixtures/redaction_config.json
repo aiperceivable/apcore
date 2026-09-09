@@ -296,12 +296,88 @@
         "note": "***REDACTED***",
         "other": "nothing here"
       }
+    },
+    {
+      "id": "regex_patterns_do_not_test_non_string_values",
+      "_why": "DISCRIMINATING — apcore-python's log-emission path (`_apply_redaction_config`) passed the value through `str(value)` before searching, while its OWN executor-capture path (`redact_sensitive`), apcore-typescript (`typeof value === 'string'`) and apcore-rust (`Value::String(s)`) all test strings only. Measured: with these patterns `amount: 42` came back `***REDACTED***` from one Python surface and `42` from the other — one SDK, two answers, on a rule 10.6 requires to hold on both. PROTOCOL_SPEC 10.6.1 requirement 2 now forbids the conversion outright, because it cannot be specified: `True`/`true`/`true` and `{'a': 1}`/`[object Object]`/`{\"a\":1}` are three renderings of one value. This fixture's pre-existing `regex_pattern_value_match` case already carried `amount: 42`, but next to patterns anchored on `Bearer` and `sk-` that cannot match \"42\" under any reading — a case that cannot fail against any implementation pins nothing.",
+      "redaction_config": {
+        "use_defaults": false,
+        "regex_patterns": [
+          "[0-9]+",
+          "true",
+          "none",
+          "a"
+        ],
+        "sensitive_keys": [],
+        "replacement": "***REDACTED***"
+      },
+      "input": {
+        "amount": 42,
+        "ratio": 1.5,
+        "flag": true,
+        "missing": null,
+        "mapping": {
+          "a": 1
+        },
+        "listing": [
+          1,
+          2
+        ],
+        "text": "order 42"
+      },
+      "expected": {
+        "amount": 42,
+        "ratio": 1.5,
+        "flag": true,
+        "missing": null,
+        "mapping": {
+          "a": 1
+        },
+        "listing": [
+          1,
+          2
+        ],
+        "text": "***REDACTED***"
+      }
+    },
+    {
+      "id": "regex_patterns_still_reach_a_string_inside_a_container",
+      "_why": "The negative above must not be over-read into 'containers are exempt'. 10.6.1 requirement 2 says containers are DESCENDED INTO, so a string at its own position inside an object or an array is still tested — an implementation that satisfied the previous case by skipping any non-string field wholesale, rather than by declining to stringify it, fails here.",
+      "redaction_config": {
+        "use_defaults": false,
+        "regex_patterns": [
+          "sk-[A-Za-z0-9]{20,}"
+        ],
+        "sensitive_keys": [],
+        "replacement": "***REDACTED***"
+      },
+      "input": {
+        "nested": {
+          "key": "sk-1234567890abcdefghij1234567890",
+          "count": 7
+        },
+        "items": [
+          "sk-1234567890abcdefghij1234567890",
+          7
+        ]
+      },
+      "expected": {
+        "nested": {
+          "key": "***REDACTED***",
+          "count": 7
+        },
+        "items": [
+          "***REDACTED***",
+          7
+        ]
+      }
     }
   ],
   "driver_contract": {
     "discriminating_payload": "`username` matches NO entry of the canonical default list; `password` and `_secret_token` both do. That is what makes these cases able to tell 'the override was read and replaced the defaults' from 'the defaults are in force'. A payload whose keys all match a default anyway — such as this fixture's existing `auth_header`, which contains `auth` — stays green under both, and is why the config-key defect went unnoticed in every SDK.",
     "which_key_is_read_is_part_of_the_contract": "Behaviour-given-a-config is not enough. Drivers MUST build the config from the exact dot-path the case names and assert the resulting redaction, so that reading the wrong key path fails here rather than in an operator's production logs.",
     "legacy_spelling_is_per_sdk_history": "The CANONICAL key `obs.redaction.*` is the cross-language contract and every SDK MUST read it — that is `canonical_config_key_is_read`, and it applies to all three. The LEGACY spelling is not: each SDK carries whatever it shipped before D-53, and apcore-python carries nothing. Drivers read `legacy_key_by_sdk` for their own language; a `null` entry means the case does not apply and MUST be skipped with that reason stated, not xfailed as though the SDK were deficient.",
-    "a_case_must_carry_its_own_inputs": "Every config-key case names BOTH the key to write (`legacy_key_by_sdk` / `config_canonical`) and the value to write (`legacy_value` / the value inside `config_canonical`). An earlier revision named the key and dropped the value, which forces each driver to invent one — and a driver-invented input is not a cross-language contract, it is three private guesses that happen to agree today."
+    "a_case_must_carry_its_own_inputs": "Every config-key case names BOTH the key to write (`legacy_key_by_sdk` / `config_canonical`) and the value to write (`legacy_value` / the value inside `config_canonical`). An earlier revision named the key and dropped the value, which forces each driver to invent one — and a driver-invented input is not a cross-language contract, it is three private guesses that happen to agree today.",
+    "non_string_values_are_not_stringified": "A driver MUST feed the `input` object through its SDK's redaction with the value TYPES intact — a driver that JSON-serialises the case and reloads it as text, or that coerces every leaf to a string before calling, makes `regex_patterns_do_not_test_non_string_values` unable to fail and re-creates the blind spot that hid the defect. The distinction under test is exactly whether the implementation converts, so the conversion must not happen in the harness (PROTOCOL_SPEC 10.6.1 requirement 2)."
   }
 }

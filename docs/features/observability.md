@@ -1331,7 +1331,7 @@ obs:
       - "*token*"
       - "*secret*"
       - "*api_key*"
-    regex_patterns:            # field VALUES — unanchored, case-insensitive search
+    regex_patterns:            # STRING field values — unanchored, case-insensitive search
       - "^Bearer .*"
       - "^sk-[A-Za-z0-9]+"
     replacement: "***REDACTED***"
@@ -1942,7 +1942,7 @@ The full normalization algorithm and the single per-SDK reference implementation
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `obs.redaction.regex_patterns` | list[regex] | `[]` | Regular expressions matched case-insensitively against field **values** by **unanchored search** — a value matches when the pattern occurs *anywhere* within it; write `^…$` for a whole-value match. A matching value is replaced by `replacement`. See [PROTOCOL_SPEC §10.6.1](../spec/protocol-spec.md). |
+| `obs.redaction.regex_patterns` | list[regex] | `[]` | Regular expressions matched case-insensitively against **string** field **values** by **unanchored search** — a value matches when the pattern occurs *anywhere* within it; write `^…$` for a whole-value match. A matching value is replaced by `replacement`. **Strings only:** a number, boolean, `null`, object or array is never tested and never stringified in order to test it (§10.6.1 requirement 2); containers are descended into, so a string inside one is still reached. See [PROTOCOL_SPEC §10.6.1](../spec/protocol-spec.md). |
 | `obs.redaction.sensitive_keys` | list[string] | see below | Matched case-insensitively against field **names** in `extra` dicts and module input/output, **per entry**: an entry containing `*` or `?` is a glob-dialect pattern (algorithm **A25**, anchored to the whole name); an entry containing neither is a plain substring match against the normalized name. `[`, `]`, `{`, `}` and `\` are **literals**, never a character class. See [PROTOCOL_SPEC §10.6.1](../spec/protocol-spec.md). |
 | `obs.redaction.replacement` | string | `"***REDACTED***"` | Substituted token used in place of redacted values. |
 
@@ -2033,7 +2033,8 @@ The following 16-entry list is the canonical superset that all three SDKs (Pytho
 
 - Implementations MUST replace the previous `_secret_`-prefix logic with `obs.redaction.sensitive_keys` matching. The `_secret_` prefix MAY remain as a SHOULD-redact token for backward compatibility but is deprecated.
 - Redaction MUST apply both at log emission (in `ContextLogger`) and at the executor's input/output capture point.
-- Redaction MUST be applied as the **union** of: (a) `x-sensitive` schema annotations, (b) `obs.redaction.sensitive_keys` substring matches, and (c) `obs.redaction.regex_patterns` value matches.
+- Redaction MUST be applied as the **union** of: (a) `x-sensitive` schema annotations, (b) `obs.redaction.sensitive_keys` substring matches, and (c) `obs.redaction.regex_patterns` **string**-value matches.
+- `regex_patterns` MUST NOT be applied to a non-string value, and a non-string value MUST NOT be converted to a string in order to apply it (§10.6.1 requirement 2).
 - Implementations MUST NOT redact `trace_id`, `caller_id`, `module_id`, or `span_id`; these correlation fields MUST appear unmodified in every log entry.
 - The match against `sensitive_keys` MUST be case-insensitive substring (so `"X-API-Key"` matches `api_key`).
 
@@ -2045,7 +2046,7 @@ obs:
     regex_patterns:
       - "^Bearer\\s+[A-Za-z0-9._\\-]+$"
       - "^sk-[A-Za-z0-9]{20,}$"
-      - "^[0-9]{12,19}$"          # naive PAN
+      - "^[0-9]{12,19}$"          # naive PAN — matches a PAN sent as a STRING
     sensitive_keys:
       - password
       - secret
@@ -2055,6 +2056,19 @@ obs:
       - cookie
     replacement: "***REDACTED***"
 ```
+
+!!! warning "`regex_patterns` never sees a value that is not a string"
+
+    The `^[0-9]{12,19}$` entry above catches `{"pan": "4111111111111111"}` and does
+    **not** catch `{"pan": 4111111111111111}` — a number is not tested, and is not
+    converted to a string in order to test it (PROTOCOL_SPEC §10.6.1 requirement 2).
+    This is deliberate and cannot be relaxed portably: Python, TypeScript and Rust
+    render the same non-string value three different ways (`{'a': 1}` / `[object
+    Object]` / `{"a":1}`; `True` / `true` / `true`), so a rule defined over that
+    rendering would be three rules rather than one.
+
+    Catch numeric secrets by **field name** instead — `sensitive_keys` matches the
+    name whatever the value's type is — or serialize the field as a string.
 
 === "Python"
     ```python
