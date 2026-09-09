@@ -1,5 +1,5 @@
 {
-  "description": "Granular reload via path_filter glob input on system.control.reload_module. path_filter and module_id are mutually exclusive (MODULE_RELOAD_CONFLICT). path_filter that matches zero modules is a no-op. Reload order MUST follow dependency topological order. See docs/features/system-modules.md#14-granular-reload-via-path-filtering.",
+  "description": "Granular reload via the path_filter input on system.control.reload_module. path_filter and module_id are mutually exclusive (MODULE_RELOAD_CONFLICT). A path_filter matching zero modules is a no-op. Reload order MUST follow dependency topological order. PROTOCOL_SPEC 6.7 clause 4 fixes the matcher: path_filter is a GLOB-DIALECT pattern matched with algorithm A25 (9.2.3) against each registered module ID — `*` and `?` only, every other character literal, and NO pattern is ever rejected. Until v1.37.0 this clause said only 'glob' and the three SDKs used three matchers (fnmatch, A08, the glob crate), so one control-plane request reloaded two modules, reloaded none, or was refused as malformed depending on which SDK served it. Every case below except the first uses a value from outside the trailing-star family, which is the only family the three agreed on. See docs/features/system-modules.md#14-granular-reload-via-path-filtering.",
   "test_cases": [
     {
       "id": "glob_filter_restricts_rediscovery",
@@ -16,7 +16,10 @@
       },
       "expected": {
         "success": true,
-        "reloaded_modules_set": ["executor.email.send", "executor.email.verify"],
+        "reloaded_modules_set": [
+          "executor.email.send",
+          "executor.email.verify"
+        ],
         "_note": "Only matching IDs are re-discovered and reloaded."
       }
     },
@@ -32,7 +35,9 @@
       },
       "expected": {
         "success": true,
-        "reloaded_modules_set": ["executor.email.send"],
+        "reloaded_modules_set": [
+          "executor.email.send"
+        ],
         "_note": "Existing module_id-based single reload is unchanged when path_filter is absent."
       }
     },
@@ -66,6 +71,88 @@
       "expected": {
         "error_code": "MODULE_RELOAD_CONFLICT",
         "_note": "Providing both module_id and path_filter MUST raise MODULE_RELOAD_CONFLICT."
+      }
+    },
+    {
+      "id": "question_mark_is_a_wildcard_in_path_filter",
+      "_why": "DISCRIMINATING — apcore-typescript matches path_filter with A08, where `?` is a LITERAL, so this reloads nothing while Python (fnmatch) and Rust (glob) reload two modules. reload_path_filter's own rule that a zero-match filter is a silent no-op is what makes the divergence invisible: TypeScript returns success with an empty list.",
+      "registered_modules": [
+        "executor.email.send",
+        "executor.email.verify",
+        "executor.math.add",
+        "executor.math.multiply",
+        "analytics.reports.daily"
+      ],
+      "input": {
+        "path_filter": "executor.?mail.*",
+        "reason": "deploy"
+      },
+      "expected": {
+        "success": true,
+        "reloaded_modules_set": [
+          "executor.email.send",
+          "executor.email.verify"
+        ]
+      }
+    },
+    {
+      "id": "bracket_is_a_literal_and_MUST_NOT_be_rejected",
+      "_why": "DISCRIMINATING — `glob::Pattern::new(\"a[b\")` is an ERROR in apcore-rust ('invalid range pattern'), so the request FAILS there while the other two serve it. Under A25 every string is a valid pattern (9.2.3 requirement 2): `a[b` is a literal name, matches no registered module, and the call is an ordinary no-op.",
+      "registered_modules": [
+        "executor.email.send",
+        "executor.email.verify",
+        "executor.math.add",
+        "executor.math.multiply",
+        "analytics.reports.daily"
+      ],
+      "input": {
+        "path_filter": "a[b",
+        "reason": "deploy"
+      },
+      "expected": {
+        "success": true,
+        "reloaded_modules_set": []
+      }
+    },
+    {
+      "id": "character_class_does_not_expand",
+      "_why": "DISCRIMINATING — apcore-python (fnmatch) and apcore-rust (glob) both expand `[em]` as a character class and reload four modules. A25 has no classes, so the pattern names a literal segment that no module carries and the call is a no-op.",
+      "registered_modules": [
+        "executor.email.send",
+        "executor.email.verify",
+        "executor.math.add",
+        "executor.math.multiply",
+        "analytics.reports.daily"
+      ],
+      "input": {
+        "path_filter": "executor.[em]*",
+        "reason": "deploy"
+      },
+      "expected": {
+        "success": true,
+        "reloaded_modules_set": []
+      }
+    },
+    {
+      "id": "double_star_is_two_ordinary_stars",
+      "_why": "DISCRIMINATING — `glob::Pattern::new(\"executor.email.**\")` is an ERROR in apcore-rust ('recursive wildcards must form a single path component'). Under A25 the empty interior segment is a no-op, so this behaves exactly like a single trailing star.",
+      "registered_modules": [
+        "executor.email.send",
+        "executor.email.verify",
+        "executor.math.add",
+        "executor.math.multiply",
+        "analytics.reports.daily"
+      ],
+      "input": {
+        "path_filter": "executor.email.**",
+        "reason": "deploy"
+      },
+      "expected": {
+        "success": true,
+        "reloaded_modules_set": [
+          "executor.email.send",
+          "executor.email.verify"
+        ]
       }
     }
   ]

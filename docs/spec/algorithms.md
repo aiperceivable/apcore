@@ -39,6 +39,8 @@ The apcore specification defines multiple algorithms that must or should be impl
 | A21 | `safe_unregister()` | Hot-reload safe unregistration | §12.7.4 | **MUST** |
 | A22 | `enforce_timeout()` | Timeout enforcement | §12.7.5 | **MUST** |
 | A23 | `to_strict_schema()` | Strict Mode Schema conversion | §4.16 | **SHOULD** |
+| A24 | `deep_merge_chunks()` | Stream chunk aggregation (recursive deep merge, depth-capped) | §5 streaming | **MUST** |
+| A25 | `match_glob()` | Portable glob matching for pattern-valued values | §9.2.3 | **MUST** |
 
 ### 1.3 Conventions
 
@@ -2035,6 +2037,125 @@ Properties:
 
 - Implementations **MUST** reject a non-object chunk (array, string, number, boolean, null) *before* delivering it to the consumer, raising `InvalidInputError` with `code=GENERAL_INVALID_INPUT` and `details.code = STREAM_CHUNK_NOT_OBJECT`. Python, TypeScript, and Rust all enforce this with a per-chunk shape check in the streaming loop, so the invalid chunk is never yielded. See `../features/streaming.md` §Returns (D-58).
 - The merge is performed in-place on an accumulator dict; iteration over the chunk stream is single-pass.
+
+---
+
+## 18. Pattern Matching Algorithm
+
+### A25: `match_glob()` — Portable Glob Matching
+
+**Source**: PROTOCOL_SPEC §9.2.3
+
+**Description**: Matches a **pattern-valued** configuration value or system-module input
+against a name — a filename, a field name, an event type, a module ID. A25 is the matcher
+for every pattern-valued value in this specification **except** ACL rule patterns and
+`match_modules`, which are module-ID matching and use A08.
+
+A25 exists because the specification previously typed these values only with the word
+"glob" and named no algorithm, so each SDK delegated to whichever matcher its host language
+offered — `pathlib.Path.glob`, `fnmatch`, the `glob` crate, a translated `RegExp` — and
+inherited that library's dialect. Those dialects disagree, so one declared type became three
+contracts (#116, #117). Two of the resulting divergences were silent redaction bypasses.
+
+**Input Parameters:**
+
+| Parameter | Type | Description |
+|------|------|------|
+| `pattern` | `String` | Pattern-valued string. **Every** string is valid; there is no parse error. |
+| `value` | `String` | The name to test |
+
+**Output:**
+
+| Return Value | Type | Description |
+|--------|------|------|
+| `matched` | `Boolean` | Whether the **whole** value matches the pattern |
+
+**Metacharacters — exactly two:**
+
+| Character | Meaning |
+|---|---|
+| `*` | zero or more characters, including `.` and `/` |
+| `?` | exactly one character |
+
+Every other character is a literal, **including `[` `]` `{` `}` `\` `!` `^` `-`**. There is
+no escape character.
+
+**Preconditions:** none. A25 accepts any pair of strings.
+
+**Postconditions:**
+
+- The match is **anchored**: the pattern must cover the entire value, not a substring of it.
+- Deterministic: same inputs always return the same result.
+- Total: never raises, never rejects a pattern.
+
+**Pseudocode:**
+
+```
+Algorithm: match_glob(pattern, value)
+
+Steps:
+  1. segments ← split(pattern, "*")            # n = len(segments) >= 1
+  2. If n == 1:
+       → return match_exact(segments[0], value)
+  3. If NOT match_prefix(segments[0], value) → return false
+     pos ← len(segments[0])
+  4. For i in 1 .. n-2:                        # interior segments, leftmost-first
+       j ← smallest index >= pos such that
+             match_exact(segments[i], value[j : j + len(segments[i])])
+       If no such j → return false
+       pos ← j + len(segments[i])
+  5. last ← segments[n-1]
+     If last == "" → return true               # pattern ended with "*"
+     If len(value) - pos < len(last) → return false
+     → return match_exact(last, value[len(value) - len(last) :])
+
+  where
+    match_exact(seg, text)  ≡ len(seg) == len(text) AND match_prefix(seg, text)
+    match_prefix(seg, text) ≡ len(text) >= len(seg) AND
+                              for every k in 0 .. len(seg)-1:
+                                  seg[k] == "?" OR seg[k] == text[k]
+```
+
+**Complexity Analysis:**
+
+| Dimension | Complexity | Description |
+|------|--------|------|
+| Time | O(m * n) | m is pattern length, n is value length |
+| Space | O(m) | Storage for split segments |
+
+**Implementation Notes:**
+
+- **Do not delegate to the host library.** `fnmatch`, `pathlib.Path.glob`, the `glob` crate
+  and a hand-translated `RegExp` each differ from A25 and from one another, and every one of
+  them was the source of a divergence this algorithm replaces. Roughly twenty lines per
+  language, no dependency.
+- **Step 4 is leftmost-first and does not backtrack**, which is the same greedy strategy A08
+  specifies. Stating the procedure — not only the syntax — is the point: two matchers can
+  both honour `*` and `?` and still disagree on `a*a` against `aaa`.
+- **Case sensitivity is not part of A25.** It compares characters exactly. A surface that is
+  case-insensitive (§9.2.3's table marks them) folds **both** the pattern and the value
+  before calling A25. Folding one side only is a silent bypass, not a partial fix.
+- `?` matches exactly one character and therefore never matches the empty string:
+  `a?` does not match `a`.
+- Consecutive stars collapse naturally — `a**b` splits to `["a", "", "b"]` and the empty
+  interior segment is a no-op — so `**` is not a distinct construct and needs no special case.
+- Results may be cached per `(pattern, value)` pair; a compiled representation of the split
+  is also safe to cache per pattern.
+
+**Relationship to A08:**
+
+| | A08 `match_pattern` | A25 `match_glob` |
+|---|---|---|
+| Matches | module IDs, in ACL rules and `match_modules` | filenames, field names, event types, `path_filter` |
+| Metacharacters | `*` | `*` and `?` |
+| Anchored | yes | yes |
+| Interior search | leftmost-first, greedy | leftmost-first, greedy |
+
+The two agree on every pattern whose only metacharacter is `*`. They are kept separate
+because promoting `?` to a wildcard in A08 would widen ACL `allow` rules that are inert
+today — a module ID cannot contain `?` (§2.7), so such a rule matches nothing — and an
+authorization matcher must not widen silently. §6.2.2 requires that dead pattern to be
+reported instead.
 
 ---
 

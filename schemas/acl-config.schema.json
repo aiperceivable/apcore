@@ -56,7 +56,8 @@
       "properties": {
         "callers": {
           "$ref": "#/$defs/PatternArray",
-          "description": "List of caller module ID patterns. Supports wildcards: '*' matches any characters. Special values: '@external' for top-level/external calls, '@system' for internal system calls.",
+          "description": "List of caller module ID patterns. Matched with algorithm A08 (protocol-spec 6.2): '*' matches any characters and is the ONLY metacharacter — '?' and every other character are literals, so a pattern containing '?' can never match a module ID (protocol-spec 6.2.2 requires that to be reported). Special values: '@external' for top-level/external calls, '@system' for internal system calls.",
+          "x-apcore-pattern": "module-id",
           "examples": [
             [
               "orchestrator.*"
@@ -74,7 +75,8 @@
         },
         "targets": {
           "$ref": "#/$defs/PatternArray",
-          "description": "List of target module ID patterns. Supports wildcards: '*' matches any characters.",
+          "description": "List of target module ID patterns. Matched with algorithm A08 (protocol-spec 6.2): '*' matches any characters and is the ONLY metacharacter — '?' and every other character are literals (protocol-spec 6.2.2).",
+          "x-apcore-pattern": "module-id",
           "examples": [
             [
               "executor.*"

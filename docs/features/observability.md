@@ -1927,8 +1927,8 @@ The full normalization algorithm and the single per-SDK reference implementation
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `obs.redaction.regex_patterns` | list[regex] | `[]` | Regex patterns matched against field **values**. Any value that fully matches one of the patterns is replaced with `replacement`. |
-| `obs.redaction.sensitive_keys` | list[string] | see below | Substring patterns matched (case-insensitive) against field **names** in `extra` dicts and module input/output. Matching fields are redacted. |
+| `obs.redaction.regex_patterns` | list[regex] | `[]` | Regular expressions matched case-insensitively against field **values** by **unanchored search** — a value matches when the pattern occurs *anywhere* within it; write `^…$` for a whole-value match. A matching value is replaced by `replacement`. See [PROTOCOL_SPEC §10.6.1](../spec/protocol-spec.md). |
+| `obs.redaction.sensitive_keys` | list[string] | see below | Matched case-insensitively against field **names** in `extra` dicts and module input/output, **per entry**: an entry containing `*` or `?` is a glob-dialect pattern (algorithm **A25**, anchored to the whole name); an entry containing neither is a plain substring match against the normalized name. `[`, `]`, `{`, `}` and `\` are **literals**, never a character class. See [PROTOCOL_SPEC §10.6.1](../spec/protocol-spec.md). |
 | `obs.redaction.replacement` | string | `"***REDACTED***"` | Substituted token used in place of redacted values. |
 
 **Default `obs.redaction.sensitive_keys`** (SHOULD be applied unless explicitly overridden):

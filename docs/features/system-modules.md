@@ -1431,7 +1431,8 @@ Currently `system.control.reload_module` reloads a single module by ID. The opti
 
 #### Normative Rules
 
-- Implementations MUST support an **optional** `path_filter` input field on `system.control.reload_module` that accepts a glob pattern (e.g., `executor.*`, `analytics.reports.*`). When specified, the module MUST restrict re-discovery to module IDs matching the pattern and reload only those modules.
+- Implementations MUST support an **optional** `path_filter` input field on `system.control.reload_module` that accepts a glob-dialect pattern (e.g., `executor.*`, `analytics.reports.*`), matched with algorithm **A25** ([PROTOCOL_SPEC §9.2.3](../spec/protocol-spec.md)) against each registered module ID. When specified, the module MUST restrict re-discovery to module IDs matching the pattern and reload only those modules.
+- `path_filter` is matched with **A25**, not with the host language's glob library and not with A08. `*` and `?` are the only metacharacters; every other character is a literal, so `a[b` is a pattern matching the literal name `a[b` and MUST NOT raise. This is stated because the three SDKs previously used three different matchers here, and the same control-plane request reloaded two modules, reloaded none, or was refused as malformed depending on which one served it (#117).
 - `path_filter` and `module_id` MUST be mutually exclusive. If both are provided, implementations MUST raise a `MODULE_RELOAD_CONFLICT` error.
 - A `path_filter` that matches zero modules MUST be a no-op: `reloaded_modules` is the empty list and no error is raised.
 - When `path_filter` is omitted **and** `module_id` is omitted, implementations MUST raise `InvalidInputError` (one of the two MUST be present).
@@ -1442,7 +1443,7 @@ Currently `system.control.reload_module` reloads a single module by ID. The opti
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `module_id` | string | *(one of required)* | Single module to reload (mutually exclusive with `path_filter`) |
-| `path_filter` | string | *(one of required)* | Glob pattern for bulk reload (mutually exclusive with `module_id`) |
+| `path_filter` | string | *(one of required)* | Glob-dialect pattern (A25) for bulk reload, matched against module IDs (mutually exclusive with `module_id`) |
 | `reload_dependents` | bool | `false` | When `true`, also reload modules that depend on matched modules |
 | `reason` | string | *(required)* | Audit reason |
 

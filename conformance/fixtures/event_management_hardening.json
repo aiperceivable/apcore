@@ -1,11 +1,13 @@
 {
-  "description": "Cross-language SubscriberFactory parity, built-in File/Stdout/Filter subscribers, and circuit-breaker state machine conformance (Issue #36).",
+  "description": "Cross-language SubscriberFactory parity, built-in File/Stdout/Filter subscribers, and circuit-breaker state machine conformance (Issue #36). Event-type patterns on `event_pattern`, `include_events` and `exclude_events` are matched with algorithm A25 (PROTOCOL_SPEC 9.16.3): `*` and `?` only, every other character literal, case-sensitive.",
   "test_cases": [
     {
       "id": "subscriber_factory_registered_type",
       "description": "A custom subscriber type registered via register_subscriber_type is instantiated when referenced by name in configuration.",
       "input": {
-        "registered_types": ["slack"],
+        "registered_types": [
+          "slack"
+        ],
         "subscriber_config": {
           "type": "slack",
           "webhook_url": "https://hooks.slack.com/services/TEST",
@@ -123,9 +125,18 @@
           "recovery_window_ms": 30000
         },
         "failure_sequence": [
-          {"attempt": 1, "outcome": "failure"},
-          {"attempt": 2, "outcome": "failure"},
-          {"attempt": 3, "outcome": "failure"}
+          {
+            "attempt": 1,
+            "outcome": "failure"
+          },
+          {
+            "attempt": 2,
+            "outcome": "failure"
+          },
+          {
+            "attempt": 3,
+            "outcome": "failure"
+          }
         ]
       },
       "expected": {
@@ -203,6 +214,90 @@
       "expected": {
         "all_match_pattern": true,
         "pattern": "^apcore\\.[a-z_]+\\.[a-z_]+$"
+      }
+    },
+    {
+      "id": "filter_exclude_question_mark_is_a_wildcard",
+      "description": "`exclude_events` entries are matched with algorithm A25 (PROTOCOL_SPEC 9.16.3), so `?` matches exactly one character and the event is DISCARDED.",
+      "_why": "DISCRIMINATING, and the direction matters: apcore-rust's event matcher supports `*` alone, so `?` is a literal, the pattern fails to match, and the event is DELIVERED. exclude_events FAILS OPEN — a matcher that understands fewer metacharacters than the operator wrote does not narrow the filter, it opens it. `include_events` fails the safe way round under the identical divergence, which is exactly why nobody noticed (#117 section 3).",
+      "input": {
+        "subscriber_config": {
+          "type": "filter",
+          "delegate_type": "webhook",
+          "delegate_config": {
+            "url": "https://example.com/hook"
+          },
+          "exclude_events": [
+            "apcore.config.?pdated"
+          ]
+        },
+        "event": {
+          "event_type": "apcore.config.updated",
+          "module_id": null,
+          "timestamp": "2026-04-28T00:00:00Z",
+          "severity": "info",
+          "data": {}
+        }
+      },
+      "expected": {
+        "delivery_attempted": false,
+        "discarded": true
+      }
+    },
+    {
+      "id": "filter_exclude_character_class_does_not_expand",
+      "description": "`[cr]` is two literal characters plus two literal brackets, not a character class, so the pattern matches nothing and the event is DELIVERED.",
+      "_why": "DISCRIMINATING against apcore-python, whose `fnmatch` expands `[cr]` and discards the event. A25 has no classes (9.2.3 requirement 4). Stated on `exclude_events` so the divergence is observable as an event that arrives rather than one that silently does not.",
+      "input": {
+        "subscriber_config": {
+          "type": "filter",
+          "delegate_type": "webhook",
+          "delegate_config": {
+            "url": "https://example.com/hook"
+          },
+          "exclude_events": [
+            "apcore.[cr]onfig.updated"
+          ]
+        },
+        "event": {
+          "event_type": "apcore.config.updated",
+          "module_id": null,
+          "timestamp": "2026-04-28T00:00:00Z",
+          "severity": "info",
+          "data": {}
+        }
+      },
+      "expected": {
+        "delivery_attempted": true,
+        "discarded": false
+      }
+    },
+    {
+      "id": "filter_include_question_mark_is_a_wildcard",
+      "description": "`include_events` is matched with the same algorithm; `?` matches one character and the event is FORWARDED.",
+      "_why": "DISCRIMINATING against apcore-rust (`*`-only matcher). Paired with the exclude case above so an implementation cannot pass by inverting the filter.",
+      "input": {
+        "subscriber_config": {
+          "type": "filter",
+          "delegate_type": "webhook",
+          "delegate_config": {
+            "url": "https://example.com/hook"
+          },
+          "include_events": [
+            "apcore.health.recovere?"
+          ]
+        },
+        "event": {
+          "event_type": "apcore.health.recovered",
+          "module_id": null,
+          "timestamp": "2026-04-28T00:00:00Z",
+          "severity": "info",
+          "data": {}
+        }
+      },
+      "expected": {
+        "delivery_attempted": true,
+        "discarded": false
       }
     }
   ]

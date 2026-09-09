@@ -1,0 +1,215 @@
+{
+  "description": "Algorithm A25 `match_glob` — PROTOCOL_SPEC 9.2.3. The single matcher for every glob-dialect pattern-valued value in the specification: `bindings.pattern`, `obs.redaction.sensitive_keys` glob entries, event `event_pattern` / `include_events` / `exclude_events`, and `system.control.reload_module`'s `path_filter`. It is NOT the matcher for ACL rule patterns or `match_modules`, which match module IDs with A08 and are pinned by `pattern_matching.json`.\n\nTwo metacharacters and no others: `*` (zero or more characters, crossing `.` and `/`) and `?` (exactly one). Every other character is a literal, `[ ] { } \\ ! ^ -` included. The match is anchored to the whole value. Every string is a valid pattern: A25 has no parse phase and MUST NOT raise or skip.\n\nWHY THIS FIXTURE EXISTS (#116, #117). Before v1.37.0 the specification typed these values with the bare word \"glob\" and named no algorithm, so each SDK delegated to its host library — `pathlib.Path.glob`, `fnmatch`, the `glob` crate, a translated `RegExp` — and inherited that library's dialect. The corpus could not see it: every pattern value in every fixture was `*`, a literal, or leading-star-plus-literal-suffix, which is the one family on which a real glob, a leading-star strip and a first-star removal all coincide. Cases here are therefore chosen by one rule: A CASE EARNS ITS PLACE ONLY IF IT FAILS AGAINST AT LEAST ONE IMPLEMENTATION AS SHIPPED. Of the 30 cases, 11 are marked DISCRIMINATING in their `_why` and name the shipped implementation each one separates; the remaining 19 are marked CONTROL and exist to keep the discriminating cases from being satisfiable by a degenerate matcher.",
+  "test_cases": [
+    {
+      "id": "star_matches_everything",
+      "pattern": "*",
+      "value": "anything.at.all",
+      "expected": true,
+      "_why": "CONTROL — the one value every implementation already agrees on."
+    },
+    {
+      "id": "star_matches_empty_value",
+      "pattern": "*",
+      "value": "",
+      "expected": true,
+      "_why": "CONTROL — `*` is zero-or-more, so it matches the empty string."
+    },
+    {
+      "id": "empty_pattern_matches_empty_value",
+      "pattern": "",
+      "value": "",
+      "expected": true,
+      "_why": "CONTROL — a pattern with no metacharacter is an exact comparison."
+    },
+    {
+      "id": "empty_pattern_does_not_match_nonempty",
+      "pattern": "",
+      "value": "a",
+      "expected": false,
+      "_why": "CONTROL — anchored: the pattern must cover the whole value."
+    },
+    {
+      "id": "exact_match_no_metacharacter",
+      "pattern": "greet.bind.yaml",
+      "value": "greet.bind.yaml",
+      "expected": true,
+      "_why": "CONTROL — no `*`, no `?` — plain equality."
+    },
+    {
+      "id": "question_matches_exactly_one_character",
+      "pattern": "a?",
+      "value": "ab",
+      "expected": true,
+      "_why": "DISCRIMINATING — false wherever `?` is a literal: apcore-rust's event matcher (`*` only), and both non-Python binding loaders, which never look at `?` at all."
+    },
+    {
+      "id": "question_does_not_match_empty",
+      "pattern": "a?",
+      "value": "a",
+      "expected": false,
+      "_why": "CONTROL — `?` is one character, never zero. A `*`-only matcher answers false here too, so this case alone separates nothing — it exists to stop `question_matches_exactly_one_character` from being satisfiable by making `?` match zero-or-more."
+    },
+    {
+      "id": "question_mark_is_a_wildcard",
+      "pattern": "module.?oaded",
+      "value": "module.loaded",
+      "expected": true,
+      "_why": "DISCRIMINATING — false in apcore-rust's event subscriber matcher, whose own doc comment scopes it to \"the subset of fnmatch behaviour the spec fixtures and YAML examples actually exercise\", and false in the apcore-rust / apcore-typescript binding loaders."
+    },
+    {
+      "id": "question_mark_matches_one_not_many",
+      "pattern": "module.?oaded",
+      "value": "module.unloaded",
+      "expected": false,
+      "_why": "CONTROL — `?` is exactly one character, so it cannot span `un`."
+    },
+    {
+      "id": "anchored_at_both_ends",
+      "pattern": "data*.yaml",
+      "value": "xdata1.yaml",
+      "expected": false,
+      "_why": "CONTROL — the pattern is anchored at the start; a leading `x` defeats it."
+    },
+    {
+      "id": "star_in_the_middle",
+      "pattern": "data*.yaml",
+      "value": "data1.yaml",
+      "expected": true,
+      "_why": "DISCRIMINATING — the ordinary case a suffix match cannot express. False in apcore-rust's binding loader (`strip_prefix('*')` leaves a pattern that does not begin with `*` unchanged, then `ends_with`) and in apcore-typescript's (`replace('*','')` yields `data.yaml`, then `endsWith`)."
+    },
+    {
+      "id": "first_star_removal_must_not_match",
+      "pattern": "a*b.yaml",
+      "value": "zab.yaml",
+      "expected": false,
+      "_why": "DISCRIMINATING — TRUE in apcore-typescript's binding loader today. `replace('*','')` deletes the star WHEREVER it sits, reducing the pattern to `ab.yaml`, and `endsWith` then accepts a file the pattern is anchored away from. No glob dialect matches this."
+    },
+    {
+      "id": "trailing_star_matches_remainder",
+      "pattern": "executor.email.*",
+      "value": "executor.email.send",
+      "expected": true,
+      "_why": "CONTROL — the `path_filter` fixture's own value family. Present as a control, not as coverage."
+    },
+    {
+      "id": "leading_star_matches_suffix",
+      "pattern": "*.binding.yaml",
+      "value": "greet.binding.yaml",
+      "expected": true,
+      "_why": "CONTROL — the default `bindings.pattern` family — leading star plus literal suffix, the one shape on which a real glob, a leading-star strip and a first-star removal all coincide. This is the family the whole corpus was drawn from, which is why it caught nothing."
+    },
+    {
+      "id": "interior_segment_leftmost_first",
+      "pattern": "a*a",
+      "value": "aaa",
+      "expected": true,
+      "_why": "DISCRIMINATING — pins the search STRATEGY, not the syntax. Two matchers can both honour `*` and `?` and still disagree here, which is why 9.2.3 specifies A25 as an algorithm rather than as a character set."
+    },
+    {
+      "id": "interior_segment_overlaps_tail",
+      "pattern": "a*a",
+      "value": "aa",
+      "expected": true,
+      "_why": "CONTROL — the interior star matches zero characters; the final segment still has to be found."
+    },
+    {
+      "id": "interior_segment_needs_room",
+      "pattern": "a*a",
+      "value": "a",
+      "expected": false,
+      "_why": "CONTROL — one character cannot satisfy both the head and the tail segment."
+    },
+    {
+      "id": "consecutive_stars_are_not_a_special_form",
+      "pattern": "a**b",
+      "value": "axxb",
+      "expected": true,
+      "_why": "DISCRIMINATING — `glob::Pattern::new(\"a**b\")` is an ERROR in apcore-rust (\"recursive wildcards must form a single path component\"), so `path_filter` refuses a request the other two serve. Under A25 the empty interior segment is a no-op and `**` is not a construct."
+    },
+    {
+      "id": "consecutive_stars_still_anchored",
+      "pattern": "a**b",
+      "value": "axxc",
+      "expected": false,
+      "_why": "CONTROL — `**` widens nothing; the tail segment is still required."
+    },
+    {
+      "id": "bracket_is_a_literal_open",
+      "pattern": "a[b",
+      "value": "a[b",
+      "expected": true,
+      "_why": "DISCRIMINATING — `glob::Pattern::new(\"a[b\")` is an ERROR in apcore-rust (\"invalid range pattern\"). Under A25 there is no parse phase: every string is a pattern, so an unbalanced bracket matches itself instead of failing the request."
+    },
+    {
+      "id": "bracket_is_a_literal_not_a_class",
+      "pattern": "[ab].binding.yaml",
+      "value": "a.binding.yaml",
+      "expected": false,
+      "_why": "DISCRIMINATING — TRUE in apcore-python's binding loader, whose `Path.glob` reads `[ab]` as a character class. A25 has no classes."
+    },
+    {
+      "id": "bracket_class_matches_only_itself",
+      "pattern": "[ab].binding.yaml",
+      "value": "[ab].binding.yaml",
+      "expected": true,
+      "_why": "DISCRIMINATING — false in ALL THREE class-aware matchers — `fnmatch`, `glob::Pattern` and apcore-typescript's `_globToRegExp`, which passes `[ab]` through to a `RegExp` verbatim. Stated from the positive side so an implementation cannot satisfy `bracket_is_a_literal_not_a_class` merely by rejecting the pattern."
+    },
+    {
+      "id": "negated_class_is_literal_not_negation",
+      "pattern": "[!p]assword",
+      "value": "bassword",
+      "expected": false,
+      "_why": "DISCRIMINATING — TRUE in apcore-python (`fnmatch`) and apcore-rust (`glob::Pattern`), which both read `[!p]` as \"any character except p\". Under A25 there is no negation, so this redacts nothing — and, crucially, the operator finds that out at the first test rather than never."
+    },
+    {
+      "id": "negated_class_is_not_a_regexp_alternation",
+      "pattern": "[!p]assword",
+      "value": "password",
+      "expected": false,
+      "_why": "DISCRIMINATING — TRUE in apcore-typescript today: `_globToRegExp` passes `[!p]` verbatim into a `RegExp`, where it means \"`!` or `p`\". The meaning is INVERTED, not weakened — TypeScript redacts the one field the other two deliberately exclude, and leaks the ones they catch (#117 §1)."
+    },
+    {
+      "id": "brace_is_a_literal",
+      "pattern": "{a,b}.yaml",
+      "value": "a.yaml",
+      "expected": false,
+      "_why": "CONTROL — brace expansion is in no dialect here; all three current matchers already agree."
+    },
+    {
+      "id": "backslash_does_not_escape",
+      "pattern": "a\\*b",
+      "value": "axb",
+      "expected": false,
+      "_why": "CONTROL — there is no escape character. The pattern is `a`, `\\`, `*`, `b`, so a literal backslash is required in the value. All three current matchers agree."
+    },
+    {
+      "id": "backslash_is_matched_literally",
+      "pattern": "a\\*b",
+      "value": "a\\xb",
+      "expected": true,
+      "_why": "CONTROL — the same pattern against a value that does contain the backslash."
+    },
+    {
+      "id": "dot_is_not_special",
+      "pattern": "a.c",
+      "value": "abc",
+      "expected": false,
+      "_why": "CONTROL — `.` is a literal, not a regex wildcard. All three current matchers escape it; the case pins the property so a future glob-to-RegExp translation cannot drop the escape silently."
+    },
+    {
+      "id": "star_crosses_dots",
+      "pattern": "api.*",
+      "value": "api.handler.task_submit",
+      "expected": true,
+      "_why": "CONTROL — `*` spans `.`; A25 is not segment-aware, and agrees with A08 on this point."
+    },
+    {
+      "id": "star_crosses_slashes",
+      "pattern": "*.yaml",
+      "value": "sub/dir/f.yaml",
+      "expected": true,
+      "_why": "CONTROL — `*` spans `/` too. A25 is a string matcher, not a path matcher — a distinction that matters because `bindings.pattern` is applied to a FILENAME (5.12.6) and never to a path, so an implementation must not reach for a path-aware library and inherit its non-recursive `*`."
+    }
+  ]
+}

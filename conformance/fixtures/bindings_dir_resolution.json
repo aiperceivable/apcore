@@ -236,6 +236,104 @@
         "scanned": false,
         "registered_module_ids": []
       }
+    },
+    {
+      "id": "pattern_star_in_the_middle_is_honoured",
+      "comment": "DISCRIMINATING, and the case the whole fixture was missing. Every pattern value the corpus carried — `*.binding.yaml` and `*.bind.yaml` — is leading-star-plus-literal-suffix, which is the ONE family on which a real glob, a leading-star strip and a first-star removal all coincide, so `config_file_pattern_is_honoured` proves the pattern is READ and cannot prove it MEANS the same thing in three SDKs. `data*.yaml` separates all three as shipped: apcore-python's `Path.glob` matches, apcore-rust's `strip_prefix('*')` leaves the pattern unchanged (it does not begin with `*`) and `ends_with` matches nothing, apcore-typescript's `replace('*','')` yields `data.yaml` and `endsWith` matches nothing. PROTOCOL_SPEC 5.12.6 now names algorithm A25 (9.2.3). The decoy carries a distinct id so a fallback to the default pattern is visible rather than silent.",
+      "config_file": {
+        "path": "apcore.yaml",
+        "content": {
+          "bindings": {
+            "dir": "./custom_bindings",
+            "pattern": "data*.yaml"
+          }
+        }
+      },
+      "env": {},
+      "explicit_dir": null,
+      "fs": {
+        "custom_bindings/data1.yaml": "greet",
+        "custom_bindings/decoy.binding.yaml": "wrong_pattern_decoy"
+      },
+      "expected": {
+        "scanned": true,
+        "scanned_dir": "custom_bindings",
+        "loaded_module_ids": [
+          "greet"
+        ]
+      }
+    },
+    {
+      "id": "pattern_first_star_must_not_be_removed_from_the_middle",
+      "comment": "DISCRIMINATING against apcore-typescript specifically, in the direction that LOADS A FILE NOBODY ASKED FOR. `replace('*','')` deletes the first star wherever it sits, so `a*b.yaml` becomes `ab.yaml` and `endsWith` accepts `zab.yaml` — a file anchored-at-the-start matching cannot reach, and which the other two SDKs correctly ignore. Under A25 nothing matches and the loader returns no modules.",
+      "config_file": {
+        "path": "apcore.yaml",
+        "content": {
+          "bindings": {
+            "dir": "./custom_bindings",
+            "pattern": "a*b.yaml"
+          }
+        }
+      },
+      "env": {},
+      "explicit_dir": null,
+      "fs": {
+        "custom_bindings/zab.yaml": "wrong_pattern_decoy"
+      },
+      "expected": {
+        "scanned": true,
+        "scanned_dir": "custom_bindings",
+        "loaded_module_ids": []
+      }
+    },
+    {
+      "id": "pattern_question_mark_is_a_wildcard",
+      "comment": "DISCRIMINATING against apcore-rust and apcore-typescript, both of which never inspect `?` at all: their suffix matchers compare `?.bind.yaml` with `ends_with`/`endsWith` and match nothing, while A25 (and apcore-python's glob) match the single-character name. Pairs with the case above: one proves `?` is honoured, the other proves it is exactly one character.",
+      "config_file": {
+        "path": "apcore.yaml",
+        "content": {
+          "bindings": {
+            "dir": "./custom_bindings",
+            "pattern": "?.bind.yaml"
+          }
+        }
+      },
+      "env": {},
+      "explicit_dir": null,
+      "fs": {
+        "custom_bindings/a.bind.yaml": "greet",
+        "custom_bindings/ab.bind.yaml": "wrong_pattern_decoy"
+      },
+      "expected": {
+        "scanned": true,
+        "scanned_dir": "custom_bindings",
+        "loaded_module_ids": [
+          "greet"
+        ]
+      }
+    },
+    {
+      "id": "pattern_bracket_is_a_literal_not_a_character_class",
+      "comment": "DISCRIMINATING against apcore-python, whose `Path.glob` expands `[ab]` as a character class and loads the file. A25 has no classes (9.2.3 requirement 4), so `[ab].bind.yaml` names a literal filename that is not present, and the loader returns nothing — without raising, because no pattern is ever rejected.",
+      "config_file": {
+        "path": "apcore.yaml",
+        "content": {
+          "bindings": {
+            "dir": "./custom_bindings",
+            "pattern": "[ab].bind.yaml"
+          }
+        }
+      },
+      "env": {},
+      "explicit_dir": null,
+      "fs": {
+        "custom_bindings/a.bind.yaml": "wrong_pattern_decoy"
+      },
+      "expected": {
+        "scanned": true,
+        "scanned_dir": "custom_bindings",
+        "loaded_module_ids": []
+      }
     }
   ],
   "binding_files": {

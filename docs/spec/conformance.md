@@ -621,7 +621,7 @@ The repository ships **72 cross-language fixture files** under `conformance/fixt
 | [`approval_request_fields`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/approval_request_fields.json) | 2 | `ApprovalRequest` carries `caller_id` (read straight off `Context.caller_id` — null on a top-level call, never the `@external` ACL sentinel) and `action` (= `module_id`), populated by the approval gate at Executor Step 4.5 (spec §7.3.1, decision D-03) |
 | [`async_task_cancellation`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/async_task_cancellation.json) | 2 | `AsyncTaskManager.cancel()` real abort via CancelToken (D-18) |
 | [`async_task_evolution`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/async_task_evolution.json) | 10 | Pluggable `TaskStore`, retry with backoff |
-| [`bindings_dir_resolution`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/bindings_dir_resolution.json) | 9 | Binding-directory resolution: a loader invoked without an explicit directory resolves `bindings.dir` / `bindings.pattern` under §9.2 precedence, an explicit argument wins, and no scan happens at client initialisation (spec §5.12.6) |
+| [`bindings_dir_resolution`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/bindings_dir_resolution.json) | 13 | Binding-directory resolution: a loader invoked without an explicit directory resolves `bindings.dir` / `bindings.pattern` under §9.2 precedence, an explicit argument wins, and no scan happens at client initialisation (spec §5.12.6) |
 | [`binding_errors`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/binding_errors.json) | 6 | Binding error message conformance (DECLARATIVE_CONFIG_SPEC §7.2) |
 | [`call_chain`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/call_chain.json) | 11 | Call-chain safety guard (Algorithm A20) |
 | [`config_defaults`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/config_defaults.json) | 18 | Config default values cross-SDK identity |
@@ -639,7 +639,7 @@ The repository ships **72 cross-language fixture files** under `conformance/fixt
 | [`error_recovery_metadata`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/error_recovery_metadata.json) | 19 | `retryable` / `ai_guidance` / `user_fixable` / `suggestion` recovery metadata (spec §8) |
 | [`error_serialization`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/error_serialization.json) | 2 | `ModuleError.to_dict()` snake_case wire form (spec §8) |
 | [`event_delivery_semantics`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/event_delivery_semantics.json) | 6 | Event retry, DLQ and `apcore.event.delivery_failed` (spec §7) |
-| [`event_management_hardening`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/event_management_hardening.json) | 10 | SubscriberFactory parity, built-in subscribers |
+| [`event_management_hardening`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/event_management_hardening.json) | 13 | SubscriberFactory parity, built-in subscribers |
 | [`event_naming`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/event_naming.json) | 7 | Event-name canonicalization (Issue #36 / D-34) |
 | [`executor_trace_cancellation`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/executor_trace_cancellation.json) | 1 | `call_with_trace()` cancellation short-circuit (D-19 / D-20) |
 | [`governance_state`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/governance_state.json) | 13 | `Executor.governance_state()` — configured vs. actually wired (spec §6.6.5) |
@@ -652,14 +652,15 @@ The repository ships **72 cross-language fixture files** under `conformance/fixt
 | [`observability_hardening`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/observability_hardening.json) | 10 | Pluggable storage, BatchSpan, OTel parity |
 | [`openai_strict_compat`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/openai_strict_compat.json) | 30 | OpenAI structured-outputs strict-mode incompatibility detection (DECLARATIVE_CONFIG_SPEC §6.2 / §6.6) |
 | [`overrides_store`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/overrides_store.json) | 5 | OverridesStore pluggable persistence |
-| [`pattern_matching`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/pattern_matching.json) | 12 | ACL pattern matching (Algorithm A09) |
+| [`pattern_matching`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/pattern_matching.json) | 12 | ACL / `match_modules` module-ID pattern matching (Algorithm A08) |
+| [`glob_matching`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/glob_matching.json) | 30 | Portable glob matching for pattern-valued values (Algorithm A25, §9.2.3) |
 | [`pipeline_failfast_config`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/pipeline_failfast_config.json) | 7 | Pipeline configuration fail-fast (Issue #33) |
 | [`pipeline_hardening`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/pipeline_hardening.json) | 5 | Pipeline execution hardening: fail-fast, replace-step, run_until |
 | [`pipeline_step_middleware`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/pipeline_step_middleware.json) | 9 | Pipeline StepMiddleware lifecycle (Issue #33) |
 | [`preflight_disclosure`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/preflight_disclosure.json) | 4 | `validate()` withholds `preflight()` / `preview()` from an ACL-denied caller (spec §12.8.5.1) |
-| [`redaction_config`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/redaction_config.json) | 7 | Redaction config via `obs.redaction.regex_patterns` / `sensitive_keys` |
+| [`redaction_config`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/redaction_config.json) | 11 | Redaction config via `obs.redaction.regex_patterns` / `sensitive_keys` |
 | [`registry_load_ordering`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/registry_load_ordering.json) | 4 | Discovery load order and dependency topological sort (Algorithm A07) |
-| [`reload_path_filter`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/reload_path_filter.json) | 4 | Granular reload via `path_filter` glob (`system.control.reload_module`) |
+| [`reload_path_filter`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/reload_path_filter.json) | 8 | Granular reload via `path_filter` glob (`system.control.reload_module`) |
 | [`schema_content_hash`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/schema_content_hash.json) | 5 | Schema content-hash cache key — key-order invariant (spec §4) |
 | [`schema_export_envelope`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/schema_export_envelope.json) | 5 | `Registry.export_schema` envelope parity (§4.16) |
 | [`schema_hardening_cache`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/schema_hardening_cache.json) | 5 | Content-addressable schema cache (SHA-256 of canonical JSON) |
@@ -680,7 +681,7 @@ The repository ships **72 cross-language fixture files** under `conformance/fixt
 | [`usage_contract`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/usage_contract.json) | 11 | `system.usage.*` value semantics no schema can assert (spec §6.7.1) |
 | [`usage_exporter`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/usage_exporter.json) | 3 | `UsageExporter` push interface (#45 §3, D-55) |
 | [`version_negotiation`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/version_negotiation.json) | 10 | Version negotiation (Algorithm A14) |
-| **Total** | **843** | **72 fixtures** |
+| **Total** | **888** | **72 fixtures** |
 
 ### 8.2 Loading Fixtures from a Test Runner
 

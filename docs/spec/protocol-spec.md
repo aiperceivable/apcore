@@ -1,15 +1,15 @@
 ---
-description: "The canonical, normative apcore protocol specification (RFC 2119, v1.36.0): module, schema, naming, ACL, approval, error, config, and observability requirements for all conforming SDKs."
+description: "The canonical, normative apcore protocol specification (RFC 2119, v1.37.0): module, schema, naming, ACL, approval, error, config, and observability requirements for all conforming SDKs."
 ---
 
 # apcore — AI-Perceivable Core Standard Specification
 
 > **Canonical Specification** - This document is the authoritative specification for the apcore protocol
 
-> Version: 1.36.0
+> Version: 1.37.0
 > Status: Draft Specification (RFC 2119 Conformant)
 > Stability: Specification content is stable, pending reference implementation verification
-> Last Updated: 2026-09-06
+> Last Updated: 2026-09-09
 
 ---
 
@@ -1548,7 +1548,7 @@ Steps:
      c. If starts with "apcore://" → Convert to file path under schemas_dir
      d. Otherwise → file_part is path relative to current_file directory
   5. schema_doc ← Load and parse YAML/JSON file for file_part
-  6. resolved ← Locate target_id node in schema_doc using json_pointer
+  6. resolved ← Locate target node in schema_doc using json_pointer
   7. If resolved is itself a bare $ref → Recursively call resolve_ref(...) with
      depth + 1 and from_ref_chain = True
   8. Walk resolved's children. For each nested $ref reached by structural
@@ -1698,7 +1698,7 @@ Implementations **MUST** handle Schema edge cases according to the following tab
 | Scenario | Behavior | Level |
 |------|------|------|
 | `$ref` depth exceeds `schema.max_ref_depth` | Throw `SCHEMA_MAX_DEPTH_EXCEEDED` | **MUST** |
-| `$ref` target_id path doesn't exist (404) | Throw `SCHEMA_NOT_FOUND` | **MUST** |
+| `$ref` target path doesn't exist (404) | Throw `SCHEMA_NOT_FOUND` | **MUST** |
 | Empty Schema `{}` | Treat as `type: object`, allow any properties | **MUST** |
 | YAML/JSON syntax error | Throw `SCHEMA_PARSE_ERROR` | **MUST** |
 | Unknown JSON Schema keyword (e.g., `x-custom`) | Ignore (forward compatible) | **MUST** |
@@ -2995,11 +2995,27 @@ bindings:
 
 **The subject of this requirement is the binding loader, and its trigger is an invocation that does not name a directory.** Discovery is a *user-invoked* operation, not a lifecycle event.
 
-1. When a binding loader (`load_binding_dir` / `loadBindingDir` / the equivalent public entry point) is invoked **without an explicit directory argument**, it **MUST** resolve the scan directory from `bindings.dir` following §9.2's precedence — environment variable (`APCORE_BINDINGS_DIR`) > configuration file > default `"./bindings"` — and it **MUST** match candidate files in that directory against `bindings.pattern`, resolved through the same precedence chain with the default `"*.binding.yaml"`.
+1. When a binding loader (`load_binding_dir` / `loadBindingDir` / the equivalent public entry point) is invoked **without an explicit directory argument**, it **MUST** resolve the scan directory from `bindings.dir` following §9.2's precedence — environment variable (`APCORE_BINDINGS_DIR`) > configuration file > default `"./bindings"` — and it **MUST** match candidate files in that directory against `bindings.pattern`, resolved through the same precedence chain with the default `"*.binding.yaml"`. The match is **A25** (§9.2.3), applied to each entry's **filename** — not its path, and not recursively into subdirectories.
 2. When a binding loader **is** given an explicit directory argument, that argument wins. The full order is: explicit argument > `bindings.dir` (env > file > default). `bindings.pattern` follows the same order against its own explicit argument. An implementation **MUST NOT** read `APCORE_BINDINGS_DIR` directly at the loader; the environment tier arrives through the ordinary `APCORE_*` override mechanism of §9.2, so that one precedence chain governs the key.
 3. Implementations **MUST NOT** scan a binding directory automatically as part of client or framework initialisation. Loading bindings is an action the application takes, and an implicit startup scan would add filesystem I/O to every client and change behaviour for every deployment that merely happens to have a `./bindings` directory.
 4. A relative `bindings.dir` is a path-typed value (§9.2.1); what it is resolved *against* is governed by §9.2.2 and is not decided here.
 5. When the resolved directory does not exist, the loader **MUST** fail, raising the implementation's binding-file error and naming the resolved directory in the message. It **MUST NOT** return an empty result. This holds whether the directory came from an explicit argument, from `bindings.dir`, or from the `"./bindings"` default.
+6. A pattern is never rejected. Every string is a valid A25 pattern (§9.2.3 requirement 2), so a loader **MUST NOT** raise on `bindings.pattern` for syntactic reasons; a pattern matching no file yields no modules, which is not an error in itself.
+
+!!! note "Why clause 1 names A25 rather than saying \"glob\" (v1.37.0, #116)"
+    Through v1.36.0 this clause, §9.1.1 and `schemas/defaults.schema.json` all typed
+    `bindings.pattern` as a **glob**, and exactly one implementation delivered one — the
+    one whose standard library provides `Path.glob` for free. The other two wrote suffix
+    matches specialised for the default value: one stripped a **leading** `*` and compared
+    with `ends_with`, the other removed the **first** `*` wherever it sat and compared with
+    `endsWith`. All three agree on `"*.binding.yaml"`, and on `"*.bind.yaml"` — the only
+    non-default value the conformance corpus contained — because leading-star-plus-literal-
+    suffix is the one family on which a glob, a prefix strip and a first-star removal
+    coincide. They pairwise disagree on everything else, with no ordering between them:
+    `"data*.yaml"` matched one file under a glob and none under either suffix match, and
+    `"a*b.yaml"` matched `zab.yaml` under first-star removal — a file a glob cannot match
+    at all, since the pattern is anchored at the start. Naming the algorithm, rather than
+    the syntax, is what closes this: two matchers can both claim "glob" and still disagree.
 
 !!! note "Why a missing binding directory raises, when a missing `acl.root` does not"
     §6's `ACL.discover` states the opposite invariant for `acl.root`: a missing path
@@ -3083,7 +3099,7 @@ Without `display`, users must choose one `module_id` format that compromises acr
 ```yaml
 bindings:
   - module_id: "credit_purchase.get_purchase_status_by_payment_intent.get"
-    target_id: "myapp.purchase:get_purchase_status"
+    target: "myapp.purchase:get_purchase_status"
     description: "Auto-generated from docstring"
 
     # Display overlay — does NOT change module_id or registry behavior
@@ -4025,6 +4041,14 @@ Steps:
 Complexity: O(m × n), where m is pattern length, n is module_id length
 ```
 
+**A08 has exactly one metacharacter.** `*` is a wildcard; **every other character is a
+literal**, `?`, `[`, `]`, `{`, `}` and `\` included. A08 is deliberately *not* A25
+(§9.2.3), which is the matcher for every other pattern-valued value in this specification
+and which also honours `?`. The two surfaces do not overlap: A08 matches module IDs in ACL
+rules and in `match_modules` (§5.16); A25 matches filenames, field names, event types and
+`path_filter`. Keeping A08 narrow is a security decision, not an oversight — see §6.2.2
+for the one observable consequence and the diagnostic that closes it.
+
 ```yaml
 rule_matching:
   # Wildcard support
@@ -4256,6 +4280,29 @@ asking a human less often.
 **Reporting order is unchanged, and is not the same question.** `validate_rules()` (§6.1.2 rule 3) still orders findings by rule index, then **lexicographically by path**, so a pattern fault **interleaves** with condition faults - `$or[0].k` before `callers` before `roles` before `targets` - rather than being grouped ahead of them. Point 2 above governs which single refusal a *rejecting* entry point raises; it does not regroup what a *reporting* validator returns.
 
 **At most one finding per field, and the closure wins.** A field that fails the closure above is reported for that failure and **MUST NOT** also be reported as never-matching: the never-matching criterion presumes a well-formed array, so evaluating it against a malformed one is meaningless. Without this, implementations agree on every decision and disagree on finding *counts*.
+
+### 6.2.2 `?` in an ACL Pattern Is Dead, and MUST Be Reported
+
+A08 (§6.2) has exactly one metacharacter, `*`. `?` is a literal, and §2.7's grammar
+forbids `?` in a module ID, so **an ACL pattern containing `?` matches nothing and can
+never match anything.** In a `deny` rule that is a guard which protects nothing; in an
+`allow` rule it is a grant that never fires and sends its author looking elsewhere. Either
+way the author meant a wildcard — `?` is a wildcard in every other pattern surface this
+specification defines (A25, §9.2.3) — and got a rule that is silently inert.
+
+1. Loading a rule set **MUST NOT** fail on such a pattern. It **MUST** emit a warning
+   naming the rule index, the field (`callers` / `targets`) and the pattern as written.
+2. `validate_rules()` (§6.1.2 rule 3) **MUST** report it, at the path of the offending
+   field, ordered with every other finding by rule index then path.
+3. The pattern's **meaning is unchanged**: `?` stays a literal and the rule keeps matching
+   nothing. This clause adds a diagnostic and changes no decision — deliberately, because
+   the alternative (promoting `?` to a wildcard in A08) would widen `allow` rules that are
+   inert in every deployed policy today, which is the one direction a change to an
+   authorization matcher must not take without an operator's consent.
+
+This is the same shape as §6.1.2's unregistered-condition-key rule: a policy statement
+that cannot do what its author intended is a deploy-time finding, never a silent one, and
+never a load-time failure that would break bootstrap ordering.
 
 ### 6.3 Rule Evaluation Algorithm
 
@@ -4610,8 +4657,8 @@ This section documents the canonical `system.*` module catalogue. Conformant SDK
 1. **Registration MUST use `register_internal()`** (or equivalent privileged API) per §6.6.1 — the public `register()` MUST reject any `module_id` starting with `system.`.
 2. **Read modules** (`system.health.*`, `system.usage.*`, `system.manifest.*`) **MUST NOT** mutate framework state. Calling them with any inputs MUST be safe to repeat.
 3. **Write modules** (`system.control.*`) **MUST** emit audit events through the framework `EventEmitter` and **SHOULD** declare `annotations.requires_approval = true` to surface the Approval Gate (§7) for destructive operations.
-4. **`system.control.reload_module`** input **MUST** accept exactly one of `module_id` (exact match) or `path_filter` (glob); supplying both or neither MUST raise a validation error.
-5. **`system.control.update_config`** **MUST** redact sensitive keys (per §10 `obs.redaction.sensitive_keys`) in both `old_value` and `new_value` fields of its output and audit event.
+4. **`system.control.reload_module`** input **MUST** accept exactly one of `module_id` (exact match) or `path_filter`; supplying both or neither MUST raise a validation error. `path_filter` is a **glob-dialect pattern matched with A25** (§9.2.3) against each registered module ID. Naming the algorithm here is load-bearing: while this clause said only "glob", the three implementations matched it with `fnmatch`, with A08, and with the `glob` crate respectively, so one control-plane request reloaded two modules, reloaded none, or was refused as a malformed pattern depending on which SDK served it.
+5. **`system.control.update_config`** **MUST** redact sensitive keys (per §10.6.1 `obs.redaction.sensitive_keys`) in both `old_value` and `new_value` fields of its output and audit event.
 6. **`system.control.toggle_feature`** state **MUST** persist via the configured `OverridesStore` so toggle state survives process restart; without persistence, toggle decisions revert to the registered defaults on reload.
 
 **Conformance note:** SDKs declaring Level 1 conformance (§ ./conformance.md §3) MUST register the 6 read modules. SDKs declaring Level 2 MUST additionally register the 3 control modules. Implementations MAY register additional modules under `system.<vendor>.*` namespaces — these are NOT covered by this canonical catalogue and MUST NOT collide with the names above.
@@ -5768,7 +5815,7 @@ Implementations **MUST** follow these default value conventions:
 | `observability.metrics.enabled` | `false` | `true`/`false` | Metrics collection switch |
 | `observability.metrics.exporter` | `"stdout"` | `stdout`/`prometheus`/`otlp` | Metrics exporter |
 | `bindings.dir` | `"./bindings"` | Valid directory path | Binding file directory |
-| `bindings.pattern` | `"*.binding.yaml"` | glob pattern | Binding file matching pattern |
+| `bindings.pattern` | `"*.binding.yaml"` | glob-dialect pattern (A25, §9.2.3) | Binding file matching pattern, matched against the filename within `bindings.dir` |
 | `id_map.auto_detect` | `true` | `true`/`false` | Auto ID mapping detection |
 
 **Note**:
@@ -5825,7 +5872,7 @@ A **path-typed** key is a configuration key whose value is a filesystem path. Th
 1. Implementations **MUST** expose this set through a public, readable accessor (a constant, function, or equivalent) so that a consumer can ask *which* configuration values are paths without hardcoding the answer.
 2. A key added to §9.1 whose value is a filesystem path **MUST** carry the `x-apcore-path` marker in the same change that adds it. A path-valued key without the marker is a specification defect, not an implicit exclusion.
 3. `extensions.roots` is list-valued: every element is path-typed, in both the bare-string form and the `{ root, namespace }` form. §9.2's scalar environment-override convention does not apply to it; an implementation **MUST NOT** invent a delimiter-separated `APCORE_EXTENSIONS_ROOTS` encoding.
-4. `bindings.pattern` is **NOT** path-typed. It is a glob matched against filenames *within* `bindings.dir` and is never resolved as a path in its own right. `id_map.overrides` keys and values are module IDs, not paths.
+4. `bindings.pattern` is **NOT** path-typed. It is a glob-dialect pattern (A25, §9.2.3) matched against filenames *within* `bindings.dir` and is never resolved as a path in its own right. It is *pattern*-valued instead, and §9.2.3 declares that set the same way this section declares this one. `id_map.overrides` keys and values are module IDs, not paths.
 5. **An empty string is not a path.** When a path-typed key resolves to `""` — most commonly because an `APCORE_*` variable is *set but empty*, which §9.2 still treats as an override — implementations **MUST NOT** use it as a directory. The empty value **MUST** be discarded and resolution **MUST** fall through to the next tier, exactly as if the variable had been unset. An implementation **MAY** log a warning naming the key.
 
     This is stated because §9.2's override rule and shell ergonomics collide. `export APCORE_ACL_ROOT=` and a variable inherited empty from a container spec are both "set" to the tooling, so an unguarded implementation lets an empty string silently *blank out* a directory the configuration file correctly declared, and then resolves that empty path relative to the working directory — which is the working directory itself. The same shape is already recorded for `APCORE_CONFIG_FILE`, where an empty value injected a phantom `config.file` key. Path-typed keys are the population where the failure is silent rather than loud, because "" is a legal relative path to the filesystem API but never the one an operator meant.
@@ -5916,6 +5963,177 @@ Two sibling keys, identical relative values, identical override syntax, differen
 | 1 (`$APCORE_CONFIG_FILE` pointing outside CWD) | The one genuine break: `schema.root`, `extensions.root` and `bindings.dir` move from CWD to the config file's directory. This is the population the clause-2 warning is scoped to reach. |
 
 **Interaction with `include:` composition.** Adopting a single project root settles open question #1 of `docs/spec/rfc-config-include.md` — whether a path value declared *inside* an included fragment resolves relative to that fragment's directory or to the root file's. Under §9.2.2 the question does not arise: resolution has one base for the whole `Config`, so a fragment-relative reading would reintroduce exactly the per-value origin tracking clause 1 forbids. That RFC's Status is **Proposed** and it remains unratified; this section constrains the answer it may give, it does not adopt the RFC.
+
+#### 9.2.3 Pattern-Valued Values
+
+A **pattern-valued** value is a string that is *matched against a name* rather than used
+literally: a filename, a field name, an event type, a module ID. Through v1.36.0 this
+specification typed every one of them with the bare word "glob" or "pattern" and named no
+algorithm at any point of use, so each implementation reached for whichever matcher its
+host language offered — `pathlib.Path.glob`, `fnmatch`, the `glob` crate, `RegExp`, the
+`regex` crate — and inherited that library's dialect. Those dialects disagree with one
+another, so three implementations each picking the obvious local answer produced three
+different contracts for one declared type (#116, #117).
+
+**The counter-example is what makes the cause precise.** `match_modules` (§5.16) is also
+typed only as "glob patterns" in prose, yet all three implementations match it with
+Algorithm **A08** and agree exactly — because its value is a module ID and the code around
+it already had A08 in hand. `path_filter` (§6.7 clause 4) matches module IDs *too*, and
+diverged three ways, because it lives in the system-module code where A08 was not already
+in reach. Same value domain, same libraries available, opposite outcomes. Convergence
+tracked **whether a named algorithm was reachable at the point of use**, not the value's
+domain and not the availability of a library. The remedy is therefore to name an algorithm
+at every point of use and to close the set, exactly as §9.2.1 did for path-typed keys.
+
+**Three dialects exist, and no fourth.** Each pattern-valued property in the canonical
+schemas carries an `"x-apcore-pattern"` marker naming its dialect, the same way §9.2.1's
+path-typed keys carry `"x-apcore-path"`.
+
+| Marker | Algorithm | Used for |
+|---|---|---|
+| `"glob"` | **A25** `match_glob` (below) | filenames, field names, event types, `path_filter` |
+| `"regex"` | the host language's regular-expression engine, constrained by requirement 6 | field **values** |
+| `"module-id"` | **A08** `match_pattern` (§6.2) | ACL rule patterns, `match_modules` |
+
+##### The closed set
+
+A value not in this table is not pattern-valued. Adding one **MUST** add its row here and
+its `x-apcore-pattern` marker in the same change; a pattern-valued key without a marker is
+a specification defect, not an implicit exclusion.
+
+| Value | Marker | Matched against | Case |
+|---|---|---|---|
+| `bindings.pattern` (§5.12.6) | glob (**A25**) | the **filename** of each entry directly in `bindings.dir` — never the path, never recursively | sensitive |
+| `obs.redaction.sensitive_keys[]` — entries containing `*` or `?` (§10.6.1) | glob (**A25**) | the field name | **insensitive** |
+| `obs.redaction.regex_patterns[]` (§10.6.1) | **regex** | the string form of the field **value** | **insensitive** |
+| `include_events[]`, `exclude_events[]`, `event_pattern` (§9.16) | glob (**A25**) | the event type | sensitive |
+| `system.control.reload_module` → `path_filter` (§6.7) | glob (**A25**) | the module ID | sensitive |
+| ACL `callers[]` / `targets[]` (§6.2) | module-id (**A08**) | the module ID | sensitive |
+| pipeline / middleware `match_modules[]` (§5.16) | module-id (**A08**) | the module ID | sensitive |
+
+`obs.redaction.sensitive_keys` entries containing neither `*` nor `?` are **not** patterns
+at all; they are substrings, matched by the separate rule in §10.6.1. That hybrid is
+existing behaviour in all three implementations and is specified rather than removed.
+
+**One key is deliberately absent from the table: `extensions.ignore_patterns`.** It is
+registered in all three implementations' configuration key surfaces and read by **none** of
+them, so it has no matcher to specify and no behaviour to make consistent — §3.6's
+`scan_extensions` step 3a ("if entry name matches `ignore_patterns` → skip") is a **MUST
+whose input nothing supplies**, which is exactly the shape #114 found in `bindings.dir`.
+Assigning it a dialect here would declare a contract no implementation could be measured
+against, and this section exists to stop doing that. It is excluded until a consumer exists,
+on the same reasoning §9.2.2 used to exclude `bindings.dir` from its fixture set, and is
+recorded as a separate defect rather than silently absorbed into this one.
+
+##### Algorithm A25 — `match_glob`
+
+```
+Algorithm: match_glob(pattern, value)
+
+Input:
+  pattern — a pattern-valued string
+  value   — the name to test
+
+Output:
+  matched — boolean
+
+Metacharacters — exactly two, and no others:
+  *  matches zero or more characters, including "." and "/"
+  ?  matches exactly one character
+
+Every other character is a literal, INCLUDING  [  ]  {  }  \  !  ^  -
+There is no escape character: to match a literal "*" or "?" is not expressible,
+and that is deliberate (see requirement 4).
+
+Steps:
+  1. Split pattern on "*" into segments s[0..n-1].
+     A pattern with no "*" yields exactly one segment.
+  2. If n == 1:
+       → Return match_exact(s[0], value)          # no "*": whole value must match
+  3. If NOT match_prefix(s[0], value) → Return false
+     pos ← len(s[0])
+  4. For i in 1 .. n-2:                            # the interior segments
+       found ← the LEFTMOST index j >= pos with match_exact(s[i], value[j : j+len(s[i])])
+       If no such j → Return false
+       pos ← found + len(s[i])
+  5. last ← s[n-1]
+     If last is empty → Return true                # pattern ended with "*"
+     If len(value) - pos < len(last) → Return false
+     → Return match_exact(last, value[len(value)-len(last) :])
+  6. where:
+       match_exact(seg, text)  ≡ len(seg) == len(text) AND match_prefix(seg, text)
+       match_prefix(seg, text) ≡ len(text) >= len(seg) AND
+                                 for every k in 0..len(seg)-1:
+                                     seg[k] == "?"  OR  seg[k] == text[k]
+
+Complexity: O(m x n), m = len(pattern), n = len(value)
+```
+
+Step 4 is **leftmost-first, non-backtracking**, which is the same greedy strategy A08
+already specifies. It is stated as an algorithm rather than as a syntax because three
+implementations converge only when the *procedure* is fixed: two matchers can both claim
+"`*` and `?`" and still disagree on `a*a` against `aaa`.
+
+##### Requirements
+
+1. Implementations **MUST** match every glob-dialect value in the table above with A25.
+   An implementation **MUST NOT** delegate to a host-library matcher whose dialect differs
+   from A25 — `fnmatch`, `pathlib.Path.glob`, the `glob` crate and a translated `RegExp`
+   all differ from it and from each other, and each was the source of a divergence this
+   section closes.
+2. **Every string is a valid pattern.** A25 has no parse phase and no error return. An
+   implementation **MUST NOT** reject, warn about, or skip a pattern-valued value on
+   syntactic grounds; `a[b`, `{x,y}` and `**` are patterns whose bracket, brace and second
+   star are literals. A matcher that raises on an unbalanced `[` makes one SDK refuse a
+   control-plane request the other two serve.
+3. **Case sensitivity is a property of the surface, not of the algorithm.** A25 itself
+   compares characters exactly. A surface marked *insensitive* in the table above
+   **MUST** apply the same case fold to **both** the pattern and the value before calling
+   A25. Folding only one side is a silent bypass: it makes a pattern spelled
+   `"*Token*"` match nothing while `"*token*"` matches, with no diagnostic, on a
+   redaction surface.
+4. **`[`, `]`, `{`, `}` and `\` are literals.** Character classes are the construct the
+   host libraries disagree about most — `[!x]` versus `[^x]` negation, POSIX classes,
+   ranges — and they are the construct no real value in the table above needs. Excluding
+   them removes the disagreement rather than adjudicating it. The cost is stated plainly:
+   a literal `*` or `?` in a name cannot be matched exactly. No value in the table has an
+   alphabet that contains either character.
+5. **A25 is not A08, and the two surfaces do not overlap.** A08 (§6.2) matches ACL rule
+   patterns and `match_modules` against module IDs; A25 matches everything else in the
+   table. A08 is left unchanged because widening it would change authorization decisions
+   already in force: it treats `?` as a literal, and since a module ID (§2.7) cannot
+   contain `?`, an ACL pattern containing one matches nothing today. Making it a wildcard
+   would turn a dead `allow` rule live, which is the one direction a security change must
+   not take silently. §6.2.2 closes that hole from the other side instead, by requiring
+   the dead pattern to be reported.
+6. **Regex-dialect values.**
+   a. Matching is an **unanchored search**: a value matches when the pattern matches
+      *anywhere* within it. This is what all three implementations do; the canonical
+      schema's earlier description ("fully matches") described no implementation and is
+      corrected in the same change as this section. An operator wanting a whole-value
+      match writes `^…$`.
+   b. Matching is **case-insensitive**.
+   c. **Portable subset.** A pattern **SHOULD** be expressible without lookaround,
+      backreferences, or inline flag groups (`(?i)`). Those three are exactly where the
+      engines disagree: the Rust `regex` crate refuses lookaround and backreferences by
+      design, to keep matching linear in the input, and JavaScript rejects `(?i)`. A
+      pattern outside the subset is **not portable**, and a configuration that relies on
+      one is not conformant across SDKs.
+   d. **A pattern that does not compile MUST NOT be discarded in silence.** The
+      implementation **MUST** emit a diagnostic naming the pattern and the engine's
+      error, once per configuration load, and `validate_config()` (A12, §9.3) **MUST**
+      report it as a validation error. Silently skipping is the failure mode this clause
+      exists to forbid: it leaves a redaction rule that an operator wrote, that the
+      configuration schema accepted, and that redacts nothing — indistinguishable from a
+      rule that is working, on the one surface where the consequence is plaintext
+      credentials in a log.
+
+##### What this section does not change
+
+It fixes the *language*, not the *policy*. No default value moves, no key changes its
+meaning, and no surface gains or loses a pattern. Implementations that already matched a
+surface with A25's semantics — TypeScript's `path_filter`, every implementation's
+`match_modules` — are already conformant there.
 
 ### 9.3 Configuration Validation Algorithm
 
@@ -6388,7 +6606,7 @@ The mount mechanism allows attaching external configuration sources to the Confi
 
 ```
 config.mount(
-    namespace:  string,           # MUST — target_id namespace
+    namespace:  string,           # MUST — target namespace
     from_file:  path | nil,       # MAY  — load from file
     from_dict:  map  | nil,       # MAY  — load from in-memory dict
 )
@@ -6398,7 +6616,7 @@ Exactly one of `from_file` or `from_dict` **MUST** be provided.
 
 **Mount rules:**
 
-1. The target_id namespace **may** or **may not** be previously registered via `register_namespace`.
+1. The target namespace **may** or **may not** be previously registered via `register_namespace`.
    - If registered: mount data is merged (file/dict < env overrides), then validated against the registered schema.
    - If not registered: mount data is stored as-is, accessible via `get()`, but not validated. A WARN **SHOULD** be logged.
 2. Mounting to a namespace that already has data (from the unified file or a prior mount) **MUST** deep-merge the mount data into the existing data. Mount data has lower priority than file data (see §9.6.2). This means the unified file is the authoritative source when both exist. If the caller_id intends the mounted file to be the authoritative source for a namespace, the namespace section **SHOULD NOT** appear in the unified file.
@@ -6771,7 +6989,7 @@ settings: ApflowSettings = config.bind("apflow", ApflowSettings)
 
 **Binding rules:**
 
-1. `bind()` deserializes the namespace subtree into the target_id type.
+1. `bind()` deserializes the namespace subtree into the target type.
 2. If the namespace has a registered JSON Schema, validation **SHOULD** have already occurred at load time. `bind()` performs structural deserialization only — it **SHOULD NOT** re-validate.
 3. If deserialization fails (missing fields, type mismatch), `bind()` **MUST** raise a `ConfigError` with a clear message indicating the namespace and the failing field.
 4. The model type used in `bind()` is owned by the downstream package, not by apcore. apcore provides the mechanism, not the types.
@@ -7093,7 +7311,7 @@ Implementations **MUST** use the following error codes (extensions to §8). All 
 | `CONFIG_NAMESPACE_RESERVED` | Attempt to register `apcore` or `_config` | New |
 | `CONFIG_ENV_PREFIX_CONFLICT` | Duplicate `env_prefix`, or `env_prefix` matches `^APCORE_[A-Z0-9]` (collides with the `apcore` namespace's `APCORE_` prefix) | New |
 | `CONFIG_MOUNT_ERROR` | Mount source file not found, invalid YAML in mount file, or mount to `_config` | New |
-| `CONFIG_BIND_ERROR` | Typed deserialization failure in `bind()` — missing fields or type mismatch between namespace data and target_id type | New |
+| `CONFIG_BIND_ERROR` | Typed deserialization failure in `bind()` — missing fields or type mismatch between namespace data and target type | New |
 | `CONFIG_ENV_MAP_CONFLICT` | An env var name in `env_map` is already claimed by another `env_map` (global or namespace) | New |
 
 ### 9.13 Ecosystem Integration Patterns
@@ -7441,6 +7659,38 @@ The following are the canonical event type names, payload keys, and severity for
 >
 > **Subsystem-segment correction (v0.22.0):** the registry events moved from `apcore.module.*` to `apcore.registry.*` (subsystem is the emitting module, not the affected entity), and the threshold events moved from `apcore.error.*` / `apcore.latency.*` to `apcore.health.*` (`error` and `latency` are categories, not subsystems; the emitting subsystem is the health-monitoring `PlatformNotifyMiddleware`). See [event-system.md §Legacy Aliases](../features/event-system.md#deprecation-legacy-event-names) for the full rename table.
 
+#### 9.16.3 Event Pattern Matching
+
+A subscriber's `event_pattern`, and the `include_events` / `exclude_events` lists of a
+`filter` subscriber, are **glob-dialect patterns matched with A25** (§9.2.3) against the
+event type, **case-sensitively**. Event types are lower-case by §9.16.1's convention, so a
+case fold would change no decision and is not applied.
+
+1. `event_pattern` selects what a subscriber receives. `"*"` — the default — receives
+   everything.
+2. `include_events`, when present, is an allow-list: the event is forwarded when **any**
+   entry matches. `exclude_events` is a deny-list applied whether or not `include_events`
+   is present: an event matching **any** entry is discarded.
+3. **`exclude_events` is why the algorithm has to be named here.** A pattern that fails to
+   match means the event is *delivered*, so a matcher that understands fewer
+   metacharacters than the operator wrote does not narrow the filter — it **opens** it. A
+   subscriber configured to exclude `secret.?vent` excluded it under a full-`fnmatch`
+   implementation and **received it** under a `*`-only one, with nothing to indicate the
+   pattern had not been understood. `include_events` fails the safe way round under the
+   same divergence, which is precisely why it was not noticed.
+4. A pattern is never rejected and never warned about on syntactic grounds (§9.2.3
+   requirement 2).
+
+!!! note "Why this was three different matchers (v1.37.0, #117)"
+    Until v1.36.0 no section stated the matcher for these keys, and the three
+    implementations supported three different metacharacter sets: full `fnmatch`
+    (`*`, `?`, `[…]`, `[!…]`), `*` and `?` with `[` escaped to a literal, and `*` alone.
+    The narrowest implementation's own doc comment named the mechanism exactly — it
+    described its support as *"the subset of `fnmatch` behaviour the spec fixtures and YAML
+    examples actually exercise"*. That is an accurate account of what happens whenever a
+    specification is silent: **the corpus becomes the contract, and the corpus
+    under-specifies**, because every fixture value here was `"*"` or a literal event name.
+
 ---
 
 ## 10. Observability Specification
@@ -7591,6 +7841,89 @@ Steps:
 
 Complexity: O(n), where n is number of data fields
 ```
+
+#### 10.6.1 Configured Redaction Rules (`obs.redaction.*`)
+
+§10.6 covers redaction driven by the **schema** (`x-sensitive`). This section covers
+redaction driven by **configuration**, which every implementation has shipped since D-53
+and which no section of this specification had ever defined. Its only written contract was
+a one-line `description` in `schemas/apcore-config.schema.json`, and that description was
+wrong on both keys — it described `sensitive_keys` as a plain substring match, omitting the
+glob branch all three implementations have; and it described `regex_patterns` as a full
+match, when all three search. An undefined surface is where three implementations diverge
+(#117), so it is defined here.
+
+Redaction is applied as the **union** of three independent rules: (a) `x-sensitive` schema
+annotations (§10.6), (b) `obs.redaction.sensitive_keys` matched against field **names**,
+and (c) `obs.redaction.regex_patterns` matched against field **values**. A field redacted
+by any one of them is redacted.
+
+##### `sensitive_keys` — a hybrid, deliberately
+
+Each entry is interpreted per-entry, by its own spelling:
+
+| Entry contains | Interpreted as | Matched against |
+|---|---|---|
+| `*` or `?` | a **glob-dialect pattern**, A25 (§9.2.3) | the whole field name |
+| neither | a **substring** | the normalized field name |
+
+1. Both branches are **case-insensitive**, and the fold **MUST** be applied to the pattern
+   and to the field name **alike**. Folding only the field name is a silent bypass: an
+   operator who writes `"*Token*"` — or any capitalised spelling — then gets redaction from
+   an implementation that folds both sides and **plaintext** from one that folds only the
+   name, with no warning, because the pattern is valid and simply matches nothing.
+2. The glob branch is **anchored**: the pattern must match the *entire* field name. `key`
+   is a substring entry and matches `api_key`; `*key*` is a pattern entry and matches it
+   too; `key*` matches neither `api_key` nor `keyring`'s sibling `api_keyring`. This is
+   what makes the two branches usefully different rather than redundant.
+3. The substring branch normalizes both sides before comparing: lower-case, and `-` and
+   whitespace mapped to `_`, so `"X-API-Key"` matches the entry `api_key`. Implementations
+   **SHOULD** additionally collapse separators so a camelCase field (`AccessKey`) matches a
+   snake_case entry (`access_key`).
+4. `[`, `]`, `{`, `}` and `\` are **literals** in the glob branch, per §9.2.3 requirement 4.
+   Passing them through to a host regular-expression engine unescaped **MUST NOT** happen:
+   in `RegExp` syntax `[!p]` means "`!` or `p`" while in every glob dialect it means "not
+   `p`", so an entry written `[!p]assword` redacts the exact field the operator excluded
+   and leaks the ones they meant to catch. Under this section `[!p]assword` contains no
+   `*` or `?`, so it is a substring entry and matches a field literally named that — inert
+   rather than inverted, which is the correct outcome for a construct this dialect does not
+   have.
+5. An **empty** entry **MUST** be ignored. It is not a substring that matches every field.
+
+##### `regex_patterns`
+
+1. Each entry is a regular expression in the **regex dialect** of §9.2.3, matched by
+   **unanchored search**, **case-insensitively**, against the string form of a field's
+   value. A value that matches is replaced by `replacement`.
+2. Entries **SHOULD** stay inside §9.2.3 requirement 6c's portable subset — no lookaround,
+   no backreferences, no inline flag groups.
+3. **A pattern the engine cannot compile MUST NOT be dropped in silence** (§9.2.3
+   requirement 6d). It **MUST** produce a diagnostic naming the pattern and the engine's
+   error, and `validate_config()` **MUST** report it. This is the clause with the sharpest
+   consequence in the section: a `regex_patterns` entry that fails to compile is
+   indistinguishable, from the outside, from one that compiles and matches nothing — and
+   the observable difference is credentials in plaintext in a log. Implementations
+   previously caught the compile error and continued: one re-failed silently on every log
+   line, one substituted a regular expression that can never match, one warned. All three
+   kept running with a redaction rule that redacted nothing.
+4. Compilation **SHOULD** happen once, when the configuration is read, so the diagnostic
+   fires at load rather than per log record.
+
+##### Protected fields
+
+Five correlation fields are **never** redacted, whatever an operator's patterns say:
+
+```
+trace_id   span_id   caller_id   module_id   target_id
+```
+
+Implementations **MUST** exempt them from rules (b) and (c) alike, at every nesting depth.
+A `sensitive_keys` entry as ordinary as `*id*` otherwise erases exactly the identifiers that
+make the record correlatable, and a log that cannot be correlated cannot be used to
+investigate the incident the redaction was configured for. The exemption covers the
+protected field's **own value** only: a container reached *through* a protected key is still
+descended into, and sensitive fields inside it are still redacted. All three implementations
+already carry this set; this clause records the agreement.
 
 ### 10.7 Sampling Strategy
 
@@ -8421,7 +8754,7 @@ Phase 4: Advanced
 
 ### 12.6 Language-specific Guidelines
 
-Each SDK implementation **SHOULD** use the idiomatic schema validation, async model, and package management conventions of its target_id language. Specific library choices are documented in each SDK's own repository.
+Each SDK implementation **SHOULD** use the idiomatic schema validation, async model, and package management conventions of its target language. Specific library choices are documented in each SDK's own repository.
 
 ### 12.7 Concurrency Model Specification
 
@@ -9181,3 +9514,4 @@ Each language SDK **SHOULD** provide idiomatic module definition syntax. The fol
 | 1.34.0 | 2026-09-06 | **§9.2.1 Path-Typed Configuration Keys (new) — the specification never said which configuration values are filesystem paths, so every consumer that had to know maintained its own list (#113).** §9.1.1 gives four keys a relative default (`extensions.root`, `schema.root`, `acl.root`, `bindings.dir`) and §9.2 makes each of them environment-overridable, but nothing marked them as paths. A consumer forwarding apcore configuration across a process boundary — a CLI spawning a worker, a supervisor building a container environment — must know which `APCORE_*` variables carry paths, because a relative value re-roots silently wherever the working directory differs; `apcore-cli` had already hand-maintained exactly such a list (`SANDBOX_PATH_TYPED_VARS`) with a note that adding a key means editing three SDKs. The set is now **closed and declared at the source that already defines the key surface**: `schemas/apcore-config.schema.json` and `schemas/defaults.schema.json` carry `"x-apcore-path": true` on each path-valued property, implementations MUST expose the set through a public accessor, and a new path-valued key MUST carry the marker in the change that adds it. `bindings.pattern` is stated NOT to be path-typed (a glob matched within `dir`, never resolved itself), and `extensions.roots` is stated to be list-valued with no scalar env encoding — an implementation MUST NOT invent a delimiter-separated `APCORE_EXTENSIONS_ROOTS`. **Purely additive**: no key changes meaning, no default moves, and no resolution behaviour is defined here. The **resolution base remains unspecified** and is tracked in #113 — `acl.root` resolves against the config file's directory (`ACL.discover`, D-64) while `schema.root` resolves against the process CWD (`SchemaLoader`), and reconciling those two is a separate decision this entry deliberately does not pre-empt. New conformance fixture `conformance/fixtures/config_path_typed_keys.json`. Governance: maintainer approval per GOVERNANCE.md § Decision Making; tracking issue #113. |
 | 1.35.0 | 2026-09-06 | **§5.12.6 — a MUST with no subject, and §9.2.2 Path Resolution Base (new) — a relative path with no declared base (#114, #113).** **§5.12.6** required that "if `bindings.dir` is configured, implementations MUST scan files matching `pattern` in that directory" and never said *who* scans or *when*. No SDK satisfied it: `bindings.dir` is registered in all three key surfaces (`apcore-python config.py:217`, `apcore-typescript config-key-surface.ts:70`, `apcore-rust config.rs:213`) and read by no code path, while `BindingLoader` is exported public API in all three (`__init__.py:198`, `index.ts:277`, `lib.rs:66`) and called from no internal one — a design, not an oversight, since binding loading is a user-invoked tool. The two readings the old text permitted were "the framework scans at startup", which nobody implements and which would add filesystem I/O to every client's startup and change behaviour for every deployment that merely has a `./bindings` directory, and "a loader honours the key when invoked", which is nearly satisfied already. The requirement now names both: a binding loader invoked **without an explicit directory argument** MUST resolve the directory from `bindings.dir` under §9.2 precedence (env `APCORE_BINDINGS_DIR` > file > default `./bindings`) and MUST match files against `bindings.pattern` through the same chain (default `*.binding.yaml`); an explicit argument still wins; and implementations **MUST NOT** scan automatically at client initialisation. The MUST is not weakened — it is made enforceable and testable for the first time. TypeScript's pre-existing raw `process.env.APCORE_BINDINGS_DIR` read (`bindings.ts:163`) implemented the environment tier alone of this key's chain and is folded into §9.2's mechanism, so those users keep working. The `bindings.files` withdrawal note is retained: that key was schema-invalid and unimplementable; `bindings.dir` is declared by the canonical schema with a default and present in all three key surfaces, so the precedent does not transfer. **§9.2.2** answers the question §9.2.1 deliberately left open in v1.34.0: what a *relative* path-typed value is resolved against. Today `acl.root` resolves against the configuration file's directory (`ACL.discover`, D-64, `docs/features/acl-system.md`) while `schema.root` and `extensions.root` resolve against the process CWD — two sibling keys, identical relative values, identical override syntax, two bases, and no rule saying either is wrong. The **project root** is declared: the configuration file's directory when that file came from §9.14 discovery tiers 1-5 (`$APCORE_CONFIG_FILE`, or a project-local `./project.yaml|.yml|apcore.yaml|.yml`), and the process CWD when it came from the user-level tiers 6-7 or when no file was found. The tier is what selects the base and has to be: in tiers 2-5 the file's directory *is* CWD and the rules are indistinguishable; in tier 1 the file's directory is the better answer; in tiers 6-7 it is the wrong one, because `extensions.root: ./extensions` in `~/.config/apcore/config.yaml` cannot mean `~/.config/apcore/extensions`. That last case is live today in `acl.root` — a user-level config silently supplies an ACL policy to every project the user runs while the project's own `./acl/` is ignored, which for a default-deny system is the inverse of the intent, and the same load resolves `extensions.root` against CWD, so **one configuration document yields two bases**. From **v2.0**, every relative path-typed value (§9.2.1's closed set) resolves against the project root — file-declared, env-sourced, API-supplied and defaults alike — with **one base per `Config`** and **no per-key origin tracking**, which is what makes the rule implementable in three SDKs at once. **This version changes no behaviour.** It is the deprecation phase §13.2's two-minor floor requires: 1.x keeps the current semantics exactly, implementations MUST expose a `project_root` accessor (additive, no resolution attached), and SHOULD warn only when project root differs from CWD **and** a relative path-typed value is present — a blanket warning is explicitly not wanted, since it would fire for the tiers 2-5 majority where nothing changes. Adopting this also settles `docs/spec/rfc-config-include.md` open question #1 (fragment-relative vs root-relative path values), because one base for the whole `Config` leaves the fragment-relative reading no room. New conformance fixtures `conformance/fixtures/bindings_dir_resolution.json` and `conformance/fixtures/config_project_root.json`. Governance: maintainer approval per GOVERNANCE.md § Decision Making; tracking issues #114 and #113. |
 | 1.36.0 | 2026-09-06 | **Four corrections found by writing the first conformance drivers for v1.35.0's own fixtures — three SDKs reported the same defects independently (#113, #114, #115).** **§5.12.2 declared the binding field `target_id` a MUST; everything else in the ecosystem uses `target`** — `schemas/binding.schema.json`, `DECLARATIVE_CONFIG_SPEC` §3.2, both binding fixtures, and all three SDK loaders. The protocol spec was the sole outlier, and on a MUST, so a binding file written from the section that defines the binding-file format loaded in no SDK. Corrected throughout §5.12, and in the ten further places outside it (§5.13.9's `ResolvedModule`, §8.2/§8.6/§8.7's error descriptions, §5.14.6 and §9.15 prose) where a past over-applied rename had left `target_id` standing. No implementation changes: the population of files using `target_id` is empty, because such a file has never loaded. **§5.12.6 gains clause 5 — a resolved binding directory that does not exist MUST raise, naming the directory, and MUST NOT return an empty result.** v1.35.0 named the MUST's subject but left its failure mode unstated, and the fixture guessed the opposite of what all three SDKs do. The contrast with `ACL.discover`'s missing-path no-op (D-64) is now stated as deliberate: ACL discovery is automatic, so silence is right; binding loading is user-invoked, so an absent directory is a mistake. **§9.2.1 gains requirement 5 — an empty string is not a path.** §9.2 counts a *set but empty* `APCORE_*` variable as an override, so `export APCORE_ACL_ROOT=` silently blanked a directory the configuration file correctly declared and then resolved `""` to the working directory. The same shape is on record for `APCORE_CONFIG_FILE` (#88); path-typed keys are where it fails silently rather than loudly. Empty values MUST fall through to the next tier. **§9.2.2 fixes the deprecation warning's cadence at once per configuration load, never once per process.** v1.35.0 required the warning but not its cadence, and the three SDKs promptly invented three — Python deduplicated through the `warnings` filter, TypeScript held a module-global once-flag, Rust warned per load. A process-global flag makes emission order-dependent (the first load consumes the warning, so a later affected document is silent) and is a test-isolation hazard. De-duplication belongs to the host logging layer. **`schemas/defaults.schema.json` gains the `bindings` section** it never had, so `bindings.dir` / `bindings.pattern` finally have a home in the file that calls itself the single source of truth for defaults; until now the `./bindings` default existed only in `apcore-config.schema.json` and every SDK had to hardcode it at the loader, since `config_key_governance.json` pins the default tables to `defaults.schema.json`. `config_key_governance.json` regenerated (65 allowed keys, 20 canonical defaults). Fixture repairs: `bindings_dir_resolution` gains `env_var_must_not_be_read_directly_at_the_loader` (clause 2 had no case, so an implementation reading the raw variable — the exact apcore-typescript#36 defect — passed the whole fixture), its candidate directories now carry distinct module ids (a shared id made `env_overrides_config_file_dir` pass whichever directory was scanned), and `missing_configured_dir` now expects the raise; `config_project_root`'s tier-6/7 cases now name the TIER through tokens instead of hardcoding the POSIX spelling, which had made every driver fail on macOS, and `no_warning_when_all_path_values_absolute` now spells every §9.2.1 key absolutely, without which it was unsatisfiable against §9.2.2's own rule that defaults count. Governance: maintainer approval per GOVERNANCE.md; tracking issues #113, #114, #115. |
+| 1.37.0 | 2026-09-09 | **§9.2.3 Pattern-Valued Values (new) and Algorithm A25 `match_glob` — the specification typed six values as "a glob" and named no matcher, so each SDK inherited its host library's dialect (#116, #117).** `bindings.pattern`, `obs.redaction.sensitive_keys`, `obs.redaction.regex_patterns`, a subscriber's `event_pattern` / `include_events` / `exclude_events`, and `system.control.reload_module`'s `path_filter` were each typed only with the word *glob* or *pattern*. Implementations reached for `pathlib.Path.glob`, `fnmatch`, the `glob` crate, a translated `RegExp` and the `regex` crate — matchers that disagree with one another — so **one declared type became three contracts**, and all three agreed only on the default value nobody had ever changed. **The counter-example is what makes the cause precise, and it is not "a library was available".** `match_modules` (§5.16) is typed only as "glob patterns" in prose too, yet all three implementations match it with **A08** and agree exactly, because its value is a module ID and the surrounding code already had A08 in hand. `path_filter` matches module IDs *as well* and diverged three ways, because it lives in the system-module code where A08 was not already in reach. Same value domain, same libraries available, opposite outcomes: **convergence tracked whether a named algorithm was reachable at the point of use.** The remedy is therefore to name an algorithm at every point of use and close the set — the same shape §9.2.1 used for path-typed keys. **§9.2.3** declares the closed set, three dialect markers (`"x-apcore-pattern": "glob" | "regex" | "module-id"`, carried in the canonical schemas beside `x-apcore-path`), and per-surface case sensitivity. **A25** is specified as an *algorithm*, not a syntax — leftmost-first, non-backtracking, anchored — because two matchers can both claim `*` and `?` and still disagree on `a*a` against `aaa`. Exactly two metacharacters: `*` and `?`. **Every other character is a literal, `[ ] { } \ ! ^ -` included, and every string is a valid pattern**: A25 has no parse phase, so an implementation **MUST NOT** reject one — `glob::Pattern` refused `a[b` and `a**b`, so the same control-plane request one SDK served another refused. **Two of the divergences were silent security bypasses, and both are closed here.** (1) `sensitive_keys` matching lower-cased the *field name* but not the *pattern* in apcore-rust, so `"*Token*"` — or any capitalised spelling — redacted in Python and TypeScript and left **plaintext** in Rust, with no warning, because the pattern was valid and simply matched nothing. §9.2.3 requirement 3 now requires the fold on **both** sides. (Worth recording precisely, because the obvious statement of this bug is wrong: `*key*` does match `API_KEY` in all three, since Rust also tries the lowered key — only an uppercase *pattern* discriminates.) (2) apcore-typescript passed `[…]` verbatim into a `RegExp`, where `[!p]` means "`!` or `p`" rather than "not `p`", so `[!p]assword` **redacted `password`** — the one field the other two deliberately exclude — and leaked `bassword`. Under A25 brackets are literals and the construct is inert rather than inverted. **§10.6.1 (new) gives `obs.redaction.*` its first normative home.** It has shipped since D-53 with no section of this specification defining it; its only written contract was a `description` in `schemas/apcore-config.schema.json`, **wrong on both keys** — it called `sensitive_keys` a plain substring match, omitting the glob branch all three implement, and called `regex_patterns` a *full* match when all three **search**. Both are corrected in the schema and in `docs/features/observability.md`, and the fixture's own regex cases were all spelled `^…$`, which a full match and a search satisfy alike, so the corpus could not see it. §10.6.1 also fixes the per-entry hybrid (an entry with `*` or `?` is an A25 pattern anchored to the whole name; an entry with neither is a substring over the normalized name), requires the five correlation fields (`trace_id`, `span_id`, `caller_id`, `module_id`, `target_id`) to be exempt, and — the clause with the sharpest consequence — **forbids dropping an uncompilable `regex_patterns` entry in silence**: Python re-failed silently on every log line, TypeScript substituted a never-matching regex, only Rust warned, and all three kept running with a redaction rule that redacted nothing. A diagnostic is now **MUST**, and `validate_config()` **MUST** report it. Regex portability is stated rather than assumed: no lookaround, no backreferences, no inline `(?i)` — the intersection of the three engines, which is also the feature set that keeps matching linear. **§9.16.3 (new)** names A25 for event-type patterns and states why it is load-bearing: **`exclude_events` fails open.** A pattern that fails to match means the event is *delivered*, so a matcher supporting fewer metacharacters than the operator wrote does not narrow the filter, it opens it — a subscriber excluding `secret.?vent` excluded it under `fnmatch` and **received** it under a `*`-only matcher. `include_events` fails the safe way round under the identical divergence, which is why it went unnoticed. The narrowest implementation's own doc comment named the mechanism exactly: its support was "the subset of `fnmatch` behaviour the spec fixtures and YAML examples actually exercise" — **where the specification is silent, the corpus becomes the contract, and the corpus under-specifies.** **§6.2.2 (new)** closes the one place the two algorithms could still be confused, without touching A08. A08 keeps `*` as its only metacharacter — promoting `?` would widen `allow` rules that are inert today, which is the one direction an authorization matcher must not move silently — but an ACL pattern containing `?` can never match a module ID (§2.7), so it **MUST** now warn at load and be reported by `validate_rules()`. Meaning unchanged, decision unchanged, silence removed. Same shape as §6.1.2's unregistered-condition-key rule. **Scope, stated as a boundary rather than left to inference.** `extensions.ignore_patterns` is **deliberately excluded** from the closed set: it is registered in all three key surfaces and read by **none** of them, so §3.6's `scan_extensions` step 3a is a **MUST whose input nothing supplies** — the same shape #114 found in `bindings.dir`. Assigning it a dialect would declare a contract no implementation could be measured against, which is the practice this section exists to end; it is recorded as a separate defect instead. §5.13.3's binding example still spelled the target field `target_id` after v1.36.0's correction, so it would have loaded in no SDK — fixed, along with seven prose residuals of the same over-applied rename (`target_id node`, `target_id path`, `target_id namespace`, `target_id type`, `target_id language`). **MINOR, not MAJOR, on the v1.22.0 precedent**: the specification is being corrected to have *one* meaning where it previously had three, and the affected population is a configuration using `?`, `[`, `{` or a mid-string `*` in a pattern-valued key — every one of which behaves differently in each SDK today, so no deployment can be relying on the behaviour across them. **This IS an SDK change in all three.** New conformance fixture `conformance/fixtures/glob_matching.json` (30 cases, 11 of them marked DISCRIMINATING and naming the shipped implementation each separates), plus discriminating cases added to `bindings_dir_resolution` (+4), `redaction_config` (+4), `reload_path_filter` (+4) and `event_management_hardening` (+3). Every added case obeys one rule, which is the corpus lesson of both issues: **a case earns its place only if it fails against at least one implementation as shipped.** The pre-existing corpus failed that test everywhere — every pattern value in every fixture was `*`, a literal, or leading-star-plus-literal-suffix, which is precisely the family on which a real glob, a leading-star strip and a first-star removal all coincide. Governance: maintainer approval per GOVERNANCE.md § Decision Making; tracking issues #116, #117. |

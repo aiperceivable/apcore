@@ -175,7 +175,8 @@
         },
         "pattern": {
           "type": "string",
-          "description": "Default glob binding files must match within `dir`. Not path-typed: matched against filenames, never resolved as a path.",
+          "description": "Default pattern binding files must match within `dir`. Glob dialect, matched with algorithm A25 (protocol-spec 9.2.3) against the FILENAME. Not path-typed: never resolved as a path itself.",
+          "x-apcore-pattern": "glob",
           "default": "*.binding.yaml"
         }
       }

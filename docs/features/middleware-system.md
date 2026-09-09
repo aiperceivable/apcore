@@ -412,7 +412,7 @@ middleware:
 
 - Implementations MUST support at minimum the `tracing`, `circuit_breaker`, and `logging` built-in middleware types via YAML configuration.
 - Custom middleware types MUST be resolvable via a dotted module path supplied in the `handler` field (e.g., `myapp.middleware.RateLimiter`). Implementations MUST raise a clear configuration error if the handler cannot be imported or does not implement the `Middleware` interface.
-- The `match_modules` field, when present, restricts the middleware to module IDs matching the provided glob patterns. When absent, the middleware applies to all modules.
+- The `match_modules` field, when present, restricts the middleware to module IDs matching the provided patterns. When absent, the middleware applies to all modules. Patterns are matched with algorithm **A08** ([PROTOCOL_SPEC §6.2](../spec/protocol-spec.md)) — the same matcher ACL rules use, since both match module IDs. `*` is the only metacharacter; `?` and everything else are literals.
 
 ### 1.5 Async Handler Detection
 

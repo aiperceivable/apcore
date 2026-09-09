@@ -1,5 +1,5 @@
 {
-  "description": "Redaction configuration via obs.redaction.regex_patterns and obs.redaction.sensitive_keys. Replaces the legacy hardcoded _secret_ key prefix. Matching MUST be case-insensitive substring for sensitive_keys, full regex match for regex_patterns. Default sensitive_keys list MUST cover common credential terms. trace_id, caller_id, target_id, module_id, and span_id MUST NEVER be redacted. See docs/features/observability.md#redaction-configuration.",
+  "description": "Redaction configuration via obs.redaction.regex_patterns and obs.redaction.sensitive_keys. Replaces the legacy hardcoded _secret_ key prefix. PROTOCOL_SPEC 10.6.1 governs the matching: `sensitive_keys` is a per-entry hybrid — an entry containing `*` or `?` is a glob-dialect pattern matched with algorithm A25 (anchored to the whole field name), an entry containing neither is a case-insensitive substring match against the normalized name; `regex_patterns` is an UNANCHORED, case-insensitive SEARCH over the string form of the value. The 'full regex match' this description claimed until v1.37.0 described no implementation — all three search — and every regex case here was anchored with ^...$, so the corpus could not tell. trace_id, caller_id, target_id, module_id and span_id MUST NEVER be redacted. See docs/features/observability.md#redaction-configuration.",
   "test_cases": [
     {
       "id": "regex_pattern_value_match",
@@ -205,6 +205,97 @@
       "legacy_value": [
         "password"
       ]
+    },
+    {
+      "id": "sensitive_keys_glob_case_fold_applies_to_the_pattern_too",
+      "_why": "DISCRIMINATING — apcore-rust lowercases the KEY (`p.matches(name) || p.matches(&name.to_lowercase())`) but never the PATTERN, so an operator who writes any capitalised spelling gets redaction in Python and TypeScript and PLAINTEXT in Rust, with no warning: the pattern is valid and simply matches nothing. PROTOCOL_SPEC 10.6.1 requires the fold on BOTH sides. Note the shape of the bug — `*key*` matches `API_KEY` in all three today, so a case spelled in lower case cannot see it; only an UPPERCASE PATTERN discriminates.",
+      "redaction_config": {
+        "use_defaults": false,
+        "regex_patterns": [],
+        "sensitive_keys": [
+          "*Token*"
+        ],
+        "replacement": "***REDACTED***"
+      },
+      "input": {
+        "access_token": "t1",
+        "ACCESS_TOKEN": "t2",
+        "AccessToken": "t3",
+        "refresh": "r1"
+      },
+      "expected": {
+        "access_token": "***REDACTED***",
+        "ACCESS_TOKEN": "***REDACTED***",
+        "AccessToken": "***REDACTED***",
+        "refresh": "r1"
+      }
+    },
+    {
+      "id": "sensitive_keys_bracket_is_a_literal_never_a_character_class",
+      "_why": "DISCRIMINATING against all three, in two opposite directions. `[!p]assword` contains no `*` and no `?`, so under 10.6.1 it is a SUBSTRING entry and matches only a field whose name contains it literally. Today: apcore-python (fnmatch) and apcore-rust (glob::Pattern) read `[!p]` as 'any character except p' and redact `bassword`; apcore-typescript passes `[!p]` verbatim into a RegExp, where it means '! or p', and redacts `password` — the exact field the other two deliberately exclude. The meaning is inverted, not merely weakened (#117 section 1).",
+      "redaction_config": {
+        "use_defaults": false,
+        "regex_patterns": [],
+        "sensitive_keys": [
+          "[!p]assword"
+        ],
+        "replacement": "***REDACTED***"
+      },
+      "input": {
+        "password": "p1",
+        "bassword": "b1",
+        "[!p]assword": "lit"
+      },
+      "expected": {
+        "password": "p1",
+        "bassword": "b1",
+        "[!p]assword": "***REDACTED***"
+      }
+    },
+    {
+      "id": "sensitive_keys_glob_entry_is_anchored_to_the_whole_name",
+      "_why": "Separates the two branches of the hybrid. `key` (no metacharacter) is a SUBSTRING entry and matches `api_key`; `key*` is a PATTERN entry, anchored, and matches neither `api_key` nor `my_keyring`. An implementation that treats every entry as a substring, or every entry as a pattern, fails one half of this case.",
+      "redaction_config": {
+        "use_defaults": false,
+        "regex_patterns": [],
+        "sensitive_keys": [
+          "key*",
+          "secret"
+        ],
+        "replacement": "***REDACTED***"
+      },
+      "input": {
+        "api_key": "k1",
+        "keyring": "k2",
+        "my_keyring": "k3",
+        "the_secret_value": "s1"
+      },
+      "expected": {
+        "api_key": "k1",
+        "keyring": "***REDACTED***",
+        "my_keyring": "k3",
+        "the_secret_value": "***REDACTED***"
+      }
+    },
+    {
+      "id": "regex_patterns_are_an_unanchored_search",
+      "_why": "Pins the correction to this fixture's own description. Every pre-v1.37.0 regex case here was spelled ^...$, which is satisfied by a full match and by a search alike, so the corpus could not distinguish them — while all three SDKs have always searched (re.search / RegExp.test / Regex::is_match). An implementation that switched to a full match to satisfy the old description would pass every previous case and fail this one.",
+      "redaction_config": {
+        "use_defaults": false,
+        "regex_patterns": [
+          "sk-[A-Za-z0-9]{20,}"
+        ],
+        "sensitive_keys": [],
+        "replacement": "***REDACTED***"
+      },
+      "input": {
+        "note": "the key is sk-1234567890abcdefghij1234567890 (rotate it)",
+        "other": "nothing here"
+      },
+      "expected": {
+        "note": "***REDACTED***",
+        "other": "nothing here"
+      }
     }
   ],
   "driver_contract": {

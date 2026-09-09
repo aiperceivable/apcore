@@ -212,7 +212,7 @@
         },
         "ignore_patterns": {
           "type": "array",
-          "description": "Additional file/directory patterns to ignore during scanning.",
+          "description": "Additional file/directory patterns to ignore during scanning. NOTE (protocol-spec 9.2.3): registered in every SDK key surface and read by none of them, so no matcher is specified for it yet; it is deliberately absent from the closed set of pattern-valued values until a consumer exists.",
           "items": {
             "type": "string"
           },
@@ -517,7 +517,8 @@
         },
         "match_modules": {
           "type": "array",
-          "description": "Glob patterns; restrict step to matching modules.",
+          "description": "Module-ID patterns; restrict step to matching modules. Matched with algorithm A08 (protocol-spec 6.2) — `*` only, every other character literal.",
+      "x-apcore-pattern": "module-id",
           "items": {
             "type": "string"
           }
@@ -724,7 +725,8 @@
         },
         "pattern": {
           "type": "string",
-          "description": "Glob pattern binding files must match within `dir`.",
+          "description": "Pattern binding files must match within `dir`. Glob dialect, matched with algorithm A25 (protocol-spec 9.2.3) against each entry's FILENAME — `*` and `?` only, every other character literal, never recursive. Not path-typed: never resolved as a path itself.",
+          "x-apcore-pattern": "glob",
           "default": "*.binding.yaml",
           "examples": [
             "*.binding.yaml"
@@ -761,7 +763,8 @@
           "properties": {
             "regex_patterns": {
               "type": "array",
-              "description": "Regex patterns matched against field values. A value that fully matches one of the patterns is replaced with `replacement`.",
+              "description": "Regular expressions matched case-insensitively against field VALUES by UNANCHORED SEARCH — a value matches when the pattern occurs anywhere within it; write ^...$ for a whole-value match. A matching value is replaced by `replacement`. Patterns SHOULD stay inside the portable subset (no lookaround, no backreferences, no inline (?i) flags): those are exactly where the three engines disagree. A pattern that does not compile MUST NOT be dropped silently — see protocol-spec 9.2.3 requirement 6 and 10.6.1.",
+              "x-apcore-pattern": "regex",
               "items": {
                 "type": "string"
               },
@@ -769,7 +772,8 @@
             },
             "sensitive_keys": {
               "type": "array",
-              "description": "Substring patterns matched case-insensitively against field names. Matching fields are redacted.",
+              "description": "Matched case-insensitively against field NAMES, per entry: an entry containing `*` or `?` is a glob-dialect pattern matched with algorithm A25 (anchored, whole name); an entry containing neither is a plain substring match against the normalized name. `[`, `]`, `{`, `}` and `\\` are LITERALS, never a character class. The case fold applies to the pattern AND the name alike. See protocol-spec 10.6.1.",
+              "x-apcore-pattern": "glob",
               "items": {
                 "type": "string"
               },
@@ -808,7 +812,8 @@
       "properties": {
         "match_modules": {
           "type": "array",
-          "description": "Glob patterns; restrict step to matching modules.",
+          "description": "Module-ID patterns; restrict step to matching modules. Matched with algorithm A08 (protocol-spec 6.2) — `*` only, every other character literal.",
+      "x-apcore-pattern": "module-id",
           "items": {
             "type": "string"
           }

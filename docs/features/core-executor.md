@@ -67,7 +67,7 @@ The executor processes every module call through the following pipeline:
 
     | Field | Type | Default | Purpose |
     |-------|------|---------|---------|
-    | `match_modules` | glob patterns or null | `null` (all) | Only run this step for matching module IDs |
+    | `match_modules` | module-ID patterns (A08) or null | `null` (all) | Only run this step for matching module IDs |
     | `ignore_errors` | bool | `false` | If true, step failure logs warning and continues |
     | `pure` | bool | `false` | If true, safe to run during `validate()` dry-run mode |
     | `timeout_ms` | int | `0` | Per-step timeout in milliseconds (0 = no limit) |

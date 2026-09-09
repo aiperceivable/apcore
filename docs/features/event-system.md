@@ -408,6 +408,8 @@ Framework-emitted events **MUST** use the form `apcore.<subsystem>.<event>` wher
 
 Subscribers **MAY** filter by glob patterns: `apcore.registry.*`, `apcore.health.*`, `apcore.*`.
 
+Patterns are matched with algorithm **A25** (`match_glob`, [PROTOCOL_SPEC §9.2.3](../spec/protocol-spec.md)) against the event type, case-sensitively. `*` matches zero or more characters and `?` matches exactly one; **every other character is a literal**, `[`, `]`, `{`, `}` and `\` included. A pattern is never rejected — one matching nothing simply delivers nothing.
+
 ### Glob subscription example
 
 === "Python"
@@ -800,7 +802,15 @@ Implementations MUST provide `file`, `stdout`, and `filter` as built-in subscrib
 
 The `id` field (string, optional; SDK-generates a stable identifier when omitted) and the `retry` block (see [§Event Delivery Semantics](#event-delivery-semantics-issue-61)) apply uniformly to every subscriber type. The `skill_id` field on `a2a` was promoted from a hardcoded constant to a normative config field by issue #61.
 
-**Normative rules for `filter`:** A `filter` subscriber MUST forward matching events to its delegate and MUST silently discard non-matching events. Matching is evaluated against `include_events` first (if present); if the event name matches any pattern in `include_events`, it is forwarded. Events matching any pattern in `exclude_events` are discarded even when `include_events` is absent.
+**Normative rules for `filter`:** A `filter` subscriber MUST forward matching events to its delegate and MUST silently discard non-matching events. Matching is evaluated against `include_events` first (if present); if the event name matches any pattern in `include_events`, it is forwarded. Events matching any pattern in `exclude_events` are discarded even when `include_events` is absent. Both lists are matched with algorithm **A25** ([PROTOCOL_SPEC §9.16.3](../spec/protocol-spec.md)).
+
+!!! warning "`exclude_events` fails open, so the matcher has to be the same everywhere"
+    A pattern that fails to match means the event **is delivered**. An implementation that
+    understands fewer metacharacters than the operator wrote therefore does not narrow the
+    filter — it opens it. A subscriber configured to exclude `secret.?vent` excluded it
+    under a full-`fnmatch` implementation and **received** it under a `*`-only one, with
+    nothing to indicate the pattern had not been understood (#117). `include_events` fails
+    the safe way round under the identical divergence, which is why it went unnoticed.
 
 **YAML configuration examples:**
 
