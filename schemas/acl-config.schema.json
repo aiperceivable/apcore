@@ -40,7 +40,9 @@
       }
     },
     "audit": {
-      "$ref": "#/$defs/AuditConfig"
+      "$ref": "#/$defs/AuditConfig",
+      "deprecated": true,
+      "description": "DEPRECATED (spec v1.39.0, apcore#118): declared here AND as `acl.audit.*` in apcore.yaml, and read by neither — no implementation validates an ACL file against this schema, and the three ACL loaders drop unknown root keys in silence. A loader now warns when this block is present. Removed no earlier than v2.0. See PROTOCOL_SPEC 9.2.4.1."
     }
   },
   "$defs": {
@@ -249,7 +251,8 @@
           "description": "Whether to log denied access attempts.",
           "default": true
         }
-      }
+      },
+      "deprecated": true
     },
     "PatternArray": {
       "type": "array",

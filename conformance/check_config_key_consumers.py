@@ -71,6 +71,11 @@ VALID_STATUSES = {"live", "partial", "inert", "unaudited"}
 PROBES: dict[str, Callable[[], str | None]] = {}
 
 
+def _register_deprecation_probe() -> None:
+    """Registered by name so a manifest entry can point at it."""
+    PROBES["deprecated_inert_keys"] = deprecation_probe
+
+
 def probe(key: str) -> Callable[[Callable[[], str | None]], Callable[[], str | None]]:
     def register(fn: Callable[[], str | None]) -> Callable[[], str | None]:
         PROBES[key] = fn
@@ -152,6 +157,67 @@ def _control_enabled() -> str | None:
             "system.control.toggle_feature",
         },
     )
+
+
+#: PROTOCOL_SPEC 9.2.4 — the ten keys whose removal window is open.
+DEPRECATED_INERT_KEYS = (
+    "observability.tracing.enabled",
+    "observability.tracing.sampling_rate",
+    "observability.tracing.exporter",
+    "observability.metrics.enabled",
+    "observability.metrics.exporter",
+    "logging.level",
+    "logging.format",
+    "acl.audit.enabled",
+    "acl.audit.include_denied",
+    "acl.audit.log_level",
+)
+
+
+def deprecation_probe() -> str | None:
+    """9.2.4: a declared inert key warns, and a clean configuration does not.
+
+    Both halves are the requirement. A probe that only checked "it warns" would
+    pass an implementation that warns for EVERY configuration — the blanket
+    warning 9.2.2 rejects, and the failure mode requirement 2 exists to prevent,
+    since every one of these keys has a default and a merged-view check fires
+    unconditionally. apcore-rust reached exactly that state on the first attempt.
+    """
+    import tempfile
+    import warnings
+    from pathlib import Path
+
+    import yaml
+
+    from apcore.config import Config
+
+    base = {"version": "1.0.0", "project": {"name": "probe", "version": "0.1.0"}}
+
+    def load(doc: dict) -> list[str]:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "apcore.yaml"
+            path.write_text(yaml.safe_dump(doc))
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                Config.load(str(path))
+            return [str(w.message) for w in caught if "9.2.4" in str(w.message)]
+
+    if load(base):
+        return "a configuration declaring none of the deprecated keys still warned"
+
+    for key in DEPRECATED_INERT_KEYS:
+        doc = dict(base)
+        node = doc
+        parts = key.split(".")
+        for part in parts[:-1]:
+            node = node.setdefault(part, {})
+        node[parts[-1]] = "probe" if key.endswith(("level", "format", "exporter")) else 1
+        hits = load(doc)
+        if not hits:
+            return f"{key} was declared and produced no deprecation warning"
+        if key not in hits[0]:
+            return f"{key} warned but the message does not name it: {hits[0][:120]}"
+    return None
 
 
 @probe("stream.max_merge_depth")
@@ -411,6 +477,22 @@ def main() -> int:
             continue
         if status in ("inert", "partial") and not entry.get("reason"):
             problems.append(f"{key}: status {status!r} requires a `reason`")
+        dep = entry.get("deprecation")
+        if dep:
+            if not dep.get("since") or not dep.get("removed_no_earlier_than"):
+                problems.append(f"{key}: `deprecation` needs `since` and `removed_no_earlier_than`")
+            name = dep.get("probe")
+            if name and have_python:
+                if name not in PROBES:
+                    problems.append(f"{key}: deprecation probe {name!r} is not defined in this file")
+                else:
+                    try:
+                        failure = PROBES[name]()
+                    except Exception as exc:  # noqa: BLE001
+                        failure = f"probe raised {type(exc).__name__}: {exc}"
+                    if failure:
+                        problems.append(f"{key}: deprecation probe {name!r} failed — {failure}")
+
         if status == "live":
             name = entry.get("probe")
             if not name:
@@ -451,6 +533,9 @@ def main() -> int:
         print(f"{len(problems)} problem(s)", file=sys.stderr)
         return 1
     return 0
+
+
+_register_deprecation_probe()
 
 
 if __name__ == "__main__":

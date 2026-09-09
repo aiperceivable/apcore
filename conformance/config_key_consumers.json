@@ -17,17 +17,38 @@
     "acl.audit.enabled": {
       "status": "inert",
       "reason": "Auditing is driven by a programmatic audit logger/store (`ACL.set_audit_logger`, `sys_modules/audit`), never by this key. Setting it false does not disable auditing; setting it true does not enable it.",
-      "tracking": "https://github.com/aiperceivable/apcore/issues/118"
+      "tracking": "https://github.com/aiperceivable/apcore/issues/118",
+      "deprecation": {
+        "since": "1.39.0",
+        "removed_no_earlier_than": "2.0",
+        "spec": "PROTOCOL_SPEC 9.2.4",
+        "probe": "deprecated_inert_keys",
+        "tracking": "https://github.com/aiperceivable/apcore/issues/118"
+      }
     },
     "acl.audit.include_denied": {
       "status": "inert",
       "reason": "No code path reads it. PROTOCOL_SPEC 6.1's ACL file example annotates it `# SHOULD, log denied calls` — a SHOULD with no supplier.",
-      "tracking": "https://github.com/aiperceivable/apcore/issues/118"
+      "tracking": "https://github.com/aiperceivable/apcore/issues/118",
+      "deprecation": {
+        "since": "1.39.0",
+        "removed_no_earlier_than": "2.0",
+        "spec": "PROTOCOL_SPEC 9.2.4",
+        "probe": "deprecated_inert_keys",
+        "tracking": "https://github.com/aiperceivable/apcore/issues/118"
+      }
     },
     "acl.audit.log_level": {
       "status": "inert",
       "reason": "No code path reads it. Its enum also differs from `logging.level` by one value (`fatal`); nothing observes the difference because both keys are inert.",
-      "tracking": "https://github.com/aiperceivable/apcore/issues/118"
+      "tracking": "https://github.com/aiperceivable/apcore/issues/118",
+      "deprecation": {
+        "since": "1.39.0",
+        "removed_no_earlier_than": "2.0",
+        "spec": "PROTOCOL_SPEC 9.2.4",
+        "probe": "deprecated_inert_keys",
+        "tracking": "https://github.com/aiperceivable/apcore/issues/118"
+      }
     },
     "acl.default_effect": {
       "status": "live",
@@ -97,12 +118,26 @@
     "logging.format": {
       "status": "inert",
       "reason": "No code path reads it. `ContextLogger` takes `output_format` as a constructor parameter.",
-      "tracking": "https://github.com/aiperceivable/apcore/issues/118"
+      "tracking": "https://github.com/aiperceivable/apcore/issues/118",
+      "deprecation": {
+        "since": "1.39.0",
+        "removed_no_earlier_than": "2.0",
+        "spec": "PROTOCOL_SPEC 9.2.4",
+        "probe": "deprecated_inert_keys",
+        "tracking": "https://github.com/aiperceivable/apcore/issues/118"
+      }
     },
     "logging.level": {
       "status": "inert",
       "reason": "No code path reads it. `ContextLogger.__init__` has no `config` parameter at all — the two objects have never been connected. VERIFIED BY EXECUTION: an INFO record is emitted with `logging.level: error`.",
-      "tracking": "https://github.com/aiperceivable/apcore/issues/118"
+      "tracking": "https://github.com/aiperceivable/apcore/issues/118",
+      "deprecation": {
+        "since": "1.39.0",
+        "removed_no_earlier_than": "2.0",
+        "spec": "PROTOCOL_SPEC 9.2.4",
+        "probe": "deprecated_inert_keys",
+        "tracking": "https://github.com/aiperceivable/apcore/issues/118"
+      }
     },
     "middleware.disabled": {
       "status": "inert",
@@ -123,27 +158,62 @@
     "observability.metrics.enabled": {
       "status": "inert",
       "reason": "Plumbed through `Config` in apcore-rust (typed struct field; `set`/`get` round-trip) and consumed by no metrics subsystem.",
-      "tracking": "https://github.com/aiperceivable/apcore/issues/118"
+      "tracking": "https://github.com/aiperceivable/apcore/issues/118",
+      "deprecation": {
+        "since": "1.39.0",
+        "removed_no_earlier_than": "2.0",
+        "spec": "PROTOCOL_SPEC 9.2.4",
+        "probe": "deprecated_inert_keys",
+        "tracking": "https://github.com/aiperceivable/apcore/issues/118"
+      }
     },
     "observability.metrics.exporter": {
       "status": "inert",
       "reason": "No code path reads it. The exporter is a constructor argument.",
-      "tracking": "https://github.com/aiperceivable/apcore/issues/118"
+      "tracking": "https://github.com/aiperceivable/apcore/issues/118",
+      "deprecation": {
+        "since": "1.39.0",
+        "removed_no_earlier_than": "2.0",
+        "spec": "PROTOCOL_SPEC 9.2.4",
+        "probe": "deprecated_inert_keys",
+        "tracking": "https://github.com/aiperceivable/apcore/issues/118"
+      }
     },
     "observability.tracing.enabled": {
       "status": "inert",
       "reason": "Plumbed through `Config` in apcore-rust and consumed by nothing. `apcore-python client.py` reads none of the five `observability.*` keys.",
-      "tracking": "https://github.com/aiperceivable/apcore/issues/118"
+      "tracking": "https://github.com/aiperceivable/apcore/issues/118",
+      "deprecation": {
+        "since": "1.39.0",
+        "removed_no_earlier_than": "2.0",
+        "spec": "PROTOCOL_SPEC 9.2.4",
+        "probe": "deprecated_inert_keys",
+        "tracking": "https://github.com/aiperceivable/apcore/issues/118"
+      }
     },
     "observability.tracing.exporter": {
       "status": "inert",
       "reason": "Plumbed through `Config` in apcore-rust (`config.rs:2423`/`2484`; `set`/`get` round-trip) and consumed by nothing. This is the shape a set-then-get test CANNOT see, and why probes here must observe an effect outside `Config`.",
-      "tracking": "https://github.com/aiperceivable/apcore/issues/118"
+      "tracking": "https://github.com/aiperceivable/apcore/issues/118",
+      "deprecation": {
+        "since": "1.39.0",
+        "removed_no_earlier_than": "2.0",
+        "spec": "PROTOCOL_SPEC 9.2.4",
+        "probe": "deprecated_inert_keys",
+        "tracking": "https://github.com/aiperceivable/apcore/issues/118"
+      }
     },
     "observability.tracing.sampling_rate": {
       "status": "inert",
       "reason": "Range-validated by `Config` and consumed by nothing. `TracingMiddleware` takes `sampling_rate` as a constructor parameter defaulting to 1.0. VERIFIED BY EXECUTION: with the key set to 0.1, a middleware built as a client would build it reports `_sampling_rate == 1.0` — the operator gets 100% sampling. Validation is not consumption.",
-      "tracking": "https://github.com/aiperceivable/apcore/issues/118"
+      "tracking": "https://github.com/aiperceivable/apcore/issues/118",
+      "deprecation": {
+        "since": "1.39.0",
+        "removed_no_earlier_than": "2.0",
+        "spec": "PROTOCOL_SPEC 9.2.4",
+        "probe": "deprecated_inert_keys",
+        "tracking": "https://github.com/aiperceivable/apcore/issues/118"
+      }
     },
     "pipeline.configure": {
       "status": "unaudited"
