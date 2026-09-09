@@ -167,9 +167,9 @@ Any other top-level key is parse-time error (`additionalProperties: false`).
 |---|---|---|---|
 | `module_id` | string | **yes** | apcore module ID. Pattern + maxLength governed by `PROTOCOL_SPEC §2.7`. |
 | `target` | string | **yes** | Reference to the callable. See §2.2. |
-| `description` | string | no | Short description for AI/LLM. Length governed by `apcore.validation.binding.description_max_length` (default 500, configurable, null = unlimited). |
-| `documentation` | string | no | Extended long-form docs. Length governed by `apcore.validation.binding.documentation_max_length` (default null = unlimited). |
-| `tags` | list of strings | no | Item format governed by `apcore.validation.binding.tags_pattern` (default `^[a-z][a-z0-9_]*$`, configurable, null = no constraint). |
+| `description` | string | no | Short description for AI/LLM. Length governed by `apcore.validation.binding.description_max_length` — **`null` (the default) means no limit**; 200 is the recommended ceiling. See PROTOCOL_SPEC §9.1.2. |
+| `documentation` | string | no | Extended long-form docs. Length governed by `apcore.validation.binding.documentation_max_length` — **`null` (the default) means no limit**; 5000 is the recommended ceiling. See PROTOCOL_SPEC §9.1.2. |
+| `tags` | list of strings | no | Item format governed by `apcore.validation.binding.tags_pattern` — **`null` (the default) means no constraint**; `^[a-z][a-z0-9_]*$` is the recommended value. Defaulted off so enabling it cannot newly reject tags that load today. See PROTOCOL_SPEC §9.1.2. |
 | `version` | string | no | SemVer (default `"1.0.0"`). Pattern: `^\d+\.\d+\.\d+(-[a-zA-Z0-9.]+)?$`. |
 | `auto_schema` | boolean OR `"true"` \| `"strict"` \| `"permissive"` | no | See §3.4 and §6. |
 | `input_schema` | JSON Schema object | no | Explicit input schema. |
@@ -343,14 +343,14 @@ configuration *file* carries the canonical spelling only.
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `name` | string | **yes** | Unique step instance name. Length governed by `apcore.validation.pipeline.step_name_max_length` (default 64). |
+| `name` | string | **yes** | Unique step instance name. Length governed by `apcore.validation.pipeline.step_name_max_length` — **`null` (the default) means no limit**; 64 is the recommended ceiling. See PROTOCOL_SPEC §9.1.2. |
 | `type` | string | one of `type`/`handler` | Key into the step-type registry. |
 | `handler` | string | one of `type`/`handler` | `"module:Class"` reference for dynamic import. |
 | `config` | object | no | Constructor arguments for the step factory. |
 | `match_modules` | list of glob strings | no | Restrict step to matching modules. |
 | `ignore_errors` | boolean | no | Default `false`. |
 | `pure` | boolean | no | Default `false`. |
-| `timeout_ms` | integer | no | Default `0` (no timeout). Max governed by `apcore.validation.pipeline.timeout_ms_max` (default 300000). |
+| `timeout_ms` | integer | no | Default `0` (no timeout). Max governed by `apcore.validation.pipeline.timeout_ms_max` — **`null` (the default) means no bound**; 300000 is the recommended ceiling. See PROTOCOL_SPEC §9.1.2. |
 | `after` | string | one of `after`/`before` | Insert after named step. |
 | `before` | string | one of `after`/`before` | Insert before named step. |
 
@@ -638,18 +638,31 @@ Soft / UX limits live in `apcore.yaml` under `apcore.validation.*`. Hard / techn
 
 ### 9.2 Catalog (1.0)
 
+**Every one of these is unconstrained by default.** apcore does not impose limits on the
+content its users author; it offers them. The block below is an example of a project
+*opting in*, with the recommended values — it is not the default state. Omitting the
+`validation:` section entirely, which is what every project does today, checks nothing.
+
 ```yaml
 apcore:
   validation:
     binding:
-      description_max_length: 500          # null = unlimited
-      documentation_max_length: null       # null = unlimited
-      tags_pattern: "^[a-z][a-z0-9_]*$"   # null = no constraint
-      version_require_semver: true
+      # Defaults: null / null / null / false — i.e. nothing is checked.
+      # The values below are PROTOCOL_SPEC §9.1.2's RECOMMENDATIONS, shown as
+      # an operator would write them to turn each check on.
+      description_max_length: 200          # null (default) = no limit
+      documentation_max_length: 5000       # null (default) = no limit
+      tags_pattern: "^[a-z][a-z0-9_]*$"   # null (default) = no constraint
+      version_require_semver: true         # false (default) = no constraint
     pipeline:
-      step_name_max_length: 64             # null = unlimited
-      timeout_ms_max: 300000               # null = unlimited (5 min default cap)
+      step_name_max_length: 64             # null (default) = no limit
+      timeout_ms_max: 300000               # null (default) = no bound
 ```
+
+A configured limit is **enforced**, not warned about: the operator asked for a limit.
+`tags_pattern` is a regex-dialect value (PROTOCOL_SPEC §9.2.3) and one that does not
+compile is reported rather than skipped. `version_require_semver` uses the semver.org
+grammar pinned as a literal in §9.1.2 requirement 6, so `1.0` does **not** satisfy it.
 
 ### 9.3 Defaults
 

@@ -101,7 +101,8 @@
     "schema.root": "./schemas",
     "schema.strategy": "yaml_first",
     "stream.max_merge_depth": 32,
-    "sys_modules.enabled": false
+    "sys_modules.enabled": false,
+    "validation.binding.version_require_semver": false
   },
   "test_cases": [
     {

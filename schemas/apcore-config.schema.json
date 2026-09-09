@@ -616,8 +616,8 @@
                 "integer",
                 "null"
               ],
-              "description": "Max length of binding entry 'description'. null = unlimited.",
-              "default": 500,
+              "description": "Maximum characters allowed in a module `description`. **null (the default) means no limit** \u2014 apcore does not constrain content its users author; an operator opts in. 200 is the recommended ceiling for a description an LLM ranks modules by. See protocol-spec 9.1.2.",
+              "default": null,
               "minimum": 1
             },
             "documentation_max_length": {
@@ -625,7 +625,7 @@
                 "integer",
                 "null"
               ],
-              "description": "Max length of binding entry 'documentation'. null = unlimited.",
+              "description": "Maximum characters allowed in a module `documentation`. **null (the default) means no limit.** 5000 is the recommended ceiling. See protocol-spec 9.1.2.",
               "default": null,
               "minimum": 1
             },
@@ -634,13 +634,13 @@
                 "string",
                 "null"
               ],
-              "description": "Regex each tag MUST match. null = no constraint.",
-              "default": "^[a-z][a-z0-9_]*$"
+              "description": "Regular expression every binding `tag` must match. **null (the default) means no constraint.** The recommended value keeps a tag legible on every surface: lowercase, starting with a letter, digits and underscores after it. Defaulted OFF rather than to that pattern because enforcing it by default would ADD a rejection that does not exist today, for every project whose tags are capitalised or hyphenated. See protocol-spec 9.1.2.",
+              "default": null
             },
             "version_require_semver": {
               "type": "boolean",
-              "description": "If true, binding 'version' MUST match SemVer pattern. If false, any string accepted.",
-              "default": true
+              "description": "Whether a binding `version` must be SemVer. **false (the default) means no constraint**, for the same reason tags_pattern defaults to null: enabling it by default would newly reject binding files that load today. Recommended true for a project that publishes bindings. See protocol-spec 9.1.2.",
+              "default": false
             }
           }
         },
@@ -654,8 +654,8 @@
                 "integer",
                 "null"
               ],
-              "description": "Max length of pipeline step 'name'. null = unlimited.",
-              "default": 64,
+              "description": "Maximum characters allowed in a pipeline step `name`. **null (the default) means no limit.** 64 is the recommended ceiling. See protocol-spec 9.1.2.",
+              "default": null,
               "minimum": 1
             },
             "timeout_ms_max": {
@@ -663,8 +663,8 @@
                 "integer",
                 "null"
               ],
-              "description": "Max value for step 'timeout_ms'. null = unlimited.",
-              "default": 300000,
+              "description": "Maximum value allowed for a pipeline step `timeout_ms`. **null (the default) means no bound.** 300000 is the recommended ceiling. See protocol-spec 9.1.2.",
+              "default": null,
               "minimum": 1
             }
           }

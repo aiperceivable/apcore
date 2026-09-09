@@ -1,12 +1,12 @@
 ---
-description: "The canonical, normative apcore protocol specification (RFC 2119, v1.37.0): module, schema, naming, ACL, approval, error, config, and observability requirements for all conforming SDKs."
+description: "The canonical, normative apcore protocol specification (RFC 2119, v1.38.0): module, schema, naming, ACL, approval, error, config, and observability requirements for all conforming SDKs."
 ---
 
 # apcore — AI-Perceivable Core Standard Specification
 
 > **Canonical Specification** - This document is the authoritative specification for the apcore protocol
 
-> Version: 1.37.0
+> Version: 1.38.0
 > Status: Draft Specification (RFC 2119 Conformant)
 > Stability: Specification content is stable, pending reference implementation verification
 > Last Updated: 2026-09-09
@@ -120,7 +120,7 @@ Core terms used in this specification are defined as follows:
 
 | Term | English | Definition |
 |------|------|------|
-| Module | Module | Basic execution unit of apcore, encapsulates a function, **MUST** define `input_schema`, `output_schema`, and `description` (≤200 characters). Can optionally define `documentation` (≤5000 characters) to provide detailed documentation |
+| Module | Module | Basic execution unit of apcore, encapsulates a function, **MUST** define `input_schema`, `output_schema`, and `description`. Can optionally define `documentation` to provide detailed documentation. Neither field is length-limited by default; 200 and 5000 characters are the *recommended* ceilings, and a project that wants them enforced sets `validation.binding.description_max_length` / `documentation_max_length` (§9.1.2) |
 | Schema | Schema | Data structure definition based on JSON Schema Draft 2020-12, used for validating input/output and for AI/LLM understanding |
 | Canonical ID | Canonical ID | Globally unique identifier for a module, automatically generated from directory path, format is dot-separated snake_case (e.g., `executor.email.send_email`) |
 | Registry | Registry | Core component responsible for module discovery, registration, loading, and management |
@@ -1214,8 +1214,8 @@ apcore adopts the **Progressive Disclosure** design pattern, referencing the [Cl
 
 | Field | Required | Length Limit | Markdown | Purpose |
 |------|--------|----------|----------|------|
-| `description` | **Required** | ≤200 characters | No | Brief module function description for AI quick matching and understanding |
-| `documentation` | Optional | ≤5000 characters | Yes | Detailed documentation including usage scenarios, constraints, configuration requirements |
+| `description` | **Required** | No default limit; ≤200 characters **recommended** (§9.1.2) | No | Brief module function description for AI quick matching and understanding |
+| `documentation` | Optional | No default limit; ≤5000 characters **recommended** (§9.1.2) | Yes | Detailed documentation including usage scenarios, constraints, configuration requirements |
 
 **Core Philosophy:**
 
@@ -1245,7 +1245,7 @@ AI Module Discovery Flow:
 #### 4.8.2 Description Field
 
 **MUST:**
-- Length limit: ≤200 characters (approx. 100 Chinese characters)
+- Recommended length: ≤200 characters (approx. 100 Chinese characters). Not enforced unless `validation.binding.description_max_length` is set (§9.1.2)
 - Content requirements: Explain "what it does" + "when to use" + "key characteristics"
 - Avoid redundancy: Parameter info already defined in Schema need not be repeated
 
@@ -1289,7 +1289,7 @@ The `documentation` field is **optional**, used to provide detailed module docum
 
 **Format Requirements:**
 - Supports Markdown format
-- Length limit: ≤5000 characters
+- Recommended length: ≤5000 characters. Not enforced unless `validation.binding.documentation_max_length` is set (§9.1.2)
 - Recommend using structured format (headings, lists, etc.)
 
 **Recommended Content Structure:**
@@ -1371,7 +1371,7 @@ apcore modules can use three forms of documentation simultaneously:
 
 | Location | Purpose | Audience | Format |
 |------|------|------|------|
-| `description` | Quick module understanding | AI module discovery phase | Plain text, ≤200 chars |
+| `description` | Quick module understanding | AI module discovery phase | Plain text, ≤200 chars recommended |
 | `documentation` | Detailed usage documentation | AI invocation decision phase | Markdown, ≤5000 chars |
 | Python docstring | Code-level documentation | Developers, IDE | reStructuredText/Markdown |
 
@@ -5824,6 +5824,101 @@ Implementations **MUST** follow these default value conventions:
 - `timeout = 0` means disable that timeout, implementations **SHOULD** log WARN
 - `max_call_depth` and `max_module_repeat` used for call chain safety checks (algorithm A20)
 
+#### 9.1.2 Declarative Validation Limits (`validation.*`)
+
+**apcore does not impose limits on the content its users write. It offers them.**
+
+The `validation.*` keys are the six constraints an operator may switch on for a project.
+Every one of them is **unconstrained by default**, and every one is configurable. The
+specification recommends values; it does not enforce them.
+
+| Key | Default | Applies to | Recommendation |
+|---|---|---|---|
+| `validation.binding.description_max_length` | `null` — no limit | a module's `description` | 200 for a description an LLM ranks modules by; 500 where the surface tolerates it |
+| `validation.binding.documentation_max_length` | `null` — no limit | a module's `documentation` | 5000 |
+| `validation.binding.tags_pattern` | `null` — no constraint | each entry of a binding's `tags` | `"^[a-z][a-z0-9_]*$"`, which keeps a tag legible on every surface |
+| `validation.binding.version_require_semver` | `false` | a binding's `version` | `true` for a project that publishes bindings |
+| `validation.pipeline.step_name_max_length` | `null` — no limit | a pipeline step's `name` | 64 |
+| `validation.pipeline.timeout_ms_max` | `null` — no limit | a pipeline step's `timeout_ms` | 300000 |
+
+**Requirements:**
+
+1. A key set to `null` (or, for `version_require_semver`, `false`) imposes **no** check.
+   The value is not validated, and an implementation **MUST NOT** substitute a limit of
+   its own. This is the default for all six.
+2. A key set to a value **MUST** be enforced, and a violation **MUST** be reported as a
+   validation error naming the key, the offending value's length or content, and the
+   configured limit. An implementation **MUST NOT** downgrade an operator-configured
+   limit to a warning: the operator asked for a limit, and a limit that only warns is the
+   `regex_patterns` failure of §10.6.1 in another place.
+3. **A limit is checked where the value enters the system**, never at call time. A
+   constraint on authored content belongs at the moment the content is read, and the key
+   namespace says where that is:
+   - `validation.binding.*` — in the **binding loader**, against each `BindingEntry`.
+     `schemas/binding.schema.json` gives an entry exactly these four fields
+     (`description`, `documentation`, `tags`, `version`), so the four keys map onto it
+     one for one.
+   - `validation.pipeline.*` — when the `pipeline:` section is **parsed**, against each
+     declared step.
+
+   A failing entry **MUST** be rejected with the binding-file or pipeline-configuration
+   error the surrounding section already defines, naming the offending field. These keys
+   add a check, not a new error taxonomy.
+4. Limits count **characters**, not bytes. A description of 200 CJK characters is 200, not
+   600.
+5. **`tags_pattern` is a regex-dialect value** (§9.2.3): an unanchored, case-**sensitive**
+   search by the host engine, inside the portable subset of §9.2.3 requirement 6c. An
+   operator who means "the whole tag" writes `^…$`, exactly as the recommended value does.
+   A pattern that does not compile is reported, never skipped (§9.2.3 requirement 6d).
+6. **`version_require_semver` names one grammar, written here so three implementations
+   cannot invent three.** A version satisfies it when it matches
+
+   ```
+   ^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$
+   ```
+
+   which is the grammar from semver.org, unmodified. `1.0` does **not** satisfy it: the
+   patch component is required. This is stated as a literal rather than as "SemVer"
+   because the lesson of §9.2.3 is that naming a format without pinning it produces one
+   contract per implementation.
+
+**Why the default is "no limit", and what changed (v1.38.0, #118).**
+
+Through v1.37.0 these six keys were **registered in all three SDK key surfaces and read by
+none of them** — declared, schema-documented, environment-overridable, and inert. What
+filled the gap in their absence was a set of numbers no two documents agreed on. For
+`description` alone there were six: §1.6's term table said `≤200 characters` as a
+constraint, §4.8's field table repeated it, `schemas/apcore-config.schema.json` declared a
+configurable default of **500**, `DECLARATIVE_CONFIG_SPEC` §3.2 documented that 500 as
+Normative, `defaults.schema.json` carried no entry at all, and the only implementation of
+anything was a **`logger.warning`** in one SDK at 200 while the other two enforced nothing.
+
+The tie-breaker is that **§4.8's own migration algorithm has always said `warn`, not
+reject** — *"description exceeds 200 chars (not recommended, but will warn) … Keep as-is"*.
+So the specification never actually required rejection at 200, and §1.6's parenthetical
+described a rule that no section operationalised and no implementation had. Correcting it
+is the §115 shape: the specification catching up to what every implementation already did.
+
+The remaining question was which number to make real, and the answer is **none of them**.
+apcore is a library that other projects build on for years. A limit that is right for one
+project's LLM-ranked module catalogue is wrong for another's internal tooling, and a
+framework that picks for both is picking wrong for one. The recommendations above carry
+the design intent — a `description` an LLM ranks by wants to be short — where a hard limit
+would only carry someone else's guess.
+
+**The format keys default to off for a second, harder reason.** `tags_pattern` and
+`version_require_semver` were declared with *restrictive* defaults (`^[a-z][a-z0-9_]*$`
+and `true`) that nothing enforced. Shipping them as declared would not have been
+"implementing a key" — it would have **added a rejection that does not exist today**, to
+every project whose tags are capitalised or hyphenated. Defaulting them off makes this
+change purely additive: **every binding file, module and pipeline that loads before this
+version still loads after it.** An operator opts in.
+
+**Interaction with §4.8.** §4.8's advisory guidance stands and is unchanged: a long
+`description` is still not recommended, and an implementation **MAY** still warn about one
+independently of these keys. What it **MUST NOT** do is reject, unless
+`description_max_length` is configured.
+
 ### 9.2 Environment Variable Override
 
 Implementations **MUST** support overriding configuration file values through environment variables.
@@ -9519,3 +9614,4 @@ Each language SDK **SHOULD** provide idiomatic module definition syntax. The fol
 | 1.35.0 | 2026-09-06 | **§5.12.6 — a MUST with no subject, and §9.2.2 Path Resolution Base (new) — a relative path with no declared base (#114, #113).** **§5.12.6** required that "if `bindings.dir` is configured, implementations MUST scan files matching `pattern` in that directory" and never said *who* scans or *when*. No SDK satisfied it: `bindings.dir` is registered in all three key surfaces (`apcore-python config.py:217`, `apcore-typescript config-key-surface.ts:70`, `apcore-rust config.rs:213`) and read by no code path, while `BindingLoader` is exported public API in all three (`__init__.py:198`, `index.ts:277`, `lib.rs:66`) and called from no internal one — a design, not an oversight, since binding loading is a user-invoked tool. The two readings the old text permitted were "the framework scans at startup", which nobody implements and which would add filesystem I/O to every client's startup and change behaviour for every deployment that merely has a `./bindings` directory, and "a loader honours the key when invoked", which is nearly satisfied already. The requirement now names both: a binding loader invoked **without an explicit directory argument** MUST resolve the directory from `bindings.dir` under §9.2 precedence (env `APCORE_BINDINGS_DIR` > file > default `./bindings`) and MUST match files against `bindings.pattern` through the same chain (default `*.binding.yaml`); an explicit argument still wins; and implementations **MUST NOT** scan automatically at client initialisation. The MUST is not weakened — it is made enforceable and testable for the first time. TypeScript's pre-existing raw `process.env.APCORE_BINDINGS_DIR` read (`bindings.ts:163`) implemented the environment tier alone of this key's chain and is folded into §9.2's mechanism, so those users keep working. The `bindings.files` withdrawal note is retained: that key was schema-invalid and unimplementable; `bindings.dir` is declared by the canonical schema with a default and present in all three key surfaces, so the precedent does not transfer. **§9.2.2** answers the question §9.2.1 deliberately left open in v1.34.0: what a *relative* path-typed value is resolved against. Today `acl.root` resolves against the configuration file's directory (`ACL.discover`, D-64, `docs/features/acl-system.md`) while `schema.root` and `extensions.root` resolve against the process CWD — two sibling keys, identical relative values, identical override syntax, two bases, and no rule saying either is wrong. The **project root** is declared: the configuration file's directory when that file came from §9.14 discovery tiers 1-5 (`$APCORE_CONFIG_FILE`, or a project-local `./project.yaml|.yml|apcore.yaml|.yml`), and the process CWD when it came from the user-level tiers 6-7 or when no file was found. The tier is what selects the base and has to be: in tiers 2-5 the file's directory *is* CWD and the rules are indistinguishable; in tier 1 the file's directory is the better answer; in tiers 6-7 it is the wrong one, because `extensions.root: ./extensions` in `~/.config/apcore/config.yaml` cannot mean `~/.config/apcore/extensions`. That last case is live today in `acl.root` — a user-level config silently supplies an ACL policy to every project the user runs while the project's own `./acl/` is ignored, which for a default-deny system is the inverse of the intent, and the same load resolves `extensions.root` against CWD, so **one configuration document yields two bases**. From **v2.0**, every relative path-typed value (§9.2.1's closed set) resolves against the project root — file-declared, env-sourced, API-supplied and defaults alike — with **one base per `Config`** and **no per-key origin tracking**, which is what makes the rule implementable in three SDKs at once. **This version changes no behaviour.** It is the deprecation phase §13.2's two-minor floor requires: 1.x keeps the current semantics exactly, implementations MUST expose a `project_root` accessor (additive, no resolution attached), and SHOULD warn only when project root differs from CWD **and** a relative path-typed value is present — a blanket warning is explicitly not wanted, since it would fire for the tiers 2-5 majority where nothing changes. Adopting this also settles `docs/spec/rfc-config-include.md` open question #1 (fragment-relative vs root-relative path values), because one base for the whole `Config` leaves the fragment-relative reading no room. New conformance fixtures `conformance/fixtures/bindings_dir_resolution.json` and `conformance/fixtures/config_project_root.json`. Governance: maintainer approval per GOVERNANCE.md § Decision Making; tracking issues #114 and #113. |
 | 1.36.0 | 2026-09-06 | **Four corrections found by writing the first conformance drivers for v1.35.0's own fixtures — three SDKs reported the same defects independently (#113, #114, #115).** **§5.12.2 declared the binding field `target_id` a MUST; everything else in the ecosystem uses `target`** — `schemas/binding.schema.json`, `DECLARATIVE_CONFIG_SPEC` §3.2, both binding fixtures, and all three SDK loaders. The protocol spec was the sole outlier, and on a MUST, so a binding file written from the section that defines the binding-file format loaded in no SDK. Corrected throughout §5.12, and in the ten further places outside it (§5.13.9's `ResolvedModule`, §8.2/§8.6/§8.7's error descriptions, §5.14.6 and §9.15 prose) where a past over-applied rename had left `target_id` standing. No implementation changes: the population of files using `target_id` is empty, because such a file has never loaded. **§5.12.6 gains clause 5 — a resolved binding directory that does not exist MUST raise, naming the directory, and MUST NOT return an empty result.** v1.35.0 named the MUST's subject but left its failure mode unstated, and the fixture guessed the opposite of what all three SDKs do. The contrast with `ACL.discover`'s missing-path no-op (D-64) is now stated as deliberate: ACL discovery is automatic, so silence is right; binding loading is user-invoked, so an absent directory is a mistake. **§9.2.1 gains requirement 5 — an empty string is not a path.** §9.2 counts a *set but empty* `APCORE_*` variable as an override, so `export APCORE_ACL_ROOT=` silently blanked a directory the configuration file correctly declared and then resolved `""` to the working directory. The same shape is on record for `APCORE_CONFIG_FILE` (#88); path-typed keys are where it fails silently rather than loudly. Empty values MUST fall through to the next tier. **§9.2.2 fixes the deprecation warning's cadence at once per configuration load, never once per process.** v1.35.0 required the warning but not its cadence, and the three SDKs promptly invented three — Python deduplicated through the `warnings` filter, TypeScript held a module-global once-flag, Rust warned per load. A process-global flag makes emission order-dependent (the first load consumes the warning, so a later affected document is silent) and is a test-isolation hazard. De-duplication belongs to the host logging layer. **`schemas/defaults.schema.json` gains the `bindings` section** it never had, so `bindings.dir` / `bindings.pattern` finally have a home in the file that calls itself the single source of truth for defaults; until now the `./bindings` default existed only in `apcore-config.schema.json` and every SDK had to hardcode it at the loader, since `config_key_governance.json` pins the default tables to `defaults.schema.json`. `config_key_governance.json` regenerated (65 allowed keys, 20 canonical defaults). Fixture repairs: `bindings_dir_resolution` gains `env_var_must_not_be_read_directly_at_the_loader` (clause 2 had no case, so an implementation reading the raw variable — the exact apcore-typescript#36 defect — passed the whole fixture), its candidate directories now carry distinct module ids (a shared id made `env_overrides_config_file_dir` pass whichever directory was scanned), and `missing_configured_dir` now expects the raise; `config_project_root`'s tier-6/7 cases now name the TIER through tokens instead of hardcoding the POSIX spelling, which had made every driver fail on macOS, and `no_warning_when_all_path_values_absolute` now spells every §9.2.1 key absolutely, without which it was unsatisfiable against §9.2.2's own rule that defaults count. Governance: maintainer approval per GOVERNANCE.md; tracking issues #113, #114, #115. |
 | 1.37.0 | 2026-09-09 | **§9.2.3 Pattern-Valued Values (new) and Algorithm A25 `match_glob` — the specification typed six values as "a glob" and named no matcher, so each SDK inherited its host library's dialect (#116, #117).** `bindings.pattern`, `obs.redaction.sensitive_keys`, `obs.redaction.regex_patterns`, a subscriber's `event_pattern` / `include_events` / `exclude_events`, and `system.control.reload_module`'s `path_filter` were each typed only with the word *glob* or *pattern*. Implementations reached for `pathlib.Path.glob`, `fnmatch`, the `glob` crate, a translated `RegExp` and the `regex` crate — matchers that disagree with one another — so **one declared type became three contracts**, and all three agreed only on the default value nobody had ever changed. **The counter-example is what makes the cause precise, and it is not "a library was available".** `match_modules` (§5.16) is typed only as "glob patterns" in prose too, yet all three implementations match it with **A08** and agree exactly, because its value is a module ID and the surrounding code already had A08 in hand. `path_filter` matches module IDs *as well* and diverged three ways, because it lives in the system-module code where A08 was not already in reach. Same value domain, same libraries available, opposite outcomes: **convergence tracked whether a named algorithm was reachable at the point of use.** The remedy is therefore to name an algorithm at every point of use and close the set — the same shape §9.2.1 used for path-typed keys. **§9.2.3** declares the closed set, three dialect markers (`"x-apcore-pattern": "glob" | "regex" | "module-id"`, carried in the canonical schemas beside `x-apcore-path`), and per-surface case sensitivity. **A25** is specified as an *algorithm*, not a syntax — leftmost-first, non-backtracking, anchored — because two matchers can both claim `*` and `?` and still disagree on `a*a` against `aaa`. Exactly two metacharacters: `*` and `?`. **Every other character is a literal, `[ ] { } \ ! ^ -` included, and every string is a valid pattern**: A25 has no parse phase, so an implementation **MUST NOT** reject one — `glob::Pattern` refused `a[b` and `a**b`, so the same control-plane request one SDK served another refused. **Two of the divergences were silent security bypasses, and both are closed here.** (1) `sensitive_keys` matching lower-cased the *field name* but not the *pattern* in apcore-rust, so `"*Token*"` — or any capitalised spelling — redacted in Python and TypeScript and left **plaintext** in Rust, with no warning, because the pattern was valid and simply matched nothing. §9.2.3 requirement 3 now requires the fold on **both** sides. (Worth recording precisely, because the obvious statement of this bug is wrong: `*key*` does match `API_KEY` in all three, since Rust also tries the lowered key — only an uppercase *pattern* discriminates.) (2) apcore-typescript passed `[…]` verbatim into a `RegExp`, where `[!p]` means "`!` or `p`" rather than "not `p`", so `[!p]assword` **redacted `password`** — the one field the other two deliberately exclude — and leaked `bassword`. Under A25 brackets are literals and the construct is inert rather than inverted. **§10.6.1 (new) gives `obs.redaction.*` its first normative home.** It has shipped since D-53 with no section of this specification defining it; its only written contract was a `description` in `schemas/apcore-config.schema.json`, **wrong on both keys** — it called `sensitive_keys` a plain substring match, omitting the glob branch all three implement, and called `regex_patterns` a *full* match when all three **search**. Both are corrected in the schema and in `docs/features/observability.md`, and the fixture's own regex cases were all spelled `^…$`, which a full match and a search satisfy alike, so the corpus could not see it. §10.6.1 also fixes the per-entry hybrid (an entry with `*` or `?` is an A25 pattern anchored to the whole name; an entry with neither is a substring over the normalized name), requires the five correlation fields (`trace_id`, `span_id`, `caller_id`, `module_id`, `target_id`) to be exempt, and — the clause with the sharpest consequence — **forbids dropping an uncompilable `regex_patterns` entry in silence**: Python re-failed silently on every log line, TypeScript substituted a never-matching regex, only Rust warned, and all three kept running with a redaction rule that redacted nothing. A diagnostic is now **MUST**, and `validate_config()` **MUST** report it. Regex portability is stated rather than assumed: no lookaround, no backreferences, no inline `(?i)` — the intersection of the three engines, which is also the feature set that keeps matching linear. **§9.16.3 (new)** names A25 for event-type patterns and states why it is load-bearing: **`exclude_events` fails open.** A pattern that fails to match means the event is *delivered*, so a matcher supporting fewer metacharacters than the operator wrote does not narrow the filter, it opens it — a subscriber excluding `secret.?vent` excluded it under `fnmatch` and **received** it under a `*`-only matcher. `include_events` fails the safe way round under the identical divergence, which is why it went unnoticed. The narrowest implementation's own doc comment named the mechanism exactly: its support was "the subset of `fnmatch` behaviour the spec fixtures and YAML examples actually exercise" — **where the specification is silent, the corpus becomes the contract, and the corpus under-specifies.** **§6.2.2 (new)** closes the one place the two algorithms could still be confused, without touching A08. A08 keeps `*` as its only metacharacter — promoting `?` would widen `allow` rules that are inert today, which is the one direction an authorization matcher must not move silently — but an ACL pattern containing `?` can never match a module ID (§2.7), so it **MUST** now warn at load and be reported by `validate_rules()`. Meaning unchanged, decision unchanged, silence removed. Same shape as §6.1.2's unregistered-condition-key rule. **Scope, stated as a boundary rather than left to inference.** `extensions.ignore_patterns` is **deliberately excluded** from the closed set: it is registered in all three key surfaces and read by **none** of them, so §3.6's `scan_extensions` step 3a is a **MUST whose input nothing supplies** — the same shape #114 found in `bindings.dir`. Assigning it a dialect would declare a contract no implementation could be measured against, which is the practice this section exists to end; it is recorded as a separate defect instead. §5.13.3's binding example still spelled the target field `target_id` after v1.36.0's correction, so it would have loaded in no SDK — fixed, along with seven prose residuals of the same over-applied rename (`target_id node`, `target_id path`, `target_id namespace`, `target_id type`, `target_id language`). **MINOR, not MAJOR, on the v1.22.0 precedent**: the specification is being corrected to have *one* meaning where it previously had three, and the affected population is a configuration using `?`, `[`, `{` or a mid-string `*` in a pattern-valued key — every one of which behaves differently in each SDK today, so no deployment can be relying on the behaviour across them. **This IS an SDK change in all three.** New conformance fixture `conformance/fixtures/glob_matching.json` (30 cases, 11 of them marked DISCRIMINATING and naming the shipped implementation each separates), plus discriminating cases added to `bindings_dir_resolution` (+4), `redaction_config` (+4), `reload_path_filter` (+4) and `event_management_hardening` (+3). Every added case obeys one rule, which is the corpus lesson of both issues: **a case earns its place only if it fails against at least one implementation as shipped.** The pre-existing corpus failed that test everywhere — every pattern value in every fixture was `*`, a literal, or leading-star-plus-literal-suffix, which is precisely the family on which a real glob, a leading-star strip and a first-star removal all coincide. **Two corrections found while generalising this work into #118, folded in here because none of it has shipped.** `schemas/apcore-config.schema.json` declared `obs.redaction.sensitive_keys` default `[]` while D-54 requires the canonical 16-entry list as the default when the key is absent — all three SDKs ship the list, and only the canonical schema said otherwise, so anything generated from it shipped **no redaction by default**. Corrected to the 16-entry list. And D-54's own prose described `_secret_*` as "matched as a substring (the `*` is informational only)", which described no implementation: it is a pattern and it is anchored, before and after A25 alike. Governance: maintainer approval per GOVERNANCE.md § Decision Making; tracking issues #116, #117, #118. |
+| 1.38.0 | 2026-09-09 | **§9.1.2 Declarative Validation Limits (new) — six declared keys, no consumer, and a set of numbers no two documents agreed on (#118).** `validation.binding.description_max_length` / `documentation_max_length` / `tags_pattern` / `version_require_semver` and `validation.pipeline.step_name_max_length` / `timeout_ms_max` were registered in all three SDK key surfaces and read by **none** of them. What filled the gap in their absence was six different contracts for the single field `description`: §1.6's term table stated `≤200 characters` as a constraint, §4.8's field table repeated it, `schemas/apcore-config.schema.json` declared a configurable default of **500**, `DECLARATIVE_CONFIG_SPEC` §3.2 documented that 500 as Normative, `defaults.schema.json` carried no entry at all, and the only implementation of anything was a `logger.warning` in one SDK at 200 while the other two enforced nothing. **The tie-breaker is that §4.8's own migration algorithm has always said warn, not reject** — *"description exceeds 200 chars (not recommended, but will warn) … Keep as-is"*. So the specification never actually required rejection at 200, and §1.6's parenthetical described a rule no section operationalised and no implementation had. Correcting it is the #115 shape: the specification catching up to what every implementation already did, not the weakening of a MUST. **The decision is that apcore does not impose limits on the content its users author. It offers them.** All six keys are **unconstrained by default** and all six are configurable; §9.1.2 *recommends* 200 / 5000 / a lowercase tag pattern / SemVer / 64 / 300000 and enforces none of them. apcore is a library other projects build on for years: a limit right for one project's LLM-ranked module catalogue is wrong for another's internal tooling, and a framework that picks for both picks wrong for one. **The two format keys default off for a second, harder reason.** `tags_pattern` and `version_require_semver` were declared with *restrictive* defaults (`^[a-z][a-z0-9_]*$`, `true`) that nothing enforced. Shipping them as declared would not have been "implementing a key" — it would have **added a rejection that does not exist today** to every project whose tags are capitalised or hyphenated. Defaulting them off makes the whole change **purely additive: every binding file, module and pipeline that loads before this version still loads after it.** Measured, not assumed: the entire observable population of module `description` values across the three SDKs and this repository is **88 characters at its longest**, and 10 of 10 existing tag values already match the recommended pattern — so neither number was ever load-bearing. **§9.1.2 requirement 6 pins the SemVer grammar as a literal**, unmodified from semver.org, precisely because the lesson of §9.2.3 is that naming a format without pinning it produces one contract per implementation. `1.0` does not satisfy it: the patch component is required. `tags_pattern` is declared a **regex-dialect** value under §9.2.3, so a pattern that does not compile is reported rather than skipped. **Where a limit is checked is stated rather than left to inference** (requirement 3): `validation.binding.*` in the binding loader against each `BindingEntry` — whose schema carries exactly those four fields — and `validation.pipeline.*` when the `pipeline:` section is parsed. `remove:` is deliberately not name-checked: those names identify steps that already exist rather than naming new ones. When a limit **is** configured it is **enforced, not warned about**; the operator asked for a limit, and a limit that only warns is the `regex_patterns` failure of §10.6.1 in another place. §1.6, §4.8 and the surrounding prose are corrected from hard limits to recommendations. `schemas/apcore-config.schema.json` gains the six unconstrained defaults; `defaults.schema.json` gains a `validation` section carrying **one** canonical default — `version_require_semver: false` — because the other five are unconstrained *as* `null`, and `null` is the absence of a default rather than a value worth threading through three SDK default tables. `config_key_governance.json` regenerated (65 allowed keys, 21 canonical defaults). **This IS an SDK change in all three**, and it is additive in every direction. Governance: maintainer approval per GOVERNANCE.md § Decision Making; tracking issue #118. |

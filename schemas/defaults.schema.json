@@ -162,6 +162,53 @@
         }
       }
     },
+    "validation": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Declarative validation limits (PROTOCOL_SPEC 9.1.2). Every one is UNCONSTRAINED by default: apcore does not impose limits on the content its users author, it offers them. The recommended values live in the per-key descriptions of apcore-config.schema.json and in 9.1.2's table; they are recommendations, not defaults, deliberately. These six keys were declared in all three SDK key surfaces and read by none of them until v1.38.0 (apcore#118); they are recorded here now that they have a consumer, because config_key_governance.json pins each SDK's default table to THIS file. Five of the six carry NO `default` here on purpose: their unconstrained state is `null`, and `null` IS the absence of a default — carrying it through three SDK default tables would be noise that says nothing. Only `version_require_semver` has a real default value (false), so only it is a canonical default.",
+      "properties": {
+        "binding": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Limits applied to binding files and module metadata when the content is read.",
+          "properties": {
+            "description_max_length": {
+              "type": ["integer", "null"],
+              "description": "Maximum characters in a module `description`. null = no limit (recommended ceiling: 200)."
+            },
+            "documentation_max_length": {
+              "type": ["integer", "null"],
+              "description": "Maximum characters in a module `documentation`. null = no limit (recommended ceiling: 5000)."
+            },
+            "tags_pattern": {
+              "type": ["string", "null"],
+              "x-apcore-pattern": "regex",
+              "description": "Regular expression every binding tag must match. null = no constraint. Defaulted off rather than to the recommended lowercase pattern, because enforcing it by default would add a rejection that does not exist today."
+            },
+            "version_require_semver": {
+              "type": "boolean",
+              "description": "Whether a binding `version` must be SemVer. false = no constraint, for the same reason tags_pattern defaults to null.",
+              "default": false
+            }
+          }
+        },
+        "pipeline": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Limits applied when the pipeline section is parsed.",
+          "properties": {
+            "step_name_max_length": {
+              "type": ["integer", "null"],
+              "description": "Maximum characters in a pipeline step `name`. null = no limit (recommended ceiling: 64)."
+            },
+            "timeout_ms_max": {
+              "type": ["integer", "null"],
+              "description": "Maximum value for a pipeline step `timeout_ms`. null = no bound (recommended ceiling: 300000)."
+            }
+          }
+        }
+      }
+    },
     "bindings": {
       "type": "object",
       "additionalProperties": false,

@@ -1,7 +1,7 @@
 {
   "_comment": "What reads each declared configuration key. Enforced by conformance/check_config_key_consumers.py.\n\nconfig_key_governance.json pins that every declared key is ACCEPTED — the three SDKs agree on the key set and the default table. Nothing pinned that any key is READ, and 29 of 61 were not (apcore#118). This file is the missing half: every key states what consumes it, or states that nothing does and why.\n\nSTATUSES\n  live      — a probe in the checker sets the key away from its default and observes an effect OUTSIDE Config. Reading the value back from Config proves plumbing, not consumption: four observability.* keys round-trip perfectly and are consumed by nothing.\n  partial   — something reads it, but not on the path an operator would expect. The reason must say what the gap is.\n  inert     — nothing reads it. A written decision, not an accident; the reason must say what was measured.\n  unaudited — not yet examined. NOT a claim that the key works.\n\nThe `ratchet` counts may fall and may not rise. Lower a ceiling in the same change that fixes or audits a key; that is what turns apcore#118 from a report into a number that has to go down.",
   "ratchet": {
-    "inert": 24,
+    "inert": 18,
     "unaudited": 31
   },
   "keys": {
@@ -227,34 +227,28 @@
       "tracking": "https://github.com/aiperceivable/apcore/issues/118"
     },
     "validation.binding.description_max_length": {
-      "status": "inert",
-      "reason": "No code path reads it. apcore-python only WARNS at a hardcoded 200 (`schema/loader.py:539`); TypeScript and Rust enforce nothing. `schemas/apcore-config.schema.json` declares default 500 while PROTOCOL_SPEC 1.6 states a MUST of 200 — six sources, no two agreeing.",
-      "tracking": "https://github.com/aiperceivable/apcore/issues/118"
+      "status": "live",
+      "probe": "validation.binding.description_max_length"
     },
     "validation.binding.documentation_max_length": {
-      "status": "inert",
-      "reason": "No code path reads it. PROTOCOL_SPEC states <=5000 characters; no SDK enforces any limit.",
-      "tracking": "https://github.com/aiperceivable/apcore/issues/118"
+      "status": "live",
+      "probe": "validation.binding.documentation_max_length"
     },
     "validation.binding.tags_pattern": {
-      "status": "inert",
-      "reason": "No code path reads it. Binding `tags` are never validated against any pattern, despite a stated default of `^[a-z][a-z0-9_]*$`.",
-      "tracking": "https://github.com/aiperceivable/apcore/issues/118"
+      "status": "live",
+      "probe": "validation.binding.tags_pattern"
     },
     "validation.binding.version_require_semver": {
-      "status": "inert",
-      "reason": "No code path reads it. Binding `version` is never checked for SemVer.",
-      "tracking": "https://github.com/aiperceivable/apcore/issues/118"
+      "status": "live",
+      "probe": "validation.binding.version_require_semver"
     },
     "validation.pipeline.step_name_max_length": {
-      "status": "inert",
-      "reason": "No code path reads it. Step names are never length-checked.",
-      "tracking": "https://github.com/aiperceivable/apcore/issues/118"
+      "status": "live",
+      "probe": "validation.pipeline.step_name_max_length"
     },
     "validation.pipeline.timeout_ms_max": {
-      "status": "inert",
-      "reason": "No code path reads it. Step `timeout_ms` is never bounded.",
-      "tracking": "https://github.com/aiperceivable/apcore/issues/118"
+      "status": "live",
+      "probe": "validation.pipeline.timeout_ms_max"
     },
     "version": {
       "status": "unaudited"

@@ -191,6 +191,124 @@ def _max_merge_depth() -> str | None:
     return None
 
 
+def _binding_probe(key: str, value: object, entry_patch: dict) -> str | None:
+    """A validation.binding.* limit must be off by default and enforced when set.
+
+    Both halves matter and the first is the decision: apcore does not impose
+    limits on the content its users author (PROTOCOL_SPEC 9.1.2), so a probe
+    that only checked "the limit rejects" would pass an implementation that
+    rejects by default too — which is the regression this guards.
+    """
+    import tempfile
+    from pathlib import Path
+
+    import yaml
+
+    from apcore.bindings import BindingLoader
+    from apcore.config import Config
+    from apcore.errors import BindingFileInvalidError
+    from apcore.registry import Registry
+
+    entry = {
+        "module_id": "probe.module",
+        "target": "probe_targets:noop",
+        "input_schema": {"type": "object", "properties": {}},
+        "output_schema": {"type": "object", "properties": {}},
+        **entry_patch,
+    }
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "probe.binding.yaml"
+        path.write_text(yaml.safe_dump({"spec_version": "1.0", "bindings": [entry]}))
+
+        def load(configured: bool) -> str | None:
+            cfg = Config.from_defaults()
+            if configured:
+                cfg.set(key, value)
+            try:
+                BindingLoader().load_bindings(str(path), Registry(), cfg)
+            except BindingFileInvalidError as exc:
+                return str(exc)
+            except Exception:  # noqa: BLE001 — target resolution is not what we assert
+                return None
+            return None
+
+        if load(configured=False) is not None:
+            return f"{key} rejected with NO limit configured — the default must be unconstrained"
+        rejected = load(configured=True)
+        if rejected is None:
+            return f"{key}={value!r} did not reject an entry that violates it"
+        if key.rsplit(".", 1)[-1] not in rejected:
+            return f"{key} rejected but the message does not name the key: {rejected}"
+    return None
+
+
+@probe("validation.binding.description_max_length")
+def _description_max_length() -> str | None:
+    return _binding_probe(
+        "validation.binding.description_max_length", 200, {"description": "D" * 300}
+    )
+
+
+@probe("validation.binding.documentation_max_length")
+def _documentation_max_length() -> str | None:
+    return _binding_probe(
+        "validation.binding.documentation_max_length", 5000, {"documentation": "M" * 6000}
+    )
+
+
+@probe("validation.binding.tags_pattern")
+def _tags_pattern() -> str | None:
+    return _binding_probe(
+        "validation.binding.tags_pattern", "^[a-z][a-z0-9_]*$", {"tags": ["Email"]}
+    )
+
+
+@probe("validation.binding.version_require_semver")
+def _version_require_semver() -> str | None:
+    return _binding_probe(
+        "validation.binding.version_require_semver", True, {"version": "1.0"}
+    )
+
+
+def _pipeline_probe(key: str, value: object, step_patch: dict) -> str | None:
+    """A validation.pipeline.* limit must be off by default and enforced when set."""
+    from apcore.config import Config
+    from apcore.pipeline_config import ConfigurationError, _validate_pipeline_limits
+
+    section = {
+        "steps": [{"name": "probe_step", "type": "probe_noop", "after": "execute", **step_patch}]
+    }
+
+    def run(configured: bool) -> str | None:
+        cfg = Config.from_defaults()
+        if configured:
+            cfg.set(key, value)
+        try:
+            _validate_pipeline_limits(section, cfg)
+        except ConfigurationError as exc:
+            return str(exc)
+        return None
+
+    if run(configured=False) is not None:
+        return f"{key} rejected with NO limit configured — the default must be unconstrained"
+    rejected = run(configured=True)
+    if rejected is None:
+        return f"{key}={value!r} did not reject a step that violates it"
+    return None
+
+
+@probe("validation.pipeline.step_name_max_length")
+def _step_name_max_length() -> str | None:
+    return _pipeline_probe(
+        "validation.pipeline.step_name_max_length", 8, {"name": "x" * 40}
+    )
+
+
+@probe("validation.pipeline.timeout_ms_max")
+def _timeout_ms_max() -> str | None:
+    return _pipeline_probe("validation.pipeline.timeout_ms_max", 1000, {"timeout_ms": 600000})
+
+
 @probe("obs.redaction.sensitive_keys")
 def _sensitive_keys() -> str | None:
     """A field named by the key is redacted; one that is not, is not."""
