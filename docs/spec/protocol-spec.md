@@ -7668,9 +7668,13 @@ case fold would change no decision and is not applied.
 
 1. `event_pattern` selects what a subscriber receives. `"*"` — the default — receives
    everything.
-2. `include_events`, when present, is an allow-list: the event is forwarded when **any**
-   entry matches. `exclude_events` is a deny-list applied whether or not `include_events`
-   is present: an event matching **any** entry is discarded.
+2. `include_events`, when present, is an allow-list and is **decisive**: the event is
+   forwarded when **any** entry matches and discarded otherwise, and `exclude_events` is
+   not consulted. `exclude_events` applies only when `include_events` is absent, and then
+   an event matching **any** entry is discarded. This records the behaviour all three
+   implementations already share; it is stated because the precedence between the two
+   lists had never been written down, and an unstated precedence is what the rest of this
+   section is about.
 3. **`exclude_events` is why the algorithm has to be named here.** A pattern that fails to
    match means the event is *delivered*, so a matcher that understands fewer
    metacharacters than the operator wrote does not narrow the filter — it **opens** it. A
