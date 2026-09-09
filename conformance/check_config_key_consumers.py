@@ -205,6 +205,23 @@ def deprecation_probe() -> str | None:
     if load(base):
         return "a configuration declaring none of the deprecated keys still warned"
 
+    # 9.2.4 requirement 1 says "a loaded configuration document", which does not
+    # exclude one layout. 9.6's NAMESPACE mode puts the framework sections under
+    # an `apcore:` root, so a declared view read flat finds nothing there — and
+    # apcore-python was silent for every namespace-mode document until that was
+    # fixed, while apcore-typescript and apcore-rust were already correct. One
+    # SDK diverging on a requirement written for all three is exactly what this
+    # guard is for, so both layouts are pinned.
+    ns_clean = {"apcore": dict(base)}
+    if load(ns_clean):
+        return "a clean NAMESPACE-mode document warned"
+    ns_declared = {"apcore": {**base, "logging": {"level": "debug"}}}
+    hits = load(ns_declared)
+    if not hits:
+        return "a namespace-mode document declaring logging.level produced no warning"
+    if "logging.level" not in hits[0]:
+        return f"the namespace-mode notice does not name the key: {hits[0][:120]}"
+
     for key in DEPRECATED_INERT_KEYS:
         doc = dict(base)
         node = doc
