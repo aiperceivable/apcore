@@ -1967,8 +1967,8 @@ The following 16-entry list is the canonical superset that all three SDKs (Pytho
 
 - Implementations **MUST** ship this exact 16-entry list as the default `obs.redaction.sensitive_keys` value when the YAML key is absent.
 - Implementations **MUST** allow operators to fully override the default by setting `obs.redaction.sensitive_keys` in `apcore.yaml` (the override **replaces** the default; it does not merge).
-- The match is case-insensitive substring against field names, so `apiKey` and `apikey` both match `Authorization-API-Key` headers; the redundant `apiKey` entry is retained explicitly so test-fixture diffs across SDKs are byte-stable.
-- The leading `_secret_*` glob is matched as a substring (the `*` is informational only) so legacy `_secret_token` keys remain redacted under the canonical default.
+- Matching is **per entry** and case-insensitive on both sides ([PROTOCOL_SPEC §10.6.1](../spec/protocol-spec.md)): the fifteen entries with no `*` or `?` are **substring** matches against the normalized field name, so `apiKey` and `apikey` both match an `Authorization-API-Key` header; the redundant `apiKey` entry is retained explicitly so test-fixture diffs across SDKs are byte-stable.
+- **`_secret_*` is a pattern, not a substring, and it is anchored.** It matches `_secret_token` and **not** `x_secret_token`, because an entry containing `*` is matched with Algorithm **A25** against the whole field name. Earlier revisions of this section described the `*` as "informational only" and the entry as a substring; that described no implementation — all three SDKs have always anchored it (`fnmatch.fnmatchcase` before v1.37.0, A25 after), and the behaviour is unchanged by the correction. The distinction matters to an operator writing their own entry: `token*` matches `token_id` and not `access_token`, while a bare `token` matches both.
 
 === "Python"
     ```python

@@ -777,7 +777,8 @@
               "items": {
                 "type": "string"
               },
-              "default": []
+              "default": ["_secret_*", "password", "passwd", "secret", "token", "api_key", "apikey", "apiKey", "access_key", "private_key", "authorization", "auth", "credential", "cookie", "session", "bearer"],
+              "x-apcore-default-note": "The canonical 16-entry list of decision D-54 (features/observability.md). This property previously declared `default: []`, which contradicted the MUST that every SDK ship the 16-entry list when the key is absent. A schema is a machine-readable contract, and a generator or default table built from `[]` ships NO redaction by default on the one surface where that means credentials in plaintext. Setting the key to `[]` explicitly still disables key-based redaction; that is an override, not the default."
             },
             "replacement": {
               "type": "string",
