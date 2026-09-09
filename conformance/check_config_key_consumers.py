@@ -154,6 +154,43 @@ def _control_enabled() -> str | None:
     )
 
 
+@probe("stream.max_merge_depth")
+def _max_merge_depth() -> str | None:
+    """The configured cap must govern the merge, and must not be removable."""
+    from apcore.config import Config
+    from apcore.executor import _deep_merge, _resolve_merge_depth
+
+    cfg = Config.from_defaults()
+    if _resolve_merge_depth(cfg) != 32:
+        return f"the canonical default is 32, got {_resolve_merge_depth(cfg)}"
+    cfg.set("stream.max_merge_depth", 4)
+    if _resolve_merge_depth(cfg) != 4:
+        return "a configured stream.max_merge_depth did not reach the resolver"
+
+    # The cap is observable: below it the merge recurses and base-only keys at
+    # that depth survive; at it the merge replaces and they do not.
+    def nest(depth: int, sibling: str) -> dict:
+        node: dict = {"leaf": sibling, sibling: 1}
+        for _ in range(depth):
+            node = {"k": node}
+        return node
+
+    base = nest(6, "only_base")
+    _deep_merge(base, nest(6, "only_override"), max_depth=4)
+    node = base
+    for _ in range(5):
+        node = node["k"]
+    if "only_base" in node:
+        return "a cap of 4 did not apply at depth 5 — the merge recursed past it"
+
+    # A misconfiguration MUST NOT remove the cap.
+    for bad in (0, -1, "x", None):
+        cfg.set("stream.max_merge_depth", bad)
+        if _resolve_merge_depth(cfg) != 32:
+            return f"stream.max_merge_depth={bad!r} did not fall back to the canonical 32"
+    return None
+
+
 @probe("obs.redaction.sensitive_keys")
 def _sensitive_keys() -> str | None:
     """A field named by the key is redacted; one that is not, is not."""
