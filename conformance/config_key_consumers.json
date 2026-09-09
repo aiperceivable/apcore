@@ -1,7 +1,7 @@
 {
   "_comment": "What reads each declared configuration key. Enforced by conformance/check_config_key_consumers.py.\n\nconfig_key_governance.json pins that every declared key is ACCEPTED — the three SDKs agree on the key set and the default table. Nothing pinned that any key is READ, and 29 of 61 were not (apcore#118). This file is the missing half: every key states what consumes it, or states that nothing does and why.\n\nSTATUSES\n  live      — a probe in the checker sets the key away from its default and observes an effect OUTSIDE Config. Reading the value back from Config proves plumbing, not consumption: four observability.* keys round-trip perfectly and are consumed by nothing.\n  partial   — something reads it, but not on the path an operator would expect. The reason must say what the gap is.\n  inert     — nothing reads it. A written decision, not an accident; the reason must say what was measured.\n  unaudited — not yet examined. NOT a claim that the key works.\n\nThe `ratchet` counts may fall and may not rise. Lower a ceiling in the same change that fixes or audits a key; that is what turns apcore#118 from a report into a number that has to go down.",
   "ratchet": {
-    "inert": 29,
+    "inert": 25,
     "unaudited": 31
   },
   "keys": {
@@ -177,9 +177,8 @@
       "tracking": "https://github.com/aiperceivable/apcore/issues/118"
     },
     "sys_modules.control.enabled": {
-      "status": "inert",
-      "reason": "No code path reads it. The master switch `sys_modules.enabled` works and the four per-subsystem flags do not; this one gates the Level 2 WRITE surface (6.7), so it is the one most likely to be trusted in production.",
-      "tracking": "https://github.com/aiperceivable/apcore/issues/118"
+      "status": "live",
+      "probe": "sys_modules.control.enabled"
     },
     "sys_modules.control.overrides_path": {
       "status": "unaudited"
@@ -207,14 +206,12 @@
       "status": "unaudited"
     },
     "sys_modules.health.enabled": {
-      "status": "inert",
-      "reason": "No code path reads it. VERIFIED BY EXECUTION: all four sub-flags false and all four true both register the same 6 `system.*` modules.",
-      "tracking": "https://github.com/aiperceivable/apcore/issues/118"
+      "status": "live",
+      "probe": "sys_modules.health.enabled"
     },
     "sys_modules.manifest.enabled": {
-      "status": "inert",
-      "reason": "No code path reads it. See `sys_modules.health.enabled`.",
-      "tracking": "https://github.com/aiperceivable/apcore/issues/118"
+      "status": "live",
+      "probe": "sys_modules.manifest.enabled"
     },
     "sys_modules.usage.bucketing_strategy": {
       "status": "inert",
@@ -222,9 +219,8 @@
       "tracking": "https://github.com/aiperceivable/apcore/issues/118"
     },
     "sys_modules.usage.enabled": {
-      "status": "inert",
-      "reason": "No code path reads it. See `sys_modules.health.enabled`.",
-      "tracking": "https://github.com/aiperceivable/apcore/issues/118"
+      "status": "live",
+      "probe": "sys_modules.usage.enabled"
     },
     "sys_modules.usage.retention_hours": {
       "status": "inert",

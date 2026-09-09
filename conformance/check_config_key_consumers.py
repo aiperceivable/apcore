@@ -98,6 +98,62 @@ def _sys_modules_enabled() -> str | None:
     return None
 
 
+def _system_ids(**flags: bool) -> set[str]:
+    """Register the sys-module section under `flags` and report the system.* IDs."""
+    from apcore.client import APCore
+    from apcore.config import Config
+
+    cfg = Config.from_defaults()
+    cfg.set("sys_modules.enabled", True)
+    cfg.set("sys_modules.events.enabled", True)
+    for group, value in flags.items():
+        cfg.set(f"sys_modules.{group}.enabled", value)
+    return {m for m in APCore(config=cfg).registry.module_ids if m.startswith("system.")}
+
+
+def _group_probe(group: str, expected: set[str]) -> str | None:
+    """A per-group flag must remove exactly its own modules and nothing else."""
+    on = _system_ids()
+    off = _system_ids(**{group: False})
+    if not expected <= on:
+        return f"with every flag on, {sorted(expected - on)} did not register"
+    removed = on - off
+    if removed != expected:
+        return (
+            f"sys_modules.{group}.enabled=False removed {sorted(removed)}, expected "
+            f"{sorted(expected)} — the flag selects the wrong module set, or is ignored"
+        )
+    return None
+
+
+@probe("sys_modules.health.enabled")
+def _health_enabled() -> str | None:
+    return _group_probe("health", {"system.health.summary", "system.health.module"})
+
+
+@probe("sys_modules.manifest.enabled")
+def _manifest_enabled() -> str | None:
+    return _group_probe("manifest", {"system.manifest.module", "system.manifest.full"})
+
+
+@probe("sys_modules.usage.enabled")
+def _usage_enabled() -> str | None:
+    return _group_probe("usage", {"system.usage.summary", "system.usage.module"})
+
+
+@probe("sys_modules.control.enabled")
+def _control_enabled() -> str | None:
+    """The Level 2 write plane (6.7). The one an operator turns off deliberately."""
+    return _group_probe(
+        "control",
+        {
+            "system.control.update_config",
+            "system.control.reload_module",
+            "system.control.toggle_feature",
+        },
+    )
+
+
 @probe("obs.redaction.sensitive_keys")
 def _sensitive_keys() -> str | None:
     """A field named by the key is redacted; one that is not, is not."""
