@@ -619,10 +619,9 @@ apcore:
 _config:
   strict: true   # Reject unknown namespace keys
 
-observability:
-  tracing:
-    enabled: true
-    sampling_rate: 1.0
+bindings:
+  dir: "./bindings"
+  pattern: "*.binding.yaml"
 
 my-plugin:
   timeout: 10000

@@ -1324,18 +1324,27 @@ Currently redaction is driven solely by `x-sensitive: true` schema annotations. 
 #### Configuration (YAML)
 
 ```yaml
-observability:
+obs:
   redaction:
-    field_patterns:
+    sensitive_keys:            # field NAMES — glob (A25) if it has * or ?, else substring
       - "*password*"
       - "*token*"
       - "*secret*"
       - "*api_key*"
-    value_patterns:
+    regex_patterns:            # field VALUES — unanchored, case-insensitive search
       - "^Bearer .*"
       - "^sk-[A-Za-z0-9]+"
     replacement: "***REDACTED***"
 ```
+
+!!! warning "`observability.redaction.*` is the legacy spelling, and it is not a declared key"
+    Earlier revisions of this section showed `observability.redaction.field_patterns` /
+    `value_patterns`. That spelling is **not in the canonical key surface**, so
+    `_config.strict: true` rejects it — measured. It is also read inconsistently:
+    apcore-typescript and apcore-rust honour it as a legacy fallback with a deprecation
+    warning, and apcore-python deliberately does **not**. Write the canonical `obs.redaction.*`
+    keys above; they are declared, they are read by all three, and their semantics are pinned
+    in [PROTOCOL_SPEC §10.6.1](../spec/protocol-spec.md).
 
 === "Python"
     ```python
@@ -1386,23 +1395,29 @@ observability:
 
 #### Normative Rules
 
-- Implementations MUST expose a `/metrics` HTTP endpoint returning Prometheus text format when `observability.prometheus.enabled: true` is configured.
-- Implementations SHOULD expose a `/healthz` liveness endpoint and a `/readyz` readiness endpoint.
+- Implementations MUST provide a Prometheus exporter that serves a `/metrics` HTTP endpoint in Prometheus text format. It is **constructed and started by the application**, not by configuration — see the per-SDK examples below.
+- That exporter SHOULD also serve a `/healthz` liveness endpoint and a `/readyz` readiness endpoint.
 - The Prometheus `/metrics` endpoint MUST include the following standard apcore metrics: `apcore_module_calls_total`, `apcore_module_errors_total`, `apcore_module_duration_seconds` (histogram).
 - Implementations SHOULD document the required K8s ServiceMonitor annotation `prometheus.io/scrape: "true"` so that Prometheus Operator can auto-discover the endpoint.
 
-#### Configuration (YAML)
+#### There is no YAML for this
 
-```yaml
-observability:
-  prometheus:
-    enabled: true
-    port: 9090
-    path: "/metrics"
-  health:
-    liveness_path: "/healthz"
-    readiness_path: "/readyz"
-```
+!!! danger "`observability.prometheus.*` and `observability.health.*` do not exist"
+    Earlier revisions of this section showed a YAML block configuring the exporter's port and
+    paths. **Those five keys are declared nowhere and read by nothing** — measured across all
+    three SDKs — so a configuration carrying them is *rejected* under `_config.strict: true`
+    rather than merely ignored:
+
+    ```
+    - Unknown key 'observability.prometheus' (strict mode enabled)
+    - Unknown key 'observability.health' (strict mode enabled)
+    ```
+
+    The requirement above is stated in terms of the exporter, which exists, rather than of a
+    configuration trigger, which does not. Construct and start the exporter from your
+    application; its port and paths are constructor arguments. Whether they should *become*
+    configuration is open — see
+    [apcore#118](https://github.com/aiperceivable/apcore/issues/118).
 
 #### K8s ServiceMonitor annotations
 

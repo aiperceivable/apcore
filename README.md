@@ -757,12 +757,15 @@ rules:
     effect: allow
 
 default_effect: deny  # Default deny when no rules match
-
-audit:
-  enabled: true
-  log_level: info
-  include_denied: true
 ```
+
+> **`audit:` is deprecated and has never done anything.** An `audit:` block in an ACL file
+> is read by no apcore SDK — auditing is wired programmatically, by passing an audit logger
+> to the `ACL` constructor. The same three settings are *also* declared as `acl.audit.*` in
+> `apcore.yaml`, and are equally inert there. One of the two declarations is removed no
+> earlier than v2.0; loading a file that carries the block now warns.
+> See [PROTOCOL_SPEC §9.2.4.1](./docs/spec/protocol-spec.md) and
+> [apcore#118](https://github.com/aiperceivable/apcore/issues/118).
 
 ### Special Caller Identifiers
 
@@ -848,22 +851,43 @@ schema:
 acl:
   root: "./acl"
   default_effect: "deny"     # Default deny
-  audit:
-    enabled: true
+```
 
+### Configuration keys that do nothing
+
+Ten declared keys reach no consumer in any SDK. They parse, they validate, they pass strict
+mode — and setting them has **no effect**. They are deprecated as of spec v1.39.0 and are
+removed no earlier than v2.0; loading a configuration that declares one now warns.
+
+```yaml
+# None of the following does anything today. Shown so you can recognise it.
 logging:
-  level: "info"              # trace | debug | info | warn | error | fatal
-  format: "json"             # json | text
+  level: "info"              # inert — configure your host application's logger
+  format: "json"             # inert
 
 observability:
   tracing:
-    enabled: true
-    sampling_rate: 1.0       # 1.0 = full collection, 0.1 = 10% sampling
-    exporter: "stdout"       # stdout | otlp | jaeger
+    enabled: true            # inert — install TracingMiddleware yourself
+    sampling_rate: 0.1       # inert, and the sharpest case: sampling is decided by
+                             # `sampling_strategy`, a constructor argument with no
+                             # configuration key at all, which defaults to full. Ask
+                             # for 10% here and you still get 100%.
+    exporter: "stdout"       # inert — an exporter is an object, not a name
   metrics:
-    enabled: true
-    exporter: "prometheus"
+    enabled: true            # inert
+    exporter: "prometheus"   # inert
+
+acl:
+  audit:
+    enabled: true            # inert — pass an audit logger to the ACL constructor
+    include_denied: true     # inert
+    log_level: "info"        # inert
 ```
+
+Observability and audit logging **do** work — they are wired programmatically. See
+[features/observability.md](./docs/features/observability.md) and
+[features/acl-system.md](./docs/features/acl-system.md). Tracking:
+[apcore#118](https://github.com/aiperceivable/apcore/issues/118).
 
 ### Config Bus — Unified Ecosystem Configuration
 

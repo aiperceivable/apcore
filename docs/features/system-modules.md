@@ -1360,21 +1360,22 @@ When both an `AuditStore` (§1.2) and the event bus are configured, implementati
 
 #### Normative Rules
 
-- When `observability.prometheus.enabled: true`, the UsageCollector MUST expose its data via the `/metrics` endpoint established in observability hardening (§ Observability Hardening 1.6).
+- When a Prometheus exporter is running, the UsageCollector MUST expose its data via the `/metrics` endpoint established in observability hardening (§ Observability Hardening 1.6). The exporter is constructed and started by the application — there is no configuration key that starts it.
 - The UsageCollector MUST emit these additional Prometheus metrics:
     - `apcore_usage_calls_total{module_id, status}` — counter
     - `apcore_usage_error_rate{module_id}` — gauge (0.0–1.0)
     - `apcore_usage_p50_latency_ms{module_id}`, `apcore_usage_p95_latency_ms{module_id}`, `apcore_usage_p99_latency_ms{module_id}` — gauges
-- The Prometheus exporter MUST call `collector.get_module_stats()` and transform to the text format; MUST NOT block the HTTP handler for more than `export_timeout_ms` (default 1000ms).
+- The Prometheus exporter MUST call `collector.get_module_stats()` and transform to the text format; MUST NOT block the HTTP handler for more than its export budget (default 1000 ms), which is a constructor argument.
 
-#### YAML Configuration
+#### There is no YAML for this
 
-```yaml
-observability:
-  prometheus:
-    enabled: true
-    export_timeout_ms: 1000   # default; controls UsageCollector export budget
-```
+!!! danger "`observability.prometheus.*` does not exist"
+    Earlier revisions of this section showed a YAML block with
+    `observability.prometheus.enabled` and `export_timeout_ms`. **Neither key is declared
+    anywhere and neither is read by any SDK** — measured — so a configuration carrying them is
+    *rejected* under `_config.strict: true` rather than ignored. The requirements above are
+    restated in terms of the exporter, which exists; its export budget is a constructor
+    argument. See [apcore#118](https://github.com/aiperceivable/apcore/issues/118).
 
 #### Usage Examples
 
