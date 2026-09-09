@@ -265,7 +265,7 @@
     },
     {
       "id": "pattern_first_star_must_not_be_removed_from_the_middle",
-      "comment": "DISCRIMINATING against apcore-typescript specifically, in the direction that LOADS A FILE NOBODY ASKED FOR. `replace('*','')` deletes the first star wherever it sits, so `a*b.yaml` becomes `ab.yaml` and `endsWith` accepts `zab.yaml` — a file anchored-at-the-start matching cannot reach, and which the other two SDKs correctly ignore. Under A25 nothing matches and the loader returns no modules.",
+      "comment": "DISCRIMINATING against apcore-typescript specifically, in the direction that LOADS A FILE NOBODY ASKED FOR. `replace('*','')` deletes the first star wherever it sits, so `a*b.yaml` becomes `ab.yaml` and `endsWith` accepts `zab.yaml` — a file an anchored pattern cannot reach, and one the other two SDKs correctly ignore. Written with BOTH a file the pattern must match (`axb.yaml`) and the file it must not (`zab.yaml`), so the case proves the directory was enumerated as well as which file the pattern chose: a wrong pick shows up as the decoy's distinct id rather than as an empty result.",
       "config_file": {
         "path": "apcore.yaml",
         "content": {
@@ -278,12 +278,15 @@
       "env": {},
       "explicit_dir": null,
       "fs": {
+        "custom_bindings/axb.yaml": "greet",
         "custom_bindings/zab.yaml": "wrong_pattern_decoy"
       },
       "expected": {
         "scanned": true,
         "scanned_dir": "custom_bindings",
-        "loaded_module_ids": []
+        "loaded_module_ids": [
+          "greet"
+        ]
       }
     },
     {
@@ -314,7 +317,7 @@
     },
     {
       "id": "pattern_bracket_is_a_literal_not_a_character_class",
-      "comment": "DISCRIMINATING against apcore-python, whose `Path.glob` expands `[ab]` as a character class and loads the file. A25 has no classes (9.2.3 requirement 4), so `[ab].bind.yaml` names a literal filename that is not present, and the loader returns nothing — without raising, because no pattern is ever rejected.",
+      "comment": "DISCRIMINATING against apcore-python, whose `Path.glob` expands `[ab]` as a character class and loads `a.bind.yaml`. A25 has no classes (PROTOCOL_SPEC 9.2.3 requirement 4), so the pattern names a LITERAL filename — which is planted here, alongside the file a class-aware matcher would pick instead. The two files carry distinct ids, so each implementation's answer is visible rather than empty, and the case also pins requirement 2: an unbalanced-looking pattern must not be rejected.",
       "config_file": {
         "path": "apcore.yaml",
         "content": {
@@ -327,12 +330,15 @@
       "env": {},
       "explicit_dir": null,
       "fs": {
+        "custom_bindings/[ab].bind.yaml": "greet",
         "custom_bindings/a.bind.yaml": "wrong_pattern_decoy"
       },
       "expected": {
         "scanned": true,
         "scanned_dir": "custom_bindings",
-        "loaded_module_ids": []
+        "loaded_module_ids": [
+          "greet"
+        ]
       }
     }
   ],
