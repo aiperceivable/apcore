@@ -74,7 +74,32 @@ SDKS: list[tuple[str, str, str]] = [
 ]
 
 
-def mutate(value):
+def sibling_values(cases: list[dict], key: str) -> list:
+    """Every value `key` takes across the fixture's own cases.
+
+    Used to mutate an enum-ish expectation ACROSS its semantic boundary rather
+    than past the end of it. `mutate` appends a sentinel to a string, which is
+    a value no implementation produces — but a driver that only asks
+    `expected_load === "ok"` and takes the else-branch is asserting *class
+    membership*, not the value, so `"reject"` -> `"reject__MUTATED__"` leaves
+    the same branch running and the case reads as unpinned.
+    Measured on `acl_effect_value_closure`, whose TypeScript driver runs all
+    eleven of its tests and was nevertheless reported as running none of them.
+
+    Flipping to a value the SAME key takes elsewhere in the fixture crosses the
+    boundary without a hardcoded table of verdict words: if the corpus uses
+    `ok`/`reject`, the flip is `ok`, and if it uses one value throughout there
+    is no boundary to cross and the sentinel remains the best available.
+    """
+    seen = []
+    for case in cases:
+        v = case.get(key)
+        if isinstance(v, str) and v not in seen:
+            seen.append(v)
+    return seen
+
+
+def mutate(value, alternatives: list | None = None):
     """Return a value no correct implementation can produce.
 
     Every leaf changes, so a driver asserting any part of the block fails. Prose
@@ -85,6 +110,11 @@ def mutate(value):
     if isinstance(value, bool):
         return not value
     if isinstance(value, str):
+        # Cross the boundary when the fixture shows where it is (see
+        # `sibling_values`); otherwise go past the end of the value space.
+        for other in alternatives or ():
+            if other != value:
+                return other
         return value + SENTINEL
     if isinstance(value, (int, float)):
         return value + 987654
@@ -131,6 +161,24 @@ def expectation_keys(case: dict) -> list[str]:
                   if k == "expected" or k.startswith("expected_") or k in _EXTRA_EXPECTATION_KEYS)
 
 
+#: Files under `tests/` that are harnesses rather than drivers.
+#:
+#: apcore-rust's `tests/it.rs` is a list of `#[path = "…"] mod …;` lines and
+#: nothing else — every driver it aggregates is a separate file this scan finds
+#: on its own. But its module NAMES contain the fixture stems (`mod
+#: test_acl_handler_error_conformance;` contains `acl_handler_error`), so a
+#: plain substring match claims `it.rs` drives almost every fixture.
+#:
+#: That was not merely redundant, it dominated the sweep. `it` is a declared
+#: `[[test]]` target, so `run_drivers` selected it with `--test it` — no filter
+#: — and ran the WHOLE 2100-test binary once per mutated case. Measured:
+#: 2.64s for the unfiltered binary against 0.10s for the two real drivers
+#: combined, i.e. 2.85s per case where 0.20s was the work. Over a full sweep
+#: that is the difference between roughly an hour and a few minutes, and it is
+#: why the Rust scope was always the slow one.
+_HARNESS_FILES = {"it.rs"}
+
+
 def driver_files(sdk_root: Path) -> dict[str, dict[str, list[Path]]]:
     """{fixture_stem: {sdk: [test files that mention it]}}."""
     stems = [p.stem for p in FIXTURES.glob("*.json")]
@@ -140,6 +188,8 @@ def driver_files(sdk_root: Path) -> dict[str, dict[str, list[Path]]]:
         if not base.is_dir():
             continue
         for path in base.rglob(f"*{suffix}"):
+            if path.name in _HARNESS_FILES:
+                continue
             try:
                 text = path.read_text()
             except (UnicodeDecodeError, OSError):
@@ -169,7 +219,12 @@ class NoTestsRan(RuntimeError):
 
 
 def run_drivers(sdk: str, sdk_root: Path, files: list[Path]) -> bool:
-    """True when the given driver files FAIL. Timeouts and crashes count as red.
+    """True when the given driver files FAIL. See :func:`run_drivers_verbose`."""
+    return run_drivers_verbose(sdk, sdk_root, files)[0]
+
+
+def run_drivers_verbose(sdk: str, sdk_root: Path, files: list[Path]) -> tuple[bool, str]:
+    """`(failed, combined output)`. Timeouts and crashes count as red.
 
     A crash is a legitimate red: a driver that blows up on a mutated expectation
     was reading it.
@@ -182,6 +237,19 @@ def run_drivers(sdk: str, sdk_root: Path, files: list[Path]) -> bool:
     sweep was manufactured by this bug rather than measured.
     """
     repo = sdk_root / dict((s, r) for s, r, _ in SDKS)[sdk]
+    # The drivers must exercise the CHECKOUT, not whatever `apcore` happens to be
+    # installed. CI gets that from `pip install -e`, but a developer with a stale
+    # non-editable wheel in site-packages runs the whole sweep against it: the
+    # Python drivers go red before any mutation and 36 of 73 fixtures report
+    # INDETERMINATE, which reads as "the suite is broken" rather than "the tool
+    # is looking at the wrong code". Measured locally, and it costs the sweep
+    # half its coverage silently.
+    extra_env = {"CONFORMANCE_SPEC_REPO": str(REPO)}
+    if sdk == "python":
+        src = repo / "src"
+        if src.is_dir():
+            existing = os.environ.get("PYTHONPATH", "")
+            extra_env["PYTHONPATH"] = f"{src}{os.pathsep}{existing}" if existing else str(src)
     if sdk == "python":
         cmds = [[sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider",
                  *[str(f.relative_to(repo)) for f in files]]]
@@ -209,6 +277,7 @@ def run_drivers(sdk: str, sdk_root: Path, files: list[Path]) -> bool:
             raise NoTestsRan("no Rust target or module resolved")
 
     ran_something = False
+    transcript = ""
     for cmd in cmds:
         try:
             # Point the drivers at the fixture tree THIS run is mutating. Without
@@ -220,16 +289,18 @@ def run_drivers(sdk: str, sdk_root: Path, files: list[Path]) -> bool:
             # produces a plausible non-zero against the wrong corpus.
             proc = subprocess.run(cmd, cwd=repo, capture_output=True, text=True,
                                   timeout=600,
-                                  env={**os.environ, "CONFORMANCE_SPEC_REPO": str(REPO)})
+                                  env={**os.environ, **extra_env})
         except subprocess.TimeoutExpired:
-            return True
+            return True, transcript + f"\n<timeout: {' '.join(cmd)}>"
+        text = proc.stdout + proc.stderr
+        transcript += text
         if proc.returncode != 0:
-            return True
-        if not ran_nothing(sdk, proc.stdout + proc.stderr):
+            return True, transcript
+        if not ran_nothing(sdk, text):
             ran_something = True
     if not ran_something:
         raise NoTestsRan(" | ".join(" ".join(c) for c in cmds))
-    return False
+    return False, transcript
 
 
 def ran_nothing(sdk: str, output: str) -> bool:
@@ -240,6 +311,124 @@ def ran_nothing(sdk: str, output: str) -> bool:
         return "No test files found" in output or "no tests" in output.lower()
     counts = [int(n) for n in re.findall(r"test result: ok\. (\d+) passed", output)]
     return bool(counts) and sum(counts) == 0
+
+
+#: Where each framework starts NAMING what failed. Everything before the marker
+#: is progress output, and for vitest and pytest that includes the names of
+#: tests that PASSED — which is why attribution has to be scoped rather than run
+#: over the whole transcript. Measured: vitest's green run of
+#: `acl_handler_error` prints all fifteen case ids as `✓` lines, so an unscoped
+#: predicate attributes everything and the batch is always thrown away.
+#:
+#: A marker that is wrong or missing costs nothing but speed: the green baseline
+#: then attributes nothing (there is no failure section in a passing run), the
+#: red run attributes nothing either, and `batch_probe` raises `Unattributable`
+#: and hands the pair to the per-case path.
+_FAILURE_MARKERS = {
+    "python": ("short test summary info",),
+    "typescript": ("Failed Tests", "FAIL "),
+    # cargo prints `test <name> ... ok` for passes, so the `failures:` block is
+    # the only safe region for a per-case-test driver. Drivers that AGGREGATE
+    # into one assertion put the ids in the panic message instead, which appears
+    # under `---- <test> stdout ----`.
+    "rust": ("failures:", "---- ", "panicked at"),
+}
+
+
+def failure_region(sdk: str, output: str) -> str:
+    """The tail of `output` from the first point at which failures are named."""
+    starts = [output.find(m) for m in _FAILURE_MARKERS.get(sdk, ())]
+    starts = [i for i in starts if i >= 0]
+    return output[min(starts):] if starts else ""
+
+
+def attribute(output: str, case_ids: list[str]) -> set[str]:
+    """Which case ids the driver output names.
+
+    One uniform predicate across three frameworks, because they do not report
+    the same way and the drivers do not all name a test per case:
+
+    * apcore-python parametrizes with ``ids=lambda c: c["id"]``, so the id is in
+      the test NAME (`test_case[<id>]`).
+    * apcore-typescript spells its `it(...)` title with the id first, likewise.
+    * apcore-rust has drivers that collect into a `failures` vec and assert
+      ONCE, so the whole fixture is a single test and the ids live in the
+      assertion MESSAGE (`  [<id>] …`).
+
+    Matching the id anywhere in the failure output covers all three. It is a
+    coarse predicate on purpose: a FALSE POSITIVE here would mark a dead case
+    "pinned" and skip re-verifying it, so it is never trusted on its own —
+    :func:`batch_probe` validates it against the unmutated baseline first, and
+    anything unattributed falls through to the per-case path that has always
+    been the tool's ground truth.
+    """
+    return {cid for cid in case_ids if cid in output}
+
+
+def attribute_failures(sdk: str, output: str, case_ids: list[str]) -> set[str]:
+    """:func:`attribute`, scoped to the region where failures are named."""
+    return attribute(failure_region(sdk, output), case_ids)
+
+
+class Unattributable(Exception):
+    """The batch run's output cannot be tied back to case ids."""
+
+
+def batch_probe(
+    sdk: str,
+    sdk_root: Path,
+    files: list[Path],
+    path: Path,
+    backup: Path,
+    cases: list[dict],
+    baseline_output: str,
+) -> set[str]:
+    """Mutate EVERY case at once and report which ids the driver names.
+
+    Returns the set of case ids this SDK demonstrably runs. Raises
+    :class:`Unattributable` when the result cannot be trusted, in which case the
+    caller falls back to one mutation per case — the slow path, which is the
+    only one whose verdict is unambiguous.
+
+    Two things make batching sound rather than merely fast:
+
+    1. **The baseline must attribute nothing.** The unmutated run is green, so
+       no id should appear in a failure position. If one does, this fixture's
+       output is not a reliable index of which cases failed, and the whole
+       (fixture, SDK) pair goes to the slow path.
+    2. **A red run that names nothing is unattributable.** Red with no ids means
+       the driver failed for a reason other than the mutations — a parse error,
+       a load-time precondition — and reading that as "every case is pinned"
+       would be the exact false green this tool exists to prevent.
+
+    A GREEN batch run needs no fallback and is the strongest result available:
+    every case was mutated and nothing went red, so this driver runs none of
+    them.
+    """
+    ids = [c["id"] for c in cases]
+    stray = attribute_failures(sdk, baseline_output, ids)
+    if stray:
+        raise Unattributable(
+            f"the unmutated run already names {len(stray)} case id(s), so its "
+            f"output does not indicate failure"
+        )
+
+    mutated = json.loads(backup.read_text())
+    for case in mutated["test_cases"]:
+        for target in expectation_keys(case):
+            case[target] = mutate(case[target], sibling_values(cases, target))
+    path.write_text(json.dumps(mutated, indent=2, ensure_ascii=False) + "\n")
+    try:
+        red, output = run_drivers_verbose(sdk, sdk_root, files)
+    finally:
+        shutil.copy(backup, path)
+
+    if not red:
+        return set()
+    found = attribute_failures(sdk, output, ids)
+    if not found:
+        raise Unattributable("the run went red but named no case id")
+    return found
 
 
 def load_allowlist() -> dict[tuple[str, str], set[str]]:
@@ -274,6 +463,11 @@ def main() -> int:
                          "The default asks whether ANY driver runs the case, which is "
                          "the weaker question — a case only one SDK drives still "
                          "proves one implementation, not three.")
+    ap.add_argument("--per-case", action="store_true",
+                    help="mutate one case at a time instead of the two-pass sweep. The "
+                         "slow path, and the tool's ground truth: the two-pass sweep "
+                         "falls back to it per (fixture, SDK) whenever a batch result "
+                         "cannot be attributed, and this flag forces it everywhere.")
     ap.add_argument("--strict", action="store_true", help="exit 1 on any unpinned case")
     ap.add_argument("--write-baseline", action="store_true")
     args = ap.parse_args()
@@ -318,11 +512,13 @@ def main() -> int:
             # where the suite is broken.
             already_red = []
             broken = []
+            baseline: dict[str, str] = {}
             for sdk, *_ in sdks:
                 if not by_sdk.get(sdk):
                     continue
                 try:
-                    if run_drivers(sdk, args.sdk_root, by_sdk[sdk]):
+                    red, baseline[sdk] = run_drivers_verbose(sdk, args.sdk_root, by_sdk[sdk])
+                    if red:
                         already_red.append(sdk)
                 except NoTestsRan as exc:
                     broken.append(f"{sdk} ran no tests ({exc})")
@@ -336,6 +532,33 @@ def main() -> int:
                       f"{indeterminate[path.name]}", flush=True)
                 continue
 
+            # PASS 1 — mutate every case at once, once per SDK, and read back
+            # which ids the driver named. A case named by ANY sdk in scope is
+            # pinned and needs no second run; only what is left over is charged
+            # for a per-case mutation. On a healthy corpus that leftover is
+            # empty, so a fixture costs one run per SDK instead of one per case.
+            #
+            # `pass1[sdk]` is None when that SDK's batch could not be attributed
+            # — the pair then takes the slow path and its verdict is the old,
+            # unambiguous one.
+            measurable = [c for c in cases if expectation_keys(c)]
+            pass1: dict[str, set[str] | None] = {}
+            if not args.per_case:
+                for sdk, *_ in sdks:
+                    files = by_sdk.get(sdk)
+                    if not files:
+                        continue
+                    try:
+                        pass1[sdk] = batch_probe(sdk, args.sdk_root, files, path,
+                                                 backup, measurable, baseline.get(sdk, ""))
+                    except (Unattributable, NoTestsRan) as exc:
+                        pass1[sdk] = None
+                        print(f"  per-case  {path.stem} [{sdk}] — {exc}", flush=True)
+
+            #: Attributed by at least one SDK whose batch WAS trustworthy. These
+            #: skip pass 2; everything else is re-measured the old way.
+            batch_pinned = {cid for got in pass1.values() if got for cid in got}
+
             for case in cases:
                 cid = case["id"]
                 targets = expectation_keys(case)
@@ -343,16 +566,23 @@ def main() -> int:
                     no_expected.setdefault(path.name, []).append(cid)
                     continue
                 checked += 1
+                if cid in batch_pinned:
+                    continue
                 mutated = json.loads(backup.read_text())
                 for c in mutated["test_cases"]:
                     if c.get("id") == cid:
                         for key in targets:
-                            c[key] = mutate(c[key])
+                            c[key] = mutate(c[key], sibling_values(cases, key))
                 path.write_text(json.dumps(mutated, indent=2, ensure_ascii=False) + "\n")
                 pinned_by = None
                 for sdk, *_ in sdks:
                     files = by_sdk.get(sdk)
                     if not files:
+                        continue
+                    # A trustworthy GREEN batch already proved this SDK runs
+                    # none of the fixture's cases; re-running it per case can
+                    # only reproduce that, one process at a time.
+                    if not args.per_case and pass1.get(sdk) == set():
                         continue
                     try:
                         if run_drivers(sdk, args.sdk_root, files):
