@@ -50,6 +50,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import json
+import re
 import sys
 from collections.abc import Iterator
 from pathlib import Path
@@ -429,6 +430,207 @@ def _replacement() -> str | None:
 # ---------------------------------------------------------------------------
 
 
+_ISO_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+#: A rise needs enough prose to be reviewable. Long enough to state WHY the
+#: number went up, short enough not to be ceremony.
+_MIN_RISE_REASON = 60
+
+
+def _check_ratchet_ledger(
+    ratchet: dict[str, object],
+    history: list[dict[str, object]],
+    entries: dict[str, dict[str, object]],
+) -> list[str]:
+    """The ceiling must agree with an append-only ledger of its own changes.
+
+    The rule "`inert` and `unaudited` may fall and may not rise" was written in
+    a comment, and a comment is enforced only when someone reads it. The first
+    raise under it — `inert` 18 -> 19 on 2026-09-10, correcting a key that had
+    been mis-recorded as `live` — was made in the same commit that edited the
+    number, with the justification in prose beside it. That justification was
+    sound; the arrangement was not, because nothing distinguishes it from an
+    unsound one.
+
+    So the ceiling is no longer a number that can be edited on its own. It MUST
+    equal the `to` of the last `ratchet_history` entry for its status, and the
+    entries MUST chain. Raising a ceiling therefore means appending a record
+    that says what moved and why, and the diff shows it.
+
+    This does not make a raise impossible — a determined author can write a
+    ledger entry too. It makes a raise impossible to perform *silently*, or by
+    changing one digit, which is the failure mode a review actually misses.
+    """
+    problems: list[str] = []
+    by_status: dict[str, list[dict[str, object]]] = {}
+    for index, record in enumerate(history):
+        status = record.get("status")
+        if status not in ("inert", "unaudited"):
+            problems.append(
+                f"ratchet_history[{index}]: status {status!r} is not a ratcheted status"
+            )
+            continue
+        by_status.setdefault(str(status), []).append(record)
+
+        date = record.get("date")
+        if not isinstance(date, str) or not _ISO_DATE.match(date):
+            problems.append(f"ratchet_history[{index}]: `date` must be YYYY-MM-DD, got {date!r}")
+        if not str(record.get("reason") or "").strip():
+            problems.append(f"ratchet_history[{index}]: every entry needs a `reason`")
+
+    for status in ("inert", "unaudited"):
+        records = by_status.get(status, [])
+        if not records:
+            problems.append(
+                f"ratchet_history: no entry for {status!r}. The ceiling is only meaningful "
+                f"beside the record of how it got there."
+            )
+            continue
+
+        previous: object = None
+        for position, record in enumerate(records):
+            came_from = record.get("from")
+            goes_to = record.get("to")
+            if not isinstance(goes_to, int):
+                problems.append(f"ratchet_history[{status}][{position}]: `to` must be an integer")
+                continue
+            if position == 0:
+                if came_from is not None and came_from != previous:
+                    problems.append(
+                        f"ratchet_history[{status}][0]: the first entry opens the ledger and "
+                        f"must have `from: null`, got {came_from!r}"
+                    )
+            elif came_from != previous:
+                problems.append(
+                    f"ratchet_history[{status}][{position}]: `from` is {came_from!r} but the "
+                    f"previous entry ended at {previous!r}. The ledger must chain — a gap is "
+                    f"a ceiling change that was never recorded."
+                )
+            if isinstance(came_from, int) and goes_to > came_from:
+                reason = str(record.get("reason") or "")
+                if len(reason.strip()) < _MIN_RISE_REASON:
+                    problems.append(
+                        f"ratchet_history[{status}][{position}]: a RISE ({came_from} -> "
+                        f"{goes_to}) needs a `reason` saying why the number went up, not a "
+                        f"label. This is the one direction the ratchet exists to resist."
+                    )
+                keys = record.get("keys")
+                if not isinstance(keys, list) or not keys:
+                    problems.append(
+                        f"ratchet_history[{status}][{position}]: a RISE needs `keys` naming "
+                        f"which keys moved to {status!r}"
+                    )
+                else:
+                    for key in keys:
+                        actual = entries.get(str(key), {}).get("status")
+                        if actual is None:
+                            problems.append(
+                                f"ratchet_history[{status}][{position}]: `keys` names "
+                                f"{key!r}, which is not in this manifest"
+                            )
+                        elif actual != status:
+                            problems.append(
+                                f"ratchet_history[{status}][{position}]: `keys` names {key!r} "
+                                f"as moving to {status!r}, but it is recorded {actual!r}"
+                            )
+            previous = goes_to
+
+        ceiling = ratchet.get(status)
+        last = records[-1].get("to")
+        if isinstance(ceiling, int) and isinstance(last, int) and ceiling != last:
+            problems.append(
+                f"ratchet: the {status!r} ceiling is {ceiling} but the ledger ends at {last}. "
+                f"The ceiling is not a number that may be edited on its own — append a "
+                f"`ratchet_history` entry saying what moved and why, and the two will agree."
+            )
+
+    return problems
+
+
+def _self_test_ratchet_ledger() -> list[str]:
+    """Prove the ledger check rejects each way around it, FOR THE RIGHT REASON.
+
+    The ledger exists because a rule kept in a comment is enforced only when
+    someone reads it. A ledger whose enforcement is untested is that same
+    arrangement one level down — so each bypass gets a case, and each case
+    asserts the *message*, not merely that something was rejected.
+
+    That distinction is not pedantry here; it is the bug this function had on
+    its first draft. Every "rise" case was appended to a one-entry base ending
+    at 18 while declaring `from: 19`, so all of them were rejected by the CHAIN
+    rule and none of them ever exercised the rule they named. Disabling the
+    reason-length check left the self-test green. Asserting on the message is
+    what makes a case fail when its own rule is removed.
+
+    The last case must stay GREEN: tightening a ceiling has to remain cheap, or
+    the ratchet discourages the direction it exists to encourage.
+    """
+    keys = {"k.inert": {"status": "inert"}, "k.live": {"status": "live"}}
+    opens = {"status": "inert", "from": None, "to": 18, "date": "2026-09-09", "reason": "opens"}
+    rise = {
+        "status": "inert",
+        "from": 18,
+        "to": 19,
+        "date": "2026-09-10",
+        "keys": ["k.inert"],
+        "reason": "R" * _MIN_RISE_REASON,
+    }
+    #: A well-formed `unaudited` half, so `inert` is the only thing under test.
+    UNAUDITED = {"status": "unaudited", "from": None, "to": 0, "date": "2026-09-09", "reason": "n/a"}
+
+    def check(ceiling: int, hist: list[dict]) -> list[str]:
+        return _check_ratchet_ledger({"inert": ceiling, "unaudited": 0}, hist + [UNAUDITED], keys)
+
+    #: (name, ceiling, inert history, substring the rejection MUST contain).
+    #: `None` means the case must be accepted.
+    cases: list[tuple[str, int, list[dict], str | None]] = [
+        ("a ceiling edited on its own", 25, [opens, rise], "may be edited on its own"),
+        ("a rise whose reason is a label", 19, [opens, {**rise, "reason": "cleanup"}], "not a label"),
+        ("a rise naming a key that is not inert", 19, [opens, {**rise, "keys": ["k.live"]}], "but it is recorded"),
+        ("a rise naming no key at all", 19, [opens, {**rise, "keys": []}], "needs `keys` naming"),
+        ("a rise naming a key that does not exist", 19, [opens, {**rise, "keys": ["k.nope"]}], "not in this manifest"),
+        ("a deleted entry, leaving a broken chain", 19, [rise], "must have `from: null`"),
+        ("a gap between two entries", 26, [opens, rise, {**rise, "from": 25, "to": 26}], "must chain"),
+        ("a missing ledger", 19, [], "no entry for 'inert'"),
+        ("a malformed date", 19, [opens, {**rise, "date": "10/09/2026"}], "must be YYYY-MM-DD"),
+        # A FALL, deliberately: on a RISE the length rule fires too, and its
+        # message CONTAINS "needs a `reason`" — the substring would then match
+        # the wrong rule and the case would pass with this one disabled. Found
+        # by disabling each rule in turn and checking this function goes red.
+        (
+            "an entry with no reason",
+            18,
+            [opens, rise, {"status": "inert", "from": 19, "to": 18, "date": "2026-09-10", "reason": ""}],
+            "every entry needs a `reason`",
+        ),
+        ("the ledger as it stands", 19, [opens, rise], None),
+        (
+            "tightening the ceiling after wiring a key",
+            18,
+            [opens, rise, {"status": "inert", "from": 19, "to": 18, "date": "2026-09-10", "reason": "wired"}],
+            None,
+        ),
+    ]
+
+    failures: list[str] = []
+    for name, ceiling, hist, expected in cases:
+        found = check(ceiling, hist)
+        if expected is None:
+            if found:
+                failures.append(f"self-test: the ledger check rejected {name}: {found}")
+        elif not found:
+            failures.append(f"self-test: the ledger check ACCEPTED {name}")
+        elif not any(expected in problem for problem in found):
+            # Rejected, but by a different rule — the case proves nothing about
+            # the one it is named for. This is what made the first draft green
+            # while a rule was disabled.
+            failures.append(
+                f"self-test: {name} was rejected, but not for its own reason "
+                f"({expected!r} absent): {found}"
+            )
+    return failures
+
+
 @contextlib.contextmanager
 def _recording_config_sets() -> "Iterator[set[str]]":
     """Record every dot path a probe writes through ``Config.set``.
@@ -485,11 +687,24 @@ def governance_keys() -> set[str]:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--sdk-root", default="..", help="directory holding the sibling SDK checkouts")
+    ap.add_argument(
+        "--self-test",
+        action="store_true",
+        help="check that the ratchet-ledger enforcement rejects each way around it",
+    )
     args = ap.parse_args()
+
+    if args.self_test:
+        failures = _self_test_ratchet_ledger()
+        for failure in failures:
+            print(f"  {failure}", file=sys.stderr)
+        print(f"ratchet-ledger self-test: {'FAILED' if failures else 'every bypass is rejected'}")
+        return 1 if failures else 0
 
     manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
     entries: dict[str, dict] = manifest["keys"]
     ratchet: dict[str, int] = manifest["ratchet"]
+    history: list[dict] = manifest.get("ratchet_history", [])
     declared = governance_keys()
     problems: list[str] = []
 
@@ -572,6 +787,7 @@ def main() -> int:
                 f"{ceiling}. This number may fall and may not rise — lower the ceiling in "
                 f"config_key_consumers.json when you fix one."
             )
+    problems.extend(_check_ratchet_ledger(ratchet, history, entries))
 
     for p in problems:
         print(f"  {p}", file=sys.stderr)

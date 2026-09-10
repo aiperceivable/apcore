@@ -260,6 +260,16 @@ jobs:
         # check — the one anybody would write — passes on all four.
         run: python3 conformance/check_config_key_consumers.py --sdk-root ..
 
+      - name: The ratchet ledger rejects every way around it
+        working-directory: apcore
+        # The ratchet's "may fall, may not rise" lived in a code comment, and the
+        # first raise under it was made in the same commit that changed the number.
+        # A ceiling now has to equal the last entry of an append-only ledger, so a
+        # rise means appending a record of what moved and why. That enforcement is
+        # itself only as good as its own tests: this asserts each bypass is rejected
+        # FOR ITS OWN REASON, and that tightening a ceiling stays a one-line change.
+        run: python3 conformance/check_config_key_consumers.py --self-test
+
       - name: Every fixture is driven by all three SDKs
         working-directory: apcore
         # --strict, because the backlog is closed: all 60 fixtures are driven by
