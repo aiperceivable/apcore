@@ -244,6 +244,14 @@ jobs:
         # wrapping be removed from two SDKs with every test still green.
         run: python3 conformance/check_expected_keys_read.py --strict --sdk-root ..
 
+      # The probes below EXECUTE apcore-python. Without its runtime
+      # dependencies every probe raises ImportError, and this job's whole point
+      # — "the key reaches a consumer" is proven behaviourally, not by grep —
+      # collapses into a checker that cannot run. Pinned to apcore-python's own
+      # `dependencies` list, which is where they are declared.
+      - name: Install the SDK runtime dependencies the probes need
+        run: pip install --quiet "pydantic>=2.7,<3" "pyyaml>=6.0,<7" "jsonschema>=4.21,<5"
+
       - name: Every declared config key reaches a consumer
         working-directory: apcore
         # config_key_governance.json pins that every declared key is ACCEPTED. It

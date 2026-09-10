@@ -1620,6 +1620,24 @@ def main() -> int:
     have_python = python_src.is_dir()
     if have_python:
         sys.path.insert(0, str(python_src))
+        # "The directory exists" is not "apcore imports". A checkout without the
+        # SDK's runtime dependencies installed satisfies the first and fails the
+        # second, and the failure then arrives as an ImportError traceback from
+        # whichever probe ran first — or, worse, from the `Config.set` recorder,
+        # which is entered OUTSIDE the per-probe try/except and killed the whole
+        # script. Measured on this checker's first CI run. Report it as a
+        # problem instead, naming the missing dependency, so the cause is legible
+        # and the probes are not silently skipped.
+        try:
+            import apcore.config  # noqa: F401
+        except ImportError as exc:
+            problems.append(
+                f"apcore-python is present at {python_src} but does not import: {exc}. "
+                f"Every probe would be skipped, so this check would pass without "
+                f"verifying anything. Install the SDK's runtime dependencies "
+                f"(pydantic, pyyaml, jsonschema) in whatever job runs this."
+            )
+            have_python = False
 
     for key, entry in sorted(entries.items()):
         status = entry.get("status")
