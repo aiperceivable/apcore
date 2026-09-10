@@ -395,16 +395,71 @@ def _timeout_ms_max() -> str | None:
     return _pipeline_probe("validation.pipeline.timeout_ms_max", 1000, {"timeout_ms": 600000})
 
 
+def _capture_point(redaction: dict, module_input: dict) -> dict:
+    """Run a real module under `redaction` and return the CAPTURED input.
+
+    Drives the path the LIBRARY itself drives — `APCore(config=…)`, a real
+    execution, `context.redacted_inputs` — rather than
+    `RedactionConfig.from_config` plus a helper. That distinction is why these
+    three keys were recorded `partial` for a day: their probes set the key and
+    observed an effect, but through a factory **nothing in any SDK's `src/`
+    called**, and driving a helper nothing else drives proves the helper. The
+    configured rules reached the capture point in no SDK until #120
+    (PROTOCOL_SPEC §10.6.1 "Where the rules apply").
+
+    Read through a middleware rather than the `Context` handed to `call`: the
+    pipeline derives a child context and the capture point writes to that.
+    """
+    from pydantic import BaseModel
+
+    from apcore import APCore
+    from apcore.config import Config
+    from apcore.middleware.base import Middleware
+
+    class _In(BaseModel):
+        probe_field: str
+        other_field: str
+
+    class _Out(BaseModel):
+        ok: bool
+
+    class _M:
+        input_schema = _In
+        output_schema = _Out
+        description = "Config-key probe module."
+
+        def execute(self, inputs: dict, context: object) -> dict:
+            return {"ok": True}
+
+    class _Capture(Middleware):
+        def __init__(self) -> None:
+            self.inputs: dict | None = None
+
+        def before(self, module_id: str, inputs: dict, context: object) -> None:
+            self.inputs = context.redacted_inputs
+            return None
+
+    client = APCore(
+        config=Config(
+            {"version": "1.0", "project": {"name": "probe"}, "obs": {"redaction": redaction}}
+        )
+    )
+    client.register("executor.probe.module", _M())
+    seen = _Capture()
+    client.use(seen)
+    client.call("executor.probe.module", module_input)
+    if seen.inputs is None:
+        raise AssertionError("the capture point did not run")
+    return seen.inputs
+
+
 @probe("obs.redaction.sensitive_keys")
 def _sensitive_keys() -> str | None:
-    """A field named by the key is redacted; one that is not, is not."""
-    from apcore.config import Config
-    from apcore.observability.context_logger import RedactionConfig, _apply_redaction_config
-
-    cfg = Config.from_defaults()
-    cfg.set("obs.redaction.sensitive_keys", ["probe_field"])
-    rc = RedactionConfig.from_config(cfg)
-    out = _apply_redaction_config({"probe_field": "secret", "other_field": "kept"}, rc)
+    """A field named by the key is redacted at the capture point; one that is not, is not."""
+    out = _capture_point(
+        {"sensitive_keys": ["probe_field"]},
+        {"probe_field": "secret", "other_field": "kept"},
+    )
     if out.get("probe_field") == "secret":
         return "a field named by obs.redaction.sensitive_keys was not redacted"
     if out.get("other_field") != "kept":
@@ -412,16 +467,27 @@ def _sensitive_keys() -> str | None:
     return None
 
 
+@probe("obs.redaction.regex_patterns")
+def _regex_patterns() -> str | None:
+    """A VALUE matching the key is redacted at the capture point; one that is not, is not."""
+    out = _capture_point(
+        {"sensitive_keys": [], "regex_patterns": ["^sk-[A-Za-z0-9]{6,}$"]},
+        {"probe_field": "sk-abcdef123456", "other_field": "kept"},
+    )
+    if out.get("probe_field") != "***REDACTED***":
+        return f"a value matching obs.redaction.regex_patterns was not redacted: {out!r}"
+    if out.get("other_field") != "kept":
+        return "a value NOT matching obs.redaction.regex_patterns was redacted"
+    return None
+
+
 @probe("obs.redaction.replacement")
 def _replacement() -> str | None:
-    """The substitution token is the configured one."""
-    from apcore.config import Config
-    from apcore.observability.context_logger import RedactionConfig, _apply_redaction_config
-
-    cfg = Config.from_defaults()
-    cfg.set("obs.redaction.sensitive_keys", ["probe_field"])
-    cfg.set("obs.redaction.replacement", "<<PROBE>>")
-    out = _apply_redaction_config({"probe_field": "secret"}, RedactionConfig.from_config(cfg))
+    """The substitution token at the capture point is the configured one."""
+    out = _capture_point(
+        {"sensitive_keys": ["probe_field"], "replacement": "<<PROBE>>"},
+        {"probe_field": "secret", "other_field": "kept"},
+    )
     if out.get("probe_field") != "<<PROBE>>":
         return f"obs.redaction.replacement ignored: got {out.get('probe_field')!r}"
     return None
@@ -633,7 +699,7 @@ def _self_test_ratchet_ledger() -> list[str]:
 
 @contextlib.contextmanager
 def _recording_config_sets() -> "Iterator[set[str]]":
-    """Record every dot path a probe writes through ``Config.set``.
+    """Record every dot path a probe puts into a ``Config``.
 
     Requirement 2 of this file says a probe must "set the key away from its
     default, observe something **outside** `Config` change". Only the second
@@ -647,22 +713,46 @@ def _recording_config_sets() -> "Iterator[set[str]]":
     reader: the ACL's effect is read from the ACL FILE (`data.get(
     "default_effect", "deny")`). A key nothing reads was recorded as `live` by
     the very guard written to find keys nothing reads.
+
+    Both ways of putting a key into a configuration count, because both are
+    ways an operator does it: `Config.set(key, …)`, and declaring it in the
+    document a `Config` is constructed from. Watching only `set` rejected a
+    probe that built `Config({"obs": {"redaction": {...}}})` — the shape closest
+    to a real `apcore.yaml` — which would have pushed probes toward the less
+    representative spelling to satisfy the checker.
     """
     from apcore.config import Config
 
     touched: set[str] = set()
-    original = Config.set
 
-    def recording(self: object, key: str, value: object = None, **kwargs: object) -> object:
+    def walk(node: object, prefix: str = "") -> None:
+        if not isinstance(node, dict):
+            return
+        for key, value in node.items():
+            path = f"{prefix}.{key}" if prefix else str(key)
+            touched.add(path)
+            walk(value, path)
+
+    original_set = Config.set
+    original_init = Config.__init__
+
+    def recording_set(self: object, key: str, value: object = None, **kwargs: object) -> object:
         if isinstance(key, str):
             touched.add(key)
-        return original(self, key, value, **kwargs)  # type: ignore[arg-type]
+        return original_set(self, key, value, **kwargs)  # type: ignore[arg-type]
 
-    Config.set = recording  # type: ignore[method-assign]
+    def recording_init(self: object, *args: object, **kwargs: object) -> None:
+        for candidate in (*args, *kwargs.values()):
+            walk(candidate)
+        original_init(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    Config.set = recording_set  # type: ignore[method-assign]
+    Config.__init__ = recording_init  # type: ignore[method-assign]
     try:
         yield touched
     finally:
-        Config.set = original  # type: ignore[method-assign]
+        Config.set = original_set  # type: ignore[method-assign]
+        Config.__init__ = original_init  # type: ignore[method-assign]
 
 
 def governance_keys() -> set[str]:
@@ -766,8 +856,9 @@ def main() -> int:
                 problems.append(f"{key}: probe {name!r} failed — {failure}")
             elif key not in touched:
                 problems.append(
-                    f"{key}: probe {name!r} passed WITHOUT ever setting {key!r} through "
-                    f"`Config.set`, so it cannot show that the key reaches anything. It "
+                    f"{key}: probe {name!r} passed WITHOUT ever putting {key!r} into a "
+                    f"`Config` — neither through `Config.set` nor in a document it was "
+                    f"constructed from — so it cannot show that the key reaches anything. It "
                     f"observed something outside `Config` change, which was the stated "
                     f"criterion and is not sufficient: `acl.default_effect`'s probe built "
                     f"`ACL(default_effect=...)` directly and passed for a config key NO SDK "

@@ -145,17 +145,15 @@
       "tracking": "https://github.com/aiperceivable/apcore/issues/118"
     },
     "obs.redaction.regex_patterns": {
-      "status": "partial",
-      "reason": "Read only by `RedactionConfig.from_config` / `fromConfig` / `::from_config`, and **nothing in any SDK's `src/` calls it** — verified by search across all three; the only call sites are this checker's probes and apcore-rust's own unit tests. Nor is `ObsLoggingMiddleware` installed by any default client or executor construction path. So the value takes effect only when the APPLICATION AUTHOR writes `RedactionConfig.from_config(config)` and wires the middleware by hand, which is the arrangement `docs/features/observability.md` documents but no code performs. Out of the box the DEFAULT list is applied (`RedactionConfig.default()`); an operator's OVERRIDE of this key reaches nothing. Separately the key never reaches the executor's input/output capture point at all (#120). Downgraded from `live` on 2026-09-10: the probe does set the key and does observe an effect, so it satisfies the letter of requirement 2, but the path it drives is one nothing else drives. Audited 2026-09-10 alongside its two siblings; it was `unaudited` and has the same single reader."
+      "status": "live",
+      "probe": "obs.redaction.regex_patterns"
     },
     "obs.redaction.replacement": {
-      "status": "partial",
-      "reason": "Read only by `RedactionConfig.from_config` / `fromConfig` / `::from_config`, and **nothing in any SDK's `src/` calls it** — verified by search across all three; the only call sites are this checker's probes and apcore-rust's own unit tests. Nor is `ObsLoggingMiddleware` installed by any default client or executor construction path. So the value takes effect only when the APPLICATION AUTHOR writes `RedactionConfig.from_config(config)` and wires the middleware by hand, which is the arrangement `docs/features/observability.md` documents but no code performs. Out of the box the DEFAULT list is applied (`RedactionConfig.default()`); an operator's OVERRIDE of this key reaches nothing. Separately the key never reaches the executor's input/output capture point at all (#120). Downgraded from `live` on 2026-09-10: the probe does set the key and does observe an effect, so it satisfies the letter of requirement 2, but the path it drives is one nothing else drives.",
+      "status": "live",
       "probe": "obs.redaction.replacement"
     },
     "obs.redaction.sensitive_keys": {
-      "status": "partial",
-      "reason": "Read only by `RedactionConfig.from_config` / `fromConfig` / `::from_config`, and **nothing in any SDK's `src/` calls it** — verified by search across all three; the only call sites are this checker's probes and apcore-rust's own unit tests. Nor is `ObsLoggingMiddleware` installed by any default client or executor construction path. So the value takes effect only when the APPLICATION AUTHOR writes `RedactionConfig.from_config(config)` and wires the middleware by hand, which is the arrangement `docs/features/observability.md` documents but no code performs. Out of the box the DEFAULT list is applied (`RedactionConfig.default()`); an operator's OVERRIDE of this key reaches nothing. Separately the key never reaches the executor's input/output capture point at all (#120). Downgraded from `live` on 2026-09-10: the probe does set the key and does observe an effect, so it satisfies the letter of requirement 2, but the path it drives is one nothing else drives.",
+      "status": "live",
       "probe": "obs.redaction.sensitive_keys"
     },
     "observability.metrics.enabled": {
@@ -358,6 +356,13 @@
       "to": 30,
       "date": "2026-09-10",
       "reason": "`obs.redaction.regex_patterns` audited to `partial` alongside its two siblings, which share its single reader."
+    },
+    {
+      "status": "unaudited",
+      "from": 30,
+      "to": 30,
+      "date": "2026-09-10",
+      "reason": "No change: `obs.redaction.regex_patterns` moves partial -> live, which touches neither ratcheted count. Recorded so the ledger has no silent gap across the #120 change."
     }
   ]
 }

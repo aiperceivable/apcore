@@ -9,18 +9,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.31.0] - 2026-09-09
 
-> Ships `PROTOCOL_SPEC` **v1.37.0 → v1.40.0**. Four decisions of the same shape, one release.
+> Ships `PROTOCOL_SPEC` **v1.37.0 → v1.41.0**. Five decisions of the same shape, one release.
 > v1.37.0: the specification typed six values as "a glob" and named no matcher, so each SDK
 > inherited its host library's dialect. v1.38.0: six `validation.*` keys were declared and read by
 > nobody, and the numbers that filled the gap disagreed six ways for a single field. v1.39.0: ten
 > more declared keys reached no consumer at all, and withdrawing them turned out to be a migration
 > rather than a cleanup. v1.40.0: §10.6.1 said a value is matched "in its string form", one SDK
 > read that as an instruction to stringify, and the conversion turns out to be unspecifiable —
-> three languages render one value three ways. All four are the same failure — a contract named
-> but never pinned — and all four close the same way: state the rule once, in one place, and make
-> a fixture that can fail.
+> three languages render one value three ways. v1.41.0: the same section required redaction at two
+> surfaces while §10.6's published algorithm had no parameter for it, so the configured rules
+> reached one surface in every implementation. All five are the same failure — a contract named
+> but never pinned — and all five close the same way: state the rule once, in one place, and make
+> a test that can fail.
 
 ### Added
+
+- **`PROTOCOL_SPEC` §10.6.1 "Where the rules apply" (new, spec v1.41.0) — `obs.redaction.*` reached one of the two surfaces the specification names, in all three SDKs, for the whole life of the keys ([#120](https://github.com/aiperceivable/apcore/issues/120)).** `docs/features/observability.md` has always required redaction "both at log emission and at the executor's input/output capture point", as the union of `x-sensitive`, `sensitive_keys` and `regex_patterns`. Measured: the capture point applied `x-sensitive` and the `_secret_` prefix and **nothing else** — apcore-python passed no configured keys or patterns, and apcore-typescript and apcore-rust had **no parameter for them at all**.
+  **The three agreed with each other; what they disagreed with was the documentation — and the cause was in this specification.** §10.6 publishes its algorithm as `redact_sensitive(data, schema)`: two inputs, no configuration. All three wrote that signature and honoured it. The "both surfaces" rule lived only in a feature document with no normative section behind it, so **a MUST whose subject the published algorithm cannot express is a MUST nothing can satisfy.**
+  Requirement 2 states the failure as a contradiction rather than a gap: the same field, in the same execution, was a secret in the log line and plaintext in the captured input. The capture point is the one that matters more and the one that was missed — it fills what the audit trail carries (governance events, error histories, any middleware reading `context.redacted_inputs`), so an operator who added a `regex_patterns` entry for a bearer token got it redacted in the log they were watching and stored in the record they were not.
+  **Requirement 3 turned up a fourth divergence at this surface**, invisible while the configured rules reached the capture point in none of them: apcore-python resolved an absent key list to the canonical 16-entry default, apcore-typescript and apcore-rust stopped at `x-sensitive` plus `_secret_`. A field named `password`, with nothing configured anywhere, was redacted in the captured input by one SDK and stored in plaintext by two. "No configuration" now means *the defaults*, never *no redaction*, and the three agree.
+  Fixed in all three SDKs, with the rules resolved **once per strategy/executor** (requirement 5) and the same object reaching all three capture points. The acceptance test is the shape the issue names — a real `Config`, a real client, a real execution, reading `redacted_inputs` / `redacted_output` — because **every** pre-existing redaction test drove the config object or the logger, and no test in any SDK had ever observed `redacted_inputs` at all.
+
+### Fixed
+
+- **`Config::get_declared` reported the struct's defaults rather than the document, in apcore-rust ([#119](https://github.com/aiperceivable/apcore/issues/119)).** Nine keys are backed by typed struct fields — four `executor.*`, four `observability.*`, and `modules_path` — and each carries a value whether the document mentioned it or not. `get_declared` consulted the typed fields first, so a file declaring nothing answered `Some(false)` for `observability.tracing.enabled` and `Some(32)` for `executor.max_call_depth`. That view is what §9.3 evaluates requiredness against and what §9.2.4's deprecation notice is driven by, so "declared" collapsing into "defaulted" is the distinction those two rules are made of — and it is why §9.2.4's implementation had to read `user_namespaces` by hand instead of using the method built for the question. Two gaps closed with it: `set()` (and therefore every `APCORE_*` override) left no as-written record for a typed key, and `modules_path` — the one typed field that is a top-level scalar — was consumed by serde, so legacy mode answered `None` where namespace mode answered `Some`. The second was found by the suite, not by inspection: the first probe used namespace mode only and reported all nine correct.
 
 - **`PROTOCOL_SPEC` §10.6.1 requirement 2 — `regex_patterns` applies to string values only (spec v1.40.0, [#117](https://github.com/aiperceivable/apcore/issues/117)).** Requirement 1 said the pattern is searched *"against the string form of a field's value"*. Read as an instruction to stringify — and apcore-python's log-emission path did — so **one SDK gave two answers for one value**: with `regex_patterns: ["\\d+"]`, `amount: 42` came back `***REDACTED***` from `_apply_redaction_config` and untouched from `redact_sensitive`, on a rule §10.6 requires to hold on **both** surfaces.
   **No wording could have saved the phrase.** For the single value `{"a": 1}` the three host languages render `{'a': 1}`, `[object Object]` and `{"a":1}`; for `true` they render `True`, `true` and `true`. A matching rule defined over a per-language rendering is not one rule with an ambiguity in it — it is three rules, which is exactly the defect §9.2.3 was written to end, reappearing one section later in a phrase rather than in a type. The rule is now a **MUST NOT**: a number, boolean, `null`, object or array is not tested and **is not converted in order to test it**; containers are descended into, so a string inside one is still reached at its own position. This pins the majority behaviour rather than changing it — apcore-typescript, apcore-rust and apcore-python's own executor-capture path all already restricted to strings, and one code path of four did not.
