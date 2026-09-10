@@ -52,6 +52,7 @@ import contextlib
 import json
 import re
 import sys
+import warnings
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Callable
@@ -393,6 +394,309 @@ def _step_name_max_length() -> str | None:
 @probe("validation.pipeline.timeout_ms_max")
 def _timeout_ms_max() -> str | None:
     return _pipeline_probe("validation.pipeline.timeout_ms_max", 1000, {"timeout_ms": 600000})
+
+
+# ---------------------------------------------------------------------------
+# The executor limits (#118 audit, 2026-09-10)
+# ---------------------------------------------------------------------------
+
+
+def _probe_module():
+    """A trivial registered module, and the client that owns it."""
+    from pydantic import BaseModel
+
+    class _In(BaseModel):
+        pass
+
+    class _Out(BaseModel):
+        ok: bool
+
+    class _M:
+        input_schema = _In
+        output_schema = _Out
+        description = "Config-key probe module."
+
+        def execute(self, inputs: dict, context: object) -> dict:
+            return {"ok": True}
+
+    return _M()
+
+
+def _client(section: dict):
+    """An `APCore` built from a document carrying `section`."""
+    from apcore import APCore
+    from apcore.config import Config
+
+    doc = {"version": "1.0", "project": {"name": "probe"}, **section}
+    client = APCore(config=Config(doc))
+    client.register("executor.probe.module", _probe_module())
+    return client
+
+
+def _chain_limit_probe(key: str, low: int, chain_len: int, expected: str) -> str | None:
+    """A chain limit must reject past the configured bound and admit under it.
+
+    Both halves, because a limit that rejects everything passes the first.
+    """
+    from apcore.context import Context
+
+    def run(limit: int) -> str:
+        client = _client({"executor": {key.rsplit(".", 1)[-1]: limit}})
+        ctx = Context.create()
+        for i in range(chain_len):
+            ctx = ctx.child(f"executor.probe.n{i}" if "depth" in key else "executor.probe.module")
+        try:
+            client.call("executor.probe.module", {}, context=ctx)
+        except Exception as exc:  # noqa: BLE001 — the error TYPE is the observation
+            return type(exc).__name__
+        return "ok"
+
+    if run(low) != expected:
+        return f"{key}={low} did not reject a chain of {chain_len}: got {run(low)}"
+    if run(10_000) != "ok":
+        return f"{key}=10000 rejected a chain of {chain_len}, so the value is not being read"
+    return None
+
+
+@probe("executor.max_call_depth")
+def _max_call_depth() -> str | None:
+    return _chain_limit_probe("executor.max_call_depth", 3, 10, "CallDepthExceededError")
+
+
+@probe("executor.max_module_repeat")
+def _max_module_repeat() -> str | None:
+    return _chain_limit_probe("executor.max_module_repeat", 2, 6, "CallFrequencyExceededError")
+
+
+def _timeout_probe(key: str) -> str | None:
+    """A timeout must fire below the module's own duration and not above it."""
+    import time
+
+    from pydantic import BaseModel
+
+    class _In(BaseModel):
+        pass
+
+    class _Out(BaseModel):
+        ok: bool
+
+    class _Slow:
+        input_schema = _In
+        output_schema = _Out
+        description = "Sleeps long enough for a 50ms budget to expire."
+
+        def execute(self, inputs: dict, context: object) -> dict:
+            time.sleep(0.30)
+            return {"ok": True}
+
+    from apcore import APCore
+    from apcore.config import Config
+
+    def run(ms: int) -> str:
+        doc = {
+            "version": "1.0",
+            "project": {"name": "probe"},
+            "executor": {key.rsplit(".", 1)[-1]: ms},
+        }
+        client = APCore(config=Config(doc))
+        client.register("executor.probe.slow", _Slow())
+        try:
+            client.call("executor.probe.slow", {})
+        except Exception as exc:  # noqa: BLE001
+            return type(exc).__name__
+        return "ok"
+
+    if run(50) != "ModuleTimeoutError":
+        return f"{key}=50 did not time out a 300ms module: got {run(50)}"
+    if run(60_000) != "ok":
+        return f"{key}=60000 timed out a 300ms module, so the value is not being read"
+    return None
+
+
+@probe("executor.default_timeout")
+def _default_timeout() -> str | None:
+    return _timeout_probe("executor.default_timeout")
+
+
+@probe("executor.global_timeout")
+def _global_timeout() -> str | None:
+    return _timeout_probe("executor.global_timeout")
+
+
+@probe("_config.strict")
+def _config_strict() -> str | None:
+    """§9.14: with strict on, an undeclared key inside a framework section is rejected.
+
+    Goes through `Config.load` from a file rather than `Config(dict)`: the
+    strict walk runs at load, and a dict-constructed `Config` skips it —
+    measured, and worth knowing, because a probe written the obvious way
+    reports this key inert.
+    """
+    import tempfile
+    from pathlib import Path
+
+    import yaml
+
+    from apcore.config import Config
+
+    def load(strict: object) -> str:
+        doc: dict = {"version": "1.0", "project": {"name": "probe"}, "executor": {"bogus": 1}}
+        if strict is not None:
+            doc["_config"] = {"strict": strict}
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "apcore.yaml"
+            path.write_text(yaml.safe_dump(doc), encoding="utf-8")
+            try:
+                # The temp dir is not the working directory, so #113's project-root
+                # notice fires on every load. It is not what this probe measures.
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore", DeprecationWarning)
+                    Config.load(str(path))
+            except Exception as exc:  # noqa: BLE001
+                return type(exc).__name__
+        return "ok"
+
+    if load(True) == "ok":
+        return "_config.strict=true accepted an undeclared key inside a framework section"
+    if load(False) != "ok":
+        return "_config.strict=false rejected an undeclared key; the flag inverts or is ignored"
+    if load(None) != "ok":
+        return "an absent _config.strict rejected an undeclared key; the default is not false"
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Extension discovery (#118 audit, 2026-09-10)
+# ---------------------------------------------------------------------------
+
+#: A file the default discoverer will accept: a class with pydantic
+#: input/output schemas and an `execute`. Anything less is discovered and then
+#: dropped at registration, which reads as "the key did nothing".
+_DISCOVERABLE = '''from pydantic import BaseModel
+
+
+class In(BaseModel):
+    pass
+
+
+class Out(BaseModel):
+    ok: bool
+
+
+class Mod:
+    input_schema = In
+    output_schema = Out
+    description = "Config-key probe module."
+
+    def execute(self, inputs, context):
+        return {"ok": True}
+'''
+
+
+def _discovered(section: dict, build) -> list[str]:
+    """Module IDs the registry discovers from a tree `build` lays out.
+
+    Drives `Registry.discover()` — the library's own discovery path — and
+    reports what it registered, rather than reading the key back.
+    """
+    import logging
+    import os
+    import tempfile
+    import warnings
+    from pathlib import Path
+
+    import yaml
+
+    from apcore.config import Config
+    from apcore.registry import Registry
+
+    root = Path(tempfile.mkdtemp())
+    build(root)
+    doc = {"version": "1.0", "project": {"name": "probe"}, **section}
+    (root / "apcore.yaml").write_text(yaml.safe_dump(doc), encoding="utf-8")
+
+    cwd = os.getcwd()
+    os.chdir(root)
+    try:
+        with warnings.catch_warnings():
+            # #113's project-root notice fires because the temp dir is not the
+            # working directory. Not what these probes measure.
+            warnings.simplefilter("ignore", DeprecationWarning)
+            config = Config.load(str(root / "apcore.yaml"))
+        previous = logging.getLogger().manager.disable
+        logging.disable(logging.CRITICAL)
+        try:
+            registry = Registry(config=config)
+            registry.discover()
+            return sorted(registry.module_ids)
+        finally:
+            logging.disable(previous)
+    finally:
+        os.chdir(cwd)
+
+
+def _write(path, text: str = _DISCOVERABLE) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+
+
+@probe("extensions.root")
+def _extensions_root() -> str | None:
+    """The configured root selects WHICH tree is scanned."""
+
+    def build(root):
+        _write(root / "myext" / "executor" / "here" / "mod.py")
+        _write(root / "other" / "executor" / "elsewhere" / "mod.py")
+
+    here = _discovered({"extensions": {"root": "./myext"}}, build)
+    there = _discovered({"extensions": {"root": "./other"}}, build)
+    if here != ["executor.here.mod"]:
+        return f"extensions.root=./myext discovered {here}, expected only executor.here.mod"
+    if there != ["executor.elsewhere.mod"]:
+        return f"extensions.root=./other discovered {there}, so the key selects nothing"
+    return None
+
+
+@probe("extensions.max_depth")
+def _extensions_max_depth() -> str | None:
+    """The depth bound must exclude what lies past it and admit what does not."""
+
+    def build(root):
+        _write(root / "ext" / "executor" / "shallow" / "mod.py")
+        _write(root / "ext" / "executor" / "a" / "b" / "c" / "deep" / "mod.py")
+
+    shallow = _discovered({"extensions": {"root": "./ext", "max_depth": 3}}, build)
+    both = _discovered({"extensions": {"root": "./ext", "max_depth": 8}}, build)
+    if shallow != ["executor.shallow.mod"]:
+        return f"max_depth=3 discovered {shallow}; the bound did not exclude the deep module"
+    if len(both) != 2:
+        return f"max_depth=8 discovered {both}; the bound excludes what it should admit"
+    return None
+
+
+@probe("extensions.follow_symlinks")
+def _extensions_follow_symlinks() -> str | None:
+    """A symlinked directory is traversed only when the key says so.
+
+    The link target must live INSIDE the extension root: the scanner confines
+    traversal even with the flag on, so a target outside it is refused either
+    way and the probe cannot discriminate. Measured — a first version pointed
+    the link outside and reported the key inert.
+    """
+
+    def build(root):
+        ext = root / "ext"
+        _write(ext / "executor" / "plain" / "mod.py")
+        _write(ext / "hidden" / "target" / "mod.py")
+        (ext / "executor" / "sym").symlink_to(ext / "hidden" / "target", target_is_directory=True)
+
+    off = _discovered({"extensions": {"root": "./ext", "follow_symlinks": False}}, build)
+    on = _discovered({"extensions": {"root": "./ext", "follow_symlinks": True}}, build)
+    if "executor.sym.mod" in off:
+        return "follow_symlinks=false traversed a symlinked directory"
+    if "executor.sym.mod" not in on:
+        return f"follow_symlinks=true did not traverse a symlinked directory: {on}"
+    return None
 
 
 def _capture_point(redaction: dict, module_input: dict) -> dict:

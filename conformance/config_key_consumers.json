@@ -1,18 +1,20 @@
 {
   "_comment": "What reads each declared configuration key. Enforced by conformance/check_config_key_consumers.py.\n\nconfig_key_governance.json pins that every declared key is ACCEPTED — the three SDKs agree on the key set and the default table. Nothing pinned that any key is READ, and 29 of 61 were not (apcore#118). This file is the missing half: every key states what consumes it, or states that nothing does and why.\n\nSTATUSES\n  live      — a probe in the checker SETS THE KEY through Config.set (enforced: the checker records what each probe writes and rejects one that never writes its own key) and observes an effect OUTSIDE Config, on a path the LIBRARY ITSELF drives — APCore(config=...), BindingLoader.load_bindings(..., cfg), the executor's stream merge. Three things have each produced a false `live` and each is excluded by one clause above: reading the value back from Config proves plumbing, not consumption (four observability.* keys round-trip perfectly and are consumed by nothing); reaching the behaviour by another door proves the behaviour, not the key (acl.default_effect's probe built ACL(default_effect=...) directly); and driving a helper nothing else calls proves the helper, not the library (obs.redaction.* is read only by RedactionConfig.from_config, which no SDK's src/ invokes).\n  partial   — something reads it, but not on the path an operator would expect. The reason must say what the gap is.\n  inert     — nothing reads it. A written decision, not an accident; the reason must say what was measured.\n  unaudited — not yet examined. NOT a claim that the key works.\n\nThe `ratchet` counts may fall and may not rise. Lower a ceiling in the same change that fixes or audits a key; that is what turns apcore#118 from a report into a number that has to go down.\n\nTHE RATCHET IS A LEDGER, NOT A NUMBER. Each `ratchet` ceiling MUST equal the `to` of the last `ratchet_history` entry for that status, and the entries MUST chain (`from` == the previous `to`). Editing a ceiling on its own therefore fails the checker: the number and the ledger stop agreeing. A RISE additionally requires a `reason` and a `keys` list naming the keys that moved, and each named key must actually hold that status. Falls need an entry too, so the chain stays continuous, but no `keys`.\n\nThis exists because the previous rule — \"may fall, may not rise\" — was enforced by a code comment, and the first raise under it (inert 18 -> 19 on 2026-09-10) was made in the same commit that changed the number. A ceiling guarded only by review is guarded only when someone looks.",
   "ratchet": {
-    "inert": 19,
-    "unaudited": 30
+    "inert": 20,
+    "unaudited": 21
   },
   "keys": {
     "$schema": {
       "status": "unaudited"
     },
     "_config.allow_unknown": {
-      "status": "unaudited"
+      "status": "inert",
+      "reason": "No reader in any SDK. §9.6.3's behaviour matrix gives FOUR rows for an unknown top-level namespace `billing`; measured against apcore-python, all four produce the same answer — the namespace is stored and readable through `get()`. The row that should differ is `strict:false` + `allow_unknown:false`, which the matrix defines as “silently ignored, not stored”. apcore-python's config.py:843 and apcore-typescript's config.ts:1537 each carry a comment saying the field deliberately plays no part in the §9.14 strict walk — correct, since §9.6.3 scopes it to namespaces rather than framework keys — but no other code path reads it either, in any of the three. Declared, documented with a default, and inert. Audited 2026-09-10; the choice between implementing §9.6.3's row and withdrawing the key is open."
     },
     "_config.strict": {
-      "status": "unaudited"
+      "status": "live",
+      "probe": "_config.strict"
     },
     "acl.audit.enabled": {
       "status": "inert",
@@ -64,16 +66,20 @@
       "status": "unaudited"
     },
     "executor.default_timeout": {
-      "status": "unaudited"
+      "status": "live",
+      "probe": "executor.default_timeout"
     },
     "executor.global_timeout": {
-      "status": "unaudited"
+      "status": "live",
+      "probe": "executor.global_timeout"
     },
     "executor.max_call_depth": {
-      "status": "unaudited"
+      "status": "live",
+      "probe": "executor.max_call_depth"
     },
     "executor.max_module_repeat": {
-      "status": "unaudited"
+      "status": "live",
+      "probe": "executor.max_module_repeat"
     },
     "extensions.auto_discover": {
       "status": "partial",
@@ -81,7 +87,8 @@
       "tracking": "https://github.com/aiperceivable/apcore/issues/118"
     },
     "extensions.follow_symlinks": {
-      "status": "unaudited"
+      "status": "live",
+      "probe": "extensions.follow_symlinks"
     },
     "extensions.ignore_patterns": {
       "status": "inert",
@@ -94,7 +101,8 @@
       "tracking": "https://github.com/aiperceivable/apcore/issues/118"
     },
     "extensions.max_depth": {
-      "status": "unaudited"
+      "status": "live",
+      "probe": "extensions.max_depth"
     },
     "extensions.namespace": {
       "status": "inert",
@@ -102,10 +110,12 @@
       "tracking": "https://github.com/aiperceivable/apcore/issues/118"
     },
     "extensions.root": {
-      "status": "unaudited"
+      "status": "live",
+      "probe": "extensions.root"
     },
     "extensions.roots": {
-      "status": "unaudited"
+      "status": "partial",
+      "reason": "Read by apcore-rust ONLY (`Registry::set_extension_roots_from_config`, which accepts both the string and the `{root: …}` object shape). apcore-python ignores it — measured: a document setting `extensions.roots` still scans `extensions.root`'s default `./extensions` and fails when it is absent — and apcore-typescript names it only in `config.ts`'s path-typed marker declarations, never as a reader. So a multi-root project works on one SDK of three, silently, which is the shape #116/#117 were about one layer down. Audited 2026-09-10."
     },
     "id_map.auto_detect": {
       "status": "inert",
@@ -363,6 +373,30 @@
       "to": 30,
       "date": "2026-09-10",
       "reason": "No change: `obs.redaction.regex_patterns` moves partial -> live, which touches neither ratcheted count. Recorded so the ledger has no silent gap across the #120 change."
+    },
+    {
+      "status": "unaudited",
+      "from": 30,
+      "to": 25,
+      "date": "2026-09-10",
+      "reason": "#118 audit batch 1: the four `executor.*` limits and `_config.strict` audited to `live` with behavioural probes. Each asserts BOTH halves — the limit rejects past its bound AND admits under it — because a probe that only checks rejection passes an implementation that rejects everything."
+    },
+    {
+      "status": "unaudited",
+      "from": 25,
+      "to": 21,
+      "date": "2026-09-10",
+      "reason": "#118 audit batch 2: extension discovery. `extensions.root` / `max_depth` / `follow_symlinks` audited to `live` against `Registry.discover()`; `extensions.roots` to `partial` — apcore-rust reads it, the other two do not."
+    },
+    {
+      "status": "inert",
+      "from": 19,
+      "to": 20,
+      "date": "2026-09-10",
+      "keys": [
+        "_config.allow_unknown"
+      ],
+      "reason": "#118 audit batch 2 found a key nothing reads. Not a regression: it has always been inert and was `unaudited`, i.e. not yet examined, which is exactly what that status means. The rise records a discovery, and `unaudited` fell by more than this in the same change — the surface got more honest, not worse."
     }
   ]
 }
