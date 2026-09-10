@@ -964,6 +964,244 @@ def _schema_strategy() -> str | None:
     return None
 
 
+# ---------------------------------------------------------------------------
+# The sys_modules payload keys (#118 audit, 2026-09-10)
+# ---------------------------------------------------------------------------
+
+
+def _sys_context(section: dict) -> dict:
+    """The objects `APCore` assembles from `sys_modules.*`, keyed by role.
+
+    The observable for this family is WHICH object the client builds and what
+    it was built with — the caps on the `ErrorHistory`, the presence of a
+    `FileOverridesStore`, the thresholds on the platform-notify middleware, the
+    subscribers on the emitter. Each is outside `Config` and each is produced by
+    `APCore`'s own construction, which is the path an operator actually gets.
+    """
+    import logging
+    import warnings
+
+    from apcore import APCore
+    from apcore.config import Config
+
+    doc = {
+        "version": "1.0",
+        "project": {"name": "probe"},
+        "sys_modules": {"enabled": True, **section},
+    }
+    previous = logging.getLogger().manager.disable
+    logging.disable(logging.CRITICAL)
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            return APCore(config=Config(doc))._sys_modules_context
+    finally:
+        logging.disable(previous)
+
+
+@probe("sys_modules.events.enabled")
+def _sys_events_enabled() -> str | None:
+    """The flag gates the three `system.control.*` modules, ALONGSIDE control.enabled.
+
+    Both must be true — measured as a 2x2. Worth pinning precisely, because the
+    coupling is not what the key's name suggests: turning `control.enabled` on
+    while leaving `events.enabled` off registers no control surface at all.
+    """
+    import logging
+    import warnings
+
+    from apcore import APCore
+    from apcore.config import Config
+
+    def control_modules(events: bool, control: bool) -> list[str]:
+        doc = {
+            "version": "1.0",
+            "project": {"name": "probe"},
+            "sys_modules": {
+                "enabled": True,
+                "events": {"enabled": events},
+                "control": {"enabled": control},
+            },
+        }
+        previous = logging.getLogger().manager.disable
+        logging.disable(logging.CRITICAL)
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", DeprecationWarning)
+                client = APCore(config=Config(doc))
+            return sorted(m for m in client.registry.module_ids if m.startswith("system.control."))
+        finally:
+            logging.disable(previous)
+
+    if not control_modules(events=True, control=True):
+        return "events.enabled=true + control.enabled=true registered no control modules"
+    if control_modules(events=False, control=True):
+        return "events.enabled=false still registered control modules, so the flag is ignored"
+    return None
+
+
+@probe("sys_modules.events.subscribers")
+def _sys_events_subscribers() -> str | None:
+    """A declared subscriber is assembled onto the emitter; none means none."""
+    empty = _sys_context({"events": {"enabled": True, "subscribers": []}})["event_emitter"]
+    if getattr(empty, "_subscribers", None):
+        return "an empty subscribers list still produced a subscriber"
+    one = _sys_context(
+        {
+            "events": {
+                "enabled": True,
+                "subscribers": [
+                    {
+                        "type": "webhook",
+                        "url": "https://example.invalid/hook",
+                        "event_pattern": "apcore.*",
+                    }
+                ],
+            }
+        }
+    )["event_emitter"]
+    if len(getattr(one, "_subscribers", []) or []) != 1:
+        return "a declared webhook subscriber was not assembled onto the emitter"
+    return None
+
+
+def _threshold_probe(field: str, attribute: str, values: tuple) -> str | None:
+    """A platform-notify threshold reaches the middleware, and is not a default."""
+    for value in values:
+        section = {"events": {"enabled": True, "thresholds": {field: value}}}
+        middleware = _sys_context(section)["platform_notify_middleware"]
+        actual = getattr(middleware, attribute, None)
+        if actual != value:
+            return f"sys_modules.events.thresholds.{field}={value} reached the middleware as {actual!r}"
+    return None
+
+
+@probe("sys_modules.events.thresholds.error_rate")
+def _sys_threshold_error_rate() -> str | None:
+    return _threshold_probe("error_rate", "_error_rate_threshold", (0.9, 0.25))
+
+
+@probe("sys_modules.events.thresholds.latency_p99_ms")
+def _sys_threshold_latency() -> str | None:
+    return _threshold_probe("latency_p99_ms", "_latency_p99_threshold_ms", (9999, 1234))
+
+
+def _error_history_probe(field: str, attribute: str, values: tuple) -> str | None:
+    for value in values:
+        section = {"error_history": {"enabled": True, field: value}}
+        history = _sys_context(section)["error_history"]
+        actual = getattr(history, attribute, None)
+        if actual != value:
+            return f"sys_modules.error_history.{field}={value} reached the store as {actual!r}"
+    return None
+
+
+@probe("sys_modules.error_history.max_entries_per_module")
+def _sys_history_per_module() -> str | None:
+    return _error_history_probe("max_entries_per_module", "_max_entries_per_module", (5, 77))
+
+
+@probe("sys_modules.error_history.max_total_entries")
+def _sys_history_total() -> str | None:
+    return _error_history_probe("max_total_entries", "_max_total_entries", (7, 999))
+
+
+@probe("sys_modules.control.overrides_path")
+def _sys_control_overrides_path() -> str | None:
+    """The configured path produces a file-backed overrides store; no path, no store."""
+    import tempfile
+    from pathlib import Path
+
+    events_on = {"events": {"enabled": True}}
+    without = _sys_context({"control": {"enabled": True}, **events_on})["overrides_store"]
+    if without is not None:
+        return f"no overrides_path still produced a store: {type(without).__name__}"
+
+    path = Path(tempfile.mkdtemp()) / "overrides.json"
+    store = _sys_context(
+        {"control": {"enabled": True, "overrides_path": str(path)}, **events_on}
+    )["overrides_store"]
+    if store is None:
+        return "a configured overrides_path produced no store"
+    actual = getattr(store, "_path", getattr(store, "path", None))
+    if Path(str(actual)).name != path.name:
+        return f"the store was built at {actual!r}, not at the configured path"
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Project identity (#118 audit, 2026-09-10)
+# ---------------------------------------------------------------------------
+
+
+@probe("project.name")
+def _project_name() -> str | None:
+    """The configured name is what `system.manifest.full` reports."""
+    import logging
+    import warnings
+
+    from apcore import APCore
+    from apcore.config import Config
+
+    def manifest(name: str) -> object:
+        doc = {
+            "version": "1.0",
+            "project": {"name": name},
+            "sys_modules": {"enabled": True, "manifest": {"enabled": True}},
+        }
+        previous = logging.getLogger().manager.disable
+        logging.disable(logging.CRITICAL)
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", DeprecationWarning)
+                client = APCore(config=Config(doc))
+            return client.call("system.manifest.full", {}).get("project_name")
+        finally:
+            logging.disable(previous)
+
+    for name in ("PROBE_ONE", "PROBE_TWO"):
+        reported = manifest(name)
+        if reported != name:
+            return f"project.name={name!r} was reported as {reported!r}"
+    return None
+
+
+@probe("version")
+def _config_version() -> str | None:
+    """§9.3 requiredness: a document without it is rejected, one with it loads.
+
+    The narrowest possible consumer, and a real one — this is the key
+    `Config.validate`'s required-field check is written about, so an
+    implementation that stopped reading it would start accepting documents the
+    schema declares invalid.
+    """
+    import tempfile
+    import warnings
+    from pathlib import Path
+
+    import yaml
+
+    from apcore.config import Config
+
+    def load(doc: dict) -> str:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "apcore.yaml"
+            path.write_text(yaml.safe_dump(doc), encoding="utf-8")
+            try:
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore", DeprecationWarning)
+                    Config.load(str(path))
+            except Exception as exc:  # noqa: BLE001
+                return type(exc).__name__
+        return "loaded"
+
+    if load({"version": "1.0", "project": {"name": "probe"}}) != "loaded":
+        return "a document carrying `version` was rejected"
+    if load({"project": {"name": "probe"}}) == "loaded":
+        return "a document with no `version` was accepted, so requiredness does not read it"
+    return None
+
+
 def _capture_point(redaction: dict, module_input: dict) -> dict:
     """Run a real module under `redaction` and return the CAPTURED input.
 
