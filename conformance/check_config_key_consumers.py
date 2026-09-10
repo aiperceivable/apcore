@@ -699,6 +699,271 @@ def _extensions_follow_symlinks() -> str | None:
     return None
 
 
+# ---------------------------------------------------------------------------
+# ACL and binding discovery (#118 audit, 2026-09-10)
+# ---------------------------------------------------------------------------
+
+
+def _in_project(section: dict, build):
+    """Load a config from a throwaway project root laid out by `build`.
+
+    Yields `(config, root)` with the working directory moved there, because
+    every key in this group is path-typed and resolves relative to it.
+    """
+    import contextlib
+    import logging
+    import os
+    import tempfile
+    import warnings
+    from pathlib import Path
+
+    import yaml
+
+    from apcore.config import Config
+
+    @contextlib.contextmanager
+    def ctx():
+        root = Path(tempfile.mkdtemp())
+        build(root)
+        doc = {"version": "1.0", "project": {"name": "probe"}, **section}
+        (root / "apcore.yaml").write_text(yaml.safe_dump(doc), encoding="utf-8")
+        cwd = os.getcwd()
+        os.chdir(root)
+        previous = logging.getLogger().manager.disable
+        logging.disable(logging.CRITICAL)
+        try:
+            with warnings.catch_warnings():
+                # #113's project-root notice; not what these probes measure.
+                warnings.simplefilter("ignore", DeprecationWarning)
+                yield Config.load(str(root / "apcore.yaml")), root
+        finally:
+            logging.disable(previous)
+            os.chdir(cwd)
+
+    return ctx()
+
+
+@probe("acl.root")
+def _acl_root() -> str | None:
+    """The configured directory decides whether an ACL is discovered at all."""
+    import yaml
+
+    from apcore.acl import ACL
+
+    doc = {"version": "1.0", "default_effect": "allow", "rules": []}
+
+    def build_at(where: str):
+        def build(root):
+            (root / where).mkdir(parents=True, exist_ok=True)
+            (root / where / "global_acl.yaml").write_text(yaml.safe_dump(doc), encoding="utf-8")
+
+        return build
+
+    with _in_project({"acl": {"root": "./here"}}, build_at("here")) as (config, _):
+        found = ACL.discover(config)
+    with _in_project({"acl": {"root": "./here"}}, build_at("elsewhere")) as (config, _):
+        missing = ACL.discover(config)
+
+    if found is None:
+        return "acl.root pointed at a directory holding global_acl.yaml and nothing was discovered"
+    if missing is not None:
+        # D-64's own invariant: a missing path attaches nothing rather than
+        # synthesising an empty default-deny ACL.
+        return "acl.root pointed at a directory with no ACL and something was discovered anyway"
+    return None
+
+
+#: A binding file the loader accepts. `target` resolves to a real callable so
+#: the entry survives resolution; a binding that fails to resolve is dropped,
+#: which from the outside reads as "the key did nothing".
+_BINDING_ENTRY = {
+    "spec_version": "1.0",
+    "bindings": [
+        {
+            "module_id": "executor.probe.bound",
+            "target": "json:dumps",
+            "input_schema": {"type": "object", "properties": {}},
+            "output_schema": {"type": "object", "properties": {}},
+            "description": "Config-key probe binding.",
+        }
+    ],
+}
+
+
+def _loaded_bindings(section: dict, filename: str) -> object:
+    import yaml
+
+    from apcore.bindings import BindingLoader
+    from apcore.errors import BindingFileInvalidError
+    from apcore.registry import Registry
+
+    def build(root):
+        (root / "bdir").mkdir(parents=True, exist_ok=True)
+        (root / "bdir" / filename).write_text(yaml.safe_dump(_BINDING_ENTRY), encoding="utf-8")
+
+    with _in_project(section, build) as (config, _):
+        try:
+            loaded = BindingLoader().load_binding_dir(registry=Registry(), config=config)
+        except BindingFileInvalidError:
+            return "missing-dir"
+    return [m.module_id for m in loaded]
+
+
+@probe("bindings.dir")
+def _bindings_dir() -> str | None:
+    """The configured directory is the one scanned."""
+    here = _loaded_bindings({"bindings": {"dir": "./bdir"}}, "x.binding.yaml")
+    if here != ["executor.probe.bound"]:
+        return f"bindings.dir=./bdir loaded {here}, expected the binding it contains"
+    elsewhere = _loaded_bindings({"bindings": {"dir": "./nope"}}, "x.binding.yaml")
+    if elsewhere != "missing-dir":
+        return f"bindings.dir=./nope loaded {elsewhere}, so the key selects nothing"
+    return None
+
+
+@probe("bindings.pattern")
+def _bindings_pattern() -> str | None:
+    """The configured glob decides which files in that directory are read."""
+    default_hit = _loaded_bindings({"bindings": {"dir": "./bdir"}}, "x.binding.yaml")
+    default_miss = _loaded_bindings({"bindings": {"dir": "./bdir"}}, "x.yml")
+    configured = _loaded_bindings({"bindings": {"dir": "./bdir", "pattern": "*.yml"}}, "x.yml")
+    if default_hit != ["executor.probe.bound"]:
+        return f"the default pattern did not match x.binding.yaml: {default_hit}"
+    if default_miss != []:
+        return f"the default pattern matched x.yml, so it is not being applied: {default_miss}"
+    if configured != ["executor.probe.bound"]:
+        return f"pattern=*.yml did not match x.yml: {configured}"
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Schema loading (#118 audit, 2026-09-10)
+# ---------------------------------------------------------------------------
+
+
+def _schema_loader(section: dict, root):
+    from apcore.config import Config
+    from apcore.schema.loader import SchemaLoader
+
+    doc = {"version": "1.0", "project": {"name": "probe"}, "schema": {"root": str(root), **section}}
+    return SchemaLoader(config=Config(doc))
+
+
+def _schema_tree(marker: str):
+    """A `<root>/executor/t/probe.schema.yaml` carrying `marker` as its description."""
+    import tempfile
+    from pathlib import Path
+
+    import yaml
+
+    root = Path(tempfile.mkdtemp())
+    leaf = root / "executor" / "t"
+    leaf.mkdir(parents=True)
+    (leaf / "probe.schema.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "description": marker,
+                "input_schema": {"type": "object", "properties": {"yaml_marker": {}}},
+                "output_schema": {"type": "object", "properties": {}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    return root
+
+
+@probe("schema.root")
+def _schema_root() -> str | None:
+    """The configured root decides WHICH definition is loaded, not merely whether one is."""
+    import tempfile
+    from pathlib import Path
+
+    from apcore.errors import SchemaNotFoundError
+
+    here, there = _schema_tree("FROM_HERE"), _schema_tree("FROM_THERE")
+    if _schema_loader({}, here).load("executor.t.probe").description != "FROM_HERE":
+        return "schema.root did not select the tree it names"
+    if _schema_loader({}, there).load("executor.t.probe").description != "FROM_THERE":
+        return "schema.root returned the same definition for two different roots"
+    try:
+        _schema_loader({}, Path(tempfile.mkdtemp())).load("executor.t.probe")
+    except SchemaNotFoundError:
+        return None
+    return "a root with no definition still resolved one"
+
+
+@probe("schema.max_ref_depth")
+def _schema_max_ref_depth() -> str | None:
+    """A `$ref` chain longer than the bound is refused; the same chain under it resolves."""
+    import yaml
+
+    from apcore.errors import SchemaMaxDepthExceededError
+
+    root = _schema_tree("deep")
+    (root / "leaf.json").write_text('{"type":"object","properties":{"x":{"type":"string"}}}')
+    (root / "c.json").write_text('{"$ref":"leaf.json"}')
+    (root / "b.json").write_text('{"$ref":"c.json"}')
+    (root / "a.json").write_text('{"$ref":"b.json"}')
+    (root / "executor" / "t" / "probe.schema.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "description": "deep",
+                "input_schema": {"$ref": "a.json"},
+                "output_schema": {"type": "object", "properties": {}},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def resolve(depth: int) -> str:
+        loader = _schema_loader({"max_ref_depth": depth}, root)
+        try:
+            loader.resolve(loader.load("executor.t.probe"))
+        except SchemaMaxDepthExceededError:
+            return "refused"
+        return "resolved"
+
+    if resolve(1) != "refused":
+        return "max_ref_depth=1 resolved a three-hop $ref chain"
+    if resolve(32) != "resolved":
+        return "max_ref_depth=32 refused a three-hop $ref chain, so the value is not being read"
+    return None
+
+
+@probe("schema.strategy")
+def _schema_strategy() -> str | None:
+    """The strategy decides whether the YAML file or the native model wins.
+
+    Both halves: `native_first` must prefer the model AND the other two must
+    prefer the file, or a probe passes on an implementation that ignores the
+    key and always reads one of them.
+    """
+    from pydantic import BaseModel
+
+    class _NativeIn(BaseModel):
+        native_marker: str = "x"
+
+    class _NativeOut(BaseModel):
+        ok: bool = True
+
+    root = _schema_tree("strategy")
+
+    def props(strategy: str) -> list[str]:
+        loader = _schema_loader({"strategy": strategy}, root)
+        resolved, _ = loader.get_schema(
+            "executor.t.probe", native_input_schema=_NativeIn, native_output_schema=_NativeOut
+        )
+        schema = getattr(resolved, "schema", None) or getattr(resolved, "json_schema", {})
+        return sorted(schema.get("properties", {}))
+
+    if props("native_first") != ["native_marker"]:
+        return f"strategy=native_first did not prefer the native model: {props('native_first')}"
+    for strategy in ("yaml_first", "yaml_only"):
+        if props(strategy) != ["yaml_marker"]:
+            return f"strategy={strategy} did not prefer the YAML file: {props(strategy)}"
+    return None
+
+
 def _capture_point(redaction: dict, module_input: dict) -> dict:
     """Run a real module under `redaction` and return the CAPTURED input.
 
