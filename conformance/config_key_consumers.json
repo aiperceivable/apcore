@@ -1,8 +1,8 @@
 {
-  "_comment": "What reads each declared configuration key. Enforced by conformance/check_config_key_consumers.py.\n\nconfig_key_governance.json pins that every declared key is ACCEPTED — the three SDKs agree on the key set and the default table. Nothing pinned that any key is READ, and 29 of 61 were not (apcore#118). This file is the missing half: every key states what consumes it, or states that nothing does and why.\n\nSTATUSES\n  live      — a probe in the checker sets the key away from its default and observes an effect OUTSIDE Config. Reading the value back from Config proves plumbing, not consumption: four observability.* keys round-trip perfectly and are consumed by nothing.\n  partial   — something reads it, but not on the path an operator would expect. The reason must say what the gap is.\n  inert     — nothing reads it. A written decision, not an accident; the reason must say what was measured.\n  unaudited — not yet examined. NOT a claim that the key works.\n\nThe `ratchet` counts may fall and may not rise. Lower a ceiling in the same change that fixes or audits a key; that is what turns apcore#118 from a report into a number that has to go down.",
+  "_comment": "What reads each declared configuration key. Enforced by conformance/check_config_key_consumers.py.\n\nconfig_key_governance.json pins that every declared key is ACCEPTED — the three SDKs agree on the key set and the default table. Nothing pinned that any key is READ, and 29 of 61 were not (apcore#118). This file is the missing half: every key states what consumes it, or states that nothing does and why.\n\nSTATUSES\n  live      — a probe in the checker SETS THE KEY through Config.set (enforced: the checker records what each probe writes and rejects one that never writes its own key) and observes an effect OUTSIDE Config, on a path the LIBRARY ITSELF drives — APCore(config=...), BindingLoader.load_bindings(..., cfg), the executor's stream merge. Three things have each produced a false `live` and each is excluded by one clause above: reading the value back from Config proves plumbing, not consumption (four observability.* keys round-trip perfectly and are consumed by nothing); reaching the behaviour by another door proves the behaviour, not the key (acl.default_effect's probe built ACL(default_effect=...) directly); and driving a helper nothing else calls proves the helper, not the library (obs.redaction.* is read only by RedactionConfig.from_config, which no SDK's src/ invokes).\n  partial   — something reads it, but not on the path an operator would expect. The reason must say what the gap is.\n  inert     — nothing reads it. A written decision, not an accident; the reason must say what was measured.\n  unaudited — not yet examined. NOT a claim that the key works.\n\nThe `ratchet` counts may fall and may not rise. Lower a ceiling in the same change that fixes or audits a key; that is what turns apcore#118 from a report into a number that has to go down.\n\nRATCHET NOTE (2026-09-10): `inert` rose 18 -> 19 for `acl.default_effect`. That is a CORRECTION, not a regression — the key was always inert and was mis-recorded as `live` by a probe that never set it. The ceiling is raised deliberately and once; the rule that it may not rise otherwise is unchanged. `unaudited` fell 31 -> 30 in the same change (obs.redaction.regex_patterns audited to `partial`).",
   "ratchet": {
-    "inert": 18,
-    "unaudited": 31
+    "inert": 19,
+    "unaudited": 30
   },
   "keys": {
     "$schema": {
@@ -51,8 +51,8 @@
       }
     },
     "acl.default_effect": {
-      "status": "live",
-      "probe": "acl.default_effect"
+      "status": "inert",
+      "reason": "No SDK contains a reader. An ACL's default effect comes from the ACL FILE — apcore-python `acl.py:1444` `data.get(\"default_effect\", \"deny\")`, and the same in the other two — while the CONFIG key `acl.default_effect` is only declared and value-validated (apcore-python config.py:79/276, apcore-typescript config.ts:89, apcore-rust config.rs:1317, all validation). `ACL.load_from_config` says so in its own docstring: \"the `acl.default_effect` config key only takes effect once a real ACL file is loaded (it is read by `load` from the ACL file itself)\" — which is a description of the FILE field, not of this key. Recorded as `live` until 2026-09-10 by a probe that built `ACL(rules=[], default_effect=\"allow\")` DIRECTLY and never touched Config: it proved the constructor argument works, which 34 test files already cover, and proved nothing about the key. The checker now rejects a `live` probe that does not set its own key through `Config.set`."
     },
     "acl.root": {
       "status": "unaudited"
@@ -145,14 +145,17 @@
       "tracking": "https://github.com/aiperceivable/apcore/issues/118"
     },
     "obs.redaction.regex_patterns": {
-      "status": "unaudited"
+      "status": "partial",
+      "reason": "Read only by `RedactionConfig.from_config` / `fromConfig` / `::from_config`, and **nothing in any SDK's `src/` calls it** — verified by search across all three; the only call sites are this checker's probes and apcore-rust's own unit tests. Nor is `ObsLoggingMiddleware` installed by any default client or executor construction path. So the value takes effect only when the APPLICATION AUTHOR writes `RedactionConfig.from_config(config)` and wires the middleware by hand, which is the arrangement `docs/features/observability.md` documents but no code performs. Out of the box the DEFAULT list is applied (`RedactionConfig.default()`); an operator's OVERRIDE of this key reaches nothing. Separately the key never reaches the executor's input/output capture point at all (#120). Downgraded from `live` on 2026-09-10: the probe does set the key and does observe an effect, so it satisfies the letter of requirement 2, but the path it drives is one nothing else drives. Audited 2026-09-10 alongside its two siblings; it was `unaudited` and has the same single reader."
     },
     "obs.redaction.replacement": {
-      "status": "live",
+      "status": "partial",
+      "reason": "Read only by `RedactionConfig.from_config` / `fromConfig` / `::from_config`, and **nothing in any SDK's `src/` calls it** — verified by search across all three; the only call sites are this checker's probes and apcore-rust's own unit tests. Nor is `ObsLoggingMiddleware` installed by any default client or executor construction path. So the value takes effect only when the APPLICATION AUTHOR writes `RedactionConfig.from_config(config)` and wires the middleware by hand, which is the arrangement `docs/features/observability.md` documents but no code performs. Out of the box the DEFAULT list is applied (`RedactionConfig.default()`); an operator's OVERRIDE of this key reaches nothing. Separately the key never reaches the executor's input/output capture point at all (#120). Downgraded from `live` on 2026-09-10: the probe does set the key and does observe an effect, so it satisfies the letter of requirement 2, but the path it drives is one nothing else drives.",
       "probe": "obs.redaction.replacement"
     },
     "obs.redaction.sensitive_keys": {
-      "status": "live",
+      "status": "partial",
+      "reason": "Read only by `RedactionConfig.from_config` / `fromConfig` / `::from_config`, and **nothing in any SDK's `src/` calls it** — verified by search across all three; the only call sites are this checker's probes and apcore-rust's own unit tests. Nor is `ObsLoggingMiddleware` installed by any default client or executor construction path. So the value takes effect only when the APPLICATION AUTHOR writes `RedactionConfig.from_config(config)` and wires the middleware by hand, which is the arrangement `docs/features/observability.md` documents but no code performs. Out of the box the DEFAULT list is applied (`RedactionConfig.default()`); an operator's OVERRIDE of this key reaches nothing. Separately the key never reaches the executor's input/output capture point at all (#120). Downgraded from `live` on 2026-09-10: the probe does set the key and does observe an effect, so it satisfies the letter of requirement 2, but the path it drives is one nothing else drives.",
       "probe": "obs.redaction.sensitive_keys"
     },
     "observability.metrics.enabled": {

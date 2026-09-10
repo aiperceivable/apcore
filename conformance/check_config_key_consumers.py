@@ -48,8 +48,10 @@ Usage
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import sys
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Callable
 
@@ -424,21 +426,41 @@ def _replacement() -> str | None:
     return None
 
 
-@probe("acl.default_effect")
-def _default_effect() -> str | None:
-    """With no rule matching, the decision follows the configured default."""
-    from apcore.acl import ACL
-
-    allow = ACL(rules=[], default_effect="allow")
-    deny = ACL(rules=[], default_effect="deny")
-    if not allow.check("api.a", "executor.b"):
-        return "default_effect='allow' denied a call no rule matched"
-    if deny.check("api.a", "executor.b"):
-        return "default_effect='deny' allowed a call no rule matched"
-    return None
-
-
 # ---------------------------------------------------------------------------
+
+
+@contextlib.contextmanager
+def _recording_config_sets() -> "Iterator[set[str]]":
+    """Record every dot path a probe writes through ``Config.set``.
+
+    Requirement 2 of this file says a probe must "set the key away from its
+    default, observe something **outside** `Config` change". Only the second
+    half was ever enforced, and the first is the load-bearing one: a probe that
+    reaches the behaviour by some other door proves the behaviour exists, not
+    that the CONFIG KEY reaches it.
+
+    That is not hypothetical. `acl.default_effect`'s probe constructed
+    `ACL(rules=[], default_effect="allow")` directly — never touching `Config` —
+    and passed, while no SDK contains a single `config.get("acl.default_effect")`
+    reader: the ACL's effect is read from the ACL FILE (`data.get(
+    "default_effect", "deny")`). A key nothing reads was recorded as `live` by
+    the very guard written to find keys nothing reads.
+    """
+    from apcore.config import Config
+
+    touched: set[str] = set()
+    original = Config.set
+
+    def recording(self: object, key: str, value: object = None, **kwargs: object) -> object:
+        if isinstance(key, str):
+            touched.add(key)
+        return original(self, key, value, **kwargs)  # type: ignore[arg-type]
+
+    Config.set = recording  # type: ignore[method-assign]
+    try:
+        yield touched
+    finally:
+        Config.set = original  # type: ignore[method-assign]
 
 
 def governance_keys() -> set[str]:
@@ -520,12 +542,23 @@ def main() -> int:
                 continue
             if not have_python:
                 continue
-            try:
-                failure = PROBES[name]()
-            except Exception as exc:  # noqa: BLE001 — a probe that cannot run IS the finding
-                failure = f"probe raised {type(exc).__name__}: {exc}"
+            with _recording_config_sets() as touched:
+                try:
+                    failure = PROBES[name]()
+                except Exception as exc:  # noqa: BLE001 — a probe that cannot run IS the finding
+                    failure = f"probe raised {type(exc).__name__}: {exc}"
             if failure:
                 problems.append(f"{key}: probe {name!r} failed — {failure}")
+            elif key not in touched:
+                problems.append(
+                    f"{key}: probe {name!r} passed WITHOUT ever setting {key!r} through "
+                    f"`Config.set`, so it cannot show that the key reaches anything. It "
+                    f"observed something outside `Config` change, which was the stated "
+                    f"criterion and is not sufficient: `acl.default_effect`'s probe built "
+                    f"`ACL(default_effect=...)` directly and passed for a config key NO SDK "
+                    f"reads. Set the key and drive a path the library itself runs, or record "
+                    f"the key as `partial`/`inert` with a reason."
+                )
 
     # 3. The ratchet.
     counts = {s: sum(1 for e in entries.values() if e.get("status") == s) for s in VALID_STATUSES}
