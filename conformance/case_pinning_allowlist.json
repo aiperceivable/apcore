@@ -34,6 +34,38 @@
         "typescript"
       ],
       "why": "The case's own description pins an apcore-rust signature: `register_sys_modules` returns `Result<SysModulesContext, SysModuleError>` rather than unit, with the Ok arm carrying the module map and the shared handles. apcore-python returns a context dict and apcore-typescript an object — there is no Result to assert. Required to skip."
+    },
+    {
+      "fixture": "acl_handler_error.json",
+      "case": "string_callers_on_allow_rule_must_not_grant",
+      "sdks": [
+        "rust"
+      ],
+      "why": "§6.1.4.1: the case carries `callers_raw` as a bare string with `skip_if_unrepresentable`, exercising the typo that grants access — a `callers` written as a string is iterable in several host languages, so `\"admin.*\"` iterates character by character and its `*` matches everything. Measured in apcore-python, that typo granted an unrelated caller under `default_effect: deny`. apcore-rust cannot represent the value at all: `ACLRule::callers` is `Vec<String>`, so serde rejects a bare string at deserialization and the compiler rejects one in a struct literal. §6.1.4.1 says such an implementation “satisfies this clause by construction and needs no runtime check”, and the driver records the same reasoning in `SKIPPED_UNREPRESENTABLE`. Required to skip, not failing to run. Recorded 2026-09-11, after check_case_pinning.py stopped under-measuring and surfaced these four as gaps for the first time."
+    },
+    {
+      "fixture": "acl_handler_error.json",
+      "case": "scalar_callers_on_deny_rule_denies_without_raising",
+      "sdks": [
+        "rust"
+      ],
+      "why": "§6.1.4.1: the case carries `callers_raw` as a bare string with `skip_if_unrepresentable`, exercising the typo that grants access — a `callers` written as a string is iterable in several host languages, so `\"admin.*\"` iterates character by character and its `*` matches everything. Measured in apcore-python, that typo granted an unrelated caller under `default_effect: deny`. apcore-rust cannot represent the value at all: `ACLRule::callers` is `Vec<String>`, so serde rejects a bare string at deserialization and the compiler rejects one in a struct literal. §6.1.4.1 says such an implementation “satisfies this clause by construction and needs no runtime check”, and the driver records the same reasoning in `SKIPPED_UNREPRESENTABLE`. Required to skip, not failing to run. Recorded 2026-09-11, after check_case_pinning.py stopped under-measuring and surfaced these four as gaps for the first time."
+    },
+    {
+      "fixture": "acl_argument_scoped_approval.json",
+      "case": "malformed_pattern_field_raises_the_pending_requirement",
+      "sdks": [
+        "rust"
+      ],
+      "why": "§6.1.4.1: the case carries `callers_raw` as a bare string with `skip_if_unrepresentable`, exercising the typo that grants access — a `callers` written as a string is iterable in several host languages, so `\"admin.*\"` iterates character by character and its `*` matches everything. Measured in apcore-python, that typo granted an unrelated caller under `default_effect: deny`. apcore-rust cannot represent the value at all: `ACLRule::callers` is `Vec<String>`, so serde rejects a bare string at deserialization and the compiler rejects one in a struct literal. §6.1.4.1 says such an implementation “satisfies this clause by construction and needs no runtime check”, and the driver records the same reasoning in `SKIPPED_UNREPRESENTABLE`. Required to skip, not failing to run. Recorded 2026-09-11, after check_case_pinning.py stopped under-measuring and surfaced these four as gaps for the first time."
+    },
+    {
+      "fixture": "acl_argument_scoped_approval.json",
+      "case": "malformed_targets_field_raises_the_pending_requirement",
+      "sdks": [
+        "rust"
+      ],
+      "why": "§6.1.4.1: the case carries `targets_raw` as a bare string with `skip_if_unrepresentable`, exercising the typo that grants access — a `callers` written as a string is iterable in several host languages, so `\"admin.*\"` iterates character by character and its `*` matches everything. Measured in apcore-python, that typo granted an unrelated caller under `default_effect: deny`. apcore-rust cannot represent the value at all: `ACLRule::targets` is `Vec<String>`, so serde rejects a bare string at deserialization and the compiler rejects one in a struct literal. §6.1.4.1 says such an implementation “satisfies this clause by construction and needs no runtime check”, and the driver records the same reasoning in `SKIPPED_UNREPRESENTABLE`. Required to skip, not failing to run. Recorded 2026-09-11, after check_case_pinning.py stopped under-measuring and surfaced these four as gaps for the first time."
     }
   ]
 }

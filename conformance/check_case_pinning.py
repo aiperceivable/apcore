@@ -99,7 +99,24 @@ def sibling_values(cases: list[dict], key: str) -> list:
     return seen
 
 
-def mutate(value, alternatives: list | None = None):
+#: The mutation strategies, tried in order. A case is pinned when ANY of them
+#: makes a driver go red, because each has a blind spot the other covers and
+#: neither alone is sound:
+#:
+#: * `sibling` flips a string to another value the same key takes elsewhere in
+#:   the fixture. Needed because appending to `"reject"` leaves it != `"ok"`, so
+#:   a driver branching on class membership never notices.
+#: * `append` puts a sentinel on the end. Needed because two sibling values can
+#:   be INDISTINGUISHABLE to one SDK — apcore-rust maps `version_negotiation`'s
+#:   `PARSE_ERROR` onto `VERSION_INCOMPATIBLE` by documented design, so flipping
+#:   between them is a no-op there while appending is not.
+#:
+#: Both blind spots were measured, one before this list existed and one after
+#: `sibling` was added on its own.
+STRATEGIES = ("sibling", "append")
+
+
+def mutate(value, alternatives: list | None = None, strategy: str = "sibling"):
     """Return a value no correct implementation can produce.
 
     Every leaf changes, so a driver asserting any part of the block fails. Prose
@@ -112,21 +129,23 @@ def mutate(value, alternatives: list | None = None):
     if isinstance(value, str):
         # Cross the boundary when the fixture shows where it is (see
         # `sibling_values`); otherwise go past the end of the value space.
-        for other in alternatives or ():
-            if other != value:
-                return other
+        if strategy == "sibling":
+            for other in alternatives or ():
+                if other != value:
+                    return other
         return value + SENTINEL
     if isinstance(value, (int, float)):
         return value + 987654
     if isinstance(value, list):
-        return [mutate(v) for v in value] if value else [SENTINEL]
+        return [mutate(v, alternatives, strategy) for v in value] if value else [SENTINEL]
     if isinstance(value, dict):
         # An EMPTY dict must not mutate to itself. The comprehension alone
         # returned `{}` unchanged, so any case expecting `{}` could never go red
         # and was reported unpinned no matter what its driver did — a false
         # positive manufactured by the tool. `schema_strict_conversion`'s
         # `empty_schema_passthrough` was exactly that.
-        return {k: mutate(v) for k, v in value.items()} if value else {SENTINEL: SENTINEL}
+        return ({k: mutate(v, alternatives, strategy) for k, v in value.items()}
+                if value else {SENTINEL: SENTINEL})
     return SENTINEL
 
 
@@ -382,6 +401,7 @@ def batch_probe(
     backup: Path,
     cases: list[dict],
     baseline_output: str,
+    strategy: str,
 ) -> set[str]:
     """Mutate EVERY case at once and report which ids the driver names.
 
@@ -416,7 +436,7 @@ def batch_probe(
     mutated = json.loads(backup.read_text())
     for case in mutated["test_cases"]:
         for target in expectation_keys(case):
-            case[target] = mutate(case[target], sibling_values(cases, target))
+            case[target] = mutate(case[target], sibling_values(cases, target), strategy)
     path.write_text(json.dumps(mutated, indent=2, ensure_ascii=False) + "\n")
     try:
         red, output = run_drivers_verbose(sdk, sdk_root, files)
@@ -548,12 +568,20 @@ def main() -> int:
                     files = by_sdk.get(sdk)
                     if not files:
                         continue
-                    try:
-                        pass1[sdk] = batch_probe(sdk, args.sdk_root, files, path,
-                                                 backup, measurable, baseline.get(sdk, ""))
-                    except (Unattributable, NoTestsRan) as exc:
-                        pass1[sdk] = None
-                        print(f"  per-case  {path.stem} [{sdk}] — {exc}", flush=True)
+                    found: set[str] | None = set()
+                    for strategy in STRATEGIES:
+                        remaining = [c for c in measurable if c["id"] not in (found or ())]
+                        if not remaining:
+                            break
+                        try:
+                            found = (found or set()) | batch_probe(
+                                sdk, args.sdk_root, files, path, backup,
+                                remaining, baseline.get(sdk, ""), strategy)
+                        except (Unattributable, NoTestsRan) as exc:
+                            found = None
+                            print(f"  per-case  {path.stem} [{sdk}] — {exc}", flush=True)
+                            break
+                    pass1[sdk] = found
 
             #: Attributed by at least one SDK whose batch WAS trustworthy. These
             #: skip pass 2; everything else is re-measured the old way.
@@ -568,32 +596,35 @@ def main() -> int:
                 checked += 1
                 if cid in batch_pinned:
                     continue
-                mutated = json.loads(backup.read_text())
-                for c in mutated["test_cases"]:
-                    if c.get("id") == cid:
-                        for key in targets:
-                            c[key] = mutate(c[key], sibling_values(cases, key))
-                path.write_text(json.dumps(mutated, indent=2, ensure_ascii=False) + "\n")
                 pinned_by = None
-                for sdk, *_ in sdks:
-                    files = by_sdk.get(sdk)
-                    if not files:
-                        continue
-                    # A trustworthy GREEN batch already proved this SDK runs
-                    # none of the fixture's cases; re-running it per case can
-                    # only reproduce that, one process at a time.
-                    if not args.per_case and pass1.get(sdk) == set():
-                        continue
-                    try:
-                        if run_drivers(sdk, args.sdk_root, files):
-                            pinned_by = sdk
-                            break
-                    except NoTestsRan:
-                        # Cannot conclude anything; the fixture pre-check above
-                        # already rejected this shape, so reaching here means the
-                        # invocation degraded mid-sweep.
-                        pinned_by = "indeterminate"
+                for strategy in STRATEGIES:
+                    if pinned_by is not None:
                         break
+                    mutated = json.loads(backup.read_text())
+                    for c in mutated["test_cases"]:
+                        if c.get("id") == cid:
+                            for key in targets:
+                                c[key] = mutate(c[key], sibling_values(cases, key), strategy)
+                    path.write_text(json.dumps(mutated, indent=2, ensure_ascii=False) + "\n")
+                    for sdk, *_ in sdks:
+                        files = by_sdk.get(sdk)
+                        if not files:
+                            continue
+                        # A trustworthy GREEN batch already proved this SDK runs
+                        # none of the fixture's cases; re-running it per case can
+                        # only reproduce that, one process at a time.
+                        if not args.per_case and pass1.get(sdk) == set():
+                            continue
+                        try:
+                            if run_drivers(sdk, args.sdk_root, files):
+                                pinned_by = sdk
+                                break
+                        except NoTestsRan:
+                            # Cannot conclude anything; the fixture pre-check
+                            # above already rejected this shape, so reaching here
+                            # means the invocation degraded mid-sweep.
+                            pinned_by = "indeterminate"
+                            break
                 shutil.copy(backup, path)
                 if pinned_by is not None:
                     continue
