@@ -656,6 +656,7 @@ The repository ships **72 cross-language fixture files** under `conformance/fixt
 | [`glob_matching`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/glob_matching.json) | 30 | Portable glob matching for pattern-valued values (Algorithm A25, §9.2.3) |
 | [`pipeline_failfast_config`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/pipeline_failfast_config.json) | 7 | Pipeline configuration fail-fast (Issue #33) |
 | [`pipeline_hardening`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/pipeline_hardening.json) | 5 | Pipeline execution hardening: fail-fast, replace-step, run_until |
+| [`pipeline_section_wiring`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/pipeline_section_wiring.json) | 6 | A configured `pipeline:` section reaches the running strategy (§5.16 requirements 6 and 7, #118 D-72) |
 | [`pipeline_step_middleware`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/pipeline_step_middleware.json) | 9 | Pipeline StepMiddleware lifecycle (Issue #33) |
 | [`preflight_disclosure`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/preflight_disclosure.json) | 4 | `validate()` withholds `preflight()` / `preview()` from an ACL-denied caller (spec §12.8.5.1) |
 | [`redaction_config`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/redaction_config.json) | 13 | Redaction config via `obs.redaction.regex_patterns` / `sensitive_keys` |
@@ -681,7 +682,7 @@ The repository ships **72 cross-language fixture files** under `conformance/fixt
 | [`usage_contract`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/usage_contract.json) | 11 | `system.usage.*` value semantics no schema can assert (spec §6.7.1) |
 | [`usage_exporter`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/usage_exporter.json) | 3 | `UsageExporter` push interface (#45 §3, D-55) |
 | [`version_negotiation`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/version_negotiation.json) | 10 | Version negotiation (Algorithm A14) |
-| **Total** | **890** | **73 fixtures** |
+| **Total** | **896** | **74 fixtures** |
 
 ### 8.2 Loading Fixtures from a Test Runner
 

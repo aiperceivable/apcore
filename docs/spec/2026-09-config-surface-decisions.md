@@ -325,6 +325,22 @@ Against A: wiring it means a `pipeline:` block starts changing execution in a pr
 - If A: wire at client construction in three SDKs, add a conformance fixture (a removed step, a configured field, an inserted step), promote all three keys to `live`.
 - If B: deprecation window per §13.4 for all three, and a note in `DECLARATIVE_CONFIG_SPEC` §4 that the section is not read from `apcore.yaml`.
 
+**Resolved 2026-09-11 — A, implemented.** Spec v1.43.0 adds §5.16 requirements 6 and 7. Wired at
+executor construction in all three SDKs, with an explicit strategy still winning per D-73's
+precedence (API argument > `Config` > declared default). `pipeline_section_wiring.json` (6 cases)
+drives every case through client construction from a full configuration document, because the three
+fixtures that already covered this surface hand the section straight to the builder — which was
+never the broken part — and stayed green throughout. All three keys are now `live` with behavioural
+probes in `config_key_consumers.json`; the `inert` ceiling falls 25 → 21 (`extensions.ignore_patterns`
+was wired in v1.42.0 and is promoted in the same change).
+
+The migration guard is a **warning**, not a confirmation key. Three reasons: a confirmation key is
+itself a newly declared key, which is exactly what D-73 exists to constrain, and 2.0 would have to
+deprecate it again; §9.2.2 already establishes the "warn once per configuration load" cadence for
+*your configuration is about to mean something different*, so reusing it is consistent; and turning
+a currently ignored `pipeline:` into an **error** would break projects whose block is harmless,
+which is worse than the status quo.
+
 ---
 
 ## D-73 — the general rule: may a declared key be reachable only through an API?

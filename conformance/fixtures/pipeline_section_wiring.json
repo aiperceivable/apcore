@@ -1,0 +1,206 @@
+{
+  "description": "PROTOCOL_SPEC §5.16 requirements 6 and 7 (spec v1.43.0, apcore#118 decision D-72): a `pipeline:` section in the LOADED CONFIGURATION reaches the strategy the executor runs. Three fixtures already pin the builder — `pipeline_failfast_config.json`, `pipeline_hardening.json`, `pipeline_step_middleware.json` — and all three hand the section straight to `build_strategy_from_config(section, …)`. That is exactly the blind spot: the builder was never the broken part. Its first parameter is a dict the CALLER supplies, and in all three SDKs nothing extracted that dict from a `Config`, so `pipeline: remove: [acl_check]` in apcore.yaml left all eleven steps in place while every builder fixture stayed green. Every case here therefore MUST be driven through the SDK's own client/executor construction from `input.config` — a driver that calls the builder directly reproduces the defect and passes. The asymmetry is why these are MUSTs: failing to REMOVE a step is fail-safe, failing to INSERT one is not, because a declared audit, rate-limit or authorization step that never runs is invisible from inside the running system.",
+  "test_cases": [
+    {
+      "id": "no_pipeline_section_runs_the_default_pipeline",
+      "description": "A configuration with no `pipeline` section runs §5.6's eleven steps in order. The half that keeps requirement 6 additive for every project that configures nothing.",
+      "input": {
+        "config": {
+          "version": "1.0",
+          "project": {
+            "name": "pipeline-wiring"
+          }
+        }
+      },
+      "expected": {
+        "steps": [
+          "context_creation",
+          "call_chain_guard",
+          "module_lookup",
+          "acl_check",
+          "approval_gate",
+          "middleware_before",
+          "input_validation",
+          "execute",
+          "output_validation",
+          "middleware_after",
+          "return_result"
+        ],
+        "security_step_warning": false
+      }
+    },
+    {
+      "id": "an_empty_pipeline_section_runs_the_default_pipeline",
+      "description": "An empty section means the same as no section. Stated separately because implementations short-circuit it on a different branch from the absent case.",
+      "input": {
+        "config": {
+          "version": "1.0",
+          "project": {
+            "name": "pipeline-wiring"
+          },
+          "pipeline": {}
+        }
+      },
+      "expected": {
+        "steps": [
+          "context_creation",
+          "call_chain_guard",
+          "module_lookup",
+          "acl_check",
+          "approval_gate",
+          "middleware_before",
+          "input_validation",
+          "execute",
+          "output_validation",
+          "middleware_after",
+          "return_result"
+        ],
+        "security_step_warning": false
+      }
+    },
+    {
+      "id": "remove_takes_an_ordinary_step_out",
+      "description": "`pipeline.remove` reaches the running strategy. The step is gone and nothing else moved.",
+      "input": {
+        "config": {
+          "version": "1.0",
+          "project": {
+            "name": "pipeline-wiring"
+          },
+          "pipeline": {
+            "remove": [
+              "output_validation"
+            ]
+          }
+        }
+      },
+      "expected": {
+        "steps": [
+          "context_creation",
+          "call_chain_guard",
+          "module_lookup",
+          "acl_check",
+          "approval_gate",
+          "middleware_before",
+          "input_validation",
+          "execute",
+          "middleware_after",
+          "return_result"
+        ],
+        "security_step_warning": false
+      }
+    },
+    {
+      "id": "remove_takes_a_security_step_out_and_warns",
+      "description": "Requirement 7. Removing `acl_check` is honoured — the configuration is valid and an implementation MUST NOT reject it — and it emits a diagnostic naming the step, once per configuration load. The notice exists because of the TRANSITION: requirement 6 makes a previously ignored section take effect, so a configuration that has been carrying `remove: [acl_check]` while ACL was enforced anyway starts having ACL genuinely removed. An implementation MUST NOT reject the configuration: reaching the step assertion below is what proves it did not.",
+      "input": {
+        "config": {
+          "version": "1.0",
+          "project": {
+            "name": "pipeline-wiring"
+          },
+          "pipeline": {
+            "remove": [
+              "acl_check"
+            ]
+          }
+        }
+      },
+      "expected": {
+        "steps": [
+          "context_creation",
+          "call_chain_guard",
+          "module_lookup",
+          "approval_gate",
+          "middleware_before",
+          "input_validation",
+          "execute",
+          "output_validation",
+          "middleware_after",
+          "return_result"
+        ],
+        "security_step_warning": true,
+        "warning_names_step": "acl_check"
+      }
+    },
+    {
+      "id": "configure_applies_a_field_without_reordering",
+      "description": "`pipeline.configure` reaches the running strategy, and §5.16 requirement 3's replace-in-place holds through the config door: the step keeps its position and there is no second entry under the same name. `raises: false` alone would also be satisfied by an implementation that accepts the field and applies none of it, so the field is read back OFF THE BUILT STEP.",
+      "input": {
+        "config": {
+          "version": "1.0",
+          "project": {
+            "name": "pipeline-wiring"
+          },
+          "pipeline": {
+            "configure": {
+              "input_validation": {
+                "ignore_errors": true
+              }
+            }
+          }
+        }
+      },
+      "expected": {
+        "steps": [
+          "context_creation",
+          "call_chain_guard",
+          "module_lookup",
+          "acl_check",
+          "approval_gate",
+          "middleware_before",
+          "input_validation",
+          "execute",
+          "output_validation",
+          "middleware_after",
+          "return_result"
+        ],
+        "configured_step": {
+          "name": "input_validation",
+          "field": "ignore_errors",
+          "value": true
+        },
+        "security_step_warning": false
+      }
+    },
+    {
+      "id": "steps_inserts_a_declared_step",
+      "description": "The direction that is NOT fail-safe. A step declared in `pipeline.steps` is present in the running pipeline, immediately after its `after:` anchor. The driver registers a no-op step type under `input.register_step_type` first, because the type registry is an SDK-local API and the fixture cannot ship a handler.",
+      "input": {
+        "register_step_type": "conformance_probe",
+        "config": {
+          "version": "1.0",
+          "project": {
+            "name": "pipeline-wiring"
+          },
+          "pipeline": {
+            "steps": [
+              {
+                "name": "conformance_probe",
+                "type": "conformance_probe",
+                "after": "execute"
+              }
+            ]
+          }
+        }
+      },
+      "expected": {
+        "steps": [
+          "context_creation",
+          "call_chain_guard",
+          "module_lookup",
+          "acl_check",
+          "approval_gate",
+          "middleware_before",
+          "input_validation",
+          "execute",
+          "conformance_probe",
+          "output_validation",
+          "middleware_after",
+          "return_result"
+        ],
+        "security_step_warning": false
+      }
+    }
+  ]
+}

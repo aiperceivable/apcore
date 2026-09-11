@@ -1394,7 +1394,19 @@ def _check_ratchet_ledger(
                         f"which keys moved to {status!r}"
                     )
                 else:
+                    # A later entry naming the same key supersedes this one: the
+                    # ledger records the past, and a key that rose to `inert` in
+                    # September and was wired in October must not turn its own
+                    # September entry red for ever. Without this the ledger
+                    # penalises exactly the direction it exists to encourage.
+                    superseded = {
+                        str(k)
+                        for later in records[position + 1 :]
+                        for k in (later.get("keys") or [])
+                    }
                     for key in keys:
+                        if str(key) in superseded:
+                            continue
                         actual = entries.get(str(key), {}).get("status")
                         if actual is None:
                             problems.append(
@@ -1481,6 +1493,27 @@ def _self_test_ratchet_ledger() -> list[str]:
             "tightening the ceiling after wiring a key",
             18,
             [opens, rise, {"status": "inert", "from": 19, "to": 18, "date": "2026-09-10", "reason": "wired"}],
+            None,
+        ),
+        # The ledger records the PAST. A key that rose to `inert` and was later
+        # wired is named by two entries, and the earlier one must not go red for
+        # describing what was true when it was written — otherwise fixing a key
+        # breaks the ledger, which is the direction the ratchet encourages.
+        (
+            "a superseded rise, its key since wired",
+            18,
+            [
+                opens,
+                {**rise, "keys": ["k.live"]},
+                {
+                    "status": "inert",
+                    "from": 19,
+                    "to": 18,
+                    "date": "2026-09-11",
+                    "keys": ["k.live"],
+                    "reason": "wired",
+                },
+            ],
             None,
         ),
     ]
@@ -1579,6 +1612,168 @@ def governance_keys() -> set[str]:
         return found
 
     return set(walk(doc))
+
+
+# ---------------------------------------------------------------------------
+# The declarative pipeline (D-72, spec §5.16 requirements 6 and 7)
+# ---------------------------------------------------------------------------
+
+
+def _strategy_steps(section: object) -> list[str]:
+    """Step names of the pipeline an `APCore` builds under a `pipeline:` section.
+
+    Goes through the client, not `build_strategy_from_config`: the builder was
+    never the broken part. Its first parameter was a dict the caller supplied,
+    and nothing extracted that dict from a loaded `Config` — so a probe that
+    called the builder directly would have passed on all three SDKs while
+    `pipeline: remove: [acl_check]` in `apcore.yaml` left every step in place.
+    """
+    from apcore import APCore
+    from apcore.config import Config
+
+    doc: dict = {"version": "1.0", "project": {"name": "probe"}}
+    if section is not None:
+        doc["pipeline"] = section
+    client = APCore(config=Config(doc))
+    strategy = getattr(client.executor, "_strategy", None)
+    return [step.name for step in getattr(strategy, "steps", [])]
+
+
+@probe("pipeline.remove")
+def _pipeline_remove() -> str | None:
+    baseline = _strategy_steps(None)
+    if "output_validation" not in baseline:
+        return "the default pipeline has no output_validation to remove"
+    after = _strategy_steps({"remove": ["output_validation"]})
+    if "output_validation" in after:
+        return "pipeline.remove: ['output_validation'] left the step in the pipeline"
+    if len(after) != len(baseline) - 1:
+        return f"pipeline.remove removed {len(baseline) - len(after)} steps, expected 1"
+    return None
+
+
+@probe("pipeline.configure")
+def _pipeline_configure() -> str | None:
+    from apcore import APCore
+    from apcore.config import Config
+
+    doc = {
+        "version": "1.0",
+        "project": {"name": "probe"},
+        "pipeline": {"configure": {"input_validation": {"ignore_errors": True}}},
+    }
+    strategy = getattr(APCore(config=Config(doc)).executor, "_strategy", None)
+    steps = {step.name: step for step in getattr(strategy, "steps", [])}
+    target = steps.get("input_validation")
+    if target is None:
+        return "pipeline.configure dropped the step it was meant to configure"
+    if not getattr(target, "ignore_errors", False):
+        return "pipeline.configure: {input_validation: {ignore_errors: true}} did not take"
+    if list(steps) != _strategy_steps(None):
+        return "pipeline.configure reordered the pipeline; §5.16 requirement 3 says it must not"
+    return None
+
+
+@probe("pipeline.steps")
+def _pipeline_steps() -> str | None:
+    """The direction that is not fail-safe: a declared step that never runs."""
+    from apcore.pipeline_config import register_step_type, unregister_step_type
+
+    class _ProbeStep:
+        name = "probe_inserted"
+        description = "Probe step for the pipeline.steps consumer check."
+
+        def __init__(self, _config: object = None) -> None:
+            pass
+
+        async def execute(self, state: object) -> object:  # pragma: no cover - never run
+            return state
+
+    # `(config_dict) -> BaseStep`, per `register_step_type`'s contract.
+    register_step_type("probe_inserted", _ProbeStep)
+    try:
+        after = _strategy_steps(
+            {"steps": [{"name": "probe_inserted", "type": "probe_inserted", "after": "execute"}]}
+        )
+    finally:
+        unregister_step_type("probe_inserted")
+    if "probe_inserted" not in after:
+        return "pipeline.steps declared a step and the pipeline does not contain it"
+    if after.index("probe_inserted") != after.index("execute") + 1:
+        return f"pipeline.steps inserted the step at the wrong position: {after}"
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Extension discovery (spec v1.42.0, §3.5 / §3.6 A04 step 3a)
+# ---------------------------------------------------------------------------
+
+
+@probe("extensions.ignore_patterns")
+def _extensions_ignore_patterns() -> str | None:
+    """A skip rule that fails open loads code the operator asked not to load."""
+    import logging
+    import os
+    import tempfile
+    import warnings
+    from pathlib import Path
+
+    import yaml
+
+    from apcore.config import Config
+    from apcore.registry import Registry
+
+    module_src = (
+        "from pydantic import BaseModel\n\n\n"
+        "class In(BaseModel):\n    pass\n\n\n"
+        "class Out(BaseModel):\n    ok: bool\n\n\n"
+        "class Mod:\n"
+        "    input_schema = In\n"
+        "    output_schema = Out\n"
+        '    description = "Discoverable probe module."\n\n'
+        "    def execute(self, inputs, context):\n        return {'ok': True}\n"
+    )
+
+    def discover(patterns: list[str] | None) -> set[str]:
+        root = Path(tempfile.mkdtemp())
+        for sub in ("kept", "skipped"):
+            leaf = root / "ext" / "executor" / sub
+            leaf.mkdir(parents=True)
+            (leaf / "mod.py").write_text(module_src, encoding="utf-8")
+        extensions: dict = {"root": "./ext"}
+        if patterns is not None:
+            extensions["ignore_patterns"] = patterns
+        (root / "apcore.yaml").write_text(
+            yaml.safe_dump(
+                {"version": "1.0", "project": {"name": "probe"}, "extensions": extensions}
+            ),
+            encoding="utf-8",
+        )
+        cwd = os.getcwd()
+        os.chdir(root)
+        previous = logging.getLogger().manager.disable
+        logging.disable(logging.CRITICAL)
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", DeprecationWarning)
+                config = Config.load(str(root / "apcore.yaml"))
+            registry = Registry(config=config)
+            registry.discover()
+            return set(registry.module_ids)
+        finally:
+            logging.disable(previous)
+            os.chdir(cwd)
+
+    unfiltered = discover(None)
+    if not {m for m in unfiltered if "skipped" in m}:
+        return "the probe tree registered no module under 'skipped'; the probe cannot measure"
+    filtered = discover(["skipped"])
+    still_there = {m for m in filtered if "skipped" in m}
+    if still_there:
+        return f"extensions.ignore_patterns: ['skipped'] still registered {sorted(still_there)}"
+    if not {m for m in filtered if "kept" in m}:
+        return "extensions.ignore_patterns: ['skipped'] also skipped the sibling it must keep"
+    return None
 
 
 def main() -> int:
