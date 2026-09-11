@@ -1758,18 +1758,21 @@ def _tracing_exporter() -> str | None:
 
 @probe("observability.tracing.otlp_endpoint")
 def _tracing_otlp_endpoint() -> str | None:
+    """Proved by the refusal first, because that half needs no optional extra.
+
+    `OTLPExporter` requires the `opentelemetry` extra, which is optional and is
+    absent in CI, and §10.1.1 requirement 4 makes that a first-class outcome:
+    the middleware is NOT installed and the reason is logged. So the load-time
+    rejection below is the part that always runs — and it is the stronger proof
+    anyway, since a configuration can only be refused for this reason by an
+    implementation that READ both keys.
+    """
     from apcore.config import Config
     from apcore.errors import ConfigError
+    from apcore.observability.tracing import OTLPExporter
 
     endpoint = "http://collector.internal:4318/v1/traces"
-    installed = _tracing_middlewares(
-        {"enabled": True, "exporter": "otlp", "otlp_endpoint": endpoint}
-    )
-    if not installed:
-        return "observability.tracing.otlp_endpoint with exporter='otlp' installed no middleware"
-    reached = str(getattr(installed[0]._exporter, "_endpoint", ""))
-    if "collector.internal" not in reached:
-        return f"otlp_endpoint did not reach the exporter; it holds {reached!r}"
+
     # §10.1.1 requirement 3: an endpoint nothing reads is a rejected config,
     # never a silent no-op.
     config = Config({
@@ -1779,8 +1782,27 @@ def _tracing_otlp_endpoint() -> str | None:
     try:
         config.validate()
     except ConfigError:
+        pass
+    else:
+        return "otlp_endpoint against a non-OTLP exporter was accepted; it must be rejected at load"
+
+    try:
+        OTLPExporter()
+    except ImportError:
+        # Requirement 4: no middleware, and it must not have substituted one.
+        if _tracing_middlewares({"enabled": True, "exporter": "otlp", "otlp_endpoint": endpoint}):
+            return "the OTLP exporter is unbuildable here and a middleware was installed anyway"
         return None
-    return "otlp_endpoint against a non-OTLP exporter was accepted; it must be rejected at load"
+
+    installed = _tracing_middlewares(
+        {"enabled": True, "exporter": "otlp", "otlp_endpoint": endpoint}
+    )
+    if not installed:
+        return "observability.tracing.otlp_endpoint with exporter='otlp' installed no middleware"
+    reached = str(getattr(installed[0]._exporter, "_endpoint", ""))
+    if "collector.internal" not in reached:
+        return f"otlp_endpoint did not reach the exporter; it holds {reached!r}"
+    return None
 
 
 # ---------------------------------------------------------------------------
