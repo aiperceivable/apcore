@@ -41,8 +41,7 @@
     },
     "audit": {
       "$ref": "#/$defs/AuditConfig",
-      "deprecated": true,
-      "description": "DEPRECATED (spec v1.39.0, apcore#118): declared here AND as `acl.audit.*` in apcore.yaml, and read by neither — no implementation validates an ACL file against this schema, and the three ACL loaders drop unknown root keys in silence. A loader now warns when this block is present. Removed no earlier than v2.0. See PROTOCOL_SPEC 9.2.4.1."
+      "description": "ACL audit delivery (PROTOCOL_SPEC 6.3.2). DECLARING this block activates the default sink; its absence keeps today's behaviour, which is no audit output unless a callback is supplied to the ACL constructor. Deprecated in spec v1.39.0 alongside acl.audit.* in apcore.yaml, when neither was read; UN-deprecated in v1.45.0, which gave this one a delivery contract and withdrew the other."
     }
   },
   "$defs": {
@@ -226,17 +225,17 @@
     },
     "AuditConfig": {
       "type": "object",
-      "description": "ACL audit logging configuration.",
+      "description": "ACL audit delivery settings (PROTOCOL_SPEC 6.3.2). These configure the DEFAULT SINK only. A callback supplied to the ACL constructor receives every entry and is never narrowed, levelled or silenced by them: an API argument beats configuration, and the alternative would let a file silently truncate a compliance sink.",
       "additionalProperties": false,
       "properties": {
         "enabled": {
           "type": "boolean",
-          "description": "Whether to enable ACL audit logging.",
+          "description": "Whether the default sink is active. Only consulted when this block is DECLARED — the default of true does not switch auditing on for a file that omits the block.",
           "default": true
         },
         "log_level": {
           "type": "string",
-          "description": "Audit log level.",
+          "description": "Level the default sink emits `apcore.acl.audit` at. No effect on a supplied callback, which chooses its own destination.",
           "enum": [
             "trace",
             "debug",
@@ -248,11 +247,10 @@
         },
         "include_denied": {
           "type": "boolean",
-          "description": "Whether to log denied access attempts.",
+          "description": "Whether the default sink delivers entries whose decision is 'deny'. Setting it to false withholds the security-relevant half and warns once per configuration load (PROTOCOL_SPEC 6.3.2 requirement 6). No effect on a supplied callback.",
           "default": true
         }
-      },
-      "deprecated": true
+      }
     },
     "PatternArray": {
       "type": "array",

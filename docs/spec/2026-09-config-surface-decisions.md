@@ -92,6 +92,42 @@ The asymmetry is not aesthetic. Under B the surviving key still has to be *wired
 4. Wire the survivor in all three SDKs (a 1.x change; additive).
 5. Remove the other at v2.0.
 
+**Resolved 2026-09-11 — A, implemented, with the delivery contract written first.** Spec v1.45.0
+adds §6.3.2 (eight requirements) and supersedes §9.2.4.1's notice; `acl.audit.*` stays in §9.2.4
+with the ACL file's block named as its migration target, and goes at v2.0.
+
+The review that ratified A corrected the contract in four places, each of which changed the
+implementation:
+
+1. **`AuditEntry` is thirteen fields, not fourteen** — and a specified record is not a specified
+   *delivery*. The default sink needed a stable event name (`apcore.acl.audit`) and an explicit
+   statement that the thirteen go out under their `snake_case` **wire** names. That was not
+   pedantry: §6.3.1 lets an SDK surface use idiomatic names, apcore-typescript's record spells
+   `callerId`, and emitting it verbatim would have put three different "structured records" on
+   three wires from one specification. That SDK now carries an explicit thirteen-name mapping.
+2. **One effective sink, not two working at once.** A callback receives every entry and is never
+   narrowed, levelled or silenced by the block, and the override diagnostic names **all** the
+   fields that do not apply. The first draft let `include_denied: false` filter a supplied
+   callback, which would have let a file silently truncate a compliance sink a developer
+   installed deliberately — the API-beats-configuration rule failing in the direction that
+   matters.
+3. **The containment guarantee needed a boundary.** Rust's callback is `Fn(&AuditEntry)` with no
+   error channel, so requirement 3 is scoped to **recoverable** failures: an unwinding panic is
+   contained, a `panic = "abort"` build is not, and the specification says so rather than
+   promising what the language cannot deliver. Callbacks must also be **synchronous** — an async
+   one fails after the decision has been returned, outside the containment.
+4. **Reload and validation.** `reload()` refreshes the block and preserves the callback; the
+   `audit:` subtree is validated without making any other unrecognised root key in an ACL file
+   an error; and the failing-sink suppression is scoped per ACL instance **and per effective sink
+   configuration**, so changing the sink or reloading is not hidden behind an old failure.
+
+Two things the implementation found that the contract had not anticipated. **`audit:` with
+nothing under it parses to null**, and the operator still wrote the block — presence, not
+truthiness, is what requirement 2's "declaration" means, and all three SDKs test it. And
+**`ACL.load()` took no audit callback** in apcore-python or apcore-typescript, so the combination
+requirements 1 and 7 describe was unreachable through the public API; the gap surfaced as
+acceptance tests that could only be written by reaching into private state.
+
 ---
 
 ## D-67 — logging: what replaces `logging.level` / `logging.format` at v2.0

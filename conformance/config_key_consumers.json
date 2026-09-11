@@ -19,38 +19,41 @@
     },
     "acl.audit.enabled": {
       "status": "inert",
-      "reason": "Auditing is driven by a programmatic audit logger/store (`ACL.set_audit_logger`, `sys_modules/audit`), never by this key. Setting it false does not disable auditing; setting it true does not enable it.",
+      "reason": "No SDK reads it, and it stays that way deliberately. ACL auditing was declared in TWO places — this key and the ACL file's `audit:` block — and read in neither. Spec v1.45.0 (§6.3.2, decision D-66) gives the ACL FILE's block a delivery contract and wires it; this key is the home that loses. **Migrate to the ACL file's `audit.enabled`.** Removed at v2.0 per the window §9.2.4 opened in v1.39.0. Why that home and not this one: wiring this key means the `apcore.yaml` loader reaching into ACL construction, while the block is read by the ACL loader that already parses the document it lives in.",
       "tracking": "https://github.com/aiperceivable/apcore/issues/118",
       "deprecation": {
         "since": "1.39.0",
         "removed_no_earlier_than": "2.0",
         "spec": "PROTOCOL_SPEC 9.2.4",
         "probe": "deprecated_inert_keys",
-        "tracking": "https://github.com/aiperceivable/apcore/issues/118"
+        "tracking": "https://github.com/aiperceivable/apcore/issues/118",
+        "migrate_to": "the ACL file's audit.enabled (PROTOCOL_SPEC 6.3.2)"
       }
     },
     "acl.audit.include_denied": {
       "status": "inert",
-      "reason": "No code path reads it. PROTOCOL_SPEC 6.1's ACL file example annotates it `# SHOULD, log denied calls` — a SHOULD with no supplier.",
+      "reason": "No SDK reads it, and it stays that way deliberately. ACL auditing was declared in TWO places — this key and the ACL file's `audit:` block — and read in neither. Spec v1.45.0 (§6.3.2, decision D-66) gives the ACL FILE's block a delivery contract and wires it; this key is the home that loses. **Migrate to the ACL file's `audit.include_denied`.** Removed at v2.0 per the window §9.2.4 opened in v1.39.0. Why that home and not this one: wiring this key means the `apcore.yaml` loader reaching into ACL construction, while the block is read by the ACL loader that already parses the document it lives in.",
       "tracking": "https://github.com/aiperceivable/apcore/issues/118",
       "deprecation": {
         "since": "1.39.0",
         "removed_no_earlier_than": "2.0",
         "spec": "PROTOCOL_SPEC 9.2.4",
         "probe": "deprecated_inert_keys",
-        "tracking": "https://github.com/aiperceivable/apcore/issues/118"
+        "tracking": "https://github.com/aiperceivable/apcore/issues/118",
+        "migrate_to": "the ACL file's audit.include_denied (PROTOCOL_SPEC 6.3.2)"
       }
     },
     "acl.audit.log_level": {
       "status": "inert",
-      "reason": "No code path reads it. Its enum also differs from `logging.level` by one value (`fatal`); nothing observes the difference because both keys are inert.",
+      "reason": "No SDK reads it, and it stays that way deliberately. ACL auditing was declared in TWO places — this key and the ACL file's `audit:` block — and read in neither. Spec v1.45.0 (§6.3.2, decision D-66) gives the ACL FILE's block a delivery contract and wires it; this key is the home that loses. **Migrate to the ACL file's `audit.log_level`.** Removed at v2.0 per the window §9.2.4 opened in v1.39.0. Why that home and not this one: wiring this key means the `apcore.yaml` loader reaching into ACL construction, while the block is read by the ACL loader that already parses the document it lives in.",
       "tracking": "https://github.com/aiperceivable/apcore/issues/118",
       "deprecation": {
         "since": "1.39.0",
         "removed_no_earlier_than": "2.0",
         "spec": "PROTOCOL_SPEC 9.2.4",
         "probe": "deprecated_inert_keys",
-        "tracking": "https://github.com/aiperceivable/apcore/issues/118"
+        "tracking": "https://github.com/aiperceivable/apcore/issues/118",
+        "migrate_to": "the ACL file's audit.log_level (PROTOCOL_SPEC 6.3.2)"
       }
     },
     "acl.default_effect": {

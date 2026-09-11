@@ -1,0 +1,189 @@
+{
+  "description": "PROTOCOL_SPEC §6.3.2 (spec v1.45.0, apcore#118 decision D-66): ACL audit DELIVERY. §6.3.1 has always specified the record — thirteen fields, `handler_error` and `approval_required` with precise semantics — and nothing specified how it is delivered. `ACL(audit_logger=…)` was the entire surface: no default sink, no statement of what happens when delivery fails, and no meaning for the `audit:` block's `enabled` / `include_denied` / `log_level`, which were declared in TWO places and read in neither. The sharpest consequence was measured, not inferred: a failing audit callback propagated out of `check()` and turned an ALLOWED call into an error, in all three SDKs. Drivers MUST load a real ACL FILE and drive real `check()` calls: reading the parsed block back off a config object proves the parser works, which was never the question. `input.callback` selects what the driver installs programmatically — `none`, `collecting` (records every entry it receives), or `failing` (raises/throws/panics on every entry).",
+  "test_cases": [
+    {
+      "id": "no_audit_block_produces_no_audit_output",
+      "description": "The compatibility boundary. `enabled` defaults to true, so reading the merged view would switch a record per ACL check on for every ACL file in existence — a behaviour change measured in volume, on projects that asked for nothing. §6.3.2 requirement 2 makes DECLARATION the switch.",
+      "input": {
+        "acl_file": { "default_effect": "deny", "rules": [{ "callers": ["api.*"], "targets": ["executor.*"], "effect": "allow" }] },
+        "callback": "none",
+        "checks": [{ "caller_id": "api.x", "target_id": "executor.y" }]
+      },
+      "expected": { "loads": true, "decisions": ["allow"], "default_sink_records": 0 }
+    },
+    {
+      "id": "an_empty_block_is_declared_with_every_setting_at_its_default",
+      "description": "`audit:` with nothing under it parses to null, and the operator still wrote the block. Presence, not truthiness, is what requirement 2 turns on.",
+      "input": {
+        "acl_file": { "default_effect": "deny", "rules": [{ "callers": ["api.*"], "targets": ["executor.*"], "effect": "allow" }], "audit": null },
+        "callback": "none",
+        "checks": [{ "caller_id": "api.x", "target_id": "executor.y" }]
+      },
+      "expected": { "loads": true, "decisions": ["allow"], "default_sink_records": 1 }
+    },
+    {
+      "id": "a_declared_block_activates_the_default_sink",
+      "input": {
+        "acl_file": { "default_effect": "deny", "rules": [{ "callers": ["api.*"], "targets": ["executor.*"], "effect": "allow" }], "audit": { "enabled": true } },
+        "callback": "none",
+        "checks": [{ "caller_id": "api.x", "target_id": "executor.y" }, { "caller_id": "worker.x", "target_id": "executor.y" }]
+      },
+      "expected": { "loads": true, "decisions": ["allow", "deny"], "default_sink_records": 2 }
+    },
+    {
+      "id": "enabled_false_is_silent",
+      "input": {
+        "acl_file": { "default_effect": "deny", "rules": [{ "callers": ["api.*"], "targets": ["executor.*"], "effect": "allow" }], "audit": { "enabled": false } },
+        "callback": "none",
+        "checks": [{ "caller_id": "api.x", "target_id": "executor.y" }]
+      },
+      "expected": { "loads": true, "decisions": ["allow"], "default_sink_records": 0 }
+    },
+    {
+      "id": "the_default_sink_carries_the_thirteen_wire_names",
+      "description": "§6.3.2 requirement 2, and the half that keeps three implementations consumable. §6.3.1 lets an SDK surface use idiomatic field names — apcore-typescript's in-memory record spells `callerId` — and that licence stops at the default sink: on the wire the names are `snake_case`. Without this, one specification yields three different 'structured records' and nothing downstream reads all three.",
+      "input": {
+        "acl_file": { "default_effect": "deny", "rules": [{ "callers": ["api.*"], "targets": ["executor.*"], "effect": "allow" }], "audit": { "enabled": true } },
+        "callback": "none",
+        "checks": [{ "caller_id": "api.x", "target_id": "executor.y" }]
+      },
+      "expected": {
+        "loads": true,
+        "default_sink_records": 1,
+        "default_sink_field_names": [
+          "timestamp", "caller_id", "target_id", "decision", "reason", "matched_rule",
+          "matched_rule_index", "identity_type", "roles", "call_depth", "trace_id",
+          "handler_error", "approval_required"
+        ]
+      }
+    },
+    {
+      "id": "log_level_sets_the_default_sinks_level",
+      "description": "The level is the audit record's own, independent of any host logging policy.",
+      "input": {
+        "acl_file": { "default_effect": "deny", "rules": [{ "callers": ["api.*"], "targets": ["executor.*"], "effect": "allow" }], "audit": { "enabled": true, "log_level": "error" } },
+        "callback": "none",
+        "checks": [{ "caller_id": "api.x", "target_id": "executor.y" }]
+      },
+      "expected": { "loads": true, "default_sink_records": 1, "default_sink_level": "error" }
+    },
+    {
+      "id": "include_denied_false_withholds_denials_from_the_default_sink",
+      "input": {
+        "acl_file": { "default_effect": "deny", "rules": [{ "callers": ["api.*"], "targets": ["executor.*"], "effect": "allow" }], "audit": { "enabled": true, "include_denied": false } },
+        "callback": "none",
+        "checks": [{ "caller_id": "api.x", "target_id": "executor.y" }, { "caller_id": "worker.x", "target_id": "executor.y" }]
+      },
+      "expected": { "loads": true, "decisions": ["allow", "deny"], "default_sink_records": 1, "default_sink_decisions": ["allow"], "load_warning_contains": "include_denied" }
+    },
+    {
+      "id": "include_denied_true_warns_about_nothing",
+      "description": "The other half of requirement 6's notice. A blanket warning would fire for every ACL file with a block and train an operator to ignore the one that matters — §9.2.2's reasoning, applied here.",
+      "input": {
+        "acl_file": { "default_effect": "deny", "rules": [{ "callers": ["api.*"], "targets": ["executor.*"], "effect": "allow" }], "audit": { "enabled": true, "include_denied": true } },
+        "callback": "none",
+        "checks": []
+      },
+      "expected": { "loads": true, "load_warning_absent": "include_denied" }
+    },
+    {
+      "id": "a_callback_is_the_effective_sink_and_the_block_does_not_apply",
+      "description": "§6.3.2 requirement 1 — one effective sink, never two, and the API-beats-configuration rule in the direction that matters. `include_denied: false` in a file must not silently truncate a compliance sink a developer installed deliberately, so the callback receives BOTH decisions while the default sink emits nothing.",
+      "input": {
+        "acl_file": { "default_effect": "deny", "rules": [{ "callers": ["api.*"], "targets": ["executor.*"], "effect": "allow" }], "audit": { "enabled": false, "include_denied": false } },
+        "callback": "collecting",
+        "checks": [{ "caller_id": "api.x", "target_id": "executor.y" }, { "caller_id": "worker.x", "target_id": "executor.y" }]
+      },
+      "expected": { "loads": true, "decisions": ["allow", "deny"], "callback_decisions": ["allow", "deny"], "default_sink_records": 0 }
+    },
+    {
+      "id": "an_overridden_block_names_every_field_that_does_not_apply",
+      "description": "Not only the most visible one: an operator who set all three settings and hears about one has been told the smaller half of what happened.",
+      "input": {
+        "acl_file": { "default_effect": "deny", "rules": [{ "callers": ["api.*"], "targets": ["executor.*"], "effect": "allow" }], "audit": { "enabled": true, "include_denied": false, "log_level": "error" } },
+        "callback": "collecting",
+        "checks": []
+      },
+      "expected": { "loads": true, "override_warning_names": ["audit.enabled", "audit.include_denied", "audit.log_level"] }
+    },
+    {
+      "id": "a_failing_callback_does_not_change_the_allow_decision",
+      "description": "The behaviour change, and the reason this section exists. Measured before spec v1.45.0: a failing callback propagated out of `check()` and turned an ALLOWED call into an error, in all three SDKs. Auditing is a side channel and MUST NOT hold a veto over access. Bounded to RECOVERABLE failures: apcore-rust's callback is `Fn(&AuditEntry)` with no error channel, so only an unwinding panic can be contained.",
+      "input": {
+        "acl_file": { "default_effect": "deny", "rules": [{ "callers": ["api.*"], "targets": ["executor.*"], "effect": "allow" }] },
+        "callback": "failing",
+        "checks": [{ "caller_id": "api.x", "target_id": "executor.y" }]
+      },
+      "expected": { "loads": true, "decisions": ["allow"] }
+    },
+    {
+      "id": "a_failing_callback_does_not_change_the_deny_decision",
+      "description": "The deny path is a different branch of the finalise step, so it is driven separately.",
+      "input": {
+        "acl_file": { "default_effect": "deny", "rules": [{ "callers": ["api.*"], "targets": ["executor.*"], "effect": "allow" }] },
+        "callback": "failing",
+        "checks": [{ "caller_id": "worker.x", "target_id": "executor.y" }]
+      },
+      "expected": { "loads": true, "decisions": ["deny"] }
+    },
+    {
+      "id": "a_failing_sink_is_reported_once_not_once_per_check",
+      "description": "§6.3.2 requirement 5. A sink that is down otherwise produces one diagnostic per check — the flood §9.2.2 rejects.",
+      "input": {
+        "acl_file": { "default_effect": "deny", "rules": [{ "callers": ["api.*"], "targets": ["executor.*"], "effect": "allow" }] },
+        "callback": "failing",
+        "checks": [
+          { "caller_id": "api.x", "target_id": "executor.y" },
+          { "caller_id": "api.x", "target_id": "executor.y" },
+          { "caller_id": "api.x", "target_id": "executor.y" }
+        ]
+      },
+      "expected": { "loads": true, "decisions": ["allow", "allow", "allow"], "delivery_failure_reports": 1 }
+    },
+    {
+      "id": "a_block_no_longer_warns_as_deprecated",
+      "description": "§9.2.4.1's notice is SUPERSEDED. The block had never been read, so the notice was the only signal an operator got; it is now read, and a key that has gained a consumer must stop being announced as going away.",
+      "input": {
+        "acl_file": { "default_effect": "deny", "rules": [{ "callers": ["api.*"], "targets": ["executor.*"], "effect": "allow" }], "audit": { "enabled": true } },
+        "callback": "none",
+        "checks": []
+      },
+      "expected": { "loads": true, "load_warning_absent": "9.2.4.1" }
+    },
+    {
+      "id": "an_unknown_key_inside_the_block_is_rejected",
+      "description": "§6.3.2 requirement 8. The wire code is the contract; the exception class name is not.",
+      "input": {
+        "acl_file": { "default_effect": "deny", "rules": [{ "callers": ["api.*"], "targets": ["executor.*"], "effect": "allow" }], "audit": { "enabled": true, "unknown_key": true } },
+        "callback": "none",
+        "checks": []
+      },
+      "expected": { "loads": false, "error_code": "CONFIG_INVALID", "error_message_contains": "unknown_key" }
+    },
+    {
+      "id": "a_wrongly_typed_setting_is_rejected",
+      "input": {
+        "acl_file": { "default_effect": "deny", "rules": [{ "callers": ["api.*"], "targets": ["executor.*"], "effect": "allow" }], "audit": { "log_level": "verbose" } },
+        "callback": "none",
+        "checks": []
+      },
+      "expected": { "loads": false, "error_code": "CONFIG_INVALID", "error_message_contains": "log_level" }
+    },
+    {
+      "id": "other_unknown_root_keys_are_still_ignored",
+      "description": "Wiring one block is not unknown-key closure for ACL files — the same scoping §9.2.4.1 gave its own notice. A `telemetry:` block that loaded yesterday loads today.",
+      "input": {
+        "acl_file": {
+          "default_effect": "deny",
+          "rules": [{ "callers": ["api.*"], "targets": ["executor.*"], "effect": "allow" }],
+          "audit": { "enabled": true },
+          "telemetry": { "enabled": true },
+          "x_vendor_note": "kept for the deploy tooling"
+        },
+        "callback": "none",
+        "checks": [{ "caller_id": "api.x", "target_id": "executor.y" }]
+      },
+      "expected": { "loads": true, "decisions": ["allow"], "default_sink_records": 1, "load_warning_absent": "telemetry" }
+    }
+  ]
+}

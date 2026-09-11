@@ -1,12 +1,12 @@
 ---
-description: "The canonical, normative apcore protocol specification (RFC 2119, v1.44.0): module, schema, naming, ACL, approval, error, config, and observability requirements for all conforming SDKs."
+description: "The canonical, normative apcore protocol specification (RFC 2119, v1.45.0): module, schema, naming, ACL, approval, error, config, and observability requirements for all conforming SDKs."
 ---
 
 # apcore — AI-Perceivable Core Standard Specification
 
 > **Canonical Specification** - This document is the authoritative specification for the apcore protocol
 
-> Version: 1.44.0
+> Version: 1.45.0
 > Status: Draft Specification (RFC 2119 Conformant)
 > Stability: Specification content is stable, pending reference implementation verification
 > Last Updated: 2026-09-09
@@ -4422,6 +4422,104 @@ Two scoping notes, because the "if and only if" above binds to *conditions*, not
 - `handler_error` is recorded **per `check()`**, while `matched_rule` / `matched_rule_index` describe the rule that produced the decision. When one rule is unevaluable and a **later** rule decides, a single audit entry legitimately carries a `handler_error` from one rule and a `matched_rule_index` from another. Read them as "what went wrong during this check" and "what decided this check" — they are not required to refer to the same rule.
 - A rule can end UNSATISFIED while a condition inside it was unevaluable, which is why the "if and only if" cannot be read as binding to the outcome. §6.1.4 guarantees precheck-origin entries are present regardless of short-circuiting; execution-origin entries depend on what was reached.
 
+#### 6.3.2 Audit Delivery (`audit:` in the ACL file)
+
+§6.3.1 specifies the **record**. This section specifies **delivery**, which until
+v1.45.0 had no contract at all: `ACL(audit_logger=…)` was the whole surface, there was
+no default sink, no statement of what happens when delivery fails, and no semantics for
+the `audit:` block's three settings — which were declared in **two** places
+(`schemas/acl-config.schema.json` and `acl.audit.*` in `apcore.yaml`) and read in
+neither (#118, decision D-66).
+
+**The ACL file's `audit:` block is the one configuration home.** `acl.audit.*` stays
+deprecated under §9.2.4 and is removed at v2.0; its notice names this block as the
+migration target. Auditing is configured beside the rules it audits, and the ACL loader
+is already the only code that parses the document the block lives in.
+
+**Requirements:**
+
+1. **There is exactly one effective sink, never two.**
+
+   | Condition | Effective sink |
+   |---|---|
+   | `ACL(audit_logger=…)` supplied | that callback |
+   | no callback, and the ACL file **declares** `audit:` with `enabled: true` | the default sink (requirement 2) |
+   | otherwise | none — no audit records are produced |
+
+   A supplied callback receives **every** entry, allow and deny alike, and **MUST NOT**
+   be narrowed, levelled or silenced by the `audit:` block: `enabled`, `include_denied`
+   and `log_level` configure the default sink and nothing else. An API argument beats
+   configuration, and the alternative is worse than inconsistent — `include_denied:
+   false` in a file would silently truncate a compliance sink a developer installed
+   deliberately.
+
+   When a callback is supplied **and** the ACL file declares an `audit:` block,
+   implementations **MUST** emit one diagnostic per ACL construction naming **every**
+   field that does not apply, not only the most visible one.
+
+2. **Declaration activates the default sink, not the default value.** `enabled`
+   defaults to `true`, so a merged-view reading would switch a log record per ACL check
+   on for every ACL file in existence — a behaviour change measured in volume, on
+   projects that asked for nothing. The default sink is active **only when the document
+   declares an `audit:` block**, exactly as §9.2.4's notice is driven by the declared
+   document and never by the merged view. An ACL file with no `audit:` block **MUST**
+   behave as it does today: no audit output unless a callback is supplied.
+
+   The default sink emits one record per decision, through the implementation's own
+   logging facility, at `log_level`, under the stable event name **`apcore.acl.audit`**
+   (§10.3's table). The record **MUST** carry all thirteen §6.3.1 fields as
+   **structured data under their `snake_case` wire names**, not as an interpolated
+   message string. Without that, three implementations produce three different
+   "structured records" from one specification — a Python `logging` call, a TypeScript
+   `console` line and a Rust `tracing` event — and nothing downstream can consume all
+   three. How the host renders the structured record is the host's business; which
+   fields exist under which names is not.
+
+3. **Delivery MUST NOT change the access decision.** For every **recoverable** delivery
+   failure, an implementation **MUST** return the `AccessDecision` it computed. A fatal
+   process termination is outside this guarantee: a Rust callback is
+   `Fn(&AuditEntry)` with no error channel, so only an unwinding panic can be contained
+   and a build with `panic = "abort"` cannot be.
+
+   This is the one behaviour change in this section, and it is a fix rather than a
+   feature. Measured before v1.45.0: a raising `audit_logger` propagated out of
+   `check()` and turned an **allowed** call into an error, in all three SDKs. Auditing
+   is a side channel and **MUST NOT** hold a veto over access, which §10.3 has always
+   required of the governance events beside it.
+
+4. **The callback MUST be synchronous.** An `async` callback returns a coroutine or an
+   unawaited `Promise`, so its failure surfaces after the decision has already been
+   returned — outside the containment requirement 3 promises, and in TypeScript as an
+   unhandled rejection. Implementations **MUST** treat a callback that returns an
+   awaitable as an invalid delivery, emit one diagnostic, and continue. A callback that
+   needs to do asynchronous work **SHOULD** enqueue the entry and return.
+
+5. **Diagnostics for a failing sink are suppressed after the first**, scoped to **one
+   ACL instance and one effective sink configuration**. A sink that is down otherwise
+   produces one diagnostic per `check()` — the flood §9.2.2 rejects. Replacing the sink
+   or reloading a configuration that changes it starts a new scope, so a new failure is
+   never hidden behind an old one.
+
+6. **`include_denied` filters the default sink's deliveries.** `true` (the default)
+   delivers every entry; `false` withholds entries whose `decision` is `deny`. Because
+   that withholds the security-relevant half, an ACL file setting it to `false`
+   **MUST** emit a diagnostic once per configuration load, following §9.2.2's cadence
+   and §5.16 requirement 7's reasoning. It is a notice, not a refusal.
+
+7. **Reload refreshes the block and preserves the callback.** `reload()` re-reads the
+   ACL file and **MUST** apply the new `audit:` configuration to the default sink. It
+   **MUST NOT** replace or remove a programmatic callback, which was never read from the
+   file. Before v1.45.0 `reload()` refreshed only the rules and the default effect, so a
+   changed `audit:` block was the one part of the document a reload did not pick up.
+
+8. **The block is validated, and nothing else about the file becomes stricter.** The
+   `audit:` subtree **MUST** be validated against `$defs/AuditConfig` in
+   `schemas/acl-config.schema.json` — types and unknown keys inside the block — and a
+   violation is a load-time `CONFIG_INVALID`. Every **other** unrecognised root key in
+   an ACL file **MUST** keep being ignored exactly as before. This section wires one
+   block; it is not unknown-key closure for ACL files, for the same reason §9.2.4.1's
+   notice was scoped to `audit` alone.
+
 ### 6.4 Pattern Specificity Scoring
 
 When further distinguishing rules within same priority is needed, implementations **SHOULD** calculate pattern specificity score:
@@ -6295,6 +6393,13 @@ This section opens their removal window. **It changes no behaviour**: the keys k
 and keep validating exactly as they do today. What it adds is the one thing they have never
 had — a way for an operator to find out.
 
+**The surviving home for ACL auditing is the ACL file's `audit:` block** (§6.3.2, decision
+D-66). v1.39.0 opened the window on *both* declarations deliberately, so that choosing between
+them would not also be a scheduling problem; v1.45.0 chooses, and the three `acl.audit.*` rows
+above now name their migration target. A notice that says "this is going away" without saying
+"use that instead" is half a notice, and it is what an operator writing ACL configuration got
+until now.
+
 **Three of the original ten left this table in v1.44.0**, when §10.1.1 gave them consumers:
 `observability.tracing.enabled`, `.sampling_rate` and `.exporter`. Their withdrawal is
 **cancelled**, and the deprecation warning for them **MUST NOT** be emitted from v1.44.0
@@ -6309,9 +6414,9 @@ reason it no longer applies. Why the three had to move together is in §10.1.1.
 | `observability.metrics.exporter` | §9.1.1 | no metrics-exporter abstraction exists in any SDK, and `MetricsCollector` arrives only as a constructor argument |
 | `logging.level` | §9.1.1 | `ContextLogger` has no configuration parameter in any SDK |
 | `logging.format` | §9.1.1 | as above |
-| `acl.audit.enabled` | §9.1.1 | auditing is driven by a programmatic callback; see §6.1.3 |
-| `acl.audit.include_denied` | §9.1.1 | as above |
-| `acl.audit.log_level` | §9.1.1 | as above |
+| `acl.audit.enabled` | §9.1.1 | **migrate to the ACL file's `audit.enabled`** (§6.3.2). Two homes were declared for one setting and neither was read; v1.45.0 gives the ACL file's block a delivery contract and this one is withdrawn |
+| `acl.audit.include_denied` | §9.1.1 | **migrate to the ACL file's `audit.include_denied`** (§6.3.2). Two homes were declared for one setting and neither was read; v1.45.0 gives the ACL file's block a delivery contract and this one is withdrawn |
+| `acl.audit.log_level` | §9.1.1 | **migrate to the ACL file's `audit.log_level`** (§6.3.2). Two homes were declared for one setting and neither was read; v1.45.0 gives the ACL file's block a delivery contract and this one is withdrawn |
 
 **Requirements:**
 
@@ -6349,16 +6454,32 @@ it generalises: **no implementation validates an ACL file against
 the fields they want. An `audit:` block in an ACL file is silently ignored today and would go
 on being silently ignored after any schema change.
 
-So the diagnostic has to live in the loader:
+So the diagnostic had to live in the loader:
 
-5. An ACL file carrying a root-level `audit` key **MUST** produce a deprecation warning when
-   it is loaded, once per load, naming the file. The block is still ignored — this adds a
-   diagnostic and changes nothing — and no other unknown root key is affected: this clause
-   names `audit` specifically, and does **not** introduce unknown-key closure for ACL files.
+5. **Superseded by §6.3.2 in v1.45.0.** An ACL file carrying a root-level `audit` key
+   produced a deprecation warning when it was loaded, once per load, naming the file. The
+   block was still ignored — the clause added a diagnostic and changed nothing.
 
-**Whichever home survives, one of the two declarations is deleted at v2.0.** This section
-does not choose between them; it starts the window for both so the choice is not also a
-scheduling problem.
+   **That warning MUST NOT be emitted from v1.45.0 onward**: the block now has a delivery
+   contract and is read (§6.3.2). A key that has gained a consumer must stop being announced
+   as going away, for the same reason §9.2.4 requirement 1 says the table is the whole list.
+   What replaces it is narrower and points the other way — §6.3.2 requirement 6's notice for
+   `include_denied: false`, and requirement 1's for a block overridden by a callback.
+
+   The scoping note survives the supersession and still binds: §6.3.2 requirement 8 validates
+   the `audit` **subtree** and nothing else, so every other unrecognised root key in an ACL
+   file keeps being ignored exactly as before. This was never unknown-key closure for ACL
+   files.
+
+**The ACL file's block is the home that survives** (§6.3.2, decision D-66). v1.39.0 opened the
+window on both declarations deliberately, so that choosing between them would not also be a
+scheduling problem; v1.45.0 chooses. `acl.audit.*` in `apcore.yaml` stays in §9.2.4's table
+with the ACL file's block named as its migration target, and is deleted at v2.0.
+
+Why this home and not the other: under the alternative the surviving key would still have to
+be **wired**, and wiring it means the `apcore.yaml` loader reaching into ACL construction —
+while here the wiring is local to the ACL loader, which already parses the document the block
+lives in.
 
 !!! note "`sampling_rate` is the clearest case, and the one worth reading"
     Of the ten it is the only one with a cost consequence, and it shows why "just wire the
@@ -7892,6 +8013,7 @@ The following are the canonical event type names, payload keys, and severity for
 | `apcore.approval.decision` | *(new — v1.9.0, #77)* | `info` (approved/pending) / `warn` (rejected/timeout) | Approval Gate (§7) | `module_id`, `status`, `approved_by`, `reason`, `approval_id`, `trace_id` |
 | `apcore.policy.override` | *(new — v1.9.0, #77)* | `info` | Approval Gate (§7) | `module_id`, `pattern`, `requires_approval`, `destructive`, `needs_approval`, `reason`, `trace_id` |
 | `apcore.acl.denied` | *(new — v1.9.0, #77)* | `warn` | ACL Check (§6) | `module_id`, `caller_id`, `reason`, `trace_id` |
+| `apcore.acl.audit` | *(new — v1.45.0, #118 D-66)* | `observability`-independent: the ACL file's `audit.log_level`, default `info` | ACL Check (§6) — the **default sink** of §6.3.2 only, never a supplied callback | all thirteen §6.3.1 `AuditEntry` fields, under their `snake_case` wire names |
 | `apcore.stream.post_validation_failed` | *(new — v1.9.0, documents existing emit)* | `error` | Executor (streaming Phase 3) | `error_type`, `message`, `trace_id` |
 | `apcore.registry.module_load_failed` | *(new — v1.9.0, documents existing emit)* | `error` | Registry | `module_id`, `callback_name`, `error_type`, `error_message` |
 | `apcore.circuit.opened` | *(new — v1.9.0, documents existing emit)* | `warn` | `CircuitBreakerMiddleware` | `module_id`, `caller_id`, `error_rate` |
@@ -9926,3 +10048,4 @@ Each language SDK **SHOULD** provide idiomatic module definition syntax. The fol
 | 1.42.0 | 2026-09-11 | **§3.5 / §3.6 — `extensions.ignore_patterns` gets a consumer, and therefore a dialect (#118).** The key was registered in all three configuration key surfaces and read by **none** of them, so A04 step 3a — *"if entry name matches ignore_patterns → Skip"* — was a **MUST whose input nothing supplies**. A project that excluded a directory from discovery had it scanned and its modules registered anyway: **a skip rule that failed OPEN**, which is the direction that matters, and the same shape #114 found in `bindings.dir`. v1.37.0 excluded the key from §9.2.3's closed set on purpose — assigning a dialect to a key nothing reads declares a contract nothing can be measured against — and said so in the table. **The order is the rule, not the exception: a dialect is assigned when a consumer exists, not before.** This version supplies the consumer in all three SDKs and assigns the dialect in the same change, so the row, the behaviour and a fixture that can discriminate between them arrive together. The surface is narrow on purpose: A04 says *entry name*, so a pattern matches **one path segment** and `*` cannot cross a directory boundary, because there is no boundary in the value being matched. Matching is **case-sensitive**, unlike `obs.redaction.sensitive_keys` — these are filenames, and folding them would make one configuration behave differently on a case-insensitive filesystem than on the case-sensitive one it was written against. §3.5 also states what was previously only implied: its five rows are **built in and not configurable**, and the configured list is a **union** with them rather than a replacement, so a pattern cannot switch off `.git/` or `__pycache__/`. **This IS an SDK change in all three.** Governance: maintainer approval per GOVERNANCE.md § Decision Making; tracking issue #118. |
 | 1.43.0 | 2026-09-11 | **§5.16 requirements 6 and 7 — a configured `pipeline:` section was accepted, validated and then ignored, in all three SDKs (#118, decision D-72).** The declarative pipeline surface is fully implemented everywhere: `build_strategy_from_config` applies `remove`, then `configure` against a **closed** field set, then `steps`, with its own error code and its own contract in `DECLARATIVE_CONFIG_SPEC` §4. Its first parameter is a dict the **caller** supplies, and nothing extracted the section from a loaded `Config` — no client ever called the builder. Measured: `pipeline: remove: [acl_check]` in `apcore.yaml` left all eleven steps in place. **The asymmetry is why requirement 6 is a MUST.** Failing to REMOVE a step is fail-safe; failing to INSERT one is not. An operator who declared a custom step for audit logging, rate limiting or an authorization gate got a client that **silently never ran it**, with no error and no warning, and the pipeline they read in configuration was not the pipeline that executed. Of the twenty-five keys the #118 audit found inert, this is the most direct route from a declared configuration to a security control that does not run — not the only one (`extensions.ignore_patterns`, closed in v1.42.0, was the same class failing OPEN in the other direction), but the most direct. **Requirement 7 exists for the transition, not the steady state.** Making a previously ignored section take effect means a configuration that has been carrying `remove: [acl_check]` while ACL was enforced anyway starts having ACL genuinely removed — the operator getting what they asked for, and equally the one direction in which honouring configuration can withdraw a protection that was in place a moment earlier. So removing `acl_check` or `approval_gate` now emits a load-time diagnostic on §9.2.2's cadence. It is a notice and **not** a refusal: the configuration is valid, it was written deliberately, and rejecting it would break projects whose `pipeline:` block is harmless. **This IS an SDK change in all three, and it is the one change in this cycle that alters what an existing configuration does.** Governance: maintainer approval per GOVERNANCE.md § Decision Making; tracking issue #118, decision D-72. |
 | 1.44.0 | 2026-09-11 | **§10.1.1 (new), §9.15.2, §10.7 and §9.2.4 — one tracing configuration surface was declared in two places that disagree, and every key in it was inert (#118, decision D-68 C').** v1.39.0 opened a removal window on `observability.tracing.enabled` / `.sampling_rate` / `.exporter` on the finding that no implementation read them. That finding was right and the diagnosis under it was incomplete in a way that changed the remedy. **`observability.tracing.strategy` and `.otlp_endpoint` are not new keys.** §9.15.2's namespace registration has declared both since it was written — `strategy` with default `"full"` and the four values `full`/`proportional`/`error_first`/`off`, `otlp_endpoint` with default `null` — and all three SDKs carry that registration verbatim. Neither appeared in `schemas/apcore-config.schema.json`, so **`_config.strict` rejected both as unknown keys while §9.15.2 documented their defaults**, and `Config.from_defaults()` returned `None` for both. One surface, two declarations, and the more complete one discarded: the third variant of this audit's recurring shape and the sharpest of them. Two further disagreements came out with it — both sections' exporter enums differed (`jaeger` in the schema, `in_memory` in §9.15.2, for tracing; `otlp` versus `in_memory` for metrics), and §9.15.2 named `schemas/observability.schema.json` as this namespace's schema when **no such file has ever existed**, that line being its only reference anywhere. **This version makes the schema canonical**: it gains `strategy` and `otlp_endpoint`, §9.15.2 references it instead of carrying a copy, and the phantom schema reference is removed rather than satisfied, because a third declaration of one surface is the problem and not the fix. **The keys also cannot be fixed one at a time, in any order** — wiring `sampling_rate` alone yields a key that reads configuration, sets a field and still samples every span, since the strategy short-circuits ahead of the rate; adding the strategy yields two keys configuring a middleware nothing installs, no SDK having ever built a `TracingMiddleware` from configuration; and installing one needs an exporter, which is an object rather than a name. So the five move together. **`in_memory` is deliberately NOT admitted to the enum** (§10.1.1 requirement 2): all three in-memory exporters are test buffers a caller selecting them by name has no standardised way to read, so admitting one would manufacture a fresh instance of the failure this section removes — a setting that takes effect and produces nothing visible. `jaeger` stays accepted for 1.x, warns once per configuration load, installs nothing, substitutes nothing, and is removed at v2.0 under §13.4's window, since narrowing an enum rejects a configuration accepted today; the same treatment covers `otlp` wherever OTLP support is an absent optional dependency or build feature, because a middleware whose exporter discards every span is worse than no middleware. **`otlp_endpoint` set against a non-OTLP exporter is a load-time `CONFIG_INVALID` error** (requirement 3), not a silent no-op: an endpoint written down and read by nothing is the shape of every defect #118 found. **§10.7 was itself describing a surface that did not exist** — it named the key `sampling_strategy`, which is the constructor argument's name in all three SDKs and not a configuration key, and spelled `full` and `off` as rates, so the rate doubled as an on/off switch that two of the four strategies ignore. **This also closes a second dead end**: the `span_exporter` extension point warned `no TracingMiddleware found in the middleware chain` precisely because nothing installed one from configuration, and requirement 6 pins the ordering — an extension-supplied exporter object beats the configured name, and a caller-supplied middleware is never joined by a second. `observability.metrics.enabled` and `.exporter` stay in §9.2.4 and proceed to removal: no metrics-exporter abstraction exists in any SDK and `MetricsCollector` arrives only as a constructor argument. **This IS an SDK change in all three, and it ships with them** — the §9.2.4 rows and the schema's `deprecated` flags are lifted in the same change that gives the keys consumers, never ahead of it. Governance: maintainer approval per GOVERNANCE.md § Decision Making; tracking issue #118. |
+| 1.45.0 | 2026-09-11 | **§6.3.2 (new), §9.2.4 and §9.2.4.1 — ACL auditing had two declared configuration homes, neither read, and no delivery contract to wire either of them to (#118, decision D-66).** §6.3.1 has always specified the *record* — thirteen fields, with `handler_error` and `approval_required` carrying precise semantics. Nothing specified **delivery**: `ACL(audit_logger=…)` was the entire surface, with no default sink, no statement of what happens when delivery fails, and no meaning for the `audit:` block's `enabled` / `include_denied` / `log_level`. **The sharpest consequence was measured, not inferred: a raising audit callback propagated out of `check()` and turned an ALLOWED call into an error, in all three SDKs** — the callback is unguarded at `acl.py:1866`, `acl.ts:1698` and the Rust equivalent. Auditing is a side channel and MUST NOT hold a veto over access, which §10.3 has always required of the governance events beside it; requirement 3 states it, bounded to **recoverable** failures because a Rust callback is `Fn(&AuditEntry)` with no error channel and a `panic = "abort"` build cannot be contained. **The ACL file's `audit:` block is the surviving home** and `acl.audit.*` is withdrawn: under the alternative the surviving key would still need wiring, and wiring it means the `apcore.yaml` loader reaching into ACL construction, while here it is local to the ACL loader that already parses the document. §9.2.4's three `acl.audit.*` rows now name their migration target — a notice saying "this is going away" without saying "use that instead" is half a notice. **Declaration activates the default sink, never the default value**: `enabled` defaults to `true`, so a merged-view reading would switch a log record per ACL check on for every ACL file in existence, and the §9.2.4 principle that a notice is driven by the declared document applies unchanged to behaviour. A file with no `audit:` block behaves exactly as before. **There is one effective sink, never two**: a supplied callback receives every entry and is never narrowed, levelled or silenced by the block, because `include_denied: false` in a file silently truncating a compliance sink a developer installed is the API-beats-configuration rule failing in the direction that matters; a block overridden by a callback produces one diagnostic naming **every** field that does not apply. The default sink emits under the stable name **`apcore.acl.audit`** with all thirteen fields as **structured data under their `snake_case` wire names** — without that, one specification yields three different "structured records" from a Python `logging` call, a TypeScript `console` line and a Rust `tracing` event, and nothing downstream consumes all three. Callbacks **MUST** be synchronous: an `async` one returns an unawaited coroutine or `Promise` whose failure surfaces after the decision has been returned, outside the containment requirement 3 promises. Failing-sink diagnostics are suppressed after the first, scoped per ACL instance **and per effective sink configuration**, so replacing a sink or reloading is not hidden behind an old failure. `reload()` now refreshes the block and **preserves** the callback — it previously refreshed only rules and the default effect, making `audit:` the one part of the document a reload missed. The block is validated against `$defs/AuditConfig`; every other unrecognised root key in an ACL file keeps being ignored, exactly as §9.2.4.1 scoped its own notice. **This IS an SDK change in all three, and requirement 3 changes existing behaviour** — a project whose audit callback raises moves from a failed call to a returned decision plus a diagnostic. Governance: maintainer approval per GOVERNANCE.md § Decision Making; tracking issue #118. |
