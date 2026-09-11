@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.31.0] - 2026-09-09
 
-> Ships `PROTOCOL_SPEC` **v1.37.0 → v1.41.0**. Five decisions of the same shape, one release.
+> Ships `PROTOCOL_SPEC` **v1.37.0 → v1.42.0**. Six decisions of the same shape, one release.
 > v1.37.0: the specification typed six values as "a glob" and named no matcher, so each SDK
 > inherited its host library's dialect. v1.38.0: six `validation.*` keys were declared and read by
 > nobody, and the numbers that filled the gap disagreed six ways for a single field. v1.39.0: ten
@@ -23,6 +23,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > a test that can fail.
 
 ### Added
+
+- **`PROTOCOL_SPEC` §3.5 / §3.6 — `extensions.ignore_patterns` gets a consumer, and therefore a dialect (spec v1.42.0, [#118](https://github.com/aiperceivable/apcore/issues/118)).** The key was registered in all three configuration key surfaces and read by **none** of them, so A04 step 3a — *"if entry name matches ignore_patterns → Skip"* — was a **MUST whose input nothing supplies**. A project that excluded a directory from discovery had it scanned and its modules registered anyway: **a skip rule that failed OPEN**, which is the direction that matters.
+  **The ordering is the rule, not the exception.** v1.37.0 excluded this key from §9.2.3's closed set on purpose and said so in the table: assigning a dialect to a key nothing reads declares a contract nothing can be measured against. **A dialect is assigned when a consumer exists, not before** — so this version supplies the consumer in all three SDKs and assigns the dialect in the same change.
+  The surface is narrow on purpose. A04 says *entry name*, so a pattern matches **one path segment** and `*` cannot cross a directory boundary, because there is no boundary in the value being matched. Matching is **case-sensitive**, unlike `obs.redaction.sensitive_keys` — these are filenames, and folding them would make one configuration behave differently on a case-insensitive filesystem than on the case-sensitive one it was written against. §3.5 also states what was previously only implied: its five rows are **built in and not configurable**, and the configured list is a **union** with them, so no pattern can switch off `.git/` or `__pycache__/`.
+  **apcore-rust needed a second thing the other two already had.** Its `max_depth`, `follow_symlinks` and `ignore_patterns` were builder options on `DefaultDiscoverer` with **no path from a `Config` at all**, so the new MUST would have been unsatisfiable there — the very defect this change closes, one layer up. `DefaultDiscoverer::from_config` is that path, with explicit builder calls still winning per D-73's precedence (API argument > `Config` > declared default).
 
 - **`PROTOCOL_SPEC` §10.6.1 "Where the rules apply" (new, spec v1.41.0) — `obs.redaction.*` reached one of the two surfaces the specification names, in all three SDKs, for the whole life of the keys ([#120](https://github.com/aiperceivable/apcore/issues/120)).** `docs/features/observability.md` has always required redaction "both at log emission and at the executor's input/output capture point", as the union of `x-sensitive`, `sensitive_keys` and `regex_patterns`. Measured: the capture point applied `x-sensitive` and the `_secret_` prefix and **nothing else** — apcore-python passed no configured keys or patterns, and apcore-typescript and apcore-rust had **no parameter for them at all**.
   **The three agreed with each other; what they disagreed with was the documentation — and the cause was in this specification.** §10.6 publishes its algorithm as `redact_sensitive(data, schema)`: two inputs, no configuration. All three wrote that signature and honoured it. The "both surfaces" rule lived only in a feature document with no normative section behind it, so **a MUST whose subject the published algorithm cannot express is a MUST nothing can satisfy.**

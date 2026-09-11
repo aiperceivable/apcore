@@ -1,12 +1,12 @@
 ---
-description: "The canonical, normative apcore protocol specification (RFC 2119, v1.41.0): module, schema, naming, ACL, approval, error, config, and observability requirements for all conforming SDKs."
+description: "The canonical, normative apcore protocol specification (RFC 2119, v1.42.0): module, schema, naming, ACL, approval, error, config, and observability requirements for all conforming SDKs."
 ---
 
 # apcore — AI-Perceivable Core Standard Specification
 
 > **Canonical Specification** - This document is the authoritative specification for the apcore protocol
 
-> Version: 1.41.0
+> Version: 1.42.0
 > Status: Draft Specification (RFC 2119 Conformant)
 > Stability: Specification content is stable, pending reference implementation verification
 > Last Updated: 2026-09-09
@@ -602,7 +602,20 @@ Implementations **MUST** ignore the following files and directories during modul
 | `node_modules/` | — | Node.js dependencies |
 | `*.pyc` | — | Python compiled files |
 
-Implementations **may** extend the ignore pattern list through configuration.
+The five rows above are **built in** and are not configurable: an implementation applies
+them whatever the configuration says.
+
+Implementations **MUST** additionally apply `extensions.ignore_patterns`, matched as a
+**glob-dialect** value under §9.2.3 (Algorithm **A25**) against the **entry name** — one path
+segment, case-sensitively. The two lists are a union: a configured pattern adds to the
+built-in rows and cannot remove one.
+
+This was a **MUST with no supplier until v1.42.0**. The key was registered in all three
+configuration key surfaces and read by none of them, so a project that excluded a directory
+from discovery had it scanned and its modules registered anyway — a skip rule that failed
+**open**. It is the same shape as #114's `bindings.dir` and was found by the same audit
+(#118); the dialect could not be assigned earlier because §9.2.3 assigns one only where a
+consumer exists.
 
 ### 3.6 Scanning Algorithm
 
@@ -623,7 +636,8 @@ Steps:
   2. modules ← []
   3. Recursively traverse extensions_root:
      For each entry (file or directory):
-       a. If entry name matches ignore_patterns (§3.5) → Skip
+       a. If entry name matches a built-in row of §3.5, or matches any
+          config.ignore_patterns entry under A25 (§9.2.3) → Skip
        b. If entry is a symbolic link and config.follow_symlinks == false → Skip
        c. If entry is a directory:
           - If current depth >= config.max_depth (default 8) → Skip and issue warning
@@ -6105,20 +6119,31 @@ a specification defect, not an implicit exclusion.
 | `system.control.reload_module` → `path_filter` (§6.7) | glob (**A25**) | the module ID | sensitive |
 | ACL `callers[]` / `targets[]` (§6.2) | module-id (**A08**) | the module ID | sensitive |
 | pipeline / middleware `match_modules[]` (§5.16) | module-id (**A08**) | the module ID | sensitive |
+| `extensions.ignore_patterns[]` (§3.5) | glob (**A25**) | the **entry name** — one path segment, never the path | sensitive |
 
 `obs.redaction.sensitive_keys` entries containing neither `*` nor `?` are **not** patterns
 at all; they are substrings, matched by the separate rule in §10.6.1. That hybrid is
 existing behaviour in all three implementations and is specified rather than removed.
 
-**One key is deliberately absent from the table: `extensions.ignore_patterns`.** It is
-registered in all three implementations' configuration key surfaces and read by **none** of
-them, so it has no matcher to specify and no behaviour to make consistent — §3.6's
-`scan_extensions` step 3a ("if entry name matches `ignore_patterns` → skip") is a **MUST
-whose input nothing supplies**, which is exactly the shape #114 found in `bindings.dir`.
-Assigning it a dialect here would declare a contract no implementation could be measured
-against, and this section exists to stop doing that. It is excluded until a consumer exists,
-on the same reasoning §9.2.2 used to exclude `bindings.dir` from its fixture set, and is
-recorded as a separate defect rather than silently absorbed into this one.
+**`extensions.ignore_patterns` joined this table in v1.42.0, and why it was outside it until
+then is worth keeping.** v1.37.0 excluded it deliberately: it was registered in all three
+implementations' configuration key surfaces and read by **none** of them, so §3.6's
+`scan_extensions` step 3a ("if entry name matches `ignore_patterns` → skip") was a **MUST
+whose input nothing supplies** — the shape #114 found in `bindings.dir`. Assigning a dialect
+to a key no implementation reads would declare a contract nothing could be measured against,
+which is the practice this section exists to end.
+
+The order is the point, and it is the general rule for this table: **a dialect is assigned
+when a consumer exists, not before.** v1.42.0 supplies the consumer in all three SDKs and
+assigns the dialect in the same change, so the row and the behaviour arrive together and the
+fixture can discriminate between them from the first day.
+
+The surface it matches is narrow on purpose. A04 step 3a says *entry name*, so a pattern is
+matched against **one path segment** — `node_modules`, `fixtures.py` — and never against a
+path. `*` therefore cannot cross a directory boundary, because there is no boundary in the
+value being matched. Matching is **case-sensitive**, unlike `sensitive_keys`: these are
+filenames, and a protocol that folded them would make a configuration behave differently on
+a case-insensitive filesystem than on the case-sensitive one it was written against.
 
 ##### Algorithm A25 — `match_glob`
 
@@ -9757,3 +9782,4 @@ Each language SDK **SHOULD** provide idiomatic module definition syntax. The fol
 | 1.39.0 | 2026-09-09 | **§9.2.4 Deprecated Configuration Keys (new) and §9.2.4.1 — ten declared keys reach no consumer, and withdrawing them is a migration, not a cleanup (#118).** `observability.tracing.enabled` / `.sampling_rate` / `.exporter`, `observability.metrics.enabled` / `.exporter`, `logging.level` / `.format`, and `acl.audit.enabled` / `.include_denied` / `.log_level` are schema-declared, environment-overridable, documented with defaults — and read by no code path in any SDK. An operator who sets one gets no error, no warning and no effect, and `_config.strict` does not help because every one of them is correctly declared. **This version changes no behaviour.** The keys keep parsing, keep validating, keep answering `get()`, and stay accepted under strict mode for the whole 1.x line. What it adds is the one thing they have never had: a way for an operator to find out. **Deletion was the obvious plan and it is wrong twice over.** First, all ten are accepted today under `_config.strict: true` — measured, not assumed — so removing a declared key turns a currently-valid configuration into a rejected one; §13.2's two-minor floor and §13.4's `remove_field: mark as deprecated for at least 2 minor versions` both apply, and the shape is therefore *keep parsing → warn once per load → remove at 2.0*. Second, and sharper: **for the ACL file, deleting the declaration would have accomplished nothing at all.** No implementation validates an ACL file against `schemas/acl-config.schema.json` — the only references to that file in any SDK are in comments — and the three ACL loaders parse into an open container and take the fields they want, so an `audit:` block is dropped in silence today and would go on being dropped in silence after any schema change. Verified by execution: a file with an `audit:` block and a file with a nonsense root key both load with no warning. §9.2.4.1 therefore puts the notice in the **loader**, scoped to `audit` alone — a deprecation notice, **not** unknown-key closure for ACL files, so every other unrecognised root key keeps being ignored exactly as before. **The warning is driven by the DECLARED document, never the merged view** (requirement 2), because every one of these keys has a default and a merged-view check would fire for every configuration ever loaded — the blanket warning §9.2.2 explicitly rejects, which trains operators to ignore the one that matters. Cadence follows §9.2.2 exactly: once per configuration load, never once per process. **That requirement caught a real cross-SDK divergence while being implemented**: apcore-rust's `get_declared` answers `Some(false)` for `observability.tracing.enabled` in a document that never mentions it, because `observability` is a typed struct field whose leaves always carry a value — so the first implementation warned for every configuration, including clean ones. The Rust warning is driven from `user_namespaces`, which retains the raw object of every typed section as written; that `get_declared` itself cannot answer the question is recorded as a separate finding rather than repaired here, since §9.3's required-field check depends on that method. §9.2.4's table records why each key is going, and the entry worth reading is `sampling_rate`: `TracingMiddleware` decides sampling from `sampling_strategy`, which defaults to `"full"` and short-circuits before the rate is consulted, and **the configuration surface has no key for the strategy** — so wiring the scalar alone would have produced a key that reads configuration, sets a field, and still samples every span. An operator asking for 10% gets 100% today and would still get 100% after that "fix". The ten properties carry `"deprecated": true` in `schemas/apcore-config.schema.json`, and the ACL file's `audit` block carries it in `schemas/acl-config.schema.json`. **Whichever of the two audit homes survives, one is deleted at v2.0**; this section does not choose between them, it starts the window for both so the choice is not also a scheduling problem. `conformance/config_key_consumers.json` records each key's window and pins it with a probe asserting **both** halves — a declared key warns, and a clean configuration does not. Governance: maintainer approval per GOVERNANCE.md § Decision Making; tracking issue #118. |
 | 1.40.0 | 2026-09-09 | **§10.6.1 requirement 2 (new) — `regex_patterns` applies to string values only, and the conversion the old wording implied cannot be specified at all (#117).** Requirement 1 said the pattern is searched *"against the string form of a field's value"*. Read as an instruction to stringify, and apcore-python's log-emission path did exactly that, so **one SDK gave two answers for one value**: with `regex_patterns: ["\\d+"]`, the field `amount: 42` came back `***REDACTED***` from `_apply_redaction_config` and untouched from `redact_sensitive` — measured, and §10.6 requires the rule to hold on **both** of those surfaces. **The reason the phrase has to go rather than be clarified is that no wording could have saved it.** For the single value `{"a": 1}` the three host languages render `{'a': 1}`, `[object Object]` and `{"a":1}`; for `true` they render `True`, `true` and `true`. A matching rule defined over a per-language rendering is not one rule with an ambiguity in it, it is three rules — the precise defect §9.2.3 was written to end, reappearing one section later in a phrase rather than in a type. The rule is now a **MUST NOT**: a number, boolean, `null`, object or array is not tested, and **is not converted in order to test it**; containers are descended into, so a string inside one is still reached at its own position. This pins the majority behaviour rather than changing it — apcore-typescript (`typeof value === 'string'`), apcore-rust (`Value::String(s)`) and apcore-python's own executor-capture path all already restrict to strings, and only one of four code paths did not. **The existing fixture could not see it, for the reason #116 and #117 both turned on.** `redaction_config.json`'s `regex_pattern_value_match` case already carried `amount: 42` next to two patterns — but both were anchored on `Bearer` and `sk-`, so neither could match `"42"` under any interpretation, and a case that cannot fail against any implementation pins nothing. Discriminating cases are added. Requirement 5 additionally scopes diagnostic suppression: an implementation that de-duplicates the requirement-4 warning **MUST NOT** let the suppression outlive the configuration it was raised for. A process-wide "already reported" set — which apcore-python and apcore-typescript both had — silences the *second* load of the same broken pattern, i.e. the reload case and the multi-tenant case, the two where an operator most needs telling; requirement 5's "compile once, when the configuration is read" makes the correct scope the natural one. **This IS an SDK change**, in apcore-python (both halves) and apcore-typescript (suppression scope); apcore-rust already compiles at `from_config`. Governance: maintainer approval per GOVERNANCE.md § Decision Making; tracking issue #117. |
 | 1.41.0 | 2026-09-10 | **§10.6.1 "Where the rules apply" (new) — `obs.redaction.*` reached one of the two surfaces the specification names, in all three implementations, for the whole life of the keys (#120).** `docs/features/observability.md` has always said redaction MUST apply "both at log emission and at the executor's input/output capture point\", as the union of `x-sensitive`, `sensitive_keys` and `regex_patterns`. Measured: the capture point applies `x-sensitive` and the `_secret_` prefix and **nothing else** — apcore-python `builtin_steps.py:272/950/1102` calls `redact_sensitive(ctx.inputs, schema)` with no configured keys or patterns, and apcore-typescript `executor.ts:76` and apcore-rust `executor.rs:417` have **no parameter for them at all**. **The three agree with each other; what they disagree with is the documentation** — and the reason is in this specification rather than in them. §10.6 publishes its algorithm as `redact_sensitive(data, schema)`: two inputs, no configuration. All three wrote that signature and honoured it. The "both surfaces" rule lived only in a feature document with no normative section behind it, so **a MUST whose subject the published algorithm cannot express is a MUST nothing can satisfy.** Requirement 2 states the failure as a contradiction rather than a gap: the same field, in the same execution, is a secret in the log line and plaintext in the captured input, and neither answer is marked provisional. The capture point is the one that matters more and the one that was missed — it fills what the audit trail carries (governance events, error histories, any middleware reading `context.redacted_inputs`), so an operator who adds a `regex_patterns` entry for a bearer token gets it redacted in the log they were watching and stored in the record they were not. Requirement 3 pins the absent-configuration case: **"no configuration" means the defaults, never no redaction** — and the three implementations disagreed even on that, which is a **fourth divergence** at this surface and one no test could see while the *configured* rules reached the capture point in none of them. apcore-python resolved an absent key list to the canonical 16-entry default; apcore-typescript and apcore-rust applied `x-sensitive` and the `_secret_` prefix and stopped. A field named `password`, with nothing configured anywhere, was redacted in the captured input by one SDK and stored in plaintext by two. Wiring therefore changes nothing for an unconfigured apcore-python caller and converges the other two onto it. **This IS an SDK change in all three**, and it is the plumbing rather than the matcher: no capture call site held a `Config`. Found while implementing v1.40.0 and filed separately rather than folded in, because it is a wiring decision and not a dialect one. Governance: maintainer approval per GOVERNANCE.md § Decision Making; tracking issue #120. |
+| 1.42.0 | 2026-09-11 | **§3.5 / §3.6 — `extensions.ignore_patterns` gets a consumer, and therefore a dialect (#118).** The key was registered in all three configuration key surfaces and read by **none** of them, so A04 step 3a — *"if entry name matches ignore_patterns → Skip"* — was a **MUST whose input nothing supplies**. A project that excluded a directory from discovery had it scanned and its modules registered anyway: **a skip rule that failed OPEN**, which is the direction that matters, and the same shape #114 found in `bindings.dir`. v1.37.0 excluded the key from §9.2.3's closed set on purpose — assigning a dialect to a key nothing reads declares a contract nothing can be measured against — and said so in the table. **The order is the rule, not the exception: a dialect is assigned when a consumer exists, not before.** This version supplies the consumer in all three SDKs and assigns the dialect in the same change, so the row, the behaviour and a fixture that can discriminate between them arrive together. The surface is narrow on purpose: A04 says *entry name*, so a pattern matches **one path segment** and `*` cannot cross a directory boundary, because there is no boundary in the value being matched. Matching is **case-sensitive**, unlike `obs.redaction.sensitive_keys` — these are filenames, and folding them would make one configuration behave differently on a case-insensitive filesystem than on the case-sensitive one it was written against. §3.5 also states what was previously only implied: its five rows are **built in and not configurable**, and the configured list is a **union** with them rather than a replacement, so a pattern cannot switch off `.git/` or `__pycache__/`. **This IS an SDK change in all three.** Governance: maintainer approval per GOVERNANCE.md § Decision Making; tracking issue #118. |

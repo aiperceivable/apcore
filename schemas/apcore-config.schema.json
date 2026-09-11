@@ -212,7 +212,8 @@
         },
         "ignore_patterns": {
           "type": "array",
-          "description": "Additional file/directory patterns to ignore during scanning. NOTE (protocol-spec 9.2.3): registered in every SDK key surface and read by none of them, so no matcher is specified for it yet; it is deliberately absent from the closed set of pattern-valued values until a consumer exists.",
+          "x-apcore-pattern": "glob",
+          "description": "Additional file/directory patterns to ignore during scanning, matched with Algorithm A25 (protocol-spec 9.2.3) against the ENTRY NAME — one path segment, never a path, case-sensitively. A union with the built-in rows of 3.5: a configured pattern adds to them and cannot remove one. Consumer landed in spec v1.42.0; before that this key was registered in every SDK key surface and read by none, so 3.6's step 3a was a MUST whose input nothing supplied and a directory excluded from discovery was scanned anyway.",
           "items": {
             "type": "string"
           },
