@@ -1,0 +1,164 @@
+{
+  "description": "PROTOCOL_SPEC §10.1.1 (spec v1.44.0, apcore#118 decision D-68 C'): `observability.tracing.*` in the LOADED CONFIGURATION reaches the middleware the client runs. Five keys, one unit — and treating them as five independent keys is what kept all five inert. Two of them, `strategy` and `otlp_endpoint`, were declared by §9.15.2's namespace registration and by NO schema, so `_config.strict` rejected them as unknown while the specification documented their defaults; the other three were deprecated in v1.39.0 on the finding that nothing read them. Every case here MUST be driven through the SDK's own client construction from `input.config`: a driver that calls the SDK's tracing-middleware builder directly proves the builder works, which was never in doubt, and passes on the implementation this fixture exists to rule out. `expected.tracing_middleware_count` is the observable the whole section turns on — before v1.44.0 it was 0 for every configuration in this file.",
+  "test_cases": [
+    {
+      "id": "no_tracing_configuration_installs_nothing",
+      "description": "The default, and the whole of the blast radius: a project that does not ask for tracing is untouched by §10.1.1.",
+      "input": { "config": { "version": "1.0", "project": { "name": "tracing-probe" } } },
+      "expected": { "tracing_middleware_count": 0, "loads": true }
+    },
+    {
+      "id": "enabled_false_installs_nothing",
+      "description": "Stated separately from the absent case: implementations short-circuit the two on different branches.",
+      "input": {
+        "config": {
+          "version": "1.0",
+          "project": { "name": "tracing-probe" },
+          "observability": { "tracing": { "enabled": false, "strategy": "proportional", "sampling_rate": 0.5 } }
+        }
+      },
+      "expected": { "tracing_middleware_count": 0, "loads": true }
+    },
+    {
+      "id": "enabled_installs_a_middleware_with_the_stdout_exporter",
+      "description": "Requirement 1 with requirement 2's default. `stdout` is the one exporter every SDK can always build.",
+      "input": {
+        "config": {
+          "version": "1.0",
+          "project": { "name": "tracing-probe" },
+          "observability": { "tracing": { "enabled": true } }
+        }
+      },
+      "expected": { "tracing_middleware_count": 1, "exporter_kind": "stdout", "loads": true }
+    },
+    {
+      "id": "the_strategy_key_reaches_the_sampling_decision",
+      "description": "Requirement 5 and §10.7. `strategy` is what decides whether `sampling_rate` is consulted at all, which is why wiring the rate alone was a fix that changed nothing — `full` short-circuits ahead of it and an operator asking for 10% got 100%. Drivers MUST read the strategy back off the BUILT middleware, not off the Config.",
+      "input": {
+        "config": {
+          "version": "1.0",
+          "project": { "name": "tracing-probe" },
+          "observability": { "tracing": { "enabled": true, "strategy": "proportional", "sampling_rate": 0.1 } }
+        }
+      },
+      "expected": {
+        "tracing_middleware_count": 1,
+        "sampling_strategy": "proportional",
+        "sampling_rate": 0.1,
+        "loads": true
+      }
+    },
+    {
+      "id": "every_strategy_value_is_accepted",
+      "description": "The closed set of §10.7, which all three SDKs already agreed on as a constructor argument before any of them had a configuration key for it.",
+      "input": {
+        "config": {
+          "version": "1.0",
+          "project": { "name": "tracing-probe" },
+          "observability": { "tracing": { "enabled": true, "strategy": "error_first" } }
+        }
+      },
+      "expected": { "tracing_middleware_count": 1, "sampling_strategy": "error_first", "loads": true }
+    },
+    {
+      "id": "otlp_endpoint_reaches_the_otlp_exporter",
+      "description": "Requirement 3's positive half. An SDK whose OTLP support is an optional dependency or build feature that is absent reports `tracing_middleware_count: 0` here instead, per requirement 4 — a middleware whose exporter discards every span is worse than no middleware — and a driver MUST treat that as conformant rather than skipping the case silently.",
+      "input": {
+        "config": {
+          "version": "1.0",
+          "project": { "name": "tracing-probe" },
+          "observability": {
+            "tracing": { "enabled": true, "exporter": "otlp", "otlp_endpoint": "http://collector.internal:4318/v1/traces" }
+          }
+        }
+      },
+      "expected": {
+        "exporter_kind": "otlp",
+        "otlp_endpoint": "http://collector.internal:4318/v1/traces",
+        "otlp_may_be_unavailable": true,
+        "loads": true
+      }
+    },
+    {
+      "id": "an_endpoint_against_a_non_otlp_exporter_is_rejected",
+      "description": "Requirement 3's negative half, and the one place this section adds an error. An endpoint an operator wrote down and nothing reads is the shape of every defect apcore#118 found, so it is rejected rather than ignored. The wire code is the contract; the exception class name is not.",
+      "input": {
+        "config": {
+          "version": "1.0",
+          "project": { "name": "tracing-probe" },
+          "observability": { "tracing": { "enabled": true, "exporter": "stdout", "otlp_endpoint": "http://x:4318" } }
+        }
+      },
+      "expected": { "loads": false, "error_code": "CONFIG_INVALID", "error_message_contains": "otlp_endpoint" }
+    },
+    {
+      "id": "jaeger_installs_nothing_and_substitutes_nothing",
+      "description": "Requirement 4. `jaeger` names no implementation in any SDK. It stays accepted for the 1.x line — narrowing an enum rejects a configuration accepted today — warns once per configuration load, and installs NOTHING. Tracing is then off, which is exactly the observable behaviour before v1.44.0, so no working configuration stops working. Substituting a different exporter is forbidden: a silent substitution is the failure this section removes.",
+      "input": {
+        "config": {
+          "version": "1.0",
+          "project": { "name": "tracing-probe" },
+          "observability": { "tracing": { "enabled": true, "exporter": "jaeger" } }
+        }
+      },
+      "expected": { "tracing_middleware_count": 0, "warns_naming": "jaeger", "loads": true }
+    },
+    {
+      "id": "in_memory_is_not_a_configuration_value",
+      "description": "§10.1.1 requirement 2's closed enum. §9.15.2 used to name `in_memory` here, disagreeing with the schema, and all three SDKs do ship an in-memory exporter — but a caller who selects it BY NAME has no standardised way to reach the spans it holds, so it would take effect and produce nothing an operator can see. It stays an API and testing facility.",
+      "input": {
+        "config": {
+          "version": "1.0",
+          "project": { "name": "tracing-probe" },
+          "observability": { "tracing": { "enabled": true, "exporter": "in_memory" } }
+        }
+      },
+      "expected": { "loads": false, "error_code": "CONFIG_INVALID", "error_message_contains": "in_memory" }
+    },
+    {
+      "id": "the_five_keys_are_accepted_under_strict_mode",
+      "description": "The defect, from the configuration side. `strategy` and `otlp_endpoint` were declared by §9.15.2 with defaults and REJECTED here as unknown keys, because they were in no schema. This case fails on every implementation before v1.44.0.",
+      "input": {
+        "config": {
+          "version": "1.0",
+          "project": { "name": "tracing-probe" },
+          "_config": { "strict": true },
+          "observability": {
+            "tracing": {
+              "enabled": true,
+              "sampling_rate": 0.25,
+              "strategy": "error_first",
+              "exporter": "otlp",
+              "otlp_endpoint": "http://collector:4318/v1/traces"
+            }
+          }
+        }
+      },
+      "expected": { "loads": true }
+    },
+    {
+      "id": "the_wired_keys_do_not_warn_as_deprecated",
+      "description": "§9.2.4 requirement 1 — the table is the whole list, and a key that has left it MUST NOT warn. These three were deprecated in spec v1.39.0; v1.44.0 gave them consumers and cancelled the withdrawal. `observability.metrics.*` stays in the table and is unaffected.",
+      "input": {
+        "config": {
+          "version": "1.0",
+          "project": { "name": "tracing-probe" },
+          "observability": { "tracing": { "enabled": true, "sampling_rate": 0.5, "exporter": "stdout" } }
+        }
+      },
+      "expected": { "deprecation_warning": false, "loads": true }
+    },
+    {
+      "id": "the_metrics_keys_still_warn_as_deprecated",
+      "description": "The other half, and the case that proves the one above can fail. `metrics.enabled` and `.exporter` stay in §9.2.4: no metrics-exporter abstraction exists in any SDK and `MetricsCollector` arrives only as a constructor argument.",
+      "input": {
+        "config": {
+          "version": "1.0",
+          "project": { "name": "tracing-probe" },
+          "observability": { "metrics": { "enabled": true } }
+        }
+      },
+      "expected": { "deprecation_warning": true, "warns_naming": "observability.metrics.enabled", "loads": true }
+    }
+  ]
+}

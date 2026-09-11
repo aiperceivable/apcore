@@ -164,10 +164,11 @@ def _control_enabled() -> str | None:
 
 
 #: PROTOCOL_SPEC 9.2.4 — the ten keys whose removal window is open.
+#: §9.2.4's table. Ten when the window opened in spec v1.39.0; seven since
+#: v1.44.0, which gave the three `observability.tracing.*` keys consumers
+#: (§10.1.1) and cancelled their withdrawal. `WIRED_KEYS` below pins the other
+#: half — a table that never shrank passes every case here and fails those.
 DEPRECATED_INERT_KEYS = (
-    "observability.tracing.enabled",
-    "observability.tracing.sampling_rate",
-    "observability.tracing.exporter",
     "observability.metrics.enabled",
     "observability.metrics.exporter",
     "logging.level",
@@ -176,6 +177,15 @@ DEPRECATED_INERT_KEYS = (
     "acl.audit.include_denied",
     "acl.audit.log_level",
 )
+
+
+#: The keys spec v1.44.0 took out of §9.2.4, with a valid value for each.
+WIRED_KEYS = {
+    "observability.tracing.enabled": True,
+    "observability.tracing.sampling_rate": 0.25,
+    "observability.tracing.exporter": "stdout",
+    "observability.tracing.strategy": "off",
+}
 
 
 def deprecation_probe() -> str | None:
@@ -225,6 +235,19 @@ def deprecation_probe() -> str | None:
         return "a namespace-mode document declaring logging.level produced no warning"
     if "logging.level" not in hits[0]:
         return f"the namespace-mode notice does not name the key: {hits[0][:120]}"
+
+    # §9.2.4 requirement 1 — the table is the whole list, and a key that has
+    # left it MUST NOT warn. Without this half a table that never shrank would
+    # satisfy every assertion above.
+    for key in WIRED_KEYS:
+        doc = dict(base)
+        node = doc
+        parts = key.split(".")
+        for part in parts[:-1]:
+            node = node.setdefault(part, {})
+        node[parts[-1]] = WIRED_KEYS[key]
+        if load(doc):
+            return f"{key} gained a consumer in spec v1.44.0 and still warns as deprecated"
 
     for key in DEPRECATED_INERT_KEYS:
         doc = dict(base)
@@ -1612,6 +1635,152 @@ def governance_keys() -> set[str]:
         return found
 
     return set(walk(doc))
+
+
+# ---------------------------------------------------------------------------
+# Tracing from configuration (D-68 C', spec §10.1.1)
+# ---------------------------------------------------------------------------
+
+
+def _tracing_middlewares(tracing: dict) -> list:
+    """The TracingMiddleware instances a client built from `tracing` installs.
+
+    Through `APCore`, not `build_tracing_middleware`: the builder is new and was
+    never the broken part. What was inert for the whole life of these keys is
+    the step BEFORE it — no SDK extracted `observability.tracing.*` from a
+    `Config` and installed anything, so `enabled: true` produced no middleware
+    and the other four configured one that did not exist.
+    """
+    from apcore import APCore
+    from apcore.config import Config
+    from apcore.observability.tracing import TracingMiddleware
+
+    doc = {"version": "1.0", "project": {"name": "probe"}, "observability": {"tracing": tracing}}
+    client = APCore(config=Config(doc))
+    return [m for m in client.executor.middlewares if isinstance(m, TracingMiddleware)]
+
+
+@probe("observability.tracing.enabled")
+def _tracing_enabled() -> str | None:
+    if _tracing_middlewares({}):
+        return "no tracing configuration installed a middleware anyway"
+    if _tracing_middlewares({"enabled": False}):
+        return "observability.tracing.enabled=false installed a middleware"
+    if len(_tracing_middlewares({"enabled": True})) != 1:
+        return "observability.tracing.enabled=true installed no tracing middleware"
+    return None
+
+
+@probe("observability.tracing.strategy")
+def _tracing_strategy() -> str | None:
+    """The key that decides whether `sampling_rate` is consulted at all."""
+    for name in ("full", "proportional", "error_first", "off"):
+        installed = _tracing_middlewares({"enabled": True, "strategy": name})
+        if not installed:
+            return f"observability.tracing.strategy={name!r} installed no middleware"
+        actual = getattr(installed[0], "_sampling_strategy", None)
+        if actual != name:
+            return f"observability.tracing.strategy={name!r} reached the middleware as {actual!r}"
+    return None
+
+
+@probe("observability.tracing.sampling_rate")
+def _tracing_sampling_rate() -> str | None:
+    """Measured, not read back: the rate only means anything through a strategy.
+
+    Reading the field back would pass on the implementation this key had before
+    v1.44.0 too, where `full` short-circuited ahead of the rate and an operator
+    asking for 10% got 100%.
+    """
+    from apcore.context import Context
+    from apcore.observability.tracing import InMemoryExporter
+
+    from apcore import APCore
+    from apcore.config import Config
+
+    try:
+        from pydantic import BaseModel
+    except ImportError:  # pragma: no cover - pydantic is a hard dependency
+        return "pydantic is not importable; the probe cannot drive a real call"
+
+    class _In(BaseModel):
+        n: int
+
+    class _Out(BaseModel):
+        n: int
+
+    class _Echo:
+        input_schema = _In
+        output_schema = _Out
+        description = "Echo module used to drive real calls through the pipeline."
+
+        def execute(self, inputs: dict, context: Context) -> dict:
+            return {"n": inputs["n"]}
+
+    doc = {
+        "version": "1.0",
+        "project": {"name": "probe"},
+        "observability": {
+            "tracing": {"enabled": True, "strategy": "proportional", "sampling_rate": 0.1}
+        },
+    }
+    client = APCore(config=Config(doc))
+    from apcore.observability.tracing import TracingMiddleware
+
+    installed = [m for m in client.executor.middlewares if isinstance(m, TracingMiddleware)]
+    if not installed:
+        return "a configured sampling_rate installed no middleware to consult it"
+    collected = InMemoryExporter()
+    installed[0].set_exporter(collected)
+    client.register("probe.echo", _Echo())
+    runs = 2000
+    for i in range(runs):
+        client.call("probe.echo", {"n": i})
+    fraction = len(collected.get_spans()) / runs
+    if not 0.05 < fraction < 0.16:
+        return f"sampling_rate=0.1 with strategy=proportional sampled {fraction:.0%}, not ~10%"
+    return None
+
+
+@probe("observability.tracing.exporter")
+def _tracing_exporter() -> str | None:
+    from apcore.observability.tracing import StdoutExporter
+
+    installed = _tracing_middlewares({"enabled": True, "exporter": "stdout"})
+    if not installed or not isinstance(installed[0]._exporter, StdoutExporter):
+        return "observability.tracing.exporter='stdout' did not select the stdout exporter"
+    # `jaeger` names no implementation: it must install NOTHING rather than
+    # silently substituting another exporter (§10.1.1 requirement 4).
+    if _tracing_middlewares({"enabled": True, "exporter": "jaeger"}):
+        return "observability.tracing.exporter='jaeger' installed a middleware anyway"
+    return None
+
+
+@probe("observability.tracing.otlp_endpoint")
+def _tracing_otlp_endpoint() -> str | None:
+    from apcore.config import Config
+    from apcore.errors import ConfigError
+
+    endpoint = "http://collector.internal:4318/v1/traces"
+    installed = _tracing_middlewares(
+        {"enabled": True, "exporter": "otlp", "otlp_endpoint": endpoint}
+    )
+    if not installed:
+        return "observability.tracing.otlp_endpoint with exporter='otlp' installed no middleware"
+    reached = str(getattr(installed[0]._exporter, "_endpoint", ""))
+    if "collector.internal" not in reached:
+        return f"otlp_endpoint did not reach the exporter; it holds {reached!r}"
+    # §10.1.1 requirement 3: an endpoint nothing reads is a rejected config,
+    # never a silent no-op.
+    config = Config({
+        "version": "1.0", "project": {"name": "probe"},
+        "observability": {"tracing": {"exporter": "stdout", "otlp_endpoint": endpoint}},
+    })
+    try:
+        config.validate()
+    except ConfigError:
+        return None
+    return "otlp_endpoint against a non-OTLP exporter was accepted; it must be rejected at load"
 
 
 # ---------------------------------------------------------------------------

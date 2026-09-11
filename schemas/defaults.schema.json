@@ -133,6 +133,24 @@
               "type": "number",
               "description": "Trace sampling rate.",
               "default": 1.0
+            },
+            "strategy": {
+              "type": "string",
+              "description": "How the sampling decision is made (PROTOCOL_SPEC 10.7).",
+              "default": "full"
+            },
+            "exporter": {
+              "type": "string",
+              "description": "Trace exporter selected by name (PROTOCOL_SPEC 10.1.1 requirement 2).",
+              "default": "stdout"
+            },
+            "otlp_endpoint": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "OTLP collector endpoint; null means the implementation's default.",
+              "default": null
             }
           }
         },
@@ -173,15 +191,24 @@
           "description": "Limits applied to binding files and module metadata when the content is read.",
           "properties": {
             "description_max_length": {
-              "type": ["integer", "null"],
+              "type": [
+                "integer",
+                "null"
+              ],
               "description": "Maximum characters in a module `description`. null = no limit (recommended ceiling: 200)."
             },
             "documentation_max_length": {
-              "type": ["integer", "null"],
+              "type": [
+                "integer",
+                "null"
+              ],
               "description": "Maximum characters in a module `documentation`. null = no limit (recommended ceiling: 5000)."
             },
             "tags_pattern": {
-              "type": ["string", "null"],
+              "type": [
+                "string",
+                "null"
+              ],
               "x-apcore-pattern": "regex",
               "description": "Regular expression every binding tag must match. null = no constraint. Defaulted off rather than to the recommended lowercase pattern, because enforcing it by default would add a rejection that does not exist today."
             },
@@ -198,11 +225,17 @@
           "description": "Limits applied when the pipeline section is parsed.",
           "properties": {
             "step_name_max_length": {
-              "type": ["integer", "null"],
+              "type": [
+                "integer",
+                "null"
+              ],
               "description": "Maximum characters in a pipeline step `name`. null = no limit (recommended ceiling: 64)."
             },
             "timeout_ms_max": {
-              "type": ["integer", "null"],
+              "type": [
+                "integer",
+                "null"
+              ],
               "description": "Maximum value for a pipeline step `timeout_ms`. null = no bound (recommended ceiling: 300000)."
             }
           }

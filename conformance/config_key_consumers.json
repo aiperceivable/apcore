@@ -1,7 +1,7 @@
 {
   "_comment": "What reads each declared configuration key. Enforced by conformance/check_config_key_consumers.py.\n\nconfig_key_governance.json pins that every declared key is ACCEPTED — the three SDKs agree on the key set and the default table. Nothing pinned that any key is READ, and 29 of 61 were not (apcore#118). This file is the missing half: every key states what consumes it, or states that nothing does and why.\n\nSTATUSES\n  live      — a probe in the checker SETS THE KEY through Config.set (enforced: the checker records what each probe writes and rejects one that never writes its own key) and observes an effect OUTSIDE Config, on a path the LIBRARY ITSELF drives — APCore(config=...), BindingLoader.load_bindings(..., cfg), the executor's stream merge. Three things have each produced a false `live` and each is excluded by one clause above: reading the value back from Config proves plumbing, not consumption (four observability.* keys round-trip perfectly and are consumed by nothing); reaching the behaviour by another door proves the behaviour, not the key (acl.default_effect's probe built ACL(default_effect=...) directly); and driving a helper nothing else calls proves the helper, not the library (obs.redaction.* is read only by RedactionConfig.from_config, which no SDK's src/ invokes).\n  partial   — something reads it, but not on the path an operator would expect. The reason must say what the gap is.\n  inert     — nothing reads it. A written decision, not an accident; the reason must say what was measured.\n  unaudited — not yet examined. NOT a claim that the key works.\n\nThe `ratchet` counts may fall and may not rise. Lower a ceiling in the same change that fixes or audits a key; that is what turns apcore#118 from a report into a number that has to go down.\n\nTHE RATCHET IS A LEDGER, NOT A NUMBER. Each `ratchet` ceiling MUST equal the `to` of the last `ratchet_history` entry for that status, and the entries MUST chain (`from` == the previous `to`). Editing a ceiling on its own therefore fails the checker: the number and the ledger stop agreeing. A RISE additionally requires a `reason` and a `keys` list naming the keys that moved, and each named key must actually hold that status. Falls need an entry too, so the chain stays continuous, but no `keys`.\n\nThis exists because the previous rule — \"may fall, may not rise\" — was enforced by a code comment, and the first raise under it (inert 18 -> 19 on 2026-09-10) was made in the same commit that changed the number. A ceiling guarded only by review is guarded only when someone looks.",
   "ratchet": {
-    "inert": 21,
+    "inert": 18,
     "unaudited": 0
   },
   "keys": {
@@ -197,40 +197,22 @@
       }
     },
     "observability.tracing.enabled": {
-      "status": "inert",
-      "reason": "Plumbed through `Config` in apcore-rust and consumed by nothing. `apcore-python client.py` reads none of the five `observability.*` keys.",
-      "tracking": "https://github.com/aiperceivable/apcore/issues/118",
-      "deprecation": {
-        "since": "1.39.0",
-        "removed_no_earlier_than": "2.0",
-        "spec": "PROTOCOL_SPEC 9.2.4",
-        "probe": "deprecated_inert_keys",
-        "tracking": "https://github.com/aiperceivable/apcore/issues/118"
-      }
+      "status": "live",
+      "probe": "observability.tracing.enabled",
+      "reason": "Wired by D-68 C' (spec v1.44.0, §10.1.1 requirement 1): the client installs a TracingMiddleware built from `observability.tracing.*` when this is true, and installs nothing when it is absent or false. Deprecated in v1.39.0 on the finding that nothing read it; the withdrawal is cancelled, not forgotten — §9.2.4 records it. Fixed 2026-09-11.",
+      "tracking": "https://github.com/aiperceivable/apcore/issues/118"
     },
     "observability.tracing.exporter": {
-      "status": "inert",
-      "reason": "Plumbed through `Config` in apcore-rust (`config.rs:2423`/`2484`; `set`/`get` round-trip) and consumed by nothing. This is the shape a set-then-get test CANNOT see, and why probes here must observe an effect outside `Config`.",
-      "tracking": "https://github.com/aiperceivable/apcore/issues/118",
-      "deprecation": {
-        "since": "1.39.0",
-        "removed_no_earlier_than": "2.0",
-        "spec": "PROTOCOL_SPEC 9.2.4",
-        "probe": "deprecated_inert_keys",
-        "tracking": "https://github.com/aiperceivable/apcore/issues/118"
-      }
+      "status": "live",
+      "probe": "observability.tracing.exporter",
+      "reason": "Wired by D-68 C' (spec v1.44.0, §10.1.1 requirement 2). The original #118 audit wrote the whole key off as unimplementable because `jaeger` names no implementation; it is two thirds implemented — all three SDKs ship a stdout and an OTLP exporter. `jaeger` now warns once per load, installs NOTHING and substitutes nothing, which is the pre-v1.44.0 observable behaviour plus a diagnostic; it is removed at v2.0. `in_memory` is deliberately not a configuration value: a caller selecting it by name has no standardised way to read the spans it holds. Fixed 2026-09-11.",
+      "tracking": "https://github.com/aiperceivable/apcore/issues/118"
     },
     "observability.tracing.sampling_rate": {
-      "status": "inert",
-      "reason": "Range-validated by `Config` and consumed by nothing. `TracingMiddleware` takes `sampling_rate` as a constructor parameter defaulting to 1.0. VERIFIED BY EXECUTION: with the key set to 0.1, a middleware built as a client would build it reports `_sampling_rate == 1.0` — the operator gets 100% sampling. Validation is not consumption.",
-      "tracking": "https://github.com/aiperceivable/apcore/issues/118",
-      "deprecation": {
-        "since": "1.39.0",
-        "removed_no_earlier_than": "2.0",
-        "spec": "PROTOCOL_SPEC 9.2.4",
-        "probe": "deprecated_inert_keys",
-        "tracking": "https://github.com/aiperceivable/apcore/issues/118"
-      }
+      "status": "live",
+      "probe": "observability.tracing.sampling_rate",
+      "reason": "Wired by D-68 C' (spec v1.44.0). The probe MEASURES the sampled fraction over 2000 real calls rather than reading the field back: reading it back would also pass on the pre-v1.44.0 implementation, where `full` is the default strategy and short-circuits ahead of the rate, so an operator asking for 10% got 100%. Fixed 2026-09-11.",
+      "tracking": "https://github.com/aiperceivable/apcore/issues/118"
     },
     "pipeline.configure": {
       "status": "live",
@@ -360,6 +342,18 @@
     "version": {
       "status": "live",
       "probe": "version"
+    },
+    "observability.tracing.strategy": {
+      "status": "live",
+      "probe": "observability.tracing.strategy",
+      "reason": "Not a new key. §9.15.2's namespace registration has declared it — default `full`, values `full`/`proportional`/`error_first`/`off` — since that section was written, and all three SDKs carry the registration verbatim; it was absent from `schemas/apcore-config.schema.json`, so `_config.strict` REJECTED it as unknown while the specification documented its default. v1.44.0 makes the schema canonical and wires the key (§10.7). It is the key that decides whether `sampling_rate` is consulted at all. Fixed 2026-09-11.",
+      "tracking": "https://github.com/aiperceivable/apcore/issues/118"
+    },
+    "observability.tracing.otlp_endpoint": {
+      "status": "live",
+      "probe": "observability.tracing.otlp_endpoint",
+      "reason": "Not a new key — the same shape as `strategy`: declared by §9.15.2 with default `null`, present in all three SDKs, absent from the schema, and rejected by `_config.strict`. Wired by D-68 C' (spec v1.44.0, §10.1.1 requirement 3): passed to the OTLP exporter when the effective exporter is `otlp`, and an endpoint set against any other exporter is a load-time CONFIG_INVALID error rather than a silent no-op. Fixed 2026-09-11.",
+      "tracking": "https://github.com/aiperceivable/apcore/issues/118"
     }
   },
   "ratchet_history": [
@@ -495,6 +489,20 @@
         "extensions.ignore_patterns"
       ],
       "reason": "Four keys wired, not reclassified. `extensions.ignore_patterns` gained a supplier in spec v1.42.0; the three `pipeline.*` keys gained one in v1.43.0 (D-72, §5.16 requirements 6 and 7). Each now carries a behavioural probe that puts the key into a `Config` and reads the result outside it — for `pipeline.*` through `APCore`, never through `build_strategy_from_config`, since the builder was never the broken part."
+    },
+    {
+      "status": "inert",
+      "from": 21,
+      "to": 18,
+      "date": "2026-09-11",
+      "keys": [
+        "observability.tracing.enabled",
+        "observability.tracing.sampling_rate",
+        "observability.tracing.exporter",
+        "observability.tracing.strategy",
+        "observability.tracing.otlp_endpoint"
+      ],
+      "reason": "D-68 C' (spec v1.44.0). Three of these were inert and deprecated; two — `strategy` and `otlp_endpoint` — were not in this manifest at all, because they were declared by §9.15.2's namespace registration and by no schema, so `_config.strict` rejected them as unknown keys while the specification documented their defaults. The count therefore falls by three while the surface grows by two. They had to move together: wiring `sampling_rate` alone yields a key that reads configuration and still samples every span, adding `strategy` yields two keys configuring a middleware nothing installs, and installing one needs an exporter."
     }
   ]
 }

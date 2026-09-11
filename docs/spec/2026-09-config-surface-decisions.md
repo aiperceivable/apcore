@@ -126,39 +126,76 @@ apcore emits structured records; the host owns the sink, the level policy and th
 
 ---
 
-## D-68 — observability: `sampling_rate`, `metrics.exporter`, and a strategy key that does not exist
+## D-68 — the tracing configuration surface is declared in two places that disagree
 
 **Tracking issue**: [#118](https://github.com/aiperceivable/apcore/issues/118). Window opened by spec v1.39.0.
+**Revised 2026-09-11** — the original entry's status quo was wrong in a way that changed the decision. It is kept below, struck through in prose rather than deleted, because the error is the interesting part.
 
-**Status quo**
+**What the original entry said, and why it was wrong**
 
-Five `observability.*` keys are deprecated for v2.0. Three of them are not merely unimplemented — **they are unimplementable as declared**:
+The original recommendation was **C**: *"complete tracing (`strategy` + `sampling_rate`), withdraw `metrics.exporter` and `jaeger`"*, resting on this claim:
 
-- `observability.tracing.sampling_rate` — `TracingMiddleware` decides sampling from `sampling_strategy`, a **constructor argument** defaulting to `"full"` which short-circuits before any rate is consulted. There is **no `sampling_strategy` configuration key** — verified: the identifier does not appear in `schemas/`. So wiring the scalar alone yields a key that reads configuration, sets a field, and still samples every span. An operator asking for 10% gets 100% before the fix and 100% after it.
-- `observability.metrics.exporter` — there is no exporter abstraction to wire it to.
-- `observability.tracing.exporter` — `jaeger` is a declared value with zero implementations.
+> There is **no `sampling_strategy` configuration key** — verified: the identifier does not appear in `schemas/`.
 
-**Decision needed**
+The verification was correct and the conclusion was not. The identifier is absent from `schemas/`; **the key is not**. §9.15.2's `observability` namespace registration declares it — as `strategy`, with the default `"full"` and the comment `"full" | "proportional" | "error_first" | "off"` — and all three SDKs carry that registration verbatim. `strategy` is not a new key. It is an **old key declared by one canonical source and absent from the other**.
 
-Whether the observability configuration model is completed or declared out of scope.
+Two more of the same shape came out with it: `observability.tracing.otlp_endpoint` (declared in §9.15.2, default `null`, present in all three SDKs) and the exporter enums, which the two surfaces spell differently.
 
-**Options**
+**Status quo, measured**
 
-- **A — complete it.** Add `observability.tracing.strategy` (new key), add a metrics-exporter abstraction, close the `jaeger` gap or drop the value, then wire the deprecated keys and cancel their withdrawal.
-- **B — withdraw all five** at v2.0 and state that tracing/metrics wiring is done in code, by handing a configured middleware to the client.
-- **C — split.** Withdraw `metrics.exporter` and `jaeger` (no abstraction, no implementation), complete tracing (`strategy` + `sampling_rate`).
+apcore-python, by execution:
 
-**Recommendation: C, and the sequencing is the load-bearing part.**
+```
+Config.from_defaults() → namespace("observability")["tracing"]
+  = {"enabled": false, "sampling_rate": 1.0}      # the registration declares FIVE leaves
 
-Sampling rate is the one an operator genuinely wants per environment, and it is the one that is one key short of working. Metrics exporters need an abstraction nobody has designed; declaring that out of scope is honest. But note what C requires: **`strategy` is a NEW key, and a new key is rejected under `_config.strict` today, so it must be ADDED before anything is removed.** Adding is purely additive and permitted in 1.x. This is the one item in this file with work that can land now rather than at v2.0.
+get("observability.tracing.strategy")      = None
+get("observability.tracing.exporter")      = None
+get("observability.tracing.otlp_endpoint") = None
+
+_config.strict: true + observability.tracing.strategy       → REJECTED, "Unknown key"
+_config.strict: true + observability.tracing.otlp_endpoint  → REJECTED, "Unknown key"
+```
+
+So the same key is **declared with a default by §9.15.2 and rejected outright by `_config.strict`**. This is the third variant of the shape this audit keeps finding, and the sharpest: the key is declared twice, the two declarations disagree, and the fuller one is the one that gets discarded.
+
+Three further facts, all verified:
+
+| | |
+|---|---|
+| `schemas/observability.schema.json` | **does not exist.** §9.15.2 line 7727 names it as the namespace's schema; that line is the only reference to it anywhere in the repo or the three SDKs. |
+| tracing exporter enum | `apcore-config.schema.json` says `stdout`/`otlp`/`jaeger`; §9.15.2 says `stdout`/`otlp`/`in_memory`. |
+| metrics exporter enum | `apcore-config.schema.json` says `stdout`/`prometheus`/`otlp`; §9.15.2 says `stdout`/`prometheus`/`in_memory`. |
+
+And the keys cannot be fixed one at a time in any order. Wiring `sampling_rate` alone yields a key that reads configuration, sets a field and still samples every span, because the strategy short-circuits ahead of the rate. Adding the strategy yields two keys configuring a middleware **nothing installs** — no SDK has ever built a `TracingMiddleware` from configuration. Installing one needs an exporter, and an exporter is an object rather than a name. Each key is unreachable until the one before it exists.
+
+**Decision: C′ — unify the declaration surface, and wire the five tracing keys in one change.**
+
+Ratified 2026-09-11. Not the original C, and **not** split into a follow-up decision: the surface disagreement and the wiring are the same defect seen from two sides, and fixing either alone leaves a key that is declared in one place and unreachable from the other.
+
+Scope:
+
+1. **One canonical declaration.** `schemas/apcore-config.schema.json` gains `observability.tracing.strategy` and `.otlp_endpoint`. §9.15.2 stops listing its own enums and **references the canonical schema** instead; the reference to the nonexistent `schemas/observability.schema.json` is removed rather than satisfied — creating that file would make a third surface, and `apcore-config.schema.json` is already the canonical home for these keys.
+2. **`schemas/defaults.schema.json` gains the tracing defaults it lacks** — `strategy`, `exporter` and `otlp_endpoint` — so all three SDKs are held to the same default table.
+3. **The exporter enum is `stdout | otlp | jaeger` in 1.x.** `jaeger` stays accepted, warns once per configuration load, installs nothing, and is removed at v2.0 under §13.4's window, because narrowing an enum rejects a configuration accepted today.
+4. **`in_memory` is NOT a configuration value.** All three `InMemoryExporter`s are test buffers, and a caller who constructs one from configuration has **no standardised way to reach the spans it holds**. It has a class; it is not an exporter an operator can use or observe. Admitting it to the enum would manufacture a fresh instance of the exact failure this audit exists to remove — a setting that takes effect and produces nothing visible. It stays an API and testing facility.
+5. **`otlp_endpoint` is wired**: `string | null`, default `null`, passed to the exporter **only when the effective exporter is `otlp`**. An endpoint set alongside a non-OTLP exporter is a **configuration error at load**, not a silent no-op — "written but ignored" is what this whole audit is about.
+6. **Precedence** is unchanged from D-73: an explicitly supplied middleware or exporter beats `Config`, and a caller-supplied `TracingMiddleware` is never joined by a second.
+7. `observability.metrics.enabled` and `.exporter` stay deprecated and proceed to removal. There is no metrics-exporter abstraction in any SDK and `MetricsCollector` arrives only as a constructor argument.
+
+**Nothing is un-deprecated until the SDKs read the keys.** The §9.2.4 rows, the `deprecated: true` schema flags and the `inert` records in `config_key_consumers.json` stay exactly as they are until the three implementations land, and the spec change ships in the same push. A specification that says a key has a consumer while no implementation reads it is the defect, not the fix.
 
 **Owner**: maintainer.
 
-**Action once decided**
+**Acceptance** — the wiring is not accepted on a factory test. Every item is end-to-end, Config → client → middleware → observable effect:
 
-- If C: add `observability.tracing.strategy` to the schemas and all three SDKs, wire it and `sampling_rate` through `TracingMiddleware`, remove those two from the §9.2.4 deprecation table, and let `metrics.exporter` / `jaeger` proceed to removal.
-
----
+- all five keys readable, writable and validating alike from defaults, from a file, from `APCORE_*`, through `Config.set`, and under `_config.strict`;
+- `strategy: proportional` with `sampling_rate: 0.1` produces approximately 10% sampling, measured over a run, not asserted on a field;
+- `otlp_endpoint` reaches the OTLP exporter;
+- `enabled: false` installs no middleware;
+- an explicitly supplied middleware or exporter wins, and no second middleware is installed;
+- `jaeger` warns, installs nothing, and substitutes nothing;
+- `otlp_endpoint` set with a non-OTLP exporter is rejected at load.
 
 ## D-69 — `_config.allow_unknown`: implement §9.6.3's row, or withdraw the key
 
