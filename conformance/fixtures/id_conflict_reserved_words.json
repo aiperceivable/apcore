@@ -9,6 +9,11 @@
     "schema",
     "acl"
   ],
+  "error_code_by_conflict": {
+    "_why": "The wire code each `expected` conflict type surfaces as. Declared HERE rather than in three drivers because it is one rule and §8's error codes are the cross-language contract — the place a driver may NOT invent its own spelling. Added 2026-09-11 after check_case_pinning.py found all four rejection cases unpinned in every scope: each driver asserted only that registration was REFUSED, so mutating `expected` from `reserved_word` to `duplicate_id` — a value this very fixture uses — left every SDK green. The distinction the fixture exists to draw was asserted by nobody.",
+    "reserved_word": "INVALID_MODULE_ID",
+    "duplicate_id": "DUPLICATE_MODULE_ID"
+  },
   "test_cases": [
     {
       "id": "first_segment_reserved_is_rejected",
