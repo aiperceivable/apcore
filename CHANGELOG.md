@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.31.0] - 2026-09-09
+## [0.31.0] - 2026-09-14
 
 > Ships `PROTOCOL_SPEC` **v1.37.0 → v1.48.0**. Fourteen decisions of the same shape, one release,
 > and the end of the #118 audit: the configuration surface goes from **29 inert / 31 unaudited**
