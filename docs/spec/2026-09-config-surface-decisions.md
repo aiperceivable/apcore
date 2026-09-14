@@ -160,6 +160,45 @@ apcore emits structured records; the host owns the sink, the level policy and th
 - If A: `ContextLogger.from_config` in three SDKs, wired at client construction, plus a probe in `check_config_key_consumers.py` and a conformance case.
 - If B: a short normative note (§10.x) stating that logging configuration is host-owned; remove both keys at v2.0; keep the deprecation notice pointing at that note.
 
+**Resolved 2026-09-14 — B, and the "say so" half turned out to be the load-bearing one.** Spec
+v1.48.0. The keys keep their §9.2.4 window and go at v2.0; §9.15.2 stops pointing the ecosystem
+at them.
+
+**Four things were verified against the code before deciding**, because B's argument is an
+architectural boundary and a boundary claimed without measurement is just a preference.
+
+1. **No creation point has a `Config` in reach** — and the answer is harder than "not wired":
+   `Context` in all three SDKs contains the string `config` **zero times**. The primary creation
+   point is `Context.logger()`, called per module execution, which builds a logger from that
+   object. Wiring the keys means threading two values through `Context`, whose six-parameter
+   `Context.create` signature is itself a pinned cross-language contract.
+2. **Per-instance settings would cost the isolation apcore currently gets for free.** There is no
+   process-global logger state in any SDK — every `Context.logger()` returns a fresh instance, so
+   two `APCore` instances in one process are already isolated. The two ways to make
+   `logging.level` effective are to thread it through `Context` or to introduce a global; the
+   second would be the thing that *ends* that isolation. **This, not the wiring effort, is the
+   real cost.**
+3. **The API precedence is already a stable contract**, identically in all three:
+   `ObsLoggingMiddleware(logger=…)` is `the supplied logger, else a default` — §9.1.3
+   requirement 2 restated — and `from_context` / `fromContext` pass `level`, `format` and the sink
+   through.
+4. **The host path is NOT the host's logging framework, and this corrected the release note.**
+   `ContextLogger` writes structured lines **directly** to standard error — `sys.stderr`,
+   `console.error`, and this crate's own writer — and `apcore-python`'s `context_logger.py` does
+   not import `logging` at all. A note saying "configure it through your language's logging API"
+   would have sent operators somewhere with no effect on apcore's output;
+   `logging.basicConfig(level=…)` does not change a byte of it. The supported path is
+   constructing a `ContextLogger` and handing it to the middleware.
+
+**A new finding, recorded and deliberately out of #118's scope.** The API path covers the
+middleware and **not** `Context.logger()`, which constructs a default logger per invocation — so a
+module's `context.logger()` output is always stderr, `info`, JSON, in every SDK. Withdrawing
+`logging.*` makes §9.1.3's rule hold, because the keys stop naming a mechanism they cannot reach;
+it does **not** hand the host control of that path. That is a different defect from the one this
+audit was about: #118 is "a key is declared and reaches nothing", and this is "no key was ever
+declared". §9.2.4 records it as a known boundary so a reader meets it in the specification rather
+than in production.
+
 ---
 
 ## D-68 — the tracing configuration surface is declared in two places that disagree
@@ -559,7 +598,7 @@ Executor, `id_map_from_config`'s explicit argument, `acl_audit_delivery`'s callb
 | # | Subject | Recommendation | Decided |
 |---|---|---|---|
 | D-66 | `acl.audit` — two homes | A (ACL file's block survives) — **define the delivery contract first** | **A, spec v1.45.0** (§6.3.2). Contract written first, then wired. Found: a failing audit callback turned an ALLOWED call into an error, in all three SDKs |
-| D-67 | logging keys at v2.0 | B (withdraw, and say so) | **not yet taken** — the only decision in this file still open. The keys stay in §9.2.4's table meanwhile |
+| D-67 | logging keys at v2.0 | B (withdraw, and say so) | **B, spec v1.48.0**. The boundary was measured, not asserted: `Context` holds no `Config` in any SDK, and a per-instance setting would cost the multi-instance isolation apcore gets for free. The replacement wording had to be corrected — `ContextLogger` does not route through the host's logging framework |
 | D-68 | observability model | C (complete tracing, withdraw metrics) | **C′, spec v1.44.0** (§10.1.1). The status quo was wrong: `strategy` and `otlp_endpoint` were OLD keys declared by §9.15.2 and by no schema, so `_config.strict` rejected them |
 | D-69 | `_config.allow_unknown` | A (implement §9.6.3's row) | **A, spec v1.46.0** (§9.6.3 reqs 1–4). BOTH halves of the row were inert — `true` never logged the WARN it requires |
 | D-70 | `extensions.roots` | A (converge on Rust) | **A, spec v1.46.0**, target corrected: Rust was the LEAST complete of the three — it dropped the namespaces |
@@ -567,7 +606,7 @@ Executor, `id_map_from_config`'s explicit argument, `acl_audit_delivery`'s callb
 | D-72 | `pipeline.*` | A (wire it) — **rank first** | **A, spec v1.43.0** (§5.16 reqs 6–7) |
 | D-73 | API-only keys, in general | A (state the rule, **with both clauses**) | **A, spec v1.47.0** (§9.1.3), with a third clause the audit required: a key in the wrong file is the same defect. First application: `acl.default_effect` |
 
-**Surface at close: 50 live / 1 partial / 16 inert / 0 unaudited**, from 29 inert and 31 unaudited
+**All eight decisions resolved.** Surface at close: **50 live / 1 partial / 16 inert / 0 unaudited**, from 29 inert and 31 unaudited
 when #118 opened. Every remaining inert key is a written decision — eight on a removal window,
 eight naming no mechanism at all (see D-73's resolution for why that distinction matters).
 
