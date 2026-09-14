@@ -164,11 +164,13 @@ def _control_enabled() -> str | None:
 
 
 #: PROTOCOL_SPEC 9.2.4 — the ten keys whose removal window is open.
-#: §9.2.4's table. Ten when the window opened in spec v1.39.0; seven since
-#: v1.44.0, which gave the three `observability.tracing.*` keys consumers
-#: (§10.1.1) and cancelled their withdrawal. `WIRED_KEYS` below pins the other
-#: half — a table that never shrank passes every case here and fails those.
+#: §9.2.4's table. Ten when the window opened in spec v1.39.0; seven after
+#: v1.44.0 gave the three `observability.tracing.*` keys consumers (§10.1.1) and
+#: cancelled their withdrawal; eight since v1.47.0 added `acl.default_effect` as
+#: §9.1.3's first application. `WIRED_KEYS` below pins the other half — a table
+#: that never shrank passes every case here and fails those.
 DEPRECATED_INERT_KEYS = (
+    "acl.default_effect",
     "observability.metrics.enabled",
     "observability.metrics.exporter",
     "logging.level",
@@ -255,7 +257,13 @@ def deprecation_probe() -> str | None:
         parts = key.split(".")
         for part in parts[:-1]:
             node = node.setdefault(part, {})
-        node[parts[-1]] = "probe" if key.endswith(("level", "format", "exporter")) else 1
+        node[parts[-1]] = (
+            "allow"
+            if key == "acl.default_effect"
+            else "probe"
+            if key.endswith(("level", "format", "exporter"))
+            else 1
+        )
         hits = load(doc)
         if not hits:
             return f"{key} was declared and produced no deprecation warning"

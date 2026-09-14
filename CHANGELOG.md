@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.31.0] - 2026-09-09
 
-> Ships `PROTOCOL_SPEC` **v1.37.0 → v1.46.0**. Twelve decisions of the same shape, one release,
+> Ships `PROTOCOL_SPEC` **v1.37.0 → v1.47.0**. Thirteen decisions of the same shape, one release,
 > and the end of the #118 audit: the configuration surface goes from **29 inert / 31 unaudited**
 > to **50 live / 1 partial / 16 inert / 0 unaudited**, every remaining inert key a written
 > decision rather than an accident.
@@ -31,6 +31,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > contract to wire either of them to.
 
 ### Added
+
+- **`PROTOCOL_SPEC` §9.1.3 (new) — a declared configuration key MUST reach its mechanism from a `Config`, and `acl.default_effect` is the rule's first application (spec v1.47.0, [#118](https://github.com/aiperceivable/apcore/issues/118) decision D-73).** The arrangement this section forbids — a mechanism fully implemented and reachable only by passing a constructor or function argument, with a schema key naming it that reaches nothing — arose **four times independently** in code that was otherwise careful: `acl.default_effect`, `acl.audit.*`, `id_map.overrides` and `pipeline.*`. Nothing forbade it, so nothing caught it, and **each instance looked correct from inside its own SDK, because the mechanism worked.**
+  Two clauses keep the rule from leaving the same gap open under a narrower door. **Requirement 1** defines the entry point: a file load, an `APCORE_*` override and a programmatic `Config` satisfy it equally; a direct argument that bypasses `Config` does not, and stays legitimate as an argument while being unable to stand in for the key. **Requirement 2** states precedence — **API argument > `Config` > declared default** — because the rule gives many keys two doors, and the API argument winning is what keeps the rule from being a breaking change: every caller passing the argument keeps its behaviour, and the key becomes the fallback it always looked like.
+  **Requirement 3 is the one the audit forced**, and applying it is this version's second half. A key in the *wrong file* is the same defect wearing a disguise: `acl.default_effect` is not API-only at all — it reaches its mechanism from the **ACL file**, while `apcore.yaml` declares a twin that reaches nothing. Measured: `acl.default_effect: allow` in `apcore.yaml`, against an ACL file that omits it, yields **deny**. The failure is fail-closed, which is the whole explanation for how long it went unremarked — the key can silently withhold an `allow` an operator asked for, and can never silently grant one. Same remedy §9.2.4.1 chose for `acl.audit`: the declaration in the file that reads it survives, the twin joins §9.2.4's table with the ACL file named as its migration target, and it goes at v2.0. **No behaviour changes** — the key did nothing before the notice existed.
+  **The enforcement already existed, and this key is why.** `check_config_key_consumers.py`'s `live` criterion is requirement 1 restated: a probe must put the key into a `Config` and observe an effect outside it. `acl.default_effect` was recorded `live` in the very guard built to find keys nothing reads, by a probe that constructed `ACL(default_effect=…)` directly — which is exactly what requirement 1 now refuses as evidence.
 
 - **`PROTOCOL_SPEC` §9.6.3 requirements 1–4 (new), and the last three inert keys of the audit are wired (spec v1.46.0, [#118](https://github.com/aiperceivable/apcore/issues/118) decisions D-69, D-70, D-71).**
 

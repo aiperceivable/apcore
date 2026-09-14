@@ -518,19 +518,57 @@ The guard catches this class today, but only *after* a key ships and only for ke
 
 - If A: add the requirement to §9.1 with a version bump, including both clauses above; cite it from `config_key_consumers.json`'s status definitions; and audit the four known instances against it as the rule's first application.
 
+**Resolved 2026-09-14 — A, implemented as §9.1.3 with both clauses, plus a third the audit
+required.**
+
+Applying the rule to the four named instances produced one open item, and it is the instance the
+rule was hardest on. Three of the four had already been wired by D-66, D-71 and D-72 and conform.
+The fourth, `acl.default_effect`, is not API-only at all: it reaches its mechanism from the **ACL
+file**, and the `apcore.yaml` twin reaches nothing. A rule written only about API arguments would
+have exempted it on a technicality, so **requirement 3** says a key in the wrong file is the same
+defect. Measured before writing it: `acl.default_effect: allow` in `apcore.yaml`, against an ACL
+file that omits the key, yields **deny**. The failure is fail-closed, which is the whole
+explanation for how long it went unremarked — the key can silently withhold an `allow` an operator
+asked for, and can never silently grant one.
+
+The remedy is the one §9.2.4.1 chose for `acl.audit`: the declaration in the file that reads it
+survives, the twin joins §9.2.4's deprecation table naming the ACL file as its migration target,
+and it goes at v2.0.
+
+**Auditing the rest of the surface against the rule** separates two categories that look alike in
+a count of inert keys. Six keys are on a removal window for precisely this shape — `logging.level`
+/ `.format` and `observability.metrics.exporter` each name a facility that is a constructor
+argument, and `acl.audit.*` was the wrong file. The remaining inert keys are a *different* thing:
+`$schema`, `extensions.lazy_load`, `extensions.namespace`, `middleware.disabled`,
+`project.version`, `id_map.auto_detect` and the two `sys_modules.usage.*` keys name **no mechanism
+at all**, through any door. §9.1.3 has nothing to say about them, and saying so is the point — the
+rule forbids a specific arrangement, not "being unread", and conflating the two would turn it into
+a licence to delete anything the audit has not got to yet.
+
+**What enforces it.** Requirement 1 is `check_config_key_consumers.py`'s `live` criterion restated,
+and that criterion exists *because of* this instance: `acl.default_effect` was recorded `live` in
+the guard built to find keys nothing reads, by a probe that constructed `ACL(default_effect=…)`
+directly. Requirement 2 is pinned per key by the precedence case each wiring fixture already
+carries — `pipeline_section_wiring`'s explicit strategy, `tracing_from_config`'s caller-supplied
+Executor, `id_map_from_config`'s explicit argument, `acl_audit_delivery`'s callback.
+
 ---
 
 ## Resolution status
 
 | # | Subject | Recommendation | Decided |
 |---|---|---|---|
-| D-66 | `acl.audit` — two homes | A (ACL file's block survives) — **define the delivery contract first** | — |
-| D-67 | logging keys at v2.0 | B (withdraw, and say so) | — |
-| D-68 | observability model | C (complete tracing, withdraw metrics) | — |
-| D-69 | `_config.allow_unknown` | A (implement §9.6.3's row) | — |
-| D-70 | `extensions.roots` | A (converge on Rust) | — |
-| D-71 | `id_map.overrides` | A (wire it) | — |
-| D-72 | `pipeline.*` | A (wire it) — **rank first** | — |
-| D-73 | API-only keys, in general | A (state the rule, **with both clauses**) | — |
+| D-66 | `acl.audit` — two homes | A (ACL file's block survives) — **define the delivery contract first** | **A, spec v1.45.0** (§6.3.2). Contract written first, then wired. Found: a failing audit callback turned an ALLOWED call into an error, in all three SDKs |
+| D-67 | logging keys at v2.0 | B (withdraw, and say so) | **not yet taken** — the only decision in this file still open. The keys stay in §9.2.4's table meanwhile |
+| D-68 | observability model | C (complete tracing, withdraw metrics) | **C′, spec v1.44.0** (§10.1.1). The status quo was wrong: `strategy` and `otlp_endpoint` were OLD keys declared by §9.15.2 and by no schema, so `_config.strict` rejected them |
+| D-69 | `_config.allow_unknown` | A (implement §9.6.3's row) | **A, spec v1.46.0** (§9.6.3 reqs 1–4). BOTH halves of the row were inert — `true` never logged the WARN it requires |
+| D-70 | `extensions.roots` | A (converge on Rust) | **A, spec v1.46.0**, target corrected: Rust was the LEAST complete of the three — it dropped the namespaces |
+| D-71 | `id_map.overrides` | A (wire it) | **A, spec v1.46.0**. Follows `extensions.root`'s resolution base, not `acl.root`'s — #113 is still open and this does not pre-empt it |
+| D-72 | `pipeline.*` | A (wire it) — **rank first** | **A, spec v1.43.0** (§5.16 reqs 6–7) |
+| D-73 | API-only keys, in general | A (state the rule, **with both clauses**) | **A, spec v1.47.0** (§9.1.3), with a third clause the audit required: a key in the wrong file is the same defect. First application: `acl.default_effect` |
+
+**Surface at close: 50 live / 1 partial / 16 inert / 0 unaudited**, from 29 inert and 31 unaudited
+when #118 opened. Every remaining inert key is a written decision — eight on a removal window,
+eight naming no mechanism at all (see D-73's resolution for why that distinction matters).
 
 **Suggested sequence.** D-72 first: it is the most direct route from an inert key to a security or audit control that does not run. Then D-68's additive half (`observability.tracing.strategy`), because adding must precede removing and the v2.0 removals are already scheduled. Then D-66, so the deprecation notices can name a migration target while the window is still open. D-69, D-70 and D-71 are independent and small. D-73 last, since it is best written once the four instances have been resolved and their shape is settled.

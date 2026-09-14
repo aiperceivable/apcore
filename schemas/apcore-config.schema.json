@@ -282,12 +282,13 @@
         },
         "default_effect": {
           "type": "string",
-          "description": "Default ACL effect when no rule matches. MUST be 'allow' or 'deny'.",
+          "description": "Default behavior when no ACL rule matches. DEPRECATED (spec v1.47.0, apcore#118 decision D-73): read by no implementation — an ACL's default effect comes from the ACL FILE's own default_effect, and this twin reaches nothing. Measured: apcore.yaml saying allow, with an ACL file that omits it, yields deny. Migrate to the ACL file. It keeps parsing and validating through the 1.x line and is removed no earlier than v2.0. See PROTOCOL_SPEC 9.1.3 requirement 3 and 9.2.4.",
           "enum": [
             "allow",
             "deny"
           ],
-          "default": "deny"
+          "default": "deny",
+          "deprecated": true
         },
         "audit": {
           "type": "object",

@@ -60,7 +60,15 @@
     },
     "acl.default_effect": {
       "status": "inert",
-      "reason": "No SDK contains a reader. An ACL's default effect comes from the ACL FILE — apcore-python `acl.py:1444` `data.get(\"default_effect\", \"deny\")`, and the same in the other two — while the CONFIG key `acl.default_effect` is only declared and value-validated (apcore-python config.py:79/276, apcore-typescript config.ts:89, apcore-rust config.rs:1317, all validation). `ACL.load_from_config` says so in its own docstring: \"the `acl.default_effect` config key only takes effect once a real ACL file is loaded (it is read by `load` from the ACL file itself)\" — which is a description of the FILE field, not of this key. Recorded as `live` until 2026-09-10 by a probe that built `ACL(rules=[], default_effect=\"allow\")` DIRECTLY and never touched Config: it proved the constructor argument works, which 34 test files already cover, and proved nothing about the key. The checker now rejects a `live` probe that does not set its own key through `Config.set`."
+      "reason": "No SDK contains a reader, and §9.1.3's first application settles what to do about it (spec v1.47.0, decision D-73). An ACL's default effect comes from the ACL FILE's own `default_effect`; the `apcore.yaml` twin is declared and value-validated and reaches nothing. Measured: `acl.default_effect: allow` in apcore.yaml, with an ACL file that omits it, yields **deny** — the failure is fail-closed, which is why it went unremarked. Same shape as `acl.audit.*` and the same remedy: **migrate to the ACL file's `default_effect`**, this key removed at v2.0. It is also the key that taught this guard its own `live` criterion — it was recorded `live` here by a probe that built `ACL(default_effect=…)` directly, which is exactly what §9.1.3 requirement 1 now forbids as evidence.",
+      "deprecation": {
+        "since": "1.47.0",
+        "removed_no_earlier_than": "2.0",
+        "spec": "PROTOCOL_SPEC 9.1.3 requirement 3, 9.2.4",
+        "probe": "deprecated_inert_keys",
+        "migrate_to": "the ACL file's default_effect (PROTOCOL_SPEC 6.2.1)",
+        "tracking": "https://github.com/aiperceivable/apcore/issues/118"
+      }
     },
     "acl.root": {
       "status": "live",
