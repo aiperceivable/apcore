@@ -607,17 +607,42 @@ The reserved `_apcore.` prefix described in [`data` Key Convention](#data-key-co
     # Ok(()) }
     ```
 
-### Logging via `context.logger`
+### Logging from a module
+
+!!! warning "`context.logger` is deprecated (apcore#121), removed at v2.0"
+    It has no configuration door and cannot acquire one without paying for it
+    somewhere the framework should not — see the note after the examples. Its
+    output is fixed at **stderr, `info`, JSON**, bypassing whatever the host has
+    configured, so a host with structured logging to a collector gets apcore's
+    lines outside its own pipeline.
+
+**Log through the logger your application already configured.** Level, format,
+sink, sampling and per-instance policy then stay where they belong, which is
+[PROTOCOL_SPEC §9.2.4's D-67 boundary](../spec/protocol-spec.md#924-deprecated-configuration-keys):
+apcore does not own the host's logging policy. Carry the context fields you want
+correlated — `trace_id` is the one that matters — explicitly.
 
 === "Python"
 
     ```python
+    import logging
+
     from apcore import Context, Module
+
+    logger = logging.getLogger(__name__)
+
 
     class SendEmailModule(Module):
         def execute(self, inputs: dict, context: Context) -> dict:
-            context.logger.info(f"Sending email to {inputs['to']}")
-            # Output: [abc-123] [executor.email.send_email] Sending email to user@example.com
+            logger.info(
+                "Sending email to %s",
+                inputs["to"],
+                extra={
+                    "trace_id": context.trace_id,
+                    "caller_id": context.caller_id,
+                    "module_id": context.call_chain[-1] if context.call_chain else None,
+                },
+            )
             return {"success": True}
     ```
 
@@ -628,10 +653,19 @@ The reserved `_apcore.` prefix described in [`data` Key Convention](#data-key-co
 
     interface SendEmailInput { to: string; subject: string; body: string }
 
+    // Whatever the application installed — pino, winston, a console wrapper.
+    declare const logger: { info(fields: Record<string, unknown>, msg: string): void };
+
     export class SendEmailModule {
         async execute(inputs: SendEmailInput, context: Context) {
-            context.logger.info(`Sending email to ${inputs.to}`);
-            // Output: [abc-123] [executor.email.send_email] Sending email to user@example.com
+            logger.info(
+                {
+                    traceId: context.traceId,
+                    callerId: context.callerId,
+                    moduleId: context.callChain.at(-1) ?? null,
+                },
+                `Sending email to ${inputs.to}`,
+            );
             return { success: true };
         }
     }
@@ -657,12 +691,37 @@ The reserved `_apcore.` prefix described in [`data` Key Convention](#data-key-co
             ctx: &Context<Value>,
         ) -> Result<Value, ModuleError> {
             let to = inputs["to"].as_str().unwrap_or_default();
-            ctx.logger().info(&format!("Sending email to {to}"));
-            // Output: [abc-123] [executor.email.send_email] Sending email to user@example.com
+            tracing::info!(
+                trace_id = %ctx.trace_id,
+                caller_id = ?ctx.caller_id,
+                module_id = ?ctx.call_chain.last(),
+                "Sending email to {to}"
+            );
             Ok(json!({ "success": true }))
         }
     }
     ```
+
+**`ObsLoggingMiddleware` is for a different job**, and is not a drop-in
+replacement for the examples above. It emits apcore's own **execution events** —
+one record per call, carrying inputs, outputs and timing, redacted per
+[§10.6.1](../spec/protocol-spec.md#1061-configured-redaction-rules-obsredaction).
+Install it when you want automatic call auditing; it does not give module code a
+place to write an ad-hoc line, and moving every `context.logger` caller onto it
+would change log volume, record shape and how logging is switched on.
+
+??? note "Why `context.logger` cannot simply be made configurable"
+    Its logger is built from a `Context`, and `Context` carries no `Config` in
+    any of the three SDKs. Reaching one means either threading the values
+    through `Context` — whose six-parameter `Context.create` is a pinned
+    cross-language contract — or introducing a process-global logger
+    configuration. The second is the expensive one, and not in effort: every
+    `Context.logger()` returns a fresh instance today, so two `APCore` instances
+    in one process are already isolated, and a global is precisely what would
+    end that. apcore-typescript also **memoises** the logger per `Context` while
+    the other two rebuild it per access — a divergence with no observable effect
+    only because the logger is stateless and unconfigurable, and one that would
+    have to be settled first. Tracked in apcore#121.
 
 ### Middleware redaction
 

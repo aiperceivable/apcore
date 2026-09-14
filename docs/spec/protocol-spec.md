@@ -6511,13 +6511,24 @@ construct a `ContextLogger` with the level, format and sink you want and hand it
 middleware that emits — `ObsLoggingMiddleware(logger=…)` in all three SDKs, whose precedence
 (`the supplied logger, else a default`) is the §9.1.3 requirement 2 contract already.
 
-!!! warning "Known boundary — `Context.logger()` is not configurable"
-    The path above covers the middleware. It does **not** cover `Context.logger()`, which every
-    module reaches through `context.logger()`: that call constructs a default logger per
-    invocation, so its output is always stderr, `info`, JSON, in every SDK. Withdrawing
-    `logging.*` makes §9.1.3's rule hold — the keys stop naming a mechanism they cannot reach —
-    but it does not hand the host control of that path, and this specification does not yet
-    define one. Recorded here rather than left for a reader to discover.
+!!! warning "`Context.logger()` is deprecated, and is not the answer to this"
+    The path above covers the middleware. It does **not** cover `Context.logger()`, which
+    constructs a default logger per access — output always stderr, `info`, JSON, in every SDK.
+    Withdrawing `logging.*` makes §9.1.3's rule hold, because the keys stop naming a mechanism
+    they cannot reach; it does not hand the host control of *that* path.
+
+    **It is not given one.** `Context.logger()` is deprecated from SDK 0.31.0 and removed at
+    v2.0 (apcore#121). Module code SHOULD log through the host application's own logger, which
+    is the same boundary D-67 draws: level, format, sink, sampling and per-instance policy stay
+    with the host. `ObsLoggingMiddleware` is **not** the migration target — it emits apcore's
+    execution events, a different facility, and moving ad-hoc logging onto it would change
+    record shape and volume.
+
+    Wiring it instead was considered and rejected on cost that is not effort: the logger is
+    built from a `Context`, which carries no `Config` in any SDK, so a configuration route means
+    threading values through `Context`'s pinned six-parameter contract or introducing a
+    process-global logger — and the global is what would end the multi-instance isolation apcore
+    currently gets for free.
 
 ##### 9.2.4.1 The ACL file's `audit:` block
 
