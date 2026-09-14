@@ -1638,6 +1638,227 @@ def governance_keys() -> set[str]:
 
 
 # ---------------------------------------------------------------------------
+# Unknown namespaces (D-69, spec §9.6.3)
+# ---------------------------------------------------------------------------
+
+
+@probe("_config.allow_unknown")
+def _config_allow_unknown() -> str | None:
+    """Both halves of §9.6.3's `strict: false` row, which were BOTH inert.
+
+    `false` must drop the namespace (it was stored), and `true` must warn (it
+    said nothing). A probe checking only one leaves the row half true.
+    """
+    import logging
+    import tempfile
+    import warnings
+    from pathlib import Path
+
+    import yaml
+
+    from apcore.config import Config
+
+    class _Collect(logging.Handler):
+        def __init__(self) -> None:
+            super().__init__(logging.DEBUG)
+            self.lines: list[str] = []
+
+        def emit(self, record: logging.LogRecord) -> None:
+            self.lines.append(record.getMessage())
+
+    def load(allow: bool) -> tuple[object, list[str]]:
+        path = Path(tempfile.mkdtemp()) / "apcore.yaml"
+        path.write_text(
+            yaml.safe_dump({
+                "apcore": {"version": "1.0", "project": {"name": "probe"}},
+                "_config": {"strict": False, "allow_unknown": allow},
+                "billing": {"x": 1},
+            }),
+            encoding="utf-8",
+        )
+        handler = _Collect()
+        root = logging.getLogger()
+        root.addHandler(handler)
+        previous = root.level
+        root.setLevel(logging.DEBUG)
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", DeprecationWarning)
+                config = Config.load(str(path))
+        finally:
+            root.removeHandler(handler)
+            root.setLevel(previous)
+        return config.get("billing.x"), handler.lines
+
+    stored, warned = load(True)
+    if stored != 1:
+        return "allow_unknown=true did not store the unregistered namespace"
+    if not any("billing" in line and "registered" in line for line in warned):
+        return "allow_unknown=true stored the namespace and logged no warning (§9.6.3)"
+
+    dropped, _ = load(False)
+    if dropped is not None:
+        return f"allow_unknown=false left the namespace readable; get() answered {dropped!r}"
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Multi-root discovery (D-70, spec §9.1.1)
+# ---------------------------------------------------------------------------
+
+
+@probe("extensions.roots")
+def _extensions_roots() -> str | None:
+    """Both element shapes, and the NAMESPACE half the key exists for.
+
+    Two roots deriving the same unprefixed ID: without the prefix they collide,
+    so this cannot pass on an implementation that reads the paths and drops the
+    namespaces — which is what apcore-rust did.
+    """
+    import logging
+    import os
+    import tempfile
+    import warnings
+    from pathlib import Path
+
+    import yaml
+
+    from apcore.config import Config
+    from apcore.registry import Registry
+
+    module_src = (
+        "from pydantic import BaseModel\n\n\n"
+        "class In(BaseModel):\n    pass\n\n\n"
+        "class Out(BaseModel):\n    ok: bool\n\n\n"
+        "class Mod:\n"
+        "    input_schema = In\n"
+        "    output_schema = Out\n"
+        '    description = "Discoverable probe module."\n\n'
+        "    def execute(self, inputs, context):\n        return {'ok': True}\n"
+    )
+
+    def discover(extensions: dict) -> set[str]:
+        root = Path(tempfile.mkdtemp())
+        for name in ("alpha", "beta"):
+            leaf = root / name / "executor" / "svc"
+            leaf.mkdir(parents=True)
+            (leaf / "mod.py").write_text(module_src, encoding="utf-8")
+        (root / "apcore.yaml").write_text(
+            yaml.safe_dump({"version": "1.0", "project": {"name": "probe"},
+                            "extensions": extensions}),
+            encoding="utf-8",
+        )
+        cwd = os.getcwd()
+        os.chdir(root)
+        previous = logging.getLogger().manager.disable
+        logging.disable(logging.CRITICAL)
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", DeprecationWarning)
+                config = Config.load(str(root / "apcore.yaml"))
+            registry = Registry(config=config)
+            registry.discover()
+            return set(registry.module_ids)
+        finally:
+            logging.disable(previous)
+            os.chdir(cwd)
+
+    single = discover({"root": "./alpha"})
+    if single != {"executor.svc.mod"}:
+        return f"the probe tree did not discover its module; got {sorted(single)}"
+
+    strings = discover({"roots": ["./alpha", "./beta"]})
+    if strings != {"alpha.executor.svc.mod", "beta.executor.svc.mod"}:
+        return f"string entries did not derive namespaces; got {sorted(strings)}"
+
+    objects = discover(
+        {"roots": [{"root": "./alpha", "namespace": "aa"},
+                   {"root": "./beta", "namespace": "bb"}]}
+    )
+    if objects != {"aa.executor.svc.mod", "bb.executor.svc.mod"}:
+        return f"object entries did not apply their namespaces; got {sorted(objects)}"
+    return None
+
+
+# ---------------------------------------------------------------------------
+# The ID map (D-71, spec §9.1.1)
+# ---------------------------------------------------------------------------
+
+
+@probe("id_map.overrides")
+def _id_map_overrides() -> str | None:
+    """The key must rename a DISCOVERED module, not merely load a file.
+
+    Driven through `Registry.discover()`, because the mechanism was implemented
+    in all three SDKs and the config key reached none of them: a probe that
+    called `load_id_map` would have passed throughout.
+    """
+    import logging
+    import os
+    import tempfile
+    import warnings
+    from pathlib import Path
+
+    import yaml
+
+    from apcore.config import Config
+    from apcore.registry import Registry
+
+    module_src = (
+        "from pydantic import BaseModel\n\n\n"
+        "class In(BaseModel):\n    pass\n\n\n"
+        "class Out(BaseModel):\n    ok: bool\n\n\n"
+        "class Mod:\n"
+        "    input_schema = In\n"
+        "    output_schema = Out\n"
+        '    description = "Discoverable probe module."\n\n'
+        "    def execute(self, inputs, context):\n        return {'ok': True}\n"
+    )
+
+    def discover(declare: bool) -> set[str]:
+        root = Path(tempfile.mkdtemp())
+        leaf = root / "ext" / "executor" / "orig"
+        leaf.mkdir(parents=True)
+        (leaf / "mod.py").write_text(module_src, encoding="utf-8")
+        (root / "map.yaml").write_text(
+            yaml.safe_dump(
+                {"mappings": [{"file": "executor/orig/mod.py", "id": "executor.renamed.mod"}]}
+            ),
+            encoding="utf-8",
+        )
+        doc: dict = {
+            "version": "1.0",
+            "project": {"name": "probe"},
+            "extensions": {"root": "./ext"},
+        }
+        if declare:
+            doc["id_map"] = {"overrides": "./map.yaml"}
+        (root / "apcore.yaml").write_text(yaml.safe_dump(doc), encoding="utf-8")
+        cwd = os.getcwd()
+        os.chdir(root)
+        previous = logging.getLogger().manager.disable
+        logging.disable(logging.CRITICAL)
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", DeprecationWarning)
+                config = Config.load(str(root / "apcore.yaml"))
+            registry = Registry(config=config)
+            registry.discover()
+            return set(registry.module_ids)
+        finally:
+            logging.disable(previous)
+            os.chdir(cwd)
+
+    undeclared = discover(False)
+    if undeclared != {"executor.orig.mod"}:
+        return f"the probe tree did not discover its module; got {sorted(undeclared)}"
+    declared = discover(True)
+    if declared != {"executor.renamed.mod"}:
+        return f"id_map.overrides did not rename the discovered module; got {sorted(declared)}"
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Tracing from configuration (D-68 C', spec §10.1.1)
 # ---------------------------------------------------------------------------
 

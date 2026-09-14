@@ -609,6 +609,7 @@ The repository ships **72 cross-language fixture files** under `conformance/fixt
 | Fixture | Cases | Tested feature |
 |---------|------:|----------------|
 | [`acl_agent_scoping`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/acl_agent_scoping.json) | 19 | Agent-scoped ACL governance: per-agent caller patterns and scoping rules (spec §6) |
+| [`allow_unknown_namespaces`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/allow_unknown_namespaces.json) | 6 | `_config.allow_unknown`: drop or store an unregistered namespace (§9.6.3, #118 D-69) |
 | [`acl_audit_delivery`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/acl_audit_delivery.json) | 17 | ACL audit delivery: one effective sink, containment, the wire record (§6.3.2, #118 D-66) |
 | [`acl_evaluation`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/acl_evaluation.json) | 19 | ACL rule evaluation, first-match-wins (spec §6) |
 | [`acl_handler_error`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/acl_handler_error.json) | 15 | An unevaluable ACL condition resolves toward refusing access; `handler_error` names the condition path (spec §6.1.1 / §6.1.4 / §6.1.4.1) |
@@ -645,10 +646,12 @@ The repository ships **72 cross-language fixture files** under `conformance/fixt
 | [`executor_trace_cancellation`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/executor_trace_cancellation.json) | 1 | `call_with_trace()` cancellation short-circuit (D-19 / D-20) |
 | [`governance_state`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/governance_state.json) | 13 | `Executor.governance_state()` — configured vs. actually wired (spec §6.6.5) |
 | [`identity_system`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/identity_system.json) | 8 | Identity construction, propagation (AC-014, AC-015) |
+| [`multi_root_discovery`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/multi_root_discovery.json) | 6 | `extensions.roots` multi-root discovery with namespace isolation (§9.1.1, #118 D-70) |
 | [`middleware_hardening`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/middleware_hardening.json) | 9 | Context namespacing, CircuitBreaker |
 | [`middleware_on_error_recovery`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/middleware_on_error_recovery.json) | 4 | Middleware after-chain error recovery |
 | [`multi_module_discovery`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/multi_module_discovery.json) | 8 | Multi-class discovery, snake_case conversion, conflict detection |
 | [`normalize_id`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/normalize_id.json) | 16 | ID normalization (Algorithm A02) |
+| [`id_map_from_config`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/id_map_from_config.json) | 4 | `id_map.overrides` reaches the ID-map mechanism (§9.1.1, #118 D-71) |
 | [`id_conflict_reserved_words`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/id_conflict_reserved_words.json) | 9 | Reserved-word ID conflicts on the first segment only; later segments unrestricted (spec §2.6 step 2) |
 | [`observability_hardening`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/observability_hardening.json) | 10 | Pluggable storage, BatchSpan, OTel parity |
 | [`openai_strict_compat`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/openai_strict_compat.json) | 30 | OpenAI structured-outputs strict-mode incompatibility detection (DECLARATIVE_CONFIG_SPEC §6.2 / §6.6) |
@@ -684,7 +687,7 @@ The repository ships **72 cross-language fixture files** under `conformance/fixt
 | [`usage_contract`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/usage_contract.json) | 11 | `system.usage.*` value semantics no schema can assert (spec §6.7.1) |
 | [`usage_exporter`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/usage_exporter.json) | 3 | `UsageExporter` push interface (#45 §3, D-55) |
 | [`version_negotiation`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/version_negotiation.json) | 10 | Version negotiation (Algorithm A14) |
-| **Total** | **925** | **76 fixtures** |
+| **Total** | **941** | **79 fixtures** |
 
 ### 8.2 Loading Fixtures from a Test Runner
 

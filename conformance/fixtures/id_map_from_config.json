@@ -1,0 +1,63 @@
+{
+  "description": "PROTOCOL_SPEC §9.1.1 `id_map.overrides` reaches the ID-map mechanism (spec v1.46.0, apcore#118 decision D-71). The MECHANISM was implemented in all three SDKs and the three agreed closely — stage 2 of discovery rewrites a discovered `canonical_id`, and each SDK had a loader for the map file. What none of them had was the CONFIG PATH: the map arrived only through a constructor argument (`Registry(id_map_path=…)` / `idMapPath` / `DefaultDiscoverer::with_id_map`). Measured before the fix: with `id_map.overrides` pointing at a valid map that renames `executor/orig/mod.py`, discovery still registered `executor.orig.mod`. The fourth instance of the shape apcore#118 keeps finding — the mechanism is implemented, the configuration key does not reach it — and the one where a driver calling the loader directly would prove the loader works, which was never the question. Drivers MUST discover from a real directory with a real `apcore.yaml`, and read the registered module IDs.",
+  "test_cases": [
+    {
+      "id": "no_override_key_leaves_the_derived_id",
+      "description": "The compatibility boundary: a project that declares nothing keeps the ID its file path derives.",
+      "input": {
+        "declare_override": false,
+        "explicit_argument": false
+      },
+      "expected": {
+        "module_ids": [
+          "executor.orig.mod"
+        ]
+      }
+    },
+    {
+      "id": "the_config_key_reaches_the_id_map",
+      "description": "The defect. This case fails on every implementation before v1.46.0.",
+      "input": {
+        "declare_override": true,
+        "explicit_argument": false
+      },
+      "expected": {
+        "module_ids": [
+          "executor.renamed.mod"
+        ]
+      }
+    },
+    {
+      "id": "an_explicit_argument_wins_over_the_config",
+      "description": "D-73's precedence — an API argument beats `Config` — and the same rule `extensions.root` follows in the constructor beside it.",
+      "input": {
+        "declare_override": true,
+        "explicit_argument": true
+      },
+      "expected": {
+        "module_ids": [
+          "executor.explicit.mod"
+        ]
+      }
+    },
+    {
+      "id": "an_explicit_argument_works_with_no_config_key",
+      "description": "The pre-existing path, unchanged: wiring the key must not disturb the door that already worked.",
+      "input": {
+        "declare_override": false,
+        "explicit_argument": true
+      },
+      "expected": {
+        "module_ids": [
+          "executor.explicit.mod"
+        ]
+      }
+    }
+  ],
+  "driver_contract": {
+    "tree": "One module file at `<root>/ext/executor/orig/mod.py` (or the SDK's equivalent extension), discovered under `extensions.root: ./ext`, deriving the ID `executor.orig.mod`.",
+    "config_map": "`<root>/map.yaml` maps the file `executor/orig/mod.py` to the ID `executor.renamed.mod`. Declared as `id_map.overrides: ./map.yaml` when `input.declare_override` is true.",
+    "explicit_map": "`<root>/explicit.yaml` maps the same file to `executor.explicit.mod`, passed through the SDK's constructor argument when `input.explicit_argument` is true.",
+    "relative_paths": "`id_map.overrides` is used AS DECLARED — a relative value resolves against the process working directory, exactly as `extensions.root` does. PROTOCOL_SPEC §9.2.1 states that the resolution base for path-typed keys is deliberately unspecified and tracked in #113 (`acl.root` uses the config file's directory, `schema.root` the CWD); this key does not settle that, it follows its SIBLING. `id_map.overrides` and `extensions.root` are two halves of one discovery configuration and are always read together, so a split base between them would be worse than either. An input to #113, not an answer."
+  }
+}

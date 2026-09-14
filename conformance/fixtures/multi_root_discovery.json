@@ -1,0 +1,61 @@
+{
+  "description": "PROTOCOL_SPEC §9.1.1 `extensions.roots` — multi-root discovery WITH namespace isolation (spec v1.46.0, apcore#118 decision D-70). `$defs/ExtensionsConfig`'s own description leads with it: \"Supports single root (backward compatible) or multiple roots with namespace isolation.\" Every entry carries a namespace — auto-derived from the last path segment for a bare string, explicit in the object form — and every SDK already had the scanner that applies it (`scan_multi_root` / `scanMultiRoot`). What was missing differed by SDK, which is why this fixture pins both halves: apcore-python and apcore-typescript read the key at all (a multi-root project worked on one SDK of three, silently), and apcore-rust read the paths and DROPPED the namespaces, so module IDs were unprefixed there and prefixed in the other two. `roots` and `root` are exclusive `oneOf` branches, so a document carrying `roots` is in multi-root mode. Drivers MUST discover from a real directory tree and read the registered module IDs.",
+  "test_cases": [
+    {
+      "id": "a_single_root_derives_no_namespace",
+      "description": "The backward-compatible branch. `extensions.root` prefixes nothing, and wiring `roots` must not change that.",
+      "input": { "extensions": { "root": "./alpha" } },
+      "expected": { "module_ids": ["executor.svc.mod"] }
+    },
+    {
+      "id": "string_entries_derive_the_namespace_from_the_last_path_segment",
+      "description": "The half apcore-rust honoured only partly: it scanned both roots and prefixed neither.",
+      "input": { "extensions": { "roots": ["./alpha", "./beta"] } },
+      "expected": { "module_ids": ["alpha.executor.svc.mod", "beta.executor.svc.mod"] }
+    },
+    {
+      "id": "object_entries_carry_an_explicit_namespace",
+      "description": "The other element shape `$defs/ExtensionsConfig` admits. An explicit namespace overrides the derived one.",
+      "input": {
+        "extensions": {
+          "roots": [
+            { "root": "./alpha", "namespace": "aa" },
+            { "root": "./beta", "namespace": "bb" }
+          ]
+        }
+      },
+      "expected": { "module_ids": ["aa.executor.svc.mod", "bb.executor.svc.mod"] }
+    },
+    {
+      "id": "the_two_element_shapes_mix_in_one_list",
+      "description": "Nothing in the schema requires a list to be homogeneous, and an operator adding one explicit namespace to a list of paths is the likely way this key is first used.",
+      "input": {
+        "extensions": { "roots": ["./alpha", { "root": "./beta", "namespace": "bb" }] }
+      },
+      "expected": { "module_ids": ["alpha.executor.svc.mod", "bb.executor.svc.mod"] }
+    },
+    {
+      "id": "a_duplicate_namespace_is_rejected",
+      "description": "Namespace isolation is the point of the key, so two roots claiming one namespace is a configuration error rather than a merge. Every SDK's scanner already validated this before scanning anything; until now no configuration could reach the check.",
+      "input": {
+        "extensions": {
+          "roots": [
+            { "root": "./alpha", "namespace": "same" },
+            { "root": "./beta", "namespace": "same" }
+          ]
+        }
+      },
+      "expected": { "raises": true, "error_message_contains": "same" }
+    },
+    {
+      "id": "roots_takes_precedence_over_root",
+      "description": "`$defs/ExtensionsConfig` puts them in exclusive `oneOf` branches, so a document carrying both is already outside the schema — but an implementation still has to pick one, and picking `root` would make `roots` inert exactly as it was.",
+      "input": { "extensions": { "root": "./alpha", "roots": ["./beta"] } },
+      "expected": { "module_ids": ["beta.executor.svc.mod"] }
+    }
+  ],
+  "driver_contract": {
+    "tree": "Two sibling trees under the project root, `alpha/executor/svc/mod.<ext>` and `beta/executor/svc/mod.<ext>`, each deriving the unprefixed ID `executor.svc.mod`. Identical IDs on purpose: without namespace prefixing the two collide, which is what makes the prefix observable rather than cosmetic.",
+    "discovery": "Drivers MUST construct the SDK's registry from a real `apcore.yaml` carrying `input.extensions` and read the registered module IDs after discovery. Calling `scan_multi_root` directly proves the scanner works — which was never the question in any SDK."
+  }
+}

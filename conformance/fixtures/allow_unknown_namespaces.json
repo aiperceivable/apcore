@@ -1,0 +1,45 @@
+{
+  "description": "PROTOCOL_SPEC §9.6.3 `_config.allow_unknown` — the behaviour matrix for an unregistered top-level namespace (spec v1.46.0, apcore#118 decision D-69). BOTH halves of the `strict: false` row were inert in all three SDKs, and the fixture pins both: `allow_unknown: false` is documented as \"silently ignored (not stored)\" and the namespace was stored anyway, so `get()` answered for it; `allow_unknown: true` is documented as \"stored, accessible, **WARN logged**\" and no implementation logged anything. Fixing one without the other leaves the row half true. **Namespace mode only, by construction**: §9.6.3 is about namespaces, and a legacy document has none — its root IS the `apcore` namespace, so an unrecognised top-level key there is a framework key governed by §9.14's walk under `strict`. `strict`'s own clause (b) says it \"applies in legacy mode too\", which is the specification saying clause (a) does not; the last case pins that boundary so the scoping is a decision rather than an omission.",
+  "test_cases": [
+    {
+      "id": "strict_true_rejects_the_namespace",
+      "description": "Clause (a). `allow_unknown` is ignored when strict is true — §9.6.3's own comment says it is \"only relevant when strict: false\".",
+      "input": { "mode": "namespace", "config": { "strict": true, "allow_unknown": true }, "namespace": "billing" },
+      "expected": { "loads": false, "error_code": "CONFIG_INVALID", "error_message_contains": "billing" }
+    },
+    {
+      "id": "allow_unknown_true_stores_and_warns",
+      "description": "The half every implementation got right except the warning. The value is readable and the operator is told the namespace is unvalidated.",
+      "input": { "mode": "namespace", "config": { "strict": false, "allow_unknown": true }, "namespace": "billing" },
+      "expected": { "loads": true, "value_readable": true, "warns_naming": "billing" }
+    },
+    {
+      "id": "allow_unknown_false_drops_the_namespace",
+      "description": "The defect. This case fails on every implementation before v1.46.0, where the namespace was stored and `get()` answered for it.",
+      "input": { "mode": "namespace", "config": { "strict": false, "allow_unknown": false }, "namespace": "billing" },
+      "expected": { "loads": true, "value_readable": false }
+    },
+    {
+      "id": "an_absent_config_block_takes_the_defaults",
+      "description": "§9.6.3's matrix describes the DEFAULTS (`strict: false, allow_unknown: true`), so a document with no `_config` at all is the row that warns. Not the blanket warning §9.2.2 rejects: it fires on a condition specific to the document — there IS an unregistered namespace — never on every configuration ever loaded.",
+      "input": { "mode": "namespace", "config": null, "namespace": "billing" },
+      "expected": { "loads": true, "value_readable": true, "warns_naming": "billing" }
+    },
+    {
+      "id": "a_document_with_no_unknown_namespace_is_silent",
+      "description": "The quiet half, and the one that fails against an implementation that warns unconditionally.",
+      "input": { "mode": "namespace", "config": { "strict": false, "allow_unknown": true }, "namespace": null },
+      "expected": { "loads": true, "warns_absent": "no package has registered" }
+    },
+    {
+      "id": "legacy_mode_is_out_of_scope",
+      "description": "A legacy document has no namespaces, so `allow_unknown: false` drops nothing and the key remains readable. Pinned so the scoping is a decision rather than an omission — an implementation that applied the field here would be treating framework keys as namespaces, which §9.14's walk already governs.",
+      "input": { "mode": "legacy", "config": { "strict": false, "allow_unknown": false }, "namespace": "billing" },
+      "expected": { "loads": true, "value_readable": true }
+    }
+  ],
+  "driver_contract": {
+    "document": "`input.namespace`, when non-null, is an unregistered top-level key carrying `{x: 1}`. In namespace mode the framework section lives under `apcore:` and `_config` is a top-level namespace beside it; in legacy mode both sit at the document root. `input.config` null means no `_config` block at all.",
+    "readable": "`value_readable` is the answer to `get('<namespace>.x')` — a value when true, null/undefined/None when false. Drivers MUST read it through the SDK's public accessor, not off the parsed document."
+  }
+}

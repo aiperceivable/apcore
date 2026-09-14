@@ -278,6 +278,26 @@ Against A: it is the one option that makes a `get()` start returning `null` wher
 - If A: implement in three SDKs, add a conformance fixture covering all four matrix rows, promote the key to `live` with a probe.
 - If B: remove the row from §9.6.3, open a deprecation window for the key per §13.4.
 
+**Resolved 2026-09-14 — A, implemented.** Spec v1.46.0 adds §9.6.3 requirements 1–4.
+
+The status quo above was right that `allow_unknown` changes nothing, and it recorded only half
+of why. **Both halves of the `strict: false` line were inert**: `false` stored the namespace it
+documents as dropped, and `true` never logged the WARN the same row requires. Fixing one would
+have left the row half true, so both live in one function in each SDK and one probe drives
+both — a probe checking only the drop passes on an implementation that never warns, which is
+the state all three were in.
+
+Two boundaries were decided rather than left to inference. **Namespace mode only**: a legacy
+document has no namespaces, its root *is* the `apcore` namespace, and `strict`'s own clause (b)
+saying it "applies in legacy mode too" is the specification saying clause (a) does not. The
+fixture pins that with a `legacy_mode_is_out_of_scope` case. And an **absent** `_config` block
+takes the documented defaults rather than being an exemption — otherwise the default pair the
+matrix describes is unreachable, and the WARN row would fire only for documents that opted into
+the default explicitly.
+
+Requirement 2 remains the one clause in §9 whose implementation makes a `get()` that returned a
+value return null. The release note says so.
+
 ---
 
 ## D-70 — `extensions.roots`: converge the other two SDKs, or withdraw
@@ -314,6 +334,33 @@ The scanner in every SDK already supports multiple roots internally — apcore-p
 
 - If A: implement in two SDKs, add a `multi_root_discovery` fixture, promote to `live`.
 - If B: deprecation window per §13.4, remove Rust's reader at v2.0.
+
+**Resolved 2026-09-14 — A, implemented, with the convergence target corrected.**
+
+"Converge on Rust" was wrong, and the correction is the interesting part. `$defs/ExtensionsConfig`
+opens with *"Supports single root (backward compatible) or multiple roots **with namespace
+isolation**"*, and every entry in `roots` carries a namespace — derived from the last path segment
+for a bare string, explicit in the object form. **apcore-rust dropped the namespaces entirely**:
+`set_extension_roots_from_config` flattened both element shapes into `Vec<String>`. It honoured
+multiple roots and not the isolation the key exists for, so it was the *least* complete of the
+three, not the reference. apcore-python's `scan_multi_root` and apcore-typescript's
+`scanMultiRoot` are the full contract and always were — including the namespace validation that
+rejects two roots claiming one namespace before scanning anything. What those two lacked was a
+path from a `Config`.
+
+So: Python and TypeScript are wiring; **Rust is the one that needed a behaviour change**. Its
+`Discoverer::discover(&self, roots: &[String])` is a public trait, so the namespaces could not
+ride along with the paths without breaking it; they travel through `DefaultDiscoverer::from_config`
+— which reads the same key — and are paired back up in `discover`. A root the map does not know
+simply has no namespace, so a caller passing roots explicitly is unaffected.
+
+The implementation settled one thing the decision had not asked: **a one-element `roots` list is
+namespaced like an n-element one.** All three SDKs dispatch to the multi-root scanner on "more
+than one root or an explicit namespace", so `roots: ["./beta"]` would otherwise take the
+single-root branch and prefix nothing. Nothing in the schema makes a one-element list special, and
+`roots` versus `root` *is* the namespaced/backward-compatible distinction — so the namespace is
+derived at the configuration door, where the value equals what the scanner would derive anyway.
+The fixture's `roots_takes_precedence_over_root` case is what asked the question.
 
 ---
 
@@ -354,6 +401,24 @@ It is wiring, not implementation, in all three: the resolution site for `extensi
 
 - If A: read the key at registry construction in all three SDKs, add a fixture, promote to `live`.
 - If B: deprecation window per §13.4.
+
+**Resolved 2026-09-14 — A, implemented.** Read at registry construction in apcore-python and
+apcore-typescript, and in `DefaultDiscoverer::from_config` in apcore-rust — the same door
+`extensions.ignore_patterns` uses there, since that SDK's `Registry::discover` takes the
+discoverer as an argument rather than owning one. An explicit constructor argument still wins
+(D-73's precedence).
+
+**One thing was nearly decided by accident.** The first implementation resolved a relative
+`id_map.overrides` against the config file's directory, matching `acl.root` — but §9.2.1 states
+that the resolution base for path-typed keys is *deliberately unspecified* and tracks it in #113,
+where `acl.root` (config directory) and `schema.root` (process CWD) are the two sides yet to be
+reconciled. Picking one silently would have pre-empted a question the specification says it is not
+answering. The key now follows **`extensions.root`** instead — not because CWD is the better base,
+but because `id_map.overrides` and `extensions.root` are two halves of one discovery configuration
+and are always read together, so a split base *between them* is worse than either base. Each SDK
+says so at the resolution site, the fixture's `driver_contract` says so, and each SDK has a case
+pinning that the two halves move together: if `extensions.root` ever migrates to the config
+directory, that case fails and takes the map with it.
 
 ---
 

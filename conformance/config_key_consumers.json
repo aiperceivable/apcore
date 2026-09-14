@@ -1,7 +1,7 @@
 {
   "_comment": "What reads each declared configuration key. Enforced by conformance/check_config_key_consumers.py.\n\nconfig_key_governance.json pins that every declared key is ACCEPTED — the three SDKs agree on the key set and the default table. Nothing pinned that any key is READ, and 29 of 61 were not (apcore#118). This file is the missing half: every key states what consumes it, or states that nothing does and why.\n\nSTATUSES\n  live      — a probe in the checker SETS THE KEY through Config.set (enforced: the checker records what each probe writes and rejects one that never writes its own key) and observes an effect OUTSIDE Config, on a path the LIBRARY ITSELF drives — APCore(config=...), BindingLoader.load_bindings(..., cfg), the executor's stream merge. Three things have each produced a false `live` and each is excluded by one clause above: reading the value back from Config proves plumbing, not consumption (four observability.* keys round-trip perfectly and are consumed by nothing); reaching the behaviour by another door proves the behaviour, not the key (acl.default_effect's probe built ACL(default_effect=...) directly); and driving a helper nothing else calls proves the helper, not the library (obs.redaction.* is read only by RedactionConfig.from_config, which no SDK's src/ invokes).\n  partial   — something reads it, but not on the path an operator would expect. The reason must say what the gap is.\n  inert     — nothing reads it. A written decision, not an accident; the reason must say what was measured.\n  unaudited — not yet examined. NOT a claim that the key works.\n\nThe `ratchet` counts may fall and may not rise. Lower a ceiling in the same change that fixes or audits a key; that is what turns apcore#118 from a report into a number that has to go down.\n\nTHE RATCHET IS A LEDGER, NOT A NUMBER. Each `ratchet` ceiling MUST equal the `to` of the last `ratchet_history` entry for that status, and the entries MUST chain (`from` == the previous `to`). Editing a ceiling on its own therefore fails the checker: the number and the ledger stop agreeing. A RISE additionally requires a `reason` and a `keys` list naming the keys that moved, and each named key must actually hold that status. Falls need an entry too, so the chain stays continuous, but no `keys`.\n\nThis exists because the previous rule — \"may fall, may not rise\" — was enforced by a code comment, and the first raise under it (inert 18 -> 19 on 2026-09-10) was made in the same commit that changed the number. A ceiling guarded only by review is guarded only when someone looks.",
   "ratchet": {
-    "inert": 18,
+    "inert": 16,
     "unaudited": 0
   },
   "keys": {
@@ -10,8 +10,10 @@
       "reason": "Inert BY DESIGN, and recorded rather than fixed. A top-level `$schema` in a YAML or JSON document is a convention for EDITORS and external validators — it tells them which schema to check the file against — so no SDK should read it at runtime and none does. Measured: a document with `$schema`, without it, and with a nonsense value (`12345`) all load identically. The three `$schema` hits inside the SDKs belong to schema DEFINITION files, a different document kind. Listed here so a future audit does not re-open it as a defect. Audited 2026-09-10."
     },
     "_config.allow_unknown": {
-      "status": "inert",
-      "reason": "No reader in any SDK. §9.6.3's behaviour matrix gives FOUR rows for an unknown top-level namespace `billing`; measured against apcore-python, all four produce the same answer — the namespace is stored and readable through `get()`. The row that should differ is `strict:false` + `allow_unknown:false`, which the matrix defines as “silently ignored, not stored”. apcore-python's config.py:843 and apcore-typescript's config.ts:1537 each carry a comment saying the field deliberately plays no part in the §9.14 strict walk — correct, since §9.6.3 scopes it to namespaces rather than framework keys — but no other code path reads it either, in any of the three. Declared, documented with a default, and inert. Audited 2026-09-10; the choice between implementing §9.6.3's row and withdrawing the key is open."
+      "status": "live",
+      "probe": "_config.allow_unknown",
+      "reason": "Wired by D-69 (spec v1.46.0). BOTH halves of §9.6.3's `strict: false` row were inert: `allow_unknown: false` is documented as 'silently ignored (not stored)' and the namespace was stored anyway, so `get()` answered for it; `allow_unknown: true` is documented as 'stored, accessible, WARN logged' and no implementation logged anything. Namespace mode only, by construction — §9.6.3 is about namespaces and a legacy document has none, its root being the `apcore` namespace itself. This is the one key in the audit whose fix makes a `get()` that returned a value return null, so only a deployment that explicitly writes `allow_unknown: false` changes behaviour. Fixed 2026-09-11.",
+      "tracking": "https://github.com/aiperceivable/apcore/issues/118"
     },
     "_config.strict": {
       "status": "live",
@@ -122,8 +124,10 @@
       "probe": "extensions.root"
     },
     "extensions.roots": {
-      "status": "partial",
-      "reason": "Read by apcore-rust ONLY (`Registry::set_extension_roots_from_config`, which accepts both the string and the `{root: …}` object shape). apcore-python ignores it — measured: a document setting `extensions.roots` still scans `extensions.root`'s default `./extensions` and fails when it is absent — and apcore-typescript names it only in `config.ts`'s path-typed marker declarations, never as a reader. So a multi-root project works on one SDK of three, silently, which is the shape #116/#117 were about one layer down. Audited 2026-09-10."
+      "status": "live",
+      "probe": "extensions.roots",
+      "reason": "Wired by D-70 (spec v1.46.0). Not the usual shape: this key was READ, by apcore-rust alone, so a multi-root project worked on one SDK of three silently. And what apcore-rust read was half of it — the paths reached the registry and the NAMESPACES were dropped, while `$defs/ExtensionsConfig`'s own description leads with \"multiple roots with namespace isolation\". Every SDK already had the scanner (`scan_multi_root` / `scanMultiRoot`) that applies the prefix. A one-element `roots` list is namespaced like an n-element one: the namespace is derived at the config door rather than left to the scanner's own dispatch, because nothing in the schema makes a one-element list special and `roots` versus `root` IS the namespaced/backward-compatible distinction. Fixed 2026-09-11.",
+      "tracking": "https://github.com/aiperceivable/apcore/issues/118"
     },
     "id_map.auto_detect": {
       "status": "inert",
@@ -131,8 +135,10 @@
       "tracking": "https://github.com/aiperceivable/apcore/issues/118"
     },
     "id_map.overrides": {
-      "status": "inert",
-      "reason": "No SDK reads it. The ID-map mechanism EXISTS — apcore-python's `Registry._apply_id_map_overrides` (stage 2 of discovery) rewrites a discovered `canonical_id`, and apcore-rust has the same stage — but the map arrives only through the `Registry(id_map_path=…)` CONSTRUCTOR argument, never from this key. Measured: with `id_map.overrides` pointing at a valid map that renames `executor/orig/mod.py`, discovery still registers `executor.orig.mod`. Exactly the shape of `acl.default_effect` — the behaviour is implemented and the config key does not reach it, so a probe that exercises the behaviour by another door would report this key live. Audited 2026-09-10."
+      "status": "live",
+      "probe": "id_map.overrides",
+      "reason": "Wired by D-71 (spec v1.46.0). The fourth instance of the `acl.default_effect` shape in this audit: the ID-map MECHANISM was implemented in all three SDKs and the three agreed closely — stage 2 of discovery rewrites a discovered `canonical_id` — while the map arrived only through a constructor argument. Measured before the fix: with the key pointing at a valid map that renames `executor/orig/mod.py`, discovery still registered `executor.orig.mod`. A relative value follows `extensions.root`'s resolution base, not `acl.root`'s: §9.2.1 leaves that base deliberately unspecified (#113) and these two keys are halves of one discovery configuration, so a split base between them would be worse than either. Fixed 2026-09-11.",
+      "tracking": "https://github.com/aiperceivable/apcore/issues/118"
     },
     "logging.format": {
       "status": "inert",
@@ -506,6 +512,26 @@
         "observability.tracing.otlp_endpoint"
       ],
       "reason": "D-68 C' (spec v1.44.0). Three of these were inert and deprecated; two — `strategy` and `otlp_endpoint` — were not in this manifest at all, because they were declared by §9.15.2's namespace registration and by no schema, so `_config.strict` rejected them as unknown keys while the specification documented their defaults. The count therefore falls by three while the surface grows by two. They had to move together: wiring `sampling_rate` alone yields a key that reads configuration and still samples every span, adding `strategy` yields two keys configuring a middleware nothing installs, and installing one needs an exporter."
+    },
+    {
+      "status": "inert",
+      "from": 18,
+      "to": 17,
+      "date": "2026-09-11",
+      "keys": [
+        "id_map.overrides"
+      ],
+      "reason": "D-71 (spec v1.46.0). The mechanism was already implemented in all three SDKs; only the config path was missing, so this is wiring rather than implementation. The probe drives `Registry.discover()` and reads the registered module IDs — one that called `load_id_map` would have passed for the whole life of the defect."
+    },
+    {
+      "status": "inert",
+      "from": 17,
+      "to": 16,
+      "date": "2026-09-11",
+      "keys": [
+        "_config.allow_unknown"
+      ],
+      "reason": "D-69 (spec v1.46.0), and the last key of the #118 audit to be wired. The probe drives BOTH halves of §9.6.3's row: a probe checking only the drop would pass on an implementation that never emits the warning the same row requires, which is the state all three SDKs were in."
     }
   ]
 }
