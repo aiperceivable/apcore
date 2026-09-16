@@ -1,5 +1,5 @@
 {
-  "description": "Approval gate enforcement at Executor Step 5. Verifies gate fires only when both handler is configured and module declares requires_approval=true, and that all four result statuses map to the correct outcomes.",
+  "description": "Approval gate enforcement at Executor Step 5. Verifies gate fires only when both handler is configured and module declares requires_approval=true, and that all four result statuses map to the correct outcomes. Since D-96 (spec v1.50.0) the three `governance_sources` cases state the module and descriptor declarations SEPARATELY: the original `module_requires_approval` boolean could be satisfied from either source, so all three SDKs passed it while disagreeing about which one decides.",
   "algorithm": "A05",
   "test_cases": [
     {
@@ -76,6 +76,60 @@
         "outcome": "error",
         "error_code": "APPROVAL_PENDING",
         "approval_id": "req-abc123"
+      }
+    },
+    {
+      "id": "gate_fires_when_only_the_module_declares_it",
+      "description": "The live module instance declares requires_approval and the registry descriptor does NOT. PROTOCOL_SPEC 7.4 step 2 binds annotations = module.annotations and step 3 tests THAT binding, so the gate MUST fire. apcore-rust decided gate firing from the descriptor and ran this ungated (D-96) -- an approval bypass that every SDK's suite and this very fixture passed, because the single `module_requires_approval` boolean let each driver satisfy it from whichever source it preferred.",
+      "approval_handler_configured": true,
+      "governance_sources": {
+        "module": true,
+        "descriptor": false
+      },
+      "approval_result": {
+        "status": "approved",
+        "approved_by": "auto",
+        "reason": null,
+        "approval_id": null,
+        "metadata": null
+      },
+      "expected": {
+        "gate_invoked": true,
+        "outcome": "proceed"
+      }
+    },
+    {
+      "id": "gate_fires_when_only_the_descriptor_declares_it",
+      "description": "The registry descriptor declares requires_approval and the live module does NOT. Per D-96 the gate fires on the UNION of the governance sources an implementation has, so this MUST gate too. Reading only the module would simply invert the previous bypass: both single-source readings are fail-OPEN, and on an approval gate the failure direction is the whole argument -- requiring an approval that was not needed costs a prompt, skipping one that was needed is a bypass. An SDK whose descriptor is DERIVED from the module (apcore-python, apcore-typescript) cannot set these two independently; its driver sets the union it can express, which reaches the same expected outcome and is why the union costs those SDKs nothing.",
+      "approval_handler_configured": true,
+      "governance_sources": {
+        "module": false,
+        "descriptor": true
+      },
+      "approval_result": {
+        "status": "approved",
+        "approved_by": "auto",
+        "reason": null,
+        "approval_id": null,
+        "metadata": null
+      },
+      "expected": {
+        "gate_invoked": true,
+        "outcome": "proceed"
+      }
+    },
+    {
+      "id": "gate_skipped_when_neither_source_declares_it",
+      "description": "Neither source declares requires_approval, so the union is empty and the gate MUST NOT fire. Pins the negative half: a fix that gates on everything would pass the two cases above and is caught here.",
+      "approval_handler_configured": true,
+      "governance_sources": {
+        "module": false,
+        "descriptor": false
+      },
+      "approval_result": null,
+      "expected": {
+        "gate_invoked": false,
+        "outcome": "proceed"
       }
     }
   ],

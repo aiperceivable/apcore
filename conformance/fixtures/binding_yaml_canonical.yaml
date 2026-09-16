@@ -22,9 +22,33 @@ bindings:
       - "auto_schema"
     version: "1.0.0"
     auto_schema: true
+    # The full annotation key set binding.schema.json declares (12 properties,
+    # additionalProperties: false). D-107-adjacent: this block used to set only
+    # `readonly` and `idempotent` -- two keys every SDK handles -- so a parser
+    # covering 5 of the 12 passed it. apcore-rust's hand-rolled
+    # `annotations_from_value` recognised readonly/destructive/idempotent/
+    # requires_approval/open_world and routed the other seven, INCLUDING the
+    # literal key `extra`, into `annotations.extra` -- re-nesting extension data
+    # under its own name, against §4.4.1's wire format. `streaming` is
+    # deliberately NOT set here: it is the one key with a registration-time
+    # consequence (a module declaring it without a conforming stream() must be
+    # rejected), which belongs in its own negative case rather than riding on a
+    # fixture whose target is a plain function.
     annotations:
       readonly: true
       idempotent: true
+      destructive: false
+      requires_approval: true
+      open_world: false
+      cacheable: true
+      cache_ttl: 300
+      cache_key_fields:
+        - "a"
+        - "b"
+      paginated: true
+      pagination_style: "offset"
+      extra:
+        mcp.category: "email"
 
   # Entry 2: explicit input/output schemas
   - module_id: "conformance.explicit_schema"

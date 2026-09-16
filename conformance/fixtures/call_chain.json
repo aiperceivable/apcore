@@ -130,9 +130,8 @@
         "a"
       ],
       "max_call_depth": 0,
-      "expected_error": "INVALID_LIMIT",
-      "divergence_ref": "T-B-005",
-      "note": "max_call_depth < 1 is invalid input and MUST be rejected before any chain inspection (Python ValueError / TS Error / Rust ModuleError GENERAL_INVALID_INPUT)."
+      "expected_error": "GENERAL_INVALID_INPUT",
+      "note": "max_call_depth < 1 is invalid input and MUST be rejected before any chain inspection. Per D-84 (spec v1.49.0) all three SDKs raise the TYPED error carrying wire code GENERAL_INVALID_INPUT. This case previously read 'Python ValueError / TS Error / Rust ModuleError' — three per-language types for one condition, two of which no cross-language caller could catch. That is the divergence D-84 closed, so the case now pins one wire code instead of recording the split."
     },
     {
       "id": "floor_max_module_repeat_below_one_rejected",
@@ -142,9 +141,8 @@
       ],
       "max_call_depth": 32,
       "max_module_repeat": 0,
-      "expected_error": "INVALID_LIMIT",
-      "divergence_ref": "T-B-005",
-      "note": "max_module_repeat < 1 is invalid input and MUST be rejected before the frequency check."
+      "expected_error": "GENERAL_INVALID_INPUT",
+      "note": "max_module_repeat < 1 is invalid input and MUST be rejected before any chain inspection. Per D-84 (spec v1.49.0) all three SDKs raise the TYPED error carrying wire code GENERAL_INVALID_INPUT. This case previously read 'Python ValueError / TS Error / Rust ModuleError' — three per-language types for one condition, two of which no cross-language caller could catch. That is the divergence D-84 closed, so the case now pins one wire code instead of recording the split."
     }
   ],
   "driver_contract": {

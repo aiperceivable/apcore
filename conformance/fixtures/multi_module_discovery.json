@@ -1,5 +1,5 @@
 {
-  "description": "Multi-class discovery: ID derivation, snake_case conversion, conflict detection, and backward compatibility (PROTOCOL_SPEC §2.1.1)",
+  "description": "Multi-class discovery: ID derivation, snake_case conversion, conflict detection, and backward compatibility (PROTOCOL_SPEC §2.1.1). Opt-in is the per-class `multi_class` marker (D-107, spec v1.50.0); the file-level `multi_class_enabled` input these cases used to carry was the toggle decision-log D-06 withdrew, and pinning it kept all three SDKs passing against a model the spec says does not exist.",
   "test_cases": [
     {
       "id": "single_class_id_unchanged",
@@ -7,13 +7,18 @@
       "input": {
         "file_path": "extensions/math/math_ops.py",
         "extensions_root": "extensions",
-        "multi_class_enabled": true,
         "classes": [
-          { "name": "MathOps", "implements_module": true }
+          {
+            "name": "MathOps",
+            "implements_module": true,
+            "multi_class": true
+          }
         ]
       },
       "expected": {
-        "module_ids": ["math.math_ops"],
+        "module_ids": [
+          "math.math_ops"
+        ],
         "error": null
       }
     },
@@ -23,14 +28,24 @@
       "input": {
         "file_path": "extensions/math/math_ops.py",
         "extensions_root": "extensions",
-        "multi_class_enabled": true,
         "classes": [
-          { "name": "Addition", "implements_module": true },
-          { "name": "Subtraction", "implements_module": true }
+          {
+            "name": "Addition",
+            "implements_module": true,
+            "multi_class": true
+          },
+          {
+            "name": "Subtraction",
+            "implements_module": true,
+            "multi_class": true
+          }
         ]
       },
       "expected": {
-        "module_ids": ["math.math_ops.addition", "math.math_ops.subtraction"],
+        "module_ids": [
+          "math.math_ops.addition",
+          "math.math_ops.subtraction"
+        ],
         "error": null
       }
     },
@@ -70,10 +85,17 @@
       "input": {
         "file_path": "extensions/math/math_ops.py",
         "extensions_root": "extensions",
-        "multi_class_enabled": true,
         "classes": [
-          { "name": "MyModule", "implements_module": true },
-          { "name": "My_Module", "implements_module": true }
+          {
+            "name": "MyModule",
+            "implements_module": true,
+            "multi_class": true
+          },
+          {
+            "name": "My_Module",
+            "implements_module": true,
+            "multi_class": true
+          }
         ]
       },
       "expected": {
@@ -90,13 +112,18 @@
       "input": {
         "file_path": "extensions/executor/math/arithmetic.py",
         "extensions_root": "extensions",
-        "multi_class_enabled": true,
         "classes": [
-          { "name": "Addition", "implements_module": true }
+          {
+            "name": "Addition",
+            "implements_module": true,
+            "multi_class": true
+          }
         ]
       },
       "expected": {
-        "module_ids": ["executor.math.arithmetic"],
+        "module_ids": [
+          "executor.math.arithmetic"
+        ],
         "grammar_valid": true,
         "error": null
       }
@@ -107,14 +134,21 @@
       "input": {
         "file_path": "extensions/math/math_ops.py",
         "extensions_root": "extensions",
-        "multi_class_enabled": false,
         "classes": [
-          { "name": "Addition", "implements_module": true },
-          { "name": "Subtraction", "implements_module": true }
+          {
+            "name": "Addition",
+            "implements_module": true
+          },
+          {
+            "name": "Subtraction",
+            "implements_module": true
+          }
         ]
       },
       "expected": {
-        "module_ids": ["math.math_ops"],
+        "module_ids": [
+          "math.math_ops"
+        ],
         "note": "Only the first qualifying class is loaded in single-class mode; the second is silently ignored or causes an error per SDK policy. The base_id is never suffixed."
       }
     }
