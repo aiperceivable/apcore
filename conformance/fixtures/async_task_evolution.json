@@ -55,10 +55,10 @@
     },
     {
       "id": "task_store_list_by_status",
-      "description": "TaskStore.list returns only tasks matching the given status filter.",
+      "description": "TaskStore.list returns only tasks matching the given status filter, in INSERTION order (D-82). The completed tasks are seeded out of lexicographic order deliberately: with one matching task the filter was the only thing under test and any ordering passed.",
       "stored_tasks": [
         {
-          "task_id": "task-001",
+          "task_id": "task-c",
           "module_id": "worker.job",
           "status": "completed",
           "submitted_at": 1700000000.0,
@@ -82,6 +82,18 @@
           "max_retries": 0
         },
         {
+          "task_id": "task-a",
+          "module_id": "worker.job",
+          "status": "completed",
+          "submitted_at": 1700000010.0,
+          "started_at": 1700000011.0,
+          "completed_at": 1700000012.0,
+          "result": null,
+          "error": null,
+          "retry_count": 0,
+          "max_retries": 0
+        },
+        {
           "task_id": "task-003",
           "module_id": "worker.job",
           "status": "failed",
@@ -92,16 +104,31 @@
           "error": "timeout",
           "retry_count": 0,
           "max_retries": 0
+        },
+        {
+          "task_id": "task-b",
+          "module_id": "worker.job",
+          "status": "completed",
+          "submitted_at": 1700000005.0,
+          "started_at": 1700000006.0,
+          "completed_at": 1700000007.0,
+          "result": null,
+          "error": null,
+          "retry_count": 0,
+          "max_retries": 0
         }
       ],
       "action": "list_by_status",
       "status_filter": "completed",
       "expected": {
-        "count": 1,
+        "count": 3,
         "task_ids": [
-          "task-001"
+          "task-c",
+          "task-a",
+          "task-b"
         ]
-      }
+      },
+      "note": "D-82: `task_ids` is ordered. Lexicographic order would be a/b/c and submitted_at order would be c/b/a; insertion order is c/a/b, so a driver that sorts by either key fails. Before this, apcore-python compared sorted lists and apcore-typescript asserted containment \u2014 only apcore-rust asserted the order the decision makes normative."
     },
     {
       "id": "retry_scheduled_on_failure",
@@ -206,7 +233,7 @@
     },
     {
       "id": "reaper_deletes_expired_tasks",
-      "description": "When the Reaper is enabled and ttl_seconds elapses, tasks with completed_at older than now - ttl_seconds are deleted on the next sweep. now_timestamp is 1700002000: the cutoff is 1699998400, so expired-task-001 (completed 1699990002) is swept and fresh-task-001 (completed 1699999002) survives. It was 1700003000, which put the cutoff at 1699999400 and expired BOTH tasks — remaining_task_ids was unreachable and no SDK drove this case as written; apcore-typescript silently substituted its own timestamp to get past it.",
+      "description": "When the Reaper is enabled and ttl_seconds elapses, tasks with completed_at older than now - ttl_seconds are deleted on the next sweep. now_timestamp is 1700002000: the cutoff is 1699998400, so expired-task-001 (completed 1699990002) is swept and fresh-task-001 (completed 1699999002) survives. It was 1700003000, which put the cutoff at 1699999400 and expired BOTH tasks \u2014 remaining_task_ids was unreachable and no SDK drove this case as written; apcore-typescript silently substituted its own timestamp to get past it.",
       "config": {
         "reaper": {
           "enabled": true,

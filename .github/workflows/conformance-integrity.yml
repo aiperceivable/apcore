@@ -290,7 +290,7 @@ jobs:
 
       - name: Every behavioural decision names an executed case
         working-directory: apcore
-        # NOT --strict: 25 of 37 behavioural decisions are still unpinned, and
+        # NOT --strict: 24 of 37 behavioural decisions are still unpinned, and
         # blocking unrelated work on that backlog helps nobody. What this DOES
         # enforce without --strict is the ratchet and the map's integrity — a
         # new decision cannot land without a case, a case reference that stops

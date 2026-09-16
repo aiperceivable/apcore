@@ -1,6 +1,6 @@
 {
   "_comment": "Which executed conformance case pins each decision. Enforced by conformance/check_decision_coverage.py.\n\nA decision recorded only in prose is a decision nothing verifies. This audit produced two false statements of exactly that kind -- D-96 claimed its union was 'unobservable' in two SDKs (it was a fail-open approval bypass in both, corrected as D-125), and the v1.10.0 row claimed all three SDKs accept a version hint (apcore-rust has no such parameter, corrected as D-126). Neither could be caught by a test, because the sentence itself said the test was unnecessary.\n\nUNLINKED MEANS UNCOVERED, deliberately. A case that pins a decision without saying so can be weakened by someone who does not know what it is for -- which is how approval_gate.json came to set both governance sources from one boolean and passed in all three SDKs while one of them had a bypass. If a case pins a decision, name it here.\n\n`discriminates` is not documentation. It must say what makes the case fail when an SDK regresses; if it cannot be written, the case is not discriminating and the decision is still unpinned.\n\nkinds: behavioural = needs a discriminating case | deferred = spec text only, no implementation to pin yet | unconstrained = the decision deliberately leaves the shape language-defined.",
-  "ratchet": 25,
+  "ratchet": 24,
   "ratchet_history": [
     {
       "value": 32,
@@ -11,6 +11,11 @@
       "value": 25,
       "date": "2026-09-16",
       "note": "linked D-103 to a case that already existed and had never been named"
+    },
+    {
+      "value": 24,
+      "date": "2026-09-16",
+      "note": "D-82: strengthened an existing case from one task to three, and fixed two drivers that asserted the order away"
     }
   ],
   "decisions": {
@@ -47,7 +52,8 @@
     "D-80": {
       "title": "the registry event set is closed, and `file_changed` is in it",
       "kind": "behavioural",
-      "cases": []
+      "cases": [],
+      "gap_note": "event_naming.json#legacy_names_are_not_emitted pins that legacy NAMES are not emitted, which is a different rule. This decision is about the closed event set accepted by `Registry.on()` \u2014 `change`/`add`/`remove` rejected, `file_changed` accepted \u2014 and about `file_changed` being conditional on whether watch() re-registers (see D-37 note in registry-system.md). Needs a registry-events fixture; none exists."
     },
     "D-81": {
       "title": "`TaskStoreError` must reach the caller",
@@ -57,7 +63,10 @@
     "D-82": {
       "title": "`list_tasks` insertion order is normative",
       "kind": "behavioural",
-      "cases": []
+      "cases": [
+        "async_task_evolution.json#task_store_list_by_status"
+      ],
+      "discriminates": "Three matching tasks are seeded so that insertion order (c, a, b) differs from BOTH lexicographic order (a, b, c) and submitted_at order (c, b, a), and `expected.task_ids` is compared AS ORDERED. Flipping the expectation to lexicographic order turns all three drivers red, which is what makes the case discriminating rather than merely present. Before this the case seeded ONE matching task, and two of the three drivers compared sorted lists or asserted containment \u2014 so the decision was enforced by apcore-rust alone and no number of extra tasks would have changed that."
     },
     "D-83": {
       "title": "the published `guard_call_chain` signature is normative",
@@ -177,7 +186,8 @@
     "D-99": {
       "title": "global_deadline is epoch seconds, not a monotonic reading",
       "kind": "behavioural",
-      "cases": []
+      "cases": [],
+      "gap_note": "A round-trip case cannot discriminate a monotonic basis from an epoch one: both preserve the field. Needs a case whose deadline is an ABSOLUTE epoch value in the past, expecting the call to be refused \u2014 against a monotonic basis that value is ~1.8e9 compared with ~1e5 and the budget silently never fires."
     },
     "D-100": {
       "title": "global_deadline travels in the field, not a `data` key",
@@ -187,12 +197,14 @@
     "D-101": {
       "title": "global_deadline belongs to the call tree, not the Context",
       "kind": "behavioural",
-      "cases": []
+      "cases": [],
+      "gap_note": "Needs two successive top-level calls on ONE reused Context, asserting the second gets a fresh budget. context_create.json constructs a Context; it does not make two calls."
     },
     "D-102": {
       "title": "global_deadline is recomputed unconditionally on a deserialized Context",
       "kind": "behavioural",
-      "cases": []
+      "cases": [],
+      "gap_note": "Needs a Context deserialized with a NON-EMPTY call_chain, asserting the receiving executor recomputes the deadline. context_serialization.json round-trips the field but never re-enters an executor with it."
     },
     "D-103": {
       "title": "a null `identity` stays null",
@@ -215,7 +227,8 @@
     "D-106": {
       "title": "a p99 beyond the largest bucket is that bucket, not zero",
       "kind": "behavioural",
-      "cases": []
+      "cases": [],
+      "gap_note": "usage_contract.json's p99 cases drive `UsageCollector`'s EXACT percentile (`sorted[rank]`), not `estimate_p99_latency_ms`'s histogram-bucket estimate, which is what this decision is about. A case here would not discriminate. Needs a fixture that drives the bucket estimator with a sample above the top boundary, expecting that boundary rather than 0.0 \u2014 and 0.0 is also the legitimate empty-set answer, so the case must distinguish the two. NEW DRIVER CODE in all three SDKs."
     },
     "D-107": {
       "title": "per-class markers are the only multi-class opt-in",
@@ -338,7 +351,8 @@
       "binds": [
         "python"
       ],
-      "binds_note": "Only apcore-python has a watch path that re-registers; apcore-rust re-runs discovery (which invokes on_load) and apcore-typescript's watch() never re-registers."
+      "binds_note": "Only apcore-python has a watch path that re-registers; apcore-rust re-runs discovery (which invokes on_load) and apcore-typescript's watch() never re-registers.",
+      "gap_note": "registry_load_ordering.json#visibility_after_successful_on_load and #callback_failure_blocks_visibility pin the same rule through `register()` \u2014 they are NOT this decision, whose whole content is that the rule also binds the WATCH entry point, which those cases never take. Linking them would be the loose linking this map forbids."
     },
     "D-124": {
       "title": "the node fallback is scoped to its own document",

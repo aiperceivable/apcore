@@ -48,8 +48,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   because the sentence itself said the test was unnecessary.
 
   Of 53 decisions (D-74 – D-126): **37 behavioural, 14 deferred** (D-108 – D-121, spec text only),
-  **2 unconstrained** (the decision itself leaves the shape language-defined). Of the 37, six are
-  pinned by a conformance case and six by per-SDK tests covering every SDK they bind — **ratchet 25**,
+  **2 unconstrained** (the decision itself leaves the shape language-defined). Of the 37, seven are
+  pinned by a conformance case and six by per-SDK tests covering every SDK they bind — **ratchet 24**,
   which may only go down.
 
   **Unlinked means uncovered, deliberately.** A case that pins a decision without saying so can be
@@ -69,6 +69,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   synthesising an `@external` principal fails it. The case predates the decision and had never been
   named, so the decision read as unpinned while a driver in every SDK was already asserting it.
   That is the shape this map exists to make visible in both directions.
+
+  The second entry closed found the opposite problem. `async_task_evolution.json#task_store_list_by_status`
+  is the one case that lists tasks, and D-82 makes insertion order normative — but it seeded a
+  single matching task, and of the three drivers **only apcore-rust compared the list as ordered**:
+  apcore-python compared `sorted(ids) == sorted(expected)` and apcore-typescript looped
+  `expect(ids).toContain(...)`. Both assert the order away by construction, so no number of extra
+  tasks would have made the case enforce the decision. The case now seeds three tasks whose
+  insertion order (c, a, b) differs from both lexicographic (a, b, c) and `submitted_at` (c, b, a)
+  order, and both drivers compare as ordered. Flipping the expectation to lexicographic turns all
+  three red — verified.
 
 ### Security (v1.54.0)
 
