@@ -1,12 +1,12 @@
 ---
-description: "The canonical, normative apcore protocol specification (RFC 2119, v1.54.0): module, schema, naming, ACL, approval, error, config, and observability requirements for all conforming SDKs."
+description: "The canonical, normative apcore protocol specification (RFC 2119, v1.55.0): module, schema, naming, ACL, approval, error, config, and observability requirements for all conforming SDKs."
 ---
 
 # apcore — AI-Perceivable Core Standard Specification
 
 > **Canonical Specification** - This document is the authoritative specification for the apcore protocol
 
-> Version: 1.54.0
+> Version: 1.55.0
 > Status: Draft Specification (RFC 2119 Conformant)
 > Stability: Specification content is stable, pending reference implementation verification
 > Last Updated: 2026-09-16
@@ -2175,6 +2175,35 @@ multi_version:
       version: "2.0.0"
       alias: "executor.validator.db_params@2"
 ```
+
+> **D-126 (v1.55.0) — the v1.10.0 row is wrong about `version`.** It recorded
+> "all three SDKs accept it, only apcore-python resolves by it". The second half
+> is right; the first is not. apcore-rust's `Registry::get(&self, name)` takes no
+> version hint, so a Rust caller cannot pass one. apcore-typescript accepts the
+> argument and discards it — the parameter name appeared exactly once in the
+> source, in the signature.
+>
+> The historical row is left as written, as D-96's was: it records what was
+> decided then. What is corrected is the **current** statement in
+> [`registry-system.md`](../features/registry-system.md#contract-registryregister),
+> and the inert parameter itself.
+>
+> An implementation that accepts a `version_hint` it does not resolve by
+> **MUST** make that visible to the caller. Silence is the failure: a caller
+> writing `get(id, "1.0.0")` believes it has pinned a version and has not, which
+> is §9.1.3's "declared surface reaches no mechanism" applied to a method
+> parameter. Compile-time refusal (apcore-rust) satisfies this; so does a
+> deprecation warning. Resolution itself stays OPTIONAL — §5.4 multi-version
+> coexistence is optional, and making resolution normative would put a
+> requirement into the spec that two of three implementations do not provide,
+> which is what the v1.10.0 row was right to avoid.
+>
+> apcore-typescript deprecates its hint for removal at 2.0 rather than removing
+> it now, following **D-121**: removal is a compile error for every caller that
+> passes one, and the warning carries the same information without breaking the
+> build. The cadence is D-89's — once per module ID per registry instance,
+> because `get` is a read hosts call in loops.
+
 
 ### 5.5 Module Isolation (Optional)
 
@@ -10351,3 +10380,4 @@ Each language SDK **SHOULD** provide idiomatic module definition syntax. The fol
 | 1.52.0 | 2026-09-16 | **Two decisions found while REVIEWING the v1.49.0/v1.50.0 work, not by the audit that produced it (D-122, D-123).** **`shutdown()` attempts every cancellation before it reports** (D-122). The three SDKs split on this while implementing D-81 — two stop at the first failure, one attempts all — so it is a genuine choice, decided on the asymmetry of the two failure modes: when the store is unreachable both strategies cancel nothing and stopping early merely arrives there faster, but when ONE task fails, stopping leaves every remaining task uncancelled. An uncancelled task in a shared store is a lasting cost (it holds a `max_tasks` slot for every manager sharing that store, and outlives the process that could have cancelled it); a slower shutdown is transient. The hang objection carries little weight because `shutdown()` is **already an unbounded wait by contract** — it waits for completion and takes no timeout in any SDK — so a caller needing a bound must already impose one. **A hot-reloaded module MUST NOT become visible before its `on_load()` has run** (D-123). `Contract: Registry.register` Side Effects step 8 already requires this, but is scoped to `register`; a watch-driven reload is a different entry point, so an implementation writing the internal maps directly violates no stated rule — which is what apcore-python's `_handle_file_change` does, publishing a module that is visible but never initialised. The rule constrains **publication, not mechanism**: D11-005 leaves the reload mechanism language-defined and this does not narrow it. Recovery semantics are governed by D-112 rules 2-4 and are deliberately NOT restated at the second entry point, because a duplicated rule drifting apart is the defect class this whole audit is about — §10.6.1's key matcher was implemented twice and drifted into a leak, and A-D-017's fix landed on the reader while the type being read was never updated. Only apcore-python is affected: apcore-rust re-runs discovery (which invokes `on_load`) and apcore-typescript's `watch()` never re-registers. Governance: maintainer approval per GOVERNANCE.md § Decision Making. |
 | 1.53.0 | 2026-09-16 | **The D-104 node fallback is scoped to its own document (D-124).** Found in maintainer review of the v1.50.0 branches, then reproduced in all three SDKs. D-104 settled WHICH two bases a local `#/…` pointer tries — the file root, then the schema node — and said nothing about how far the second one travels; every implementation held it on the resolver and consulted it for every local pointer, including ones resolved after following a reference into another file. A `#/$defs/X` written inside an EXTERNAL schema, naming a definition that document does not have, therefore fell back to the CALLING module's schema node and bound to whatever shared the name. Three consequences, in increasing order of cost: an invalid reference reports success where it owes `SCHEMA_NOT_FOUND`; the resolved schema then validates against a contract the external author never wrote; and §10.6 reads `x-sensitive` off the **resolved** schema, so a field the external document marks sensitive can be replaced by a local definition that does not and be logged in plaintext — the same class of leak as SCH-001, by a different route. This does not narrow D-104: a local pointer inside an external document still resolves in THAT document, and Layout B is unaffected, because at the origin the schema node and its document are the same document. Governance: maintainer approval per GOVERNANCE.md § Decision Making. |
 | 1.54.0 | 2026-09-16 | **SECURITY: D-96 binds every SDK and every governance reader (D-125).** D-96's closing remark — that the union is "unobservable in implementations whose descriptors are derived from the module (apcore-python, apcore-typescript)" — was asserted without being checked, and is false. Both peers merge a `*_meta.yaml` / `*.binding.yaml` / `metadata` document into the descriptor with §4.13's YAML > code precedence, which is a second place an operator can declare governance, and neither gate read it. **Reproduced in both:** a module registered with `metadata.annotations.requires_approval: true` produced a descriptor reporting `true`, a `system.manifest.*` entry reporting `true`, a preflight reporting **false**, and **no gate** — it executed with an approval handler configured and the handler was never consulted. That is the bypass D-96 describes, in the two SDKs D-96 named as unaffected, and it is fail-OPEN. The rule is unchanged; its SCOPE is corrected, and now binds the gate, the §7.9.5 preflight, the §6.6.5 posture accessor and the `system.manifest.*` projection alike — a reader narrower than the gate reports a verdict the gate will not honour. The union is `OR` on `requires_approval` and `destructive` only; every other annotation describes behaviour rather than governance and stays instance-sourced. An implementation MUST NOT resolve it with the metadata-merge precedence, which lets the weaker declaration win in both directions. Two consequences: a metadata `requires_approval: false` no longer cancels a code-declared `true`, and the manifest publishes the enforced value. **This IS an SDK change** in all three. Governance: maintainer approval per GOVERNANCE.md § Decision Making. |
+| 1.55.0 | 2026-09-16 | **A `version_hint` an implementation does not resolve by MUST NOT be silent (D-126).** The v1.10.0 row recorded "all three SDKs accept it, only apcore-python resolves by it". The second half is right; the first is not — apcore-rust's `Registry::get(&self, name)` takes no hint, so a Rust caller cannot pass one, and apcore-typescript accepted the argument and discarded it (the parameter name appeared exactly once in the source, in the signature). Found by verifying the spec's inaction-licensing claims about other SDKs, the same sweep that produced D-125. Resolution stays **OPTIONAL** — §5.4 coexistence is optional and making resolution normative would put a requirement into the spec that two of three implementations do not provide, which the v1.10.0 row was right to avoid. What is now required is **visibility**: compile-time refusal satisfies it (apcore-rust), and so does a deprecation warning. The parameter is INERT rather than wrong in apcore-typescript, because its `register` refuses a second registration of the same `module_id` — but a caller writing `get(id, "1.0.0")` believes it has pinned a version and has not, which is §9.1.3's "declared surface reaches no mechanism" on a method parameter. apcore-typescript deprecates for removal at 2.0 rather than removing now, following D-121, at D-89's once-per-module-ID cadence. The v1.10.0 row is left as written; the corrected statement is the current one in registry-system.md. Governance: maintainer approval per GOVERNANCE.md § Decision Making. |

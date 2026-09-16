@@ -126,7 +126,17 @@ Normative behavioral contract. All SDK implementations MUST satisfy these guaran
 !!! info "Multi-version registration (optional, Phase B)"
     SDKs MAY accept additional `version` and `metadata` parameters to support [§5.4 Multi-version Coexistence](../spec/protocol-spec.md#54-multi-version-coexistence). When supported, the same `module_id` MAY be registered with multiple distinct versions, and `Registry.get(module_id, version_hint=...)` resolves via semantic-version range matching.
 
-    Accepting the parameters and resolving by version are separate things, and only apcore-python does both.
+    Accepting the parameters and resolving by version are separate things, and the
+    three SDKs sit at three different points (D-126). **apcore-python** accepts
+    `version_hint` and resolves by it. **apcore-rust**'s `get(&self, name)` takes no
+    hint at all, so a caller cannot pass one — the compiler refuses, which is the
+    honest end of this spectrum. **apcore-typescript** accepts the argument and
+    discards it; since its `register` refuses a second registration of the same
+    `module_id`, only one version can ever be present, so the hint is **inert**
+    rather than wrong. It is deprecated for removal at 2.0 and warns once per
+    module ID when a caller passes one — a declared surface that reaches no
+    mechanism is the shape §9.1.3 forbids for configuration keys, and a caller
+    writing `get(id, "1.0.0")` believes it has pinned a version and has not.
 
     **SDK status (Phase B)**:
 

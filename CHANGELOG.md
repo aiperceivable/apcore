@@ -9,8 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-> Ships `PROTOCOL_SPEC` **v1.48.0 → v1.54.0**: fifty-two cross-language divergences settled
-> (**D-74 – D-125**), found by a deep-chain (call-graph) audit of the three core SDKs — the last
+> Ships `PROTOCOL_SPEC` **v1.48.0 → v1.55.0**: fifty-three cross-language divergences settled
+> (**D-74 – D-126**), found by a deep-chain (call-graph) audit of the three core SDKs — the last
 > four (**D-122** – **D-125**) by reviewing the audit's own output rather than by the audit itself,
 > and **D-124**/**D-125** by the maintainer reviewing the branches. **D-125 corrects a sentence of
 > D-96 that was asserted without being checked** and left a fail-open approval bypass standing in
@@ -25,6 +25,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > `approval_gate.json` passes in all three SDKs off two different sources of truth. A case that
 > cannot discriminate between two implementations is not testing the thing that differs — which is
 > why this release changes fixtures as well as text.
+
+### Changed — specification (v1.55.0)
+
+- **A `version_hint` an implementation does not resolve by MUST NOT be silent** (D-126). The v1.10.0
+  row said "all three SDKs accept it, only apcore-python resolves by it". The second half is right;
+  the first is not — apcore-rust's `Registry::get(&self, name)` takes no hint at all, and
+  apcore-typescript accepted the argument and discarded it. Found by the sweep that verifies the
+  spec's *inaction-licensing* claims about other SDKs — sentences of the shape "X already does this"
+  / "X is unaffected", which can never be caught by a test because the sentence itself says the test
+  is unnecessary. That sweep also produced D-125. Resolution stays OPTIONAL; **visibility** is what
+  is now required, and compile-time refusal satisfies it as well as a deprecation warning does.
 
 ### Security (v1.54.0)
 
