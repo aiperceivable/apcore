@@ -287,3 +287,17 @@ jobs:
         # undriven, which is how the backlog accumulated in the first place.
         run: python3 conformance/check_driver_coverage.py --strict --sdk-root ..
 
+
+      - name: Every behavioural decision names an executed case
+        working-directory: apcore
+        # NOT --strict: 26 of 37 behavioural decisions are still unpinned, and
+        # blocking unrelated work on that backlog helps nobody. What this DOES
+        # enforce without --strict is the ratchet and the map's integrity — a
+        # new decision cannot land without a case, a case reference that stops
+        # resolving is a failure, and a decision named in the spec but missing
+        # from the map is a failure. Those are not backlog; they are the map
+        # claiming coverage it does not have, which is the exact failure this
+        # audit spent two corrections on (D-125, D-126).
+        #
+        # Switch to --strict when the ratchet reaches zero.
+        run: python3 conformance/check_decision_coverage.py --sdk-root ..

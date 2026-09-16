@@ -1,0 +1,374 @@
+{
+  "_comment": "Which executed conformance case pins each decision. Enforced by conformance/check_decision_coverage.py.\n\nA decision recorded only in prose is a decision nothing verifies. This audit produced two false statements of exactly that kind -- D-96 claimed its union was 'unobservable' in two SDKs (it was a fail-open approval bypass in both, corrected as D-125), and the v1.10.0 row claimed all three SDKs accept a version hint (apcore-rust has no such parameter, corrected as D-126). Neither could be caught by a test, because the sentence itself said the test was unnecessary.\n\nUNLINKED MEANS UNCOVERED, deliberately. A case that pins a decision without saying so can be weakened by someone who does not know what it is for -- which is how approval_gate.json came to set both governance sources from one boolean and passed in all three SDKs while one of them had a bypass. If a case pins a decision, name it here.\n\n`discriminates` is not documentation. It must say what makes the case fail when an SDK regresses; if it cannot be written, the case is not discriminating and the decision is still unpinned.\n\nkinds: behavioural = needs a discriminating case | deferred = spec text only, no implementation to pin yet | unconstrained = the decision deliberately leaves the shape language-defined.",
+  "ratchet": 26,
+  "ratchet_history": [
+    {
+      "value": 32,
+      "date": "2026-09-16",
+      "note": "initial measurement; D-74 - D-126"
+    }
+  ],
+  "decisions": {
+    "D-74": {
+      "title": "`Config.get(\"\")` is not an error",
+      "kind": "behavioural",
+      "cases": []
+    },
+    "D-75": {
+      "title": "`Executor.call` must enforce the module-ID length bound at entry",
+      "kind": "behavioural",
+      "cases": []
+    },
+    "D-76": {
+      "title": "`ContextFactory.create_context(request)`",
+      "kind": "behavioural",
+      "cases": []
+    },
+    "D-77": {
+      "title": "`Registry.describe` returns a string; a structured override falls through",
+      "kind": "behavioural",
+      "cases": []
+    },
+    "D-78": {
+      "title": "`ExtensionManager.apply` must not drain the store",
+      "kind": "behavioural",
+      "cases": []
+    },
+    "D-79": {
+      "title": "a stalled topological sort is not a cycle",
+      "kind": "behavioural",
+      "cases": []
+    },
+    "D-80": {
+      "title": "the registry event set is closed, and `file_changed` is in it",
+      "kind": "behavioural",
+      "cases": []
+    },
+    "D-81": {
+      "title": "`TaskStoreError` must reach the caller",
+      "kind": "behavioural",
+      "cases": []
+    },
+    "D-82": {
+      "title": "`list_tasks` insertion order is normative",
+      "kind": "behavioural",
+      "cases": []
+    },
+    "D-83": {
+      "title": "the published `guard_call_chain` signature is normative",
+      "kind": "behavioural",
+      "cases": []
+    },
+    "D-84": {
+      "title": "a non-positive call-chain limit raises a typed error",
+      "kind": "behavioural",
+      "cases": [
+        "call_chain.json#floor_max_call_depth_below_one_rejected",
+        "call_chain.json#floor_max_module_repeat_below_one_rejected"
+      ],
+      "discriminates": "Both pin the WIRE code GENERAL_INVALID_INPUT, not an exception class name \u2014 a class name is shared across SDKs emitting three different codes."
+    },
+    "D-85": {
+      "title": "malformed version constraints must be reportable",
+      "kind": "behavioural",
+      "cases": []
+    },
+    "D-86": {
+      "title": "`Registry.register` validation order",
+      "kind": "behavioural",
+      "cases": []
+    },
+    "D-87": {
+      "title": "the ACL audit-block surface is a language idiom",
+      "kind": "unconstrained",
+      "note": "The decision IS that the audit-block surface is a language idiom and deliberately unconstrained. There is no cross-SDK behaviour to pin.",
+      "cases": []
+    },
+    "D-88": {
+      "title": "index-keyed warning dedupe must be cleared on index shift",
+      "kind": "behavioural",
+      "cases": []
+    },
+    "D-89": {
+      "title": "deprecation warning cadence",
+      "kind": "behavioural",
+      "cases": []
+    },
+    "D-90": {
+      "title": "`reset()` must not substitute the cancellation handle",
+      "kind": "behavioural",
+      "cases": []
+    },
+    "D-91": {
+      "title": "a removal method a host cannot call does not satisfy the contract",
+      "kind": "behavioural",
+      "cases": []
+    },
+    "D-92": {
+      "title": "`TaskStoreError` must exist before it can be raised",
+      "kind": "behavioural",
+      "cases": []
+    },
+    "D-93": {
+      "title": "the contextual-audit redaction list is a superset, and bare substrings are the point of it",
+      "kind": "behavioural",
+      "cases": [
+        "contextual_audit.json#toggle_feature_redacts_bare_substring_identity_fields",
+        "contextual_audit.json#toggle_feature_redacts_sensitive_identity_fields"
+      ],
+      "discriminates": "Carries signing_key / auth_header / session_id / API-Key, which only a BARE-substring matcher catches, plus a `tenant` control that must NOT be redacted."
+    },
+    "D-94": {
+      "title": "symlink confinement runs before the dir/file split",
+      "kind": "behavioural",
+      "cases": []
+    },
+    "D-95": {
+      "title": "a configuration dot-path addresses data, never the host object graph",
+      "kind": "behavioural",
+      "cases": [],
+      "sdk_tests": {
+        "typescript": [
+          "tests/config-prototype-pollution.test.ts"
+        ]
+      },
+      "binds": [
+        "typescript"
+      ],
+      "binds_note": "The defect is a JavaScript prototype-chain property; apcore-python and apcore-rust have no equivalent object graph to pollute."
+    },
+    "D-96": {
+      "title": "the gate fires on the UNION of its governance sources",
+      "kind": "behavioural",
+      "cases": [
+        "approval_gate.json#gate_fires_when_only_the_module_declares_it",
+        "approval_gate.json#gate_fires_when_only_the_descriptor_declares_it",
+        "approval_gate.json#gate_skipped_when_neither_source_declares_it"
+      ],
+      "discriminates": "The two governance sources are separate fixture fields and each case sets exactly one of them, so a gate reading either source alone turns one case red. The third is the control that stops a hardcoded `true` passing."
+    },
+    "D-97": {
+      "title": "binding declarations must survive registration",
+      "kind": "behavioural",
+      "cases": [
+        "binding_yaml_canonical.yaml#conformance.auto_permissive"
+      ],
+      "discriminates": "Its annotation block declares all eleven keys, so any accessor the module type fails to expose is visible as a dropped declaration at registration."
+    },
+    "D-98": {
+      "title": "`$ref` sibling keys are preserved",
+      "kind": "behavioural",
+      "cases": [],
+      "sdk_tests": {
+        "rust": [
+          "tests/test_ref_sibling_keys_preserved.rs"
+        ]
+      },
+      "binds": [
+        "rust"
+      ],
+      "binds_note": "apcore-python and apcore-typescript already preserved sibling keys; only apcore-rust dropped them."
+    },
+    "D-99": {
+      "title": "global_deadline is epoch seconds, not a monotonic reading",
+      "kind": "behavioural",
+      "cases": []
+    },
+    "D-100": {
+      "title": "global_deadline travels in the field, not a `data` key",
+      "kind": "behavioural",
+      "cases": []
+    },
+    "D-101": {
+      "title": "global_deadline belongs to the call tree, not the Context",
+      "kind": "behavioural",
+      "cases": []
+    },
+    "D-102": {
+      "title": "global_deadline is recomputed unconditionally on a deserialized Context",
+      "kind": "behavioural",
+      "cases": []
+    },
+    "D-103": {
+      "title": "a null `identity` stays null",
+      "kind": "behavioural",
+      "cases": []
+    },
+    "D-104": {
+      "title": "the base document for a local `#/\u2026` reference",
+      "kind": "behavioural",
+      "cases": []
+    },
+    "D-105": {
+      "title": "the executor's ACL step MUST take the async path",
+      "kind": "behavioural",
+      "cases": []
+    },
+    "D-106": {
+      "title": "a p99 beyond the largest bucket is that bucket, not zero",
+      "kind": "behavioural",
+      "cases": []
+    },
+    "D-107": {
+      "title": "per-class markers are the only multi-class opt-in",
+      "kind": "behavioural",
+      "cases": [
+        "multi_module_discovery.json#two_classes_distinct_ids",
+        "multi_module_discovery.json#disabled_by_default"
+      ],
+      "discriminates": "The opt-in is a PER-CLASS `multi_class` marker. `disabled_by_default` leaves it unset on both classes and expects one ID; an implementation gating on a file-level toggle cannot tell the two cases apart."
+    },
+    "D-108": {
+      "title": "an unknown extension point is an error; an empty one is not",
+      "kind": "deferred",
+      "note": "spec text only (v1.51.0); implementation deliberately deferred. Becomes `behavioural` the moment it is implemented.",
+      "cases": []
+    },
+    "D-109": {
+      "title": "only the healthy/degraded boundary is configurable",
+      "kind": "deferred",
+      "note": "spec text only (v1.51.0); implementation deliberately deferred. Becomes `behavioural` the moment it is implemented.",
+      "cases": []
+    },
+    "D-110": {
+      "title": "`project_name` defaults to `\"apcore\"`",
+      "kind": "deferred",
+      "note": "spec text only (v1.51.0); implementation deliberately deferred. Becomes `behavioural` the moment it is implemented.",
+      "cases": []
+    },
+    "D-111": {
+      "title": "a bulk reload audits per module, with a correlation id",
+      "kind": "deferred",
+      "note": "spec text only (v1.51.0); implementation deliberately deferred. Becomes `behavioural` the moment it is implemented.",
+      "cases": []
+    },
+    "D-112": {
+      "title": "a failed reload restores the previous module",
+      "kind": "deferred",
+      "note": "spec text only (v1.51.0); implementation deliberately deferred. Becomes `behavioural` the moment it is implemented.",
+      "cases": []
+    },
+    "D-113": {
+      "title": "storage-backend namespaces, and the omitted-argument default",
+      "kind": "deferred",
+      "note": "spec text only (v1.51.0); implementation deliberately deferred. Becomes `behavioural` the moment it is implemented.",
+      "cases": []
+    },
+    "D-114": {
+      "title": "`remove()` clears the duplicate-identity entry",
+      "kind": "deferred",
+      "note": "spec text only (v1.51.0); implementation deliberately deferred. Becomes `behavioural` the moment it is implemented.",
+      "cases": []
+    },
+    "D-115": {
+      "title": "a malformed annotation value is tolerated and dropped",
+      "kind": "deferred",
+      "note": "spec text only (v1.51.0); implementation deliberately deferred. Becomes `behavioural` the moment it is implemented.",
+      "cases": []
+    },
+    "D-116": {
+      "title": "circuit-breaker events carry the declared subscriber type",
+      "kind": "deferred",
+      "note": "spec text only (v1.51.0); implementation deliberately deferred. Becomes `behavioural` the moment it is implemented.",
+      "cases": []
+    },
+    "D-117": {
+      "title": "registered-namespace defaults do not answer for a legacy document",
+      "kind": "deferred",
+      "note": "spec text only (v1.51.0); implementation deliberately deferred. Becomes `behavioural` the moment it is implemented.",
+      "cases": []
+    },
+    "D-118": {
+      "title": "an empty `roles` list is omitted from the audit snapshot",
+      "kind": "deferred",
+      "note": "spec text only (v1.51.0); implementation deliberately deferred. Becomes `behavioural` the moment it is implemented.",
+      "cases": []
+    },
+    "D-119": {
+      "title": "`system.*` modules declare `open_world: false` explicitly",
+      "kind": "deferred",
+      "note": "spec text only (v1.51.0); implementation deliberately deferred. Becomes `behavioural` the moment it is implemented.",
+      "cases": []
+    },
+    "D-120": {
+      "title": "error timestamps are `Z` with millisecond precision",
+      "kind": "deferred",
+      "note": "spec text only (v1.51.0); implementation deliberately deferred. Becomes `behavioural` the moment it is implemented.",
+      "cases": []
+    },
+    "D-121": {
+      "title": "`reload_dependents` is deprecated for removal",
+      "kind": "deferred",
+      "note": "spec text only (v1.51.0); implementation deliberately deferred. Becomes `behavioural` the moment it is implemented.",
+      "cases": []
+    },
+    "D-122": {
+      "title": "`shutdown()` attempts every cancellation before it reports",
+      "kind": "behavioural",
+      "cases": [],
+      "sdk_tests": {
+        "python": [
+          "tests/test_deep_chain_v150.py"
+        ],
+        "typescript": [
+          "tests/async-task.test.ts"
+        ],
+        "rust": [
+          "tests/async_tasks_spec.rs"
+        ]
+      }
+    },
+    "D-123": {
+      "title": "a hot-reloaded module MUST NOT become visible before its `on_load()` has run",
+      "kind": "behavioural",
+      "cases": [],
+      "sdk_tests": {
+        "python": [
+          "tests/registry/test_hot_reload_on_load.py"
+        ]
+      },
+      "binds": [
+        "python"
+      ],
+      "binds_note": "Only apcore-python has a watch path that re-registers; apcore-rust re-runs discovery (which invokes on_load) and apcore-typescript's watch() never re-registers."
+    },
+    "D-124": {
+      "title": "the node fallback is scoped to its own document",
+      "kind": "behavioural",
+      "cases": [],
+      "sdk_tests": {
+        "python": [
+          "tests/test_deep_chain_v150.py"
+        ],
+        "typescript": [
+          "tests/schema/test-local-ref-file-root.test.ts"
+        ],
+        "rust": [
+          "tests/test_ref_fallback_is_document_scoped.rs"
+        ]
+      }
+    },
+    "D-125": {
+      "title": "D-96 binds every SDK and every governance reader",
+      "kind": "behavioural",
+      "cases": [],
+      "sdk_tests": {
+        "python": [
+          "tests/test_governance_union.py"
+        ],
+        "typescript": [
+          "tests/governance-union.test.ts"
+        ],
+        "rust": [
+          "tests/test_approval_gate_decides_from_live_module.rs"
+        ]
+      }
+    },
+    "D-126": {
+      "title": "the v1.10.0 row is wrong about `version`",
+      "kind": "unconstrained",
+      "note": "Three conformant answers exist by design \u2014 compile-time refusal (apcore-rust), a deprecation warning (apcore-typescript), real resolution (apcore-python). A single fixture case cannot express 'not silent' across all three; each SDK pins its own.",
+      "cases": []
+    }
+  }
+}

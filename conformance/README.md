@@ -168,3 +168,38 @@ Both fixture guards keep a baseline plus an allowlist. Allowlist entries require
 **A case can be declared and run by nobody.** `check_driver_coverage.py` answers *does each SDK load this fixture*, `check_expected_keys_read.py` answers *does any driver read this `expected` key*. Neither answers *does any driver RUN this case* — both stay green when the fixture is loaded and the key names are read by some **other** case in the same file. `check_case_pinning.py` answers it directly: it mutates the case's expectation so no correct implementation can satisfy it, runs the drivers, and reports the case if nothing goes red. A case that cannot go red is not coverage. It runs test processes, so it is a scheduled sweep rather than a per-PR check; `conformance/case_pinning_baseline.json` records the known backlog.
 
 **Asserting a class name is not asserting the contract.** Three separate instances were found in the 0.26 sweep: `pipeline_failfast_config.json` asserted `error_type: "ConfigurationError"`, a name all three SDKs share, and was green while they emitted three different wire codes; `pipeline_step_middleware.json` asserted `wrapped_in` against a string literal in one driver and was ignored by the other two; `test_trace_context.py` compared the fixture's own `code` value to a literal. Assert the **wire code**.
+
+## Decision coverage
+
+`decision_coverage.json` records which executed case pins each decision from the
+2026-09 deep-chain audit (D-74 onward), and `check_decision_coverage.py` enforces
+it.
+
+A decision recorded only in prose is a decision nothing verifies. This repository
+has shipped two false statements of exactly that kind — D-96 recorded that its
+union was "unobservable" in apcore-python and apcore-typescript (it was a
+fail-open approval bypass in both, corrected as D-125), and the v1.10.0 row
+recorded that all three SDKs accept a `version` hint (apcore-rust has no such
+parameter, corrected as D-126). Neither could be caught by a test, because the
+sentence itself said the test was unnecessary.
+
+**Unlinked means uncovered, deliberately.** A case that pins a decision without
+saying so can be weakened by someone who does not know what it is for — which is
+how `approval_gate.json` came to set both governance sources from a single
+boolean and passed in all three SDKs while one of them had a bypass.
+
+Two strengths of coverage are recorded, and the map says which it has:
+
+| | |
+|---|---|
+| `cases` | A conformance case. One document, three drivers — they cannot drift apart. |
+| `sdk_tests` | Per-SDK regression tests covering every SDK the decision binds. Stops a regression today; three files can drift where one cannot. |
+
+`ratchet` is the number of behavioural decisions with neither. It may only go
+down. CI runs the checker without `--strict`, so the backlog does not block
+unrelated work — but a new decision landing without a case, a case reference that
+stops resolving, a named test file that no longer exists, and a decision present
+in the spec but absent from the map are all failures. Those are not backlog; they
+are the map claiming coverage it does not have.
+
+Switch CI to `--strict` when the ratchet reaches zero.

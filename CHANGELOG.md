@@ -37,6 +37,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is unnecessary. That sweep also produced D-125. Resolution stays OPTIONAL; **visibility** is what
   is now required, and compile-time refusal satisfies it as well as a deprecation warning does.
 
+### Added — conformance
+
+- **`decision_coverage.json` + `check_decision_coverage.py`: every behavioural decision must name
+  an executed case.** A decision recorded only in prose is a decision nothing verifies, and this
+  release contains two corrections of exactly that kind — D-96 recorded that its union was
+  "unobservable" in apcore-python and apcore-typescript (a fail-open approval bypass in both,
+  corrected as D-125), and the v1.10.0 row recorded that all three SDKs accept a `version` hint
+  (apcore-rust has no such parameter, corrected as D-126). Neither could be caught by a test,
+  because the sentence itself said the test was unnecessary.
+
+  Of 53 decisions (D-74 – D-126): **37 behavioural, 14 deferred** (D-108 – D-121, spec text only),
+  **2 unconstrained** (the decision itself leaves the shape language-defined). Of the 37, five are
+  pinned by a conformance case and six by per-SDK tests covering every SDK they bind — **ratchet 26**,
+  which may only go down.
+
+  **Unlinked means uncovered, deliberately.** A case that pins a decision without saying so can be
+  weakened by someone who does not know what it is for, which is how `approval_gate.json` came to
+  set both governance sources from a single boolean and passed in all three SDKs while one had a
+  bypass. `discriminates` is not documentation either: it must say what makes the case fail when an
+  SDK regresses, and if it cannot be written the decision is still unpinned.
+
+  CI runs without `--strict`, so the backlog blocks nothing — but four things fail regardless,
+  because they are the map claiming coverage it does not have: a new decision landing without a
+  case, a case reference that stops resolving, a named test file that no longer exists, and a
+  decision present in the spec but absent from the map. All four were verified to fail before the
+  checker was wired in.
+
 ### Security (v1.54.0)
 
 - **A governance requirement declared in a metadata document reached every surface that describes a
