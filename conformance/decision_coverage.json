@@ -1,11 +1,16 @@
 {
   "_comment": "Which executed conformance case pins each decision. Enforced by conformance/check_decision_coverage.py.\n\nA decision recorded only in prose is a decision nothing verifies. This audit produced two false statements of exactly that kind -- D-96 claimed its union was 'unobservable' in two SDKs (it was a fail-open approval bypass in both, corrected as D-125), and the v1.10.0 row claimed all three SDKs accept a version hint (apcore-rust has no such parameter, corrected as D-126). Neither could be caught by a test, because the sentence itself said the test was unnecessary.\n\nUNLINKED MEANS UNCOVERED, deliberately. A case that pins a decision without saying so can be weakened by someone who does not know what it is for -- which is how approval_gate.json came to set both governance sources from one boolean and passed in all three SDKs while one of them had a bypass. If a case pins a decision, name it here.\n\n`discriminates` is not documentation. It must say what makes the case fail when an SDK regresses; if it cannot be written, the case is not discriminating and the decision is still unpinned.\n\nkinds: behavioural = needs a discriminating case | deferred = spec text only, no implementation to pin yet | unconstrained = the decision deliberately leaves the shape language-defined.",
-  "ratchet": 26,
+  "ratchet": 25,
   "ratchet_history": [
     {
       "value": 32,
       "date": "2026-09-16",
       "note": "initial measurement; D-74 - D-126"
+    },
+    {
+      "value": 25,
+      "date": "2026-09-16",
+      "note": "linked D-103 to a case that already existed and had never been named"
     }
   ],
   "decisions": {
@@ -192,7 +197,10 @@
     "D-103": {
       "title": "a null `identity` stays null",
       "kind": "behavioural",
-      "cases": []
+      "cases": [
+        "context_create.json#create_minimal_all_defaults"
+      ],
+      "discriminates": "Empty input, `expected.identity: null`. An implementation that manufactures a principal for a call that carries none fails here \u2014 which is exactly what apcore-rust did, synthesising `Identity{id:\"@external\", type:\"external\"}` and cloning it down through `child()`. The case predates the decision and was never linked to it, so the decision read as unpinned: check_driver_coverage confirms all three SDKs drive the fixture and check_expected_keys_read --strict confirms every `expected` key in it is asserted by a driver."
     },
     "D-104": {
       "title": "the base document for a local `#/\u2026` reference",

@@ -48,8 +48,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   because the sentence itself said the test was unnecessary.
 
   Of 53 decisions (D-74 – D-126): **37 behavioural, 14 deferred** (D-108 – D-121, spec text only),
-  **2 unconstrained** (the decision itself leaves the shape language-defined). Of the 37, five are
-  pinned by a conformance case and six by per-SDK tests covering every SDK they bind — **ratchet 26**,
+  **2 unconstrained** (the decision itself leaves the shape language-defined). Of the 37, six are
+  pinned by a conformance case and six by per-SDK tests covering every SDK they bind — **ratchet 25**,
   which may only go down.
 
   **Unlinked means uncovered, deliberately.** A case that pins a decision without saying so can be
@@ -63,6 +63,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   case, a case reference that stops resolving, a named test file that no longer exists, and a
   decision present in the spec but absent from the map. All four were verified to fail before the
   checker was wired in.
+
+  The first entry closed was already there: `context_create.json#create_minimal_all_defaults`
+  asserts `expected.identity: null` on empty input, which is D-103 exactly — an implementation
+  synthesising an `@external` principal fails it. The case predates the decision and had never been
+  named, so the decision read as unpinned while a driver in every SDK was already asserting it.
+  That is the shape this map exists to make visible in both directions.
 
 ### Security (v1.54.0)
 
