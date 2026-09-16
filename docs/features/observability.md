@@ -22,7 +22,56 @@ Comprehensive observability with distributed tracing, metrics collection, and st
 - Define a `SpanExporter` protocol with three implementations: `StdoutExporter` (JSON lines to stdout), `InMemoryExporter` (bounded in-memory collection for testing), and `OTLPExporter` (OpenTelemetry bridge).
 - `InMemoryExporter` MUST be bounded (deque with configurable maxlen, default 10,000) to prevent unbounded memory growth.
 
-### Metrics
+#> **D-106 (v1.50.0) — p99 when no bucket reaches the threshold.** When the
+> nearest-rank target falls beyond the largest finite histogram bucket — every
+> observation overflowed it — the estimate **MUST** be the largest finite bucket
+> bound, not zero. Returning `0.0` reports the *fastest possible* latency for
+> the *slowest* modules, and since latency alerting compares the estimate
+> against a threshold, it disables the alert precisely for the modules that
+> should fire it. apcore-rust returned `0.0` and pinned that in a unit test
+> (`estimate_p99_from_histogram_no_bucket_exceeds_threshold_returns_zero`),
+> which is why a green suite did not catch it. An implementation **SHOULD** also
+> emit the `+Inf` bucket in its snapshot, so a consumer can tell "no data" from
+> "all overflow".
+
+## Storage backend namespaces, and the error-timestamp format
+
+> **Added in spec v1.51.0** (D-113, D-120).
+
+**D-113 — each collector writes under one named namespace.** §1.1 makes the
+`StorageBackend` constructor argument a MUST and requires `InMemoryStorageBackend`
+when it is omitted, but never NAMED the namespaces — so of nine
+collector/SDK combinations only four wrote at all, the two SDKs that did write
+disagreed (`errors` vs `error_history` for the same records), and only one
+honoured the omitted-argument default. The namespaces are now fixed:
+
+| Collector | Namespace |
+|---|---|
+| `MetricsCollector` | `metrics` |
+| `UsageCollector` | `usage` |
+| `ErrorHistory` | `error_history` |
+
+When the argument is omitted, `InMemoryStorageBackend` **MUST** be used — not
+`None`, which made `.storage.list(...)` raise on one SDK and return nothing on
+another for the same code the spec prints as its example.
+
+> **Migration.** apcore-python currently writes `ErrorHistory` records under
+> `errors`. Adopting `error_history` orphans anything already persisted by a
+> network-backed store. Implementations **SHOULD** read from both names for one
+> minor version, writing only the new one, and **MUST** state the rename in
+> their migration notes. A namespace rename is invisible until someone queries
+> old data and finds nothing.
+
+**D-120 — error timestamps are UTC with a `Z` suffix and millisecond
+precision** — `2026-09-16T10:30:00.123Z`. Three SDKs rendered three spellings
+(`+00:00` microseconds, `Z` milliseconds, `+00:00` nanoseconds), so a
+string-ordering or strict-parsing consumer saw three formats. Fixing the suffix
+alone would leave three precisions behind the same `Z` — the same defect, now
+harder to see — so the precision is part of the requirement. The fix belongs in
+`ErrorHistory`, where the timestamps are produced: a renderer at the
+`system.health.*` surface changes one reader and leaves the others.
+
+## Metrics
 - Implement a `MetricsCollector` with thread-safe counters and histograms (with configurable bucket boundaries).
 - Provide convenience methods for standard apcore metrics: `increment_calls()` → `apcore_module_calls_total`, `increment_errors()` → `apcore_module_errors_total`, `observe_duration()` → `apcore_module_duration_seconds`.
 - Support Prometheus text exposition format export via `export_prometheus()`.

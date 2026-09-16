@@ -77,7 +77,7 @@ When a Config with `sys_modules.enabled: true` is provided:
 | | `register(module_id, module)` | None | Direct module registration |
 | | `discover()` | int | Auto-discover and register modules |
 | **Execution** | `call(module_id, inputs?, context?)` | dict | Synchronous call |
-| | `call_async(module_id, inputs?, context?)` | dict | Asynchronous call |
+| | `call_async(module_id, inputs?, context?, version_hint?)` | dict | Asynchronous call (Python only; TypeScript `callAsync` is an alias for `call`, Rust `call` is already async) |
 | | `stream(module_id, inputs?, context?)` | AsyncIterator | Streaming output |
 | | `validate(module_id, inputs?, context?)` | PreflightResult | Non-destructive preflight |
 | **Inspection** | `list_modules(tags?, prefix?)` | list[str] | List module IDs (sorted) |
@@ -338,6 +338,39 @@ The APCore interface follows each language's idioms while maintaining functional
 - thread_safe: true (Executor holds an internal lock on shared state)
 - pure: false (side-effects: span created, metrics emitted, middleware hooks invoked)
 - idempotent: false (module `execute` is not guaranteed idempotent)
+
+## Contract: APCore.call_async
+
+### Inputs
+- `module_id` (str/string, required) — target module ID; validated against `MODULE_ID_PATTERN`; reject empty or malformed with `InvalidInputError(code=INVALID_MODULE_ID)`
+- `inputs` (dict/object, optional) — validated against the module's `input_schema`; absent is treated as `{}`
+- `context` (Context, optional) — execution context; created fresh when absent
+- `version_hint` (str/string, optional) — preferred version constraint
+
+### Errors
+- Identical to `APCore.call` — this surface adds no error of its own:
+- `InvalidInputError(code=INVALID_MODULE_ID)` — `module_id` is empty or malformed
+- `ModuleNotFoundError(code=MODULE_NOT_FOUND)` — no module registered under `module_id`
+- `SchemaValidationError(code=SCHEMA_VALIDATION_ERROR)` — `inputs` fails the module's `input_schema`
+- Any error raised by the module's `execute` handler propagates unchanged
+
+### Returns
+- On success: `dict`/`Record<string, unknown>` — the module's validated output, identical to `APCore.call`
+
+### Properties
+- async: true — this is the async surface by definition
+- thread_safe: true (delegates to the Executor, which holds an internal lock on shared state)
+- pure: false (side-effects: span created, metrics emitted, middleware hooks invoked)
+- idempotent: false (module `execute` is not guaranteed idempotent)
+
+> **Per-language availability.** This method exists to serve languages whose
+> `call()` is synchronous. Python's `call()` blocks, so `call_async()` is a
+> genuinely distinct coroutine surface. TypeScript's `callAsync()` is an
+> explicit **alias** for `call()` — both delegate to the same
+> `executor.call(...)` and return the same `Promise`. Rust has **no**
+> `call_async` at all, because `APCore::call` is already `pub async fn`.
+> Implementations **MUST NOT** give `call_async` behaviour that differs from
+> `call` beyond the synchronous/asynchronous calling convention.
 
 ## Contract: APCore.on
 

@@ -459,7 +459,7 @@ The canonical input list — across all SDKs, the public factory MUST accept **e
 
 | # | Name | Type | Default | Notes |
 |---|------|------|---------|-------|
-| 1 | `identity` | Identity \| null | null | When null, the constructor synthesizes an `@external` identity. |
+| 1 | `identity` | Identity \| null | null | Stays **null** when absent. **D-103 (v1.50.0):** this row previously said the constructor "synthesizes an `@external` identity", contradicting this same contract's Returns clause ("All caller-supplied fields populated as provided"), the `Context` field table (`identity: Identity \| null`), and every cross-language example in `context-object.md`. `@external` is the **caller-side ACL sentinel** substituted for a null `caller_id`; it MUST NOT become an `Identity` object. A module written to the spec's own example — `if not context.identity: raise "Authentication required"` — rejects an unauthenticated call on an implementation that leaves it null and ADMITS it on one that fabricates a principal, which is the wrong way for that divergence to fail. An implementation **MUST NOT** synthesize an `Identity` for a call that supplied none. |
 | 2 | `trace_parent` | TraceParent \| null | null | W3C Trace Context entry. The TraceParent type itself carries `tracestate` (vendor state) — SDKs MUST embed `tracestate` in the `TraceParent` type, not expose it as a separate factory parameter. Invalid values (non-32-hex, all-zero, all-f) MUST log WARN and be replaced with a fresh `trace_id`. |
 | 3 | `cancel_token` | CancelToken \| null | null | External cooperative-cancellation source. When omitted, the Executor synthesizes a fresh token at pipeline entry. Adopting this parameter eliminates the post-hoc `ctx.cancel_token = token` anti-pattern that proliferated across the ecosystem. |
 | 4 | `data` | Mapping<string, Any> \| null | empty | User-propagated state carried through the call chain by reference. |
@@ -546,6 +546,54 @@ The binding method is a **cross-boundary contract member** — the Executor call
 - Distributed cancellation MUST go through **out-of-band channels** (e.g., `AsyncTaskStore` task_id lookup, a `RemoteCancelSignal` subscription, or a control plane RPC). It MUST NOT attempt to ride the in-context `cancel_token` field across process boundaries.
 
 The `cancel_token` parameter on `Context.create()` exists solely for **in-process cooperation** — a request handler binding the HTTP/RPC request's abort signal to the call tree it spawns locally.
+
+## `global_deadline` Representation and Lifetime
+
+> **Added in spec v1.50.0** (D-99 – D-102). Three SDKs kept this value on three
+> different clocks, in two different places, with two different lifetimes. All
+> four rules below were already implied by existing text; none was stated where
+> an implementer would look.
+
+**D-99 — the clock is epoch seconds.** `global_deadline` is an absolute deadline
+expressed as **epoch seconds** (`float` / `number` / `f64`), as
+[design-context-annotations-acl.md](../spec/design-context-annotations-acl.md)
+has stated since the field was introduced. An implementation **MUST NOT**
+substitute a monotonic clock or millisecond units.
+
+This is not a style preference. The field is a **public `Context.create`
+parameter**, so a caller writes it; a caller following the spec writes
+`time.time() + budget`. Against a monotonic basis that value is roughly
+`1.8e9` compared against roughly `1e5`, so the deadline never fires and the call
+runs with **no budget at all** — the failure is silent and it fails open.
+Against a millisecond basis the same value expires immediately. apcore-python
+used `time.monotonic()` and apcore-typescript used `Date.now()` milliseconds;
+both were internally consistent and both made the public parameter unusable.
+
+**D-100 — the field is the storage, not a `data` key.** The deadline lives in
+the first-class `Context.global_deadline` field. An implementation **MUST NOT**
+keep it in `context.data` under a private key: `data` is caller-visible,
+caller-writable and shared by reference with child contexts, and a first-class
+field that the pipeline never reads is a parameter the caller cannot use.
+apcore-typescript wrote and read `context.data['_apcore.executor.global_deadline']`
+and never consulted its own `globalDeadline` field, so a caller-supplied
+deadline was silently replaced by the config default.
+
+**D-101 — the deadline belongs to the call tree, not to the Context.** It is
+computed onto the context the pipeline derives for THIS call, and an
+implementation **MUST NOT** write it onto a caller-supplied Context that
+outlives the call. Reusing one Context across successive top-level
+`Executor.call()` invocations is explicitly blessed above; a budget pinned to
+that object makes the second call inherit the first call's remaining time — or
+fail immediately, having already expired.
+
+**D-102 — a deserialized Context recomputes, unconditionally.** The rule below
+("the receiving Executor MUST recompute") is not conditioned on the call being
+a root call. A Context arriving from another process carries a non-empty
+`call_chain` **by definition**, so gating recomputation on an empty chain
+inverts the rule exactly where it applies: apcore-python did, and every
+cross-process sub-tree ran with no global budget. The correct guard is "the
+deadline is absent", which already preserves an in-process caller's explicit
+value.
 
 ## `global_deadline` Distributed Semantics
 

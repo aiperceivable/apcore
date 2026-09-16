@@ -38,7 +38,7 @@ MCP tells an agent what it *can* call. apcore decides whether this call — with
 
 - [What is apcore?](#what-is-apcore)
   - [The Concept: Cognitive Interface](#the-concept-cognitive-interface)
-  - [Why Not Just Use Existing MCP Solutions?](#why-not-just-use-existing-mcp-solutions)
+  - [How apcore Complements MCP](#how-apcore-complements-mcp)
 - [Why AI-Perceivable?](#why-ai-perceivable)
   - [The AI Collaboration Lifecycle](#the-ai-collaboration-lifecycle)
 - [Core Principles](#core-principles)
@@ -598,7 +598,7 @@ Each module's metadata is divided into three layers, progressing from required t
 - **Module discovery phase**: AI reads all modules' `description`, quickly determines candidate modules
 - **Call decision phase**: AI loads `documentation` on-demand, learns detailed usage and constraints
 
-> Complete format rules and correspondence with Claude Skill / OpenAPI: see [Protocol Specification §4.8](./docs/spec/protocol-spec.md#48-description-and-documentation). Code examples: see [Class-based Modules](#1-class-based-modules) above.
+> Complete format rules and correspondence with Claude Skill / OpenAPI: see [Protocol Specification §4.8](./docs/spec/protocol-spec.md#48-description-and-documentation-field-specification). Code examples: see [Class-based Modules](#1-class-based-modules) above.
 
 ### Schema Definition
 
@@ -1143,6 +1143,9 @@ Development guide: see [Adapter Development Guide](./docs/guides/adapter-develop
 | Document | Description |
 |------|------|
 | [Protocol Specification](./docs/spec/protocol-spec.md) | Complete standard specification (RFC 2119 Conformant) |
+| [Getting Started](./docs/getting-started.md) | Install the Python, TypeScript, or Rust SDK and build your first module |
+| [Glossary](./docs/glossary.md) | Single-page glossary of apcore terminology, cross-referenced to the spec |
+| [Site Map](./docs/site-map.md) | Navigable map of the whole documentation tree |
 | [Scope Definition](./SCOPE.md) | Responsibility boundaries (what's in/out of scope) |
 | [Positioning](./docs/POSITIONING.md) | Where apcore sits in the stack — relationship to MCP, A2A, CLI, REST |
 | [Roadmap](./ROADMAP.md) | Project roadmap, milestones, and the path to 1.0 |
@@ -1195,6 +1198,12 @@ Development guide: see [Adapter Development Guide](./docs/guides/adapter-develop
 | [Adapter Development](./docs/guides/adapter-development.md) | Framework adapter development |
 | [Testing Modules](./docs/guides/testing-modules.md) | Module testing guide |
 | [Multi-Language Development](./docs/guides/multi-language.md) | Cross-language development guide |
+| [Integrating Existing Projects](./docs/guides/integrating-existing-projects.md) | Incremental adoption in apps with existing request/correlation IDs (dual-ID model) |
+| [Cookbook — Approval Flow](./docs/guides/cookbook-approval-flow.md) | Approval-gated modules end to end: sync block-until-decided and async pending resume |
+| [Cookbook — Cancellation](./docs/guides/cookbook-cancellation.md) | Cooperative cancellation of long-running modules, with cleanup via middleware |
+| [Cookbook — Streaming](./docs/guides/cookbook-streaming.md) | Streaming modules emitting partial chunks, deep-merged by the executor |
+| [Cookbook — Observability](./docs/guides/cookbook-observability.md) | OpenTelemetry traces and structured logs with PII auto-redaction |
+| [Troubleshooting](./docs/guides/troubleshooting.md) | FAQ for discovery failures, unexpected ACL_DENIED, and validation errors |
 
 ### Specification Documents
 
@@ -1208,6 +1217,14 @@ Development guide: see [Adapter Development Guide](./docs/guides/adapter-develop
 | [RFC — `include:` Config Composition](./docs/spec/rfc-config-include.md) | Proposed RFC (D-65, #75): top-level `include:` for cross-file `apcore.yaml` composition — relative paths, deep-merge local-wins, cycle detection |
 | [Algorithm Reference](./docs/spec/algorithms.md) | Core algorithm summary (including namespace, redaction, etc.) |
 | [Durability Boundary](./docs/spec/design-durability-boundary.md) | Stable hooks and explicit non-goals for retry/replay/workflow layers built on apcore |
+| [Declarative Config Specification](./docs/spec/DECLARATIVE_CONFIG_SPEC.md) | The three declarative YAML surfaces: binding files, `apcore.yaml` pipeline, entry-point config |
+| [Security Considerations](./docs/spec/security-considerations.md) | RFC 3552-style threat model, in-scope mitigations, residual risks, production audit guidance |
+| [Execution Pipeline Design](./docs/spec/design-execution-pipeline.md) | Configurable pipeline as a flat ordered step list, with AI decision support |
+| [Context-Annotations-ACL Design](./docs/spec/design-context-annotations-acl.md) | Historical v0.17 design rationale, superseded by the spec but retained for context |
+| [Decision Log — 2026-05](./docs/spec/2026-05-decision-log.md) | Maintainer decisions from the 2026-05 cross-language alignment run |
+| [Decision Log — 2026-09](./docs/spec/2026-09-decision-log.md) | Maintainer decisions from the 2026-09-05 consistency audit |
+| [Config Surface Decisions — 2026-09](./docs/spec/2026-09-config-surface-decisions.md) | Keep-or-withdraw calls on declared config surfaces no SDK reaches (#118) |
+| [Deep-Chain Decisions — D-74–D-91](./docs/spec/2026-09-deep-chain-decisions.md) | Eighteen cross-language divergences settled in spec v1.49.0, from the 2026-09-14 deep-chain audit |
 
 ---
 

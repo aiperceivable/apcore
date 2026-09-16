@@ -141,6 +141,25 @@ If a parameter is declared as `context: Context`, the framework auto-injects the
 
 For full grammar details and decorator semantics, see [PROTOCOL_SPEC §5.11](../spec/protocol-spec.md) and [Decorator & YAML Bindings](./decorator-bindings.md).
 
+> **D-115 (v1.51.0) — a malformed annotation value is tolerated and dropped,
+> never fabricated and never fatal.** Three SDKs produced three outcomes for the
+> same wire input. Given `{"readonly": true, "extra": "oops"}` — `extra` present
+> but not an object — apcore-python coerced it to `{}`, apcore-typescript
+> object-spread the STRING and fabricated `{"0":"o","1":"o","2":"p","3":"s"}`,
+> and apcore-rust failed the deserialization, which because `ModuleAnnotations`
+> is nested in `ModuleDescriptor` discarded the WHOLE descriptor. Given
+> `{"cache_ttl": -5}`, two clamped with a warning and one failed outright.
+>
+> The rule is apcore-python's: **coerce or drop the offending value, keep the
+> rest, warn**. TypeScript's output is worse than lenient — it is invented data
+> a caller cannot distinguish from a real declaration. Rust's is worse than
+> strict — one out-of-range integer removes an entire module.
+>
+> A note for implementations whose integer types cannot represent the malformed
+> value: deserialize as a SIGNED integer first, then apply the range handling.
+> Declaring the field `u64` puts the failure before the clamp, so the clamp the
+> contract requires is unreachable.
+
 ## Contract: Module conformance
 
 Normative behavioral contract. All SDK implementations MUST satisfy these guarantees.

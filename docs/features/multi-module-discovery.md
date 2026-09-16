@@ -65,6 +65,31 @@ Multi-class discovery is **opt-in per file** via a language-idiomatic marker:
 
 > **Note**: An earlier draft of the spec mentioned a global config key `extensions.multi_class_discovery`. That toggle was never implemented in any SDK and was removed per [decision-log D-06](../spec/2026-05-decision-log.md#d-06-multi_class_enabled-config-plumbing). Per-class markers are the only opt-in path.
 
+> **D-107 (v1.50.0) — the note above was true of the spec and of no
+> implementation.** Three SDKs shipped three opt-in models and the conformance
+> fixture pinned a fourth. apcore-python honours a per-class marker and nothing
+> else. apcore-rust has no per-class marker at all — `DiscoveredClass` is
+> `{name, implements_module}` — and gates on a file-level
+> `DiscoveryConfig::multi_class` whose own doc comment still cites
+> `extensions.multi_class_discovery`, the key D-06 removed. apcore-typescript
+> ships **both**, under two names with opposite defaults: `Registry.discoverMultiClass`
+> honours the per-class `multiClass` field, while the publicly exported free
+> function ignores it and defaults to off — so this page's own TypeScript example
+> silently returns one module where it documents two. And
+> `conformance/fixtures/multi_module_discovery.json` carries a file-level
+> `multi_class_enabled` on every non-conversion case, so all three SDKs pass a
+> fixture pinning the model this note says does not exist.
+>
+> **Per-class markers are authoritative**, as stated. A file-level toggle cannot
+> express the case the feature exists for — two participating classes beside a
+> helper class that must not become a module — and it is the same flag D-06
+> already removed once. Required changes: apcore-rust adds a per-class marker to
+> `DiscoveredClass` and drops the file-level gate; apcore-typescript's free
+> function resolves opt-in the way its `Registry` method already does
+> (`classes.some(c => c.multiClass)`); and the fixture's `multi_class_enabled`
+> input becomes a per-class field. Until the fixture changes it is pinning the
+> withdrawn model, which is why it could not see any of this.
+
 ### Conflict Detection
 
 Two classes produce a conflict when their snake_case-converted names are identical. Common sources of conflict:

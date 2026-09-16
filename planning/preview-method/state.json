@@ -1,6 +1,6 @@
 {
   "feature": "preview-method",
-  "status": "pending",
+  "status": "in_progress",
   "tasks": [
     {
       "id": "rfc-draft",
@@ -11,20 +11,22 @@
     {
       "id": "rust-non-exhaustive-tracking",
       "title": "File tracking issue against apcore-rust to mark PreflightResult / PreflightCheckResult #[non_exhaustive] before extending",
-      "status": "pending",
+      "status": "completed",
       "file": "(cross-repo: apcore-rust)"
     },
     {
       "id": "rfc-acceptance-review",
       "title": "Maintainer review of RFC; resolve open questions; promote to normative spec",
-      "status": "pending",
+      "status": "completed",
       "file": "docs/spec/rfc-preview-method.md"
     },
     {
       "id": "spec-normative-text",
-      "title": "Add normative text to PROTOCOL_SPEC.md §5.6 (Module.preview()) + §12.8.4 (PreflightResult.predicted_changes)",
-      "status": "pending",
-      "files": ["PROTOCOL_SPEC.md"]
+      "title": "Add normative text to PROTOCOL_SPEC.md \u00a75.6 (Module.preview()) + \u00a712.8.4 (PreflightResult.predicted_changes)",
+      "status": "completed",
+      "files": [
+        "PROTOCOL_SPEC.md"
+      ]
     },
     {
       "id": "conformance-fixture",
@@ -35,12 +37,13 @@
     {
       "id": "sdk-implementations",
       "title": "Implement preview() across apcore-python / apcore-typescript / apcore-rust (cross-repo, post-acceptance)",
-      "status": "pending",
+      "status": "completed",
       "file": "(cross-repo: 3 SDK repos)"
     }
   ],
   "metadata": {
     "source_doc": "docs/spec/rfc-preview-method.md",
-    "created_by": "frontier-alignment-stage-2"
+    "created_by": "frontier-alignment-stage-2",
+    "status_note": "RFC accepted 2026-05-06 and promoted to protocol-spec.md in v0.21.0; preview()/PreviewResult ship in all three SDKs and apcore-rust carries #[non_exhaustive] on PreflightResult / PreflightCheckResult (module.rs:462, :486). Verified 2026-09-14. Only the conformance fixture remains outstanding."
   }
 }

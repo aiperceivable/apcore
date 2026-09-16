@@ -86,10 +86,82 @@ Aggregated health overview of all registered modules.
 
 | Status | Condition |
 |--------|-----------|
-| healthy | error rate < 1% (configurable via `error_rate_threshold`) |
-| degraded | error rate 1% – 10% |
-| error | error rate >= 10% |
+| healthy | `error_rate < error_rate_threshold` (default 1%, configurable) |
+| degraded | `error_rate_threshold <= error_rate < 0.10` |
+| error | `error_rate >= 0.10` (**fixed, not configurable**) |
 | unknown | No calls recorded |
+
+> **D-109 (v1.51.0) — only the healthy/degraded boundary is configurable.**
+> `error_rate_threshold` moves the FIRST boundary and nothing else; the
+> degraded/error boundary is fixed at 10%. apcore-python and apcore-typescript
+> scaled the second boundary from the first (`healthy_threshold * 10`), so a
+> caller passing `0.001` silently got an error boundary of 1% as well and a
+> module measuring 5% was classified `error` there and `degraded` on
+> apcore-rust — which reads the table above. The consequence of the fixed form
+> is worth stating plainly, because it surprises: with
+> `error_rate_threshold: 0.001`, `healthy` is `< 0.1%`, `degraded` spans
+> `0.1%–10%`, and `error` still begins at 10%. A caller who wants a stricter
+> ERROR boundary is asking for a second knob, which this contract deliberately
+> does not have.
+
+## System-module output and audit conventions
+
+> **Added in spec v1.51.0** (D-110, D-111, D-112, D-118, D-119).
+
+**D-110 — `project_name` defaults to `"apcore"`.** When `project.name` is not
+configured, `system.manifest.full` reports `"apcore"`, not the empty string.
+apcore-rust already did; apcore-python and apcore-typescript returned `""` from
+`manifest.full` while their own `system.health.summary` returned `"apcore"` — so
+two system modules in the same SDK disagreed about the same missing value.
+Aligning on `"apcore"` changes one call site per SDK instead of two, and removes
+that internal contradiction rather than relocating it.
+
+**D-111 — a bulk reload writes one audit entry PER MODULE, plus a correlation
+id.** apcore-python and apcore-rust wrote a single aggregate entry whose
+`target_module_id` was the glob (`executor.*`). `AuditStore.query(module_id?)`
+filters by a concrete module id, so that entry is **unfindable** by the accessor
+the audit store exists for. Each reloaded module therefore gets its own entry.
+Because per-module entries lose the fact that they were one operation, every
+entry from a single bulk reload **MUST** carry the same correlation id, so "what
+did this deploy touch" remains one query.
+
+**D-112 — a failed reload restores the previous module (best-effort
+compensation, NOT atomic replacement).** apcore-typescript re-registered the
+original on failure; apcore-python and apcore-rust left it unregistered, and the
+contract said callers must handle the partial state. For a control plane that is
+the wrong default: a failed hot-fix should not make a working module *disappear*.
+
+Stated precisely, because the mechanism cannot deliver more than this:
+
+1. Restoration is **compensating**, not transactional. The module is genuinely
+   unregistered for a window, and a concurrent call in that window sees
+   `MODULE_NOT_FOUND`. An implementation **MUST NOT** claim atomic replacement.
+2. The restore path **MUST** re-run the restored module's `on_load`. Its
+   `on_unload` already ran during the unregister, so re-publishing without
+   `on_load` yields a module that is visible but torn down — harder to diagnose
+   than one that is absent.
+3. If that restoring load ALSO fails, the module **MAY** remain unavailable:
+   there is no good state left to return to, and publishing a module whose load
+   hook failed is the defect §12.2's deferred-publish rule exists to prevent.
+4. On the bulk path, restoration is **per module**. The operation as a whole
+   still fails (D-17's rule), but implementations are **NOT** required to
+   roll back modules that already reloaded successfully — cross-module
+   transactionality is not a primitive the registry has.
+
+**D-118 — an empty `roles` list is omitted from the audit identity snapshot.**
+apcore-python and apcore-rust omit the key; apcore-typescript always emitted
+`roles: []`. The spec names `id`, `type` and optionally `display_name`, so a
+subscriber branching on `'roles' in payload.identity` gets different answers for
+an identity that has no roles.
+
+**D-119 — every `system.*` module declares `open_world: false` EXPLICITLY.**
+No system module reaches an external system, so `false` is the semantically
+correct value — apcore-typescript set it, apcore-python and apcore-rust left it
+at the language default, which is `true`. An AI agent using `open_world` to
+decide whether a call leaves the process therefore got opposite answers for an
+in-process health query. The value **MUST** be written out rather than inherited:
+relying on a default that means the opposite of the intended value is how the
+divergence arose.
 
 ## Contract: system.health.summary
 
@@ -1445,7 +1517,7 @@ Currently `system.control.reload_module` reloads a single module by ID. The opti
 |-------|------|---------|-------------|
 | `module_id` | string | *(one of required)* | Single module to reload (mutually exclusive with `path_filter`) |
 | `path_filter` | string | *(one of required)* | Glob-dialect pattern (A25) for bulk reload, matched against module IDs (mutually exclusive with `module_id`) |
-| `reload_dependents` | bool | `false` | When `true`, also reload modules that depend on matched modules |
+| `reload_dependents` | bool | `false` | **DEPRECATED (v1.51.0, D-121) — removal scheduled for v2.0.** Declared by all three SDKs and implemented by none, so it has never done anything: the field is accepted and ignored. Three independent implementations skipping it is evidence it is not a capability the protocol actually needs, and continuing to declare it manufactures an interface no caller can rely on — the §9.1.3 "declared surface reaches no mechanism" shape, applied to a module INPUT field. **Replacement:** call `reload_module` with an explicit `path_filter` that covers the dependents you want reloaded. During the deprecation window behaviour is unchanged (accepted, ignored); after removal, passing the field is a **validation error** rather than a silent no-op, because every SDK's input schema sets `additionalProperties: false`. That transition is abrupt by construction and MUST be called out in the migration notes. |
 | `reason` | string | *(required)* | Audit reason |
 
 #### Usage Examples

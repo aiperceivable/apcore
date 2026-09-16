@@ -304,19 +304,47 @@ On deserialization, the Identity is reconstructed from the serialized form.
 
 ## Contract: ContextFactory.create_context
 
+> **Rewritten in spec v1.49.0** (D-76). The previous Inputs row declared
+> `(identity, caller_id, data)` — a factory **no SDK ever built**, and one that
+> misses the point of the interface. `ContextFactory` exists so a web-framework
+> integration can turn a *runtime-specific request* into a `Context`, extracting
+> the identity along the way; a signature that already takes an `Identity` has
+> had that work done for it and has nothing left to do. apcore-python and
+> apcore-typescript both take a single opaque request. apcore-rust took
+> `(identity, services)` while its own doc comment asserted the canonical name
+> was `create_context(request)`.
+
 ### Inputs
-- `identity` (Identity, optional) — caller identity; defaults to `@external` when absent
-- `caller_id` (str/string/&str, optional) — caller module ID for call-chain tracking
-- `data` (dict/object/Value, optional) — initial context data payload
+- `request` (Any/unknown/generic, required) — the runtime-specific request object
+  (a Django `HttpRequest`, an Express `Request`, an Axum extractor, …). It is
+  **opaque to apcore**: the implementation, not the protocol, knows how to read it.
 
 ### Errors
-- No errors raised (invalid identity fields are sanitized, not rejected)
+- No errors raised under normal operation. Invalid or missing identity fields are
+  sanitized to the `@external` anonymous identity rather than rejected — a request
+  that cannot be authenticated still produces a usable, unprivileged `Context`, and
+  the ACL's default-deny then governs what it may reach.
+- An implementation whose request parsing can genuinely fail (I/O during extraction,
+  for example) MAY declare a fallible return; it **MUST NOT** use that channel to
+  report "not authenticated", which is the `@external` case above.
 
 ### Returns
-- On success: `Context` — initialized execution context with assigned trace ID and caller identity
+- On success: `Context` — an initialized execution context carrying a freshly
+  assigned trace ID and the extracted caller identity.
 
 ### Properties
-- async: false
+- async: false for implementations whose extraction is pure (apcore-python,
+  apcore-typescript). An implementation MAY declare it async where the host
+  ecosystem's request handling is inherently asynchronous (apcore-rust's trait is
+  `#[async_trait]`); that is a language-ecosystem allowance, and it does **not**
+  license changing the parameter away from `request`.
 - thread_safe: true
-- pure: false (generates a new trace ID on each call; not idempotent)
+- pure: false (generates a new trace ID on each call)
 - idempotent: false
+
+### Additional members
+
+An implementation MAY expose further factory members (apcore-rust has `create` and
+`create_child`). Those are additive and unconstrained by this contract — but
+`create_context(request)` **MUST** be present and **MUST** take the request, so a
+context factory written against the spec ports across SDKs.

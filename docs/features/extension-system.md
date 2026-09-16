@@ -249,6 +249,40 @@ class _CompositeExporter:
 - thread_safe: false
 - pure: false (mutates extension store)
 
+## An unknown extension point is an error; an empty one is not
+
+> **Added in spec v1.51.0** (D-108).
+
+`get`, `get_all` and `unregister` **MUST** reject an extension point name that is
+not registered, with `InvalidInputError(code=GENERAL_INVALID_INPUT)`.
+
+They **MUST NOT** raise for a point that exists but currently holds nothing:
+`get` returns null, `get_all` returns an empty collection, `unregister` returns
+false. That distinction is the whole of this decision, and it is why the
+`### Errors` row of those contracts previously read "No errors raised" — the row
+was written about the EMPTY case, and one implementation read it as covering the
+UNKNOWN case too, returning a silent empty answer for a misspelled point name.
+
+A typo then becomes a wiring bug that first surfaces at `apply()`, far from the
+`get("middlewares")` that caused it, with nothing naming the mistake.
+
+## Removal must be expressible
+
+> **Added in spec v1.49.0** (D-91).
+
+`unregister(point_name, extension)` identifies its target by identity/equality
+against a value the caller supplies. In a language where the manager **owns** its
+extensions, a caller cannot borrow one back out of the manager and hand it to a
+method that also needs mutable access — so an implementation whose only removal
+signature takes a borrowed extension has a method that compiles but that no
+caller outside the manager can invoke for a positive removal.
+
+An implementation **MUST** provide at least one removal path a host can actually
+reach: the identity form where the language allows it, or an equivalent keyed on
+something the caller holds independently (the handle returned by `register`, or an
+index/name). "Provided but uncallable" does not satisfy the contract, and is not
+detectable by a signature-level parity check — only by trying to write the call.
+
 ## Contract: ExtensionManager.apply
 
 ### Inputs
@@ -269,10 +303,26 @@ class _CompositeExporter:
 5. `executor.use(mw)` for each middleware in registration order
 6. Locate `TracingMiddleware` in executor chain; set single exporter directly or wrap multiple in `CompositeExporter`
 
+### Postconditions
+
+> **Added in spec v1.49.0** (D-78). This section did not exist, and one SDK
+> consequently consumed the store while two read it.
+
+`apply` **MUST NOT** consume the extension store. After it returns, the manager
+still holds every registration it held before: `get`, `get_all` and `count`
+report the same extensions, and applying the same manager to a SECOND registry /
+executor pair wires the same set again.
+
+This is not a free choice. The `idempotent: false` row below states that calling
+`apply` twice *stacks* middleware — an observable that only a non-consuming
+implementation can produce. A draining implementation makes the second `apply`
+a silent no-op, so a host wiring two executors from one manager gets extensions
+on the first and none on the second, with no error to say so.
+
 ### Properties
 - async: false
 - thread_safe: false (call once during startup, before concurrent request handling)
-- pure: false (mutates registry and executor)
+- pure: false (mutates registry and executor; does NOT mutate the extension store — see Postconditions)
 - idempotent: false (calling apply twice stacks middleware and re-wires other extensions)
 
 ## Usage

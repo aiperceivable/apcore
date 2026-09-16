@@ -35,6 +35,13 @@ theme:
     - content.code.copy
     - toc.follow
 
+# Pages deliberately kept out of `nav`. Redirect stubs must stay published so
+# old inbound links keep resolving, but they do not belong in the navigation
+# tree — listing them here records that intent instead of leaving them to look
+# like an accidental orphan.
+not_in_nav: |
+  context-annotations-acl/tech-design.md
+
 plugins:
   - search
 
@@ -129,6 +136,7 @@ nav:
           - Decision Log (2026-05): spec/2026-05-decision-log.md
           - Decision Log (2026-09): spec/2026-09-decision-log.md
           - Config Surface Decisions (2026-09): spec/2026-09-config-surface-decisions.md
+          - Deep-Chain Decisions (D-74–D-91): spec/2026-09-deep-chain-decisions.md
           - "RFC — preview() Method": spec/rfc-preview-method.md
           - "RFC — Ephemeral Modules": spec/rfc-ephemeral-modules.md
           - "RFC — include: Config Composition": spec/rfc-config-include.md

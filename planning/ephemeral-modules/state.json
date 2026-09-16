@@ -1,6 +1,6 @@
 {
   "feature": "ephemeral-modules",
-  "status": "pending",
+  "status": "in_progress",
   "tasks": [
     {
       "id": "rfc-draft",
@@ -10,27 +10,29 @@
     },
     {
       "id": "namespace-reserve-patch",
-      "title": "Optional 1-line spec patch reserving `ephemeral.*` in §2.5 ahead of full RFC acceptance (prevents third-party collision)",
-      "status": "pending",
+      "title": "Optional 1-line spec patch reserving `ephemeral.*` in \u00a72.5 ahead of full RFC acceptance (prevents third-party collision)",
+      "status": "completed",
       "file": "PROTOCOL_SPEC.md"
     },
     {
       "id": "rfc-acceptance-review",
       "title": "Maintainer review; resolve open questions (namespace name, TTL design, re-registration semantics)",
-      "status": "pending",
+      "status": "completed",
       "file": "docs/spec/rfc-ephemeral-modules.md"
     },
     {
       "id": "python-pilot",
-      "title": "Pilot implementation in apcore-python — leverage existing register_internal() precedent",
-      "status": "pending",
+      "title": "Pilot implementation in apcore-python \u2014 leverage existing register_internal() precedent",
+      "status": "completed",
       "file": "(cross-repo: apcore-python)"
     },
     {
       "id": "spec-normative-text",
-      "title": "Promote to normative §2.5 + §4.4 amendments after pilot confirms ergonomics",
-      "status": "pending",
-      "files": ["PROTOCOL_SPEC.md"]
+      "title": "Promote to normative \u00a72.5 + \u00a74.4 amendments after pilot confirms ergonomics",
+      "status": "completed",
+      "files": [
+        "PROTOCOL_SPEC.md"
+      ]
     },
     {
       "id": "conformance-fixture",
@@ -41,12 +43,13 @@
     {
       "id": "sdk-replication",
       "title": "Replicate Python pilot in apcore-typescript and apcore-rust",
-      "status": "pending",
+      "status": "completed",
       "file": "(cross-repo: 2 SDK repos)"
     }
   ],
   "metadata": {
     "source_doc": "docs/spec/rfc-ephemeral-modules.md",
-    "created_by": "frontier-alignment-stage-3"
+    "created_by": "frontier-alignment-stage-3",
+    "status_note": "RFC accepted 2026-05-06 and promoted to protocol-spec.md in v0.21.0; EPHEMERAL_NAMESPACE_PREFIX ships in all three SDKs. Verified 2026-09-14. Only the conformance fixture remains outstanding."
   }
 }

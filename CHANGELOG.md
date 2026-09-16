@@ -7,6 +7,266 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+> Ships `PROTOCOL_SPEC` **v1.48.0 → v1.54.0**: fifty-two cross-language divergences settled
+> (**D-74 – D-125**), found by a deep-chain (call-graph) audit of the three core SDKs — the last
+> four (**D-122** – **D-125**) by reviewing the audit's own output rather than by the audit itself,
+> and **D-124**/**D-125** by the maintainer reviewing the branches. **D-125 corrects a sentence of
+> D-96 that was asserted without being checked** and left a fail-open approval bypass standing in
+> the two SDKs D-96 named as unaffected.
+> The first wave (D-74 – D-91, v1.49.0) came from a partial pass; re-running it across all
+> twenty-two logical modules roughly tripled the count and turned up **five security defects**
+> (D-93 – D-98). Full reasoning, including which SDK was authoritative for each and why, is in
+> [`docs/spec/2026-09-deep-chain-decisions.md`](./docs/spec/2026-09-deep-chain-decisions.md).
+>
+> **Why three green suites and seventy-nine passing fixtures saw none of it:** a fixture pins an
+> OUTCOME, and these implementations reached the same outcome by different paths.
+> `approval_gate.json` passes in all three SDKs off two different sources of truth. A case that
+> cannot discriminate between two implementations is not testing the thing that differs — which is
+> why this release changes fixtures as well as text.
+
+### Security (v1.54.0)
+
+- **A governance requirement declared in a metadata document reached every surface that describes a
+  module and nothing that stops it** (D-125). D-96 closed by stating the union was "unobservable in
+  implementations whose descriptors are derived from the module (apcore-python, apcore-typescript)".
+  That sentence was written during this audit, never checked, and is false: both peers fold a
+  `*_meta.yaml` / `*.binding.yaml` / `metadata` declaration into the descriptor with §4.13's
+  YAML > code precedence — a second place an operator declares governance — and neither gate read it.
+  **Reproduced in both SDKs**: a module registered with
+  `metadata.annotations.requires_approval: true` gave a descriptor reporting `true`, a
+  `system.manifest.*` entry reporting `true`, a preflight reporting **false**, and **no gate at all** —
+  the module executed with an approval handler configured and the handler was never consulted.
+  The rule is unchanged; its SCOPE is corrected, and now binds the gate, the §7.9.5 preflight, the
+  §6.6.5 posture accessor, the `system.manifest.*` projection and the ephemeral-registration advisory
+  alike. The union is `OR` on `requires_approval` / `destructive` only; every other annotation
+  describes behaviour rather than governance and stays instance-sourced. An implementation **MUST
+  NOT** resolve it with the metadata-merge precedence, which lets the weaker declaration win in both
+  directions. Two consequences: a metadata `requires_approval: false` no longer cancels a
+  code-declared `true`, and the manifest publishes the value the gate enforces — advertising a
+  governance flag the gate does not honour is worse than advertising none, because an agent reads the
+  manifest to decide whether to call.
+
+### Security (v1.53.0)
+
+- **A `$ref` into an external schema could bind to the caller's definitions, including past an
+  `x-sensitive` marking** (D-124). D-104 gave a local `#/…` pointer a second base — the schema node,
+  after the file root — and did not say how far that second base travels. All three SDKs held it on
+  the resolver and consulted it for **every** local pointer, including ones resolved after following
+  a reference into another file. So a `#/$defs/X` written inside an EXTERNAL schema, naming a
+  definition that document does not have, fell back to the CALLING module's `input_schema` `$defs`
+  and bound to whatever happened to share the name. Three consequences, in increasing order of cost:
+  an invalid reference reports success where it owes `SCHEMA_NOT_FOUND`; the resolved schema then
+  validates against a contract the external author never wrote; and §10.6 reads `x-sensitive` off the
+  **resolved** schema, so a field the external document marks sensitive can be replaced by a
+  same-named local definition that does not, and the value is logged in plaintext — SCH-001's leak
+  reached by a different route. The fallback is now scoped to the document it was declared for.
+  **This does not narrow D-104**: a local pointer inside an external document still resolves in that
+  document, and Layout B is unaffected, because at the origin the schema node and its document are
+  the same document. Every SDK's regression test carries that control case.
+
+  *Found by the maintainer reviewing the v1.50.0 branches — reported against apcore-rust, then
+  reproduced in apcore-python and apcore-typescript rather than assumed from the code.*
+
+### Changed — specification (v1.52.0, found while reviewing the audit's output)
+
+> Two decisions that the audit did not produce. They came from reading the 12,747 changed lines the
+> earlier waves produced, before handing them to a maintainer — and one of them is a divergence the
+> audit's own fixes **created**. Both are implemented here, unlike v1.51.0, because both are narrow
+> enough to review beside the change that exposed them.
+
+- **`shutdown()` attempts every cancellation before it reports** (D-122). Three SDKs split on this
+  while implementing D-81 on the same day: the decision said `TaskStoreError` must reach the caller
+  and said nothing about the tasks not yet reached, so two stopped at the first failure and one
+  attempted all. Decided on the asymmetry of the failure modes, not the 2-of-3 count (which would
+  have picked the other option): when the store is unreachable both strategies cancel nothing, but
+  when ONE task fails, stopping leaves every remaining task uncancelled — and an uncancelled task in
+  a shared store holds a `max_tasks` slot for every manager sharing that store and outlives the
+  process that could have cancelled it, while a slower shutdown is transient. The hang objection
+  carries little weight because `shutdown()` is **already an unbounded wait by contract**: it waits
+  for completion and takes no timeout in any SDK, so a caller needing a bound must already impose one.
+  *Implemented in apcore-python and apcore-rust; apcore-typescript already behaved this way.*
+- **A hot-reloaded module MUST NOT become visible before its `on_load()` has run** (D-123).
+  `Contract: Registry.register` Side Effects step 8 already required it — and is scoped to `register`,
+  so a watch-driven reload writing the internal maps directly violated no stated rule while publishing
+  a module that was visible, callable and never initialised. The rule constrains **publication, not
+  mechanism**: D11-005 leaves the reload mechanism language-defined and this does not narrow it.
+  Recovery is governed by **D-112 rules 2–4** and deliberately NOT restated at the second entry point,
+  because a duplicated rule drifting apart is the defect class this whole audit is about.
+  *Only apcore-python was affected: apcore-rust re-runs discovery (which invokes `on_load`) and
+  apcore-typescript's `watch()` never re-registers.*
+
+### Changed — specification (v1.51.0, policy decisions, implementation deferred)
+
+> Fourteen decisions (**D-108 – D-121**) from the deep-chain audit's warning tail. Unlike v1.49.0 and
+> v1.50.0, which corrected defects, these settle questions where **the spec was silent and each of the
+> three SDKs had answered reasonably** — maintainer policy rather than audit findings, which is why
+> they were brought to the maintainer as a list rather than decided by the audit.
+>
+> **Implementation is deliberately deferred** until the v1.49.0/v1.50.0 branches are reviewed. Those
+> already carry 12,747 changed lines across four repositories, unreviewed; stacking a third wave on an
+> unreviewed base would bury any defect in it.
+
+- **An unknown extension point is an error; an empty one is not** (D-108). The `### Errors: No errors
+  raised` row was written about the EMPTY case and read by one SDK as covering the UNKNOWN case, so a
+  misspelled point name returned a silent empty answer and surfaced later as a wiring bug at `apply()`.
+- **Only the healthy/degraded health boundary is configurable** (D-109). Two SDKs scaled the
+  degraded/error boundary from it, so `error_rate_threshold: 0.001` silently moved both.
+- **A failed reload restores the previous module** (D-112) — best-effort compensation, explicitly NOT
+  atomic replacement. The restore path MUST re-run `on_load`; it MAY leave the module unavailable when
+  that also fails; and on the bulk path it is per-module, because cross-module transactionality is not
+  a registry primitive.
+- **A bulk reload audits per module with a shared correlation id** (D-111). The aggregate entry two
+  SDKs wrote was keyed on the glob and therefore unfindable by `AuditStore.query(module_id)`.
+- **Storage-backend namespaces are named** — `metrics` / `usage` / `error_history` — and the
+  omitted-argument default is `InMemoryStorageBackend` (D-113). Carries a dual-read migration window,
+  because a namespace rename is invisible until someone queries old data and finds nothing.
+- **Error timestamps are UTC `Z` with millisecond precision** (D-120). Precision is part of the
+  requirement: fixing the suffix alone would leave three precisions behind one `Z`.
+- **A malformed annotation value is tolerated and dropped** (D-115). One SDK fabricated index keys from
+  a string; another discarded an entire module descriptor over one out-of-range integer.
+- **`reload_dependents` is deprecated for removal at v2.0** (D-121) — declared by all three SDKs,
+  implemented by none. Replacement: an explicit `path_filter` covering the dependents.
+- Also: `project_name` defaults to `"apcore"` (D-110); `remove()` clears the middleware
+  duplicate-identity entry (D-114); circuit-breaker events carry the DECLARED subscriber type the DLQ
+  path already uses (D-116); registered-namespace defaults do not answer for a legacy document (D-117);
+  an empty `roles` list is omitted from the audit identity snapshot (D-118); and every `system.*` module
+  declares `open_world: false` explicitly rather than inheriting a default that means the opposite
+  (D-119).
+
+### Security (v1.50.0)
+
+- **Two independent approval bypasses, which compose** (D-96, D-97). §7.4 binds
+  `annotations = module.annotations`; one SDK decided gate firing from the registry **descriptor**,
+  so a module declaring `requires_approval: true` ran ungated whenever the descriptor omitted it —
+  while the `ApprovalRequest` read the live module, so one call could be gated by one source and
+  described by the other. Separately its `FunctionModule` stored annotations/tags/documentation/
+  metadata as fields but implemented none of the corresponding accessors, zeroing everything a
+  `*.binding.yaml` declared, the approval requirement included. The correction is a **union, not a
+  swap**: reading only the module would simply invert the bypass, and on an approval gate the
+  failure direction is the whole argument.
+- **Prototype pollution through a configuration dot-path** (D-95). `part in current` is true for
+  `__proto__`, so the walk left the config object and assigned to `Object.prototype`. Reachable with
+  **no module call, no ACL decision and no approval** — the `APCORE_` env loader maps
+  `APCORE_____PROTO_____POLLUTED` to `__proto__.polluted`.
+- **Symlink escape from the extensions root** (D-94). The confinement check sat inside the directory
+  branch, so a symlinked `.py` pointing outside the root was discovered, imported and executed. Its
+  own comment describes that exact failure.
+- **Credentials published verbatim on the event bus** (D-93). One SDK's contextual-audit redaction
+  list enumerated compounds where the peers carry bare `key` / `auth` / `session`, so `signing_key`,
+  `auth_header` and `session_id` matched nothing.
+- **`x-sensitive` dropped beside a `$ref`** (D-98). Sibling keys were discarded on resolution, and
+  §10.6 redaction reads `x-sensitive` off the RESOLVED schema — so a field marked sensitive was
+  redacted by two SDKs and logged in plaintext by the third.
+
+### Changed — specification (v1.50.0)
+
+- `global_deadline` is **epoch seconds**, lives in the field rather than a `data` key, belongs to the
+  call tree rather than the Context, and is recomputed unconditionally on a deserialized Context
+  (D-99 – D-102). Three SDKs had three clocks; a spec-shaped caller value silently disabled the
+  budget entirely on one of them.
+- A null `identity` **stays null** — no synthetic `@external` principal (D-103), resolving a
+  contradiction between this contract's own parameter row and its Returns clause.
+- A local `#/…` reference resolves against the **file root with a fallback to the schema node**, so
+  that both layouts load (D-104). Previously no schema file containing a local `$ref` loaded in all
+  three SDKs.
+- The executor's ACL step **MUST** take the async path (D-105), without which the entire
+  `register_async_condition` extension point is dead in the only code path that enforces.
+- `TaskStoreError` is declared on eight surfaces and defined by no SDK, so no caller can catch it
+  (D-92) — the §9.1.3 "declared surface reaches no mechanism" shape, applied to an error contract.
+- A p99 estimate beyond the largest bucket is **that bucket, not zero** (D-106), which had disabled
+  latency alerting for exactly the slowest modules.
+- **Per-class markers are the only multi-class opt-in** (D-107) — against a fixture still pinning the
+  file-level toggle decision-log D-06 withdrew.
+
+
+> Ships `PROTOCOL_SPEC` **v1.48.0 → v1.49.0**: eighteen cross-language divergences settled
+> (**D-74 – D-91**), found by a deep-chain (call-graph) audit of the three core SDKs rather than a
+> signature diff. Every one of them passed shape-level parity — same method, same arity, same declared
+> types — and diverged only in what the code did. The full reasoning, including which SDK was
+> authoritative for each and why, is in
+> [`docs/spec/2026-09-deep-chain-decisions.md`](./docs/spec/2026-09-deep-chain-decisions.md).
+>
+> No SDK was the outlier every time: Python was alone on four items, TypeScript on five, Rust on
+> seven, and on two the three agreed while the spec text was simply wrong.
+
+### Changed — specification (v1.49.0)
+
+- **§12.2 `describe` returned `→ ModuleDescription`, a type no SDK produces** (D-77). All three return
+  a rendered string; `get_definition` is the structured accessor. When a module supplies its own
+  `describe()` — whose declared return is a mapping — the registry returns it only if it is a string
+  and otherwise falls through, rather than stringifying a dict into a language-specific repr.
+- **`ExtensionManager.apply` gained a Postconditions section** forbidding it from draining the
+  extension store (D-78). The block's existing `idempotent: false` row already implied non-consuming
+  by promising that a second `apply` stacks middleware — an observable a draining implementation
+  silently turns into a no-op.
+- **The registry event set is now closed and stated** — `register`, `unregister`, and a conditional
+  `file_changed` (D-80). Found because apcore-typescript's `watch()` emitted `file_changed` while its
+  own `on()` rejected that name, so every hot-reload notification fired into an empty callback list;
+  and because this page's own example told readers to subscribe to `change` / `add` / `remove`, three
+  names every SDK rejects.
+- **A stalled topological sort is not a cycle** (D-79). Two SDKs reported `CIRCULAR_DEPENDENCY` with a
+  fabricated one-element `cycle_path` when a batch member's dependency simply was not in the batch,
+  sending authors to break a loop that does not exist.
+- **`ContextFactory.create_context` rewritten** from `(identity, caller_id, data)` — a factory nobody
+  built, which takes the very identity the factory exists to extract — to the `(request)` shape
+  apcore-python and apcore-typescript ship (D-76).
+- **`TaskStoreError` must reach the caller** (D-81). It was declared on every `TaskStore` method and
+  absorbed by the manager, so a `cancel` whose `save` failed still returned `true`.
+- `list_tasks` insertion order is normative and a `task_id` sort does not satisfy it (D-82); the
+  `guard_call_chain` signature published in this spec is normative, and the `Context`-taking form one
+  SDK shipped instead made the guard unreachable for any host whose services type was not
+  `serde_json::Value` (D-83); a non-positive call-chain limit raises a typed `GENERAL_INVALID_INPUT`
+  rather than three per-language error types (D-84); malformed version constraints must be reportable
+  rather than resolving to a `(0,0,0)` comparison that reported `"latest"` as satisfied for every
+  `0.x.y` module (D-85); `Registry.register`'s validation steps are ordered intrinsic-then-extrinsic
+  (D-86); the audit-block surface on a directly-constructed ACL is a language idiom but its
+  reachability is required (D-87); index-keyed warning dedupe must be cleared by index-shifting
+  mutations (D-88); the deprecation warning is once per `(module_id, version)` per registry, not once
+  per read (D-89); `reset()` must not substitute the underlying cancellation handle (D-90); and a
+  removal method a host cannot actually call does not satisfy the contract (D-91).
+
+### Fixed
+
+- **Site logo and favicon were broken on every published page.** `mkdocs.yml` pointed `theme.logo`
+  and `theme.favicon` at `assets/apcore-logo.svg`, resolved relative to `docs_dir`, but no such file
+  existed — the only copy lived at the repository root, which MkDocs never copies into the build.
+  Added `docs/assets/apcore-logo.svg`; `mkdocs build --strict` now emits it and the link resolves.
+- **Two dead anchors in `README.md`.** The table-of-contents entry pointed at
+  `#why-not-just-use-existing-mcp-solutions`, an anchor no heading produces since the section was
+  renamed to "How apcore Complements MCP"; and the §4.8 deep link was truncated to
+  `#48-description-and-documentation`, missing the `-field-specification` suffix the real heading
+  slugifies to. Both now resolve.
+- **`docs/features/apcore-client.md` declared `APCore.call_async` without a `## Contract:` block** —
+  the only row of its Method Summary table lacking one. Added the block, and recorded the
+  per-language reality it exists to pin: Python's `call()` is synchronous so `call_async()` is a
+  distinct coroutine surface, TypeScript's `callAsync()` is an explicit alias for `call()`, and Rust
+  has no `call_async` because `APCore::call` is already `async`. The table row also omitted
+  `version_hint`, which both Python and TypeScript accept.
+- **`Config.get`'s Inputs row contradicted its own `### Errors` row** (D-74). It claimed an empty key
+  was "rejected with `ValueError`/`ConfigInvalidError`" while the same block said "No errors raised".
+  Verified at runtime: all three SDKs return the default. A conformance case written from that row
+  would have failed on every implementation. The clause is removed.
+- **Two planning trackers described finished work as unstarted.** `planning/preview-method/` and
+  `planning/ephemeral-modules/` still reported `"status": "pending"` for six tasks accepted in
+  2026-05 and shipped in v0.21.0. Each task was verified individually against the source rather than
+  flipped wholesale; both trackers are now `in_progress` with the one genuinely outstanding task
+  each (the conformance fixture), not `completed`.
+
+### Added
+
+- `README.md` Documentation Index now lists the 16 user-facing documents it had omitted — the four
+  cookbooks, the troubleshooting and existing-project integration guides, Getting Started, the
+  glossary, the site map, the declarative-config and security-considerations specs, both design
+  documents, and the three decision logs.
+- `mkdocs.yml` gained a `not_in_nav` declaration for the `context-annotations-acl/tech-design.md`
+  redirect stub. The stub stays published so old inbound links keep resolving, but a redirect does
+  not belong in the navigation tree; declaring it records that intent instead of leaving it looking
+  like an accidental orphan.
+
+---
+
 ## [0.31.0] - 2026-09-14
 
 > Ships `PROTOCOL_SPEC` **v1.37.0 → v1.48.0**. Fourteen decisions of the same shape, one release,

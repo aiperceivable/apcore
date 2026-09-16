@@ -145,16 +145,31 @@ Normative behavioral contract. All SDK implementations MUST satisfy these guaran
 ### Side Effects (ordered)
 
 1. Acquire registry lock.
-2. Validate `module_id` and module structure.
-3. Check for duplicate `module_id` against both the visible store **and** the in-flight loading set; reject with `InvalidInputError(code=DUPLICATE_MODULE_ID)` if already registered (unless overwrite semantics are explicitly opted in).
-4. Reserve `module_id` in an in-flight loading set so concurrent registrations for the same ID are rejected with `DUPLICATE_MODULE_ID`.
-5. Release the registry lock.
-6. Invoke `module.on_load()` if defined, **outside** the registry lock but **before** the module becomes visible. If it raises:
+2. Validate `module_id` (pattern **and** length — see `Contract: Executor.call`).
+3. Validate module structure, including the `streaming` annotation / `stream()` consistency check.
+4. Run the host-supplied custom validator, if one is installed via `set_validator`.
+5. Check for duplicate `module_id` against both the visible store **and** the in-flight loading set; reject with `InvalidInputError(code=DUPLICATE_MODULE_ID)` if already registered (unless overwrite semantics are explicitly opted in).
+6. Reserve `module_id` in an in-flight loading set so concurrent registrations for the same ID are rejected with `DUPLICATE_MODULE_ID`.
+7. Release the registry lock.
+8. Invoke `module.on_load()` if defined, **outside** the registry lock but **before** the module becomes visible. If it raises:
    - Remove `module_id` from the in-flight loading set.
    - Emit `apcore.registry.module_load_failed` carrying `{module_id, callback_name, error_type, error_message}`.
    - Re-raise the original exception.
-7. Atomically publish the module into the visible discovery store (briefly re-acquiring the registry lock) and remove `module_id` from the in-flight loading set. After this step the module is observable via `get`, `list`, and `get_definition`.
-8. Emit a `register` event to subscribers.
+9. Atomically publish the module into the visible discovery store (briefly re-acquiring the registry lock) and remove `module_id` from the in-flight loading set. After this step the module is observable via `get`, `list`, and `get_definition`.
+10. Emit a `register` event to subscribers.
+
+> **D-86 (v1.49.0) — steps 2-5 are ordered, and were not.** This list previously
+> collapsed them into "validate `module_id` and module structure" followed by the
+> duplicate check, naming neither the structure check nor the custom validator,
+> and the three SDKs drifted into three orders. The same call — a module that is
+> simultaneously malformed, rejected by the validator, and a duplicate — reported
+> `DUPLICATE_MODULE_ID`, `GENERAL_INVALID_INPUT` and `MODULE_LOAD_ERROR`
+> respectively. The order above is intrinsic-then-extrinsic: what is wrong with
+> the module itself is reported before what is wrong about *where it is being
+> put*, because the author must fix the module either way, whereas a duplicate ID
+> may simply mean they picked the wrong name. A side effect worth stating: a
+> stateful custom validator IS invoked for a registration that later fails the
+> duplicate check.
 
 ### Errors
 
@@ -374,6 +389,37 @@ Normative contract for the filesystem scanner used by step 1 of the discovery pi
 
 ### Hot Reload (Development Mode)
 
+> **D-123 (v1.52.0) — a hot-reloaded module MUST NOT become visible before its
+> `on_load()` has run.**
+>
+> The publish path of a watch-driven reload is bound by the same precondition as
+> any other registration: the new instance **MUST** execute `on_load()` before it
+> becomes observable via `get` / `list` / `get_definition`
+> ([`Contract: Registry.register`](#contract-registryregister) Side Effects, step
+> 8). Recovery when that load fails is governed by
+> [**D-112**](./system-modules.md#system-module-output-and-audit-conventions)
+> rules 2–4 — restore the previous instance and re-run *its* `on_load`; if that
+> restoring load also fails the module MAY remain unavailable; on a bulk path
+> restoration is per module — and is deliberately **not restated here**, so the
+> two entry points cannot drift apart.
+>
+> **This constrains publication, not mechanism.** D11-005 leaves the reload
+> *mechanism* language-defined — re-registering in place, re-running discovery,
+> or notifying only are all permitted — and this rule does not narrow that. It
+> says that whichever mechanism an implementation picks, it may not publish a
+> module whose load hook has not run. A module that is visible but never
+> initialised is harder to diagnose than one that is absent, which is the same
+> reasoning D-112 rule 2 records.
+>
+> The rule exists because step 8 is scoped to `Registry.register`, and a
+> watch-driven reload is a different entry point — so an implementation that
+> writes the internal maps directly, as apcore-python's `_handle_file_change`
+> does, violates no stated rule today. Of the three SDKs only apcore-python is
+> affected: apcore-rust re-runs discovery, which invokes `on_load`, and
+> apcore-typescript's `watch()` unregisters and emits `file_changed` without
+> re-registering at all, so it has no publish path to constrain.
+
+
 Hot reload watches the extension directory for file changes and re-runs discovery. It is intended for development; production registries SHOULD NOT enable file watching.
 
 ```python
@@ -382,9 +428,11 @@ from apcore import Registry
 registry = Registry(extensions_dir="./extensions")
 registry.discover()
 
-registry.on("change", lambda module_id: print(f"Module changed: {module_id}"))
-registry.on("add",    lambda module_id: print(f"Module added: {module_id}"))
-registry.on("remove", lambda module_id: print(f"Module removed: {module_id}"))
+# The event set is closed — see "Registry events" below. `change` / `add` /
+# `remove` are NOT events; this example used to call them and every SDK
+# rejects them with InvalidInputError (D-80).
+registry.on("register",   lambda module_id, module: print(f"Module registered: {module_id}"))
+registry.on("unregister", lambda module_id, module: print(f"Module removed: {module_id}"))
 registry.watch()
 
 # Stop watching
@@ -598,3 +646,115 @@ Normative behavioral contract. All SDK implementations MUST satisfy these guaran
 - thread_safe: true
 - pure: false (may invoke Pydantic `model_rebuild()` as a side effect in Python)
 - idempotent: true (for the same registry state, returns the same descriptor)
+
+## Version constraint validation
+
+> **Added in spec v1.49.0** (D-85).
+
+A version constraint operand **MUST** begin with a digit. `"latest"`, `"v1.0.0"`
+and `""` are malformed, not permissive.
+
+An implementation **MUST NOT** resolve a malformed constraint to a comparison.
+apcore-rust parsed the operand with a leading-numeric-prefix reader that yielded
+`(0, 0, 0)` for any non-numeric string, then compared major versions only — so
+`version: "latest"` reported *satisfied* for every `0.x.y` module and the
+constraint was never enforced, while `"v1.0.0"` reported a *mismatch* against an
+actual `1.0.0`. Both directions are wrong from one missing guard.
+
+Implementations **MUST** expose a fallible form that reports the malformed
+constraint as `VersionConstraintError(code=VERSION_CONSTRAINT_INVALID)`, so a
+caller can tell "this constraint is nonsense" apart from "this version does not
+satisfy it". A non-fallible convenience form MAY exist alongside it; when one
+does, it **MUST** fail closed (treat the constraint as unsatisfied) and **MUST**
+log a warning, and the fallible form is the canonical cross-language path.
+
+
+## Registry events
+
+> **Added in spec v1.49.0** (D-80). The event set was never stated, so the three
+> SDKs disagreed about which names exist and one shipped an event nobody could
+> subscribe to.
+
+The registry event set is **closed**:
+
+| Event | Emitted when | Emitted by |
+|---|---|---|
+| `register` | a module becomes visible in the registry | all implementations |
+| `unregister` | a module is removed from the registry | all implementations |
+| `file_changed` | a watched module file changed and the implementation is NOT re-registering it itself (notify-only hot reload) | implementations whose `watch()` is notify-only |
+
+**Requirements.**
+
+1. `on` / `off` **MUST** reject an event name outside this set with
+   `InvalidInputError(code=GENERAL_INVALID_INPUT)`. Accepting an unknown name and
+   returning a valid-looking handle turns a typo into a permanently silent
+   subscription — the callback simply never fires, and nothing says so.
+2. An implementation **MUST** accept, in `on`, every event name it can itself
+   emit. Emitting an event that the same implementation's `on` refuses is a dead
+   notification path: apcore-typescript's `watch()` emitted `file_changed` while
+   its `on` allowed only `register` / `unregister`, so the callback list was
+   always empty and every hot-reload notification was discarded.
+3. `file_changed` is **conditional**, not optional-by-preference: an
+   implementation whose `watch()` re-registers the module itself (re-running
+   discovery, as apcore-rust does, or re-registering in place, as apcore-python
+   does) already emits `unregister`/`register` and **MUST NOT** additionally emit
+   `file_changed` for the same change. One file change produces one story.
+
+Callback signature is `(module_id, module)` for `register` / `unregister`. For
+`file_changed` the second argument is the change payload (`{file_path}`), since
+no module instance is available — the point of the event is that the
+implementation did not construct one.
+
+
+## Contract: Registry.describe
+
+> **Added in spec v1.49.0** (D-77). `describe` was declared in
+> [PROTOCOL_SPEC §12.2](../spec/protocol-spec.md#122-core-component-interface-contracts)
+> but carried no Contract block, and the three SDKs consequently returned three
+> different things for the same module. See the note below.
+
+### Inputs
+- `module_id` (str/string/&str, required) — the canonical module ID to describe.
+
+### Errors
+- `ModuleNotFoundError(code=MODULE_NOT_FOUND)` — no module registered under `module_id`.
+
+### Returns
+- On success: a **human-readable description string**. This is the rendering for a
+  human or an LLM reader; the machine-readable accessor is
+  [`get_definition`](#contract-registryget_definition), which returns the structured
+  `ModuleDescriptor`. `describe` **MUST NOT** return a structured object.
+
+### Deprecation warning cadence
+
+`get_definition` derives `sunset_date` from `metadata["x-deprecation"].sunset_date`
+and emits a deprecation warning. Because `get_definition` is a **read** and hosts
+call it in loops, the warning **MUST** be emitted at most once per
+`(module_id, version)` per registry instance (**D-89, v1.49.0**). Emitting it on
+every read turns an advisory into log spam proportional to traffic, which is how
+operators learn to filter it out.
+
+### Module-supplied override
+
+A module MAY implement its own `describe()` ([§5.6](./module-interface.md), optional
+method). That method's declared return is an **introspection mapping**
+(`{description, input_schema, output_schema, annotations}`), not a string — so the
+registry **MUST NOT** pass it through as the description.
+
+Implementations **MUST** apply this rule:
+
+1. If the module implements `describe()` **and** its return is a string, return that
+   string verbatim — this is the author's deliberate override.
+2. Otherwise (no `describe()`, a `null`/`None` return, a structured return, or a
+   return the implementation cannot resolve synchronously) fall through to the
+   generated description envelope.
+
+An implementation **MUST NOT** stringify a structured return (`str(dict)` yields a
+language-specific repr, not a description), and **MUST NOT** return the structured
+value through an interface it declares as returning a string.
+
+### Properties
+- async: false
+- thread_safe: true
+- pure: true (read-only rendering)
+- idempotent: true

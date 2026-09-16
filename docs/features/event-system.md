@@ -1176,7 +1176,21 @@ subscribers:
       max_attempts: 1      # no retry; stdout is local
 ```
 
-### Dead-Letter Event on Permanent Failure (Normative)
+#> **D-116 (v1.51.0) — the circuit-breaker events carry the DECLARED subscriber
+> type.** `apcore.subscriber.circuit_opened` / `circuit_closed` **MUST** report
+> the same `subscriber_type` the dead-letter path already reports — the declared
+> kind (`webhook`, `a2a`, `file`, …), not a class name and not a guess. A
+> subscriber that declares no type takes whatever default the DLQ path already
+> uses; implementations **MUST NOT** invent a second default for this surface.
+>
+> apcore-python and apcore-typescript reported the wrapped subscriber's class
+> name and apcore-rust split its `subscriber_id` on the first hyphen — so an id
+> of `health-alert` became the type `health`, and one with no hyphen became the
+> whole id. All three disagreed with the value the same SDK puts in its own DLQ
+> payload, which is the one a consumer routing on `subscriber_type` already
+> receives.
+
+## Dead-Letter Event on Permanent Failure (Normative)
 
 When the configured retries are exhausted, the SDK **MUST** emit a built-in event named `apcore.event.delivery_failed`. The payload schema **MUST** be:
 

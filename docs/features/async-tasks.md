@@ -268,13 +268,51 @@ When `cancel()` is called on a running task:
 - pure: false (spawns background work, persists task state)
 - idempotent: false
 
+### `TaskStoreError` must exist before it can be raised
+
+> **Added in spec v1.50.0** (D-92).
+
+This page declares `TaskStoreError(code=TASK_STORE_UNAVAILABLE)` on eight
+surfaces. **No SDK defines it** — neither the class nor the code appears in
+apcore-python, apcore-typescript or apcore-rust. A declared error type that no
+implementation can raise is one no caller can catch, which is the
+"declared surface reaches no mechanism" shape §9.1.3 forbids for configuration
+keys, here applied to an error contract.
+
+Implementations **MUST** define the error type and register
+`TASK_STORE_UNAVAILABLE` in the error-code registry, and **MUST** export it, so
+that a host writing a network-backed `TaskStore` has one canonical type to raise
+and a caller has one type to catch. The bundled in-memory store cannot fail and
+therefore never raises it; that is exactly why the type must be exported rather
+than merely raised internally — the hosts who need it are the ones writing the
+stores the spec was written for.
+
+### Store errors reach the caller (all manager methods)
+
+> **Added in spec v1.49.0** (D-81).
+
+Every `AsyncTaskManager` method that touches the store — `submit`, `cancel`,
+`get_status`, `get_result`, `list_tasks`, `cleanup`, `shutdown` — **MUST**
+propagate a `TaskStoreError(code=TASK_STORE_UNAVAILABLE)` raised by the
+underlying `TaskStore` rather than absorbing it into a normal return value.
+
+The failure this forbids is silent and dangerous: a manager that maps a store
+outage onto `false` / `None` / an empty list reports "no such task" or "no tasks"
+for a store that is merely unreachable, and — worst of all — a `cancel` that
+swallows a failed `save` returns `true`, telling the caller the task is
+terminated while it keeps running. `TaskStoreError` is already declared on each
+`TaskStore` method below; declaring it there and dropping it in the manager
+means no caller can ever catch it. An implementation whose method signature has
+no error channel **MUST** be given one.
+
 ## Contract: AsyncTaskManager.cancel
 
 ### Inputs
 - `task_id` (str/string/&str, required) — ID of the task to cancel
 
 ### Errors
-- None raised under normal operation. Implementations report cancellation outcome via the boolean return value rather than raising.
+- `TaskStoreError(code=TASK_STORE_UNAVAILABLE)` — the backing store is unreachable (see "Store errors reach the caller" above). Not raised by in-memory stores.
+- Otherwise none under normal operation: the cancellation OUTCOME is reported through the boolean return value, not by raising.
 
 ### Returns
 - On success: `bool` — `true` if cancellation was applied (the task was active and is now `Cancelled`), `false` if the task did not exist or had already reached a terminal state.
@@ -672,7 +710,13 @@ handle = manager.start_reaper(ttl_seconds=7200.0, sweep_interval_ms=600_000)
 
 ### Returns
 - On success: `list[TaskInfo]` / `TaskInfo[]` — a snapshot list of matching task records. Each entry MUST be a shallow copy in every SDK (Python `dataclasses.replace(info)`, TypeScript `{ ...info }`, Rust `clone()`). See `get_status` and Decision **D-23** for the mutation-safety contract.
-- The list order is insertion order (Python dict / JavaScript Map)
+- The list order is **insertion order** — the order tasks were submitted. This is normative, not an
+  artefact of Python's dict or JavaScript's Map: a caller reading `list_tasks()[0]` gets the
+  first-submitted task. An implementation whose backing map has no insertion order (Rust's `DashMap`,
+  for example) **MUST** carry its own monotonic insertion counter and sort on it; it **MUST NOT**
+  substitute a sort on `task_id`, which is a UUID and therefore random with respect to submission
+  (**D-82, v1.49.0** — apcore-rust did exactly that, so its first element was the lexicographically
+  smallest UUID).
 - An empty list is returned if no tasks match the filter
 
 ### Properties
@@ -710,6 +754,44 @@ Only tasks in terminal states are considered: `COMPLETED`, `FAILED`, `CANCELLED`
 - idempotent: false (a second call with the same threshold removes nothing if all eligible tasks were already removed, but the side-effect on state differs from no-op)
 
 ---
+
+## `shutdown()` attempts every cancellation before it reports
+
+> **Added in spec v1.52.0** (D-122).
+
+`shutdown()` **MUST** attempt to cancel every active task, including after one of
+those cancellations has failed. Once every task has been attempted, it **MUST**
+propagate the first failure.
+
+The three SDKs split on this while implementing D-81, so it is a genuine choice
+rather than a defect — but the failure modes are not symmetric, and that decides
+it. A `cancel` can fail for two reasons:
+
+- **The store is unreachable.** Every cancellation then fails, and stopping at
+  the first produces the same outcome as attempting all — nothing is cancelled
+  either way. Stopping early is merely faster to the same place.
+- **One task fails** (a conditional-write conflict, a corrupted record, a task
+  deleted concurrently). Stopping at the first leaves every remaining task
+  uncancelled, when they could have been cancelled.
+
+The costs of those two outcomes differ in duration. An uncancelled task in a
+shared or persistent store is a **lasting** problem: it holds a slot against
+`max_tasks` for every manager sharing that store, and it stays PENDING/RUNNING
+after the process that could have cancelled it is gone. A slower shutdown is
+transient.
+
+The obvious objection — that attempting N cancellations against a dead backend
+makes shutdown hang — carries less weight here than it first appears, because
+**`shutdown()` is already an unbounded wait by contract**: it cancels all tasks
+*and waits for completion*, and takes no timeout parameter in any SDK. A caller
+who needs a bound must already impose one. The marginal risk of N failed store
+round-trips is small next to a method that already waits for every running task
+to finish.
+
+> Implementations MAY additionally report how many tasks were attempted and how
+> many were cancelled. Propagating only the first error loses that count, which
+> is the one thing a shutdown caller could still act on. It is not required here
+> because it changes the return type.
 
 ## Contract: AsyncTaskManager.shutdown
 

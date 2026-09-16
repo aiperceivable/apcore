@@ -453,6 +453,30 @@ acl:
     }
     ```
 
+## Audit configuration and warning discipline
+
+> **Added in spec v1.49.0** (D-87, D-88).
+
+**D-87 — supplying the `audit:` block to a directly-constructed ACL.** §6.3.2
+requirement 1 makes the block the one configuration home for audit delivery, and
+`load()` / `reload()` carry it in every SDK. A host that builds an ACL
+programmatically rather than from a file **MUST** also have a way to supply it.
+The *shape* of that way is a language idiom and is deliberately unconstrained: an
+optional constructor parameter (apcore-python, apcore-typescript) and a builder or
+setter (apcore-rust, whose constructors are fixed-arity) are equally conforming.
+What is required is that the capability be reachable, and that the audit sink be
+rebuilt when it is supplied.
+
+**D-88 — the §6.5 "conditions present but no context" warning is deduped per rule
+index, so index-shifting mutations MUST clear the dedupe state.** `add_rule`
+inserts at index 0 and shifts every existing rule, so a retained entry suppresses
+the warning for a *different* rule than the one it was recorded for. Any operation
+that inserts, removes or reorders rules — `add_rule`, `remove_rule`, `reload` —
+**MUST** clear the dedupe set. An implementation that does not dedupe at all is
+also conforming (the warning is a `SHOULD`), but an implementation that dedupes by
+index and does not clear is **not**: it silently drops a warning the section
+requires, and does so for the rule the operator just added.
+
 ## Contract: ACL.add_rule
 
 ### Inputs

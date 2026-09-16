@@ -326,6 +326,20 @@ Modules performing long-running work **SHOULD** check the cancel token periodica
 - thread_safe: true
 - pure: true (no side effects; only checks internal cancelled state)
 
+> **D-90 (v1.49.0) — `reset()` and the abort channel.** `reset()` clears the
+> cooperative cancellation state: after it returns, `is_cancelled()` is false and
+> `check()` / `raise_if_cancelled()` do not raise. An implementation **MUST NOT**
+> implement `reset()` by substituting a fresh underlying cancellation primitive:
+> a consumer that captured the previous handle would be silently detached and
+> would never observe a later `cancel()` — apcore-typescript replaced its
+> `AbortController` and so broke exactly the real-abort channel that
+> `async-tasks.md` §D-18 makes normative for it. Where the host platform cannot
+> un-signal an already-signalled handle (a Web `AbortSignal` is one-shot), the
+> implementation **MUST** keep the single handle, **MUST** treat the cooperative
+> flag as authoritative, and **SHOULD** tell the caller once that a cancelled
+> token is not reusable for handle-based work. Failing closed that way can only
+> cancel work early; substituting the handle fails open and cannot cancel it at all.
+
 ## Contract: CancelToken.reset
 
 ### Inputs

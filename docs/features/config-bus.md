@@ -996,10 +996,30 @@ Rust returns a `Result` because it signals failure by return value rather than b
 - pure: false (reads filesystem and environment variables)
 - idempotent: true (loading the same file twice produces equivalent Config instances)
 
+## Registered-namespace defaults do not answer for a legacy document
+
+> **Added in spec v1.51.0** (D-117).
+
+A namespace registration's `defaults` tree is consulted by `get()` **only in
+namespace mode**. In legacy mode a key that no namespace owns resolves from the
+document and the canonical default table alone.
+
+apcore-rust consulted the registrations in both modes, so a legacy `apcore.yaml`
+mentioning no `sys_modules` block answered `168` for
+`sys_modules.usage.retention_hours` where apcore-python and apcore-typescript
+answered null. §9.6.3's reading is that a legacy document has no namespaces at
+all — so a namespace registration, which is a declaration ABOUT a namespace,
+has nothing to say about one. `bind()` and `namespace()` inherit this, being
+built on the same layer.
+
 ## Contract: Config.get
 
 ### Inputs
-- `key` (str/string/&str, required) — dot-path key (e.g., `"my-plugin.timeout"` or `"port"`); empty string is rejected with `ValueError`/`ConfigInvalidError`
+- `key` (str/string/&str, required) — dot-path key (e.g., `"my-plugin.timeout"` or `"port"`). An empty
+  string is **not** an error: it resolves no value and therefore returns `default` (or `None`/`null`),
+  exactly like any other absent key. See D-74 — this row previously claimed the empty string was
+  "rejected with `ValueError`/`ConfigInvalidError`", which contradicted this block's own `### Errors`
+  row and described behaviour no SDK has ever had.
 - `default` (Any/unknown/Value, optional) — value returned when key is absent; when absent and key is missing, returns `None`/`null`/`None`
 
 ### Errors

@@ -95,6 +95,18 @@ Count occurrences of `module_id` in the full call chain. If `count > max_module_
     ) -> Result<(), ModuleError>;
     ```
 
+    !!! warning "D-83 (v1.49.0) — this signature is normative and apcore-rust did not have it"
+        The shipped crate exposed only `guard_call_chain(ctx: &Context<serde_json::Value>,
+        module_name: &str, max_depth: u32)`, so the code above did not compile, and two
+        consequences followed. `Context<T>` is generic, so a host whose services type is
+        anything other than `serde_json::Value` **could not call the guard at all** — its
+        nested calls ran with no depth, cycle or frequency enforcement while the Python and
+        TypeScript equivalents got all three from a one-line call. And `DEFAULT_MAX_CALL_DEPTH`
+        was a `pub const` the guard never consulted, so the default was documented but not
+        applied. A chain-taking, generic-free entry point is **REQUIRED**; a
+        `Context`-taking convenience wrapper over it is permitted and is what the executor's
+        own pipeline step should use.
+
 ### Error Types
 
 | Error | Code | Key Properties | Description |
@@ -212,6 +224,12 @@ Modules that perform nested calls (calling other modules within their execution)
 - `CallDepthExceededError(code=CALL_DEPTH_EXCEEDED)` — call chain depth exceeds `max_depth`
 - `CircularCallError(code=CIRCULAR_CALL)` — `module_id` already appears in the current call chain (cycle detected)
 - `CallFrequencyExceededError(code=CALL_FREQUENCY_EXCEEDED)` — `module_id` has been invoked more than `max_repeat` times in this chain
+- `InvalidInputError(code=GENERAL_INVALID_INPUT)` — `max_call_depth` or `max_module_repeat` is less than 1.
+  **Added in spec v1.49.0 (D-84).** This row did not exist, and the three SDKs each invented their own
+  rejection: a builtin `ValueError`, a bare `Error`, and a typed `ModuleError`. Only the last is catchable
+  by a cross-language caller, and only it carries a code from the registry — a misconfigured
+  `executor.max_call_depth: 0` otherwise surfaces as `error.code == "ValueError"`, a string that is not an
+  apcore error code at all. Implementations **MUST** raise the typed error with `GENERAL_INVALID_INPUT`.
 
 ### Returns
 - On success (guard passes): void/None/() — no return value; raises on violation

@@ -427,6 +427,21 @@ Incorrect async detection causes middleware to be invoked synchronously when it 
 - **TypeScript:** Implementations MUST check `handler.constructor.name === 'AsyncFunction'` to detect async handlers before invocation. Checking `instanceof Promise` after invocation is too late (the function has already been called synchronously). Preferred approach: inspect the function itself via `handler.constructor.name`.
 - **Rust:** Async handlers are statically typed via `async_trait`; no runtime detection is needed or possible.
 
+## Removing a middleware clears its duplicate-identity entry
+
+> **Added in spec v1.51.0** (D-114).
+
+`MiddlewareManager.remove` **MUST** drop the removed middleware's entry from the
+duplicate-detection registry.
+
+apcore-typescript did; apcore-python and apcore-rust did not, so the standard
+swap sequence — `use(mw)` / `remove(mw)` / `use(mw)` — warned about a duplicate
+registration and named a call site that no longer exists. The registry records
+where a middleware was FIRST registered so a genuine duplicate can be traced
+back to it; an entry left behind by a removal corrupts that record in both
+directions, because the next real duplicate is then attributed to the
+registration that was removed rather than to the one still installed.
+
 ## Contract: Middleware.detect_async
 
 ### Inputs

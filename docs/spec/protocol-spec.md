@@ -1,15 +1,15 @@
 ---
-description: "The canonical, normative apcore protocol specification (RFC 2119, v1.48.0): module, schema, naming, ACL, approval, error, config, and observability requirements for all conforming SDKs."
+description: "The canonical, normative apcore protocol specification (RFC 2119, v1.54.0): module, schema, naming, ACL, approval, error, config, and observability requirements for all conforming SDKs."
 ---
 
 # apcore — AI-Perceivable Core Standard Specification
 
 > **Canonical Specification** - This document is the authoritative specification for the apcore protocol
 
-> Version: 1.48.0
+> Version: 1.54.0
 > Status: Draft Specification (RFC 2119 Conformant)
 > Stability: Specification content is stable, pending reference implementation verification
-> Last Updated: 2026-09-09
+> Last Updated: 2026-09-16
 
 ---
 
@@ -1558,6 +1558,14 @@ Steps:
   3. visited_refs ← visited_refs ∪ {ref_string}
   4. Parse ref_string into (file_part, json_pointer):
      a. If starts with "#" → file_part = current_file, json_pointer = ref_string[1:]
+        Resolve the pointer against the FILE ROOT first; if it does not resolve
+        there, fall back to the schema node being resolved (the `input_schema` /
+        `output_schema` document itself). See D-104 below — BOTH layouts are
+        addressable, and an implementation MUST support both. The fallback is
+        available ONLY while resolution is still inside the document the schema
+        node belongs to; once a reference has been followed into another
+        document, a local pointer that does not resolve in THAT document MUST
+        throw SCHEMA_NOT_FOUND (D-124).
      b. If contains "#" → Split by "#" into file_part and json_pointer
      c. If starts with "apcore://" → Convert to file path under schemas_dir
      d. Otherwise → file_part is path relative to current_file directory
@@ -1568,6 +1576,48 @@ Steps:
   8. Walk resolved's children. For each nested $ref reached by structural
      descent, call resolve_ref(...) with depth + 1 and from_ref_chain = False
   9. Return resolved
+
+> **D-104 (v1.50.0) — the base document for a local `#/…` reference.** This step
+> said only "file_part = current_file", and the three SDKs read it two ways, so
+> **no schema file containing a local `$ref` loaded in all three**. apcore-rust
+> resolved against the whole file, which is what step 4a says and what §4.11's
+> own example requires — that example puts `definitions:` beside `input_schema`
+> as a top-level key of the schema FILE, and it is loadable on Rust alone.
+> apcore-python and apcore-typescript resolved against the schema node, so
+> `#/$defs/User` nested inside `input_schema` worked there and the spec's own
+> example did not. Each rejected what the other accepted.
+>
+> Both layouts are now normative, file root first. The fallback rather than a
+> hard break, because Layout B is what two of three SDKs accept today and is
+> therefore presumably in the wild; the two lookups cannot collide, since a
+> pointer either resolves at the file root or it does not. A consequence worth
+> stating: `SchemaDefinition.definitions`, collected from the file's top level
+> by apcore-python and apcore-typescript and until now read by nothing, becomes
+> live — it was dead precisely because the refs that would have used it could
+> not resolve.
+
+> **D-124 (v1.53.0) — the node fallback is scoped to its own document.** D-104
+> settled WHICH two bases a local pointer tries. It did not say how far the
+> second one travels, and all three SDKs answered "everywhere": the fallback was
+> held on the resolver and consulted for every local pointer, including ones
+> resolved after following a reference into another file. So a `#/$defs/X`
+> written inside an EXTERNAL schema, naming a definition that document does not
+> have, fell back to the CALLING module's schema node and bound to whatever
+> happened to share the name.
+>
+> Three consequences, in increasing order of cost. An invalid reference reports
+> success where it owes `SCHEMA_NOT_FOUND`. The resolved schema then validates
+> against a contract the external author never wrote — accepting or rejecting
+> inputs on a definition that is not the one referenced. And §10.6 reads
+> `x-sensitive` off the **resolved** schema, so a field the external document
+> marks sensitive can be silently replaced by a local definition that does not,
+> and the value is then logged in plaintext. That is the same class of leak as
+> dropping `$ref` sibling keys (SCH-001), reached by a different route.
+>
+> A document falls back only to its own node. This does not narrow D-104: a
+> local pointer inside an external document still resolves normally **in that
+> document**, and Layout B is unaffected, because the schema node and the
+> document it belongs to are the same document at the origin.
 
 Complexity: O(d), where d is reference depth (bounded by schema.max_ref_depth,
 default 32)
@@ -3590,6 +3640,20 @@ Implementations **MUST** handle module edge cases according to the following tab
 | Module in `dependencies.optional` exists but its registered version does not satisfy the declared `version` constraint | Log WARN, skip the dependency edge, continue loading | **MUST** |
 | Reverse dependency (A depends on B, B also depends on A) | Throw `CIRCULAR_DEPENDENCY` | **MUST** |
 | Indirect circular dependency (A → B → C → A) | Throw `CIRCULAR_DEPENDENCY` | **MUST** |
+| Load order cannot be completed but **no cycle exists** (e.g. a batch member depends on a module that is registered but not part of this batch, so its in-degree never reaches zero) | Throw `MODULE_LOAD_ERROR` naming the blocked modules — **MUST NOT** report `CIRCULAR_DEPENDENCY` | **MUST** |
+
+> **D-79 (v1.49.0) — a stalled topological sort is not a cycle.** A Kahn-style
+> sort that terminates with nodes remaining has two distinct causes, and only one
+> of them is a cycle. apcore-python discriminated them (it searched for a back
+> edge and fell back to `MODULE_LOAD_ERROR` when it found none); apcore-typescript
+> and apcore-rust both reported `CIRCULAR_DEPENDENCY` unconditionally and
+> synthesised a `cycle_path` from the leftover node set — for the non-cycle case
+> that is a one-element "cycle", describing a loop that does not exist. The row
+> above makes the distinction normative because the two causes need opposite
+> fixes: a real cycle means the author must break a dependency edge, while a
+> stall means a dependency is simply missing from the batch, and telling the
+> author to break a non-existent loop sends them looking for something that is
+> not there. An implementation **MUST NOT** emit a fabricated `cycle_path`.
 
 #### 5.15.3 Module Lifecycle Edges
 
@@ -3861,6 +3925,26 @@ An async-only key is thus a live rule on one path and an unevaluable condition o
 A key that resolves on both paths is not a finding.
 
 This is diagnostics, not enforcement. The guarantee that a broken `deny` rule cannot silently pass traffic is §6.1.1's, and holds whether or not anyone calls the validator.
+
+> **D-105 (v1.50.0) — the executor's ACL step MUST take the async path.** The
+> table above defines what each entry point resolves; it never said which one
+> the pipeline's `acl_check` step calls, and the three SDKs split. apcore-python
+> and apcore-typescript prefer the async accessor when the ACL exposes one
+> (apcore-typescript's `_decide` records the reason in a comment); apcore-rust
+> called the synchronous `check_access` from inside an already-`async` step.
+>
+> The consequence is not a latency difference. A condition registered through
+> `register_async_condition` is, on the sync path, "async only" — the first row
+> of the table — so it resolves to **UNEVALUABLE**, and §6.1.1 then applies:
+> an `allow` rule carrying it stops granting and the caller is denied, while a
+> `deny` rule carrying it denies unconditionally rather than when the handler
+> says so. Both directions are wrong, and the async condition registry is
+> unreachable from the only path that enforces, making a documented extension
+> point dead in production while its unit tests pass.
+>
+> An implementation whose ACL exposes an async evaluation entry point **MUST**
+> use it from the executor's ACL step, falling back to the synchronous one only
+> when no async entry point exists.
 
 #### 6.1.4 Structural and registry precheck (v1.25.0, #100)
 
@@ -5062,6 +5146,73 @@ ApprovalResult:
 
 ### 7.4 Executor Integration (Step 5)
 
+> **D-96 (v1.50.0) — the gate fires on the UNION of its governance sources.**
+> Step 2 binds `module.annotations`, and an implementation **MUST** consult it:
+> apcore-rust decided gate firing from the registry **descriptor** instead, so a
+> module whose own `annotations()` declared `requires_approval: true` ran
+> **ungated** whenever the descriptor omitted it — while the `ApprovalRequest`
+> handed to the handler read the live module, so a single call could be gated by
+> one source and described by the other.
+>
+> The correction is a union, **not** a swap. An implementation that additionally
+> accepts a caller-supplied `ModuleDescriptor` — apcore-rust's `Registry::register`
+> documents descriptors "loaded from a config file or discovered from an external
+> source" — **MUST** fire the gate when *either* the live module or the descriptor
+> declares the requirement. Reading only the descriptor ignores what the module
+> declares; reading only the module ignores what an operator declared in
+> configuration. Both are fail-OPEN, and on this surface the failure direction is
+> the whole point: requiring approval that was not strictly needed costs a prompt,
+> skipping approval that was needed is a bypass.
+>
+> This mirrors §6.9's existing architecture, where the requirement is already the
+> union of the module annotation, the ACL rule and `gate_destructive`, and where a
+> policy may only ADD.
+>
+> **Every SDK has a second governance source, and every reader is bound by this
+> rule.** D-96 as first written claimed the union was "unobservable in
+> implementations whose descriptors are derived from the module"; that was
+> asserted rather than checked, and D-125 corrects it. No SDK derives its
+> descriptor purely from the module: apcore-python and apcore-typescript fold a
+> `*_meta.yaml` / `*.binding.yaml` / `metadata` declaration into it (§4.13), and
+> apcore-rust accepts one supplied by the caller. The rule therefore binds
+> **every** reader of `requires_approval` / `destructive` for a registered
+> module, not the gate alone:
+>
+> | Reader | Requirement |
+> |---|---|
+> | Approval gate (Step 5) | Fires on the union. |
+> | `Executor.validate` preflight (§7.9.5) | Reports the union, so it cannot disagree with the gate. |
+> | Governance-posture accessor (§6.6.5) | Reads the union; a module gated by the pipeline MUST NOT be reported as ungated. |
+> | `system.manifest.*` annotations | Publishes the union — an agent decides whether to call from this. |
+>
+> An implementation **MUST NOT** resolve this union with its metadata-merge
+> precedence (§4.13's YAML > code), which is correct for a descriptor and wrong
+> for a gate: the merge lets the weaker declaration win in *both* directions.
+
+> **D-125 (v1.54.0) — D-96 binds every SDK and every governance reader.** D-96's
+> closing remark — that the union is unobservable where descriptors are "derived
+> from the module" — was written without being checked, and it is false. Both
+> peers merge a metadata document into the descriptor with YAML > code
+> precedence (§4.13), which is a second place an operator can declare
+> governance, and neither gate read it. Reproduced in both: a module registered
+> with `metadata.annotations.requires_approval: true` produced a descriptor
+> reporting `true`, a `system.manifest.*` entry reporting `true`, a preflight
+> reporting **false**, and **no gate** — the module executed with an approval
+> handler configured and the handler was never consulted.
+>
+> That is the bypass D-96 describes, in the two SDKs D-96 named as unaffected,
+> and it is fail-OPEN. The rule is unchanged; its scope is corrected. The union
+> is over the live module instance and the registry's declared annotations, and
+> it is `OR` on `requires_approval` and `destructive` only — every other
+> annotation describes behaviour rather than governance and stays
+> instance-sourced.
+>
+> Two consequences worth stating. A metadata `requires_approval: false` no
+> longer cancels a module that declares `true` in code — under the merge's
+> precedence it did, at every descriptor reader. And the manifest now publishes
+> the enforced value: advertising a governance flag the gate does not honour is
+> worse than advertising none, because it is a specific claim an agent acts on.
+
 The Approval Gate is Step 5 in the Executor's pipeline, between ACL Enforcement and Middleware Before Chain:
 
 ```
@@ -5102,6 +5253,8 @@ Behavior:
   1. IF approval_handler is null → SKIP (no enforcement)
   2. LET annotations = module.annotations
   3. IF annotations is null OR annotations.requires_approval is false → SKIP
+     (but see D-96: the gate fires on the UNION of every governance source
+      the implementation has, not on this one alone)
   4. IF arguments contains "_approval_token":
        a. LET token = arguments.pop("_approval_token")
        b. LET result = approval_handler.check_approval(token)
@@ -9057,11 +9210,25 @@ Interface: Registry
   list() → List<String>
 
   /**
-   * Get module description info (for AI/LLM use)
+   * Get a human-readable module description (for AI/LLM use).
+   *
+   * Returns a rendered description STRING, not a structured object: the
+   * machine-readable accessor is `get_definition`, which returns the
+   * ModuleDescriptor. All three SDKs return a string; the previous
+   * `→ ModuleDescription` declaration matched none of them (D-77, v1.49.0).
+   *
+   * A module MAY supply its own `describe()` (§5.6), whose declared return is
+   * an introspection MAPPING. An implementation MUST return that override only
+   * when it is itself a string, and MUST otherwise fall through to the
+   * generated envelope — it MUST NOT stringify the mapping, and MUST NOT
+   * return the mapping through an interface declared as returning a string.
+   * See features/registry-system.md "Contract: Registry.describe".
+   *
    * @param module_id — Canonical ID
-   * @return description — Complete description including Schema, Annotations, Examples
+   * @return description — Human-readable description string
+   * @throws MODULE_NOT_FOUND — No module registered under module_id
    */
-  describe(module_id: String) → ModuleDescription
+  describe(module_id: String) → String
 
 Interface: Executor
   /**
@@ -10178,3 +10345,9 @@ Each language SDK **SHOULD** provide idiomatic module definition syntax. The fol
 | 1.46.0 | 2026-09-14 | **§9.6.3 requirements 1–4 (new) — and the last three inert keys of the #118 audit are wired (decisions D-69, D-70, D-71).** **`_config.allow_unknown` (D-69)**: §9.6.3 published a three-row behaviour matrix and **both halves of its `strict: false` line were inert in all three SDKs** — `allow_unknown: false` is documented as "silently ignored (not stored)" and the namespace was stored anyway, so `get()` answered for it, while `allow_unknown: true` is documented as "stored, accessible, **WARN logged**" and nothing logged. A table was not enough, so the four requirements state it: namespace mode only (a legacy document has no namespaces — its root IS the `apcore` namespace, and `strict`'s clause (b) saying it "applies in legacy mode too" is the specification saying clause (a) does not), `false` drops, `true` warns once per load naming every retained namespace, and an **absent** `_config` takes the documented defaults rather than being an exemption. Requirement 2 is the one clause in §9 whose implementation makes a `get()` that returned a value return null; it fires only for a configuration that explicitly writes `allow_unknown: false`. **`extensions.roots` (D-70)** was read by **apcore-rust alone**, so a multi-root project worked on one SDK of three, silently — and what apcore-rust read was **half the key**: it took the paths and dropped the namespaces, while `$defs/ExtensionsConfig`'s own description leads with "multiple roots **with namespace isolation**". Every SDK already had the scanner that applies the prefix (`scan_multi_root` / `scanMultiRoot`); none had a path from a `Config` to it, and the one that did threw away what makes the key worth having. A **one-element** `roots` list is namespaced like an n-element one: the namespace is derived at the configuration door rather than left to the scanner's own "more than one root or an explicit namespace" dispatch, because nothing in the schema makes a one-element list special and `roots` versus `root` **is** the namespaced/backward-compatible distinction. **`id_map.overrides` (D-71)** is the fourth instance of the shape this audit keeps finding: the ID-map mechanism is implemented in all three SDKs and the three agree closely — stage 2 of discovery rewrites a discovered `canonical_id` — while the map arrived only through a constructor argument. Measured: with the key pointing at a valid map renaming `executor/orig/mod.py`, discovery still registered `executor.orig.mod`. A relative value follows **`extensions.root`'s** resolution base, not `acl.root`'s: §9.2.1 leaves that base deliberately unspecified and tracks it in #113, and these two keys are halves of one discovery configuration always read together, so a split base between them would be worse than either — an input to #113, not an answer. Three new conformance fixtures: `allow_unknown_namespaces.json` (6 cases, including the absent-`_config` row, the quiet half, and the legacy boundary so the scoping is a decision rather than an omission), `multi_root_discovery.json` (6 cases, two roots deriving the **same** unprefixed ID so the namespace is observable rather than cosmetic), `id_map_from_config.json` (4 cases, driven through discovery because a driver calling the map loader proves the loader works — which was never the question). **The #118 audit's configuration surface is now 50 live / 1 partial / 16 inert / 0 unaudited**, from 29 inert and 31 unaudited when it opened. **This IS an SDK change in all three.** Governance: maintainer approval per GOVERNANCE.md § Decision Making; tracking issue #118. |
 | 1.47.0 | 2026-09-14 | **§9.1.3 (new) — a declared configuration key MUST reach its mechanism from a `Config` (#118, decision D-73), and `acl.default_effect` is the rule's first application.** The arrangement this section forbids — a mechanism fully implemented and reachable only by passing a constructor or function argument, with a schema key naming it that reaches nothing — arose **four times independently** in code that was otherwise careful: `acl.default_effect`, `acl.audit.*`, `id_map.overrides` and `pipeline.*`. Nothing in this specification forbade it, so nothing caught it, and **each instance looked correct from inside its own SDK because the mechanism worked**. The section closes the class the way §9.2.3 closed pattern dialects and §9.2.1 closed path-typed keys: name the requirement once rather than repair its instances one at a time. Two clauses keep it from leaving the same gap open under a narrower door. **Requirement 1 defines the entry point**: a file load, an `APCORE_*` override and a programmatic `Config` all satisfy it equally; a direct argument that bypasses `Config` does not, and remains legitimate as an argument while being unable to stand in for the key. **Requirement 2 states precedence** — API argument > `Config` > declared default — because the rule gives many keys two doors, "both are wired, which one applies" is the question that produced §9.2.2's project-root divergence one layer up, and the API argument winning is also what keeps the rule from being a breaking change: every caller passing the argument keeps its behaviour and the key becomes the fallback it always looked like. **Requirement 3 covers the key in the wrong file**, which is the same defect wearing a disguise, and applying it is this version's second half. `acl.default_effect` reaches its mechanism from the **ACL file** and not from `apcore.yaml`, where §9.1 also declares it — measured, a project writing `acl.default_effect: allow` in `apcore.yaml` against an ACL file that omits it gets **deny**. The failure is fail-closed, which is why it went unremarked for so long: the key can silently withhold an `allow` an operator asked for and can never silently grant one. Same shape as `acl.audit` and the same remedy §9.2.4.1 chose there — the declaration in the file that reads it survives, the twin joins §9.2.4's table with the ACL file named as its migration target, and it is removed at v2.0. **The enforcement already exists**: `check_config_key_consumers.py`'s `live` criterion is requirement 1 restated, and it was `acl.default_effect` that taught it — the key was recorded `live` in the very guard built to find keys nothing reads, by a probe that constructed `ACL(default_effect=…)` directly. Requirement 2 is pinned per key by the precedence case each wiring fixture carries. **This IS an SDK change in all three** (the deprecation table gains a row); no behaviour changes. Governance: maintainer approval per GOVERNANCE.md § Decision Making; tracking issue #118. |
 | 1.48.0 | 2026-09-14 | **§9.2.4 — `logging.level` and `logging.format` are withdrawn with no replacement key (#118, decision D-67), and §9.15.2 stops pointing the ecosystem at them.** This is the last of the eight decisions #118 opened. The finding is a **boundary**, not an implementation cost: wiring the two keys would require threading their values through `Context` — the object every `Context.logger()` call builds a logger from, and which in **all three SDKs contains no reference to a `Config` at all** — or introducing a process-global logger configuration. The second is the expensive one, and not in effort: every `Context.logger()` returns a fresh instance today, so two `APCore` instances in one process are already isolated, and a global would be the thing that **ends** that. apcore does not own the host's logging policy. **The replacement wording had to be corrected against the code**, because the obvious phrasing is false: apcore's `ContextLogger` **does not route through the host's logging framework** — it writes structured lines directly to standard error (`sys.stderr`, `console.error`, this crate's own writer), and `apcore-python`'s `context_logger.py` does not import `logging` at all. Telling an operator to "configure it through your language's logging API" would send them somewhere with no effect on apcore's output. The supported path is the API argument — construct a `ContextLogger` with the level, format and sink you want and pass it to `ObsLoggingMiddleware(logger=…)`, whose `supplied else default` precedence is §9.1.3 requirement 2 already. **A known boundary is recorded rather than left to be discovered**: that path covers the middleware and not `Context.logger()`, which constructs a default logger per invocation, so a module's `context.logger()` output is always stderr / `info` / JSON in every SDK. Withdrawing `logging.*` makes §9.1.3's rule hold — the keys stop naming a mechanism they cannot reach — without handing the host control of that path, and this specification does not yet define one. §9.15.2's ecosystem table told `apcore-mcp`, `apcore-a2a`, `apcore-cli` and third parties to read `logging.level` / `.format`; an adapter that did got a value no apcore code path acts on, which is how a declared-but-inert key acquires downstream readers and becomes expensive to remove. **No SDK change**: both keys have been in §9.2.4's table and every SDK's deprecation list since v1.39.0, and nothing about their behaviour changes. Governance: maintainer approval per GOVERNANCE.md § Decision Making; tracking issue #118. |
+| 1.49.0 | 2026-09-15 | **Eighteen cross-language divergences settled, from the deep-chain audit of 2026-09-14 (D-74 – D-91).** The shape they share: a contract the spec never stated, so three SDKs each picked an answer and none was wrong to. **§12.2 `describe` returned `→ ModuleDescription`, a type no SDK produces** — all three return a rendered string, `get_definition` is the structured accessor, and when the module supplies its own `describe()` (whose declared return is a mapping) the registry must return it only if it is a string and otherwise fall through, rather than stringifying a dict into a language-specific repr (D-77). **`ExtensionManager.apply` gained a Postconditions section** forbidding it from draining the store; the existing `idempotent: false` row already implied non-consuming by promising that a second `apply` stacks middleware, which a draining implementation silently turns into a no-op (D-78). **The registry event set is now closed and stated** — `register`, `unregister`, and a conditional `file_changed` — after apcore-typescript was found emitting `file_changed` from `watch()` while its own `on()` rejected that name, so every hot-reload notification fired into an empty callback list, and after this page's own example told readers to subscribe to `change` / `add` / `remove`, three names every SDK rejects (D-80). **A stalled topological sort is not a cycle**: two SDKs reported `CIRCULAR_DEPENDENCY` with a fabricated one-element `cycle_path` for a batch member whose dependency simply was not in the batch, sending authors to break a loop that does not exist (D-79). **`ContextFactory.create_context` was rewritten** from `(identity, caller_id, data)` — a factory nobody built, and one that takes the identity the factory exists to extract — to the `(request)` shape apcore-python and apcore-typescript ship (D-76). **`TaskStoreError` must reach the caller**: it was declared on every `TaskStore` method and absorbed by the manager, so a `cancel` whose `save` failed still returned `true` (D-81). Also: insertion order for `list_tasks` is normative and a `task_id` sort does not satisfy it (D-82); the `guard_call_chain` signature published in this spec is normative, and the `Context`-taking form apcore-rust shipped instead made the guard unreachable for any host whose services type was not `serde_json::Value` (D-83); a non-positive call-chain limit raises a typed `GENERAL_INVALID_INPUT` rather than three per-language error types (D-84); malformed version constraints must be reportable rather than resolving to a `(0,0,0)` comparison that reported `"latest"` as satisfied for every `0.x.y` module (D-85); `Registry.register`'s validation steps are ordered intrinsic-then-extrinsic (D-86); the audit-block surface on a directly-constructed ACL is a language idiom but its reachability is required (D-87); index-keyed warning dedupe must be cleared by index-shifting mutations (D-88); the deprecation warning is once per `(module_id, version)` per registry, not once per read (D-89); `reset()` must not substitute the underlying cancellation handle (D-90); and a removal method a host cannot actually call does not satisfy the contract (D-91). **`Config.get`'s Inputs row is corrected** — it claimed an empty key was rejected with `ValueError`, contradicting its own `### Errors` row and describing behaviour no SDK has ever had (D-74). **This IS an SDK change** in all three. Governance: maintainer approval per GOVERNANCE.md § Decision Making. |
+| 1.50.0 | 2026-09-15 | **The deep-chain audit's second wave (D-92 – D-107): sixteen critical cross-language divergences, five of them security defects.** All were invisible to three green test suites and 79 passing conformance fixtures, because a fixture pins an OUTCOME and these implementations reached different outcomes by different paths — `approval_gate.json` passes in all three SDKs off two different sources of truth. **Two independent approval bypasses, which compose.** §7.4 step 2 binds `annotations = module.annotations` and step 3 tests that binding; apcore-rust decided gate firing from the registry DESCRIPTOR instead, so a module declaring `requires_approval: true` whose descriptor omits it ran ungated (D-96). Separately its `FunctionModule` stores `annotations`/`tags`/`documentation`/`metadata` as fields but implements none of the corresponding `Module` accessors, so everything a `*.binding.yaml` declares was discarded at registration — including the approval requirement (D-97). The registry-side half of that had already been fixed under A-D-017, on the reader; the type being read was never updated. **A configuration dot-path must address data, never the host object graph** (D-95): apcore-typescript's `setNested` guarded its descent with `part in current`, and `'__proto__' in {}` is true, so `APCORE_____PROTO_____POLLUTED=x` in the environment polluted `Object.prototype` process-wide at `Config.load()` — no module call, no ACL, no approval. **Symlink confinement runs before the dir/file split** (D-94): apcore-python's check lived inside the directory branch, so a symlinked `.py` whose target escaped the extensions root was discovered and executed — the exact failure the check's own comment describes, on the one branch that yields importable files. **The contextual-audit redaction list is a superset, and bare substrings are the point of it** (D-93): apcore-typescript enumerated compounds (`api_key`, `private_key`, `authorization`) where the peers carry bare `key`/`auth`/`session`, so `signing_key`, `auth_header` and `session_id` reached the event bus verbatim. **`$ref` sibling keys are preserved** (D-98): apcore-rust discarded them, and since §10.6 redaction reads `x-sensitive` off the RESOLVED schema, a field marked sensitive beside a `$ref` was logged in plaintext there and redacted by its peers. Also settled: `global_deadline` is epoch seconds, lives in the field rather than a `data` key, belongs to the call tree rather than the Context, and is recomputed unconditionally on a deserialized Context (D-99 – D-102) — three SDKs had three clocks, and a spec-shaped caller value silently disabled the budget entirely on one of them; a null `identity` stays null and MUST NOT be given a synthetic `@external` principal, resolving a contradiction between this contract's own rows (D-103); a local `#/…` reference resolves against the file root with a fallback to the schema node, so that BOTH layouts load — previously no schema file containing a local `$ref` loaded in all three (D-104); the executor's ACL step MUST take the async path, without which the entire `register_async_condition` extension point is dead in the only code path that enforces (D-105); `TaskStoreError` is declared on eight surfaces and defined by no SDK, so no caller can catch it (D-92); a p99 estimate beyond the largest bucket is that bucket, not zero, which had disabled latency alerting for exactly the slowest modules (D-106); and per-class markers are the only multi-class opt-in, against a fixture still pinning the file-level toggle D-06 withdrew (D-107). **This IS an SDK change** in all three. Governance: maintainer approval per GOVERNANCE.md § Decision Making. |
+| 1.51.0 | 2026-09-16 | **Fourteen policy decisions from the deep-chain audit's warning tail (D-108 – D-121) — the subset where the spec was silent and no implementation was obviously right.** Unlike v1.49.0 and v1.50.0, which corrected defects, these settle questions three SDKs had each answered reasonably and differently. **An unknown extension point is an error; an empty one is not** (D-108) — the `### Errors: No errors raised` row was written about the EMPTY case and read by one SDK as covering the UNKNOWN case, so a misspelled point name returned a silent empty answer and surfaced later as a wiring bug at `apply()`. **Only the healthy/degraded health boundary is configurable** (D-109); two SDKs scaled the degraded/error boundary from it, so `error_rate_threshold: 0.001` silently moved both and a module at 5% was `error` on two SDKs and `degraded` on the third. **A failed reload restores the previous module** (D-112) — best-effort compensation, explicitly NOT atomic replacement: the restore path MUST re-run `on_load`, MAY leave the module unavailable when that also fails, and is per-module on the bulk path, because cross-module transactionality is not a registry primitive. **A bulk reload audits per module with a shared correlation id** (D-111); the aggregate entry two SDKs wrote was keyed on the glob and therefore unfindable by `AuditStore.query(module_id)`. **Storage-backend namespaces are named** — `metrics`, `usage`, `error_history` — and the omitted-argument default is `InMemoryStorageBackend` (D-113); of nine collector/SDK combinations only four wrote at all and the two that did disagreed, so the rename carries a dual-read migration window. **Error timestamps are UTC `Z` with millisecond precision** (D-120), precision included because fixing the suffix alone would leave three precisions behind one `Z`. **A malformed annotation value is tolerated and dropped** (D-115) — one SDK fabricated index keys from a string, another discarded the whole descriptor over a single out-of-range integer; implementations whose integer type cannot hold the bad value must deserialize signed FIRST, or the required clamp is unreachable. **`reload_dependents` is deprecated for removal at v2.0** (D-121): declared by all three SDKs, implemented by none, replacement is an explicit `path_filter`. Also: `project_name` defaults to `"apcore"` (D-110); `remove()` clears the middleware duplicate-identity entry (D-114); the circuit-breaker events carry the DECLARED subscriber type the DLQ path already uses (D-116); registered-namespace defaults do not answer for a legacy document (D-117); an empty `roles` list is omitted from the audit identity snapshot (D-118); and every `system.*` module declares `open_world: false` explicitly rather than inheriting a default that means the opposite (D-119). **This IS an SDK change** in all three; implementation is deliberately deferred until the v1.49.0/v1.50.0 branches are reviewed. Governance: maintainer approval per GOVERNANCE.md § Decision Making. |
+| 1.52.0 | 2026-09-16 | **Two decisions found while REVIEWING the v1.49.0/v1.50.0 work, not by the audit that produced it (D-122, D-123).** **`shutdown()` attempts every cancellation before it reports** (D-122). The three SDKs split on this while implementing D-81 — two stop at the first failure, one attempts all — so it is a genuine choice, decided on the asymmetry of the two failure modes: when the store is unreachable both strategies cancel nothing and stopping early merely arrives there faster, but when ONE task fails, stopping leaves every remaining task uncancelled. An uncancelled task in a shared store is a lasting cost (it holds a `max_tasks` slot for every manager sharing that store, and outlives the process that could have cancelled it); a slower shutdown is transient. The hang objection carries little weight because `shutdown()` is **already an unbounded wait by contract** — it waits for completion and takes no timeout in any SDK — so a caller needing a bound must already impose one. **A hot-reloaded module MUST NOT become visible before its `on_load()` has run** (D-123). `Contract: Registry.register` Side Effects step 8 already requires this, but is scoped to `register`; a watch-driven reload is a different entry point, so an implementation writing the internal maps directly violates no stated rule — which is what apcore-python's `_handle_file_change` does, publishing a module that is visible but never initialised. The rule constrains **publication, not mechanism**: D11-005 leaves the reload mechanism language-defined and this does not narrow it. Recovery semantics are governed by D-112 rules 2-4 and are deliberately NOT restated at the second entry point, because a duplicated rule drifting apart is the defect class this whole audit is about — §10.6.1's key matcher was implemented twice and drifted into a leak, and A-D-017's fix landed on the reader while the type being read was never updated. Only apcore-python is affected: apcore-rust re-runs discovery (which invokes `on_load`) and apcore-typescript's `watch()` never re-registers. Governance: maintainer approval per GOVERNANCE.md § Decision Making. |
+| 1.53.0 | 2026-09-16 | **The D-104 node fallback is scoped to its own document (D-124).** Found in maintainer review of the v1.50.0 branches, then reproduced in all three SDKs. D-104 settled WHICH two bases a local `#/…` pointer tries — the file root, then the schema node — and said nothing about how far the second one travels; every implementation held it on the resolver and consulted it for every local pointer, including ones resolved after following a reference into another file. A `#/$defs/X` written inside an EXTERNAL schema, naming a definition that document does not have, therefore fell back to the CALLING module's schema node and bound to whatever shared the name. Three consequences, in increasing order of cost: an invalid reference reports success where it owes `SCHEMA_NOT_FOUND`; the resolved schema then validates against a contract the external author never wrote; and §10.6 reads `x-sensitive` off the **resolved** schema, so a field the external document marks sensitive can be replaced by a local definition that does not and be logged in plaintext — the same class of leak as SCH-001, by a different route. This does not narrow D-104: a local pointer inside an external document still resolves in THAT document, and Layout B is unaffected, because at the origin the schema node and its document are the same document. Governance: maintainer approval per GOVERNANCE.md § Decision Making. |
+| 1.54.0 | 2026-09-16 | **SECURITY: D-96 binds every SDK and every governance reader (D-125).** D-96's closing remark — that the union is "unobservable in implementations whose descriptors are derived from the module (apcore-python, apcore-typescript)" — was asserted without being checked, and is false. Both peers merge a `*_meta.yaml` / `*.binding.yaml` / `metadata` document into the descriptor with §4.13's YAML > code precedence, which is a second place an operator can declare governance, and neither gate read it. **Reproduced in both:** a module registered with `metadata.annotations.requires_approval: true` produced a descriptor reporting `true`, a `system.manifest.*` entry reporting `true`, a preflight reporting **false**, and **no gate** — it executed with an approval handler configured and the handler was never consulted. That is the bypass D-96 describes, in the two SDKs D-96 named as unaffected, and it is fail-OPEN. The rule is unchanged; its SCOPE is corrected, and now binds the gate, the §7.9.5 preflight, the §6.6.5 posture accessor and the `system.manifest.*` projection alike — a reader narrower than the gate reports a verdict the gate will not honour. The union is `OR` on `requires_approval` and `destructive` only; every other annotation describes behaviour rather than governance and stays instance-sourced. An implementation MUST NOT resolve it with the metadata-merge precedence, which lets the weaker declaration win in both directions. Two consequences: a metadata `requires_approval: false` no longer cancels a code-declared `true`, and the manifest publishes the enforced value. **This IS an SDK change** in all three. Governance: maintainer approval per GOVERNANCE.md § Decision Making. |
