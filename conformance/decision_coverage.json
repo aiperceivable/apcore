@@ -351,11 +351,12 @@
     },
     "D-118": {
       "title": "an empty `roles` list is omitted from the audit snapshot",
-      "kind": "deferred",
-      "note": "spec text only (v1.51.0); implementation deliberately deferred. Becomes `behavioural` the moment it is implemented.",
-      "cases": [],
-      "case_sketch": "Host: contextual_audit.json (it already carries identity cases). An identity with `roles: []` -> the audit identity snapshot has NO `roles` key at all. Asserting `roles == []` would NOT discriminate: that is exactly what the diverging SDK emits. The case must assert key ABSENCE. Control: a non-empty roles list IS present.",
-      "sketch_host": "contextual_audit.json"
+      "kind": "behavioural",
+      "cases": [
+        "contextual_audit.json#toggle_feature_omits_an_empty_roles_list_from_the_identity_snapshot",
+        "contextual_audit.json#toggle_feature_keeps_a_non_empty_roles_list"
+      ],
+      "discriminates": "An identity carrying `roles: []` must produce a snapshot with NO `roles` key. Asserting `roles: []` would not discriminate \u2014 that is exactly what the diverging SDK emitted \u2014 and `data_contains` is a SUBSET match, so an extra key passes it. The case therefore needs key ABSENCE, which the fixture could not express: `identity_must_not_contain_keys` was added for it and wired into all three drivers. The second case is the control: without it an SDK that simply never emits `roles` passes, and the decision is about the EMPTY list only. apcore-typescript was red on the first case before the fix."
     },
     "D-119": {
       "title": "`system.*` modules declare `open_world: false` explicitly",

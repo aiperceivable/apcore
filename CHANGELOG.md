@@ -192,9 +192,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > three SDKs had answered reasonably** — maintainer policy rather than audit findings, which is why
 > they were brought to the maintainer as a list rather than decided by the audit.
 >
-> **Implementation is deliberately deferred** until the v1.49.0/v1.50.0 branches are reviewed. Those
-> already carry 12,747 changed lines across four repositories, unreviewed; stacking a third wave on an
-> unreviewed base would bury any defect in it.
+> **Implementation was deliberately deferred** until the v1.49.0/v1.50.0 branches were reviewed —
+> those already carried 12,747 changed lines across four repositories, and stacking a third wave on
+> an unreviewed base would have buried any defect in it. Implementation has now begun, one decision
+> at a time and case-first: the discriminating conformance case is written and run against all three
+> SDKs BEFORE the implementation, so the decision lands pinned rather than believed. **D-118 has
+> landed; the other thirteen have not.** Each carries a `case_sketch` in
+> `conformance/decision_coverage.json` saying what its case looks like and what makes it red.
 
 - **An unknown extension point is an error; an empty one is not** (D-108). The `### Errors: No errors
   raised` row was written about the EMPTY case and read by one SDK as covering the UNKNOWN case, so a
@@ -216,11 +220,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a string; another discarded an entire module descriptor over one out-of-range integer.
 - **`reload_dependents` is deprecated for removal at v2.0** (D-121) — declared by all three SDKs,
   implemented by none. Replacement: an explicit `path_filter` covering the dependents.
+- **Landed (D-118):** an empty `roles` list is omitted from the audit identity snapshot. Writing the
+  case first is what made it work: `data_contains` is a SUBSET match, so asserting `roles: []` — the
+  obvious case — would have passed against the very SDK that emits it. The assertion had to be key
+  ABSENCE, which the fixture could not express until `identity_must_not_contain_keys` was added.
+  apcore-typescript was red; apcore-python and apcore-rust already conformed.
 - Also: `project_name` defaults to `"apcore"` (D-110); `remove()` clears the middleware
   duplicate-identity entry (D-114); circuit-breaker events carry the DECLARED subscriber type the DLQ
   path already uses (D-116); registered-namespace defaults do not answer for a legacy document (D-117);
-  an empty `roles` list is omitted from the audit identity snapshot (D-118); and every `system.*` module
-  declares `open_world: false` explicitly rather than inheriting a default that means the opposite
+  and every `system.*` module declares `open_world: false` explicitly rather than inheriting a default that means the opposite
   (D-119).
 
 ### Security (v1.50.0)

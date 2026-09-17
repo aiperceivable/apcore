@@ -214,6 +214,70 @@
           }
         }
       }
+    },
+    {
+      "id": "toggle_feature_omits_an_empty_roles_list_from_the_identity_snapshot",
+      "description": "D-118: an identity carrying `roles: []` produces an audit snapshot with NO `roles` key. The spec names only `id`, `type` and optionally `display_name`. Asserting `roles: []` would NOT discriminate \u2014 that is exactly what the diverging SDK emits, and `data_contains` is a SUBSET match, so an extra key passes it. The assertion has to be key ABSENCE, which is why this case needs `identity_must_not_contain_keys` rather than a richer `data_contains`.",
+      "module_id": "system.control.toggle_feature",
+      "context": {
+        "caller_id": "user-77",
+        "identity": {
+          "id": "user-77",
+          "type": "user",
+          "roles": []
+        }
+      },
+      "input": {
+        "module_id": "risky.module",
+        "enabled": false,
+        "reason": "incident-2345"
+      },
+      "expected": {
+        "event_type": "apcore.module.toggled",
+        "data_contains": {
+          "caller_id": "user-77",
+          "identity": {
+            "id": "user-77",
+            "type": "user"
+          }
+        },
+        "identity_must_not_contain_keys": [
+          "roles"
+        ]
+      }
+    },
+    {
+      "id": "toggle_feature_keeps_a_non_empty_roles_list",
+      "description": "The control for the case above. Without it, an SDK that simply never emits `roles` passes \u2014 and the decision is about the EMPTY list only.",
+      "module_id": "system.control.toggle_feature",
+      "context": {
+        "caller_id": "user-88",
+        "identity": {
+          "id": "user-88",
+          "type": "user",
+          "roles": [
+            "analyst"
+          ]
+        }
+      },
+      "input": {
+        "module_id": "risky.module",
+        "enabled": true,
+        "reason": "restore"
+      },
+      "expected": {
+        "event_type": "apcore.module.toggled",
+        "data_contains": {
+          "caller_id": "user-88",
+          "identity": {
+            "id": "user-88",
+            "type": "user",
+            "roles": [
+              "analyst"
+            ]
+          }
+        }
+      }
     }
   ]
 }
