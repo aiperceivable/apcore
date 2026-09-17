@@ -1,6 +1,6 @@
 {
   "_comment": "Which executed conformance case pins each decision. Enforced by conformance/check_decision_coverage.py.\n\nA decision recorded only in prose is a decision nothing verifies. This audit produced two false statements of exactly that kind -- D-96 claimed its union was 'unobservable' in two SDKs (it was a fail-open approval bypass in both, corrected as D-125), and the v1.10.0 row claimed all three SDKs accept a version hint (apcore-rust has no such parameter, corrected as D-126). Neither could be caught by a test, because the sentence itself said the test was unnecessary.\n\nUNLINKED MEANS UNCOVERED, deliberately. A case that pins a decision without saying so can be weakened by someone who does not know what it is for -- which is how approval_gate.json came to set both governance sources from one boolean and passed in all three SDKs while one of them had a bypass. If a case pins a decision, name it here.\n\n`discriminates` is not documentation. It must say what makes the case fail when an SDK regresses; if it cannot be written, the case is not discriminating and the decision is still unpinned.\n\nkinds: behavioural = needs a discriminating case | deferred = spec text only, no implementation to pin yet | unconstrained = the decision deliberately leaves the shape language-defined.\n\nThe 14 `deferred` entries carry a `case_sketch`: what the discriminating case looks like, what makes it RED, and which existing fixture should host it. Written BEFORE implementation on purpose. D-92 shows why \u2014 it landed in one SDK of three and nothing noticed, because the only thing that could have noticed was a case nobody had written yet. The case has to be written either way; writing it first costs nothing and forces the question \"what would make this red?\" at the moment it is cheapest to answer.",
-  "ratchet": 8,
+  "ratchet": 5,
   "ratchet_history": [
     {
       "value": 32,
@@ -47,12 +47,36 @@
     "D-74": {
       "title": "`Config.get(\"\")` is not an error",
       "kind": "behavioural",
-      "cases": []
+      "cases": [],
+      "sdk_tests": {
+        "python": [
+          "tests/test_config.py::TestEmptyKeyIsNotAnError"
+        ],
+        "typescript": [
+          "tests/test-config.test.ts"
+        ],
+        "rust": [
+          "tests/core_executor_spec.rs::config_get_empty_key_is_not_an_error"
+        ]
+      },
+      "discriminates": "Two assertions, because 'does not raise' alone is satisfied by a short-circuit `if not key: return None` \u2014 which ignores a caller-supplied default and is NOT 'like any other absent key', the decision's own wording. The second assertion is what pins it: `get(\"\", SENTINEL)` returns SENTINEL, and the empty-key result is asserted EQUAL to an absent non-empty key's rather than each being checked alone.\n\nVerified red two ways in Python and TypeScript: re-adding the deleted rejection clause reddens three of four, and the short-circuit reddens exactly the two that distinguish it \u2014 which is the evidence that the second assertion earns its place. apcore-rust's `get` takes no default, so its version asserts the empty key and an absent key agree on both `get` and `get_declared`.\n\nA control asserts a PRESENT key is unaffected: without it, an implementation returning the default for every key satisfies everything above.\n\nThis decision deleted a clause describing behaviour that never existed in any SDK \u2014 the Inputs row said an empty key is rejected, the Errors row in the same block said no errors are raised. A conformance case written from the spec would have failed on all three, which is why the authority is the implementations."
     },
     "D-75": {
       "title": "`Executor.call` must enforce the module-ID length bound at entry",
       "kind": "behavioural",
-      "cases": []
+      "cases": [],
+      "sdk_tests": {
+        "python": [
+          "tests/test_core_executor_spec.py::test_call_input_module_id_over_length"
+        ],
+        "typescript": [
+          "tests/test-executor.test.ts"
+        ],
+        "rust": [
+          "tests/core_executor_spec.rs::call_rejects_an_over_length_module_id_at_the_entry_guard"
+        ]
+      },
+      "discriminates": "The discriminator is WHICH CODE comes back, not that an error comes back at all. The registry enforces the same bound one step later, so an SDK with no entry check still fails the call \u2014 with INVALID_MODULE_ID replaced by MODULE_NOT_FOUND, from the wrong layer, after building the PipelineContext the guard exists to avoid. A test asserting only `raises`/`rejects` passes in both worlds.\n\nPaired with an AT-BOUND test: an id of exactly MAX_MODULE_ID_LENGTH must pass the guard and reach the registry (MODULE_NOT_FOUND). The two together pin the boundary; 'over-length is refused' alone is also satisfied by an off-by-one that refuses the bound itself.\n\nVerified red in apcore-rust by disabling the entry-guard length check, which turns the code from INVALID_MODULE_ID into MODULE_NOT_FOUND and reddens exactly the over-length test."
     },
     "D-76": {
       "title": "`ContextFactory.create_context(request)`",
@@ -158,7 +182,19 @@
     "D-86": {
       "title": "`Registry.register` validation order",
       "kind": "behavioural",
-      "cases": []
+      "cases": [],
+      "sdk_tests": {
+        "python": [
+          "tests/registry/test_registry.py::TestRegisterValidationOrder"
+        ],
+        "typescript": [
+          "tests/registry/test-register-validation-order.test.ts"
+        ],
+        "rust": [
+          "tests/registry_system_spec.rs::register_reports_structure_before_the_custom_validator"
+        ]
+      },
+      "discriminates": "Every test makes TWO checks fail AT ONCE and asserts which is reported. That is the entire discriminator: a test tripping one check at a time passes under every ordering, including the three the SDKs actually shipped \u2014 Python ran validator then streaming, TypeScript duplicate then validator, Rust streaming then validator then duplicate. A module that was malformed, validator-rejected AND duplicate at once reported three different errors.\n\nFour orderings are pinned (module_id first, then structure, then the custom validator, then duplicate) plus a CONTROL asserting each check still fires on its own \u2014 without which 'structure wins' is also satisfied by an implementation reporting a streaming error for everything, and 'validator wins' by one that never reaches the duplicate check.\n\nThe structure-before-duplicate test also asserts the INCUMBENT registration survives: a rejected register must not have removed or replaced what was already there.\n\nVerified red by replaying the two historical wrong orders: putting the duplicate check first reddens two tests in TypeScript, putting the validator before the structure check reddens two in both TypeScript and Rust, and the control stays green in every case.\n\nThe TypeScript tests route every assertion through a helper that turns a SYNCHRONOUS throw into a rejection: `register` is declared `Promise<void>` but the id and structure checks throw synchronously by design, so `expect(reg.register(...)).rejects` never receives a promise and reports the wrong thing."
     },
     "D-87": {
       "title": "the ACL audit-block surface is a language idiom",

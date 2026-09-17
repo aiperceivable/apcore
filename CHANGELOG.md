@@ -218,7 +218,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   different IDs, which `detect_id_conflicts` does not catch. Three readings are set out under
   **Open — not yet adjudicated** in the decision log, with a recommendation.
 
-  ### D-77 and D-83 — the SDK a decision was aligned TO is the one nobody tests
+  ### D-74, D-75 and D-86 — three boundary decisions, and why one assertion is not enough
+
+  All three were implemented everywhere; the coverage was uneven in a way that
+  keeps repeating. **D-74 had no test in any SDK.** D-75 had Python and
+  TypeScript, not Rust. D-86 had Python only.
+
+  Each one needed a SECOND assertion to be worth anything, and in each case the
+  first assertion alone is what an unwary test would have stopped at:
+
+  - **D-74** (`Config.get("")` is not an error) — "does not raise" is satisfied
+    by a short-circuit `if not key: return None`, which ignores a
+    caller-supplied default and is NOT "like any other absent key", the
+    decision's own wording. The empty-key result is therefore asserted EQUAL to
+    an absent non-empty key's. Measured: re-adding the deleted rejection clause
+    reddens three of four tests, while the short-circuit reddens exactly the two
+    that distinguish it — which is the evidence the second assertion earns its
+    place. The decision deleted a clause describing behaviour that never existed
+    in any SDK; the Inputs row said an empty key is rejected and the Errors row
+    in the same block said no errors are raised.
+
+  - **D-75** (the module-ID length bound at the entry guard) — the discriminator
+    is WHICH CODE comes back. The registry enforces the same bound one step
+    later, so an SDK with no entry check still fails the call, with
+    `INVALID_MODULE_ID` replaced by `MODULE_NOT_FOUND` from the wrong layer,
+    after building the `PipelineContext` the guard exists to avoid. A test
+    asserting only "it raises" passes in both worlds. Paired with an AT-BOUND
+    test, because "over-length is refused" alone is also satisfied by an
+    off-by-one that refuses the bound itself.
+
+  - **D-86** (`register` validation order) — every test makes TWO checks fail at
+    once and asserts which is reported. A test tripping one check at a time
+    passes under every ordering, including the three the SDKs actually shipped:
+    Python ran validator → streaming, TypeScript duplicate → validator, Rust
+    streaming → validator → duplicate. A module that was malformed,
+    validator-rejected AND duplicate at once reported three different errors.
+    Verified by replaying both historical wrong orders; the control — each check
+    still fires on its own — stays green in each, which is what separates a
+    wrong ORDER from a check that stopped working.
+
+  Two implementation details worth recording for anyone re-verifying these. The
+  TypeScript D-86 assertions route through a helper that turns a SYNCHRONOUS
+  throw into a rejection: `register` is declared `Promise<void>` but its id and
+  structure checks throw synchronously by design, so
+  `expect(reg.register(...)).rejects` never receives a promise and reports the
+  wrong thing. And the first draft of those tests used camelCase module ids,
+  which the id pattern rejects — every test failed on the id check, which
+  incidentally confirmed the id check is first and would have been a misleading
+  green if the ids had been valid but the order wrong.
+
+  `check_decision_coverage.py` also caught a `teststs/` typo in this batch's own
+  map entry, which is the eighth rot mode doing exactly what it was added for.
+
+    ### D-77 and D-83 — the SDK a decision was aligned TO is the one nobody tests
 
   Both were implemented everywhere. In both cases the gap was in the SDK the
   decision names as its authority, and for the same reason: the SDKs that had to
