@@ -471,6 +471,24 @@
       "kind": "unconstrained",
       "note": "Three conformant answers exist by design \u2014 compile-time refusal (apcore-rust), a deprecation warning (apcore-typescript), real resolution (apcore-python). A single fixture case cannot express 'not silent' across all three; each SDK pins its own.",
       "cases": []
+    },
+    "D-127": {
+      "title": "a symlink is recorded once, under its real path",
+      "kind": "behavioural",
+      "cases": [],
+      "sdk_tests": {
+        "python": [
+          "tests/registry/test_scanner.py"
+        ],
+        "typescript": [
+          "tests/registry/test-scanner-symlink-confinement.test.ts",
+          "tests/registry/test-scanner.test.ts"
+        ],
+        "rust": [
+          "tests/test_scanner_symlink_confinement.rs"
+        ]
+      },
+      "discriminates": "Per-SDK for the same reason as D-94: filesystem semantics, which the fixture `fs` primitive (a flat path->content map with no symlink) cannot express. Each SDK asserts the target is recorded ONCE under the ID derived from its canonical real path \u2014 the aliased-directory test asserts set equality `{real.mod}`, not membership, because membership is exactly what passed while the duplicate existed. `file_path` is asserted to be the real path, since an alias is a name and the loader has to open the target."
     }
   }
 }

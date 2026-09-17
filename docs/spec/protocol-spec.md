@@ -1,12 +1,12 @@
 ---
-description: "The canonical, normative apcore protocol specification (RFC 2119, v1.55.0): module, schema, naming, ACL, approval, error, config, and observability requirements for all conforming SDKs."
+description: "The canonical, normative apcore protocol specification (RFC 2119, v1.56.0): module, schema, naming, ACL, approval, error, config, and observability requirements for all conforming SDKs."
 ---
 
 # apcore — AI-Perceivable Core Standard Specification
 
 > **Canonical Specification** - This document is the authoritative specification for the apcore protocol
 
-> Version: 1.55.0
+> Version: 1.56.0
 > Status: Draft Specification (RFC 2119 Conformant)
 > Stability: Specification content is stable, pending reference implementation verification
 > Last Updated: 2026-09-16
@@ -638,12 +638,21 @@ Steps:
      For each entry (file or directory):
        a. If entry name matches a built-in row of §3.5, or matches any
           config.ignore_patterns entry under A25 (§9.2.3) → Skip
-       b. If entry is a symbolic link and config.follow_symlinks == false → Skip
+       b. If entry is a symbolic link:
+          - If config.follow_symlinks == false → Skip
+          - Otherwise resolve it to its canonical real path. If that path is not
+            inside the canonical extensions_root → Skip and issue a warning
+            (D-94). Otherwise continue with the resolved target (D-127).
        c. If entry is a directory:
           - If current depth >= config.max_depth (default 8) → Skip and issue warning
+          - If its canonical real path has already been visited → Skip (D-127:
+            this is what terminates a directory cycle and what stops an aliased
+            directory being discovered twice)
           - Otherwise → Recurse into it
        d. If entry is a file and extension belongs to supported_extensions:
-          - canonical_id ← directory_to_canonical_id(entry.path, extensions_root)
+          - real ← canonical real path of entry.path
+          - If real has already been recorded → Skip (D-127: recorded once)
+          - canonical_id ← directory_to_canonical_id(real, extensions_root)
           - If canonical_id passes validation → Append (entry.path, canonical_id) to modules
           - If validation fails → Log warning
   4. Perform detect_id_conflicts batch detection on modules
@@ -651,6 +660,50 @@ Steps:
 
 Complexity: O(n), where n is the number of filesystem entries
 ```
+
+> **D-127 (v1.56.0) — a symlink is recorded once, under its real path.**
+> `follow_symlinks: true` records the real target inside the root **once**; file
+> identity, module ID and visited-directory tracking are all keyed on the
+> **canonical real path**.
+>
+> Measured before the rule was written, with `follow_symlinks: true`:
+>
+> | | apcore-python | apcore-typescript | apcore-rust |
+> |---|---|---|---|
+> | symlinked FILE in root | `alias`, `real.target` | `real.target` | `real.target` |
+> | symlinked DIRECTORY in root | `aliasdir.…`, `real.…` | `real.…` | `aliasdir.…`, `real.…` |
+>
+> Two failures, in opposite directions. **Duplicate discovery**: one file reached
+> by two paths became two modules with different IDs, which step 4's
+> `detect_id_conflicts` cannot catch because the IDs differ — so an operator
+> laying out extensions with symlinks got duplicate registrations, and the same
+> module executed under two names. **A half-inert key**: `follow_symlinks` never
+> reached the file branch in two SDKs, so it governed directories and did nothing
+> for files — the §9.1.3 shape a declared key must not have.
+>
+> Two points the rule pins explicitly, because leaving either open leaves the
+> result unstable:
+>
+> 1. **Containment is checked on the resolved real path**, and deduplication uses
+>    that same path. A check on the link and a dedupe on the link are two
+>    different keys, and only the real path answers "is this the same file".
+> 2. **The module ID is derived from the canonical real path relative to the
+>    root**, never from whichever alias the traversal happened to reach first.
+>    Deriving it from the alias makes the registered ID depend on directory
+>    iteration order, which is not stable across filesystems or platforms.
+>
+> Directory symlinks are covered by the same key: an aliased directory whose real
+> path was already visited is skipped, which both prevents the duplicate and
+> terminates a cycle. All three SDKs already terminated on a cycle; none of them
+> keyed identity consistently.
+>
+> **Not in scope: TOCTOU.** A single canonical check cannot stop a party who can
+> replace the link between the scan and the load. This rule fixes discovery
+> semantics; whether a stronger file-handle or directory-descriptor level
+> defence is warranted depends on whether the extensions root is attacker-
+> writable, which is a threat-model question and is filed as a separate security
+> assessment rather than folded in here.
+
 
 ---
 

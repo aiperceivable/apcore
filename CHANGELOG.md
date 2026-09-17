@@ -9,8 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-> Ships `PROTOCOL_SPEC` **v1.48.0 → v1.55.0**: fifty-three cross-language divergences settled
-> (**D-74 – D-126**), found by a deep-chain (call-graph) audit of the three core SDKs — the last
+> Ships `PROTOCOL_SPEC` **v1.48.0 → v1.56.0**: fifty-four cross-language divergences settled
+> (**D-74 – D-127**), found by a deep-chain (call-graph) audit of the three core SDKs — the last
 > four (**D-122** – **D-125**) by reviewing the audit's own output rather than by the audit itself,
 > and **D-124**/**D-125** by the maintainer reviewing the branches. **D-125 corrects a sentence of
 > D-96 that was asserted without being checked** and left a fail-open approval bypass standing in
@@ -25,6 +25,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > `approval_gate.json` passes in all three SDKs off two different sources of truth. A case that
 > cannot discriminate between two implementations is not testing the thing that differs — which is
 > why this release changes fixtures as well as text.
+
+### Security (v1.56.0)
+
+- **A symlink is recorded once, under its real path** (D-127). `follow_symlinks: true` now records
+  the real target inside the root **once**; file identity, module ID and visited-directory tracking
+  are all keyed on the **canonical real path**. Measured before the rule was written: one file
+  reached by two paths became **two modules with different IDs** in apcore-python (file and
+  directory) and apcore-rust (directory), which step 4's `detect_id_conflicts` cannot catch
+  precisely because the IDs differ — the same module registered and executed under two names. In the
+  other direction, `follow_symlinks` never reached the file branch in apcore-typescript or
+  apcore-rust, so it governed directories and did nothing for files: a declared key that does not
+  reach its mechanism. Two points are pinned explicitly because leaving either open leaves the result
+  unstable — containment is checked on the resolved real path and dedupe uses that same path, and the
+  module ID is derived from the canonical real path rather than from whichever alias the traversal
+  reached first, which would make the registered ID depend on directory iteration order.
+  **TOCTOU is out of scope and filed separately**: a single canonical check cannot stop a party who
+  can replace the link between the scan and the load, and whether a file-handle level defence is
+  warranted is a threat-model question about whether the extensions root is attacker-writable.
+
+- **Two further apcore-typescript defects surfaced while implementing it**, both the same shape — a
+  path compared against a root that was normalised but not canonicalised. The **containment check**
+  measured a `realpathSync` result against `resolve(root)`, so under any root with a symlinked
+  ancestor (`/tmp` → `/private/tmp` on macOS, `/var` → `/private/var`, a symlinked home) every
+  symlink inside the root was rejected as escaping — fail-closed, but it disabled `follow_symlinks`
+  entirely under such a root. And **`id_map.overrides`** prefix-matched against the same
+  non-canonical root, so under a symlinked ancestor every override was **silently skipped**: the map
+  loads, discovery succeeds, and the IDs are simply not the ones the operator declared.
 
 ### Changed — specification (v1.55.0)
 

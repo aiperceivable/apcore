@@ -960,9 +960,11 @@ verification here took one script per SDK.
 
 ---
 
-# Open — not yet adjudicated
+# Adjudicated after the fact
 
-## O-1 — `extensions.follow_symlinks: true` does not reach the file branch in two SDKs
+## O-1 — RESOLVED as D-127 (spec v1.56.0)
+
+**`extensions.follow_symlinks: true` does not reach the file branch in two SDKs**
 
 **Found** 2026-09-17, while pinning D-94. Not a D-94 defect: every SDK's
 containment check is correct, and all three now have regression tests for it.
@@ -1017,3 +1019,49 @@ Reading 2 is the one this note recommends: it makes the key reach its mechanism,
 which is what §9.1.3 requires, without manufacturing a second module out of a
 convenience symlink. It is also the only reading under which the three SDKs can
 agree without either peer adopting a duplicate-module hazard.
+
+
+**Resolution.** Adjudicated as reading 2 with two points pinned that the original
+note left open, and a third scenario it had not covered:
+
+1. Containment is checked on the **resolved real path**, and deduplication uses
+   that same path.
+2. The module ID is derived from the **canonical real path relative to the
+   root**, never from whichever alias the traversal reached first — otherwise the
+   registered ID depends on directory iteration order.
+3. Directory symlinks are covered by the same key: an aliased directory whose
+   real path was already visited is skipped, which both removes the duplicate and
+   terminates a cycle.
+
+Minimal semantics: *`follow_symlinks: true` records the real target inside the
+root once; file identity, module ID and visited-directory tracking are all keyed
+on the canonical real path.*
+
+Measured again after implementation — all three converge on `['real.target']` for
+an aliased file and `['real.nested.target']` for an aliased directory.
+
+**TOCTOU is explicitly out of scope** and filed separately: a single canonical
+check cannot stop a party who can replace the link between the scan and the load.
+Whether a file-handle or directory-descriptor level defence is warranted depends
+on whether the extensions root is attacker-writable, which is a threat-model
+question rather than a discovery-semantics one.
+
+**Two further defects surfaced while implementing it**, both in apcore-typescript
+and both of the same shape — a path compared against a root that was normalised
+but not canonicalised:
+
+* The **containment check** compared a `realpathSync` result against
+  `resolve(root)`. Under any root with a symlinked ancestor (`/tmp` ->
+  `/private/tmp` on macOS, `/var` -> `/private/var`, a symlinked home) every
+  symlink inside the root was rejected as escaping. Fail-CLOSED, so not a hole,
+  but it disabled `follow_symlinks` entirely under such a root.
+* **`id_map.overrides`** computed its relative path by prefix-matching against
+  the same non-canonical root, so under a symlinked ancestor every override was
+  **silently skipped** — the map loads, discovery succeeds, and the IDs are
+  simply not the ones the operator declared. That is the worst shape for this
+  surface, and it is the one `#118` spent a release removing elsewhere.
+
+Both were found by the existing suite rather than by inspection: the first by the
+D-127 scenario itself, the second by `test-registry.test.ts`. A third guard, the
+browser-entry import graph, caught a top-level `node:fs` import added during the
+fix — the lazy `ensureNodeModules` accessor is used instead.
