@@ -270,12 +270,25 @@ A typo then becomes a wiring bug that first surfaces at `apply()`, far from the
 
 > **Added in spec v1.49.0** (D-91).
 
-`unregister(point_name, extension)` identifies its target by identity/equality
-against a value the caller supplies. In a language where the manager **owns** its
+`unregister(point_name, extension)` identifies its target by IDENTITY against a
+value the caller supplies. In a language where the manager **owns** its
 extensions, a caller cannot borrow one back out of the manager and hand it to a
 method that also needs mutable access — so an implementation whose only removal
 signature takes a borrowed extension has a method that compiles but that no
 caller outside the manager can invoke for a positive removal.
+
+> **D-128 (v1.57.0) — identity, not equality.** This paragraph used to read
+> "by identity/equality", contradicting its own Inputs row above ("identity
+> comparison") two paragraphs earlier, and one SDK took the permissive
+> reading. apcore-python removed with `list.remove`, which compares using
+> `__eq__`: for any extension type that defines equality — a dataclass
+> middleware, for one — `unregister(second)` deleted `first`. A host removing
+> the second of two identically-configured middlewares **kept the one it
+> wanted gone and lost the one it wanted kept**, with nothing raised and
+> nothing logged. Implementations **MUST** compare by identity (Python `is`,
+> TypeScript `===`, a pointer address or a registration handle in Rust) and
+> **MUST NOT** treat value equality as authorising a removal. Two registrations
+> that compare equal are two registrations.
 
 An implementation **MUST** provide at least one removal path a host can actually
 reach: the identity form where the language allows it, or an equivalent keyed on

@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-> Ships `PROTOCOL_SPEC` **v1.48.0 → v1.56.0**: fifty-four cross-language divergences settled
+> Ships `PROTOCOL_SPEC` **v1.48.0 → v1.57.0**: fifty-four cross-language divergences settled
 > (**D-74 – D-127**), found by a deep-chain (call-graph) audit of the three core SDKs — the last
 > four (**D-122** – **D-125**) by reviewing the audit's own output rather than by the audit itself,
 > and **D-124**/**D-125** by the maintainer reviewing the branches. **D-125 corrects a sentence of
@@ -25,6 +25,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > `approval_gate.json` passes in all three SDKs off two different sources of truth. A case that
 > cannot discriminate between two implementations is not testing the thing that differs — which is
 > why this release changes fixtures as well as text.
+
+### Fixed (v1.57.0)
+
+- **`unregister` removes by identity, not equality** (D-128). Found while pinning
+  D-91: answering "is this removal path reachable?" meant writing the call from
+  outside the manager in all three SDKs, and that turned up a different defect in
+  the same contract. `extension-system.md` said two things — its Inputs row,
+  "the exact extension object to remove (**identity comparison**)", and its own
+  prose two paragraphs later, "identifies its target by **identity/equality**".
+  apcore-python took the permissive reading and removed with `list.remove`, which
+  compares using `__eq__`. Any extension type that defines equality — a dataclass
+  middleware is the ordinary case — makes two identically-configured
+  registrations compare equal, so `unregister(second)` deleted `first`: **a host
+  removing the second of two identically-configured middlewares kept the one it
+  wanted gone and lost the one it wanted kept**, with nothing raised, nothing
+  logged, and `True` returned. Fixed in apcore-python; apcore-typescript
+  (`indexOf`, `===`) and apcore-rust (`object_address()`) already conformed, and
+  the contradictory sentence is corrected to match the row it contradicted.
+
+  **All three SDKs already had a test named `unregister.removes.identity`, and
+  not one of them could tell identity from equality.** Each registered two
+  DEFAULT-EQUALITY stubs, whose `==` / `toEqual` / value comparison *is*
+  identity, so the scenario answers the same either way; apcore-typescript's went
+  further and asserted with `toEqual`, a deep structural comparison — the very
+  semantics under test. Each SDK now has a test whose two registrations are
+  equal-but-distinct BY CONSTRUCTION, with both preconditions asserted so it
+  cannot silently degrade back, plus a control: an equal-but-never-registered
+  object is a no-op, without which "removal is by identity" is also satisfied by
+  an implementation that removes the last value-equal entry.
+
+- **D-91's own removal path had no test that answered its question.**
+  `unregister_handle` — the method the decision added to apcore-rust — was
+  exercised by a single line and by a unit test inside the crate. A unit test
+  cannot answer a REACHABILITY question: it can reach private state a host
+  cannot. It now has an integration test across the crate boundary, registering
+  two value-equal extensions so the handle is the only thing distinguishing them,
+  verified red by making `unregister_handle` drop index 0. A stale comment was
+  corrected alongside it: the identity test ended with `// And the handle form
+  removes exactly one too` above a second call to the *identity* form.
 
 ### Security (v1.56.0)
 

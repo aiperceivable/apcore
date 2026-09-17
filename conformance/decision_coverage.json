@@ -1,6 +1,6 @@
 {
   "_comment": "Which executed conformance case pins each decision. Enforced by conformance/check_decision_coverage.py.\n\nA decision recorded only in prose is a decision nothing verifies. This audit produced two false statements of exactly that kind -- D-96 claimed its union was 'unobservable' in two SDKs (it was a fail-open approval bypass in both, corrected as D-125), and the v1.10.0 row claimed all three SDKs accept a version hint (apcore-rust has no such parameter, corrected as D-126). Neither could be caught by a test, because the sentence itself said the test was unnecessary.\n\nUNLINKED MEANS UNCOVERED, deliberately. A case that pins a decision without saying so can be weakened by someone who does not know what it is for -- which is how approval_gate.json came to set both governance sources from one boolean and passed in all three SDKs while one of them had a bypass. If a case pins a decision, name it here.\n\n`discriminates` is not documentation. It must say what makes the case fail when an SDK regresses; if it cannot be written, the case is not discriminating and the decision is still unpinned.\n\nkinds: behavioural = needs a discriminating case | deferred = spec text only, no implementation to pin yet | unconstrained = the decision deliberately leaves the shape language-defined.\n\nThe 14 `deferred` entries carry a `case_sketch`: what the discriminating case looks like, what makes it RED, and which existing fixture should host it. Written BEFORE implementation on purpose. D-92 shows why \u2014 it landed in one SDK of three and nothing noticed, because the only thing that could have noticed was a case nobody had written yet. The case has to be written either way; writing it first costs nothing and forces the question \"what would make this red?\" at the moment it is cheapest to answer.",
-  "ratchet": 11,
+  "ratchet": 10,
   "ratchet_history": [
     {
       "value": 32,
@@ -196,7 +196,19 @@
     "D-91": {
       "title": "a removal method a host cannot call does not satisfy the contract",
       "kind": "behavioural",
-      "cases": []
+      "cases": [],
+      "sdk_tests": {
+        "python": [
+          "tests/test_extension_system_spec.py::test_extension_system_unregister_removes_extension"
+        ],
+        "typescript": [
+          "tests/extension-system_spec.test.ts"
+        ],
+        "rust": [
+          "tests/extension_system_spec.rs::unregister_handle_removes_the_registration_it_was_given"
+        ]
+      },
+      "discriminates": "The decision is about REACHABILITY, so the test must live where a host lives. apcore-rust's is an integration test in `tests/`, across the crate boundary: a unit test inside the manager's own module can reach private state a host cannot, and would answer the decision's question wrongly. It registers two VALUE-EQUAL extensions so the handle is the only thing that distinguishes them, removes by handle, and asserts the surviving `Arc` is the other one \u2014 verified red by making `unregister_handle` drop index 0. A spent handle must then be a silent no-op.\n\nPython and TypeScript reach the identity form directly: the caller already holds the object it registered, so there is nothing to borrow back.\n\nA stale comment was corrected while pinning this: apcore-rust's identity test ended with `// And the handle form removes exactly one too` above a second call to the IDENTITY form. `unregister_handle` \u2014 the method D-91 added \u2014 was exercised by one line elsewhere and by a unit test inside the crate; it now has a test that answers the decision's actual question."
     },
     "D-92": {
       "title": "`TaskStoreError` must exist before it can be raised",
@@ -606,6 +618,23 @@
         ]
       },
       "discriminates": "Per-SDK for the same reason as D-94: filesystem semantics, which the fixture `fs` primitive (a flat path->content map with no symlink) cannot express. Each SDK asserts the target is recorded ONCE under the ID derived from its canonical real path \u2014 the aliased-directory test asserts set equality `{real.mod}`, not membership, because membership is exactly what passed while the duplicate existed. `file_path` is asserted to be the real path, since an alias is a name and the loader has to open the target."
+    },
+    "D-128": {
+      "title": "`unregister` removes by identity, not equality",
+      "kind": "behavioural",
+      "cases": [],
+      "sdk_tests": {
+        "python": [
+          "tests/test_extension_system_spec.py::test_extension_system_unregister_removes_by_identity_not_equality"
+        ],
+        "typescript": [
+          "tests/extension-system_spec.test.ts"
+        ],
+        "rust": [
+          "tests/extension_system_spec.rs::unregister_removes_by_identity_not_equality"
+        ]
+      },
+      "discriminates": "The two registrations must be EQUAL BY VALUE and DISTINCT BY IDENTITY, and each test asserts both preconditions so it cannot silently degrade into the test it replaced. That is the entire discriminator, and its absence is why nothing caught the defect: all three SDKs already had a test named `unregister.removes.identity` and not one could tell the two semantics apart, because each registered two DEFAULT-EQUALITY stubs whose `==` / `toEqual` / value comparison IS identity. apcore-typescript's asserted with `toEqual`, a deep structural comparison \u2014 the very semantics under test.\n\nPython uses a dataclass middleware (equality generated), TypeScript two structurally identical stubs asserted `toEqual` but `not.toBe`, Rust two `NamedMiddleware` with the same name asserted `!Arc::ptr_eq`.\n\nEach carries a CONTROL: an equal-but-never-registered object must be a no-op. Without it, 'removal is by identity' is also satisfied by an implementation that removes the LAST value-equal entry \u2014 still wrong, and still passing the main test whenever only one registration exists.\n\nVerified red in all three by restoring value-equality removal: `list.remove` in Python, a structural `findIndex` in TypeScript, a discriminant+Debug comparison in Rust."
     }
   }
 }

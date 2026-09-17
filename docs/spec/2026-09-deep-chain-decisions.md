@@ -1129,3 +1129,45 @@ Both were found by the existing suite rather than by inspection: the first by th
 D-127 scenario itself, the second by `test-registry.test.ts`. A third guard, the
 browser-entry import graph, caught a top-level `node:fs` import added during the
 fix — the lazy `ensureNodeModules` accessor is used instead.
+
+---
+
+## D-128 — `unregister` removes by identity, not equality
+
+**Found while pinning D-91.** D-91 asked whether a removal path is *reachable*;
+answering it meant writing the call from outside the manager in all three SDKs,
+and that turned up a different defect in the same contract.
+
+**Status quo.** `extension-system.md` said two things. Its Inputs row: "the exact
+extension object to remove (**identity comparison**)". Its own prose two
+paragraphs later: "identifies its target by **identity/equality**". apcore-python
+took the permissive reading and removed with `list.remove`, which compares using
+`__eq__`. apcore-typescript uses `indexOf` (`===`) and apcore-rust compares
+`object_address()`; both are identity.
+
+The consequence is not theoretical. Any extension type that defines equality — a
+dataclass middleware is the ordinary case — makes two identically-configured
+registrations compare equal, and `unregister(second)` then deletes `first`.
+**A host removing the second of two identically-configured middlewares keeps the
+one it wanted gone and loses the one it wanted kept.** Nothing is raised, nothing
+is logged, and `unregister` returns `True`.
+
+**Decision.** Removal compares by IDENTITY — Python `is`, TypeScript `===`, a
+pointer address or a registration handle in Rust. Value equality **MUST NOT**
+authorise a removal. Two registrations that compare equal are two registrations.
+The permissive "identity/equality" wording is corrected to match the Inputs row
+it contradicted.
+
+**Authority.** apcore-typescript + apcore-rust, and the contract's own Inputs
+row, which has said "identity comparison" since it was written.
+
+**Why nothing caught it.** All three SDKs had a test named
+`unregister.removes.identity`, and not one of them could tell identity from
+equality: each registered two *default-equality* stubs, whose `==` / `toEqual` /
+value comparison IS identity, so the scenario answers the same either way.
+apcore-typescript's went further and asserted with `toEqual`, a deep structural
+comparison — the very semantics under test. A case that cannot distinguish the
+two implementations is not testing the thing that differs, which is the sentence
+this whole audit opened with. Each SDK now has a test whose two registrations are
+equal-but-distinct by construction, with the precondition asserted so it cannot
+silently degrade, plus a control: an equal-but-never-registered object is a no-op.
