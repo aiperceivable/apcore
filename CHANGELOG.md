@@ -196,8 +196,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > those already carried 12,747 changed lines across four repositories, and stacking a third wave on
 > an unreviewed base would have buried any defect in it. Implementation has now begun, one decision
 > at a time and case-first: the discriminating conformance case is written and run against all three
-> SDKs BEFORE the implementation, so the decision lands pinned rather than believed. **D-118 has
-> landed; the other thirteen have not.** Each carries a `case_sketch` in
+> SDKs BEFORE the implementation, so the decision lands pinned rather than believed. **D-110, D-118 and D-119 have landed; the other eleven have not.** Each carries a `case_sketch` in
 > `conformance/decision_coverage.json` saying what its case looks like and what makes it red.
 
 - **An unknown extension point is an error; an empty one is not** (D-108). The `### Errors: No errors
@@ -225,7 +224,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   obvious case — would have passed against the very SDK that emits it. The assertion had to be key
   ABSENCE, which the fixture could not express until `identity_must_not_contain_keys` was added.
   apcore-typescript was red; apcore-python and apcore-rust already conformed.
-- Also: `project_name` defaults to `"apcore"` (D-110); `remove()` clears the middleware
+- **Landed (D-110):** `project_name` defaults to `"apcore"`. The paired case is the decision, not a
+  nicety — D-110 was settled on internal consistency rather than an SDK majority, so the fixture
+  asserts that `system.health.summary` reports the same value in the SAME configuration. Without it
+  an SDK could satisfy `manifest.full` and still have its two system modules disagree about the same
+  fact in the same process, which is the state the decision removes. apcore-python and
+  apcore-typescript were red; apcore-rust already returned `"apcore"`.
+- **Landed (D-119):** every `system.*` module declares `open_world: false`. The case reads
+  `get_definition().annotations` — the surface `system.manifest.*` publishes, so it is what a
+  consumer sees and the one shape all three SDKs share — and carries an `at_least: 1` guard, because
+  with no system modules registered "every module conforms" is vacuously true. apcore-python and
+  apcore-rust were red, both by inheriting a default of `true` that means the opposite of the
+  intended value; that inheritance is the second half of the decision.
+- Also: `remove()` clears the middleware
   duplicate-identity entry (D-114); circuit-breaker events carry the DECLARED subscriber type the DLQ
   path already uses (D-116); registered-namespace defaults do not answer for a legacy document (D-117);
   and every `system.*` module declares `open_world: false` explicitly rather than inheriting a default that means the opposite

@@ -287,11 +287,12 @@
     },
     "D-110": {
       "title": "`project_name` defaults to `\"apcore\"`",
-      "kind": "deferred",
-      "note": "spec text only (v1.51.0); implementation deliberately deferred. Becomes `behavioural` the moment it is implemented.",
-      "cases": [],
-      "case_sketch": "Host: system_modules_hardening.json. `manifest.full` with no `project.name` configured -> project_name `\"apcore\"`; an SDK returning `\"\"` is red. Pair it with a `health.summary` case in the SAME configuration asserting the same value \u2014 the decision was taken on internal consistency, so a case that pins only one of the two modules leaves the contradiction it removed unpinned.",
-      "sketch_host": "system_modules_hardening.json"
+      "kind": "behavioural",
+      "cases": [
+        "system_modules_hardening.json#manifest_full_project_name_defaults_to_apcore",
+        "system_modules_hardening.json#health_summary_project_name_agrees_with_manifest_full"
+      ],
+      "discriminates": "With no `project.name` configured, `manifest.full` must report `\"apcore\"`; an SDK returning `\"\"` is red \u2014 apcore-python and apcore-typescript both were. The SECOND case is the decision, not a nicety: D-110 was settled on internal consistency rather than an SDK majority, so a case pinning only `manifest.full` could be satisfied while an SDK's two system modules still disagreed about the same fact in the same process. It asserts `health.summary` reports the same value in the SAME configuration."
     },
     "D-111": {
       "title": "a bulk reload audits per module, with a correlation id",
@@ -360,11 +361,11 @@
     },
     "D-119": {
       "title": "`system.*` modules declare `open_world: false` explicitly",
-      "kind": "deferred",
-      "note": "spec text only (v1.51.0); implementation deliberately deferred. Becomes `behavioural` the moment it is implemented.",
-      "cases": [],
-      "case_sketch": "Host: system_modules_hardening.json. For every registered `system.*` module, `annotations.open_world` is `false`. The decision's second half is that it is written out EXPLICITLY rather than inherited \u2014 a language default of `true` means the opposite of the intended value, which is how the divergence arose \u2014 so the case should read the declared annotations rather than an effective value computed with defaults applied.",
-      "sketch_host": "system_modules_hardening.json"
+      "kind": "behavioural",
+      "cases": [
+        "system_modules_hardening.json#system_modules_declare_open_world_false"
+      ],
+      "discriminates": "Every registered `system.*` module reports `annotations.open_world == false` through `get_definition()` \u2014 the surface `system.manifest.*` publishes, which is what a consumer sees and the one shape all three SDKs share. `at_least: 1` is the guard against a vacuous pass: with no system modules registered, 'every module conforms' is trivially true. apcore-python and apcore-rust were red, both by inheriting a default of `true` that means the opposite of the intended value \u2014 which is the second half of the decision, and why the case reads the declared annotation rather than an effective one."
     },
     "D-120": {
       "title": "error timestamps are `Z` with millisecond precision",

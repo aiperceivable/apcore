@@ -229,7 +229,7 @@
     },
     {
       "id": "rust_register_returns_result",
-      "description": "Rust register_sys_modules returns Result<SysModulesContext, SysModuleError> — Ok(SysModulesContext) on success, Err(SysModuleError) on failure. The Ok arm carries the registered-module map and the shared EventEmitter/ToggleState/ErrorHistory/UsageCollector handles, matching apcore-python's returned context dict; it is NOT unit.",
+      "description": "Rust register_sys_modules returns Result<SysModulesContext, SysModuleError> \u2014 Ok(SysModulesContext) on success, Err(SysModuleError) on failure. The Ok arm carries the registered-module map and the shared EventEmitter/ToggleState/ErrorHistory/UsageCollector handles, matching apcore-python's returned context dict; it is NOT unit.",
       "language": "rust",
       "setup": {
         "simulated_failure": null
@@ -248,7 +248,7 @@
     },
     {
       "id": "reload_order_is_topological_not_alphabetical",
-      "description": "Bulk reload MUST order by the declared dependency graph, and the only way to observe that is a graph whose topological order DISAGREES with the alphabet. `executor.alpha` depends on `executor.zulu`, so the dependency order is zulu-then-alpha while a plain sort yields alpha-then-zulu. `reload_with_path_filter` cannot discriminate — its three modules declare no dependencies on each other, so every permutation is a valid topological order and an assertion there passes whatever the SDK does. Both apcore-python and apcore-typescript degenerated to alphabetical for the same underlying reason (the metadata merge dropped `dependencies` before the post-registration accessor could see it) and each fixed it with a repo-local test; nothing proved the three agree. See apcore-typescript#35.",
+      "description": "Bulk reload MUST order by the declared dependency graph, and the only way to observe that is a graph whose topological order DISAGREES with the alphabet. `executor.alpha` depends on `executor.zulu`, so the dependency order is zulu-then-alpha while a plain sort yields alpha-then-zulu. `reload_with_path_filter` cannot discriminate \u2014 its three modules declare no dependencies on each other, so every permutation is a valid topological order and an assertion there passes whatever the SDK does. Both apcore-python and apcore-typescript degenerated to alphabetical for the same underlying reason (the metadata merge dropped `dependencies` before the post-registration accessor could see it) and each fixed it with a repo-local test; nothing proved the three agree. See apcore-typescript#35.",
       "setup": {
         "registered_modules": [
           "executor.alpha",
@@ -280,10 +280,46 @@
         ],
         "orders_differ": true
       }
+    },
+    {
+      "id": "manifest_full_project_name_defaults_to_apcore",
+      "description": "D-110: with no `project.name` configured, `system.manifest.full` reports project_name `\"apcore\"`. Two SDKs reported `\"\"` while their own `system.health.summary` already reported `\"apcore\"` \u2014 the decision was taken on internal consistency rather than an SDK majority, so the paired case below is part of it, not a nicety.",
+      "action": {
+        "module": "system.manifest.full",
+        "input": {},
+        "config": {}
+      },
+      "expected": {
+        "project_name": "apcore"
+      }
+    },
+    {
+      "id": "health_summary_project_name_agrees_with_manifest_full",
+      "description": "D-110, the other half. In the SAME configuration `system.health.summary` reports the same project_name. A case pinning only `manifest.full` would leave the contradiction the decision removed unpinned \u2014 an SDK could satisfy it and still have its two system modules disagree.",
+      "action": {
+        "module": "system.health.summary",
+        "input": {},
+        "config": {}
+      },
+      "expected": {
+        "project_name": "apcore"
+      }
+    },
+    {
+      "id": "system_modules_declare_open_world_false",
+      "description": "D-119: every registered `system.*` module DECLARES `open_world: false` \u2014 no system module reaches an external system. The second half of the decision is that it is written out rather than inherited: the language default is `true`, which means the opposite of the intended value, and that is how the divergence arose. So the assertion reads the module's DECLARED annotations rather than an effective value computed with defaults applied. The read is get_definition().annotations rather than any per-language class attribute: that is the surface system.manifest.* publishes, so it is what a consumer actually sees, and it is the one shape all three SDKs share.",
+      "action": {
+        "enumerate": "system.*",
+        "read": "get_definition(module_id).annotations.open_world"
+      },
+      "expected": {
+        "every_value": false,
+        "at_least": 1
+      }
     }
   ],
   "driver_contract": {
-    "ordering_needs_a_disagreeing_graph": "Assert `reload_order_observed` as an ORDERED list against the sequence the SDK actually reloaded in — the unregister/register calls, not a field in the response. A driver that reads back a report is asserting a relabelling, not the order work happened in. `alphabetical_order_would_be` is stated so a driver can show the two differ; a case where they coincide proves nothing, which is exactly the state `reload_with_path_filter` is in.",
-    "dependencies_must_survive_registration": "The dependency must be declared through the SAME path an application uses, and read back through the post-registration accessor. Both SDKs that had this bug lost `dependencies` in the metadata merge while discovery-time sorting kept working — so a driver that supplies the graph directly to the sort would pass against an implementation whose accessor returns nothing."
+    "ordering_needs_a_disagreeing_graph": "Assert `reload_order_observed` as an ORDERED list against the sequence the SDK actually reloaded in \u2014 the unregister/register calls, not a field in the response. A driver that reads back a report is asserting a relabelling, not the order work happened in. `alphabetical_order_would_be` is stated so a driver can show the two differ; a case where they coincide proves nothing, which is exactly the state `reload_with_path_filter` is in.",
+    "dependencies_must_survive_registration": "The dependency must be declared through the SAME path an application uses, and read back through the post-registration accessor. Both SDKs that had this bug lost `dependencies` in the metadata merge while discovery-time sorting kept working \u2014 so a driver that supplies the graph directly to the sort would pass against an implementation whose accessor returns nothing."
   }
 }
