@@ -1,5 +1,5 @@
 {
-  "_comment": "Which executed conformance case pins each decision. Enforced by conformance/check_decision_coverage.py.\n\nA decision recorded only in prose is a decision nothing verifies. This audit produced two false statements of exactly that kind -- D-96 claimed its union was 'unobservable' in two SDKs (it was a fail-open approval bypass in both, corrected as D-125), and the v1.10.0 row claimed all three SDKs accept a version hint (apcore-rust has no such parameter, corrected as D-126). Neither could be caught by a test, because the sentence itself said the test was unnecessary.\n\nUNLINKED MEANS UNCOVERED, deliberately. A case that pins a decision without saying so can be weakened by someone who does not know what it is for -- which is how approval_gate.json came to set both governance sources from one boolean and passed in all three SDKs while one of them had a bypass. If a case pins a decision, name it here.\n\n`discriminates` is not documentation. It must say what makes the case fail when an SDK regresses; if it cannot be written, the case is not discriminating and the decision is still unpinned.\n\nkinds: behavioural = needs a discriminating case | deferred = spec text only, no implementation to pin yet | unconstrained = the decision deliberately leaves the shape language-defined.",
+  "_comment": "Which executed conformance case pins each decision. Enforced by conformance/check_decision_coverage.py.\n\nA decision recorded only in prose is a decision nothing verifies. This audit produced two false statements of exactly that kind -- D-96 claimed its union was 'unobservable' in two SDKs (it was a fail-open approval bypass in both, corrected as D-125), and the v1.10.0 row claimed all three SDKs accept a version hint (apcore-rust has no such parameter, corrected as D-126). Neither could be caught by a test, because the sentence itself said the test was unnecessary.\n\nUNLINKED MEANS UNCOVERED, deliberately. A case that pins a decision without saying so can be weakened by someone who does not know what it is for -- which is how approval_gate.json came to set both governance sources from one boolean and passed in all three SDKs while one of them had a bypass. If a case pins a decision, name it here.\n\n`discriminates` is not documentation. It must say what makes the case fail when an SDK regresses; if it cannot be written, the case is not discriminating and the decision is still unpinned.\n\nkinds: behavioural = needs a discriminating case | deferred = spec text only, no implementation to pin yet | unconstrained = the decision deliberately leaves the shape language-defined.\n\nThe 14 `deferred` entries carry a `case_sketch`: what the discriminating case looks like, what makes it RED, and which existing fixture should host it. Written BEFORE implementation on purpose. D-92 shows why \u2014 it landed in one SDK of three and nothing noticed, because the only thing that could have noticed was a case nobody had written yet. The case has to be written either way; writing it first costs nothing and forces the question \"what would make this red?\" at the moment it is cheapest to answer.",
   "ratchet": 21,
   "ratchet_history": [
     {
@@ -273,85 +273,113 @@
       "title": "an unknown extension point is an error; an empty one is not",
       "kind": "deferred",
       "note": "spec text only (v1.51.0); implementation deliberately deferred. Becomes `behavioural` the moment it is implemented.",
-      "cases": []
+      "cases": [],
+      "case_sketch": "Host: a new extension-point fixture (none of the 80 covers this surface). TWO cases, and the second is the control. (1) `get`/`get_all`/`unregister` on a name never registered -> error_code GENERAL_INVALID_INPUT; an SDK returning None/empty/false is red. (2) the SAME calls on a registered point holding nothing -> no error, empty result; without it an SDK raising for BOTH passes case 1 and the typo-vs-empty distinction the decision is about is unpinned.",
+      "sketch_host": "NEW"
     },
     "D-109": {
       "title": "only the healthy/degraded boundary is configurable",
       "kind": "deferred",
       "note": "spec text only (v1.51.0); implementation deliberately deferred. Becomes `behavioural` the moment it is implemented.",
-      "cases": []
+      "cases": [],
+      "case_sketch": "Host: system_modules_hardening.json (health classification). The discriminating input is `error_rate_threshold: 0.001` with an observed error rate of 0.05 -> `degraded`. An SDK computing the second boundary as threshold*10 puts it at 0.01 and answers `error`. Add a case at 0.5 -> `error` as the control, so the ERROR boundary is pinned at the table's fixed 0.10 rather than merely 'not scaled'.",
+      "sketch_host": "system_modules_hardening.json"
     },
     "D-110": {
       "title": "`project_name` defaults to `\"apcore\"`",
       "kind": "deferred",
       "note": "spec text only (v1.51.0); implementation deliberately deferred. Becomes `behavioural` the moment it is implemented.",
-      "cases": []
+      "cases": [],
+      "case_sketch": "Host: system_modules_hardening.json. `manifest.full` with no `project.name` configured -> project_name `\"apcore\"`; an SDK returning `\"\"` is red. Pair it with a `health.summary` case in the SAME configuration asserting the same value \u2014 the decision was taken on internal consistency, so a case that pins only one of the two modules leaves the contradiction it removed unpinned.",
+      "sketch_host": "system_modules_hardening.json"
     },
     "D-111": {
       "title": "a bulk reload audits per module, with a correlation id",
       "kind": "deferred",
       "note": "spec text only (v1.51.0); implementation deliberately deferred. Becomes `behavioural` the moment it is implemented.",
-      "cases": []
+      "cases": [],
+      "case_sketch": "Host: reload_path_filter.json (it already drives bulk reload) plus an audit assertion. A glob matching THREE modules -> three audit entries, each `target_module_id` a concrete id, all sharing one `correlation_id`. An SDK writing one aggregate entry keyed on `executor.*` gives count 1 and a target no `AuditStore.query(module_id)` can find, which is the whole point. Assert the correlation id is EQUAL across entries and non-empty \u2014 per-module entries alone lose the fact that they were one deploy.",
+      "sketch_host": "reload_path_filter.json"
     },
     "D-112": {
       "title": "a failed reload restores the previous module",
       "kind": "deferred",
       "note": "spec text only (v1.51.0); implementation deliberately deferred. Becomes `behavioural` the moment it is implemented.",
-      "cases": []
+      "cases": [],
+      "case_sketch": "Host: registry_load_ordering.json (nearest in spirit \u2014 it already pins visibility against on_load). THREE cases: (1) a reload whose new instance fails `on_load` -> `get(id)` returns the ORIGINAL instance; (2) the original's `on_load` ran AGAIN during restore, since Phase 3 already ran its `on_unload` and a republished-but-torn-down module is the state the decision exists to avoid; (3) the restoring load ALSO fails -> the module stays absent. Case 3 is the control: without it 'restore' could be read as 'never fail'.",
+      "sketch_host": "registry_load_ordering.json"
     },
     "D-113": {
       "title": "storage-backend namespaces, and the omitted-argument default",
       "kind": "deferred",
       "note": "spec text only (v1.51.0); implementation deliberately deferred. Becomes `behavioural` the moment it is implemented.",
-      "cases": []
+      "cases": [],
+      "case_sketch": "Host: storage_backend.json (it exists and is driven by all three). Write one record through each collector and read it back under the DECLARED namespace: `metrics`, `usage`, `error_history`. An SDK writing `errors` finds nothing under `error_history` and is red. Second case: omit the backend argument entirely -> the backend is `InMemoryStorageBackend` and the write is still readable, which only apcore-typescript honoured.",
+      "sketch_host": "storage_backend.json"
     },
     "D-114": {
       "title": "`remove()` clears the duplicate-identity entry",
       "kind": "deferred",
       "note": "spec text only (v1.51.0); implementation deliberately deferred. Becomes `behavioural` the moment it is implemented.",
-      "cases": []
+      "cases": [],
+      "case_sketch": "Host: middleware_hardening.json. `use(m)` / `remove(m)` / `use(m)` with the same identity -> the second `use` emits NO duplicate warning. An SDK that does not clear the entry warns about a registration that no longer exists. Control: `use(m)` / `use(m)` without the remove MUST still warn, or the case passes for an SDK that simply stopped warning.",
+      "sketch_host": "middleware_hardening.json"
     },
     "D-115": {
       "title": "a malformed annotation value is tolerated and dropped",
       "kind": "deferred",
       "note": "spec text only (v1.51.0); implementation deliberately deferred. Becomes `behavioural` the moment it is implemented.",
-      "cases": []
+      "cases": [],
+      "case_sketch": "Host: annotations_extra_round_trip.json (it exists and already round-trips annotations). `{\"extra\": \"oops\"}` -> the resulting annotations carry the OTHER declared fields unchanged and no `extra`, plus a warning. That one input discriminates all three observed behaviours: coerced to `{}` (correct), object-spread into `{\"0\":\"o\", ...}` (invented data indistinguishable from a real declaration), and the whole ModuleDescriptor rejected. Second case `{\"cache_ttl\": -5}` -> clamped and the module still registers.",
+      "sketch_host": "annotations_extra_round_trip.json"
     },
     "D-116": {
       "title": "circuit-breaker events carry the declared subscriber type",
       "kind": "deferred",
       "note": "spec text only (v1.51.0); implementation deliberately deferred. Becomes `behavioural` the moment it is implemented.",
-      "cases": []
+      "cases": [],
+      "case_sketch": "Host: event_management_hardening.json (it already drives the circuit breaker). A subscriber with id `health-alert` DECLARED as kind `webhook`, tripped open -> the event's `subscriber_type` is `webhook`. The id is chosen to contain a hyphen: an SDK splitting on the first hyphen answers `health`, and one reporting the wrapped class name answers something else again. Control: an UNDECLARED subscriber takes the DLQ path's existing default \u2014 assert that value rather than inventing a second one.",
+      "sketch_host": "event_management_hardening.json"
     },
     "D-117": {
       "title": "registered-namespace defaults do not answer for a legacy document",
       "kind": "deferred",
       "note": "spec text only (v1.51.0); implementation deliberately deferred. Becomes `behavioural` the moment it is implemented.",
-      "cases": []
+      "cases": [],
+      "case_sketch": "Host: overrides_store.json. Register a namespace default, then read the key from a LEGACY (namespace-less) document -> the default MUST NOT answer. An SDK consulting registered defaults in both modes returns it. Control: the same read in namespace mode DOES get the default, or the case passes for an SDK that simply ignores registered defaults.",
+      "sketch_host": "overrides_store.json"
     },
     "D-118": {
       "title": "an empty `roles` list is omitted from the audit snapshot",
       "kind": "deferred",
       "note": "spec text only (v1.51.0); implementation deliberately deferred. Becomes `behavioural` the moment it is implemented.",
-      "cases": []
+      "cases": [],
+      "case_sketch": "Host: contextual_audit.json (it already carries identity cases). An identity with `roles: []` -> the audit identity snapshot has NO `roles` key at all. Asserting `roles == []` would NOT discriminate: that is exactly what the diverging SDK emits. The case must assert key ABSENCE. Control: a non-empty roles list IS present.",
+      "sketch_host": "contextual_audit.json"
     },
     "D-119": {
       "title": "`system.*` modules declare `open_world: false` explicitly",
       "kind": "deferred",
       "note": "spec text only (v1.51.0); implementation deliberately deferred. Becomes `behavioural` the moment it is implemented.",
-      "cases": []
+      "cases": [],
+      "case_sketch": "Host: system_modules_hardening.json. For every registered `system.*` module, `annotations.open_world` is `false`. The decision's second half is that it is written out EXPLICITLY rather than inherited \u2014 a language default of `true` means the opposite of the intended value, which is how the divergence arose \u2014 so the case should read the declared annotations rather than an effective value computed with defaults applied.",
+      "sketch_host": "system_modules_hardening.json"
     },
     "D-120": {
       "title": "error timestamps are `Z` with millisecond precision",
       "kind": "deferred",
       "note": "spec text only (v1.51.0); implementation deliberately deferred. Becomes `behavioural` the moment it is implemented.",
-      "cases": []
+      "cases": [],
+      "case_sketch": "Host: error_fingerprinting.json or observability_hardening.json (both drive ErrorHistory). Assert the timestamp against `^\\\\d{4}-\\\\d{2}-\\\\d{2}T\\\\d{2}:\\\\d{2}:\\\\d{2}\\\\.\\\\d{3}Z$`. The pattern is the whole case: a `Z`-only assertion leaves three precisions behind one suffix, which is the same divergence made harder to see. It must be asserted on the record the PRODUCER writes, not on a health-summary rendering of it.",
+      "sketch_host": "error_fingerprinting.json"
     },
     "D-121": {
       "title": "`reload_dependents` is deprecated for removal",
       "kind": "deferred",
       "note": "spec text only (v1.51.0); implementation deliberately deferred. Becomes `behavioural` the moment it is implemented.",
-      "cases": []
+      "cases": [],
+      "case_sketch": "Host: reload_path_filter.json. Passing `reload_dependents: true` -> the call succeeds, the field changes nothing, and a deprecation warning is emitted once. Control: omitting it emits no warning. After removal at v2.0 the same input becomes a validation error (`additionalProperties: false`), so the case is written to be flipped at that release rather than deleted.",
+      "sketch_host": "reload_path_filter.json"
     },
     "D-122": {
       "title": "`shutdown()` attempts every cancellation before it reports",

@@ -203,3 +203,35 @@ in the spec but absent from the map are all failures. Those are not backlog; the
 are the map claiming coverage it does not have.
 
 Switch CI to `--strict` when the ratchet reaches zero.
+
+### The map is subject to the disease it treats
+
+`discriminates` and `case_sketch` are prose, and prose asserted without being
+checked is what this audit kept finding to be wrong. Two things keep the map from
+becoming another artifact mistaken for a mechanism:
+
+- **Every linked case is cross-checked against `case_pinning_baseline.json`.**
+  `check_case_pinning.py` mutates a fixture value and checks some driver goes red,
+  which is the only MECHANICAL test of whether a case discriminates. A case this
+  map claims that guard reports as unpinned or not-measurable is a failure.
+- **`sketch_host` is a fixture name, not a sentence.** It is checked to exist, so
+  a plan that names a fixture nobody wrote reads as a plan and is not one.
+
+Seven failure modes are enforced, each verified to fail before the checker was
+wired into CI: a decision missing from the map, a case reference that stops
+resolving, a linked case the mutation guard cannot measure, a named SDK test file
+that no longer exists, a linked case with no `discriminates`, a deferred decision
+with no `case_sketch` or an unresolvable `sketch_host`, and a new decision landing
+without a case.
+
+### Why the sketches are written before implementation
+
+The 14 deferred decisions (D-108 – D-121) each carry a `case_sketch`: what the
+discriminating case looks like, what makes it red, and which fixture hosts it —
+13 of the 14 name a fixture that already exists.
+
+D-92 is why. It required all three SDKs to define `TASK_STORE_UNAVAILABLE`, landed
+in apcore-python alone, and nothing noticed — because the only thing that could
+notice was a case nobody had written. The case has to be written either way.
+Writing it first costs nothing and forces the question *what would make this red?*
+at the moment it is cheapest to answer.

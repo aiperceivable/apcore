@@ -41,6 +41,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 FIXTURES = REPO / "conformance" / "fixtures"
 MAP = REPO / "conformance" / "decision_coverage.json"
+PINNING = REPO / "conformance" / "case_pinning_baseline.json"
 SOURCES = [
     REPO / "docs" / "spec" / "protocol-spec.md",
     REPO / "docs" / "spec" / "2026-09-deep-chain-decisions.md",
@@ -66,6 +67,30 @@ def load_case_ids(path: Path) -> set[str]:
     doc = json.loads(path.read_text())
     cases = doc.get("test_cases") or doc.get("cases") or []
     return {c["id"] for c in cases if isinstance(c, dict) and "id" in c}
+
+
+def unmeasurable_cases() -> dict[str, set[str]]:
+    """Cases `check_case_pinning.py` reports as unpinned or not measurable.
+
+    That guard mutates a fixture value and checks some driver goes red, which is
+    the only MECHANICAL test of whether a case discriminates. This map's
+    `discriminates` field is prose, and prose is what this whole audit keeps
+    finding to be wrong — so a case named here that the mutation guard cannot
+    measure is coverage this map is claiming and cannot back.
+
+    Without this cross-check the map is itself an artifact recording a
+    requirement, mistaken for the mechanism enforcing it: exactly the failure it
+    exists to prevent.
+    """
+    if not PINNING.exists():  # pragma: no cover - the baseline ships with the repo
+        return {}
+    doc = json.loads(PINNING.read_text())
+    out: dict[str, set[str]] = {}
+    for scope in doc.get("by_scope", {}).values():
+        for bucket in ("unpinned", "not_measurable"):
+            for fixture, ids in (scope.get(bucket) or {}).items():
+                out.setdefault(fixture, set()).update(ids)
+    return out
 
 
 def main() -> int:
@@ -95,6 +120,7 @@ def main() -> int:
     # 2. Every case reference must resolve. A map that points at a case someone
     #    renamed is worse than an empty map: it reads as covered.
     cache: dict[str, set[str]] = {}
+    unmeasurable = unmeasurable_cases()
     for key, entry in sorted(decisions.items(), key=lambda kv: int(kv[0][2:])):
         for ref in entry.get("cases", []):
             if "#" not in ref:
@@ -109,6 +135,12 @@ def main() -> int:
                 cache[fixture] = load_case_ids(path)
             if case_id not in cache[fixture]:
                 rot.append(f"{key}: {fixture} has no case {case_id!r}")
+            elif case_id in unmeasurable.get(fixture, ()):
+                rot.append(
+                    f"{key}: {ref} is listed unpinned/not-measurable by "
+                    f"check_case_pinning.py — the map claims coverage the mutation "
+                    f"guard cannot back"
+                )
 
         # 3. A linked case must say what makes it discriminating. If that cannot
         #    be written, the case is not discriminating and the decision is
@@ -129,6 +161,21 @@ def main() -> int:
                 rot.append(f"{key}: `binds` names unknown SDK {sdk!r}")
         if entry["kind"] != "behavioural" and not entry.get("note"):
             rot.append(f"{key}: kind={entry['kind']} must carry a `note` saying why")
+
+        # A deferred decision is one that WILL be implemented. The sketch is what
+        # stops it landing the way D-92 did -- in one SDK of three, with nothing
+        # able to notice because the only thing that could was a case nobody had
+        # written. `sketch_host` is checked rather than trusted for the same
+        # reason `cases` is: a host naming a fixture that does not exist reads as
+        # a plan and is not one.
+        if entry["kind"] == "deferred":
+            if not entry.get("case_sketch"):
+                rot.append(f"{key}: deferred and carries no `case_sketch`")
+            host = entry.get("sketch_host")
+            if not host:
+                rot.append(f"{key}: deferred and names no `sketch_host`")
+            elif host != "NEW" and not (FIXTURES / host).exists():
+                rot.append(f"{key}: sketch_host {host!r} does not exist")
 
     # A decision counts as PINNED when a conformance case names it, or when
     # per-SDK regression tests cover every SDK the decision binds.

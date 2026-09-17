@@ -104,6 +104,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `known_ids` set when a case declares one. All three already conformed; the decision is pinned now
   rather than merely believed.
 
+  **Two additions keep the map from becoming what it exists to prevent.** Every linked case is now
+  cross-checked against `case_pinning_baseline.json` — `check_case_pinning.py` mutates a fixture
+  value and checks a driver goes red, which is the only mechanical test of whether a case
+  discriminates, and `discriminates` is prose. And each of the 14 deferred decisions carries a
+  `case_sketch` plus a machine-checked `sketch_host`: what the case looks like, what makes it red,
+  and which fixture hosts it. 13 of the 14 name a fixture that already exists. They are written
+  *before* implementation because D-92 landed in one SDK of three and nothing noticed — the only
+  thing that could notice was a case nobody had written yet, and the case has to be written either
+  way.
+
 ### Security (v1.54.0)
 
 - **A governance requirement declared in a metadata document reached every surface that describes a
