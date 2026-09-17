@@ -108,6 +108,27 @@
         "fingerprints_distinct": 2,
         "_note": "Same code + same normalized message but different top_frame_hash MUST yield distinct fingerprints"
       }
+    },
+    {
+      "id": "timestamp_is_millis_z",
+      "description": "D-120: every timestamp ErrorHistory writes is `2026-09-16T10:30:00.123Z` — exactly three fractional digits and a `Z` suffix. Measured before the decision: `+00:00` microseconds in apcore-python, `Z` milliseconds in apcore-typescript, `Z` microseconds in apcore-rust, and apcore-rust's health summary reformatted the same record with `to_rfc3339()` into a third form. Asserting the suffix alone would leave three precisions behind one `Z`: the same divergence, harder to see. All three timestamp fields are checked, because a fix applied to one of them is the divergence again at one field's remove.",
+      "errors": [
+        {
+          "error_code": "DB_TIMEOUT",
+          "caller_id": "executor.db.query",
+          "message": "Connection timed out"
+        }
+      ],
+      "expected": {
+        "entry_count": 1,
+        "fingerprints_distinct": 1,
+        "timestamp_pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+        "timestamp_fields": [
+          "timestamp",
+          "first_occurred",
+          "last_occurred"
+        ]
+      }
     }
   ]
 }

@@ -618,8 +618,8 @@ The repository ships **72 cross-language fixture files** under `conformance/fixt
 | [`acl_effect_value_closure`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/acl_effect_value_closure.json) | 10 | A rule's `effect` value is a closed set at every entry point — file loading, direct construction and runtime insertion; `default_effect` on the same terms (spec §6.1.5) |
 | [`acl_pattern_arity`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/acl_pattern_arity.json) | 51 | A `callers` / `targets` pattern array's shape is a closed set at every entry point, plus a validator-only tier for well-formed arrays that match nothing (spec §6.2.1) |
 | [`acl_root_discovery`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/acl_root_discovery.json) | 10 | `ACL.discover()` config-driven `acl.root` resolution; missing path MUST attach nothing (spec §6) |
-| [`annotations_extra_round_trip`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/annotations_extra_round_trip.json) | 8 | `ModuleAnnotations.extra` wire-format round-trip (spec §4.4) |
-| [`approval_gate`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/approval_gate.json) | 5 | Approval gate enforcement at Executor Step 5 |
+| [`annotations_extra_round_trip`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/annotations_extra_round_trip.json) | 11 | `ModuleAnnotations.extra` wire-format round-trip (spec §4.4) |
+| [`approval_gate`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/approval_gate.json) | 8 | Approval gate enforcement at Executor Step 5 |
 | [`approval_request_fields`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/approval_request_fields.json) | 2 | `ApprovalRequest` carries `caller_id` (read straight off `Context.caller_id` — null on a top-level call, never the `@external` ACL sentinel) and `action` (= `module_id`), populated by the approval gate at Executor Step 4.5 (spec §7.3.1, decision D-03) |
 | [`async_task_cancellation`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/async_task_cancellation.json) | 2 | `AsyncTaskManager.cancel()` real abort via CancelToken (D-18) |
 | [`async_task_evolution`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/async_task_evolution.json) | 10 | Pluggable `TaskStore`, retry with backoff |
@@ -634,10 +634,10 @@ The repository ships **72 cross-language fixture files** under `conformance/fixt
 | [`context_create`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/context_create.json) | 15 | `Context.create()` canonical 6-parameter factory (Issue #66) |
 | [`context_serialization`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/context_serialization.json) | 8 | Context JSON round-trip (spec §5.7) |
 | [`context_trace_parent`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/context_trace_parent.json) | 10 | `Context.create` trace_parent input handling |
-| [`contextual_audit`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/contextual_audit.json) | 7 | Contextual audit trail for control-plane modules (#45.2) |
-| [`dependency_version_constraints`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/dependency_version_constraints.json) | 15 | Dependency version constraint enforcement (spec §5) |
-| [`error_codes`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/error_codes.json) | 18 | Error code collision detection (Algorithm A17, spec §8.4) |
-| [`error_fingerprinting`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/error_fingerprinting.json) | 5 | Error fingerprint composition for ErrorHistory dedup |
+| [`contextual_audit`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/contextual_audit.json) | 10 | Contextual audit trail for control-plane modules (#45.2) |
+| [`dependency_version_constraints`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/dependency_version_constraints.json) | 18 | Dependency version constraint enforcement (spec §5) |
+| [`error_codes`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/error_codes.json) | 19 | Error code collision detection (Algorithm A17, spec §8.4) |
+| [`error_fingerprinting`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/error_fingerprinting.json) | 6 | Error fingerprint composition for ErrorHistory dedup |
 | [`error_recovery_metadata`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/error_recovery_metadata.json) | 19 | `retryable` / `ai_guidance` / `user_fixable` / `suggestion` recovery metadata (spec §8) |
 | [`error_serialization`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/error_serialization.json) | 2 | `ModuleError.to_dict()` snake_case wire form (spec §8) |
 | [`event_delivery_semantics`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/event_delivery_semantics.json) | 6 | Event retry, DLQ and `apcore.event.delivery_failed` (spec §7) |
@@ -647,7 +647,7 @@ The repository ships **72 cross-language fixture files** under `conformance/fixt
 | [`governance_state`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/governance_state.json) | 13 | `Executor.governance_state()` — configured vs. actually wired (spec §6.6.5) |
 | [`identity_system`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/identity_system.json) | 8 | Identity construction, propagation (AC-014, AC-015) |
 | [`multi_root_discovery`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/multi_root_discovery.json) | 6 | `extensions.roots` multi-root discovery with namespace isolation (§9.1.1, #118 D-70) |
-| [`middleware_hardening`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/middleware_hardening.json) | 9 | Context namespacing, CircuitBreaker |
+| [`middleware_hardening`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/middleware_hardening.json) | 11 | Context namespacing, CircuitBreaker |
 | [`middleware_on_error_recovery`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/middleware_on_error_recovery.json) | 4 | Middleware after-chain error recovery |
 | [`multi_module_discovery`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/multi_module_discovery.json) | 8 | Multi-class discovery, snake_case conversion, conflict detection |
 | [`normalize_id`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/normalize_id.json) | 16 | ID normalization (Algorithm A02) |
@@ -680,14 +680,14 @@ The repository ships **72 cross-language fixture files** under `conformance/fixt
 | [`specificity`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/specificity.json) | 10 | ACL pattern specificity scoring (Algorithm A10) |
 | [`storage_backend`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/storage_backend.json) | 5 | StorageBackend pluggable persistence (shared by ErrorHistory) |
 | [`stream_aggregation`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/stream_aggregation.json) | 10 | Stream chunk aggregation (recursive deep merge) |
-| [`system_modules_hardening`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/system_modules_hardening.json) | 11 | System modules hardening: persistence, audit, Prometheus |
+| [`system_modules_hardening`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/system_modules_hardening.json) | 14 | System modules hardening: persistence, audit, Prometheus |
 | [`toggle_state_isolation`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/toggle_state_isolation.json) | 4 | Per-instance `ToggleState` isolation (#71) |
 | [`tracing_from_config`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/tracing_from_config.json) | 12 | `observability.tracing.*` reaches the running middleware (§10.1.1, #118 D-68 C') |
 | [`trace_context`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/trace_context.json) | 8 | W3C TraceContext alignment (Issue #35) |
 | [`usage_contract`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/usage_contract.json) | 11 | `system.usage.*` value semantics no schema can assert (spec §6.7.1) |
 | [`usage_exporter`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/usage_exporter.json) | 3 | `UsageExporter` push interface (#45 §3, D-55) |
 | [`version_negotiation`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/version_negotiation.json) | 10 | Version negotiation (Algorithm A14) |
-| **Total** | **941** | **79 fixtures** |
+| **Total** | **960** | **79 fixtures** |
 
 ### 8.2 Loading Fixtures from a Test Runner
 
