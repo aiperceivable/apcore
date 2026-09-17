@@ -177,6 +177,31 @@
           "executor.email.verify"
         ]
       }
+    },
+    {
+      "id": "bulk_reload_audits_per_module_with_one_correlation_id",
+      "description": "D-111: a bulk reload writes one audit entry PER MODULE, and every entry from that one reload carries the SAME correlation id.\n\napcore-python and apcore-rust wrote a single aggregate entry whose `target_module_id` was the glob. `AuditStore.query(module_id)` filters on a concrete id, so that entry is unfindable by the accessor the store exists for — the operation was audited and could not be looked up. Asserting the entry COUNT alone would pass for an aggregate entry if the glob happened to match one module, which is why the expected targets are listed explicitly.\n\nThe correlation id is asserted as a property (all equal, non-empty) rather than as a value: it is generated per call. Per-module entries alone lose the fact that they were one deploy, so a fresh id per entry groups nothing — and a constant groups every deploy together, which is pinned by per-SDK tests running two reloads.",
+      "registered_modules": [
+        "executor.email.send",
+        "executor.email.verify",
+        "executor.math.add"
+      ],
+      "input": {
+        "path_filter": "executor.email.*",
+        "reason": "deploy email service"
+      },
+      "expected": {
+        "success": true,
+        "reloaded_modules_set": [
+          "executor.email.send",
+          "executor.email.verify"
+        ],
+        "audit_target_module_ids_set": [
+          "executor.email.send",
+          "executor.email.verify"
+        ],
+        "audit_correlation_ids_are_equal_and_non_empty": true
+      }
     }
   ]
 }

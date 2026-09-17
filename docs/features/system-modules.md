@@ -1200,10 +1200,19 @@ AuditEntry:
   actor_id: str
   actor_type: str     # user | service | agent | api_key | system
   trace_id: str
+  correlation_id: str # groups one multi-target operation; "" otherwise (D-111)
   change:
     before: any       # previous value / null
     after: any        # new value / null
 ```
+
+> **D-111 (v1.58.0) — the schema now declares `correlation_id`.** The
+> requirement that "every entry from a single bulk reload MUST carry the same
+> correlation id" landed at v1.51.0, and this block was not updated, so the
+> declared structure contradicted a MUST written three sections above it —
+> the same shape D-128 corrected in `extension-system.md`. The field is
+> **optional and empty for single-target operations**, which need no grouping,
+> so an existing `AuditStore` implementation keeps working unchanged.
 
 #### Usage Examples
 

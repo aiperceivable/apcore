@@ -560,11 +560,22 @@
     },
     "D-111": {
       "title": "a bulk reload audits per module, with a correlation id",
-      "kind": "deferred",
-      "note": "spec text only (v1.51.0); implementation deliberately deferred. Becomes `behavioural` the moment it is implemented.",
-      "cases": [],
-      "case_sketch": "Host: reload_path_filter.json (it already drives bulk reload) plus an audit assertion. A glob matching THREE modules -> three audit entries, each `target_module_id` a concrete id, all sharing one `correlation_id`. An SDK writing one aggregate entry keyed on `executor.*` gives count 1 and a target no `AuditStore.query(module_id)` can find, which is the whole point. Assert the correlation id is EQUAL across entries and non-empty — per-module entries alone lose the fact that they were one deploy.",
-      "sketch_host": "reload_path_filter.json"
+      "kind": "behavioural",
+      "cases": [
+        "reload_path_filter.json#bulk_reload_audits_per_module_with_one_correlation_id"
+      ],
+      "sdk_tests": {
+        "python": [
+          "tests/conformance/test_system_modules_hardening.py::TestReloadModuleAuditEntry"
+        ],
+        "typescript": [
+          "tests/conformance-reload-path-filter.test.ts"
+        ],
+        "rust": [
+          "tests/test_reload_path_filter_conformance.rs"
+        ]
+      },
+      "discriminates": "The case asserts the SET of concrete `target_module_id`s, not a count. A count assertion accepts the aggregate entry the decision forbids whenever the glob happens to match one module, and that entry's target is one `AuditStore.query(module_id)` can never find — the operation was audited and could not be looked up, which is the whole defect. Each expected id is then looked up THROUGH that accessor, so the assertion is about findability rather than about what the writer happened to store.\n\nThe correlation id is asserted as a PROPERTY, not a value, because it is generated per call: all entries equal, and non-empty. Those two reject the two ways of getting it wrong that still look right — a fresh id per entry groups nothing, and leaving the field unset passes any 'they all match' check.\n\nThe third way is only reachable across CALLS, so it lives in the per-SDK tests: a constant (or an id minted once per process) satisfies both case assertions while making 'what did this deploy touch' return every deploy. apcore-python asserts two successive bulk reloads get different ids, and a single-module reload leaves the field empty — the id groups a multi-target operation, so minting one nothing else shares would be noise.\n\nFound while implementing: apcore-python's own test asserted `len(entries) == 1`, pinning the aggregate entry the decision forbids — the same way apcore-rust's unit test kept D-106's wrong p99 green. apcore-rust had no test on this path at all, so its change reddened nothing until the case existed.\n\nVerified red in all three: restoring the aggregate entry, using a constant id, and minting a fresh id per entry each redden exactly the assertions that stand on them."
     },
     "D-112": {
       "title": "a failed reload restores the previous module",
