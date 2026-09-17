@@ -48,8 +48,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   because the sentence itself said the test was unnecessary.
 
   Of 53 decisions (D-74 – D-126): **37 behavioural, 14 deferred** (D-108 – D-121, spec text only),
-  **2 unconstrained** (the decision itself leaves the shape language-defined). Of the 37, nine are
-  pinned by a conformance case and six by per-SDK tests covering every SDK they bind — **ratchet 22**,
+  **2 unconstrained** (the decision itself leaves the shape language-defined). Of the 37, ten are
+  pinned by a conformance case and six by per-SDK tests covering every SDK they bind — **ratchet 21**,
   which may only go down.
 
   **Unlinked means uncovered, deliberately.** A case that pins a decision without saying so can be
@@ -96,6 +96,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   typed `v1.0.0` against an actual `1.0.0` was told the versions did not line up, about versions
   that are identical, while both peers named the rule the operand broke. The resolver now uses the
   fallible form.
+
+  The fifth needed the fixture to grow a field. D-79 — a stall with no cycle is a `MODULE_LOAD_ERROR`,
+  not a fabricated one-element `CIRCULAR_DEPENDENCY` — can only be constructed with a dependency that
+  is a KNOWN module id and absent from the batch, because every in-batch acyclic graph completes.
+  `dependency_version_constraints.json` had no way to say that, so all three drivers now pass a
+  `known_ids` set when a case declares one. All three already conformed; the decision is pinned now
+  rather than merely believed.
 
 ### Security (v1.54.0)
 

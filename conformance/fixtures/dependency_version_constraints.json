@@ -466,6 +466,30 @@
         "error_code": "VERSION_CONSTRAINT_INVALID",
         "constraint": "v1.0.0"
       }
+    },
+    {
+      "id": "stall_without_a_cycle_is_a_load_error_not_a_circular_dependency",
+      "description": "D-79: Kahn's algorithm terminating with nodes left has TWO causes, and they need opposite fixes \u2014 break an edge, versus add a missing module to the batch. Here `a` requires `b`, `b` is a KNOWN module id but is not in this batch, so `a` never reaches in-degree zero and there is no cycle to find. Reporting CIRCULAR_DEPENDENCY sends the author looking for a loop that does not exist, and the fabricated `cycle_path` for this shape is a one-element \"cycle\".",
+      "known_ids": [
+        "a",
+        "b"
+      ],
+      "modules": [
+        {
+          "module_id": "a",
+          "version": "1.0.0",
+          "dependencies": [
+            {
+              "module_id": "b"
+            }
+          ]
+        }
+      ],
+      "expected": {
+        "outcome": "error",
+        "error_code": "MODULE_LOAD_ERROR",
+        "module_id": "a"
+      }
     }
   ]
 }

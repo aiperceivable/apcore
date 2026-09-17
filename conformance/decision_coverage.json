@@ -1,6 +1,6 @@
 {
   "_comment": "Which executed conformance case pins each decision. Enforced by conformance/check_decision_coverage.py.\n\nA decision recorded only in prose is a decision nothing verifies. This audit produced two false statements of exactly that kind -- D-96 claimed its union was 'unobservable' in two SDKs (it was a fail-open approval bypass in both, corrected as D-125), and the v1.10.0 row claimed all three SDKs accept a version hint (apcore-rust has no such parameter, corrected as D-126). Neither could be caught by a test, because the sentence itself said the test was unnecessary.\n\nUNLINKED MEANS UNCOVERED, deliberately. A case that pins a decision without saying so can be weakened by someone who does not know what it is for -- which is how approval_gate.json came to set both governance sources from one boolean and passed in all three SDKs while one of them had a bypass. If a case pins a decision, name it here.\n\n`discriminates` is not documentation. It must say what makes the case fail when an SDK regresses; if it cannot be written, the case is not discriminating and the decision is still unpinned.\n\nkinds: behavioural = needs a discriminating case | deferred = spec text only, no implementation to pin yet | unconstrained = the decision deliberately leaves the shape language-defined.",
-  "ratchet": 22,
+  "ratchet": 21,
   "ratchet_history": [
     {
       "value": 32,
@@ -26,6 +26,11 @@
       "value": 22,
       "date": "2026-09-17",
       "note": "D-85: the case found apcore-rust reporting a malformed constraint as a version mismatch from the resolution path"
+    },
+    {
+      "value": 21,
+      "date": "2026-09-17",
+      "note": "D-79: needed a known_ids field to construct a stall with no cycle; all three already conformed"
     }
   ],
   "decisions": {
@@ -57,7 +62,10 @@
     "D-79": {
       "title": "a stalled topological sort is not a cycle",
       "kind": "behavioural",
-      "cases": []
+      "cases": [
+        "dependency_version_constraints.json#stall_without_a_cycle_is_a_load_error_not_a_circular_dependency"
+      ],
+      "discriminates": "`a` requires `b`, `b` is a KNOWN module id absent from the batch \u2014 the only shape that stalls Kahn's algorithm with no cycle to find, since every in-batch acyclic graph completes. The case declares `error_code: MODULE_LOAD_ERROR`, so an implementation reporting CIRCULAR_DEPENDENCY with a synthesised one-element `cycle_path` is red. Flipping the expectation to CIRCULAR_DEPENDENCY turns all three drivers red, which is what makes it an assertion about the code rather than about there merely being an error. Constructing it needed a `known_ids` field the fixture did not have; all three drivers now pass it when a case declares one."
     },
     "D-80": {
       "title": "the registry event set is closed, and `file_changed` is in it",
