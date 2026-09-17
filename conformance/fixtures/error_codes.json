@@ -1,5 +1,5 @@
 {
-  "description": "Error code collision detection (Algorithm A17, spec §8.4). Locks the canonical reserved-prefix set of 14 (sync findings A-D-006) and the exact-framework-code rejection that protects one-off codes outside those prefixes (A-D-007). A custom code under a dropped/non-reserved prefix registers OK unless it exactly equals a framework code.",
+  "description": "Error code collision detection (Algorithm A17, spec \u00a78.4). Locks the canonical reserved-prefix set of 14 (sync findings A-D-006) and the exact-framework-code rejection that protects one-off codes outside those prefixes (A-D-007). A custom code under a dropped/non-reserved prefix registers OK unless it exactly equals a framework code.",
   "test_cases": [
     {
       "id": "register_custom_code",
@@ -151,6 +151,14 @@
       "expected_error": "ERROR_CODE_COLLISION"
     },
     {
+      "id": "exact_framework_code_task_store_unavailable_collision",
+      "description": "D-92: TASK_STORE_UNAVAILABLE must be a FRAMEWORK code before any SDK can raise it. async-tasks.md declares TaskStoreError on eight surfaces and no SDK defined it \u2014 a declared error type no implementation can raise is one no caller can catch. An SDK missing the constant does not collide here, so this case is red for exactly the state the decision corrects.",
+      "action": "register",
+      "module_id": "my_module",
+      "error_code": "TASK_STORE_UNAVAILABLE",
+      "expected_error": "ERROR_CODE_COLLISION"
+    },
+    {
       "id": "exact_framework_code_duplicate_module_id_collision",
       "action": "register",
       "module_id": "my_module",
@@ -175,9 +183,9 @@
     "VERSION_"
   ],
   "driver_contract": {
-    "assert_the_wire_code": "`expected_error` is a WIRE CODE (`ERROR_CODE_COLLISION`). Drivers asserted the class name `ErrorCodeCollisionError` instead and never compared the two, so mutating the fixture's declared code left every suite green on all three SDKs — measured, 12 of 18 cases.",
+    "assert_the_wire_code": "`expected_error` is a WIRE CODE (`ERROR_CODE_COLLISION`). Drivers asserted the class name `ErrorCodeCollisionError` instead and never compared the two, so mutating the fixture's declared code left every suite green on all three SDKs \u2014 measured, 12 of 18 cases.",
     "presence_is_not_a_value": "`if \"expected_error\" in case:` branches on the KEY EXISTING, not on what it says. The value must reach an assertion.",
-    "unknown_expectation_must_fail": "An expectation the driver does not recognise MUST be a hard FAILURE, never a skipped branch. Both shapes were found here: `if error_code == \"X\": ...` with no else, and `else: raises(Exception)` which accepts anything. Both turn a wrong fixture value into a passing test, so the contract becomes the driver's literal and the fixture is decoration. The pattern that works is in this repo already — pipeline_failfast_config's driver panics with \"teach the driver, do not skip it\" and has stayed honest through four rounds of new cases.",
-    "positive_cases_need_a_post_condition": "A case whose expectation is the sentinel `\"ok\"` means \"no error\", and a driver that merely calls the API satisfies it — an implementation that does nothing at all also passes. Positive cases MUST assert an OBSERVABLE POST-CONDITION: that the registration is now queryable, that the guard left the chain unchanged, that the value can be read back. Without one the case is exercised but proves nothing."
+    "unknown_expectation_must_fail": "An expectation the driver does not recognise MUST be a hard FAILURE, never a skipped branch. Both shapes were found here: `if error_code == \"X\": ...` with no else, and `else: raises(Exception)` which accepts anything. Both turn a wrong fixture value into a passing test, so the contract becomes the driver's literal and the fixture is decoration. The pattern that works is in this repo already \u2014 pipeline_failfast_config's driver panics with \"teach the driver, do not skip it\" and has stayed honest through four rounds of new cases.",
+    "positive_cases_need_a_post_condition": "A case whose expectation is the sentinel `\"ok\"` means \"no error\", and a driver that merely calls the API satisfies it \u2014 an implementation that does nothing at all also passes. Positive cases MUST assert an OBSERVABLE POST-CONDITION: that the registration is now queryable, that the guard left the chain unchanged, that the value can be read back. Without one the case is exercised but proves nothing."
   }
 }

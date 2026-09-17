@@ -48,8 +48,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   because the sentence itself said the test was unnecessary.
 
   Of 53 decisions (D-74 – D-126): **37 behavioural, 14 deferred** (D-108 – D-121, spec text only),
-  **2 unconstrained** (the decision itself leaves the shape language-defined). Of the 37, seven are
-  pinned by a conformance case and six by per-SDK tests covering every SDK they bind — **ratchet 24**,
+  **2 unconstrained** (the decision itself leaves the shape language-defined). Of the 37, eight are
+  pinned by a conformance case and six by per-SDK tests covering every SDK they bind — **ratchet 23**,
   which may only go down.
 
   **Unlinked means uncovered, deliberately.** A case that pins a decision without saying so can be
@@ -79,6 +79,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   insertion order (c, a, b) differs from both lexicographic (a, b, c) and `submitted_at` (c, b, a)
   order, and both drivers compare as ordered. Flipping the expectation to lexicographic turns all
   three red — verified.
+
+  The third entry closed found something else again: the case was new, and it came back RED in two
+  SDKs. D-92 required all three to define `TASK_STORE_UNAVAILABLE` and reserve it against A17
+  module registration, and it had landed in **apcore-python alone** — apcore-typescript and
+  apcore-rust both accepted it as a module error code. Nothing had noticed, because D-92 is a
+  v1.50.0 decision whose whole content is that a declared error type no implementation can raise is
+  one no caller can catch, and neither SDK's absence of the code was visible from anywhere. It is
+  implemented in both now. **This is the first decision the coverage map found unimplemented rather
+  than merely unpinned.**
 
 ### Security (v1.54.0)
 
