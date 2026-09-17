@@ -21,16 +21,20 @@ that nobody can see is coverage nobody can preserve.
 
     python3 conformance/check_decision_coverage.py [--strict] [--write-ratchet]
 
-Without --strict this reports and exits 0, so the existing backlog does not block
-unrelated work; it still fails on a map that has ROTTED (a decision missing from
-the map, a case reference that no longer resolves, or a named SDK test whose file
-or test function is gone), because those are not backlog, they are the map lying.
+CI runs this with --strict: the ratchet reached ZERO, so every behavioural
+decision is pinned and a new one landing unpinned is a build failure rather than
+a number that went up. Without --strict it reports and exits 0 on backlog, which
+is the mode to use while working; it still fails on a map that has ROTTED (a
+decision missing from the map, a case reference that no longer resolves, or a
+named SDK test whose file or test function is gone), because those are not
+backlog, they are the map lying.
 An `sdk_tests` entry may name a whole file or one test inside it as
 `path::name`; the second form is preferred where a file holds tests for several
 decisions, because a rename then goes red instead of reading as coverage. With --strict it exits 1 while any behavioural
 decision is unpinned — the setting to switch on once the ratchet reaches zero.
 
-The ratchet may only go down. `--write-ratchet` records a new, lower value.
+The ratchet may only go down, and is now 0. `--write-ratchet` records a new,
+lower value; it refuses to raise one, so the zero cannot be quietly given back.
 """
 
 from __future__ import annotations

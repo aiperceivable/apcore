@@ -563,6 +563,30 @@ latency alert can never fire for a module slower than the top bucket.
 apcore-rust pinned the wrong behaviour in a unit test, which is why the suite
 stayed green. **Authority:** apcore-python + apcore-typescript.
 
+> **Correction (the authority was half wrong).** Measured while pinning this
+> decision: **apcore-python returned `0.0`** for a module whose every
+> observation overflowed the top bucket — the exact failure D-106 forbids, in
+> one of the two SDKs named as authoritative for it. The mechanism is narrow
+> and is why nobody saw it. `MetricsCollector.observe` records only the buckets
+> an observation lands in, and `estimate_p99_latency_ms` collected its finite
+> boundaries from the RECORDED map. An all-overflow histogram records nothing
+> but the `inf` key, so the boundary list came back empty and the "fall back to
+> the last finite boundary" branch had nothing to fall back to. A module inside
+> the ladder answered correctly, which is every test anyone had written.
+>
+> apcore-typescript iterates `metricsCollector.buckets` — the CONFIGURED ladder
+> — and apcore-rust emits the whole ladder in its snapshot, so both were right.
+> apcore-python now takes the ladder too, via a defaulted `bucket_ladder`
+> parameter that keeps the exported signature backward-compatible.
+>
+> This is the third time in this audit that a decision's own statement about
+> which SDKs were correct turned out to be wrong: D-96's "unobservable" claim
+> (corrected as D-125), v1.10.0's "all three accept a version hint" (corrected
+> as D-126), and now this. The common cause is the same each time — the
+> statement was read off one SDK, or off the code rather than a measurement,
+> and nothing could turn red because the sentence itself said no test was
+> needed.
+
 **D-107 — per-class markers are the only multi-class opt-in.** Three SDKs shipped
 three models and the fixture pinned a fourth: apcore-python honours a per-class
 marker only; apcore-rust has no per-class marker at all and gates on a file-level

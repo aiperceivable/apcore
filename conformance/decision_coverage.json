@@ -1,6 +1,6 @@
 {
   "_comment": "Which executed conformance case pins each decision. Enforced by conformance/check_decision_coverage.py.\n\nA decision recorded only in prose is a decision nothing verifies. This audit produced two false statements of exactly that kind -- D-96 claimed its union was 'unobservable' in two SDKs (it was a fail-open approval bypass in both, corrected as D-125), and the v1.10.0 row claimed all three SDKs accept a version hint (apcore-rust has no such parameter, corrected as D-126). Neither could be caught by a test, because the sentence itself said the test was unnecessary.\n\nUNLINKED MEANS UNCOVERED, deliberately. A case that pins a decision without saying so can be weakened by someone who does not know what it is for -- which is how approval_gate.json came to set both governance sources from one boolean and passed in all three SDKs while one of them had a bypass. If a case pins a decision, name it here.\n\n`discriminates` is not documentation. It must say what makes the case fail when an SDK regresses; if it cannot be written, the case is not discriminating and the decision is still unpinned.\n\nkinds: behavioural = needs a discriminating case | deferred = spec text only, no implementation to pin yet | unconstrained = the decision deliberately leaves the shape language-defined.\n\nThe 14 `deferred` entries carry a `case_sketch`: what the discriminating case looks like, what makes it RED, and which existing fixture should host it. Written BEFORE implementation on purpose. D-92 shows why \u2014 it landed in one SDK of three and nothing noticed, because the only thing that could have noticed was a case nobody had written yet. The case has to be written either way; writing it first costs nothing and forces the question \"what would make this red?\" at the moment it is cheapest to answer.",
-  "ratchet": 5,
+  "ratchet": 0,
   "ratchet_history": [
     {
       "value": 32,
@@ -81,7 +81,19 @@
     "D-76": {
       "title": "`ContextFactory.create_context(request)`",
       "kind": "behavioural",
-      "cases": []
+      "cases": [],
+      "sdk_tests": {
+        "python": [
+          "tests/test_deep_chain_final_five.py::TestContextFactoryTakesARequest"
+        ],
+        "typescript": [
+          "tests/test-deep-chain-final-three.test.ts"
+        ],
+        "rust": [
+          "tests/identity_system_spec.rs::identity_system_create_context_input_request_extracts_identity"
+        ]
+      },
+      "discriminates": "The decision is about the PARAMETER, so apcore-python asserts the published signature directly \u2014 `inspect.signature` gives exactly `[self, request]` \u2014 which goes red if a parameter is added, renamed, or if the protocol reverts to receiving an already-built `Identity`. apcore-typescript's interface is erased at runtime, so it asserts a one-parameter factory is assignable and `tsc --noEmit`, part of the same gate, rejects the old three-parameter shape.\n\nThe behavioural half is that the FACTORY extracts the identity, not the protocol \u2014 which is the interface's whole purpose and the decision's stated authority. A CONTROL supplies an unauthenticated request and requires the resulting Context to carry NO identity: without it, 'the identity came from the request' is equally satisfied by a factory that manufactures one regardless of what it was handed. A null identity stays null (D-103); `@external` is the caller-side ACL sentinel, not a principal."
     },
     "D-77": {
       "title": "`Registry.describe` returns a string; a structured override falls through",
@@ -103,7 +115,19 @@
     "D-78": {
       "title": "`ExtensionManager.apply` must not drain the store",
       "kind": "behavioural",
-      "cases": []
+      "cases": [],
+      "sdk_tests": {
+        "python": [
+          "tests/test_deep_chain_final_five.py::TestApplyRetainsTheStore"
+        ],
+        "typescript": [
+          "tests/test-deep-chain-final-three.test.ts"
+        ],
+        "rust": [
+          "tests/extension_system_spec.rs"
+        ]
+      },
+      "discriminates": "Three assertions in ascending strength. The store is non-empty after `apply`; ONE manager wires TWO executors (the consequence the decision names \u2014 a drained store wires the first and silently leaves the second bare); and applying twice to ONE executor STACKS the middleware.\n\nThe third is the one a consuming implementation cannot satisfy under any reading, and it is what settled the decision: the block's own existing `idempotent: false` row already promised stacking, so the spec had chosen before the Postconditions section was written \u2014 it just had not said so where an implementer looks.\n\nA CONTROL applies an EMPTY manager and requires the executor's middleware list to be unchanged: without it, 'both executors have the middleware' is also satisfied by an executor that arrives with middleware of its own.\n\nVerified red in both peers by wrapping `apply` so it clears the store on the way out, which reddens exactly the three assertions and leaves the control green."
     },
     "D-79": {
       "title": "a stalled topological sort is not a cycle",
@@ -117,7 +141,18 @@
       "title": "the registry event set is closed, and `file_changed` is in it",
       "kind": "behavioural",
       "cases": [],
-      "gap_note": "event_naming.json#legacy_names_are_not_emitted pins that legacy NAMES are not emitted, which is a different rule. This decision is about the closed event set accepted by `Registry.on()` \u2014 `change`/`add`/`remove` rejected, `file_changed` accepted \u2014 and about `file_changed` being conditional on whether watch() re-registers (see D-37 note in registry-system.md). Needs a registry-events fixture; none exists."
+      "sdk_tests": {
+        "python": [
+          "tests/test_deep_chain_final_five.py::TestRegistryEventSetIsClosed"
+        ],
+        "typescript": [
+          "tests/registry/test-registry.test.ts"
+        ],
+        "rust": [
+          "tests/registry_system_spec.rs"
+        ]
+      },
+      "discriminates": "Two halves, and the second is the one that caught the original defect. `on`/`off` MUST reject anything outside the set \u2014 asserted over the three names `registry-system.md`'s own example told readers to use (`change`, `add`, `remove`), a typo, and the empty string. And `on` MUST accept everything the same implementation can EMIT: apcore-typescript's `watch()` emitted `file_changed` while its own `on()` rejected that name, so every hot-reload notification fired into an empty callback list.\n\nThe accept-what-you-emit half is asserted against the emit-side registry itself rather than a second hardcoded list, so an implementation that starts emitting a new event without opening `on()` to it goes red here instead of firing into nothing. `file_changed` is CONDITIONAL \u2014 emitted only where `watch()` is notify-only \u2014 so apcore-python neither emits nor accepts it, and that is asserted rather than assumed.\n\nVerified red by letting `on()` create a callback list for any name, which reddens all six rejection cases."
     },
     "D-81": {
       "title": "`TaskStoreError` must reach the caller",
@@ -441,7 +476,19 @@
     "D-104": {
       "title": "the base document for a local `#/\u2026` reference",
       "kind": "behavioural",
-      "cases": []
+      "cases": [],
+      "sdk_tests": {
+        "python": [
+          "tests/test_deep_chain_v150.py"
+        ],
+        "typescript": [
+          "tests/schema/test-local-ref-file-root.test.ts"
+        ],
+        "rust": [
+          "tests/deep_chain_v150_spec.rs"
+        ]
+      },
+      "discriminates": "Already covered in all three when this map was built, and linked rather than rewritten \u2014 the 'covered but unlinked' shape, which reads as a gap to every reviewer and lets the coverage be weakened by someone who cannot see what it is for.\n\nBoth layouts must load: the file root (what A05 step 4a says, and what \u00a74.11's own example requires) and the schema node (what two of three accepted, so presumably in the wild). Before the decision NO schema file containing a local `$ref` loaded in all three \u2014 each rejected what the other accepted. The discriminator is a fixture pair, one per layout, both required to resolve.\n\napcore-rust additionally pins that the node fallback is scoped to the document it was declared for (`test_ref_fallback_is_document_scoped.rs`), which is D-124 \u2014 an unscoped fallback could strip `x-sensitive` from a resolved node and send a redacted field to a plaintext log."
     },
     "D-105": {
       "title": "the executor's ACL step MUST take the async path",
@@ -464,7 +511,18 @@
       "title": "a p99 beyond the largest bucket is that bucket, not zero",
       "kind": "behavioural",
       "cases": [],
-      "gap_note": "usage_contract.json's p99 cases drive `UsageCollector`'s EXACT percentile (`sorted[rank]`), not `estimate_p99_latency_ms`'s histogram-bucket estimate, which is what this decision is about. A case here would not discriminate. Needs a fixture that drives the bucket estimator with a sample above the top boundary, expecting that boundary rather than 0.0 \u2014 and 0.0 is also the legitimate empty-set answer, so the case must distinguish the two. NEW DRIVER CODE in all three SDKs."
+      "sdk_tests": {
+        "python": [
+          "tests/test_deep_chain_final_five.py::TestP99FallsBackToTheLargestBucket"
+        ],
+        "typescript": [
+          "tests/test-deep-chain-final-three.test.ts"
+        ],
+        "rust": [
+          "tests/deep_chain_v150_spec.rs::p99_falls_back_to_the_largest_finite_bucket"
+        ]
+      },
+      "discriminates": "Every observation must OVERFLOW the largest finite bucket \u2014 a module inside the ladder answers correctly under both implementations, which is every test anyone had written and is why the defect survived.\n\nPinning it found apcore-python returning 0.0 for exactly that input, in one of the two SDKs D-106 names as authoritative. `observe` records only the buckets an observation lands in, and the estimator collected its finite boundaries from the RECORDED map, so an all-overflow histogram left the boundary list empty and the fallback had nothing to fall back to. Fixed by taking the CONFIGURED ladder, which is what apcore-typescript already iterated and apcore-rust already emitted.\n\nTWO controls, in opposite directions, and both earn their place by measurement. No data must still report 0.0 \u2014 otherwise the fix could be a blanket 'always return the top bucket', which reports the SLOWEST possible latency for a module never called; deleting the zero-count guard reddens it. And an in-range observation must NOT be pushed to the top. The no-data control is asserted on the ESTIMATOR as well as through the wrapper, because the wrapper returns early when a module has no histogram entry and never reaches the estimator's own guard \u2014 measured: the wrapper-only assertion stayed green against the deleted guard."
     },
     "D-107": {
       "title": "per-class markers are the only multi-class opt-in",

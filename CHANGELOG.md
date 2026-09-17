@@ -218,7 +218,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   different IDs, which `detect_id_conflicts` does not catch. Three readings are set out under
   **Open — not yet adjudicated** in the decision log, with a recommendation.
 
-  ### D-74, D-75 and D-86 — three boundary decisions, and why one assertion is not enough
+  ### The last five — and the ratchet reaches zero
+
+  D-76, D-78, D-80 and D-106 were each implemented everywhere and pinned only in
+  apcore-rust; D-104 was already covered in all three and merely unlinked, which
+  reads as a gap to every reviewer and lets the coverage be weakened by someone
+  who cannot see what it is for. With these, **all 44 behavioural decisions from
+  this audit are pinned**, the ratchet is **0**, and
+  `check_decision_coverage.py` runs in CI with `--strict`: a new decision landing
+  unpinned is now a build failure rather than a number that went up. Verified by
+  unpinning one decision and confirming `--strict` exits 1.
+
+  **D-106 found a live defect in one of the two SDKs the decision named as its
+  authority.** apcore-python returned `0.0` for a module whose every observation
+  overflowed the top bucket — the exact failure D-106 forbids. The mechanism is
+  narrow and is why nobody saw it: `MetricsCollector.observe` records only the
+  buckets an observation lands in, and `estimate_p99_latency_ms` collected its
+  finite boundaries from the RECORDED map, so an all-overflow histogram left the
+  boundary list empty and the "fall back to the last finite boundary" branch had
+  nothing to fall back to. A module inside the ladder answered correctly, which
+  is every test anyone had written. Fixed by taking the CONFIGURED ladder — what
+  apcore-typescript already iterated and apcore-rust already emitted — through a
+  defaulted parameter that keeps the exported signature backward-compatible.
+
+  That makes **three** decisions in this audit whose own statement about which
+  SDKs were correct turned out to be wrong: D-96's "unobservable" claim
+  (corrected as D-125), v1.10.0's "all three accept a version hint" (corrected
+  as D-126), and now D-106's authority. The common cause is the same each time —
+  the statement was read off one SDK, or off the code rather than a measurement,
+  and nothing could turn red because the sentence itself said no test was needed.
+
+  Two controls in this batch earned their place by measurement rather than by
+  argument. D-106's "no data still reports zero" had to be asserted on the
+  ESTIMATOR as well as through the wrapper: the wrapper returns early when a
+  module has no histogram entry and never reaches the estimator's own zero-count
+  guard, so the wrapper-only assertion stayed green against that guard being
+  deleted. And D-78's third assertion — applying twice to one executor STACKS —
+  is the one a consuming implementation cannot satisfy under any reading, and is
+  what the decision itself cited: the block's existing `idempotent: false` row
+  had already promised stacking, so the spec had chosen before the
+  Postconditions section was written; it just had not said so where an
+  implementer looks.
+
+    ### D-74, D-75 and D-86 — three boundary decisions, and why one assertion is not enough
 
   All three were implemented everywhere; the coverage was uneven in a way that
   keeps repeating. **D-74 had no test in any SDK.** D-75 had Python and
