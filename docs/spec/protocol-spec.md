@@ -701,8 +701,9 @@ Complexity: O(n), where n is the number of filesystem entries
 > replace the link between the scan and the load. This rule fixes discovery
 > semantics; whether a stronger file-handle or directory-descriptor level
 > defence is warranted depends on whether the extensions root is attacker-
-> writable, which is a threat-model question and is filed as a separate security
-> assessment rather than folded in here.
+> writable, which is a threat-model question and is assessed separately in
+> [Discovery TOCTOU](./2026-09-discovery-toctou-assessment.md) rather than folded
+> in here.
 
 
 ---

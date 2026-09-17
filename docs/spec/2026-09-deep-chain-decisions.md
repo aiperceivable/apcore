@@ -1044,7 +1044,8 @@ an aliased file and `['real.nested.target']` for an aliased directory.
 check cannot stop a party who can replace the link between the scan and the load.
 Whether a file-handle or directory-descriptor level defence is warranted depends
 on whether the extensions root is attacker-writable, which is a threat-model
-question rather than a discovery-semantics one.
+question rather than a discovery-semantics one, and is assessed in
+[Discovery TOCTOU](./2026-09-discovery-toctou-assessment.md).
 
 **Two further defects surfaced while implementing it**, both in apcore-typescript
 and both of the same shape — a path compared against a root that was normalised
