@@ -154,6 +154,29 @@
           "executor.email.verify"
         ]
       }
+    },
+    {
+      "id": "reload_dependents_is_accepted_and_inert",
+      "description": "D-121: `reload_dependents` is DEPRECATED and ignored. Declared in all three SDKs' input schemas and read by none — a spec MUST that no implementation satisfied, which is the §9.1.3 'declared surface reaches no mechanism' shape applied to a module input field. Three independent implementations skipping it is the evidence the maintainer decision rests on: deprecate now, remove at 2.0, do NOT implement.\n\nThe reloaded set is asserted IDENTICAL to `glob_filter_restricts_rediscovery`, which runs the same filter without the field. Asserting only that the call succeeds would pass for an SDK that started honouring it and pulled the dependents in.\n\nThe once-per-instance deprecation WARNING is pinned by per-SDK tests instead: it is instance state, and a fixture case cannot observe it without depending on which case ran first in the process.\n\nAT 2.0 THIS CASE FLIPS rather than being deleted: the field is removed, the input schema sets `additionalProperties: false`, and the same input becomes a validation error.",
+      "registered_modules": [
+        "executor.email.send",
+        "executor.email.verify",
+        "executor.math.add",
+        "executor.math.multiply",
+        "analytics.reports.daily"
+      ],
+      "input": {
+        "path_filter": "executor.email.*",
+        "reload_dependents": true,
+        "reason": "deploy email service"
+      },
+      "expected": {
+        "success": true,
+        "reloaded_modules_set": [
+          "executor.email.send",
+          "executor.email.verify"
+        ]
+      }
     }
   ]
 }

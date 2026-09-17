@@ -644,11 +644,22 @@
     },
     "D-121": {
       "title": "`reload_dependents` is deprecated for removal",
-      "kind": "deferred",
-      "note": "spec text only (v1.51.0); implementation deliberately deferred. Becomes `behavioural` the moment it is implemented.",
-      "cases": [],
-      "case_sketch": "Host: reload_path_filter.json. Passing `reload_dependents: true` -> the call succeeds, the field changes nothing, and a deprecation warning is emitted once. Control: omitting it emits no warning. After removal at v2.0 the same input becomes a validation error (`additionalProperties: false`), so the case is written to be flipped at that release rather than deleted.",
-      "sketch_host": "reload_path_filter.json"
+      "kind": "behavioural",
+      "cases": [
+        "reload_path_filter.json#reload_dependents_is_accepted_and_inert"
+      ],
+      "sdk_tests": {
+        "python": [
+          "tests/sys_modules/test_reload_dependents_deprecation.py"
+        ],
+        "typescript": [
+          "tests/sys-modules/test-reload-dependents-deprecation.test.ts"
+        ],
+        "rust": [
+          "tests/test_reload_dependents_deprecation.rs"
+        ]
+      },
+      "discriminates": "Split deliberately between a case and per-SDK tests, because the decision has two halves with different testable shapes.\n\nTHE CASE pins the cross-SDK invariant: passing `reload_dependents: true` changes nothing. Its expected reloaded set is asserted IDENTICAL to `glob_filter_restricts_rediscovery`, which runs the same filter WITHOUT the field — asserting only that the call succeeds would pass for an SDK that started honouring it and pulled the dependents in, which is the one outcome the maintainer decision forbids.\n\nTHE PER-SDK TESTS pin the deprecation notice, which a fixture cannot observe: the guard is INSTANCE state, so a case would depend on which case ran first in the process — the same process-global trap that let one test's ACL condition handler decide another's control. Each SDK asserts the notice fires, names the replacement (`path_filter`), names the release (2.0) and says the field becomes a VALIDATION ERROR rather than a no-op — a notice that omits any of those leaves the caller to discover it. Cadence is per INSTANCE, not per process, for the reason D-90's notice is per token and D-89's dedupe is per registry instance: a process-wide one-shot tells the first caller and leaves every later one to find out in production. A separate assertion reads the INPUT SCHEMA, because a host must be able to see the deprecation without calling with the field.\n\nControls: omitting the field, and passing `false`, must both say nothing — without which 'it warns' is satisfied by warning on every reload.\n\nVerified red in all three: removing the warning, making the guard process-wide, warning unconditionally, and dropping the schema marker each redden exactly the assertions that stand on them.\n\nAT 2.0 THE CASE FLIPS rather than being deleted: the field is removed, `additionalProperties: false` applies, and the same input becomes a validation error."
     },
     "D-122": {
       "title": "`shutdown()` attempts every cancellation before it reports",
