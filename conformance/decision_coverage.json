@@ -320,11 +320,12 @@
     },
     "D-114": {
       "title": "`remove()` clears the duplicate-identity entry",
-      "kind": "deferred",
-      "note": "spec text only (v1.51.0); implementation deliberately deferred. Becomes `behavioural` the moment it is implemented.",
-      "cases": [],
-      "case_sketch": "Host: middleware_hardening.json. `use(m)` / `remove(m)` / `use(m)` with the same identity -> the second `use` emits NO duplicate warning. An SDK that does not clear the entry warns about a registration that no longer exists. Control: `use(m)` / `use(m)` without the remove MUST still warn, or the case passes for an SDK that simply stopped warning.",
-      "sketch_host": "middleware_hardening.json"
+      "kind": "behavioural",
+      "cases": [
+        "middleware_hardening.json#remove_clears_the_duplicate_identity_entry",
+        "middleware_hardening.json#use_twice_still_warns_about_the_duplicate"
+      ],
+      "discriminates": "`use` / `remove` / `use` must produce ZERO duplicate warnings; `use` / `use` must produce one. The pair is what discriminates \u2014 either assertion alone passes for an SDK that simply stopped warning, and the decision is about CLEARING the entry on removal, not about dropping duplicate detection. Only the steps after the FIRST `use` are counted, because the first registration never warns and counting it would make both cases 1. apcore-python and apcore-rust were red: neither `remove` touched the identity registry, so a legitimate swap warned about a registration that no longer existed. apcore-rust additionally pins that removing one of TWO registrations sharing an identity leaves the survivor detectable \u2014 duplicate registration warns but succeeds, so that state is reachable."
     },
     "D-115": {
       "title": "a malformed annotation value is tolerated and dropped",

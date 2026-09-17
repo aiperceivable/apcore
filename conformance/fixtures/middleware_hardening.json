@@ -31,7 +31,7 @@
     },
     {
       "id": "context_namespace_violation",
-      "description": "User middleware attempting to write a key with the _apcore.* prefix must produce a warning or error — this is a namespace violation.",
+      "description": "User middleware attempting to write a key with the _apcore.* prefix must produce a warning or error \u2014 this is a namespace violation.",
       "input": {
         "writer": "user",
         "key": "_apcore.mw.tracing.spans",
@@ -135,10 +135,39 @@
           "note": "isawaitable() always returns false for uncalled functions; must not be used for async detection"
         }
       }
+    },
+    {
+      "id": "remove_clears_the_duplicate_identity_entry",
+      "description": "D-114: `use(m)` / `remove(m)` / `use(m)` emits NO duplicate-identity warning on the second `use`. The registry records the FIRST registration so a duplicate can be traced back to it; a stale entry corrupts that record in both directions \u2014 it names a registration that no longer exists, and it hides a genuine duplicate behind a warning the operator has learned to ignore.",
+      "input": {
+        "sequence": [
+          "use",
+          "remove",
+          "use"
+        ],
+        "middleware_name": "audit"
+      },
+      "expected": {
+        "duplicate_warnings": 0
+      }
+    },
+    {
+      "id": "use_twice_still_warns_about_the_duplicate",
+      "description": "The control for the case above. Without it an SDK that simply stopped warning passes, and the decision is about CLEARING the entry on removal, not about dropping the warning.",
+      "input": {
+        "sequence": [
+          "use",
+          "use"
+        ],
+        "middleware_name": "audit"
+      },
+      "expected": {
+        "duplicate_warnings": 1
+      }
     }
   ],
   "driver_contract": {
-    "assert_the_wire_code": "Cross-language cases state their expected failure as `error_code`, the wire string, never a class name. `circuit_breaker_short_circuits_open` asserted `CircuitBreakerOpenError`, a Python/TypeScript class apcore-rust cannot have — Rust models these as `ErrorCode` variants — so no Rust driver could ever satisfy it. Cases carrying an explicit `language` field are the exception: they assert that language's API shape, and a type name there is the thing under test rather than a stand-in for the contract.",
-    "tracing_is_specified_once": "`tracing_span_created` was removed. It pinned middleware-system.md §1.3, which required a span named `module_id` and a single span id in `_apcore.mw.tracing.span_id`. Both contradicted the surviving contract: protocol-spec.md §12 and conformance T08-007 require the span name `apcore.module.execute` with the module id as an attribute (a span name per module is high-cardinality, which OpenTelemetry's semantic conventions advise against), and observability.md stores a STACK in `_apcore.mw.tracing.spans` because modules call modules and a single slot is overwritten on the first nested call. §1.3 is withdrawn. TracingMiddleware's span contract is asserted where it is specified — see the observability fixtures and T08-007 — not here."
+    "assert_the_wire_code": "Cross-language cases state their expected failure as `error_code`, the wire string, never a class name. `circuit_breaker_short_circuits_open` asserted `CircuitBreakerOpenError`, a Python/TypeScript class apcore-rust cannot have \u2014 Rust models these as `ErrorCode` variants \u2014 so no Rust driver could ever satisfy it. Cases carrying an explicit `language` field are the exception: they assert that language's API shape, and a type name there is the thing under test rather than a stand-in for the contract.",
+    "tracing_is_specified_once": "`tracing_span_created` was removed. It pinned middleware-system.md \u00a71.3, which required a span named `module_id` and a single span id in `_apcore.mw.tracing.span_id`. Both contradicted the surviving contract: protocol-spec.md \u00a712 and conformance T08-007 require the span name `apcore.module.execute` with the module id as an attribute (a span name per module is high-cardinality, which OpenTelemetry's semantic conventions advise against), and observability.md stores a STACK in `_apcore.mw.tracing.spans` because modules call modules and a single slot is overwritten on the first nested call. \u00a71.3 is withdrawn. TracingMiddleware's span contract is asserted where it is specified \u2014 see the observability fixtures and T08-007 \u2014 not here."
   }
 }

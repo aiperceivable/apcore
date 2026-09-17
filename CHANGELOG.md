@@ -196,7 +196,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > those already carried 12,747 changed lines across four repositories, and stacking a third wave on
 > an unreviewed base would have buried any defect in it. Implementation has now begun, one decision
 > at a time and case-first: the discriminating conformance case is written and run against all three
-> SDKs BEFORE the implementation, so the decision lands pinned rather than believed. **D-110, D-118 and D-119 have landed; the other eleven have not.** Each carries a `case_sketch` in
+> SDKs BEFORE the implementation, so the decision lands pinned rather than believed. **D-110, D-114, D-118 and D-119 have landed; the other ten have not.** Each carries a `case_sketch` in
 > `conformance/decision_coverage.json` saying what its case looks like and what makes it red.
 
 - **An unknown extension point is an error; an empty one is not** (D-108). The `### Errors: No errors
@@ -236,8 +236,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with no system modules registered "every module conforms" is vacuously true. apcore-python and
   apcore-rust were red, both by inheriting a default of `true` that means the opposite of the
   intended value; that inheritance is the second half of the decision.
-- Also: `remove()` clears the middleware
-  duplicate-identity entry (D-114); circuit-breaker events carry the DECLARED subscriber type the DLQ
+- **Landed (D-114):** `remove()` clears the middleware duplicate-identity entry. The pair of cases is
+  what discriminates — either alone passes for an SDK that simply stopped warning, and the decision is
+  about clearing the entry on removal, not about dropping duplicate detection. apcore-python and
+  apcore-rust were red: neither `remove` touched the identity registry, so `use` / `remove` / `use` —
+  a legitimate swap — warned about a registration that no longer existed, which is how an operator
+  learns to ignore the warning that will next fire for a real duplicate.
+- Also: circuit-breaker events carry the DECLARED subscriber type the DLQ
   path already uses (D-116); registered-namespace defaults do not answer for a legacy document (D-117);
   and every `system.*` module declares `open_world: false` explicitly rather than inheriting a default that means the opposite
   (D-119).
