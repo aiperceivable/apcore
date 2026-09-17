@@ -1,6 +1,6 @@
 {
   "_comment": "Which executed conformance case pins each decision. Enforced by conformance/check_decision_coverage.py.\n\nA decision recorded only in prose is a decision nothing verifies. This audit produced two false statements of exactly that kind -- D-96 claimed its union was 'unobservable' in two SDKs (it was a fail-open approval bypass in both, corrected as D-125), and the v1.10.0 row claimed all three SDKs accept a version hint (apcore-rust has no such parameter, corrected as D-126). Neither could be caught by a test, because the sentence itself said the test was unnecessary.\n\nUNLINKED MEANS UNCOVERED, deliberately. A case that pins a decision without saying so can be weakened by someone who does not know what it is for -- which is how approval_gate.json came to set both governance sources from one boolean and passed in all three SDKs while one of them had a bypass. If a case pins a decision, name it here.\n\n`discriminates` is not documentation. It must say what makes the case fail when an SDK regresses; if it cannot be written, the case is not discriminating and the decision is still unpinned.\n\nkinds: behavioural = needs a discriminating case | deferred = spec text only, no implementation to pin yet | unconstrained = the decision deliberately leaves the shape language-defined.\n\nThe 14 `deferred` entries carry a `case_sketch`: what the discriminating case looks like, what makes it RED, and which existing fixture should host it. Written BEFORE implementation on purpose. D-92 shows why \u2014 it landed in one SDK of three and nothing noticed, because the only thing that could have noticed was a case nobody had written yet. The case has to be written either way; writing it first costs nothing and forces the question \"what would make this red?\" at the moment it is cheapest to answer.",
-  "ratchet": 20,
+  "ratchet": 19,
   "ratchet_history": [
     {
       "value": 32,
@@ -36,6 +36,11 @@
       "value": 20,
       "date": "2026-09-17",
       "note": "D-94: pinned by per-SDK tests in all three \u2014 the decision is filesystem semantics, which the fixture fs primitive cannot express"
+    },
+    {
+      "value": 19,
+      "date": "2026-09-17",
+      "note": "D-105: per-SDK, the decision is which internal accessor the executor calls \u2014 not fixture data"
     }
   ],
   "decisions": {
@@ -269,7 +274,19 @@
     "D-105": {
       "title": "the executor's ACL step MUST take the async path",
       "kind": "behavioural",
-      "cases": []
+      "cases": [],
+      "sdk_tests": {
+        "python": [
+          "tests/test_executor_async_acl_path.py"
+        ],
+        "typescript": [
+          "tests/test-executor-async-acl-path.test.ts"
+        ],
+        "rust": [
+          "tests/test_executor_async_acl_path.rs"
+        ]
+      },
+      "discriminates": "Per-SDK rather than a conformance case: the decision is about WHICH INTERNAL ACCESSOR the executor calls, and registering an async condition handler is an SDK-API act, not fixture data. A fixture forced into that shape would pin the driver's handler-registration helper.\n\nThe discriminator is a SYNC handler answering false and an ASYNC handler answering true for the same condition key. Counting handler invocations would NOT separate the paths \u2014 both invoke a handler \u2014 so only the verdict does: the async path grants and the call returns, the sync path sees false, the allow rule does not grant, and the call is denied by default. The control registers only the sync handler and asserts the denial, which proves the two handlers genuinely disagree; without it the main case could pass because the condition is satisfied either way. Verified red in all three by forcing the synchronous accessor in the ACL step.\n\nEach test uses its OWN condition key: all three SDKs register condition handlers into process-level registries (classmethod / static / associated function), so a handler registered by one test is visible to every later ACL in the process \u2014 sharing a key let the first test's async handler decide the control, which then passed the call it was written to see denied."
     },
     "D-106": {
       "title": "a p99 beyond the largest bucket is that bucket, not zero",

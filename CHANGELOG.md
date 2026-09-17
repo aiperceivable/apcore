@@ -139,6 +139,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   conform; each now has four assertions, two of them controls, verified red against a removed
   containment check.
 
+  **D-105 is pinned the same way, for the same reason**: the decision is about which internal
+  accessor the executor's ACL step calls, and registering an async condition handler is an SDK-API
+  act rather than fixture data. The discriminator is a SYNC handler answering false and an ASYNC
+  handler answering true for one condition key — counting invocations would not separate the paths,
+  because both invoke a handler; only the verdict does. All three take the async path today, and all
+  three go red when the step is forced onto the synchronous accessor. Each test uses its own
+  condition key: all three SDKs register handlers into PROCESS-level registries, so a key shared
+  between tests let one test's async handler decide another's control.
+
   That work turned up an **open item, recorded and not implemented**: `extensions.follow_symlinks:
   true` reaches the file branch in apcore-python and in neither peer, so the key is half-inert in two
   of three — the §9.1.3 shape #118 spent a release removing. It is not filed as a decision because
