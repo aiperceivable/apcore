@@ -957,3 +957,63 @@ sentence of the specification: the code was corrected in one SDK and the spec
 recorded, without checking, that the other two needed nothing. A claim about
 another implementation is a claim to verify, not to reason out — and the
 verification here took one script per SDK.
+
+---
+
+# Open — not yet adjudicated
+
+## O-1 — `extensions.follow_symlinks: true` does not reach the file branch in two SDKs
+
+**Found** 2026-09-17, while pinning D-94. Not a D-94 defect: every SDK's
+containment check is correct, and all three now have regression tests for it.
+
+**Measured.** One extensions root, one real module file in `real/`, one symlink
+to it beside `real/`, `follow_symlinks: true`:
+
+| SDK | discovered |
+|---|---|
+| apcore-python | `alias`, `real.target` |
+| apcore-typescript | `real.target` |
+| apcore-rust | `real.target` |
+
+Algorithm A (§"Discovery") step 3 is explicit: **b** skips a symbolic link only
+when `follow_symlinks == false`; **c** recurses when the entry is a directory;
+**d** appends when it is a file with a supported extension. A symlink that is not
+skipped by b therefore falls through to c or d on what it resolves to, and a
+symlinked module file reaches d.
+
+apcore-rust drops it structurally: `if file_type.is_dir() || (file_type.is_symlink()
+&& follow_symlinks)` routes a symlinked file into the directory branch, where
+`entry_path.is_dir()` is false and it falls out unappended. apcore-typescript
+stats the target and sets `isFile`, so its code reads as conformant, and the entry
+is still not appended — the cause was not chased further because the decision
+below has to come first.
+
+**So `extensions.follow_symlinks` is half-inert in two of three SDKs**: it governs
+directories and does nothing for files. That is the §9.1.3 shape this repository
+already forbids for configuration keys — a declared key that does not reach its
+mechanism — and issue #118 spent a release removing it.
+
+**Why this is not filed as a decision and implemented.** The conformant behaviour
+has a consequence a maintainer should rule on rather than inherit from an
+algorithm: apcore-python discovers the symlink AND its target, so one file becomes
+**two modules with different IDs** (`alias` and `real.target`). Step 4's
+`detect_id_conflicts` does not catch it — the IDs differ. An operator laying out
+extensions with symlinks gets duplicate registrations, and an operator symlinking
+one file for convenience gets a module they did not intend to declare.
+
+Three readings, none obviously wrong:
+
+1. **Follow A literally.** apcore-python is right; the peers append the symlinked
+   file. Duplicates are the operator's problem, and `follow_symlinks` defaults to
+   `false`.
+2. **Symlinked files are resolved, not duplicated.** Append the target once,
+   whichever path reached it, and dedupe on real path. No duplicate IDs, and
+   `follow_symlinks` still reaches files.
+3. **`follow_symlinks` governs directories only.** The peers are right, A's step
+   3d is narrowed to say so, and apcore-python changes.
+
+Reading 2 is the one this note recommends: it makes the key reach its mechanism,
+which is what §9.1.3 requires, without manufacturing a second module out of a
+convenience symlink. It is also the only reading under which the three SDKs can
+agree without either peer adopting a duplicate-module hazard.

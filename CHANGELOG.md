@@ -104,6 +104,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `known_ids` set when a case declares one. All three already conformed; the decision is pinned now
   rather than merely believed.
 
+  **D-94 is pinned by per-SDK tests rather than a conformance case, deliberately.** The decision is
+  about filesystem semantics — symlink resolution and real-path containment — and the `fs` primitive
+  every filesystem fixture uses is a flat path→content map with no symlink. A fixture forced into
+  that shape would test the driver's symlink helper, not the SDK's scanner. Not every decision can be
+  pinned by data, and pretending otherwise produces a case that tests the harness. All three SDKs
+  conform; each now has four assertions, two of them controls, verified red against a removed
+  containment check.
+
+  That work turned up an **open item, recorded and not implemented**: `extensions.follow_symlinks:
+  true` reaches the file branch in apcore-python and in neither peer, so the key is half-inert in two
+  of three — the §9.1.3 shape #118 spent a release removing. It is not filed as a decision because
+  the conformant behaviour has a consequence a maintainer should rule on rather than inherit from an
+  algorithm: apcore-python discovers the symlink AND its target, so one file becomes two modules with
+  different IDs, which `detect_id_conflicts` does not catch. Three readings are set out under
+  **Open — not yet adjudicated** in the decision log, with a recommendation.
+
   **Two additions keep the map from becoming what it exists to prevent.** Every linked case is now
   cross-checked against `case_pinning_baseline.json` — `check_case_pinning.py` mutates a fixture
   value and checks a driver goes red, which is the only mechanical test of whether a case
