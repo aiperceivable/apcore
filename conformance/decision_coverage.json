@@ -1,6 +1,6 @@
 {
   "_comment": "Which executed conformance case pins each decision. Enforced by conformance/check_decision_coverage.py.\n\nA decision recorded only in prose is a decision nothing verifies. This audit produced two false statements of exactly that kind -- D-96 claimed its union was 'unobservable' in two SDKs (it was a fail-open approval bypass in both, corrected as D-125), and the v1.10.0 row claimed all three SDKs accept a version hint (apcore-rust has no such parameter, corrected as D-126). Neither could be caught by a test, because the sentence itself said the test was unnecessary.\n\nUNLINKED MEANS UNCOVERED, deliberately. A case that pins a decision without saying so can be weakened by someone who does not know what it is for -- which is how approval_gate.json came to set both governance sources from one boolean and passed in all three SDKs while one of them had a bypass. If a case pins a decision, name it here.\n\n`discriminates` is not documentation. It must say what makes the case fail when an SDK regresses; if it cannot be written, the case is not discriminating and the decision is still unpinned.\n\nkinds: behavioural = needs a discriminating case | deferred = spec text only, no implementation to pin yet | unconstrained = the decision deliberately leaves the shape language-defined.",
-  "ratchet": 23,
+  "ratchet": 22,
   "ratchet_history": [
     {
       "value": 32,
@@ -21,6 +21,11 @@
       "value": 23,
       "date": "2026-09-17",
       "note": "D-92: the new case found the decision unimplemented in apcore-typescript and apcore-rust"
+    },
+    {
+      "value": 22,
+      "date": "2026-09-17",
+      "note": "D-85: the case found apcore-rust reporting a malformed constraint as a version mismatch from the resolution path"
     }
   ],
   "decisions": {
@@ -90,7 +95,11 @@
     "D-85": {
       "title": "malformed version constraints must be reportable",
       "kind": "behavioural",
-      "cases": []
+      "cases": [
+        "dependency_version_constraints.json#malformed_constraint_latest_is_reported_not_silently_satisfied",
+        "dependency_version_constraints.json#malformed_constraint_v_prefix_is_not_a_version_mismatch"
+      ],
+      "discriminates": "Both cases declare `error_code: VERSION_CONSTRAINT_INVALID` plus the offending `constraint`, so they distinguish three outcomes an implementation could produce: silently satisfied (`latest` parsed to (0,0,0) and compared majors only, true for every 0.x.y module), reported as a VERSION MISMATCH, or reported as a malformed constraint. The second case is the sharper one \u2014 `v1.0.0` against an actual `1.0.0` has identical versions, so an SDK reporting DEPENDENCY_VERSION_MISMATCH sends the operator to look at versions that already match. Reverting apcore-rust's resolver to the non-fallible `matches_version_hint` turns the case red on the error_code assertion."
     },
     "D-86": {
       "title": "`Registry.register` validation order",

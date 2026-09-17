@@ -48,8 +48,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   because the sentence itself said the test was unnecessary.
 
   Of 53 decisions (D-74 – D-126): **37 behavioural, 14 deferred** (D-108 – D-121, spec text only),
-  **2 unconstrained** (the decision itself leaves the shape language-defined). Of the 37, eight are
-  pinned by a conformance case and six by per-SDK tests covering every SDK they bind — **ratchet 23**,
+  **2 unconstrained** (the decision itself leaves the shape language-defined). Of the 37, nine are
+  pinned by a conformance case and six by per-SDK tests covering every SDK they bind — **ratchet 22**,
   which may only go down.
 
   **Unlinked means uncovered, deliberately.** A case that pins a decision without saying so can be
@@ -88,6 +88,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   one no caller can catch, and neither SDK's absence of the code was visible from anywhere. It is
   implemented in both now. **This is the first decision the coverage map found unimplemented rather
   than merely unpinned.**
+
+  The fourth found a decision implemented at the wrong LAYER. D-85 requires a malformed version
+  constraint to report `VERSION_CONSTRAINT_INVALID`; apcore-rust's `try_matches_version_hint` does,
+  and its dependency RESOLVER called the non-fallible `matches_version_hint`, which fails closed to
+  `false` — and then reported that `false` as `DEPENDENCY_VERSION_MISMATCH`. So an operator who
+  typed `v1.0.0` against an actual `1.0.0` was told the versions did not line up, about versions
+  that are identical, while both peers named the rule the operand broke. The resolver now uses the
+  fallible form.
 
 ### Security (v1.54.0)
 
