@@ -1,0 +1,149 @@
+{
+  "ratchet": 24,
+  "accepted": {
+    "apcore_client.start.error.CONFIG_INVALID": {
+      "python": "skipped",
+      "typescript": "skipped",
+      "rust": "live",
+      "note": "recorded, not yet examined"
+    },
+    "apcore_client.start.property.idempotent_false": {
+      "python": "skipped",
+      "typescript": "skipped",
+      "rust": "live",
+      "note": "recorded, not yet examined"
+    },
+    "apcore_client.stop.property.idempotent_true": {
+      "python": "skipped",
+      "typescript": "skipped",
+      "rust": "live",
+      "note": "recorded, not yet examined"
+    },
+    "call_chain_guard.guard_call_chain.input.module_id.required": {
+      "python": "live",
+      "typescript": "skipped",
+      "rust": "live",
+      "note": "recorded, not yet examined"
+    },
+    "config_bus.get.input.key.empty": {
+      "python": "live",
+      "typescript": "skipped",
+      "rust": "live",
+      "note": "x"
+    },
+    "config_bus.mount.property.thread_safe": {
+      "python": "live",
+      "typescript": "skipped",
+      "rust": "live",
+      "note": "recorded, not yet examined"
+    },
+    "config_bus.register_namespace.property.thread_safe": {
+      "python": "live",
+      "typescript": "skipped",
+      "rust": "live",
+      "note": "recorded, not yet examined"
+    },
+    "config_bus.reload.property.thread_safe": {
+      "python": "live",
+      "typescript": "skipped",
+      "rust": "live",
+      "note": "recorded, not yet examined"
+    },
+    "decorator_bindings.module.error.FUNC_MISSING_RETURN_TYPE": {
+      "python": "live",
+      "typescript": "skipped",
+      "rust": "skipped",
+      "note": "recorded, not yet examined"
+    },
+    "decorator_bindings.module.error.FUNC_MISSING_TYPE_HINT": {
+      "python": "live",
+      "typescript": "skipped",
+      "rust": "skipped",
+      "note": "recorded, not yet examined"
+    },
+    "decorator_bindings.module.property.async.false": {
+      "python": "live",
+      "typescript": "live",
+      "rust": "skipped",
+      "note": "recorded, not yet examined"
+    },
+    "event_system.deliver.error.ImportError_a2a": {
+      "python": "live",
+      "typescript": "skipped",
+      "rust": "live",
+      "note": "recorded, not yet examined"
+    },
+    "event_system.deliver.error.WEBHOOK_DELIVERY_FAILED": {
+      "python": "live",
+      "typescript": "skipped",
+      "rust": "live",
+      "note": "recorded, not yet examined"
+    },
+    "event_system.emit.input.event_type.not_empty": {
+      "python": "live",
+      "typescript": "skipped",
+      "rust": "live",
+      "note": "recorded, not yet examined"
+    },
+    "event_system.on_failure.input.subscriber_id.required": {
+      "python": "live",
+      "typescript": "skipped",
+      "rust": "live",
+      "note": "recorded, not yet examined"
+    },
+    "event_system.subscribe.input.subscriber.async_on_event": {
+      "python": "live",
+      "typescript": "skipped",
+      "rust": "live",
+      "note": "recorded, not yet examined"
+    },
+    "middleware_system.detect_async.input.handler.required": {
+      "python": "skipped",
+      "typescript": "skipped",
+      "rust": "live",
+      "note": "recorded, not yet examined"
+    },
+    "middleware_system.detect_async.property.idempotent": {
+      "python": "skipped",
+      "typescript": "skipped",
+      "rust": "live",
+      "note": "recorded, not yet examined"
+    },
+    "middleware_system.detect_async.property.pure": {
+      "python": "skipped",
+      "typescript": "skipped",
+      "rust": "live",
+      "note": "recorded, not yet examined"
+    },
+    "multi_module_discovery.discover_multi_class.input.file_path.nonexistent": {
+      "python": "live",
+      "typescript": "skipped",
+      "rust": "live",
+      "note": "recorded, not yet examined"
+    },
+    "multi_module_discovery.discover_multi_class.input.pre_approval_hook.allow": {
+      "python": "live",
+      "typescript": "skipped",
+      "rust": "live",
+      "note": "recorded, not yet examined"
+    },
+    "multi_module_discovery.discover_multi_class.input.pre_approval_hook.reject": {
+      "python": "live",
+      "typescript": "skipped",
+      "rust": "live",
+      "note": "recorded, not yet examined"
+    },
+    "system_modules.check_module_disabled.input.registry_param": {
+      "python": "live",
+      "typescript": "skipped",
+      "rust": "live",
+      "note": "recorded, not yet examined"
+    },
+    "system_modules.is_module_disabled.input.registry_param": {
+      "python": "live",
+      "typescript": "skipped",
+      "rust": "live",
+      "note": "recorded, not yet examined"
+    }
+  }
+}

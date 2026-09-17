@@ -301,3 +301,17 @@ jobs:
         #
         # Switch to --strict when the ratchet reaches zero.
         run: python3 conformance/check_decision_coverage.py --sdk-root ..
+
+      - name: A clause one SDK disabled is a claim about that SDK
+        working-directory: apcore
+        # NOT --strict: 24 clauses are disabled in one SDK and live in another,
+        # and several are real API differences rather than defects. What this
+        # DOES enforce is that the set cannot grow, and that the RECORD cannot
+        # go stale — an entry describing a gap that has closed fails, because
+        # that is exactly what this guard was written after finding twice:
+        # `async_tasks.save.error.TASK_STORE_UNAVAILABLE` stayed skipped in two
+        # SDKs after D-92 required the symbol it said was missing, and
+        # `cancellation.raise_if_cancelled.*` stayed skipped in apcore-typescript
+        # after this audit's own implementation added the method. A skip is
+        # green, so neither turned anything red.
+        run: python3 conformance/check_skip_asymmetry.py --sdk-root ..

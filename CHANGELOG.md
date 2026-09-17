@@ -179,7 +179,66 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   different IDs, which `detect_id_conflicts` does not catch. Three readings are set out under
   **Open — not yet adjudicated** in the decision log, with a recommendation.
 
-  `check_decision_coverage.py` also gained an eighth rot mode: an `sdk_tests` entry may now name one
+  **D-81 was implemented in all three SDKs and measured against a stand-in.**
+  Every manager method that touches the store propagates the outage in Python,
+  TypeScript and Rust — nine surfaces, seven, nine. What none of them tested was
+  the type a host will actually raise. The suites predate **D-92**, which
+  required the SDKs to define and export `TaskStoreError` /
+  `TASK_STORE_UNAVAILABLE`, so apcore-typescript's failing store threw
+  `new Error('TASK_STORE_UNAVAILABLE')` and apcore-rust's raised
+  `GeneralInternalError` with the code in its message. Measured: a manager that
+  swallows the CANONICAL type into "task not found" while re-raising everything
+  else passes **45 tests in each SDK**. The two decisions were written eight
+  apart and never joined up — D-92 created the one type a caller can catch, and
+  nothing checked that D-81's propagation covered it.
+
+  The stores now raise the canonical type, the assertions are on the CODE
+  rather than "some error escaped", and apcore-python — which had one assertion
+  for this, on `get_status`, filed under D-92 — gained the six other manager
+  methods the decision names. Verified red per store accessor. apcore-python
+  needed four mutations rather than three: it has TWO independent store-read
+  paths, the async `_store_get` adapter and the sync `get_status` coroutine
+  pump that `get_result` uses, and a mutation on the adapter alone leaves the
+  sync path unmeasured. The pump's mutation must also sit at the `send()` call
+  — the store method is `async def`, so calling it builds a coroutine and
+  raises nothing.
+
+  ### A disabled test is a claim that goes stale silently
+
+  Chasing D-81 turned up the mechanism that let this stand, and it had struck
+  **twice, both times against this audit's own work**:
+
+  - `async_tasks.save.error.TASK_STORE_UNAVAILABLE` was still `it.skip` in
+    apcore-typescript and `#[ignore]` in apcore-rust, reason *"missing symbol
+    TaskStoreError/TASK_STORE_UNAVAILABLE (contract gap)"* — the exact claim
+    **D-92 made false**. Only apcore-python's was updated.
+  - `cancellation.raise_if_cancelled.*` was still `it.skip` in
+    apcore-typescript, reason *"missing symbol CancelToken.raiseIfCancelled"*,
+    after the v1.49.0 – v1.54.0 implementation commit added
+    `raiseIfCancelled()` to `src/cancel.ts`. Three clauses, and the file header
+    said the symbol did not exist.
+
+  A skip is green. A disabled test explaining why something cannot be tested
+  keeps explaining it after it can, and the clause reads as a *documented gap*
+  in every review while going untested. All four are now live, each verified
+  red in both directions (a no-op implementation and an unconditional one).
+
+  **`conformance/check_skip_asymmetry.py`** (new) makes the shape mechanical.
+  Resolving "does symbol X exist today" across three languages is guesswork — a
+  first attempt produced more false positives than findings. The oracle is the
+  PEER SUITES: the three share clause ids, so a clause LIVE in one SDK and
+  DISABLED in another is a precise, language-independent signal, and it is the
+  one that catches this class — apcore-python exercised `raise_if_cancelled`
+  throughout. 24 such clauses exist today; several are real API differences
+  (apcore-python has no `Middleware.detect_async`), so the baseline records the
+  set with the per-SDK state that was true when it was recorded, and a
+  **baseline entry is a record that someone looked, not a judgement that the
+  skip is correct**. Three rot modes, each verified red: a new asymmetry, an
+  entry whose per-SDK state changed, and — the one that matters — an entry
+  describing a gap that has since closed, which is the same stale artifact the
+  guard exists to find.
+
+    `check_decision_coverage.py` also gained an eighth rot mode: an `sdk_tests` entry may now name one
   test inside a shared file as `path::name`, and a rename goes red instead of reading as coverage.
   Four of the five files above hold tests for several decisions, so naming the file alone would have
   let any of them be deleted silently.

@@ -1,6 +1,6 @@
 {
   "_comment": "Which executed conformance case pins each decision. Enforced by conformance/check_decision_coverage.py.\n\nA decision recorded only in prose is a decision nothing verifies. This audit produced two false statements of exactly that kind -- D-96 claimed its union was 'unobservable' in two SDKs (it was a fail-open approval bypass in both, corrected as D-125), and the v1.10.0 row claimed all three SDKs accept a version hint (apcore-rust has no such parameter, corrected as D-126). Neither could be caught by a test, because the sentence itself said the test was unnecessary.\n\nUNLINKED MEANS UNCOVERED, deliberately. A case that pins a decision without saying so can be weakened by someone who does not know what it is for -- which is how approval_gate.json came to set both governance sources from one boolean and passed in all three SDKs while one of them had a bypass. If a case pins a decision, name it here.\n\n`discriminates` is not documentation. It must say what makes the case fail when an SDK regresses; if it cannot be written, the case is not discriminating and the decision is still unpinned.\n\nkinds: behavioural = needs a discriminating case | deferred = spec text only, no implementation to pin yet | unconstrained = the decision deliberately leaves the shape language-defined.\n\nThe 14 `deferred` entries carry a `case_sketch`: what the discriminating case looks like, what makes it RED, and which existing fixture should host it. Written BEFORE implementation on purpose. D-92 shows why \u2014 it landed in one SDK of three and nothing noticed, because the only thing that could have noticed was a case nobody had written yet. The case has to be written either way; writing it first costs nothing and forces the question \"what would make this red?\" at the moment it is cheapest to answer.",
-  "ratchet": 15,
+  "ratchet": 14,
   "ratchet_history": [
     {
       "value": 32,
@@ -86,7 +86,19 @@
     "D-81": {
       "title": "`TaskStoreError` must reach the caller",
       "kind": "behavioural",
-      "cases": []
+      "cases": [],
+      "sdk_tests": {
+        "python": [
+          "tests/test_deep_chain_v150.py::TestStoreErrorsReachTheCaller"
+        ],
+        "typescript": [
+          "tests/async-task.test.ts"
+        ],
+        "rust": [
+          "tests/async_tasks_spec.rs::async_tasks_store_error_reaches_the_caller"
+        ]
+      },
+      "discriminates": "Per-SDK rather than a conformance case: the input is a STORE THAT FAILS, and a store is an SDK-API object a host implements, not flat fixture data. Each SDK drives a store whose methods fail independently, so a test fails exactly the store call the method under test makes and no other.\n\nThe store raises the CANONICAL type D-92 defines. That is the part that was missing and it is the whole discriminator: the tests used to raise a stand-in (`new Error('TASK_STORE_UNAVAILABLE')` in apcore-typescript, `GeneralInternalError` with the code in its message in apcore-rust) written before the type existed, and MEASURED against that stand-in a manager that swallowed `TaskStoreError` specifically while re-raising everything else passed 45 tests in each SDK. Assertions are on the CODE, not on `is_err()` / `rejects.toThrow`, for the same reason.\n\nEvery SDK carries a CONTROL: the same methods against a healthy store all succeed, so 'they all raised' cannot be satisfied by a manager that fails everything.\n\nVerified red per store accessor, each mutation reddening exactly the methods that route through it. apcore-python needed four mutations, not three, because it has TWO independent store-read paths: the async `_store_get` adapter and the sync `get_status` coroutine pump, which `get_result` uses. A mutation on the adapter alone leaves the sync path unmeasured. The pump's mutation must also sit at the `send()` call, not at `self._store.get(...)`: the store method is `async def`, so calling it only builds a coroutine and raises nothing."
     },
     "D-82": {
       "title": "`list_tasks` insertion order is normative",
@@ -156,10 +168,16 @@
       "cases": [
         "error_codes.json#exact_framework_code_task_store_unavailable_collision"
       ],
-      "discriminates": "Registering TASK_STORE_UNAVAILABLE as a module error code must collide (Algorithm A17), which it can only do if the SDK defines the code as a framework code. An SDK that never defined it does not collide and the case goes red \u2014 which is what happened: apcore-typescript and apcore-rust both accepted it, so D-92 had landed in apcore-python alone. The control is the existing `TASK_BANANA`-shaped behaviour: a module code sharing the prefix is still accepted, so the case pins the exact code rather than a prefix rule.",
+      "discriminates": "Registering TASK_STORE_UNAVAILABLE as a module error code must collide (Algorithm A17), which it can only do if the SDK defines the code as a framework code. An SDK that never defined it does not collide and the case goes red \u2014 which is what happened: apcore-typescript and apcore-rust both accepted it, so D-92 had landed in apcore-python alone. The control is the existing `TASK_BANANA`-shaped behaviour: a module code sharing the prefix is still accepted, so the case pins the exact code rather than a prefix rule.\n\nPer-SDK tests were added alongside the case after the clause's own conformance test was found still DISABLED in apcore-typescript (`it.skip`) and apcore-rust (`#[ignore]`), both giving the reason 'missing symbol TaskStoreError/TASK_STORE_UNAVAILABLE (contract gap)' \u2014 a claim this very decision had made false. A skip is green, so closing the gap turned nothing red and the clause read as a documented gap while going untested. `check_skip_asymmetry.py` now reports that shape.",
       "sdk_tests": {
         "python": [
-          "tests/test_deep_chain_v150.py"
+          "tests/test_deep_chain_v150.py::TestTaskStoreErrorIsDefinedAndExported"
+        ],
+        "typescript": [
+          "tests/async-tasks_spec.test.ts"
+        ],
+        "rust": [
+          "tests/async_tasks_spec.rs::async_tasks_save_error_task_store_unavailable"
         ]
       }
     },

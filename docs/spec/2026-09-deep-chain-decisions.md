@@ -167,6 +167,30 @@ change for apcore-rust).
 **Authority.** The spec's own declaration. Declaring an error on the store and
 dropping it in the manager means no caller can ever catch it.
 
+**Pinned afterwards, and the pinning found the real gap.** All three SDKs
+propagate on every manager surface — measured with a store whose every method
+fails, before a line was written. What none of them tested was the type a host
+will actually raise. The suites predate **D-92**, so apcore-typescript's failing
+store threw `new Error('TASK_STORE_UNAVAILABLE')` and apcore-rust's raised
+`GeneralInternalError` with the code in its message; a manager that swallows the
+canonical `TaskStoreError` into "task not found" while re-raising everything else
+passed 45 tests in each SDK. apcore-python had one assertion, on `get_status`,
+filed under D-92. **Two decisions eight apart, never joined up:** D-92 created
+the one type a caller can catch, and nothing checked that D-81's propagation
+covered it.
+
+**And the clause's own conformance test was still disabled in two SDKs.**
+`async_tasks.save.error.TASK_STORE_UNAVAILABLE` remained `it.skip` in
+apcore-typescript and `#[ignore]` in apcore-rust, both reading *"missing symbol
+TaskStoreError/TASK_STORE_UNAVAILABLE (contract gap)"* — the claim D-92 itself
+made false. A second instance turned up beside it:
+`cancellation.raise_if_cancelled.*`, skipped in apcore-typescript as a missing
+symbol after this audit's own implementation commit added `raiseIfCancelled()`.
+A skip is green, so closing a gap turns nothing red and the clause reads as a
+documented gap while going untested.
+`conformance/check_skip_asymmetry.py` now reports the shape, using the peer
+suites as the oracle: a clause LIVE in one SDK and DISABLED in another.
+
 ---
 
 ## D-82 — `list_tasks` insertion order is normative
