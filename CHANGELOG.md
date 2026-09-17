@@ -179,7 +179,67 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   different IDs, which `detect_id_conflicts` does not catch. Three readings are set out under
   **Open — not yet adjudicated** in the decision log, with a recommendation.
 
-  **D-81 was implemented in all three SDKs and measured against a stand-in.**
+  ### D-88 — a live defect in the decision's own authority
+
+  `removeRule` never cleared the index-keyed §6.5 dedupe in **apcore-typescript**,
+  which D-88 names as its authority. The decision's status quo recorded that this
+  SDK "cleared the dedupe set in both `addRule` and `reload`" — the two sites it
+  had — and the decision generalised to *any* operation that inserts, removes or
+  reorders rules. apcore-python and apcore-rust implemented the generalisation.
+  apcore-typescript kept the pair the status quo described, and had **no test for
+  the §6.5 warning at all**, so nothing noticed. Measured before the fix: two
+  conditional rules, warn for index 0, remove index 0, and the surviving rule's
+  warning was suppressed by the REMOVED rule's marker — precisely the failure the
+  decision's Authority line describes.
+
+  **And apcore-rust's `remove_rule` test proved nothing.** It used two rules with
+  DIFFERENT targets, so one `check` evaluated one of them and the survivor moved
+  onto an index nobody had warned about — it warns with or without the clear. The
+  test passed with the clear deleted. Right name, right comment, no discriminating
+  power. The index-COLLISION shape is the whole point: every rule must match the
+  checked target so one `check` marks every index, and removing rule 0 leaves the
+  survivor on an index a marker was already recorded for. Rebuilt on that shape,
+  it now goes red.
+
+  Two controls carry their weight in all three SDKs: a repeat check with no
+  mutation must not re-warn, and a removal that removed nothing must not re-warn.
+  Together they separate "clears correctly" from "clears unconditionally", which
+  would re-warn on every failed lookup — the spam the dedupe exists to bound.
+
+  ### D-89 — the cadence was settled, the scope was not
+
+  Pinning it found no defect and two **unadjudicated divergences**, both
+  observable and neither covered by "at most once per `(module_id, version)` per
+  registry instance":
+
+  - **Where the warning fires.** apcore-python and apcore-typescript warn on the
+    READ; apcore-rust warns at REGISTRATION and its reads never warn. D-89's own
+    rationale is written about the read path.
+  - **What an unregister + re-register does.** apcore-python forgets the marker
+    and re-warns; the other two stay silent. This is the sharp one:
+    **apcore-rust's unit test asserts the silence as the requirement and
+    apcore-python's source comment asserts the re-warning as the requirement.**
+    Two SDKs have pinned opposite readings of a question the decision does not
+    answer, and both are green. It matters more than it looks — `watch()` re-runs
+    discovery as an unregister + re-register, so on apcore-python a hot-reload
+    loop re-warns for every deprecated module on every reload, which is the
+    traffic-proportional spam D-89 exists to prevent arriving through the door it
+    did not close.
+
+  The agreed four dimensions are pinned in all three; these two are left
+  unasserted **with the reason written into each test file**, so the adjudication
+  is not pre-empted by whichever suite was written last. An open item with a
+  recommendation is filed beside D-89 in the decision log.
+
+  **apcore-rust's cadence test asserted the size of a private set.** "The set has
+  one entry" and "one warning reached the operator" are different claims:
+  measured, with the `log_deprecation_warning` call deleted that unit test still
+  PASSES while four of the five new observable tests fail. The set is the artifact
+  that records the decision; the emitted warning is the mechanism it exists for —
+  the same distinction this audit keeps finding, here inside a test rather than a
+  spec sentence.
+
+    **D-81 was implemented in all three SDKs and measured against a stand-in.**
   Every manager method that touches the store propagates the outage in Python,
   TypeScript and Rust — nine surfaces, seven, nine. What none of them tested was
   the type a host will actually raise. The suites predate **D-92**, which

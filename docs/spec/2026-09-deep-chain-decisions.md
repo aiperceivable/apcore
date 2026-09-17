@@ -319,6 +319,45 @@ just added.
 per-read warning is spam proportional to traffic — which is how operators learn to
 filter it out.
 
+**Open — the decision bounded the cadence and left the scope open.** Pinning it
+measured two divergences the text does not settle, and each SDK has filled the
+silence differently. Both are observable; neither is covered by "at most once per
+`(module_id, version)` per registry instance".
+
+1. **Where the warning fires.** apcore-python and apcore-typescript warn on the
+   READ (`get_definition`); apcore-rust warns at REGISTRATION and its reads never
+   warn at all. A host that registers a deprecated module and never reads its
+   definition is told on apcore-rust and not on the other two; a host that
+   registers before installing its log subscriber is told on the other two and
+   not on apcore-rust. D-89's own rationale is written about the read path.
+2. **What an unregister + re-register does.** apcore-python drops the marker
+   (`_forget_deprecation_warnings`) and warns again; apcore-typescript and
+   apcore-rust stay silent. This is not a gap in anybody's implementation —
+   **apcore-rust's unit test asserts the silence as the requirement and
+   apcore-python's source comment asserts the re-warning as the requirement.**
+   Two SDKs have pinned opposite readings of a question D-89 does not answer, and
+   both are green.
+
+   It also matters more than it looks: `watch()` re-runs discovery as an
+   unregister + re-register, so on apcore-python a hot-reload loop re-warns for
+   every deprecated module on every reload — the traffic-proportional spam D-89
+   exists to prevent, arriving through the door it did not close. On the other
+   two a genuinely NEW deprecation block on a re-registered module is silent.
+
+**Recommendation.** Fire on the read, and key the dedupe on
+`(module_id, version, deprecation block)` rather than forgetting on
+re-registration. The read path is where D-89's rationale lives and is what two of
+three implement; including the block in the key gives apcore-python what its
+comment was reaching for — a re-registration carrying a CHANGED notice warns,
+one carrying the same notice does not — without re-warning on every reload.
+
+The agreed dimensions are pinned in all three SDKs today; these two are
+deliberately left unasserted, with the reason written into each test file, so the
+adjudication is not pre-empted by whichever suite was written last. Not filed as
+a decision here because it needs a maintainer to choose, not an algorithm to
+follow — the same handling as D-94's `follow_symlinks` open item, which became
+D-127.
+
 ---
 
 ## D-90 — `reset()` must not substitute the cancellation handle

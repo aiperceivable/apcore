@@ -1,6 +1,6 @@
 {
   "_comment": "Which executed conformance case pins each decision. Enforced by conformance/check_decision_coverage.py.\n\nA decision recorded only in prose is a decision nothing verifies. This audit produced two false statements of exactly that kind -- D-96 claimed its union was 'unobservable' in two SDKs (it was a fail-open approval bypass in both, corrected as D-125), and the v1.10.0 row claimed all three SDKs accept a version hint (apcore-rust has no such parameter, corrected as D-126). Neither could be caught by a test, because the sentence itself said the test was unnecessary.\n\nUNLINKED MEANS UNCOVERED, deliberately. A case that pins a decision without saying so can be weakened by someone who does not know what it is for -- which is how approval_gate.json came to set both governance sources from one boolean and passed in all three SDKs while one of them had a bypass. If a case pins a decision, name it here.\n\n`discriminates` is not documentation. It must say what makes the case fail when an SDK regresses; if it cannot be written, the case is not discriminating and the decision is still unpinned.\n\nkinds: behavioural = needs a discriminating case | deferred = spec text only, no implementation to pin yet | unconstrained = the decision deliberately leaves the shape language-defined.\n\nThe 14 `deferred` entries carry a `case_sketch`: what the discriminating case looks like, what makes it RED, and which existing fixture should host it. Written BEFORE implementation on purpose. D-92 shows why \u2014 it landed in one SDK of three and nothing noticed, because the only thing that could have noticed was a case nobody had written yet. The case has to be written either way; writing it first costs nothing and forces the question \"what would make this red?\" at the moment it is cheapest to answer.",
-  "ratchet": 14,
+  "ratchet": 12,
   "ratchet_history": [
     {
       "value": 32,
@@ -145,12 +145,36 @@
     "D-88": {
       "title": "index-keyed warning dedupe must be cleared on index shift",
       "kind": "behavioural",
-      "cases": []
+      "cases": [],
+      "sdk_tests": {
+        "python": [
+          "tests/test_acl_unevaluable_conditions.py::TestSixFiveWarningDedupeClearedOnIndexShift"
+        ],
+        "typescript": [
+          "tests/test-acl-missing-context-dedupe.test.ts"
+        ],
+        "rust": [
+          "tests/acl_system_spec.rs::remove_rule_clears_missing_context_dedupe"
+        ]
+      },
+      "discriminates": "Per-SDK rather than a conformance case: the subject is WARNING CADENCE across a sequence of mutating calls, which a flat input/output fixture cannot express.\n\nThe INDEX-COLLISION shape is the whole discriminator and it is easy to miss. Every rule must match the checked target, so one `check` marks every index; removing rule 0 then leaves the survivor sitting on an index a marker was already recorded for. Rules with DISTINCT targets do not collide \u2014 the survivor lands on an index nobody warned about and warns whether or not the dedupe was cleared. apcore-rust's `remove_rule` test had exactly that shape: the right name, the right comment, and it passed with the clear deleted. It was rebuilt.\n\nTwo controls, both load-bearing. A repeat check with no mutation must NOT re-warn, and a removeRule that removed nothing must NOT re-warn \u2014 together they separate 'clears correctly' from 'clears unconditionally', which would re-warn on every failed lookup and is the spam the dedupe exists to bound.\n\nFound live in apcore-typescript, the decision's own AUTHORITY: `removeRule` never cleared. The status quo recorded that this SDK 'cleared the dedupe set in both addRule and reload' and the decision generalised to any operation that shifts indices; apcore-python and apcore-rust implemented the generalisation, apcore-typescript kept the two sites it already had, and had no test for the \u00a76.5 warning at all. Verified red in all three, one mutation per clear site plus one that disables the dedupe entirely."
     },
     "D-89": {
       "title": "deprecation warning cadence",
       "kind": "behavioural",
-      "cases": []
+      "cases": [],
+      "sdk_tests": {
+        "python": [
+          "tests/registry/test_version_negotiation.py::TestDeprecationWarningCadence"
+        ],
+        "typescript": [
+          "tests/registry/test-deprecation-warning-cadence.test.ts"
+        ],
+        "rust": [
+          "tests/test_deprecation_warning_cadence.rs"
+        ]
+      },
+      "discriminates": "Four dimensions, each isolated by its own mutation: the dedupe guard itself (ten reads must warn once), the version in the key (a newly registered version is a new notice), per-INSTANCE scope (a process-global set silences a second registry's advisory for a module its operator has never been told about), and a control \u2014 a module with no `x-deprecation` block must never warn, without which 'exactly one warning' also holds for an SDK that warns once for any module at all.\n\nEvery test counts the warning THE OPERATOR RECEIVES. apcore-rust's existing unit test asserted the size of the private `deprecation_warned` set instead, and measured: with the `log_deprecation_warning` call deleted, that test still PASSES while four of the five new tests fail. The set is the artifact that records the decision; the emitted warning is the mechanism it exists for.\n\nTwo dimensions are deliberately NOT asserted, in any SDK, with the reason written into each test file: WHERE the warning fires (read in apcore-python and apcore-typescript, registration in apcore-rust) and what an unregister + re-register does (apcore-python re-warns, the other two stay silent). D-89 settles neither, and apcore-rust's unit test and apcore-python's source comment have pinned OPPOSITE readings of the second \u2014 both green. Asserting either here would pre-empt an adjudication that needs a maintainer; the open item is filed beside D-89 in the decision log."
     },
     "D-90": {
       "title": "`reset()` must not substitute the cancellation handle",
