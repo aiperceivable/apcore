@@ -1,6 +1,6 @@
 {
   "_comment": "Which executed conformance case pins each decision. Enforced by conformance/check_decision_coverage.py.\n\nA decision recorded only in prose is a decision nothing verifies. This audit produced two false statements of exactly that kind -- D-96 claimed its union was 'unobservable' in two SDKs (it was a fail-open approval bypass in both, corrected as D-125), and the v1.10.0 row claimed all three SDKs accept a version hint (apcore-rust has no such parameter, corrected as D-126). Neither could be caught by a test, because the sentence itself said the test was unnecessary.\n\nUNLINKED MEANS UNCOVERED, deliberately. A case that pins a decision without saying so can be weakened by someone who does not know what it is for -- which is how approval_gate.json came to set both governance sources from one boolean and passed in all three SDKs while one of them had a bypass. If a case pins a decision, name it here.\n\n`discriminates` is not documentation. It must say what makes the case fail when an SDK regresses; if it cannot be written, the case is not discriminating and the decision is still unpinned.\n\nkinds: behavioural = needs a discriminating case | deferred = spec text only, no implementation to pin yet | unconstrained = the decision deliberately leaves the shape language-defined.\n\nThe 14 `deferred` entries carry a `case_sketch`: what the discriminating case looks like, what makes it RED, and which existing fixture should host it. Written BEFORE implementation on purpose. D-92 shows why \u2014 it landed in one SDK of three and nothing noticed, because the only thing that could have noticed was a case nobody had written yet. The case has to be written either way; writing it first costs nothing and forces the question \"what would make this red?\" at the moment it is cheapest to answer.",
-  "ratchet": 12,
+  "ratchet": 11,
   "ratchet_history": [
     {
       "value": 32,
@@ -179,7 +179,19 @@
     "D-90": {
       "title": "`reset()` must not substitute the cancellation handle",
       "kind": "behavioural",
-      "cases": []
+      "cases": [],
+      "sdk_tests": {
+        "python": [
+          "tests/test_cancel.py::TestResetKeepsOneHandle"
+        ],
+        "typescript": [
+          "tests/test-cancel-token-reset-handle.test.ts"
+        ],
+        "rust": [
+          "tests/test_cancel.rs::a_clone_taken_before_reset_still_observes_a_later_cancel"
+        ]
+      },
+      "discriminates": "Per-SDK rather than a conformance case: the subject is HANDLE IDENTITY across a call \u2014 whether the object a consumer captured before `reset()` is still the one a later `cancel()` reaches. A fixture carries values, not object identity.\n\napcore-typescript is where the decision bites and where the discriminating test lives: a listener attached to the pre-reset `AbortSignal` must fire on a later cancel. Five of its six tests go red against the shipped defect (reset installing a fresh `AbortController`); the sixth is the control \u2014 a reset with NO prior cancel must say nothing \u2014 which separates the once-per-token notice from an SDK that warns on every reset. Two further mutations isolate the notice's scope: making it process-global reddens the per-token test, warning unconditionally reddens the control.\n\nThe notice is the decision's second half: where the platform cannot un-signal a one-shot handle, say so once rather than fake a reset. Keeping one controller means the signal stays aborted after a cancel, which fails CLOSED \u2014 it can only cancel work early. Substituting the handle failed OPEN and could not cancel it at all.\n\nThe two authorities are pinned at the contract level, with their limits stated rather than papered over. In apcore-rust the substitution is not expressible (`reset(&self)`, and moving the `Arc` behind an interior-mutable cell does not detach clones \u2014 they all read through the same cell), so its tests are verified red by the one detachment that IS expressible, a `Clone` returning `Self::new()`, which reddens all three and establishes that they rest on genuine handle sharing. In apcore-python it is neither representable nor catchable, and that was MEASURED: adding a handle, swapping it on reset and routing `check()` through it leaves all three tests green, because every holder holds the token itself. The test file says so."
     },
     "D-91": {
       "title": "a removal method a host cannot call does not satisfy the contract",

@@ -179,7 +179,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   different IDs, which `detect_id_conflicts` does not catch. Three readings are set out under
   **Open — not yet adjudicated** in the decision log, with a recommendation.
 
-  ### D-88 — a live defect in the decision's own authority
+  ### D-90 — the fix was implemented and pinned by nothing
+
+  `reset()` installing a fresh `AbortController` was fixed in apcore-typescript
+  when the decision landed, with a long comment explaining why. No SDK had a test
+  for it. The comment is the artifact that records the rule; nothing enforced it,
+  and `readonly` on `_controller` — the compile-time guard standing in for one —
+  is a keystroke away from being removed in a refactor whose failure is silent.
+
+  Six tests in apcore-typescript, five of which go red against the shipped
+  defect. The discriminating one attaches a listener to the pre-reset
+  `AbortSignal` and requires a later `cancel()` to fire it — the shape a module
+  actually hits, and the one cooperative checkers cannot see, because
+  `isCancelled` and `check()` read the current handle and report exactly what the
+  caller expects. The sixth is a control (a reset with no prior cancel must say
+  nothing), and two further mutations isolate the notice's scope: process-global
+  reddens the per-token test, unconditional reddens the control.
+
+  **Both authorities are pinned at the contract level with their limits stated
+  rather than papered over.** In apcore-rust the substitution is not expressible:
+  `reset(&self)` cannot swap the field, and moving the `Arc` behind an
+  interior-mutable cell does not detach anything — every clone reads through the
+  same cell. Its tests are verified red by the one detachment that IS
+  expressible, a `Clone` returning `Self::new()`, which reddens all three and is
+  what establishes they rest on genuine handle sharing.
+
+  In apcore-python the failure is neither representable nor catchable, and that
+  was **measured rather than assumed**. The first draft of the test file claimed
+  the tests would catch a future handle-and-swap; adding a handle, swapping it in
+  `reset()` and routing `check()` through it left all three GREEN, because every
+  holder holds the token itself and follows the swap. The claim was false and is
+  now replaced by what the mutation showed — a test file asserting a guarantee it
+  does not provide is the same defect as a spec sentence doing it, and this audit
+  has corrected two of those already (D-125, D-126).
+
+    ### D-88 — a live defect in the decision's own authority
 
   `removeRule` never cleared the index-keyed §6.5 dedupe in **apcore-typescript**,
   which D-88 names as its authority. The decision's status quo recorded that this
