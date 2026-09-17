@@ -1,6 +1,6 @@
 {
   "_comment": "Which executed conformance case pins each decision. Enforced by conformance/check_decision_coverage.py.\n\nA decision recorded only in prose is a decision nothing verifies. This audit produced two false statements of exactly that kind -- D-96 claimed its union was 'unobservable' in two SDKs (it was a fail-open approval bypass in both, corrected as D-125), and the v1.10.0 row claimed all three SDKs accept a version hint (apcore-rust has no such parameter, corrected as D-126). Neither could be caught by a test, because the sentence itself said the test was unnecessary.\n\nUNLINKED MEANS UNCOVERED, deliberately. A case that pins a decision without saying so can be weakened by someone who does not know what it is for -- which is how approval_gate.json came to set both governance sources from one boolean and passed in all three SDKs while one of them had a bypass. If a case pins a decision, name it here.\n\n`discriminates` is not documentation. It must say what makes the case fail when an SDK regresses; if it cannot be written, the case is not discriminating and the decision is still unpinned.\n\nkinds: behavioural = needs a discriminating case | deferred = spec text only, no implementation to pin yet | unconstrained = the decision deliberately leaves the shape language-defined.\n\nThe 14 `deferred` entries carry a `case_sketch`: what the discriminating case looks like, what makes it RED, and which existing fixture should host it. Written BEFORE implementation on purpose. D-92 shows why \u2014 it landed in one SDK of three and nothing noticed, because the only thing that could have noticed was a case nobody had written yet. The case has to be written either way; writing it first costs nothing and forces the question \"what would make this red?\" at the moment it is cheapest to answer.",
-  "ratchet": 10,
+  "ratchet": 8,
   "ratchet_history": [
     {
       "value": 32,
@@ -62,7 +62,19 @@
     "D-77": {
       "title": "`Registry.describe` returns a string; a structured override falls through",
       "kind": "behavioural",
-      "cases": []
+      "cases": [],
+      "sdk_tests": {
+        "python": [
+          "tests/registry/test_registry.py"
+        ],
+        "typescript": [
+          "tests/registry/test-registry.test.ts"
+        ],
+        "rust": [
+          "tests/test_registry_describe_d77.rs"
+        ]
+      },
+      "discriminates": "The module's `describe()` override returns something that is NOT a string, and the test asserts BOTH failures the decision forbids separately: the mapping must not be returned through a string-typed interface, and it must not be SERIALISED into the description either. The three SDKs failed in three different ways on the same module \u2014 apcore-python returned `str(dict)`, a language-specific repr; apcore-typescript returned the raw object through a method it types `: string`; apcore-rust already fell through \u2014 so a test asserting only 'the override was not returned' passes for the stringifying implementation.\n\nThe Rust test carries a CONTROL that the generated envelope for a structured override is IDENTICAL to the no-override envelope, module id aside. Without it, 'it fell through' also holds for an implementation returning an error, an empty string or a constant, none of which is the envelope the decision requires. A fourth test covers \u00a712.2's other half: an unknown id yields the `MODULE_NOT_FOUND` code, never a 'Module not found' sentinel STRING a caller would print as a description.\n\napcore-rust is the decision's authority \u2014 'Rust, and the type system' \u2014 and was the SDK with no test: the two that were changed to match it both pinned the behaviour, the one they were aligned to did not. Verified red three ways: serialising a non-string override, ignoring a string override, and returning a sentinel string for an unknown id."
     },
     "D-78": {
       "title": "`ExtensionManager.apply` must not drain the store",
@@ -111,7 +123,19 @@
     "D-83": {
       "title": "the published `guard_call_chain` signature is normative",
       "kind": "behavioural",
-      "cases": []
+      "cases": [],
+      "sdk_tests": {
+        "python": [
+          "tests/test_call_chain_published_signature.py"
+        ],
+        "typescript": [
+          "tests/utils/test-call-chain-published-signature.test.ts"
+        ],
+        "rust": [
+          "tests/call_chain_guard_spec.rs::input_generic_free_entry_point"
+        ]
+      },
+      "discriminates": "REACHABILITY is the decision, so every test imports through the door a HOST comes through. Python asserts the guard and both limit constants are in `apcore.__all__` and calls it with the published parameter NAMES as keywords; TypeScript imports from the package root AND from the browser entry, since the guard is pure logic a browser host must also reach; Rust drives it from a `Context<HostServices>` whose type parameter is not `serde_json::Value`, which the old `Context`-taking signature made impossible. A deep import (`apcore.utils.call_chain`, `../../src/utils/call-chain.js`) would pass while both public entries omitted the symbol \u2014 the exact shape D-83 forbids.\n\nThen each published PARAMETER is shown to be consulted on its own: two chains with one module_id give two outcomes; a chain at the depth limit passes while limit+1 is refused (A20 rejects on `len > max`, so asserting both sides catches an off-by-one as well as an ignored constant); and the repeat limit rejects a chain the depth limit accepts. The repeat case must put the repeated module at the END of the prior chain \u2014 A20 checks depth, then circularity, then frequency, so any other arrangement is rejected as a cycle and the frequency limit is never reached.\n\nThe default-constant assertion is the one that matters most: apcore-rust's `DEFAULT_MAX_CALL_DEPTH` was a `pub const` the guard never consulted \u2014 a declared surface reaching no mechanism, the same shape as an inert config key. Verified red in Python and TypeScript by hardcoding a different default, by ignoring the repeat limit, and by dropping the symbol from the public entry."
     },
     "D-84": {
       "title": "a non-positive call-chain limit raises a typed error",

@@ -218,7 +218,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   different IDs, which `detect_id_conflicts` does not catch. Three readings are set out under
   **Open — not yet adjudicated** in the decision log, with a recommendation.
 
-  ### D-90 — the fix was implemented and pinned by nothing
+  ### D-77 and D-83 — the SDK a decision was aligned TO is the one nobody tests
+
+  Both were implemented everywhere. In both cases the gap was in the SDK the
+  decision names as its authority, and for the same reason: the SDKs that had to
+  be CHANGED got tests as part of the change, and the one they were changed to
+  match did not.
+
+  - **D-77** (`Registry.describe` returns a string; a structured override falls
+    through) — authority "Rust, and the type system". apcore-python and
+    apcore-typescript each pinned it; apcore-rust had nothing. Four tests now,
+    asserting the two forbidden failures SEPARATELY — a mapping must not be
+    returned through a string-typed interface, and must not be serialised into
+    the description either. The three SDKs had failed three different ways on
+    the same module (`str(dict)`, the raw object, correct), so a test asserting
+    only "the override was not returned" passes for the stringifying one. The
+    control requires the fallen-through envelope to be IDENTICAL to the
+    no-override envelope, module id aside, without which "it fell through" also
+    holds for an error, an empty string or a constant.
+
+  - **D-83** (the published `guard_call_chain` signature is normative) —
+    authority "the spec, and reachability". apcore-rust, the SDK whose shipped
+    signature did not match the published one, has had tests since the fix;
+    apcore-python and apcore-typescript, which already conformed, had none. Both
+    now import through the door a HOST comes through — `apcore.__all__` and the
+    published parameter names as keywords, the package root AND the browser
+    entry — because a deep import passes while both public entries omit the
+    symbol, which is exactly the shape the decision forbids. Each published
+    limit is then shown to reject on its own, and the documented default is
+    shown to be the enforced one: apcore-rust's `DEFAULT_MAX_CALL_DEPTH` was a
+    public constant the guard never consulted, the same "declared surface
+    reaching no mechanism" shape as an inert config key.
+
+  Two of the new assertions encoded a wrong reading of A20 and were corrected
+  against the implementation rather than the other way round: the depth check is
+  `len(chain) > max`, so the limit itself is allowed and only limit+1 is
+  refused; and the frequency check counts occurrences of `module_id` itself,
+  after a circularity check that fires first unless the repeated module sits at
+  the END of the prior chain. Both tests now assert both sides of the boundary,
+  which catches an off-by-one as well as an ignored constant.
+
+    ### D-90 — the fix was implemented and pinned by nothing
 
   `reset()` installing a fresh `AbortController` was fixed in apcore-typescript
   when the decision landed, with a long comment explaining why. No SDK had a test
