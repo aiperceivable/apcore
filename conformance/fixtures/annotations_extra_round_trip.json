@@ -1,5 +1,5 @@
 {
-  "description": "Cross-language ModuleAnnotations.extra wire-format round-trip (spec §4.4). Locks the canonical nested form and verifies Python/TypeScript/Rust SDKs produce and consume identical JSON. See planning notes for the rationale (Rust previously used #[serde(flatten)], Python/TS used nested). Spec MUST: extension keys are serialized as a nested 'extra' object; flattened root-level extension keys are forbidden for producers.",
+  "description": "Cross-language ModuleAnnotations.extra wire-format round-trip (spec \u00a74.4). Locks the canonical nested form and verifies Python/TypeScript/Rust SDKs produce and consume identical JSON. See planning notes for the rationale (Rust previously used #[serde(flatten)], Python/TS used nested). Spec MUST: extension keys are serialized as a nested 'extra' object; flattened root-level extension keys are forbidden for producers.",
   "test_cases": [
     {
       "id": "canonical_nested_round_trip",
@@ -13,7 +13,10 @@
         "streaming": false,
         "cacheable": true,
         "cache_ttl": 60,
-        "cache_key_fields": ["query", "locale"],
+        "cache_key_fields": [
+          "query",
+          "locale"
+        ],
         "paginated": false,
         "pagination_style": "cursor",
         "extra": {
@@ -30,7 +33,10 @@
         "streaming": false,
         "cacheable": true,
         "cache_ttl": 60,
-        "cache_key_fields": ["query", "locale"],
+        "cache_key_fields": [
+          "query",
+          "locale"
+        ],
         "paginated": false,
         "pagination_style": "cursor",
         "extra": {
@@ -143,9 +149,12 @@
         "paginated": false,
         "pagination_style": "cursor",
         "extra": {
-          "ui.label.zh": "确认操作",
-          "ui.label.ja": "操作を確認",
-          "ui.icons": ["⚠️", "🔒"],
+          "ui.label.zh": "\u786e\u8ba4\u64cd\u4f5c",
+          "ui.label.ja": "\u64cd\u4f5c\u3092\u78ba\u8a8d",
+          "ui.icons": [
+            "\u26a0\ufe0f",
+            "\ud83d\udd12"
+          ],
           "policy.matrix": {
             "weekday": "auto",
             "weekend": "manual"
@@ -165,9 +174,12 @@
         "paginated": false,
         "pagination_style": "cursor",
         "extra": {
-          "ui.label.zh": "确认操作",
-          "ui.label.ja": "操作を確認",
-          "ui.icons": ["⚠️", "🔒"],
+          "ui.label.zh": "\u786e\u8ba4\u64cd\u4f5c",
+          "ui.label.ja": "\u64cd\u4f5c\u3092\u78ba\u8a8d",
+          "ui.icons": [
+            "\u26a0\ufe0f",
+            "\ud83d\udd12"
+          ],
           "policy.matrix": {
             "weekday": "auto",
             "weekend": "manual"
@@ -175,9 +187,12 @@
         }
       },
       "expected_deserialized_extra": {
-        "ui.label.zh": "确认操作",
-        "ui.label.ja": "操作を確認",
-        "ui.icons": ["⚠️", "🔒"],
+        "ui.label.zh": "\u786e\u8ba4\u64cd\u4f5c",
+        "ui.label.ja": "\u64cd\u4f5c\u3092\u78ba\u8a8d",
+        "ui.icons": [
+          "\u26a0\ufe0f",
+          "\ud83d\udd12"
+        ],
         "policy.matrix": {
           "weekday": "auto",
           "weekend": "manual"
@@ -186,7 +201,7 @@
     },
     {
       "id": "deserialize_legacy_flattened_form",
-      "description": "Backward compatibility: consumers MUST accept legacy producers (notably apcore-rust ≤ 0.17.1) that flattened extension keys to the annotations root. Such input MUST normalize into the nested 'extra' object on deserialize. Re-serializing the result MUST emit the canonical nested form.",
+      "description": "Backward compatibility: consumers MUST accept legacy producers (notably apcore-rust \u2264 0.17.1) that flattened extension keys to the annotations root. Such input MUST normalize into the nested 'extra' object on deserialize. Re-serializing the result MUST emit the canonical nested form.",
       "input_serialized": {
         "readonly": true,
         "destructive": false,
@@ -226,7 +241,7 @@
     },
     {
       "id": "nested_takes_precedence_over_flattened",
-      "description": "If a deserialization input contains BOTH a nested 'extra.k' and a top-level 'k' with the same key, the nested value MUST win. (This intentionally inverts the legacy Python/TS behavior of 'overflow wins' to align all SDKs with the new normative rule from spec §4.4.)",
+      "description": "If a deserialization input contains BOTH a nested 'extra.k' and a top-level 'k' with the same key, the nested value MUST win. (This intentionally inverts the legacy Python/TS behavior of 'overflow wins' to align all SDKs with the new normative rule from spec \u00a74.4.)",
       "input_serialized": {
         "readonly": false,
         "destructive": false,
@@ -270,7 +285,10 @@
           "cli.approval_message": "ok?"
         }
       },
-      "forbidden_root_keys": ["mcp.category", "cli.approval_message"]
+      "forbidden_root_keys": [
+        "mcp.category",
+        "cli.approval_message"
+      ]
     },
     {
       "id": "extra_key_with_dotted_namespace_not_split",
@@ -316,6 +334,54 @@
         "a.b": 2,
         "a": 3
       }
+    },
+    {
+      "id": "malformed_extra_is_dropped_and_the_rest_survives",
+      "description": "D-115: a malformed annotation value is TOLERATED and dropped, the rest is kept, and a warning is emitted. `extra` is declared an object; a string there is neither an object nor a reason to discard the module. One input discriminates all three observed behaviours: coerced to `{}` (correct), kept as the string, and the whole ModuleDescriptor rejected. Rejecting is worse than strict \u2014 one bad value removes an entire module \u2014 and keeping it is worse than lenient: the value then reads as a real declaration to anything downstream.",
+      "input_serialized": {
+        "readonly": true,
+        "cacheable": true,
+        "extra": "oops"
+      },
+      "expected_deserialized_extra": {},
+      "expected_survivors": {
+        "readonly": true,
+        "cacheable": true
+      },
+      "expected_warning": true
+    },
+    {
+      "id": "out_of_range_cache_ttl_is_clamped_and_the_module_survives",
+      "description": "D-115, the numeric half. `cache_ttl: -5` is clamped to 0 rather than rejected. The pairing matters: an SDK could tolerate a malformed OBJECT and still reject a malformed INTEGER, which is exactly the split observed \u2014 and one bad integer removing an entire module is the outcome the decision rules out.",
+      "input_serialized": {
+        "readonly": true,
+        "cache_ttl": -5
+      },
+      "expected_deserialized_extra": {},
+      "expected_survivors": {
+        "readonly": true,
+        "cache_ttl": 0
+      },
+      "expected_warning": true
+    },
+    {
+      "id": "a_well_formed_extra_is_not_touched",
+      "description": "The control. Without it an SDK that drops `extra` unconditionally passes the first case, and an SDK that clamps every integer to 0 passes the second.",
+      "input_serialized": {
+        "readonly": true,
+        "cache_ttl": 300,
+        "extra": {
+          "vendor.tier": "gold"
+        }
+      },
+      "expected_deserialized_extra": {
+        "vendor.tier": "gold"
+      },
+      "expected_survivors": {
+        "readonly": true,
+        "cache_ttl": 300
+      },
+      "expected_warning": false
     }
   ]
 }

@@ -196,7 +196,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > those already carried 12,747 changed lines across four repositories, and stacking a third wave on
 > an unreviewed base would have buried any defect in it. Implementation has now begun, one decision
 > at a time and case-first: the discriminating conformance case is written and run against all three
-> SDKs BEFORE the implementation, so the decision lands pinned rather than believed. **D-110, D-114, D-118 and D-119 have landed; the other ten have not.** Each carries a `case_sketch` in
+> SDKs BEFORE the implementation, so the decision lands pinned rather than believed. **D-110, D-114, D-115, D-118 and D-119 have landed; the other nine have not.** Each carries a `case_sketch` in
 > `conformance/decision_coverage.json` saying what its case looks like and what makes it red.
 
 - **An unknown extension point is an error; an empty one is not** (D-108). The `### Errors: No errors
@@ -215,6 +215,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   because a namespace rename is invisible until someone queries old data and finds nothing.
 - **Error timestamps are UTC `Z` with millisecond precision** (D-120). Precision is part of the
   requirement: fixing the suffix alone would leave three precisions behind one `Z`.
+- **Landed (D-115):** a malformed annotation value is tolerated and dropped. **No SDK implemented
+  this** — all three were red on at least one half, and the decision's recorded status quo turned out
+  to be wrong about two of them. apcore-python did coerce a non-object `extra` to `{}` in
+  `from_dict`, which the registration path does not use; `merge_annotations` builds the dataclass
+  directly, where `dict("oops")` raised a bare `ValueError` that escapes every `except ModuleError`
+  handler and took the whole registration with it. apcore-typescript kept the string, and left
+  `cache_ttl: -5` unclamped. apcore-rust rejected both. The decision itself is unchanged — its
+  argument never rested on a count — but its **Authority** line is withdrawn, and the correction is
+  appended to D-115 in the decision log rather than folded quietly into the table.
 - **A malformed annotation value is tolerated and dropped** (D-115). One SDK fabricated index keys from
   a string; another discarded an entire module descriptor over one out-of-range integer.
 - **`reload_dependents` is deprecated for removal at v2.0** (D-121) — declared by all three SDKs,

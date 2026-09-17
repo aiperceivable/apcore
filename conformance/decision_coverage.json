@@ -329,11 +329,13 @@
     },
     "D-115": {
       "title": "a malformed annotation value is tolerated and dropped",
-      "kind": "deferred",
-      "note": "spec text only (v1.51.0); implementation deliberately deferred. Becomes `behavioural` the moment it is implemented.",
-      "cases": [],
-      "case_sketch": "Host: annotations_extra_round_trip.json (it exists and already round-trips annotations). `{\"extra\": \"oops\"}` -> the resulting annotations carry the OTHER declared fields unchanged and no `extra`, plus a warning. That one input discriminates all three observed behaviours: coerced to `{}` (correct), object-spread into `{\"0\":\"o\", ...}` (invented data indistinguishable from a real declaration), and the whole ModuleDescriptor rejected. Second case `{\"cache_ttl\": -5}` -> clamped and the module still registers.",
-      "sketch_host": "annotations_extra_round_trip.json"
+      "kind": "behavioural",
+      "cases": [
+        "annotations_extra_round_trip.json#malformed_extra_is_dropped_and_the_rest_survives",
+        "annotations_extra_round_trip.json#out_of_range_cache_ttl_is_clamped_and_the_module_survives",
+        "annotations_extra_round_trip.json#a_well_formed_extra_is_not_touched"
+      ],
+      "discriminates": "`expected_survivors` is what makes these discriminating: `expected_deserialized_extra` alone cannot say the REST survived \u2014 an SDK that rejects the whole value never reaches the assertion, and one that drops everything satisfies it. The object half and the integer half are separate cases because an SDK can tolerate a malformed OBJECT and still reject a malformed INTEGER, which is exactly the split that was observed. The third case is the control: without it an SDK that drops `extra` unconditionally passes the first, and one that clamps every integer to 0 passes the second. All three SDKs were red on at least one half, and the decision's recorded status quo turned out to be wrong about two of them \u2014 see the correction appended to D-115 in the decision log."
     },
     "D-116": {
       "title": "circuit-breaker events carry the declared subscriber type",

@@ -652,6 +652,32 @@ strict — one bad integer removes an entire module. Recorded with the
 implementation note that a `u64` field puts the failure BEFORE the clamp, making
 the required clamp unreachable; deserialize signed first.
 
+**Correction (2026-09-17).** The status quo above was recorded without being run,
+and two thirds of it are wrong. Measured at implementation time:
+
+| input | apcore-python | apcore-typescript | apcore-rust |
+|---|---|---|---|
+| `{"extra": "oops"}` | **rejected the registration** with a bare `ValueError` | kept the string as `extra` | rejected |
+| `{"cache_ttl": -5}` | clamped to 0 | kept `-5` | rejected |
+
+apcore-python did coerce to `{}` — in `from_dict`, which the registration path
+does not use. `merge_annotations` builds the dataclass directly, where
+`dict("oops")` raised, so a module with one malformed annotation was refused with
+an untyped error that escapes every `except ModuleError` handler. That is the
+same shape as D-85: the tolerance existed at one door of two, and the status quo
+was read off the tolerant one.
+
+**The decision is unchanged**, because its argument never rested on the count:
+keeping the value is worse than lenient (it then reads as a declaration the
+author wrote), and rejecting is worse than strict (one bad value removes an
+entire module). What is withdrawn is the **Authority** line — no SDK implemented
+this, so there was no majority and no authority to follow. The decision stands on
+its own reasoning, which is where it always stood.
+
+Recording this rather than quietly amending the table: a decision whose status
+quo was never run is exactly what D-125 and D-126 corrected elsewhere, and the
+correction is only useful if it is visible.
+
 ## D-116 — circuit-breaker events carry the declared subscriber type
 
 **Status quo.** apcore-python and apcore-typescript reported the wrapped
