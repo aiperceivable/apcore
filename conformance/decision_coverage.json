@@ -1,6 +1,6 @@
 {
   "_comment": "Which executed conformance case pins each decision. Enforced by conformance/check_decision_coverage.py.\n\nA decision recorded only in prose is a decision nothing verifies. This audit produced two false statements of exactly that kind -- D-96 claimed its union was 'unobservable' in two SDKs (it was a fail-open approval bypass in both, corrected as D-125), and the v1.10.0 row claimed all three SDKs accept a version hint (apcore-rust has no such parameter, corrected as D-126). Neither could be caught by a test, because the sentence itself said the test was unnecessary.\n\nUNLINKED MEANS UNCOVERED, deliberately. A case that pins a decision without saying so can be weakened by someone who does not know what it is for -- which is how approval_gate.json came to set both governance sources from one boolean and passed in all three SDKs while one of them had a bypass. If a case pins a decision, name it here.\n\n`discriminates` is not documentation. It must say what makes the case fail when an SDK regresses; if it cannot be written, the case is not discriminating and the decision is still unpinned.\n\nkinds: behavioural = needs a discriminating case | deferred = spec text only, no implementation to pin yet | unconstrained = the decision deliberately leaves the shape language-defined.\n\nThe 14 `deferred` entries carry a `case_sketch`: what the discriminating case looks like, what makes it RED, and which existing fixture should host it. Written BEFORE implementation on purpose. D-92 shows why \u2014 it landed in one SDK of three and nothing noticed, because the only thing that could have noticed was a case nobody had written yet. The case has to be written either way; writing it first costs nothing and forces the question \"what would make this red?\" at the moment it is cheapest to answer.",
-  "ratchet": 19,
+  "ratchet": 15,
   "ratchet_history": [
     {
       "value": 32,
@@ -239,24 +239,70 @@
       "title": "global_deadline is epoch seconds, not a monotonic reading",
       "kind": "behavioural",
       "cases": [],
-      "gap_note": "A round-trip case cannot discriminate a monotonic basis from an epoch one: both preserve the field. Needs a case whose deadline is an ABSOLUTE epoch value in the past, expecting the call to be refused \u2014 against a monotonic basis that value is ~1.8e9 compared with ~1e5 and the budget silently never fires."
+      "sdk_tests": {
+        "python": [
+          "tests/test_deep_chain_v150.py::TestGlobalDeadline::test_caller_supplied_epoch_deadline_fires"
+        ],
+        "typescript": [
+          "tests/test-global-deadline-pipeline.test.ts"
+        ],
+        "rust": [
+          "tests/test_executor.rs::test_global_deadline_set_by_context_creation"
+        ]
+      },
+      "discriminates": "Per-SDK rather than a conformance case: the clock BASIS is not flat input/output data \u2014 a round-trip case cannot separate a monotonic reading from an epoch one, because both preserve whatever number the fixture supplies. The discriminator has to be an ABSOLUTE epoch value compared against the SDK's own `now`.\n\nPython and TypeScript supply a caller deadline of `now_epoch + small` and require the call to time out; against a monotonic basis that value is ~1.8e9 compared with ~1e5, the deadline never fires, and the call runs with no budget at all \u2014 silent, and fail-open. Rust asserts the COMPUTED deadline lands in `[now_epoch + 50, now_epoch + 70]` for a 60 s budget, which a monotonic basis misses by nine orders of magnitude.\n\nVerified red in TypeScript by restoring the millisecond basis (`Date.now() + timeout`)."
     },
     "D-100": {
-      "title": "global_deadline travels in the field, not a `data` key",
+      "title": "the first-class global_deadline field IS the storage",
       "kind": "behavioural",
-      "cases": []
+      "cases": [],
+      "sdk_tests": {
+        "python": [
+          "tests/test_deep_chain_v150.py::TestGlobalDeadline::test_caller_supplied_deadline_wins_over_the_config_default"
+        ],
+        "typescript": [
+          "tests/test-global-deadline-pipeline.test.ts"
+        ],
+        "rust": [
+          "tests/test_global_deadline_lifetime.rs"
+        ]
+      },
+      "discriminates": "The scenario is a caller-supplied deadline SHORTER than a generous config default (50 ms against 10 s in Python and Rust, 5 s against 600 s in TypeScript). If the field is not the storage \u2014 the TypeScript defect, which wrote and read `context.data['_apcore.executor.global_deadline']` and never consulted the field \u2014 the caller's value is discarded and the generous default lets the call through.\n\nEach SDK carries a CONTROL: the same module under the same config default with no caller deadline must SUCCEED. Without it a blanket 'everything times out' regression would pass the main assertion for the wrong reason. TypeScript adds a third assertion that the private data key is no longer written at all.\n\nVerified red in all three by dropping the `global_deadline is None` guard at the set site, so the config default overwrites the caller's value."
     },
     "D-101": {
-      "title": "global_deadline belongs to the call tree, not the Context",
+      "title": "the deadline belongs to the call tree, not to the Context",
       "kind": "behavioural",
       "cases": [],
-      "gap_note": "Needs two successive top-level calls on ONE reused Context, asserting the second gets a fresh budget. context_create.json constructs a Context; it does not make two calls."
+      "sdk_tests": {
+        "python": [
+          "tests/test_deep_chain_v150.py::TestGlobalDeadline::test_deadline_is_not_written_onto_the_callers_context",
+          "tests/test_deep_chain_v150.py::TestGlobalDeadline::test_reused_context_does_not_inherit_the_first_calls_deadline"
+        ],
+        "typescript": [
+          "tests/test-global-deadline-pipeline.test.ts"
+        ],
+        "rust": [
+          "tests/test_global_deadline_lifetime.rs"
+        ]
+      },
+      "discriminates": "Two assertions, because either alone is passable. First, the caller's Context still reports a null deadline after the call returns. Second \u2014 the behavioural one \u2014 a Context reused across successive top-level calls gets a FRESH budget each time: Python waits past the first budget and requires the second call to succeed; Rust runs a 150 ms module three times under a 250 ms budget, which an inherited deadline would refuse on the second.\n\nRust carries a CONTROL proving the budget is genuinely enforced at that size (the same module IS refused under 100 ms), so 'all three passed' cannot be explained by there being no budget at all. TypeScript adds the counterpart direction: a NESTED call must still inherit the enclosing budget, which stops 'clear it everywhere' passing as a fix.\n\nVerified red in Python by writing the computed deadline onto the caller-supplied Context, and in Rust by sharing one deadline across top-level calls through a `OnceLock`. Note Rust's `&Context` parameter makes the in-place write structurally impossible today; the test stands against a future signature or interior-mutability change."
     },
     "D-102": {
-      "title": "global_deadline is recomputed unconditionally on a deserialized Context",
+      "title": "a deserialized Context recomputes the deadline unconditionally",
       "kind": "behavioural",
       "cases": [],
-      "gap_note": "Needs a Context deserialized with a NON-EMPTY call_chain, asserting the receiving executor recomputes the deadline. context_serialization.json round-trips the field but never re-enters an executor with it."
+      "sdk_tests": {
+        "python": [
+          "tests/test_deep_chain_v150.py::TestGlobalDeadline::test_deserialized_context_recomputes_the_deadline"
+        ],
+        "typescript": [
+          "tests/test-global-deadline-pipeline.test.ts"
+        ],
+        "rust": [
+          "tests/test_global_deadline_lifetime.rs"
+        ]
+      },
+      "discriminates": "The input is a Context that has been round-tripped through serialize/deserialize after a `child()` hop, so it carries a non-empty `call_chain` and a null `global_deadline` \u2014 the shape a cross-process sub-tree arrives in BY DEFINITION. Both preconditions are asserted before the call, so the test cannot silently degrade into a root-call test if serialization changes.\n\nPython and Rust require the call to be REFUSED under a small budget; TypeScript asserts the module was handed a deadline inside the expected window, with a root-call CONTROL on the same executor so 'a deadline was computed' cannot hold for a reason unrelated to the call chain.\n\nVerified red in all three by reinstating the `call_chain is empty` conjunct at the set site. The mutation must gate on the INCOMING context: Python and TypeScript compute the deadline AFTER deriving the child, whose chain is non-empty even for a root call, so gating on the derived chain disables every budget and reddens the controls too \u2014 that is a different regression, not this one."
     },
     "D-103": {
       "title": "a null `identity` stays null",

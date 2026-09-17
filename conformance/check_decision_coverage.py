@@ -23,8 +23,11 @@ that nobody can see is coverage nobody can preserve.
 
 Without --strict this reports and exits 0, so the existing backlog does not block
 unrelated work; it still fails on a map that has ROTTED (a decision missing from
-the map, or a case reference that no longer resolves), because those are not
-backlog, they are the map lying. With --strict it exits 1 while any behavioural
+the map, a case reference that no longer resolves, or a named SDK test whose file
+or test function is gone), because those are not backlog, they are the map lying.
+An `sdk_tests` entry may name a whole file or one test inside it as
+`path::name`; the second form is preferred where a file holds tests for several
+decisions, because a rename then goes red instead of reading as coverage. With --strict it exits 1 while any behavioural
 decision is unpinned — the setting to switch on once the ratchet reaches zero.
 
 The ratchet may only go down. `--write-ratchet` records a new, lower value.
@@ -154,8 +157,21 @@ def main() -> int:
                 rot.append(f"{key}: unknown SDK {sdk!r} in sdk_tests")
                 continue
             for rel in files:
-                if not (args.sdk_root / SDK_DIRS[sdk] / rel).exists():
-                    rot.append(f"{key}: {sdk} test {rel!r} does not exist")
+                # `path::name` names ONE test inside a shared file. That is the
+                # precise form, and checking it is a stronger rot signal than
+                # checking the file: a test function renamed out from under the
+                # map goes red here instead of quietly reading as coverage.
+                path, _, node = rel.partition("::")
+                target = args.sdk_root / SDK_DIRS[sdk] / path
+                if not target.exists():
+                    rot.append(f"{key}: {sdk} test {path!r} does not exist")
+                elif node and node.rsplit("::", 1)[-1] not in target.read_text(
+                    encoding="utf-8", errors="replace"
+                ):
+                    rot.append(
+                        f"{key}: {sdk} test {path!r} no longer defines "
+                        f"{node.rsplit('::', 1)[-1]!r}"
+                    )
         for sdk in entry.get("binds") or []:
             if sdk not in SDK_DIRS:
                 rot.append(f"{key}: `binds` names unknown SDK {sdk!r}")

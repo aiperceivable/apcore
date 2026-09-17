@@ -148,6 +148,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   condition key: all three SDKs register handlers into PROCESS-level registries, so a key shared
   between tests let one test's async handler decide another's control.
 
+  **The `global_deadline` group (D-99 – D-102) was implemented everywhere and pinned in two SDKs
+  out of three, unevenly.** Measured before anything was written: apcore-python covered D-99, D-101
+  and D-102 and not D-100; apcore-typescript covered D-99, D-100 and D-101 and not D-102; and
+  apcore-rust — the SDK the adjudication named as the **authority** for D-99, D-100 and D-101 —
+  stood on one test, for D-99 alone. A reference implementation is the one nobody writes a
+  regression test against, which is the whole exposure: the rule that settles the other two SDKs
+  had nothing holding it in place. Five tests close the gaps, each verified red against a faithful
+  reproduction of the original defect.
+
+  That fidelity mattered. The first D-102 mutation gated recomputation on the **derived** context's
+  call chain, which is non-empty even for a root call, so it disabled every budget and reddened the
+  controls too — a louder failure that is a different regression. Reproducing the real shape (gate
+  on the INCOMING chain) reddens exactly one test in each SDK and leaves the root-call control
+  green. A mutation that breaks more than the decision does not prove the test discriminates; it
+  proves something upstream of it is load-bearing.
+
+  Two further notes on measuring rather than reading. Every one of these four decisions carries a
+  multi-paragraph comment at the set site naming itself, and a comment is the artifact that records
+  a rule, not the mechanism that enforces it — the distinction this whole audit exists to keep.
+  And the first Rust probe used a 400 ms budget against a 150 ms module, which passes whether the
+  budget is fresh per call or inherited; a case that cannot go red proves nothing regardless of how
+  right it looks.
+
   That work turned up an **open item, recorded and not implemented**: `extensions.follow_symlinks:
   true` reaches the file branch in apcore-python and in neither peer, so the key is half-inert in two
   of three — the §9.1.3 shape #118 spent a release removing. It is not filed as a decision because
@@ -155,6 +178,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   algorithm: apcore-python discovers the symlink AND its target, so one file becomes two modules with
   different IDs, which `detect_id_conflicts` does not catch. Three readings are set out under
   **Open — not yet adjudicated** in the decision log, with a recommendation.
+
+  `check_decision_coverage.py` also gained an eighth rot mode: an `sdk_tests` entry may now name one
+  test inside a shared file as `path::name`, and a rename goes red instead of reading as coverage.
+  Four of the five files above hold tests for several decisions, so naming the file alone would have
+  let any of them be deleted silently.
 
   **Two additions keep the map from becoming what it exists to prevent.** Every linked case is now
   cross-checked against `case_pinning_baseline.json` — `check_case_pinning.py` mutates a fixture
