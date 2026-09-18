@@ -579,11 +579,20 @@
     },
     "D-112": {
       "title": "a failed reload restores the previous module",
-      "kind": "deferred",
-      "note": "spec text only (v1.51.0); implementation deliberately deferred. Becomes `behavioural` the moment it is implemented.",
+      "kind": "behavioural",
       "cases": [],
-      "case_sketch": "Host: registry_load_ordering.json (nearest in spirit — it already pins visibility against on_load). THREE cases: (1) a reload whose new instance fails `on_load` -> `get(id)` returns the ORIGINAL instance; (2) the original's `on_load` ran AGAIN during restore, since Phase 3 already ran its `on_unload` and a republished-but-torn-down module is the state the decision exists to avoid; (3) the restoring load ALSO fails -> the module stays absent. Case 3 is the control: without it 'restore' could be read as 'never fail'.",
-      "sketch_host": "registry_load_ordering.json"
+      "sdk_tests": {
+        "python": [
+          "tests/sys_modules/test_reload_restores_previous_module.py"
+        ],
+        "typescript": [
+          "tests/sys-modules/test-reload-restores-previous-module.test.ts"
+        ],
+        "rust": [
+          "tests/test_reload_restores_previous_module.rs"
+        ]
+      },
+      "discriminates": "Per-SDK rather than a conformance case: the discriminator is OBJECT IDENTITY — after a failed reload, is `get(id)` the SAME instance that was registered before? A fixture carries values, not identity, and 'a module is registered under that id' is exactly what a re-discovery that half-worked also produces.\n\nEach of the decision's four rules is asserted separately, because they constrain different things and three of them are satisfiable without the others:\n  1. the ORIGINAL instance is back (`is` / `Arc::ptr_eq` / `toBe`)\n  2. the restore RE-RAN `on_load`, asserted as the exact hook sequence `[on_unload, on_load]`. Rule 2 exists because the unregister already ran `on_unload`, so a restore that skips `on_load` republishes a module that is visible but TORN DOWN — harder to diagnose than one that is absent, and indistinguishable from a correct restore by any 'is it registered?' check.\n  3. if the restoring load ALSO fails the module stays unavailable, and the caller is told about the ORIGINAL failure rather than the restore's.\n  4. on the bulk path, the failing module is restored while a module that already reloaded KEEPS its new instance — asserted in the same test, because 'restored' and 'not rolled back' are the two halves of rule 4 and an implementation that rolls everything back satisfies the first alone.\n\nA CONTROL asserts a SUCCESSFUL reload publishes the NEW instance: without it, 'the original is registered afterwards' is equally satisfied by an implementation that never swaps anything in.\n\napcore-typescript additionally covers the SECOND failure point — `discover()` succeeds but does not bring the module back — because an implementation that restores only on a thrown discovery error leaves exactly the same hole; the mutation confirms that test is the only one that notices.\n\nVerified red in all three. In apcore-rust the change was previously unfalsifiable: 2992 tests passed before and after the behaviour changed."
     },
     "D-113": {
       "title": "storage-backend namespaces, and the omitted-argument default",
