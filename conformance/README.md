@@ -35,6 +35,7 @@ SDK conformance runners **must** load `.json` files with a JSON parser. The `.ya
 | `error_recovery_metadata.json` | — | Default AI error-recovery metadata (retryable, user_fixable) resolved per error code; user_fixable=true when caller can fix by changing input/config |
 | `async_task_cancellation.json` | Issue #34 | Over-capacity submit raises TASK_LIMIT_EXCEEDED; cancel during backoff stops further retries (sync A-D-003/A-D-004) |
 | `executor_trace_cancellation.json` | — | call_with_trace cancellation bypasses on_error chain (sync A-D-001, D-19/D-20) |
+| `extension_point_lookup.json` | D-108 | `get`/`get_all`/`unregister` reject an UNREGISTERED extension point with `GENERAL_INVALID_INPUT`, and do not raise for a registered point holding nothing (spec v1.51.0) |
 | `config_env.json` | — | Configuration environment variable override |
 | `context_serialization.json` | — | Cross-language Context serialize/deserialize round-trip |
 | `schema_validation.json` | §4.15 | Schema validation edge cases, plus the **opt-in library-level** coercing mode. Cases carrying `expected_valid_strict` / `expected_valid_coerce` document BOTH modes and SHOULD be asserted against both, naming the mode explicitly rather than relying on a constructor default. The coercing mode is a knob on the standalone validator API only — it never reaches the module-invocation boundary, which is covered by `schema_keyword_parity.json` (TYPE_MAPPING §17.3). |

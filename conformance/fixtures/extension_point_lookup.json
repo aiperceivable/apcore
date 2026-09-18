@@ -1,0 +1,93 @@
+{
+  "description": "D-108 — an unknown extension point is an error; an empty one is not (spec v1.51.0, docs/features/extension-system.md '## An unknown extension point is an error; an empty one is not'). `get`, `get_all` and `unregister` MUST reject a point name that was never registered with InvalidInputError(code=GENERAL_INVALID_INPUT), and MUST NOT raise for a registered point that currently holds nothing. The two halves are load-bearing together: an SDK that answers null/empty/false for a misspelled name turns a typo into a wiring bug that first surfaces at apply(), and an SDK that raises for an empty point breaks every host that probes before registering. Runner: build a FRESH ExtensionManager per case, with the six built-in points ('discoverer', 'middleware', 'acl', 'span_exporter', 'module_validator', 'approval_handler') and nothing registered. For each name in `setup`, register one SDK-native extension of that point's declared type (any trivial instance will do; keep a reference to it). Then perform `operation` on `point_name`. `unregister_target` selects the object handed to `unregister`: 'setup' = the exact object registered by `setup` (same identity), 'stranger' = a freshly built extension of the same type that was NEVER registered. Assertions: when `expected.error_code` is a string the call MUST fail with the framework error carrying that code — an SDK that returns null / an empty collection / false instead is a FAILURE, and so is an SDK that raises a generic language error (KeyError, bare Error) that carries no code. When `expected.error_code` is null the call MUST NOT raise, and the remaining `expected` key is the answer: `value` is 'none' or 'present' for `get`, `count` is the length for `get_all`, `removed` is the boolean for `unregister`.",
+  "test_cases": [
+    {
+      "id": "get_unknown_point_is_an_error",
+      "setup": [],
+      "operation": "get",
+      "point_name": "middlewares",
+      "expected": {"error_code": "GENERAL_INVALID_INPUT"}
+    },
+    {
+      "id": "get_all_unknown_point_is_an_error",
+      "setup": [],
+      "operation": "get_all",
+      "point_name": "middlewares",
+      "expected": {"error_code": "GENERAL_INVALID_INPUT"}
+    },
+    {
+      "id": "unregister_unknown_point_is_an_error",
+      "setup": ["middleware"],
+      "operation": "unregister",
+      "point_name": "middlewares",
+      "unregister_target": "stranger",
+      "expected": {"error_code": "GENERAL_INVALID_INPUT"}
+    },
+    {
+      "id": "unknown_point_is_an_error_even_when_a_sibling_point_is_populated",
+      "setup": ["middleware", "acl"],
+      "operation": "get",
+      "point_name": "acls",
+      "expected": {"error_code": "GENERAL_INVALID_INPUT"}
+    },
+    {
+      "id": "get_empty_registered_point_is_not_an_error",
+      "setup": [],
+      "operation": "get",
+      "point_name": "acl",
+      "expected": {"error_code": null, "value": "none"}
+    },
+    {
+      "id": "get_all_empty_registered_point_is_not_an_error",
+      "setup": [],
+      "operation": "get_all",
+      "point_name": "middleware",
+      "expected": {"error_code": null, "count": 0}
+    },
+    {
+      "id": "unregister_from_empty_registered_point_is_not_an_error",
+      "setup": [],
+      "operation": "unregister",
+      "point_name": "middleware",
+      "unregister_target": "stranger",
+      "expected": {"error_code": null, "removed": false}
+    },
+    {
+      "id": "get_populated_point_returns_the_extension",
+      "setup": ["acl"],
+      "operation": "get",
+      "point_name": "acl",
+      "expected": {"error_code": null, "value": "present"}
+    },
+    {
+      "id": "get_all_populated_point_returns_the_extensions",
+      "setup": ["middleware", "middleware"],
+      "operation": "get_all",
+      "point_name": "middleware",
+      "expected": {"error_code": null, "count": 2}
+    },
+    {
+      "id": "unregister_a_registered_extension_removes_it",
+      "setup": ["middleware"],
+      "operation": "unregister",
+      "point_name": "middleware",
+      "unregister_target": "setup",
+      "expected": {"error_code": null, "removed": true}
+    },
+    {
+      "id": "unregister_an_extension_this_point_does_not_hold_is_not_an_error",
+      "setup": ["middleware"],
+      "operation": "unregister",
+      "point_name": "middleware",
+      "unregister_target": "stranger",
+      "expected": {"error_code": null, "removed": false}
+    },
+    {
+      "id": "empty_point_name_is_an_unknown_point",
+      "setup": [],
+      "operation": "get",
+      "point_name": "",
+      "expected": {"error_code": "GENERAL_INVALID_INPUT"}
+    }
+  ]
+}

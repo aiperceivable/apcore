@@ -157,7 +157,33 @@ jobs:
               print(f"conformance.md Total says {m.group(1)}, fixtures hold {total}",
                     file=sys.stderr)
               bad += 1
-          print(f"{len(glob.glob('conformance/fixtures/*.json'))} fixtures, {total} cases")
+          files = len(glob.glob("conformance/fixtures/*.json"))
+          m = re.search(r"\|\s*\*\*Total\*\*\s*\|\s*\*\*\d+\*\*\s*\|\s*\*\*(\d+) fixtures\*\*",
+                        inventory)
+          if not m:
+              print("conformance.md 8.1 Total row has no fixture-count cell", file=sys.stderr)
+              bad += 1
+          elif int(m.group(1)) != files:
+              print(f"conformance.md Total row says {m.group(1)} fixtures, there are {files}",
+                    file=sys.stderr)
+              bad += 1
+          # conformance.md 8 opens by quoting BOTH numbers in prose and asserting
+          # that "these two numbers are checked against the fixtures themselves
+          # by conformance-integrity". They were not: the sentence read 72 files
+          # / 843 cases against an actual 80 / 982. A sentence claiming a guard
+          # is not the guard.
+          m = re.search(r"ships \*\*(\d+) cross-language fixture files\*\* under "
+                        r"`conformance/fixtures/` covering \*\*(\d+) test cases\*\*",
+                        inventory)
+          if not m:
+              print("conformance.md 8 no longer states its fixture-file / case counts",
+                    file=sys.stderr)
+              bad += 1
+          elif (int(m.group(1)), int(m.group(2))) != (files, total):
+              print(f"conformance.md 8 prose says {m.group(1)} files / {m.group(2)} cases, "
+                    f"there are {files} / {total}", file=sys.stderr)
+              bad += 1
+          print(f"{files} fixtures, {total} cases")
           sys.exit(1 if bad else 0)
           PY
 

@@ -602,7 +602,7 @@ Implementations declaring conformance **MUST** list any of these deviations that
 
 ## 8. Conformance Test Fixtures
 
-The repository ships **72 cross-language fixture files** under `conformance/fixtures/` covering **843 test cases**. These two numbers are checked against the fixtures themselves by `conformance-integrity`, together with §8.1's per-fixture counts and its Total row — a count nobody verifies reads as coverage in every review and every inventory built from it. Each fixture is a JSON document of shape `{ "description": "...", "test_cases": [...] }` consumed by all three SDK test runners (apcore-python, apcore-typescript, apcore-rust). A SDK declaring a conformance level **MUST** pass every fixture whose tested feature is required at that level (see §2 Level 0, §3 Level 1, §4 Level 2 for the per-feature breakdown).
+The repository ships **80 cross-language fixture files** under `conformance/fixtures/` covering **982 test cases**. These two numbers are checked against the fixtures themselves by `conformance-integrity`, together with §8.1's per-fixture counts and its Total row — a count nobody verifies reads as coverage in every review and every inventory built from it. Each fixture is a JSON document of shape `{ "description": "...", "test_cases": [...] }` consumed by all three SDK test runners (apcore-python, apcore-typescript, apcore-rust). A SDK declaring a conformance level **MUST** pass every fixture whose tested feature is required at that level (see §2 Level 0, §3 Level 1, §4 Level 2 for the per-feature breakdown).
 
 ### 8.1 Fixture Inventory
 
@@ -657,6 +657,7 @@ The repository ships **72 cross-language fixture files** under `conformance/fixt
 | [`openai_strict_compat`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/openai_strict_compat.json) | 30 | OpenAI structured-outputs strict-mode incompatibility detection (DECLARATIVE_CONFIG_SPEC §6.2 / §6.6) |
 | [`overrides_store`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/overrides_store.json) | 5 | OverridesStore pluggable persistence |
 | [`pattern_matching`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/pattern_matching.json) | 12 | ACL / `match_modules` module-ID pattern matching (Algorithm A08) |
+| [`extension_point_lookup`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/extension_point_lookup.json) | 12 | An unknown extension point is an error, an empty one is not (D-108, spec v1.51.0) |
 | [`glob_matching`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/glob_matching.json) | 30 | Portable glob matching for pattern-valued values (Algorithm A25, §9.2.3) |
 | [`pipeline_failfast_config`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/pipeline_failfast_config.json) | 7 | Pipeline configuration fail-fast (Issue #33) |
 | [`pipeline_hardening`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/pipeline_hardening.json) | 5 | Pipeline execution hardening: fail-fast, replace-step, run_until |
@@ -687,7 +688,7 @@ The repository ships **72 cross-language fixture files** under `conformance/fixt
 | [`usage_contract`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/usage_contract.json) | 11 | `system.usage.*` value semantics no schema can assert (spec §6.7.1) |
 | [`usage_exporter`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/usage_exporter.json) | 3 | `UsageExporter` push interface (#45 §3, D-55) |
 | [`version_negotiation`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/version_negotiation.json) | 10 | Version negotiation (Algorithm A14) |
-| **Total** | **970** | **79 fixtures** |
+| **Total** | **982** | **80 fixtures** |
 
 ### 8.2 Loading Fixtures from a Test Runner
 

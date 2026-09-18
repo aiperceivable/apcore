@@ -619,10 +619,18 @@ were brought to the maintainer as a list rather than decided by the audit. Two
 (D-112, D-121) were decided against the recommendation the audit offered, and
 both are recorded below as the maintainer settled them.
 
-Implementation is **deliberately deferred** until the v1.49.0 and v1.50.0
-branches are reviewed: those already carry 12,747 changed lines across four
+Implementation was **deliberately deferred** until the v1.49.0 and v1.50.0
+branches were reviewed: those already carried 12,747 changed lines across four
 repositories, unreviewed, and stacking a third wave on an unreviewed base would
-bury any defect in it.
+have buried any defect in it.
+
+> **All fourteen are now implemented in all three SDKs**, each pinned by a
+> conformance case listed in `conformance/decision_coverage.json`. Implementing
+> them found live defects in six — D-109, D-111, D-112, D-113, D-116 and D-117
+> — where the spec's answer was not what any SDK did, and in two of those the
+> divergence was in the SDK the decision named as its authority. The status-quo
+> paragraphs below are kept as written: they record what each SDK did at the
+> time the decision was taken, not what it does now.
 
 ## D-108 — an unknown extension point is an error; an empty one is not
 

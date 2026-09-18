@@ -188,7 +188,7 @@ class _CompositeExporter:
 - `extension` (Any/unknown/Box<dyn Trait>, required) — must satisfy the extension point's declared type; type checking is performed at registration time
 
 ### Errors
-- `ExtensionPointNotFoundError` (or `ValueError` / `Err(ModuleError)`) — `point_name` is not a registered extension point
+- `InvalidInputError` (`code=GENERAL_INVALID_INPUT`, `Err(ModuleError)` in Rust) — `point_name` is not a registered extension point. Python raised a bare `KeyError` and TypeScript a bare `Error` until D-108 was implemented; neither carries a code, so a caller could not tell a misspelled point name from any other failure.
 - `ExtensionTypeError` (or `TypeError` / `Err(ModuleError)`) — `extension` does not satisfy the point's expected type/trait
 
 ### Returns
@@ -206,7 +206,8 @@ class _CompositeExporter:
 - `point_name` (str/string/&str, required) — name of a single-cardinality extension point
 
 ### Errors
-- No errors raised; returns `None`/`null`/`None` when nothing is registered
+- `InvalidInputError` (`code=GENERAL_INVALID_INPUT`) — `point_name` is not a registered extension point
+- No error for a registered point that currently holds nothing; returns `None`/`null`/`None`. See ["An unknown extension point is an error; an empty one is not"](#an-unknown-extension-point-is-an-error-an-empty-one-is-not) — this row used to state only the second half, and one SDK read it as covering the first.
 
 ### Returns
 - On success: the registered extension object, or `None`/`null`/`None`
@@ -222,7 +223,8 @@ class _CompositeExporter:
 - `point_name` (str/string/&str, required) — name of a multi-cardinality extension point
 
 ### Errors
-- No errors raised; returns empty list when nothing is registered
+- `InvalidInputError` (`code=GENERAL_INVALID_INPUT`) — `point_name` is not a registered extension point
+- No error for a registered point that currently holds nothing; returns an empty collection. See ["An unknown extension point is an error; an empty one is not"](#an-unknown-extension-point-is-an-error-an-empty-one-is-not).
 
 ### Returns
 - On success: `list` / `Array` / `Vec` of all registered extensions in registration order
@@ -239,10 +241,11 @@ class _CompositeExporter:
 - `extension` (Any/unknown/ref, required) — the exact extension object to remove (identity comparison)
 
 ### Errors
-- No error if the extension is not found (silent no-op)
+- `InvalidInputError` (`code=GENERAL_INVALID_INPUT`) — `point_name` is not a registered extension point
+- No error if the POINT is registered and does not hold the given extension — that is a silent `false`. See ["An unknown extension point is an error; an empty one is not"](#an-unknown-extension-point-is-an-error-an-empty-one-is-not); this row is the one that was read as covering an unknown point name too.
 
 ### Returns
-- On success: void/None/()
+- On success: `True`/`true`/`Ok(true)` when the extension was removed, `False`/`false`/`Ok(false)` when the point does not hold it
 
 ### Properties
 - async: false

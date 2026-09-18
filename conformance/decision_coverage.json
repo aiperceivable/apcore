@@ -535,11 +535,19 @@
     },
     "D-108": {
       "title": "an unknown extension point is an error; an empty one is not",
-      "kind": "deferred",
-      "note": "spec text only (v1.51.0); implementation deliberately deferred. Becomes `behavioural` the moment it is implemented.",
-      "cases": [],
-      "case_sketch": "Host: a new extension-point fixture (none of the 80 covers this surface). TWO cases, and the second is the control. (1) `get`/`get_all`/`unregister` on a name never registered -> error_code GENERAL_INVALID_INPUT; an SDK returning None/empty/false is red. (2) the SAME calls on a registered point holding nothing -> no error, empty result; without it an SDK raising for BOTH passes case 1 and the typo-vs-empty distinction the decision is about is unpinned.",
-      "sketch_host": "NEW"
+      "kind": "behavioural",
+      "cases": [
+        "extension_point_lookup.json#get_unknown_point_is_an_error",
+        "extension_point_lookup.json#get_all_unknown_point_is_an_error",
+        "extension_point_lookup.json#unregister_unknown_point_is_an_error",
+        "extension_point_lookup.json#unknown_point_is_an_error_even_when_a_sibling_point_is_populated",
+        "extension_point_lookup.json#empty_point_name_is_an_unknown_point",
+        "extension_point_lookup.json#get_empty_registered_point_is_not_an_error",
+        "extension_point_lookup.json#get_all_empty_registered_point_is_not_an_error",
+        "extension_point_lookup.json#unregister_from_empty_registered_point_is_not_an_error",
+        "extension_point_lookup.json#unregister_an_extension_this_point_does_not_hold_is_not_an_error"
+      ],
+      "discriminates": "The input is a point name the manager never registered — `middlewares`, the plural typo of a real point, plus `acls` and the empty string. The five error cases require `InvalidInputError(code=GENERAL_INVALID_INPUT)`; an SDK answering `None`/`[]`/`false` is red, and so is an SDK raising a language-generic error that carries no code. That second half matters: apcore-typescript already threw for all three calls, so a `toThrow()` assertion was green against a bare `throw new Error(...)` a caller could not branch on, and apcore-python raised the `KeyError` a plain dict miss raises.\n\nThe four not-an-error cases are the control, and they are not redundant: 'rejects an unknown point' is equally satisfied by an implementation that rejects anything not currently holding an extension, which would break every host that probes a point before registering into it. `unknown_point_is_an_error_even_when_a_sibling_point_is_populated` closes the remaining shortcut — an implementation keyed on 'the store is empty' rather than 'the point is unknown' passes the other four error cases. The mutations confirm the split in both directions: restoring the silent empty answer reddens exactly the five error cases and none of the controls (measured on all three SDKs); over-rejecting on an empty point reddens exactly the seven cases that must answer.\n\n`unregister_an_extension_this_point_does_not_hold_is_not_an_error` is the case the decision exists to separate. The contract's `### Errors: No error if the extension is not found` row was written about THAT, and one SDK read it as covering the unknown POINT too, so `get(\"middlewares\")` wired nothing and first surfaced as a bug at `apply()`, far from the typo that caused it."
     },
     "D-109": {
       "title": "only the healthy/degraded boundary is configurable",

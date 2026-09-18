@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-> Ships `PROTOCOL_SPEC` **v1.48.0 → v1.57.0**: fifty-four cross-language divergences settled
+> Ships `PROTOCOL_SPEC` **v1.48.0 → v1.58.0**: fifty-four cross-language divergences settled
 > (**D-74 – D-127**), found by a deep-chain (call-graph) audit of the three core SDKs — the last
 > four (**D-122** – **D-125**) by reviewing the audit's own output rather than by the audit itself,
 > and **D-124**/**D-125** by the maintainer reviewing the branches. **D-125 corrects a sentence of
@@ -25,6 +25,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > `approval_gate.json` passes in all three SDKs off two different sources of truth. A case that
 > cannot discriminate between two implementations is not testing the thing that differs — which is
 > why this release changes fixtures as well as text.
+
+### Changed — specification (v1.58.0)
+
+- **The audit-entry schema declares `correlation_id`** (D-111). The requirement that every entry
+  from a single bulk reload carry the same correlation id landed at v1.51.0, and
+  `system-modules.md`'s declared structure was not updated — so the block contradicted a `MUST`
+  written three sections above it, which is the same shape D-128 corrected in
+  `extension-system.md`. The field is **optional and empty for single-target operations**, which
+  need no grouping, so an existing `AuditStore` implementation keeps working unchanged.
 
 ### Fixed (v1.57.0)
 
@@ -103,6 +112,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is unnecessary. That sweep also produced D-125. Resolution stays OPTIONAL; **visibility** is what
   is now required, and compile-time refusal satisfies it as well as a deprecation warning does.
 
+### Fixed — implementing the fourteen deferred decisions (D-108 – D-121)
+
+> v1.51.0 settled fourteen questions in text and deferred the code. Writing that code, decision by
+> decision and red-first, found **live defects in six of them** — cases where the spec's answer was
+> not what ANY SDK did, and in two of those the divergence sat in the very SDK the decision named as
+> its authority. A policy decision taken from a status-quo table is a decision taken from a reading
+> of three implementations; the reading is where the errors are.
+
+- **An unknown extension point is an error; an empty one is not** (D-108). apcore-rust answered
+  `None` / `&[]` / `false` for a point name it had never registered, so `get("middlewares")` — the
+  plural typo of a real point — wired nothing and first surfaced as a missing middleware at
+  `apply()`, far from the call that caused it. apcore-python raised the `KeyError` a plain dict miss
+  raises and apcore-typescript a bare `Error`; neither carries a code, so **no caller could branch on
+  it and no cross-language assertion could do better than match on message text**. All three now
+  raise `InvalidInputError(code=GENERAL_INVALID_INPUT)` from a single `require_point` path, on
+  `register` as well as the three the decision names, and all three still answer quietly for a
+  registered point holding nothing. The `### Errors` rows of those contracts have been reconciled
+  with the decision: they said "No errors raised" and "No error if the extension is not found", which
+  was written about the EMPTY case and is exactly the sentence apcore-rust read as covering the
+  unknown one. New fixture `extension_point_lookup.json`, 12 cases, four of them the control that
+  keeps "reject an unknown point" from being satisfied by "reject anything not currently holding an
+  extension".
+
+- **Storage-backend namespaces are named, and the omitted default is in-memory** (D-113). Of the
+  nine collector/SDK combinations, **five wrote nothing at all**, and the two that did wrote to
+  different namespace names. Landed with a dual-read migration window.
+
+- **A bulk reload audits per module with a shared correlation id** (D-111). apcore-python and
+  apcore-rust wrote one aggregate entry keyed on the glob, which `AuditStore.query(module_id)` cannot
+  find — the audit existed and was unreachable by the only question anyone asks of it.
+
+- **A failed reload restores the previous module** (D-112). apcore-python and apcore-rust left the
+  module unregistered after a failed reload, and apcore-rust could not restore it at all: the
+  registry had no re-instatement path that took an already-constructed module. The door had to be
+  added before the decision could be implemented, let alone tested.
+
+- **Circuit events carry the declared subscriber type** (D-116) — all three reported a wrong
+  `subscriber_type`, each differently. **Namespace defaults are scoped to namespace mode** (D-117) —
+  apcore-rust consulted registered-namespace defaults for a legacy document. **Only the
+  healthy/degraded boundary is configurable** (D-109) — apcore-python and apcore-typescript silently
+  provided a second threshold knob the classification table forbids, so `error_rate_threshold: 0.001`
+  moved both boundaries and a module at 5% was `error` on two SDKs and `degraded` on the third.
+  **Error timestamps are UTC `Z` with millisecond precision** (D-120) — apcore-python emitted
+  `+00:00` with microseconds and apcore-rust had **two** formats for one record.
+
+- Also implemented, each pinned by a case: D-110, D-114, D-115, D-118, D-119, D-121.
+
 ### Added — conformance
 
 - **`decision_coverage.json` + `check_decision_coverage.py`: every behavioural decision must name
@@ -113,10 +169,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (apcore-rust has no such parameter, corrected as D-126). Neither could be caught by a test,
   because the sentence itself said the test was unnecessary.
 
-  Of 53 decisions (D-74 – D-126): **37 behavioural, 14 deferred** (D-108 – D-121, spec text only),
-  **2 unconstrained** (the decision itself leaves the shape language-defined). Of the 37, ten are
-  pinned by a conformance case and six by per-SDK tests covering every SDK they bind — **ratchet 21**,
-  which may only go down.
+  Of 55 decisions (D-74 – D-128): **53 behavioural, 2 unconstrained** (the decision itself leaves
+  the shape language-defined). Every one of the 53 is pinned — 23 by a conformance case and 30 by
+  per-SDK tests covering every SDK they bind. **Ratchet 0**, and CI runs `--strict`, so a new
+  decision landing unpinned is a build failure rather than a number that went up.
+
+  That started at **37 behavioural, 14 deferred** (D-108 – D-121, spec text only) and **ratchet
+  21**. The fourteen deferred ones were implemented in the same cycle; what that cost is the entry
+  below.
 
   **Unlinked means uncovered, deliberately.** A case that pins a decision without saying so can be
   weakened by someone who does not know what it is for, which is how `approval_gate.json` came to
@@ -591,7 +651,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   *Only apcore-python was affected: apcore-rust re-runs discovery (which invokes `on_load`) and
   apcore-typescript's `watch()` never re-registers.*
 
-### Changed — specification (v1.51.0, policy decisions, implementation deferred)
+### Changed — specification (v1.51.0, policy decisions)
 
 > Fourteen decisions (**D-108 – D-121**) from the deep-chain audit's warning tail. Unlike v1.49.0 and
 > v1.50.0, which corrected defects, these settle questions where **the spec was silent and each of the
