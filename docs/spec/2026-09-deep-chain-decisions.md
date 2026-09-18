@@ -319,44 +319,52 @@ just added.
 per-read warning is spam proportional to traffic — which is how operators learn to
 filter it out.
 
-**Open — the decision bounded the cadence and left the scope open.** Pinning it
-measured two divergences the text does not settle, and each SDK has filled the
-silence differently. Both are observable; neither is covered by "at most once per
-`(module_id, version)` per registry instance".
+**Adjudicated at v1.59.0 — the decision bounded the cadence and left the scope
+open.** Pinning it measured two divergences the text did not settle, and each SDK
+had filled the silence differently. Both were observable; neither was covered by
+"at most once per `(module_id, version)` per registry instance". Both were put to
+the maintainer rather than decided by the audit — the same handling as D-94's
+`follow_symlinks` open item, which became D-127 — and both were settled as the
+recommendation proposed.
 
-1. **Where the warning fires.** apcore-python and apcore-typescript warn on the
-   READ (`get_definition`); apcore-rust warns at REGISTRATION and its reads never
-   warn at all. A host that registers a deprecated module and never reads its
-   definition is told on apcore-rust and not on the other two; a host that
-   registers before installing its log subscriber is told on the other two and
+1. **Where the warning fires. → The READ.** apcore-python and apcore-typescript
+   warned on `get_definition`; apcore-rust warned at REGISTRATION and its reads
+   never warned at all. A host that registered a deprecated module and never read
+   its definition was told on apcore-rust and not on the other two; a host that
+   registered before installing its log subscriber was told on the other two and
    not on apcore-rust. D-89's own rationale is written about the read path.
-2. **What an unregister + re-register does.** apcore-python drops the marker
-   (`_forget_deprecation_warnings`) and warns again; apcore-typescript and
-   apcore-rust stay silent. This is not a gap in anybody's implementation —
-   **apcore-rust's unit test asserts the silence as the requirement and
-   apcore-python's source comment asserts the re-warning as the requirement.**
-   Two SDKs have pinned opposite readings of a question D-89 does not answer, and
-   both are green.
 
-   It also matters more than it looks: `watch()` re-runs discovery as an
-   unregister + re-register, so on apcore-python a hot-reload loop re-warns for
-   every deprecated module on every reload — the traffic-proportional spam D-89
-   exists to prevent, arriving through the door it did not close. On the other
-   two a genuinely NEW deprecation block on a re-registered module is silent.
+   The asymmetry is what settled it. The registration-time miss is
+   **unrecoverable** — the dedupe entry is written whether or not a subscriber
+   existed to receive the warning, so there is no later read that can re-emit it,
+   and `discover()` at import time puts registration before logging configuration
+   in the ordinary case. The read-path miss is bounded: a module whose definition
+   is never read is one nothing is asking about through this registry. Two of
+   three already implemented the read path.
 
-**Recommendation.** Fire on the read, and key the dedupe on
-`(module_id, version, deprecation block)` rather than forgetting on
-re-registration. The read path is where D-89's rationale lives and is what two of
-three implement; including the block in the key gives apcore-python what its
-comment was reaching for — a re-registration carrying a CHANGED notice warns,
-one carrying the same notice does not — without re-warning on every reload.
+2. **What an unregister + re-register does. → Key the dedupe on the notice.**
+   apcore-python dropped the marker (`_forget_deprecation_warnings`) and warned
+   again; apcore-typescript and apcore-rust stayed silent. This was not a gap in
+   anybody's implementation — **apcore-rust's unit test asserted the silence as
+   the requirement and apcore-python's source comment asserted the re-warning as
+   the requirement.** Two SDKs had pinned opposite readings of a question D-89
+   does not answer, and both were green.
 
-The agreed dimensions are pinned in all three SDKs today; these two are
-deliberately left unasserted, with the reason written into each test file, so the
-adjudication is not pre-empted by whichever suite was written last. Not filed as
-a decision here because it needs a maintainer to choose, not an algorithm to
-follow — the same handling as D-94's `follow_symlinks` open item, which became
-D-127.
+   It mattered more than it looked: `watch()` re-runs discovery as an unregister
+   + re-register, so on apcore-python a hot-reload loop re-warned for every
+   deprecated module on every reload — the traffic-proportional spam D-89 exists
+   to prevent, arriving through the door it did not close. On the other two a
+   genuinely NEW deprecation block on a re-registered module was silent.
+
+   The key is now `(module_id, version, x-deprecation block)`, compared by deep
+   value equality, and is never cleared on `unregister`. That gives apcore-python
+   what its comment was reaching for — a re-registration carrying a CHANGED
+   notice warns, one carrying the same notice does not — without re-warning on
+   every reload.
+
+Both dimensions were deliberately left unasserted while open, with the reason
+written into each SDK's test file, so the adjudication would not be pre-empted by
+whichever suite was written last. They are asserted in all three now.
 
 ---
 

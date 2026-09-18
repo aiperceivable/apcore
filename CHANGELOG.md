@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-> Ships `PROTOCOL_SPEC` **v1.48.0 → v1.58.0**: fifty-four cross-language divergences settled
+> Ships `PROTOCOL_SPEC` **v1.48.0 → v1.59.0**: fifty-four cross-language divergences settled
 > (**D-74 – D-127**), found by a deep-chain (call-graph) audit of the three core SDKs — the last
 > four (**D-122** – **D-125**) by reviewing the audit's own output rather than by the audit itself,
 > and **D-124**/**D-125** by the maintainer reviewing the branches. **D-125 corrects a sentence of
@@ -25,6 +25,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > `approval_gate.json` passes in all three SDKs off two different sources of truth. A case that
 > cannot discriminate between two implementations is not testing the thing that differs — which is
 > why this release changes fixtures as well as text.
+
+### Changed — specification (v1.59.0)
+
+- **D-89's two open dimensions adjudicated: the READ is the emission point, and the dedupe key
+  includes the notice.** v1.49.0 bounded the deprecation-warning cadence — "at most once per
+  `(module_id, version)` per registry instance" — and left the scope open. Pinning it measured two
+  divergences the text does not settle; each SDK had filled the silence differently, and all three
+  suites were green.
+
+  **Where it fires → `get_definition`, never `register`.** apcore-rust emitted at registration and
+  its reads never warned at all. The asymmetry is what settled it: the registration-time miss is
+  **unrecoverable**, because the dedupe entry is written whether or not a log subscriber existed to
+  receive the warning, so no later read can re-emit it — and `discover()` at import time puts
+  registration before logging configuration in the ordinary case. The read-path miss is bounded and
+  is stated rather than hidden: a module whose definition is never read is not warned about.
+
+  **What a re-registration does → key on the notice, and never clear it on `unregister`.** The key
+  is now `(module_id, version, x-deprecation block)` by deep value equality. apcore-python forgot
+  the marker on `unregister`, so `watch()` — which re-runs discovery as an unregister +
+  re-register — re-warned for every deprecated module on every hot reload: the
+  traffic-proportional spam D-89 exists to prevent, arriving through the door its wording did not
+  close. apcore-typescript and apcore-rust kept the marker and therefore **swallowed a genuinely
+  NEW or CHANGED notice** on a re-registered module. Keying on the block gives both halves at once.
+
+  This was not a gap in anybody's implementation: **apcore-rust's unit test asserted the silence as
+  the requirement and apcore-python's source comment asserted the re-warning as the requirement** —
+  two SDKs pinning opposite readings of a question the decision does not answer, both green. Both
+  dimensions were deliberately left unasserted while open, with the reason written into each SDK's
+  test file, so the adjudication would not be pre-empted by whichever suite was written last.
 
 ### Changed — specification (v1.58.0)
 

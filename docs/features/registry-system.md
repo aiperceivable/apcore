@@ -744,6 +744,42 @@ call it in loops, the warning **MUST** be emitted at most once per
 every read turns an advisory into log spam proportional to traffic, which is how
 operators learn to filter it out.
 
+> **D-89 (v1.59.0) — the READ is the emission point, and the dedupe key includes
+> the notice.** v1.49.0 bounded the cadence and left the scope open; pinning it
+> measured two divergences the text did not settle, and the three SDKs had filled
+> the silence three ways, all green.
+>
+> **1. Where it fires.** The warning **MUST** be emitted from `get_definition`.
+> An implementation **MUST NOT** emit it from `register` instead: registration
+> runs at startup, frequently before the host has installed a log subscriber
+> (`discover()` at import time is the ordinary case), so a registration-time
+> warning is lost with no later chance to re-emit — the dedupe entry has already
+> been written. apcore-rust emitted at registration and its reads never warned at
+> all, so a host that registered a deprecated module after configuring logging
+> was told, and one that registered before configuring it never was.
+>
+> The trade is stated rather than hidden: a module that is registered and whose
+> definition is never read is **not** warned about. That is the accepted cost of
+> the rule, and it is the smaller one — a deprecation nobody reads is a
+> deprecation nobody is using through this registry.
+>
+> **2. What an unregister + re-register does.** The dedupe key **MUST** be
+> `(module_id, version, x-deprecation block)` — the block by deep value equality,
+> not by identity. A re-registration carrying the **same** notice **MUST NOT**
+> warn again; one carrying a **changed or newly added** notice **MUST**. An
+> implementation **MUST NOT** clear the dedupe state on `unregister`: `watch()`
+> re-runs discovery as an unregister + re-register, so forgetting on unregister
+> re-warns for every deprecated module on every hot reload — the
+> traffic-proportional spam this decision exists to prevent, arriving through the
+> door the original wording did not close. apcore-python forgot on unregister and
+> re-warned; apcore-typescript and apcore-rust stayed silent and therefore
+> swallowed a genuinely new notice on a re-registered module. Keying on the block
+> is what gives both halves at once.
+>
+> Implementations compare blocks by canonical value (sorted keys, no incidental
+> whitespace). The key itself is internal and unobservable; what is normative is
+> that **equal notices dedupe and unequal notices do not**.
+
 ### Module-supplied override
 
 A module MAY implement its own `describe()` ([§5.6](./module-interface.md), optional
