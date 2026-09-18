@@ -159,6 +159,33 @@
       "expected": {
         "final_get_value": "v2"
       }
+    },
+    {
+      "id": "each_collector_writes_its_declared_namespace",
+      "description": "D-113. §1.1 made the `StorageBackend` argument a MUST and never named the namespaces, so of NINE collector/SDK combinations only four wrote anything, and the two SDKs that wrote ErrorHistory records used different names (`errors` vs `error_history`). A namespace IS the key a caller queries by, so an unnamed one made the argument write-only — or, in five of nine, not even that.\n\nThe case drives all three bundled collectors through ONE backend and asserts the exact set of namespaces it received. A per-collector case would let an SDK that writes two of three pass two cases and fail one, which reads as a partial gap; the set assertion says plainly that the surface is three namespaces, not three independent behaviours.",
+      "collectors": [
+        "metrics",
+        "usage",
+        "error_history"
+      ],
+      "expected": {
+        "namespaces_written": [
+          "error_history",
+          "metrics",
+          "usage"
+        ]
+      }
+    },
+    {
+      "id": "an_omitted_backend_is_the_in_memory_one",
+      "description": "D-113's other half: 'when omitted, `InMemoryStorageBackend` MUST be used'. Only apcore-typescript honoured it, so the SAME omission produced a working store there and a silent no-op elsewhere — and a caller reading records back got an empty list rather than an error, which is the shape that hides longest.\n\nAsserted as READABILITY rather than as a type name: what the caller can observe is that a record written with no backend supplied is still there to read. A type-name assertion would also pin each SDK's spelling of the class, which is not what the decision says.",
+      "collectors": [
+        "error_history"
+      ],
+      "omit_backend": true,
+      "expected": {
+        "records_readable": true
+      }
     }
   ],
   "driver_contract": {

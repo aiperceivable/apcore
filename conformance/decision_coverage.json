@@ -597,11 +597,23 @@
     },
     "D-113": {
       "title": "storage-backend namespaces, and the omitted-argument default",
-      "kind": "deferred",
-      "note": "spec text only (v1.51.0); implementation deliberately deferred. Becomes `behavioural` the moment it is implemented.",
-      "cases": [],
-      "case_sketch": "Host: storage_backend.json (it exists and is driven by all three). Write one record through each collector and read it back under the DECLARED namespace: `metrics`, `usage`, `error_history`. An SDK writing `errors` finds nothing under `error_history` and is red. Second case: omit the backend argument entirely -> the backend is `InMemoryStorageBackend` and the write is still readable, which only apcore-typescript honoured.",
-      "sketch_host": "storage_backend.json"
+      "kind": "behavioural",
+      "cases": [
+        "storage_backend.json#each_collector_writes_its_declared_namespace",
+        "storage_backend.json#an_omitted_backend_is_the_in_memory_one"
+      ],
+      "sdk_tests": {
+        "python": [
+          "tests/observability/test_storage_backend.py::TestErrorHistoryAcceptsStorageBackend"
+        ],
+        "typescript": [
+          "tests/conformance-storage-backend.test.ts"
+        ],
+        "rust": [
+          "tests/test_storage_backend_conformance.rs"
+        ]
+      },
+      "discriminates": "The first case drives ALL THREE collectors through ONE backend and asserts the SET of namespaces it received. A per-collector case would let an SDK that writes two of three pass two cases and fail one, which reads as a partial gap; the set assertion says the surface is three namespaces, not three independent behaviours. Measured before implementing: of the nine collector/SDK combinations only four wrote anything — apcore-python wrote `errors` from ErrorHistory and nothing from the other two, apcore-typescript wrote nothing at all, apcore-rust wrote all three correctly.\n\nThe second case asserts READABILITY rather than a type name: what a caller observes is that a record written with no backend supplied is still there to read. Pinning the class name would pin each SDK's spelling, which the decision does not say. Under the old reading `None` disabled persistence, so the caller got an empty list rather than an error — the shape that hides longest.\n\napcore-rust exposed NO accessor for the resolved backend, so that half was not observable from outside at all: untestable rather than merely unimplemented, the same shape D-91 settled for `ExtensionManager::unregister`. `ErrorHistory::storage_backend()` is the door that makes it checkable, mirroring apcore-typescript's `storage` getter.\n\nThe migration window the decision requires is pinned by per-SDK tests rather than a case: it is about data written BEFORE the rename, which a fixture has no way to plant. apcore-python asserts that writes go only to `error_history`, that a record pre-existing under `errors` stays readable, and that a fingerprint present in both is returned once.\n\nVerified red in all three: writing the legacy namespace, writing nothing from metrics, and treating an omitted backend as no storage each redden exactly the case that stands on them."
     },
     "D-114": {
       "title": "`remove()` clears the duplicate-identity entry",

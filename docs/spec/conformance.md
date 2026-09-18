@@ -678,7 +678,7 @@ The repository ships **72 cross-language fixture files** under `conformance/fixt
 | [`schema_validation`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/schema_validation.json) | 22 | Schema validation edge cases (spec §4.15) |
 | [`sensitive_keys_default`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/sensitive_keys_default.json) | 4 | Canonical default `obs.redaction.sensitive_keys` list (D-54) |
 | [`specificity`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/specificity.json) | 10 | ACL pattern specificity scoring (Algorithm A10) |
-| [`storage_backend`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/storage_backend.json) | 5 | StorageBackend pluggable persistence (shared by ErrorHistory) |
+| [`storage_backend`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/storage_backend.json) | 7 | StorageBackend pluggable persistence (shared by ErrorHistory) |
 | [`stream_aggregation`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/stream_aggregation.json) | 10 | Stream chunk aggregation (recursive deep merge) |
 | [`system_modules_hardening`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/system_modules_hardening.json) | 16 | System modules hardening: persistence, audit, Prometheus |
 | [`toggle_state_isolation`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/toggle_state_isolation.json) | 4 | Per-instance `ToggleState` isolation (#71) |
@@ -687,7 +687,7 @@ The repository ships **72 cross-language fixture files** under `conformance/fixt
 | [`usage_contract`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/usage_contract.json) | 11 | `system.usage.*` value semantics no schema can assert (spec §6.7.1) |
 | [`usage_exporter`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/usage_exporter.json) | 3 | `UsageExporter` push interface (#45 §3, D-55) |
 | [`version_negotiation`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/version_negotiation.json) | 10 | Version negotiation (Algorithm A14) |
-| **Total** | **968** | **79 fixtures** |
+| **Total** | **970** | **79 fixtures** |
 
 ### 8.2 Loading Fixtures from a Test Runner
 
