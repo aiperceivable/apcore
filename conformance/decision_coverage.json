@@ -632,11 +632,12 @@
     },
     "D-117": {
       "title": "registered-namespace defaults do not answer for a legacy document",
-      "kind": "deferred",
-      "note": "spec text only (v1.51.0); implementation deliberately deferred. Becomes `behavioural` the moment it is implemented.",
-      "cases": [],
-      "case_sketch": "Host: overrides_store.json. Register a namespace default, then read the key from a LEGACY (namespace-less) document -> the default MUST NOT answer. An SDK consulting registered defaults in both modes returns it. Control: the same read in namespace mode DOES get the default, or the case passes for an SDK that simply ignores registered defaults.",
-      "sketch_host": "overrides_store.json"
+      "kind": "behavioural",
+      "cases": [
+        "allow_unknown_namespaces.json#a_registered_namespace_default_does_not_answer_in_legacy_mode",
+        "allow_unknown_namespaces.json#a_registered_namespace_default_answers_in_namespace_mode"
+      ],
+      "discriminates": "The key is ABSENT FROM THE DOCUMENT by construction — if it were present, the document would be answering and the registration would prove nothing. The declared default is also deliberately NOT a canonical framework key: a case using, say, `executor.default_timeout` is answered by the canonical default table in BOTH modes and cannot tell the two sources apart.\n\nThe second case is the control, and it is load-bearing: the SAME registration and the SAME key read from a namespace-mode document MUST answer. Without it, 'the default does not answer in legacy mode' is equally satisfied by an implementation that never consults registered defaults at all — which would make the registration itself inert, the §9.1.3 shape the spec forbids elsewhere. The TypeScript mutation confirms the pair is tight: seeding defaults in both modes reddens the legacy case AND `legacy_mode_is_out_of_scope`, which was already there.\n\nEach case registers under a name suffixed with its own case id, because namespace registration is process-wide and permanent (§9.6.3 point 5) — two cases sharing a name would let whichever ran first decide the other, the same process-global trap that let one test's ACL condition handler decide another's control.\n\nHosted in `allow_unknown_namespaces.json`, NOT the `overrides_store.json` the deferred sketch named: that fixture is about OverridesStore persistence and has nothing to do with namespace defaults. The sketch was wrong and `check_decision_coverage.py` could not tell, because it verifies the host fixture EXISTS and not that it is about the same subject. This fixture is §9.6.3's own, which is the section the decision's authority cites, and it already carried `legacy_mode_is_out_of_scope` — the same scoping argument for a different field."
     },
     "D-118": {
       "title": "an empty `roles` list is omitted from the audit snapshot",

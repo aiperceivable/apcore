@@ -609,7 +609,7 @@ The repository ships **72 cross-language fixture files** under `conformance/fixt
 | Fixture | Cases | Tested feature |
 |---------|------:|----------------|
 | [`acl_agent_scoping`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/acl_agent_scoping.json) | 19 | Agent-scoped ACL governance: per-agent caller patterns and scoping rules (spec §6) |
-| [`allow_unknown_namespaces`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/allow_unknown_namespaces.json) | 6 | `_config.allow_unknown`: drop or store an unregistered namespace (§9.6.3, #118 D-69) |
+| [`allow_unknown_namespaces`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/allow_unknown_namespaces.json) | 8 | `_config.allow_unknown`: drop or store an unregistered namespace (§9.6.3, #118 D-69) |
 | [`acl_audit_delivery`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/acl_audit_delivery.json) | 17 | ACL audit delivery: one effective sink, containment, the wire record (§6.3.2, #118 D-66) |
 | [`acl_evaluation`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/acl_evaluation.json) | 19 | ACL rule evaluation, first-match-wins (spec §6) |
 | [`acl_handler_error`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/acl_handler_error.json) | 15 | An unevaluable ACL condition resolves toward refusing access; `handler_error` names the condition path (spec §6.1.1 / §6.1.4 / §6.1.4.1) |
@@ -687,7 +687,7 @@ The repository ships **72 cross-language fixture files** under `conformance/fixt
 | [`usage_contract`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/usage_contract.json) | 11 | `system.usage.*` value semantics no schema can assert (spec §6.7.1) |
 | [`usage_exporter`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/usage_exporter.json) | 3 | `UsageExporter` push interface (#45 §3, D-55) |
 | [`version_negotiation`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/version_negotiation.json) | 10 | Version negotiation (Algorithm A14) |
-| **Total** | **964** | **79 fixtures** |
+| **Total** | **966** | **79 fixtures** |
 
 ### 8.2 Loading Fixtures from a Test Runner
 

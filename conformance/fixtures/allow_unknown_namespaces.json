@@ -4,38 +4,135 @@
     {
       "id": "strict_true_rejects_the_namespace",
       "description": "Clause (a). `allow_unknown` is ignored when strict is true — §9.6.3's own comment says it is \"only relevant when strict: false\".",
-      "input": { "mode": "namespace", "config": { "strict": true, "allow_unknown": true }, "namespace": "billing" },
-      "expected": { "loads": false, "error_code": "CONFIG_INVALID", "error_message_contains": "billing" }
+      "input": {
+        "mode": "namespace",
+        "config": {
+          "strict": true,
+          "allow_unknown": true
+        },
+        "namespace": "billing"
+      },
+      "expected": {
+        "loads": false,
+        "error_code": "CONFIG_INVALID",
+        "error_message_contains": "billing"
+      }
     },
     {
       "id": "allow_unknown_true_stores_and_warns",
       "description": "The half every implementation got right except the warning. The value is readable and the operator is told the namespace is unvalidated.",
-      "input": { "mode": "namespace", "config": { "strict": false, "allow_unknown": true }, "namespace": "billing" },
-      "expected": { "loads": true, "value_readable": true, "warns_naming": "billing" }
+      "input": {
+        "mode": "namespace",
+        "config": {
+          "strict": false,
+          "allow_unknown": true
+        },
+        "namespace": "billing"
+      },
+      "expected": {
+        "loads": true,
+        "value_readable": true,
+        "warns_naming": "billing"
+      }
     },
     {
       "id": "allow_unknown_false_drops_the_namespace",
       "description": "The defect. This case fails on every implementation before v1.46.0, where the namespace was stored and `get()` answered for it.",
-      "input": { "mode": "namespace", "config": { "strict": false, "allow_unknown": false }, "namespace": "billing" },
-      "expected": { "loads": true, "value_readable": false }
+      "input": {
+        "mode": "namespace",
+        "config": {
+          "strict": false,
+          "allow_unknown": false
+        },
+        "namespace": "billing"
+      },
+      "expected": {
+        "loads": true,
+        "value_readable": false
+      }
     },
     {
       "id": "an_absent_config_block_takes_the_defaults",
       "description": "§9.6.3's matrix describes the DEFAULTS (`strict: false, allow_unknown: true`), so a document with no `_config` at all is the row that warns. Not the blanket warning §9.2.2 rejects: it fires on a condition specific to the document — there IS an unregistered namespace — never on every configuration ever loaded.",
-      "input": { "mode": "namespace", "config": null, "namespace": "billing" },
-      "expected": { "loads": true, "value_readable": true, "warns_naming": "billing" }
+      "input": {
+        "mode": "namespace",
+        "config": null,
+        "namespace": "billing"
+      },
+      "expected": {
+        "loads": true,
+        "value_readable": true,
+        "warns_naming": "billing"
+      }
     },
     {
       "id": "a_document_with_no_unknown_namespace_is_silent",
       "description": "The quiet half, and the one that fails against an implementation that warns unconditionally.",
-      "input": { "mode": "namespace", "config": { "strict": false, "allow_unknown": true }, "namespace": null },
-      "expected": { "loads": true, "warns_absent": "no package has registered" }
+      "input": {
+        "mode": "namespace",
+        "config": {
+          "strict": false,
+          "allow_unknown": true
+        },
+        "namespace": null
+      },
+      "expected": {
+        "loads": true,
+        "warns_absent": "no package has registered"
+      }
     },
     {
       "id": "legacy_mode_is_out_of_scope",
       "description": "A legacy document has no namespaces, so `allow_unknown: false` drops nothing and the key remains readable. Pinned so the scoping is a decision rather than an omission — an implementation that applied the field here would be treating framework keys as namespaces, which §9.14's walk already governs.",
-      "input": { "mode": "legacy", "config": { "strict": false, "allow_unknown": false }, "namespace": "billing" },
-      "expected": { "loads": true, "value_readable": true }
+      "input": {
+        "mode": "legacy",
+        "config": {
+          "strict": false,
+          "allow_unknown": false
+        },
+        "namespace": "billing"
+      },
+      "expected": {
+        "loads": true,
+        "value_readable": true
+      }
+    },
+    {
+      "id": "a_registered_namespace_default_does_not_answer_in_legacy_mode",
+      "description": "D-117. A legacy (namespace-less) document has no namespaces, so a declaration ABOUT a namespace has nothing to say about one — §9.6.3's reading, and the same scoping `legacy_mode_is_out_of_scope` already pins for `allow_unknown`.\n\napcore-rust consulted registered defaults in BOTH modes, so it answered a value for a key no reader of that file could see in it, and one the peers reported as absent. apcore-python and apcore-typescript seed these defaults into the data tree at load, which only happens in namespace mode, so they were already correct.\n\nThe declared default is deliberately NOT a canonical framework default: a case using, say, `executor.default_timeout` would be answered by the canonical default table in both modes and could not tell the two sources apart.",
+      "input": {
+        "mode": "legacy",
+        "registered_namespace": {
+          "name": "billing",
+          "defaults": {
+            "enabled": true
+          }
+        },
+        "key": "billing.enabled"
+      },
+      "expected": {
+        "loads": true,
+        "value_readable": false
+      }
+    },
+    {
+      "id": "a_registered_namespace_default_answers_in_namespace_mode",
+      "description": "D-117 control. The SAME registration and the SAME key, read from a namespace-mode document, MUST answer.\n\nWithout it, 'the default does not answer in legacy mode' is equally satisfied by an implementation that never consults registered defaults at all — which would make the registration itself inert, the §9.1.3 shape the spec forbids elsewhere.",
+      "input": {
+        "mode": "namespace",
+        "registered_namespace": {
+          "name": "billing",
+          "defaults": {
+            "enabled": true
+          }
+        },
+        "key": "billing.enabled"
+      },
+      "expected": {
+        "loads": true,
+        "value_readable": true,
+        "value": true
+      }
     }
   ],
   "driver_contract": {
