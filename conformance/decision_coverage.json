@@ -623,11 +623,12 @@
     },
     "D-116": {
       "title": "circuit-breaker events carry the declared subscriber type",
-      "kind": "deferred",
-      "note": "spec text only (v1.51.0); implementation deliberately deferred. Becomes `behavioural` the moment it is implemented.",
-      "cases": [],
-      "case_sketch": "Host: event_management_hardening.json (it already drives the circuit breaker). A subscriber with id `health-alert` DECLARED as kind `webhook`, tripped open -> the event's `subscriber_type` is `webhook`. The id is chosen to contain a hyphen: an SDK splitting on the first hyphen answers `health`, and one reporting the wrapped class name answers something else again. Control: an UNDECLARED subscriber takes the DLQ path's existing default — assert that value rather than inventing a second one.",
-      "sketch_host": "event_management_hardening.json"
+      "kind": "behavioural",
+      "cases": [
+        "event_management_hardening.json#circuit_event_reports_the_declared_subscriber_type",
+        "event_management_hardening.json#circuit_event_uses_the_dlq_default_for_an_undeclared_subscriber"
+      ],
+      "discriminates": "The subscriber id contains a HYPHEN and the declared kind is NOT a prefix of it. That is the entire discriminator, and it rules out all three wrong implementations at once: apcore-rust split `subscriber_id` on the first hyphen so `health-alert` became `health`; apcore-python and apcore-typescript reported the wrapped subscriber's class name. An id without a hyphen, or one whose prefix happens to equal the declared kind, is answered identically by every wrong implementation and by the right one — which is why the id is chosen rather than incidental.\n\nThe second case is the CONTROL, and it asserts a RELATION rather than a literal: an undeclared subscriber's type must EQUAL what the same SDK reports on its own `apcore.event.delivery_failed` payload. The default is a language-shaped derivation (a class name, normalised differently per SDK), so pinning a literal would pin one SDK's spelling on the other two. What is normative is that the two surfaces AGREE — which is the whole finding, since all three disagreed with their own DLQ value, and it is also what stops an implementation inventing a second default here.\n\nBoth events are covered: `circuit_opened` and `circuit_closed` read the same resolver, because a fix applied to one of them is the same divergence at one event's remove.\n\nFound while landing it: apcore-typescript's conformance driver looks cases up by id with NO coverage guard, so both new cases ran nowhere and its suite stayed green — the 'a case declared and run by nobody' shape. apcore-python and apcore-rust both guard this fixture and both failed immediately. A guard is added for apcore-typescript, listing the case ids it drives and checking that list against the fixture in both directions."
     },
     "D-117": {
       "title": "registered-namespace defaults do not answer for a legacy document",

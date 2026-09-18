@@ -299,6 +299,57 @@
         "delivery_attempted": true,
         "discarded": false
       }
+    },
+    {
+      "id": "circuit_event_reports_the_declared_subscriber_type",
+      "description": "D-116: `apcore.subscriber.circuit_opened` reports the DECLARED kind — the same value the dead-letter path already reports — not a class name and not a guess.\n\nThe subscriber id contains a HYPHEN by construction, and the declared kind is not a prefix of it. That is the whole discriminator: apcore-rust split `subscriber_id` on the first hyphen, so `health-alert` became the type `health`; apcore-python and apcore-typescript reported the wrapped subscriber's class name. An id without a hyphen, or one whose prefix happens to equal the declared kind, is answered the same way by all three wrong implementations and by the right one.",
+      "input": {
+        "subscriber": {
+          "subscriber_id": "health-alert",
+          "subscriber_type": "webhook"
+        },
+        "circuit_breaker_config": {
+          "timeout_ms": 3000,
+          "open_threshold": 1,
+          "recovery_window_ms": 30000
+        },
+        "failure_sequence": [
+          {
+            "attempt": 1,
+            "outcome": "failure"
+          }
+        ]
+      },
+      "expected": {
+        "circuit_state": "OPEN",
+        "event_emitted": "apcore.subscriber.circuit_opened",
+        "event_subscriber_type": "webhook"
+      }
+    },
+    {
+      "id": "circuit_event_uses_the_dlq_default_for_an_undeclared_subscriber",
+      "description": "D-116 control: a subscriber that declares no type takes whatever default the DLQ path already uses, and implementations MUST NOT invent a second default for this surface.\n\nAsserted as EQUAL TO the value the same SDK reports on its own `apcore.event.delivery_failed` payload rather than as a literal, because that default is a language-shaped derivation (a class name, normalised) and pinning a literal would pin one SDK's spelling on the other two. What is normative is that the two surfaces AGREE — which is the whole finding: all three disagreed with their own DLQ value.",
+      "input": {
+        "subscriber": {
+          "subscriber_id": "plain-one"
+        },
+        "circuit_breaker_config": {
+          "timeout_ms": 3000,
+          "open_threshold": 1,
+          "recovery_window_ms": 30000
+        },
+        "failure_sequence": [
+          {
+            "attempt": 1,
+            "outcome": "failure"
+          }
+        ]
+      },
+      "expected": {
+        "circuit_state": "OPEN",
+        "event_emitted": "apcore.subscriber.circuit_opened",
+        "event_subscriber_type_equals_dlq_subscriber_type": true
+      }
     }
   ]
 }

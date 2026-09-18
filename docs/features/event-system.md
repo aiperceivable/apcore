@@ -1176,7 +1176,7 @@ subscribers:
       max_attempts: 1      # no retry; stdout is local
 ```
 
-#> **D-116 (v1.51.0) — the circuit-breaker events carry the DECLARED subscriber
+> **D-116 (v1.51.0) — the circuit-breaker events carry the DECLARED subscriber
 > type.** `apcore.subscriber.circuit_opened` / `circuit_closed` **MUST** report
 > the same `subscriber_type` the dead-letter path already reports — the declared
 > kind (`webhook`, `a2a`, `file`, …), not a class name and not a guess. A
