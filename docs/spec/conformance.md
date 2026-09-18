@@ -680,14 +680,14 @@ The repository ships **72 cross-language fixture files** under `conformance/fixt
 | [`specificity`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/specificity.json) | 10 | ACL pattern specificity scoring (Algorithm A10) |
 | [`storage_backend`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/storage_backend.json) | 5 | StorageBackend pluggable persistence (shared by ErrorHistory) |
 | [`stream_aggregation`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/stream_aggregation.json) | 10 | Stream chunk aggregation (recursive deep merge) |
-| [`system_modules_hardening`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/system_modules_hardening.json) | 14 | System modules hardening: persistence, audit, Prometheus |
+| [`system_modules_hardening`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/system_modules_hardening.json) | 16 | System modules hardening: persistence, audit, Prometheus |
 | [`toggle_state_isolation`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/toggle_state_isolation.json) | 4 | Per-instance `ToggleState` isolation (#71) |
 | [`tracing_from_config`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/tracing_from_config.json) | 12 | `observability.tracing.*` reaches the running middleware (§10.1.1, #118 D-68 C') |
 | [`trace_context`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/trace_context.json) | 8 | W3C TraceContext alignment (Issue #35) |
 | [`usage_contract`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/usage_contract.json) | 11 | `system.usage.*` value semantics no schema can assert (spec §6.7.1) |
 | [`usage_exporter`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/usage_exporter.json) | 3 | `UsageExporter` push interface (#45 §3, D-55) |
 | [`version_negotiation`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/version_negotiation.json) | 10 | Version negotiation (Algorithm A14) |
-| **Total** | **966** | **79 fixtures** |
+| **Total** | **968** | **79 fixtures** |
 
 ### 8.2 Loading Fixtures from a Test Runner
 

@@ -543,11 +543,12 @@
     },
     "D-109": {
       "title": "only the healthy/degraded boundary is configurable",
-      "kind": "deferred",
-      "note": "spec text only (v1.51.0); implementation deliberately deferred. Becomes `behavioural` the moment it is implemented.",
-      "cases": [],
-      "case_sketch": "Host: system_modules_hardening.json (health classification). The discriminating input is `error_rate_threshold: 0.001` with an observed error rate of 0.05 -> `degraded`. An SDK computing the second boundary as threshold*10 puts it at 0.01 and answers `error`. Add a case at 0.5 -> `error` as the control, so the ERROR boundary is pinned at the table's fixed 0.10 rather than merely 'not scaled'.",
-      "sketch_host": "system_modules_hardening.json"
+      "kind": "behavioural",
+      "cases": [
+        "system_modules_hardening.json#error_rate_threshold_moves_only_the_healthy_boundary",
+        "system_modules_hardening.json#the_error_boundary_stays_at_the_table_value"
+      ],
+      "discriminates": "The input is a threshold of 0.001 with an observed error rate of 0.05 — a rate that falls BETWEEN the two boundaries under the table and ABOVE both under the scaled reading. An SDK computing the second boundary as `threshold * 10` puts it at 0.01 and answers `error`; the table answers `degraded`. The default threshold cannot discriminate at all: at 0.01 the scaled boundary IS 0.10, so the two readings agree everywhere and the divergence is invisible.\n\nThe second case is the control and it is not redundant: the SAME threshold with a rate of 0.5 must be `error`. Without it, 'not scaled' is equally satisfied by an implementation that removed the error boundary altogether and classified everything above healthy as `degraded`. The pair pins the boundary AT the table's 0.10 rather than merely establishing it does not move with the input — and the mutations confirm the split: scaling reddens only the first, removing the boundary reddens only the second.\n\nThe consequence is recorded in the contract because it surprises: at 0.001, `degraded` spans 0.1%-10%. A caller wanting a stricter ERROR boundary is asking for a second knob that deliberately does not exist, and two SDKs had silently provided it."
     },
     "D-110": {
       "title": "`project_name` defaults to `\"apcore\"`",
