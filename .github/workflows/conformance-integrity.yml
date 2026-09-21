@@ -342,4 +342,12 @@ jobs:
         # `cancellation.raise_if_cancelled.*` stayed skipped in apcore-typescript
         # after this audit's own implementation added the method. A skip is
         # green, so neither turned anything red.
-        run: python3 conformance/check_skip_asymmetry.py --sdk-root ..
+        # The detector self-test runs first and on every invocation. A guard
+        # whose detector misreads one suite's convention reports ZERO gaps for
+        # that SDK and looks clean, which is strictly worse than no guard: the
+        # window was a fixed 3-line lookbehind and read EVERY `#[ignore]`d
+        # clause in apcore-rust as live, plus apcore-python's multi-line
+        # `@pytest.mark.skip`. Both directions are pinned in SELF_TEST.
+        run: |
+          python3 conformance/check_skip_asymmetry.py --self-test
+          python3 conformance/check_skip_asymmetry.py --sdk-root ..

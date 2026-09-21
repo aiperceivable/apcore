@@ -26,6 +26,71 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > cannot discriminate between two implementations is not testing the thing that differs — which is
 > why this release changes fixtures as well as text.
 
+### Fixed — conformance guards
+
+- **`check_skip_asymmetry.py` could not see apcore-rust's skips at all, and missed apcore-python's.**
+  The guard's whole thesis is that a clause LIVE in one SDK and DISABLED in another is a precise,
+  language-independent signal. Its detector decided which was which with a fixed **three-line
+  lookbehind**, and that misread two of the three suites' own conventions:
+
+  - apcore-rust writes the clause id on a `// clause:` line **above** the attribute block, so
+    `#[ignore]` sits *between* the id and the `fn`. The first sighting resolved to `live`, and the
+    deliberate "an id seen both ways counts as live" rule then refused to downgrade it. **Every
+    `#[ignore]`d clause in apcore-rust was reported live** — a false negative in exactly the
+    direction the guard exists to catch, so an asymmetry where apcore-rust was the SDK skipping
+    could not be seen.
+  - apcore-python writes `@pytest.mark.skip(reason=...)` across six lines, then `def`, then the
+    docstring that carries the id. Three lines of lookbehind stop *inside* the decorator call.
+
+  The window is now **item-scoped**: back to the enclosing declaration and over its
+  decorator/attribute block, forward to the next declaration, both bounded by a blank line. The
+  marker pattern is anchored to line start, so a comment *about* a skip is no longer read as one.
+  Measured: 24 reported asymmetries → **43** once the detector could read all three suites.
+
+  **`--self-test` is the new part that matters.** A guard whose detector misreads one suite reports
+  zero gaps for that SDK and looks clean, which is strictly worse than no guard — so eight samples
+  pin one shape per convention per state, and they run before every count, in CI and locally.
+  Verified by re-running them against the old detector: two fail, one per blind spot.
+
+  Five of the newly-visible asymmetries were **fixed rather than accepted** — all five were stale
+  reasons falsified by this audit's own work, in apcore-rust:
+
+  - `extension_system.get_all.returns.registration_order` and `.property.pure.true` were
+    `#[ignore]`d for "missing symbol `ExtensionManager::get_all`". It has existed since D-91 and its
+    signature changed under D-108 three days earlier. Worse, the surrounding block header said the
+    same thing, so the *live* `get` / `get_all` clauses in it were asserted against `count()` — the
+    clause id said `get`, the assertion said `count`, and deleting `get` would have left them green.
+  - `extension_system.apply.side_effect.4.set_approval_handler` was `#[ignore]`d with a two-part
+    reason, **both parts false**: `Executor.approval_handler` is a public field and
+    `AutoApproveHandler` is a public unit struct. Its live sibling `apply.side_effect.3.set_acl`
+    carried the same false premise about `Executor.acl` and asserted D-78's store-intactness
+    instead — it passed with the ACL wiring deleted.
+  - `system_modules.check_module_disabled.error.module_disabled` and
+    `is_module_disabled.return.true_when_disabled` were `#[ignore]`d for "no public mutator for the
+    process-global ToggleState". `global_toggle_state_arc()` is `pub` and hands back that exact
+    `Arc`; `ToggleState::disable` is `pub`.
+
+  The remaining **27** are each verified against the SDK source, with the date and the finding in
+  `skip_asymmetry_baseline.json` — no entry still reads "recorded, not yet examined". One is
+  flagged as worth a decision rather than an acceptance:
+  `event_system.deliver.error.WEBHOOK_DELIVERY_FAILED` is defined only by apcore-python, which is
+  the D-92 shape.
+
+- **A symmetric skip is invisible to that guard by construction, and one was hiding a rule D-74 had
+  deleted.** `config_bus.get.input.key.empty` was disabled in **all three** SDKs with the reason
+  "spec says an empty key is rejected, but this SDK returns the default". D-74 removed that row and
+  recorded that it "described behaviour no SDK has ever had" — so three suites carried a skip whose
+  premise the spec itself had retracted, and the peer-suite oracle cannot see it because there is no
+  live peer. All three now assert the D-74 behaviour.
+
+### Changed — security
+
+- **The Discovery TOCTOU assessment is accepted as written** (option 1: document the boundary). The
+  trust boundary it turns on — the extensions root is at least as trusted as the host process — now
+  appears in `SECURITY.md` § *Trust boundary: the extensions root*, which is where a reporter looks
+  before filing, rather than only in an assessment under `docs/spec/`. The assessment's own
+  "What would change this" list is the trigger for reopening it.
+
 ### Changed — specification (v1.59.0)
 
 - **D-89's two open dimensions adjudicated: the READ is the emission point, and the dedupe key

@@ -4,9 +4,16 @@ description: "Threat-model assessment of the time-of-check/time-of-use window in
 
 # Discovery TOCTOU — deferred security assessment
 
-**Status: open. No decision, no SDK change.** This exists because D-94 and D-127
-both say "TOCTOU is out of scope, filed separately", and a pointer that resolves
-to nothing is worse than no pointer.
+**Status: ACCEPTED 2026-09-21 — option 1, no SDK change.** The maintainer
+accepted the recommendation below. The boundary is now stated where a security
+reporter actually looks, in [`SECURITY.md`](https://github.com/aiperceivable/apcore/blob/main/SECURITY.md) § *Trust
+boundary: the extensions root*, rather than only here — an assessment nobody
+reads before filing is the same shape as a comment claiming a case is handled.
+
+This note exists because D-94 and D-127 both say "TOCTOU is out of scope, filed
+separately", and a pointer that resolves to nothing is worse than no pointer.
+It stays open as a *record*: the "What would change this" section below is the
+trigger list, and any one of those three items reopens the decision.
 
 ## What the current design guarantees
 
@@ -69,7 +76,7 @@ rather than fixed.
    and load from there. Sidesteps the window entirely and costs a copy per
    discovery; also breaks hot reload, which watches the original tree.
 
-## Recommendation
+## Recommendation — accepted
 
 **Option 1 until a deployment in the third row is actually supported.** Options 2
 and 3 add per-platform mechanism to close a window that only opens under a

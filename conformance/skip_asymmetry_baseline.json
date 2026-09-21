@@ -1,149 +1,168 @@
 {
-  "ratchet": 24,
+  "ratchet": 27,
+  "_ratchet_note": "The ratchet was 24 and is now 27, and the increase is the guard learning to see rather than a regression. Its marker window was a fixed 3-line lookbehind, which misread two of the three suites' own conventions: apcore-rust writes the clause id on a `// clause:` line ABOVE the attribute block, so EVERY `#[ignore]`d clause in that SDK was reported LIVE — a false negative in exactly the direction the guard exists to catch — and apcore-python writes a six-line `@pytest.mark.skip(reason=...)` above the `def` whose docstring carries the id, further than three lines reach. The window is now item-scoped. Five asymmetries the corrected guard exposed were FIXED rather than accepted (see the CHANGELOG entry); the 27 below were each checked against the SDK source on the date in their note.",
   "accepted": {
-    "apcore_client.start.error.CONFIG_INVALID": {
-      "python": "skipped",
+    "acl_system.add_rule.error.value_error_kwargs_path": {
+      "python": "live",
       "typescript": "skipped",
-      "rust": "live",
-      "note": "recorded, not yet examined"
-    },
-    "apcore_client.start.property.idempotent_false": {
-      "python": "skipped",
-      "typescript": "skipped",
-      "rust": "live",
-      "note": "recorded, not yet examined"
-    },
-    "apcore_client.stop.property.idempotent_true": {
-      "python": "skipped",
-      "typescript": "skipped",
-      "rust": "live",
-      "note": "recorded, not yet examined"
+      "rust": "skipped",
+      "note": "verified 2026-09-21: the kwargs form of add_rule is Python-only by spec (D10-006); apcore-typescript and apcore-rust take a prebuilt rule object. Real API shape, not a gap."
     },
     "call_chain_guard.guard_call_chain.input.module_id.required": {
       "python": "live",
       "typescript": "skipped",
       "rust": "live",
-      "note": "recorded, not yet examined"
+      "note": "verified 2026-09-21: a required parameter is compile-enforced in TypeScript, so there is no runtime arity rejection to assert. apcore-python and apcore-rust reject at runtime because a caller can reach them untyped."
     },
-    "config_bus.get.input.key.empty": {
+    "decorator_bindings.load_bindings.error.BINDING_CALLABLE_NOT_FOUND": {
       "python": "live",
-      "typescript": "skipped",
-      "rust": "live",
-      "note": "x"
+      "typescript": "live",
+      "rust": "skipped",
+      "note": "verified 2026-09-21: apcore-rust resolves handlers from a statically-typed handler map at compile time and cannot import a named callable from a string, so the error has no reachable trigger."
     },
-    "config_bus.mount.property.thread_safe": {
+    "decorator_bindings.load_bindings.error.BINDING_INVALID_TARGET": {
       "python": "live",
-      "typescript": "skipped",
-      "rust": "live",
-      "note": "recorded, not yet examined"
+      "typescript": "live",
+      "rust": "skipped",
+      "note": "verified 2026-09-21: apcore-rust treats `target` as an opaque handler-map key and performs no ':' shape validation; there is no parse step to fail."
     },
-    "config_bus.register_namespace.property.thread_safe": {
+    "decorator_bindings.load_bindings.error.BINDING_NOT_CALLABLE": {
       "python": "live",
-      "typescript": "skipped",
-      "rust": "live",
-      "note": "recorded, not yet examined"
-    },
-    "config_bus.reload.property.thread_safe": {
-      "python": "live",
-      "typescript": "skipped",
-      "rust": "live",
-      "note": "recorded, not yet examined"
+      "typescript": "live",
+      "rust": "skipped",
+      "note": "verified 2026-09-21: apcore-rust handlers are statically-typed closures — a non-callable cannot be registered, so the runtime check the other two need does not exist."
     },
     "decorator_bindings.module.error.FUNC_MISSING_RETURN_TYPE": {
       "python": "live",
       "typescript": "skipped",
       "rust": "skipped",
-      "note": "recorded, not yet examined"
+      "note": "verified 2026-09-21: signature inference is Python-only. The FUNC_MISSING_RETURN_TYPE code exists in all three registries but only apcore-python has an inference step that can raise it."
     },
     "decorator_bindings.module.error.FUNC_MISSING_TYPE_HINT": {
       "python": "live",
       "typescript": "skipped",
       "rust": "skipped",
-      "note": "recorded, not yet examined"
+      "note": "verified 2026-09-21: same as FUNC_MISSING_RETURN_TYPE — the code is declared everywhere, the inference step that raises it is Python-only."
     },
-    "decorator_bindings.module.property.async.false": {
+    "decorator_bindings.module.input.func_or_none.untyped_param_no_schema": {
       "python": "live",
       "typescript": "live",
       "rust": "skipped",
-      "note": "recorded, not yet examined"
+      "note": "verified 2026-09-21: apcore-rust has no decorator and no runtime type-hint inference; a module declares its schemas explicitly."
     },
     "event_system.deliver.error.ImportError_a2a": {
       "python": "live",
       "typescript": "skipped",
-      "rust": "live",
-      "note": "recorded, not yet examined"
+      "rust": "skipped",
+      "note": "verified 2026-09-21: Python raises ImportError when aiohttp is absent. apcore-typescript uses global fetch and apcore-rust gates the HTTP path behind the `events` cargo feature at compile time, so neither has an import to fail."
     },
     "event_system.deliver.error.WEBHOOK_DELIVERY_FAILED": {
       "python": "live",
       "typescript": "skipped",
-      "rust": "live",
-      "note": "recorded, not yet examined"
+      "rust": "skipped",
+      "note": "verified 2026-09-21: only apcore-python defines DeliveryError/WEBHOOK_DELIVERY_FAILED; apcore-typescript has no such type and apcore-rust returns ModuleError(General*). This is the D-92 shape (a declared error type not every SDK defines) and is the one entry here worth raising as a decision rather than accepting as a language difference."
     },
     "event_system.emit.input.event_type.not_empty": {
       "python": "live",
       "typescript": "skipped",
-      "rust": "live",
-      "note": "recorded, not yet examined"
+      "rust": "skipped",
+      "note": "verified 2026-09-21: emit() is fire-and-forget in apcore-typescript and apcore-rust and validates nothing; the rule is unenforceable as a rejection contract there. Caller precondition."
     },
     "event_system.on_failure.input.subscriber_id.required": {
       "python": "live",
       "typescript": "skipped",
-      "rust": "live",
-      "note": "recorded, not yet examined"
+      "rust": "skipped",
+      "note": "verified 2026-09-21: apcore-typescript's CircuitBreakerWrapper and apcore-rust's CircuitBreaker are per-subscriber objects, so there is no subscriber_id parameter to require."
     },
     "event_system.subscribe.input.subscriber.async_on_event": {
       "python": "live",
       "typescript": "skipped",
-      "rust": "live",
-      "note": "recorded, not yet examined"
+      "rust": "skipped",
+      "note": "verified 2026-09-21: a Python-only runtime TypeError guard; apcore-typescript enforces EventSubscriber statically and apcore-rust via Box<dyn EventSubscriber>."
     },
-    "middleware_system.detect_async.input.handler.required": {
-      "python": "skipped",
-      "typescript": "skipped",
-      "rust": "live",
-      "note": "recorded, not yet examined"
-    },
-    "middleware_system.detect_async.property.idempotent": {
-      "python": "skipped",
-      "typescript": "skipped",
-      "rust": "live",
-      "note": "recorded, not yet examined"
-    },
-    "middleware_system.detect_async.property.pure": {
-      "python": "skipped",
-      "typescript": "skipped",
-      "rust": "live",
-      "note": "recorded, not yet examined"
+    "module_interface.execute.input.execute.missing": {
+      "python": "live",
+      "typescript": "live",
+      "rust": "skipped",
+      "note": "verified 2026-09-21: `execute` is a required trait method in apcore-rust — a type without it does not compile, so there is no runtime descriptor check to mirror."
     },
     "multi_module_discovery.discover_multi_class.input.file_path.nonexistent": {
       "python": "live",
       "typescript": "skipped",
-      "rust": "live",
-      "note": "recorded, not yet examined"
+      "rust": "skipped",
+      "note": "verified 2026-09-21: apcore-rust's derive_module_ids is pure and never opens the file, so a nonexistent path cannot raise MODULE_LOAD_ERROR (D11-004)."
     },
     "multi_module_discovery.discover_multi_class.input.pre_approval_hook.allow": {
       "python": "live",
       "typescript": "skipped",
-      "rust": "live",
-      "note": "recorded, not yet examined"
+      "rust": "skipped",
+      "note": "verified 2026-09-21: pre_approval_hook is Python-only (D-30): it guards runtime import, and apcore-rust parses source without executing it."
     },
     "multi_module_discovery.discover_multi_class.input.pre_approval_hook.reject": {
       "python": "live",
       "typescript": "skipped",
-      "rust": "live",
-      "note": "recorded, not yet examined"
+      "rust": "skipped",
+      "note": "verified 2026-09-21: same as pre_approval_hook.allow — Python-only safety hook (D-30)."
+    },
+    "observability.record.input.metric_name.registered": {
+      "python": "live",
+      "typescript": "live",
+      "rust": "skipped",
+      "note": "verified 2026-09-21: apcore-rust has no MetricsEmitter type; the metrics surface is MetricsCollector, which has no registered-name concept. Real API-shape difference."
+    },
+    "observability.record.property.async": {
+      "python": "live",
+      "typescript": "live",
+      "rust": "skipped",
+      "note": "verified 2026-09-21: no MetricsEmitter in apcore-rust — see observability.record.input.metric_name.registered."
+    },
+    "observability.record.property.pure": {
+      "python": "live",
+      "typescript": "live",
+      "rust": "skipped",
+      "note": "verified 2026-09-21: no MetricsEmitter in apcore-rust — see observability.record.input.metric_name.registered."
+    },
+    "observability.record.property.thread_safe": {
+      "python": "live",
+      "typescript": "live",
+      "rust": "skipped",
+      "note": "verified 2026-09-21: no MetricsEmitter in apcore-rust — see observability.record.input.metric_name.registered."
+    },
+    "observability.start_span.input.name.empty": {
+      "python": "live",
+      "typescript": "live",
+      "rust": "skipped",
+      "note": "verified 2026-09-21: apcore-rust has no Tracer type; it exposes Span and TracingMiddleware, and a Span is constructed directly rather than started from a tracer. Real API-shape difference."
+    },
+    "observability.start_span.property.async": {
+      "python": "live",
+      "typescript": "live",
+      "rust": "skipped",
+      "note": "verified 2026-09-21: no Tracer in apcore-rust — see observability.start_span.input.name.empty."
+    },
+    "observability.start_span.property.pure": {
+      "python": "live",
+      "typescript": "live",
+      "rust": "skipped",
+      "note": "verified 2026-09-21: no Tracer in apcore-rust — see observability.start_span.input.name.empty."
+    },
+    "observability.start_span.property.thread_safe": {
+      "python": "live",
+      "typescript": "live",
+      "rust": "skipped",
+      "note": "verified 2026-09-21: no Tracer in apcore-rust — see observability.start_span.input.name.empty."
     },
     "system_modules.check_module_disabled.input.registry_param": {
       "python": "live",
       "typescript": "skipped",
-      "rust": "live",
-      "note": "recorded, not yet examined"
+      "rust": "skipped",
+      "note": "verified 2026-09-21: apcore-typescript and apcore-rust both take a single moduleId and read their own toggle store; the registry parameter is Python-only."
     },
     "system_modules.is_module_disabled.input.registry_param": {
       "python": "live",
       "typescript": "skipped",
-      "rust": "live",
-      "note": "recorded, not yet examined"
+      "rust": "skipped",
+      "note": "verified 2026-09-21: same as check_module_disabled.input.registry_param — single-arg in apcore-typescript and apcore-rust."
     }
   }
 }
