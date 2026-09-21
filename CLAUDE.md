@@ -67,10 +67,11 @@ Deploy: push to `main` → GitHub Actions builds and deploys to GitHub Pages aut
 4. Check all `$ref` references still resolve
 
 ### Updating docs/spec/protocol-spec.md
-1. Requires a linked issue and maintainer approval: 2 maintainers, **or all maintainers when fewer than 3 exist** (GOVERNANCE.md § Decision Making). `MAINTAINERS.md` currently lists one, so one approval satisfies it.
-2. Do NOT remove/weaken a `MUST`/`MUST NOT` without deprecation notice + version bump
-3. Do NOT delete or rename anchor IDs — external SDKs link to them
-4. Update `CHANGELOG.md` with the change
+1. **Maintainer approval** — 2 maintainers, **or all maintainers when fewer than 3 exist** (`GOVERNANCE.md` § Decision Making). `MAINTAINERS.md` currently lists one, so one approval satisfies it. This is the only thing GOVERNANCE.md requires for a spec change.
+2. **A linked issue, if a PR is being opened.** That requirement is `CONTRIBUTING.md` § Protocol Specification — "changes to the spec require an issue discussing the change **before a PR is opened**" — not GOVERNANCE.md, and it is scoped to the PR. Its purpose is that a spec change is aired before a reviewer meets a fait accompli; an issue opened *after* the change is written serves none of it. Do not treat it as blocking work that is not going through a PR, and do not cite GOVERNANCE.md for it.
+3. Do NOT remove/weaken a `MUST`/`MUST NOT` without deprecation notice + version bump
+4. Do NOT delete or rename anchor IDs — external SDKs link to them
+5. Update `CHANGELOG.md` with the change, **and add the version-history row in `docs/spec/protocol-spec.md`** — the header version, the history table and the CHANGELOG are three places one bump has to reach, and three bumps once landed with only the header updated.
 
 ## Writing Rules
 
@@ -100,7 +101,7 @@ Use standardized terms consistently:
 ## Critical Rules
 
 ### Specification Integrity
-- Do NOT modify `docs/spec/protocol-spec.md` without a linked issue and maintainer approval (2 maintainers, or all of them when fewer than 3 exist — see `GOVERNANCE.md`)
+- Do NOT modify `docs/spec/protocol-spec.md` without maintainer approval (2 maintainers, or all of them when fewer than 3 exist — `GOVERNANCE.md` § Decision Making). A linked issue is a `CONTRIBUTING.md` requirement scoped to opening a PR, not a GOVERNANCE one; see the checklist above.
 - Do NOT add normative requirements without bumping the relevant version number
 - Do NOT contradict existing normative statements — search for conflicts first
 
