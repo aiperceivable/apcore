@@ -444,6 +444,22 @@ registration that was removed rather than to the one still installed.
 
 ## Contract: Middleware.detect_async
 
+> ⚠️ **NOT IMPLEMENTED under this name in any SDK — and the equivalents diverge.**
+> Verified:
+> - apcore-typescript: `isAsyncHandler(handler)` — a **public export**
+>   (`middleware/context-namespace.ts:48`, re-exported at `middleware/index.ts:17`
+>   and `index.ts:206`).
+> - apcore-python: no public equivalent. Detection is inline and private —
+>   `self._is_async = asyncio.iscoroutinefunction(handler)` (`client.py:515`).
+> - apcore-rust: **no equivalent at all.** The only `is_async*` symbol is
+>   `is_async_resolvable` (`acl_handlers.rs:583`), which is ACL key resolution, not
+>   handler inspection.
+>
+> So this is a three-way split: public API / private inline / absent. Decide whether
+> the capability is public (then implement it in python + rust and rename this block
+> to the agreed canonical name) or internal (then drop this block and let TypeScript's
+> export be reviewed as an unintended public surface).
+
 ### Inputs
 - `handler` (callable/Function/fn, required) — the middleware function to inspect
 

@@ -646,7 +646,28 @@ handle = manager.start_reaper(ttl_seconds=7200.0, sweep_interval_ms=600_000)
 - `sweep_interval_ms` (int, optional, default=300000) — how often (in milliseconds) the Reaper sweeps for expired tasks
 
 ### Errors
-- None — if the underlying store is unavailable during a sweep, log WARN and retry next interval
+- **Sweep failures**: none surfaced to the caller — if the underlying store is
+  unavailable during a sweep, log WARN and retry next interval. This part is accurate
+  and all three SDKs comply.
+- **Double-start guard**: ⚠️ **this section previously read "None", which every SDK
+  contradicts.** Calling `start_reaper` while a reaper is already running raises in
+  all three, and they raise three *unrelated* types with no common superclass:
+
+  | SDK | Raises | Coded? |
+  |---|---|---|
+  | apcore-rust | `ModuleError { code: ErrorCode::ReaperAlreadyRunning }` (`async_task.rs:790`, `:801`) | yes |
+  | apcore-python | generic `RuntimeError` | no |
+  | apcore-typescript | plain `Error` (`async-task.ts:459`) | no |
+
+  A caller writing `except ModuleError` / `catch (e: ModuleError)` catches apcore-rust
+  and silently misses the other two. apcore-rust's own source already documents this
+  divergence (`async_task.rs:795`).
+
+  **Normative target: `ModuleError` with code `REAPER_ALREADY_RUNNING`, in all three
+  SDKs.** apcore-rust already complies. apcore-python and apcore-typescript must be
+  brought in line; doing so is a **breaking change** for any caller currently catching
+  `RuntimeError` or a bare `Error`, so it belongs in a minor release with a changelog
+  entry, not a patch.
 
 ### Returns
 - On success: `ReaperHandle` — a handle to stop the background task (call `.stop()` to cancel the Reaper)

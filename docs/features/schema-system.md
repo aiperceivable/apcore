@@ -1049,6 +1049,15 @@ The case excerpts below illustrate the canonical shape; refer to the JSON files 
 
 ## Contract: Schema.validate_union
 
+> ⚠️ **NOT IMPLEMENTED under this name in any SDK.** The *capability* exists — union
+> keywords are handled throughout (`anyOf` 128 refs, `oneOf` 118, `any_of` 4,
+> `one_of` 19) — but as schema keywords inside the general validator, not as a named
+> method. The closest named entry point is apcore-typescript's `validateAnyOf(`;
+> apcore-python and apcore-rust expose only the general `validate` / `validate_input`.
+>
+> Decide whether union validation is a public entry point (implement + rename) or an
+> internal branch of `Schema.validate` (fold this block into that contract).
+
 ### Inputs
 - `data` (dict/object/Value, required) — data to validate against the union schema
 - `schema` (dict/object/Value, required) — JSON Schema Draft 2020-12 schema object containing `anyOf` or `oneOf`
@@ -1068,6 +1077,14 @@ The case excerpts below illustrate the canonical shape; refer to the JSON files 
 - idempotent: true
 
 ## Contract: Schema.validate_recursive
+
+> ⚠️ **NOT IMPLEMENTED under this name in any SDK.** Recursive/`$ref` resolution is
+> real and heavily used (`$ref` 145 refs, `RefResolver` 36, `ref_resolver` 6), but it
+> lives in a **separate `RefResolver` type**, not as a method on `Schema`. No SDK
+> exposes `validate_recursive`.
+>
+> Decide whether this contract belongs on `RefResolver` (move + rename) or describes
+> an internal path of `Schema.validate` (fold it in).
 
 ### Inputs
 - `data` (dict/object/Value, required) — potentially deeply-nested data to validate

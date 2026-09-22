@@ -934,7 +934,19 @@ subscribers:
 | `apcore.subscriber.circuit_opened` | warn | EventEmitter circuit breaker | `subscriber_type`, `consecutive_failures` |
 | `apcore.subscriber.circuit_closed` | info | EventEmitter circuit breaker | `subscriber_type`, `recovery_attempt` |
 
-## Contract: SubscriberCircuitBreaker.on_failure
+## Contract: CircuitBreakerWrapper._on_failure
+
+> **Internal contract.** This method is private in every SDK — apcore-python
+> `_on_failure` (`events/circuit_breaker.py:159`), apcore-typescript `_onFailure`
+> (`events/circuit-breaker.ts:142`), apcore-rust `on_failure`
+> (`events/circuit_breaker.rs:232`, not `pub`). It is specified because all three
+> must agree on its behaviour, not because callers invoke it.
+>
+> The heading previously read `SubscriberCircuitBreaker.on_failure`. No SDK has ever
+> defined a `SubscriberCircuitBreaker` type; the class is `CircuitBreakerWrapper` in
+> all three. The body of this block was corrected twice against the real methods
+> while the heading was left behind, which made every consistency check report this
+> contract as unimplemented in 3/3 SDKs.
 
 ### Inputs
 - `error` (Exception/Error/&str, required) — the delivery error that just occurred

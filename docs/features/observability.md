@@ -1028,6 +1028,15 @@ The `UsageExporter` interface lets you **push** periodic `UsageCollector` summar
 
 ## Contract: Tracer.start_span
 
+> ⚠️ **NOT IMPLEMENTED in any SDK, and the type itself is near-absent.** `Tracer`
+> appears in 1 apcore-python file, 0 in apcore-typescript, 0 in apcore-rust.
+> Span-creation equivalents are equally thin: one `start_span`, one `span(`, one
+> `Span::new` across all three repos combined — no shared public entry point.
+>
+> This block is the weakest of the unimplemented set: unlike the others there is no
+> substantial equivalent hiding under a different name. Treat it as aspirational
+> (mark planned, with a target version) or remove it.
+
 ### Inputs
 - `name` (str/string/&str, required) — span name; MUST NOT be empty
 - `parent` (Span/SpanContext, optional) — parent span for distributed tracing; creates a root span when absent
@@ -1043,7 +1052,21 @@ The `UsageExporter` interface lets you **push** periodic `UsageCollector` summar
 - thread_safe: true
 - pure: false (registers span in the active trace context)
 
-## Contract: MetricsEmitter.record
+## Contract: MetricsCollector.record
+
+> **Heading corrected.** No SDK defines a `MetricsEmitter` type. The class is
+> `MetricsCollector` in all three — apcore-python `observability/metrics.py:154`,
+> apcore-typescript `observability/metrics.ts:56`, apcore-rust
+> `observability/metrics.rs:68` — and it is widely used (124 references across the
+> three SDKs). This is the same class of defect as the former
+> `SubscriberCircuitBreaker` heading: a spec block describing real, implemented
+> behaviour under a type name that has never existed, which made every consistency
+> check report it as unimplemented in 3/3.
+>
+> ⚠️ **The method name still needs reconciling.** The recording surface is not uniform:
+> `record(`, `recordMetric(`, `recordError(`, `increment(`, `incrementCalls(`,
+> `observe(`, `observeDuration(` all appear across the three SDKs. Confirm which one
+> this contract binds before treating the rename as complete.
 
 ### Inputs
 - `metric_name` (str/string/&str, required) — metric key; MUST be a registered metric constant
@@ -1677,7 +1700,18 @@ The processor exposes three normative methods:
     processor.shutdown(None).await;
     ```
 
-## Contract: BatchSpanProcessor.on_end
+## Contract: BatchSpanProcessor.on_span_end
+
+> **Heading corrected.** No SDK defines `on_end`. apcore-python
+> (`observability/batch_span_processor.py:131`) and apcore-rust
+> (`observability/processor.rs:44`) both name it `on_span_end`; that is the canonical
+> name and this contract is binding under it.
+>
+> ⚠️ **apcore-typescript diverges on the NAME, not the behaviour**: it defines
+> `onSpan` (`observability/batch-span-processor.ts:68`), which normalizes to
+> `on_span`, not `on_span_end`. Per the naming rules this is a cross-language
+> inconsistency to fix in the SDK — rename to `onSpanEnd` — not something this spec
+> should accommodate by listing two canonical names.
 
 ### Inputs
 - `span` (Span, required) — the span that just ended, to enqueue for asynchronous export
@@ -1695,6 +1729,17 @@ The processor exposes three normative methods:
 - idempotent: false — each call enqueues (or drops) one more span
 
 ## Contract: BatchSpanProcessor.force_flush
+
+> ⚠️ **Implemented in apcore-python only.** `force_flush(timeout_ms=30000) -> bool`
+> exists at `observability/batch_span_processor.py:163`. apcore-typescript and
+> apcore-rust define neither `force_flush` nor `forceFlush` on this type — Rust has
+> only a private `flush_batch` helper (`observability/processor.rs:223`), which is not
+> an equivalent because it is not reachable by a caller.
+>
+> This is a genuine **missing API in 2 of 3 SDKs**, not a naming mismatch. It is left
+> in place deliberately: the contract is correct and the two SDKs should grow the
+> method. Until they do, consistency checks will report it as missing for
+> apcore-typescript and apcore-rust, which is the accurate result.
 
 ### Inputs
 - `timeout_ms` (int, optional) — deadline for draining the queue; an SDK-specific default applies when omitted
