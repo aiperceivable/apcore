@@ -659,7 +659,8 @@ The APCore interface follows each language's idioms while maintaining functional
 - `callback` (callable/Function, required) — a sync or async function invoked before module execution; signature: `(context: Context) -> None` (Python) / `(ctx: Context) => void | Promise<void>` (TypeScript); MUST NOT be null/None; the callback is wrapped in a `BeforeMiddleware` adapter with default priority 0
 
 ### Errors
-- No errors raised during registration; errors raised inside `callback` at execution time propagate through the middleware chain
+- `ValueError` (Python) / `RangeError` (TypeScript) / `Err(ModuleError)` with `GENERAL_INVALID_INPUT` (Rust) — if the wrapped `BeforeMiddleware`'s priority exceeds 1000. `use_before` delegates to the same `MiddlewareManager.add()` as `APCore.use` and is subject to the same rejection (A-D-017); this contract previously said "No errors raised during registration", which the delegation contradicts.
+- Errors raised inside `callback` at execution time propagate through the middleware chain
 
 ### Returns
 - On success: `self`/`APCore` — returns the client instance for method chaining
@@ -676,7 +677,8 @@ The APCore interface follows each language's idioms while maintaining functional
 - `callback` (callable/Function, required) — a sync or async function invoked after module execution; signature: `(context: Context) -> None` (Python) / `(ctx: Context) => void | Promise<void>` (TypeScript); MUST NOT be null/None; the callback is wrapped in an `AfterMiddleware` adapter with default priority 0
 
 ### Errors
-- No errors raised during registration; errors raised inside `callback` at execution time propagate through the middleware chain
+- `ValueError` (Python) / `RangeError` (TypeScript) / `Err(ModuleError)` with `GENERAL_INVALID_INPUT` (Rust) — if the wrapped `AfterMiddleware`'s priority exceeds 1000. `use_after` delegates to the same `MiddlewareManager.add()` as `APCore.use` and is subject to the same rejection (A-D-017); this contract previously said "No errors raised during registration", which the delegation contradicts.
+- Errors raised inside `callback` at execution time propagate through the middleware chain
 
 ### Returns
 - On success: `self`/`APCore` — returns the client instance for method chaining
