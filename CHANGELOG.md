@@ -919,6 +919,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   renamed to "How apcore Complements MCP"; and the §4.8 deep link was truncated to
   `#48-description-and-documentation`, missing the `-field-specification` suffix the real heading
   slugifies to. Both now resolve.
+- **`APCore.use_before` / `APCore.use_after`'s `### Errors` sections said "No errors raised during registration"** — both delegate to the same `MiddlewareManager.add()` as `APCore.use`, whose `### Errors` section already documents the `priority > 1000` rejection (A-D-017). An SDK-hardening review filed this as "Executor.use_before return shape diverges across SDKs, needs a breaking-change decision" (A-C-006) by comparing the wrong layer — the internal `Executor.use_before`, not the public `APCore.use_before` this contract describes, which already agrees across all three SDKs. No SDK code changed; both `### Errors` sections now match `APCore.use`'s.
 - **`docs/features/apcore-client.md` declared `APCore.call_async` without a `## Contract:` block** —
   the only row of its Method Summary table lacking one. Added the block, and recorded the
   per-language reality it exists to pin: Python's `call()` is synchronous so `call_async()` is a
