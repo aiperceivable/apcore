@@ -713,20 +713,28 @@ def _extensions_follow_symlinks() -> str | None:
     traversal even with the flag on, so a target outside it is refused either
     way and the probe cannot discriminate. Measured — a first version pointed
     the link outside and reported the key inert.
+
+    The target must also be unreachable WITHOUT the link. Since D-127 a module
+    is recorded once, under its real path, so a target the walk reaches
+    directly shows up as the same ID with the flag on or off and the key looks
+    inert. Placing the target past `max_depth` leaves the shallow link as its
+    only route: off discovers only the plain module, on adds the target under
+    its real-path ID.
     """
 
     def build(root):
         ext = root / "ext"
         _write(ext / "executor" / "plain" / "mod.py")
-        _write(ext / "hidden" / "target" / "mod.py")
-        (ext / "executor" / "sym").symlink_to(ext / "hidden" / "target", target_is_directory=True)
+        _write(ext / "deep" / "a" / "b" / "c" / "target" / "mod.py")
+        (ext / "executor" / "sym").symlink_to(ext / "deep" / "a" / "b" / "c" / "target", target_is_directory=True)
 
-    off = _discovered({"extensions": {"root": "./ext", "follow_symlinks": False}}, build)
-    on = _discovered({"extensions": {"root": "./ext", "follow_symlinks": True}}, build)
-    if "executor.sym.mod" in off:
-        return "follow_symlinks=false traversed a symlinked directory"
-    if "executor.sym.mod" not in on:
-        return f"follow_symlinks=true did not traverse a symlinked directory: {on}"
+    section = {"root": "./ext", "max_depth": 3}
+    off = _discovered({"extensions": {**section, "follow_symlinks": False}}, build)
+    on = _discovered({"extensions": {**section, "follow_symlinks": True}}, build)
+    if off != ["executor.plain.mod"]:
+        return f"follow_symlinks=false discovered {off}, expected only executor.plain.mod"
+    if on != ["deep.a.b.c.target.mod", "executor.plain.mod"]:
+        return f"follow_symlinks=true did not reach the target through the link: {on}"
     return None
 
 
@@ -930,11 +938,15 @@ def _schema_max_ref_depth() -> str | None:
 
     from apcore.errors import SchemaMaxDepthExceededError
 
+    # A05 step 4d resolves a relative file reference against the REFERENCING
+    # file's directory, not the schema root (D-104 hands the resolver the
+    # source file), so the chain lives beside probe.schema.yaml.
     root = _schema_tree("deep")
-    (root / "leaf.json").write_text('{"type":"object","properties":{"x":{"type":"string"}}}')
-    (root / "c.json").write_text('{"$ref":"leaf.json"}')
-    (root / "b.json").write_text('{"$ref":"c.json"}')
-    (root / "a.json").write_text('{"$ref":"b.json"}')
+    here = root / "executor" / "t"
+    (here / "leaf.json").write_text('{"type":"object","properties":{"x":{"type":"string"}}}')
+    (here / "c.json").write_text('{"$ref":"leaf.json"}')
+    (here / "b.json").write_text('{"$ref":"c.json"}')
+    (here / "a.json").write_text('{"$ref":"b.json"}')
     (root / "executor" / "t" / "probe.schema.yaml").write_text(
         yaml.safe_dump(
             {
