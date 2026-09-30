@@ -868,6 +868,12 @@
         ]
       },
       "discriminates": "Per-SDK because log record formats differ by language. Each test drives a real executor call on a module whose input and output carry an `x-sensitive` field whose NAME is outside the default sensitive_keys list, with no RedactionConfig, and asserts the logged record holds the replacement marker and not the value — so the logger's key-based pass cannot mask a middleware that logs the raw payload."
+    },
+    "D-132": {
+      "title": "the specification follows three agreeing, correct implementations",
+      "kind": "unconstrained",
+      "note": "Editorial corrections of the specification to behaviour all three SDKs already share; each area stays pinned by its existing fixtures and SDK tests. No behaviour changed, so there is nothing new to pin.",
+      "cases": []
     }
   }
 }

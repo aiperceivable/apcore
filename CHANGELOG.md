@@ -9,8 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-> Ships `PROTOCOL_SPEC` **v1.60.0 → v1.61.0**. v1.60.0 is editorial (no behaviour change); v1.61.0
-> closes three ways a governance gate could silently stop gating (D-129–D-131). Reasoning is in
+> Ships `PROTOCOL_SPEC` **v1.60.0 → v1.62.0**. v1.60.0 is editorial (no behaviour change); v1.61.0
+> closes three ways a governance gate could silently stop gating (D-129–D-131); v1.62.0 corrects
+> about fifty places where the specification disagreed with three agreeing implementations (D-132). Reasoning is in
 > [`docs/spec/2026-09-divergence-decisions.md`](./docs/spec/2026-09-divergence-decisions.md).
 
 ### Security
@@ -18,6 +19,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **An ACL, approval handler or policy given to an executor did not reach a pre-built strategy's gates** (D-129) — with a deny-all ACL the call ran while `governance_state()` reported the gate as configured and wired. Providers are now bound into the running built-in gate however the strategy was supplied, and `governance_state()` reports what the gate holds. Fixture `gate_provider_binding.json`.
 - **`pipeline.configure` could disable a governance gate** (D-130) — `ignore_errors: true` on `acl_check` turned a denial into a warning. `ignore_errors: true` and `match_modules` on `acl_check` / `approval_gate`, and `pure: true` on `approval_gate`, are now rejected with `PIPELINE_CONFIGURATION_ERROR`. Fixture `gate_step_configure.json`.
 - **Built-in logging middleware could write `x-sensitive` values in plain text** (D-131) — it now logs `context.redacted_inputs` / `redacted_output`.
+
+### Changed — specification
+
+- **The specification follows three agreeing, correct implementations** (D-132, v1.62.0) — including MUSTs no SDK met: reserved words are checked on the first segment only and `__` is allowed; entry-point failures raise `MODULE_LOAD_ERROR`; `APCORE_`-prefixed `env_prefix` values are allowed; unknown configuration keys are retained unless `_config.strict`; duplicate registration raises `DUPLICATE_MODULE_ID`; `after()` output is not re-validated; timeouts wrap `execute()` only; `validate()` must not invoke `execute()`. No behaviour change.
 
 ### Changed — documentation
 

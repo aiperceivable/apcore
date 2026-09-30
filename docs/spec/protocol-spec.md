@@ -1,12 +1,12 @@
 ---
-description: "The canonical, normative apcore protocol specification (RFC 2119, v1.61.0): module, schema, naming, ACL, approval, error, config, and observability requirements for all conforming SDKs."
+description: "The canonical, normative apcore protocol specification (RFC 2119, v1.62.0): module, schema, naming, ACL, approval, error, config, and observability requirements for all conforming SDKs."
 ---
 
 # apcore — AI-Perceivable Core Standard Specification
 
 > **Canonical specification.** This document is the single normative source for the apcore protocol. Where any other document disagrees with it, this document wins.
 
-> Version: 1.61.0
+> Version: 1.62.0
 > Status: Active — the 1.x line adds requirements compatibly; breaking changes are reserved for 2.0
 > Last Updated: 2026-09-30
 
@@ -216,7 +216,14 @@ When multi-class discovery is enabled for a file:
 4. If two classes in the same file produce the same `class_segment`, implementations **MUST** raise `MODULE_ID_CONFLICT`.
 5. A file with exactly one Module class **MUST** produce the same ID whether multi-class mode is on or off (backward compatibility guarantee).
 
-`snake_case` conversion: replace non-alphanumeric characters with `_`, lowercase all, collapse consecutive `_` to one, strip leading/trailing `_`.
+`snake_case` conversion, in this order:
+
+1. Insert `_` between a run of uppercase letters and an uppercase letter followed by a lowercase letter (`HTTPSender` → `HTTP_Sender`).
+2. Insert `_` between a lowercase letter or digit and an uppercase letter (`MathOps` → `Math_Ops`).
+3. Replace every character other than ASCII `A`–`Z`, `a`–`z` and `0`–`9` with `_`.
+4. Lowercase.
+5. Collapse consecutive `_` to one.
+6. Strip leading and trailing `_`.
 
 Examples:
 ```text
@@ -248,7 +255,7 @@ All SDK implementations **MUST** validate module IDs against this pattern during
 
 ### 2.2 ID Map (Cross-language Conversion)
 
-**ID Map** module handles cross-language ID conversion, supporting automatic recognition and manual configuration. Implementations **MUST** support canonical conversion from various language native formats to Canonical ID.
+**ID Map** covers two conversions. Implementations **MUST** support canonical conversion from a language-native ID to a Canonical ID (Algorithm A02, below). Separately, an operator can replace the ID that discovery derives for a given module file through an ID map file (below).
 
 ```text
 Algorithm: normalize_to_canonical_id(local_id, language)
@@ -273,76 +280,24 @@ Steps:
   6. Return canonical_id
 ```
 
+**ID map file.** `id_map.overrides` (§9.1) is the path of a YAML map file. A map supplied directly to the registry or discoverer (`Registry(id_map_path=…)` / `idMapPath` / `DefaultDiscoverer::with_id_map`) takes precedence over the key (D-73). The file carries a top-level `mappings` list; each entry maps one module file, by its path relative to the extension root, to the Canonical ID it is registered under:
+
 ```yaml
 # apcore.yaml
-
 id_map:
-  # Auto-detection: Determine language by file extension
-  auto_detect: true
-
-  # Built-in language conversion rules
-  languages:
-    python:
-      extensions: [".py"]
-      separator: "."
-      file_case: "snake_case"
-      class_case: "PascalCase"
-      example:
-        id: "executor.validator.db_params"
-        file: "executor/validator/db_params.py"
-        class: "DbParamsValidator"
-
-    rust:
-      extensions: [".rs"]
-      separator: "::"
-      file_case: "snake_case"
-      struct_case: "PascalCase"
-      example:
-        id: "executor.validator.db_params"
-        file: "executor/validator/db_params.rs"
-        local_id: "executor::validator::db_params"
-        struct: "DbParamsValidator"
-
-    go:
-      extensions: [".go"]
-      separator: "."
-      file_case: "snake_case"
-      struct_case: "PascalCase"
-      example:
-        id: "executor.validator.db_params"
-        file: "executor/validator/db_params.go"
-        struct: "DbParamsValidator"
-        package: "validator"
-
-    java:
-      extensions: [".java"]
-      separator: "."
-      file_case: "PascalCase"
-      class_case: "PascalCase"
-      example:
-        id: "executor.validator.db_params"
-        file: "executor/validator/DbParams.java"
-        class: "DbParamsValidator"
-        package: "com.example.extensions.executor.validator"
-
-    typescript:
-      extensions: [".ts", ".tsx"]
-      separator: "."
-      file_case: "camelCase"
-      class_case: "PascalCase"
-      example:
-        id: "executor.validator.db_params"
-        file: "executor/validator/dbParams.ts"
-        class: "DbParamsValidator"
-
-  # Special mappings (override auto rules)
-  overrides:
-    # When automatic conversion doesn't meet requirements, manually specify
-    "executor.validator.db_params":
-      java:
-        class: "com.mycompany.DbParamsValidator"
-        package: "com.mycompany.validators"
+  overrides: "./id_map.yaml"
 ```
+
+```yaml
+# id_map.yaml
+mappings:
+  - file: "executor/validator/db_params.py"   # relative to the extension root
+    id: "executor.validation.db_params"
+```
+
+1. During discovery, after Algorithm A01 has derived each file's ID, a file named by an entry's `file` is registered under that entry's `id` instead. A file the map does not name keeps its derived ID. The replacement ID is validated like any other discovered ID (§2.6, §2.7); one that fails validation is not registered.
+2. A configured map file that does not exist fails with `CONFIG_NOT_FOUND`. One that does not parse, or whose top level has no `mappings` list, fails with `CONFIG_INVALID`.
+3. An entry without `file` is skipped with a warning.
 
 ### 2.3 Special Word Handling
 
@@ -387,18 +342,11 @@ versioning:
 
 ```yaml
 reserved_words:
-  # Framework reserved
-  framework: [system, internal, core, apcore, plugin, schema, acl, ephemeral]
-
-  # Programming language keywords
-  keywords: [class, def, import, return, if, else, for, while, true, false, null, none]
-
-  # Disallowed patterns
-  patterns:
-    - "^_.*"         # Starting with underscore
-    - "^[0-9].*"     # Starting with digit
-    - ".*__.*"       # Double underscore
+  # Tested against the FIRST segment of an ID only (§2.6 step 2)
+  framework: [system, internal, core, apcore, plugin, schema, acl]
 ```
+
+`ephemeral` is not a reserved word: the `ephemeral.*` namespace is restricted by registration path — `Registry.register()` only — rather than refused, and a reserved word would make `register()` reject every ID in it (§2.5.1). A segment that starts with an underscore or a digit is already excluded by the Canonical ID grammar (§2.7).
 
 **Reserved namespace semantics:**
 
@@ -543,9 +491,9 @@ digit           = "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" ;
 
 (* Constraints *)
 (* 1. canonical_id total length MUST NOT exceed 192 characters *)
-(* 2. segment MUST NOT be a reserved word (see §2.5) *)
+(* 2. the FIRST segment MUST NOT be a reserved word (§2.5, §2.6 step 2), except for an ID *)
+(*    registered through register_internal() (§6.6.1); later segments are unrestricted *)
 (* 3. segment MUST NOT start with a digit (guaranteed by production) *)
-(* 4. segment MUST NOT contain consecutive double underscores "__" *)
 ```
 
 ```ebnf
@@ -554,7 +502,7 @@ digit           = "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" ;
 (* conform to the canonical_id production above. *)
 ```
 
-Equivalent regular expression: `^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$`
+Equivalent regular expression for the production (constraints 1 and 2 are checked separately): `^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$`
 
 ---
 
@@ -1487,23 +1435,7 @@ class SendEmailModule(Module):
 
 #### 4.8.5 Backward Compatibility
 
-To maintain backward compatibility, the framework will automatically handle old format modules:
-
-**Automatic Migration Rules:**
-
-```python
-# Existing module (only description, ≤200 chars)
-if description exists and len(description) <= 200:
-    # Keep unchanged, fully compatible
-    description = description
-    documentation = None
-
-# description exceeds 200 chars (not recommended, but will warn)
-elif description exists and len(description) > 200:
-    # Issue warning, suggest migration
-    warn("description exceeds 200 chars, consider moving details to 'documentation' field")
-    # Keep as-is, but may affect AI performance
-```
+A module that declares only `description` is complete: `documentation` is optional and absent unless declared. A `description` longer than the recommended 200 characters is kept as declared. An implementation **MAY** log a warning suggesting that the detail move to `documentation`; whether a long `description` is rejected is governed by §9.1.2 alone.
 
 **Migration Recommendations:**
 
@@ -1968,7 +1900,7 @@ apcore defines standard export Profiles for adapter developers to follow. Profil
 
 | Profile | Characteristics | Typical Users |
 |---------|------|-----------|
-| `mcp` | Preserve `x-*` fields; map annotations → hints; contains inputSchema + outputSchema | MCP Server adapters |
+| `mcp` | Preserve `x-*` fields; map annotations → hints; contains `inputSchema` (no `outputSchema`) | MCP Server adapters |
 | `openai` | Strip `x-*`; `strict: true`; replace `.` with `_` in id; parameters only | OpenAI Function Calling adapters |
 | `anthropic` | Strip `x-*`; map examples → input_examples; contains input_schema | Anthropic Claude Tool adapters |
 | `generic` | Full JSON Schema + all extensions (default) | Generic scenarios, debugging |
@@ -1979,6 +1911,7 @@ apcore defines standard export Profiles for adapter developers to follow. Profil
 - Schema: Preserve as-is (with `x-*` extension fields)
 - ID: Use as-is (`executor.email.send_email`)
 - Annotations: `readonly` → `readOnlyHint`, `destructive` → `destructiveHint`, `idempotent` → `idempotentHint`, `open_world` → `openWorldHint`
+- Output schema: not carried. An MCP adapter that advertises a tool `outputSchema` takes it from the module's `output_schema` (Appendix D.1)
 - See Appendix D.1 MCP Mapping
 
 **`openai` Profile:**
@@ -2034,10 +1967,12 @@ Steps:
   2. Otherwise, auto-infer:
      a. file ← filename from file_path (without extension)
      b. class_name ← Convert file from snake_case to PascalCase
-     c. If language == "python": Look for class inheriting Module in file
-     d. If unique match found → Return that class
-     e. If multiple matches found → Throw AMBIGUOUS_ENTRY_POINT error
-     f. If no match found → Throw NO_MODULE_CLASS error
+     c. If the language loads module files at runtime: candidates ← the classes the
+        file provides that satisfy the Module interface (§5.6 — duck-typed, no base
+        class is required)
+     d. If exactly one candidate → Return that class
+     e. If more than one candidate → Throw MODULE_LOAD_ERROR (ambiguous entry point)
+     f. If no candidate → Throw MODULE_LOAD_ERROR (no module class in the file)
   3. Return entry_point
 ```
 
@@ -2148,7 +2083,10 @@ Steps:
         - If in_degree[dependent] == 0 → queue.enqueue(dependent)
   6. If len(load_order) < len(modules):
      - remaining ← Modules not added to load_order
-     - Throw CIRCULAR_DEPENDENCY error with circular path
+     - cycle ← a dependency cycle among remaining (back-edge search), or null
+     - If cycle is not null → Throw CIRCULAR_DEPENDENCY with cycle_path = cycle
+     - Otherwise → Throw MODULE_LOAD_ERROR naming remaining; MUST NOT report
+       CIRCULAR_DEPENDENCY and MUST NOT fabricate a cycle_path (D-79)
   7. Return load_order
 
 Complexity: O(V + E), where V is number of modules, E is number of dependencies
@@ -2855,7 +2793,7 @@ Complexity: O(n), where n is number of parameters
 | `bool` / `Boolean` | `{ "type": "boolean" }` | Boolean |
 | `list[T]` / `Vec<T>` / `[]T` | `{ "type": "array", "items": <T> }` | Array |
 | `dict[str, T]` / `Map<String, T>` | `{ "type": "object", "additionalProperties": <T> }` | Map |
-| `Optional[T]` / `T \| None` | `<T>` + `"nullable": true` | Nullable type |
+| `Optional[T]` / `T \| None` / `Option<T>` | `{ "anyOf": [<T>, { "type": "null" }] }`, or `<T>` with `"null"` added to its `type` array | Nullable type (JSON Schema has no `nullable` keyword) |
 | `BaseModel` / `struct` / `@dataclass` | `{ "type": "object", "properties": {...} }` | Struct/object |
 | `Literal["a", "b"]` / `enum` | `{ "type": "string", "enum": ["a", "b"] }` | Enum |
 | `Annotated[T, Field(...)]` | `<T>` + constraint fields | Constrained type |
@@ -3128,7 +3066,7 @@ bindings:
 
 #### 5.12.5 `auto_schema` Mode
 
-When `auto_schema: true`, implementations **MUST** reuse the `generate_schema_from_function` algorithm from §5.11.4 to auto-generate Schema from target callable's type annotations.
+When `auto_schema` enables inference, implementations **MUST** infer the schemas from the target. An implementation whose language exposes type annotations at runtime **MUST** reuse the `generate_schema_from_function` algorithm from §5.11.4. One whose language does not infers from schema values associated with the target instead: schemas the target's module exports beside it, or schemas carried by the handler supplied for the target (§5.12.3).
 
 If target callable lacks sufficient type information, **MUST** throw `BINDING_SCHEMA_INFERENCE_FAILED` error. `BINDING_SCHEMA_MISSING` is a deprecated alias of this code, retained only for decoding serialized payloads.
 
@@ -3711,9 +3649,9 @@ Implementations **MUST** enforce the following control flow invariants on the ex
 
 2. **O(1) step name resolution.** Implementations **MUST** use a hash map (dictionary) keyed by step name for all step lookups during execution. Implementations **MUST NOT** perform linear scans over a step list to locate a step by name. This requirement **MUST** be enforced at code review time.
 
-3. **Replace semantic for step configuration.** When `configure_step` (or the equivalent declarative `configure:` directive) targets a step name that already exists in the current pipeline strategy, implementations **MUST** replace the existing step definition entirely. Implementations **MUST NOT** create a duplicate step entry or append a second handler under the same name. The replaced step **MUST** retain its original position in the execution order.
+3. **Replace semantic for step configuration.** When `configure_step` targets a step name that already exists in the current pipeline strategy, implementations **MUST** replace the existing step definition entirely with the step supplied. The declarative `configure:` directive (§5.16.1) instead overrides only the fields it names; the step keeps its implementation and every field not named. In both cases implementations **MUST NOT** create a duplicate step entry or append a second handler under the same name, and the step **MUST** retain its original position in the execution order.
 
-4. **`run_until` termination predicate.** Implementations **MUST** support a `run_until` call option that accepts a predicate receiving the current `PipelineState` (step name, accumulated outputs, context) and returning a boolean. When the predicate returns `true` after step N completes, implementations **MUST** skip all remaining steps and return the accumulated result from steps 1 through N. If the predicate never returns `true`, the pipeline runs to completion normally.
+4. **`run_until` termination predicate.** Implementations **MUST** support a `run_until` option of the pipeline engine — supplied to the engine's run or set on the pipeline context, not an `Executor.call()` option — that accepts a predicate receiving the current `PipelineState` (step name, accumulated outputs, context) and returning a boolean. When the predicate returns `true` after step N completes, implementations **MUST** skip all remaining steps and return the accumulated result from steps 1 through N. If the predicate never returns `true`, the pipeline runs to completion normally.
 
 5. **Step-level middleware ordering.** Implementations **SHOULD** support middleware scoped to individual pipeline steps. When both global middleware and step-level middleware are registered, global middleware **MUST** execute before step-level middleware in the before-phase, and after step-level middleware in the after-phase.
 
@@ -4459,11 +4397,11 @@ Implementations **MUST** evaluate ACL rules using a **first-match-wins** strateg
 - **SDK Surface**: Implementations **SHOULD** use idiomatic naming (e.g., `callerId` in TypeScript, `caller_id` in Python).
 
 ```text
-Algorithm: evaluate_acl(caller, target, rules, default_effect, context)
+Algorithm: evaluate_acl(caller_id, target_id, rules, default_effect, context)
 
 Input:
-  caller_id         — Caller module ID (null means external call, treated as "@external")
-  target_id         — Called module ID
+  caller_id      — Caller module ID (null means external call, treated as "@external")
+  target_id      — Called module ID
   rules          — Rule list (evaluated in definition order)
   default_effect — Default policy ("allow" | "deny")
   context        — Execution context (optional, used for condition evaluation)
@@ -4478,10 +4416,10 @@ Steps:
         For each pattern ∈ rule.callers:
           If pattern is "@external" and caller_id is null → caller_matched ← true; break
           If pattern is "@system" and context.identity.type == "system" → caller_matched ← true; break
-          If match_pattern(pattern, effective_caller) → caller_matched ← true; break
+          If match_pattern(pattern, effective_caller_id) → caller_matched ← true; break
      b. target_matched ← false
         For each pattern ∈ rule.targets:
-          If match_pattern(pattern, target) → target_matched ← true; break
+          If match_pattern(pattern, target_id) → target_matched ← true; break
      c. If caller_matched and target_matched:
         If rule.conditions is not empty:
           verdict ← evaluate_conditions(rule.conditions, context)
@@ -4516,8 +4454,8 @@ Every `check()` **MUST** emit exactly one audit entry through the configured aud
 | `roles` | `list[string]` | Identity roles from the context; empty when absent |
 | `call_depth` | `integer \| null` | Length of `context.call_chain`, when present |
 | `trace_id` | `string \| null` | Trace ID from the context, when present |
-| `handler_error` | `string \| null` | Non-null **if and only if** a condition was unevaluable (§6.1.1). **MUST** name the condition key and the reason. |
-| `approval_required` | `boolean` | Whether the matched rule required this call to be put to a human (§6.1.6). `false` when no rule matched or the matched rule required none. Carried beside `decision` rather than as a third `decision` value, because `decision` is a string downstream consumers parse (§6.9 row 7). |
+| `handler_error` | `string \| null` | Non-null **if and only if** a condition was unevaluable (§6.1.1). **MUST** name each unevaluable condition's **path** (§6.1.4) and the reason, ordered and separated as §6.1.1 rule 2 requires. |
+| `approval_required` | `boolean` | Whether this call must be put to a human (§6.1.6): the deciding rule's own requirement, union any pending requirement an unevaluable `allow` rule raised (§6.1.1 rule 5). Always `false` when `decision` is `deny`. `true` with `matched_rule_index: null` when `default_effect: allow` carries a pending requirement (§6.9 row 2); otherwise `false` when no rule matched. Carried beside `decision` rather than as a third `decision` value, because `decision` is a string downstream consumers parse (§6.9 row 7). |
 
 `handler_error` is what makes §6.1.1's two outcomes distinguishable after the fact: a rule that did not match because a handler said "no" leaves it null; a rule that did not match — or that denied — because no answer was obtainable leaves it set. An implementation **MUST NOT** set it for an ordinary `UNSATISFIED` condition.
 
@@ -4742,15 +4680,16 @@ Adapters and UI layers **SHOULD NOT** introduce additional independent permissio
 
 ##### 6.6.3.2 A configured layer is not necessarily an enforced one
 
-Layers 2 and 3 are pipeline **steps** — `acl_check` and `approval_gate` (§12.3). An `ExecutionStrategy` that does not contain the step does not run the layer, **even when the ACL object or the `ApprovalHandler` is attached to the executor**.
+Layers 2 and 3 are pipeline **steps** — `acl_check` and `approval_gate` (§5.16, [execution-pipeline.md](../features/execution-pipeline.md)). An `ExecutionStrategy` that does not contain the step does not run the layer, **even when the ACL object or the `ApprovalHandler` is attached to the executor**.
 
-Three of the four presets this specification defines remove one or both:
+Three of the five preset strategies ([execution-pipeline.md](../features/execution-pipeline.md#preset-strategies)) remove both; `performance` removes only `middleware_before` and `middleware_after`:
 
 | Preset | `acl_check` | `approval_gate` |
 |---|---|---|
 | `standard` | present | present |
 | `internal` | **removed** | **removed** |
 | `testing` | **removed** | **removed** |
+| `performance` | present | present |
 | `minimal` | **removed** | **removed** |
 
 So `executor.set_acl(acl)` followed by selecting the `internal` strategy leaves an ACL attached and never consulted. Implementations **SHOULD** warn at the moment the mismatch is created — when an ACL or handler is attached to an executor whose current strategy has no corresponding built-in step — and **MUST** expose the condition for reading through §6.6.5, so an adapter or a health endpoint can observe it rather than infer it from the presence of the object.
@@ -5247,7 +5186,7 @@ An implementation that read only the annotation would silently ignore every rule
 - The `_approval_token` mechanism (Phase B) allows clients to retry after external approval without re-triggering the approval flow.
 - The `_approval_token` key **MUST** be removed from arguments before passing to subsequent steps.
 
-**Resume semantics.** When a caller retries an `APPROVAL_PENDING` call by injecting `_approval_token` into `arguments`, the executor **MUST** re-enter the pipeline from Step 1. Implementations **MUST NOT** preserve any intermediate `PipelineContext` state across the suspend/resume boundary — the pipeline is stateless across the approval gate, and resumption is a fresh top-to-bottom traversal of the 11 steps with `_approval_token` present in `arguments`. Modules **MUST NOT** assume that side-effects performed in pre-approval steps (for example, logging or tracing in `Middleware.before`) are skipped on resume — they re-execute. Middleware authors who require at-most-once semantics across an approval gate **SHOULD** inspect `_approval_token` in their own logic and short-circuit accordingly. This contract enables external retry/replay layers to drive long-running pause/resume cycles by persisting `approval_id` plus the original inputs, without any mid-pipeline checkpointing in apcore. See [`./design-durability-boundary.md`](./design-durability-boundary.md) §2.2 for downstream integration patterns.
+**Resume semantics.** When a caller retries an `APPROVAL_PENDING` call by injecting `_approval_token` into `arguments`, the executor **MUST** re-enter the pipeline from Step 1. Implementations **MUST NOT** preserve any intermediate `PipelineContext` state across the suspend/resume boundary — the pipeline is stateless across the approval gate, and resumption is a fresh top-to-bottom traversal of the 11 steps with `_approval_token` present in `arguments`. Steps 1–4 run on both the suspended call and its resume, so their side effects — the ACL audit entry (§6.3.1), tracing — occur once per traversal, and modules **MUST NOT** assume they are skipped on resume. Step 6 (`middleware_before`) and every later step come after the gate: on a call the gate suspends they do not run at all, and on the resume they run once, after approval. Step 5 removes `_approval_token` from `arguments` on every path through the gate — including the not-gated and no-handler paths — so neither middleware nor the module ever observes it, and middleware needs no at-most-once guard across an approval gate. This contract enables external retry/replay layers to drive long-running pause/resume cycles by persisting `approval_id` plus the original inputs, without any mid-pipeline checkpointing in apcore. See [`./design-durability-boundary.md`](./design-durability-boundary.md) §2.2 for downstream integration patterns.
 
 ### 7.5 Error Types
 
@@ -5382,12 +5321,14 @@ Policy resolution receives the **call site** — what the module is being called
 
 ### 7.10 Conformance
 
-| Level | Requirement |
+The tiers below grade the approval subsystem alone. They are not the SDK conformance levels of [Conformance](./conformance.md): there, Tiers 1–2 are part of Level 1 (*Approval gate (Phase A)*, MUST) and Tiers 3–4 are part of Level 2 (*Approval Phase B and Execution Policy*, SHOULD).
+
+| Tier | Requirement |
 |-------|-------------|
-| **Level 1 (Basic)** | `ApprovalHandler` protocol defined; Executor skips gate when handler is null |
-| **Level 2 (Standard)** | Step 5 implemented in `call()`, `call_async()`, and `stream()` paths; `AlwaysDenyHandler` and `AutoApproveHandler` provided |
-| **Level 3 (Full)** | Phase B support (`check_approval`, `_approval_token`); `CallbackApprovalHandler` provided; approval audit events emitted |
-| **Level 4 (Governance)** | Execution Policy (§7.9): external override + specificity precedence, `gate_destructive`, `strict` fail-closed, effective-annotations contract, and the `apcore.approval.decision` / `apcore.policy.override` / `apcore.acl.denied` events |
+| **Tier 1 (Basic)** | `ApprovalHandler` protocol defined; Executor skips gate when handler is null |
+| **Tier 2 (Standard)** | Step 5 implemented in `call()`, `call_async()`, and `stream()` paths; `AlwaysDenyHandler` and `AutoApproveHandler` provided |
+| **Tier 3 (Full)** | Phase B support (`check_approval`, `_approval_token`); `CallbackApprovalHandler` provided; approval audit events emitted |
+| **Tier 4 (Governance)** | Execution Policy (§7.9): external override + specificity precedence, `gate_destructive`, `strict` fail-closed, effective-annotations contract, and the `apcore.approval.decision` / `apcore.policy.override` / `apcore.acl.denied` events |
 
 ---
 
@@ -5587,6 +5528,12 @@ error_codes:
     description: "Auto-schema inference failed: callable lacks usable type hints"
     http_status: 500
     # Deprecated alias: BINDING_SCHEMA_MISSING — serialized payloads carrying it remain decodable.
+  BINDING_SCHEMA_MODE_CONFLICT:
+    description: "Binding entry sets fields of more than one schema source (§5.12.2)"
+    http_status: 500
+  BINDING_STRICT_SCHEMA_INCOMPATIBLE:
+    description: "auto_schema is strict and an inferred schema fails the strict-mode check (§5.12.5)"
+    http_status: 500
   BINDING_FILE_INVALID:
     description: "Binding file parse error"
     http_status: 500
@@ -5594,6 +5541,11 @@ error_codes:
   # Middleware-related (MIDDLEWARE_*)
   MIDDLEWARE_CHAIN_ERROR:
     description: "Middleware chain execution failed"
+    http_status: 500
+
+  # Pipeline-related (PIPELINE_*)
+  PIPELINE_CONFIGURATION_ERROR:
+    description: "Pipeline configuration names a step or anchor that does not exist, or sets a field the step does not accept (§5.16.1)"
     http_status: 500
 
   # Version-related (VERSION_*)
@@ -5715,8 +5667,9 @@ custom_error_codes:
     examples:
       - module_id: "executor.validator.db_params"
         prefix: "DB_PARAMS"
-        error_code: "DB_PARAMS_INVALID_TABLE"
-        error_code: "DB_PARAMS_SQL_INJECTION"
+        error_codes:
+          - "DB_PARAMS_INVALID_TABLE"
+          - "DB_PARAMS_SQL_INJECTION"
 
   # Declare in Schema
   declaration:
@@ -5739,7 +5692,7 @@ custom_error_codes:
 
   # Framework error code priority
   priority:
-    - "Framework error code prefixes **MUST** be reserved and modules **MUST NOT** use them. The canonical set is the fourteen listed in [features/error-system.md](../features/error-system.md) § Error Code Constants — `ACL_`, `APPROVAL_`, `BINDING_`, `CALL_`, `CIRCULAR_`, `CONFIG_`, `DEPENDENCY_`, `ERROR_CODE_`, `FUNC_`, `GENERAL_`, `MIDDLEWARE_`, `MODULE_`, `SCHEMA_`, `VERSION_` — the set each SDK exports as `FRAMEWORK_ERROR_CODE_PREFIXES`."
+    - "Framework error code prefixes **MUST** be reserved and modules **MUST NOT** use them. The canonical set is the fourteen listed in [features/error-system.md](../features/error-system.md) § Error Code Constants — `ACL_`, `APPROVAL_`, `BINDING_`, `CALL_`, `CIRCULAR_`, `CONFIG_`, `DEPENDENCY_`, `ERROR_CODE_`, `FUNC_`, `GENERAL_`, `MIDDLEWARE_`, `MODULE_`, `SCHEMA_`, `VERSION_` — the set each SDK exports as `FRAMEWORK_ERROR_CODE_PREFIXES`. A framework code outside these prefixes (`EXECUTION_CANCELLED`, `RELOAD_FAILED`, `INVALID_MODULE_ID`, the `PIPELINE_*` and `STEP_*` codes) is reserved as an exact code by the `framework_codes` check below, not by its prefix."
     - "Module custom error codes **MUST NOT** conflict with framework error codes"
 
   # Collision detection algorithm
@@ -5816,7 +5769,9 @@ Implementations **MUST NOT** default retry failed module invocations. Retry beha
 | `BINDING_MODULE_NOT_FOUND` | **No** | Binding target module missing, needs config fix |
 | `BINDING_CALLABLE_NOT_FOUND` | **No** | Binding target callable missing, needs code fix |
 | `BINDING_NOT_CALLABLE` | **No** | Binding target not callable, needs code fix |
-| `BINDING_SCHEMA_MISSING` | **No** | Schema missing for binding, needs code fix |
+| `BINDING_SCHEMA_INFERENCE_FAILED` | **No** | Schema could not be inferred for binding, needs code or binding fix |
+| `BINDING_SCHEMA_MODE_CONFLICT` | **No** | Binding declares conflicting schema sources, needs config fix |
+| `BINDING_STRICT_SCHEMA_INCOMPATIBLE` | **No** | Inferred schema not strict-compatible, needs code fix |
 | `BINDING_FILE_INVALID` | **No** | Binding file parse error, needs config fix |
 | `CIRCULAR_DEPENDENCY` | **No** | Module dependency cycle, needs architecture fix |
 | `MIDDLEWARE_CHAIN_ERROR` | **No** | Middleware failed, needs code fix |
@@ -5861,7 +5816,9 @@ ModuleError (base error for all framework errors)
 ├── BindingModuleNotFoundError     # BINDING_MODULE_NOT_FOUND — Module path can't be imported
 ├── BindingCallableNotFoundError   # BINDING_CALLABLE_NOT_FOUND — Can't find target callable
 ├── BindingNotCallableError        # BINDING_NOT_CALLABLE — Target not callable
-├── BindingSchemaMissingError      # BINDING_SCHEMA_MISSING — Schema missing
+├── BindingSchemaInferenceFailedError   # BINDING_SCHEMA_INFERENCE_FAILED — Schema could not be inferred (alias: BindingSchemaMissingError)
+├── BindingSchemaModeConflictError      # BINDING_SCHEMA_MODE_CONFLICT — Conflicting schema sources
+├── BindingStrictSchemaIncompatibleError # BINDING_STRICT_SCHEMA_INCOMPATIBLE — Inferred schema not strict-compatible
 ├── BindingFileInvalidError        # BINDING_FILE_INVALID — Binding file parse error
 ├── CircularDependencyError        # CIRCULAR_DEPENDENCY — Circular dependency
 ├── DependencyNotFoundError        # DEPENDENCY_NOT_FOUND — Dependent module doesn't exist
@@ -6033,13 +5990,12 @@ middleware:
 # Binding configuration
 bindings:
   dir: "./bindings"                  # SHOULD, binding file directory (default: "./bindings")
-  files: []                          # MAY, specified binding file list
   pattern: "*.binding.yaml"          # SHOULD, file matching pattern (default: "*.binding.yaml")
 
 # ID Map configuration
 id_map:
   auto_detect: true                  # SHOULD (default: true). No effect — read by no implementation
-  overrides: {}                      # MAY, manual ID mapping overrides
+  overrides: null                    # MAY, path to an ID map file applied during discovery (§2.2)
 ```
 
 #### 9.1.1 Default Values Summary
@@ -6226,15 +6182,16 @@ APCORE_{SECTION}_{KEY}
 
 Rules:
   1. Prefix APCORE_ (uppercase)
-  2. Nested levels separated by _
-  3. All letters uppercase
-  4. Hyphens converted to underscores
+  2. Nested levels separated by a single _
+  3. An underscore inside a key name is written as a double __
+  4. All letters uppercase
+  5. Hyphens converted to underscores
 
 Examples:
-  extensions.root        → APCORE_EXTENSIONS_ROOT
-  schema.max_ref_depth   → APCORE_SCHEMA_MAX_REF_DEPTH
-  acl.default_effect     → APCORE_ACL_DEFAULT_EFFECT
-  logging.level          → APCORE_LOGGING_LEVEL
+  extensions.root               → APCORE_EXTENSIONS_ROOT
+  schema.max_ref_depth          → APCORE_SCHEMA_MAX__REF__DEPTH
+  executor.default_timeout      → APCORE_EXECUTOR_DEFAULT__TIMEOUT
+  executor.max_call_depth       → APCORE_EXECUTOR_MAX__CALL__DEPTH
   observability.tracing.enabled → APCORE_OBSERVABILITY_TRACING_ENABLED
 ```
 
@@ -6255,7 +6212,7 @@ A **path-typed** key is a configuration key whose value is a filesystem path. Th
 1. Implementations **MUST** expose this set through a public, readable accessor (a constant, function, or equivalent) so that a consumer can ask *which* configuration values are paths without hardcoding the answer.
 2. A key added to §9.1 whose value is a filesystem path **MUST** carry the `x-apcore-path` marker in the same change that adds it. A path-valued key without the marker is a specification defect, not an implicit exclusion.
 3. `extensions.roots` is list-valued: every element is path-typed, in both the bare-string form and the `{ root, namespace }` form. §9.2's scalar environment-override convention does not apply to it; an implementation **MUST NOT** invent a delimiter-separated `APCORE_EXTENSIONS_ROOTS` encoding.
-4. `bindings.pattern` is **NOT** path-typed. It is a glob-dialect pattern (A25, §9.2.3) matched against filenames *within* `bindings.dir` and is never resolved as a path in its own right. It is *pattern*-valued instead, and §9.2.3 declares that set the same way this section declares this one. `id_map.overrides` keys and values are module IDs, not paths.
+4. `bindings.pattern` is **NOT** path-typed. It is a glob-dialect pattern (A25, §9.2.3) matched against filenames *within* `bindings.dir` and is never resolved as a path in its own right. It is *pattern*-valued instead, and §9.2.3 declares that set the same way this section declares this one. `id_map.overrides` holds the path of an ID map file (§2.2); the module-ID overrides live inside that file.
 5. **An empty string is not a path.** When a path-typed key resolves to `""` — most commonly because an `APCORE_*` variable is *set but empty*, which §9.2 still treats as an override — implementations **MUST NOT** use it as a directory. The empty value **MUST** be discarded and resolution **MUST** fall through to the next tier, exactly as if the variable had been unset. An implementation **MAY** log a warning naming the key.
 
     Rationale: `export APCORE_ACL_ROOT=` and a variable inherited empty from a container spec are both "set", so without this rule an empty string would replace a directory the configuration file declared and then resolve, relative to the working directory, to the working directory itself — a legal path, but never the one an operator meant.
@@ -6376,7 +6333,7 @@ a specification defect, not an implicit exclusion.
 |---|---|---|---|
 | `bindings.pattern` (§5.12.6) | glob (**A25**) | the **filename** of each entry directly in `bindings.dir` — never the path, never recursively | sensitive |
 | `obs.redaction.sensitive_keys[]` — entries containing `*` or `?` (§10.6.1) | glob (**A25**) | the field name | **insensitive** |
-| `obs.redaction.regex_patterns[]` (§10.6.1) | **regex** | the string form of the field **value** | **insensitive** |
+| `obs.redaction.regex_patterns[]` (§10.6.1) | **regex** | the field **value**, when it is a string — other values are never converted to a string to be tested | **insensitive** |
 | `include_events[]`, `exclude_events[]`, `event_pattern` (§9.16) | glob (**A25**) | the event type | sensitive |
 | `system.control.reload_module` → `path_filter` (§6.7) | glob (**A25**) | the module ID | sensitive |
 | ACL `callers[]` / `targets[]` (§6.2) | module-id (**A08**) | the module ID | sensitive |
@@ -6634,7 +6591,7 @@ The apcore configuration system serves as a **Config Bus** — shared infrastruc
 | **Bus, not center** | apcore.Config does not own or mandate configuration; it provides registration, loading, validation, and access infrastructure. Packages that never call `register_namespace` are unaffected. |
 | **Zero-cost adoption** | Existing `apcore.yaml` files continue to work without modification. Namespace mode activates only when the file contains an `apcore:` top-level key. |
 | **Gradual integration** | Projects choose their integration depth: (1) apcore-only, (2) apcore + ecosystem packages, (3) apcore + third-party mount, (4) full unified file. Each level is independently valid. |
-| **Cross-language consistency** | All SDK implementations (Python, TypeScript, Rust, Go, Java) **MUST** implement the same namespace registration, loading, and validation semantics defined in this section. |
+| **Cross-language consistency** | All SDK implementations (Python, TypeScript, Rust) **MUST** implement the same namespace registration, loading, and validation semantics defined in this section. |
 | **Strict and flexible coexistence** | Strict mode enforces that every namespace is registered; flexible mode (default) passes through unknown namespaces with a warning. Both modes coexist within a single deployment. |
 
 #### 9.4.2 Terminology
@@ -7179,9 +7136,9 @@ In namespace mode, each registered namespace with an `env_prefix` has its own en
 
 **Naming convention:**
 
-The env variable convention depends on the `env_style` setting of the namespace registration (see §9.5.1). The default style is `"nested"`.
+The env variable convention depends on the `env_style` setting of the namespace registration (see §9.5.1). The default style is `"auto"`.
 
-**Nested style** (`env_style = "nested"`, default) — follows the same rules defined in §9.2:
+**Nested style** (`env_style = "nested"`) — follows the same rules defined in §9.2:
 
 ```text
 {ENV_PREFIX}_{SECTION}_{KEY}
@@ -7256,7 +7213,7 @@ Examples (namespace "reach", env_prefix "REACHFORGE", env_style "auto",
   REACHFORGE_NEW_UNKNOWN=x      → no match in defaults → nested fallback → reach.new.unknown
 ```
 
-> **When to use each style:** Use `"nested"` (default) when your config is purely hierarchical (e.g., `api.server.url`, `executor.default_timeout`). Use `"flat"` when your config is a flat set of snake_case keys without any nesting (e.g., `devto_api_key`, `llm_model`). Use `"auto"` when your config mixes flat snake_case keys with nested sub-sections — this is the recommended style for most real-world applications. `"auto"` requires `defaults` to be provided for accurate resolution; keys not found in `defaults` fall back to `"nested"` behavior.
+> **When to use each style:** Use `"nested"` when your config is purely hierarchical (e.g., `api.server.url`, `executor.default_timeout`). Use `"flat"` when your config is a flat set of snake_case keys without any nesting (e.g., `devto_api_key`, `llm_model`). Use `"auto"` — the default — when your config mixes flat snake_case keys with nested sub-sections; it is the recommended style for most real-world applications. `"auto"` requires `defaults` to be provided for accurate resolution; keys not found in `defaults` fall back to `"nested"` behavior.
 
 **max_depth** (default: 5) — limits the nesting depth for `"nested"` and `"auto"` styles. After `max_depth` segments are produced, remaining `_` characters are preserved as literal underscores. This prevents excessively deep nesting from long env var names. Ignored for `"flat"` style.
 
@@ -7276,7 +7233,7 @@ Examples (max_depth=5):
 Env prefix conflicts arise when one registered prefix is a string prefix of another, making it ambiguous which namespace owns a given env var. The following rules prevent this:
 
 1. Each `env_prefix` **MUST** be unique across all registered namespaces. Attempting to register a duplicate `env_prefix` **MUST** raise `CONFIG_ENV_PREFIX_CONFLICT`.
-2. Any `env_prefix` that starts with `APCORE_` (i.e., matches `^APCORE_[A-Z0-9]`) **MUST** raise `CONFIG_ENV_PREFIX_CONFLICT`. This prevents collision with the `apcore` namespace's `APCORE_` prefix. The double-underscore form (`^APCORE_[A-Z]`, e.g., `APCORE_MCP`) is explicitly permitted and dispatched via longest-prefix-match (see dispatch algorithm below).
+2. An `env_prefix` that begins with `APCORE_` — `APCORE_MCP`, `APCORE_OBSERVABILITY`, `APCORE_SYS` — is permitted; a conflict is a duplicate (rule 1), not a shared leading string. Such a prefix and the `apcore` namespace's `APCORE` both match its variables, and implementations resolve that by longest-prefix match (dispatch algorithm below).
 3. The prefix `APCORE` is reserved for the `apcore` namespace. Attempting to register it for another namespace **MUST** raise `CONFIG_NAMESPACE_RESERVED`.
 
 **Resolving the `APCORE` / `APCORE_MCP` ambiguity:**
@@ -7286,13 +7243,13 @@ A naive prefix scheme would make `APCORE_MCP` (for apcore-mcp) collide with `APC
 | Package | Namespace | Env Prefix | Why safe |
 |---------|-----------|------------|----------|
 | apcore | `apcore` | `APCORE` | Base prefix |
-| apcore-mcp | `apcore-mcp` | `APCORE_MCP` | `APCORE_MCP_` is not a valid `APCORE_` key (double `__` creates invalid path) |
-| apcore-a2a | `apcore-a2a` | `APCORE_A2A` | Same reasoning |
-| apcore-cli | `apcore-cli` | `APCORE_CLI` | Same reasoning |
+| apcore-mcp | `apcore-mcp` | `APCORE_MCP` | Longest-prefix match; no apcore key begins with `mcp.` |
+| apcore-a2a | `apcore-a2a` | `APCORE_A2A` | Longest-prefix match; no apcore key begins with `a2a.` |
+| apcore-cli | `apcore-cli` | `APCORE_CLI` | Longest-prefix match; no apcore key begins with `cli.` |
 | apflow | `apflow` | `APFLOW` | Completely disjoint prefix |
 | django-apcore | `django-apcore` | `DJANGO_APCORE` | No `DJANGO` namespace registered — no prefix collision |
 
-This works because the `APCORE_` prefix matcher stops at the first `_` boundary. An env var like `APCORE_MCP_TRANSPORT` starts with `APCORE_` (double underscore), which the `APCORE_` prefix handler would interpret as key path `apcore._mcp.transport` — not a valid apcore config path. The `APCORE_MCP_` prefix handler correctly claims it.
+`APCORE_MCP_TRANSPORT` begins with both `APCORE_` and `APCORE_MCP_`. Among registered prefixes the longer one wins, so the variable is dispatched to `apcore-mcp` as `transport`. Read through §9.2's conversion instead, the same variable names `mcp.transport`, which is no apcore key. A package prefix of the form `APCORE_<X>` is therefore safe exactly when no apcore key begins with `<x>.`.
 
 However, this convention introduces complexity. Implementations **MUST** use **longest-prefix-match** when dispatching env vars to namespaces:
 
@@ -7747,16 +7704,16 @@ All SDK implementations claiming Config Bus conformance **MUST** implement:
 
 #### 9.12.2 Language-Idiomatic Naming
 
-| Concept | Python | TypeScript | Rust | Go | Java |
-|---------|--------|------------|------|----|------|
-| Register | `register_namespace()` | `registerNamespace()` | `register_namespace()` | `RegisterNamespace()` | `registerNamespace()` |
-| Load | `Config.load()` | `Config.load()` | `Config::load()` | `config.Load()` | `Config.load()` |
-| Get | `config.get()` | `config.get()` | `config.get()` | `cfg.Get()` | `config.get()` |
-| Mount | `config.mount()` | `config.mount()` | `config.mount()` | `cfg.Mount()` | `config.mount()` |
-| Bind | `config.bind()` | `config.bind<T>()` | `config.bind::<T>()` | `config.Bind()` | `config.bind()` |
-| Namespace | `config.namespace()` | `config.namespace()` | `config.namespace()` | `cfg.Namespace()` | `config.namespace()` |
+| Concept | Python | TypeScript | Rust |
+|---------|--------|------------|------|
+| Register | `register_namespace()` | `registerNamespace()` | `register_namespace()` |
+| Load | `Config.load()` | `Config.load()` | `Config::load()` |
+| Get | `config.get()` | `config.get()` | `config.get()` |
+| Mount | `config.mount()` | `config.mount()` | `config.mount()` |
+| Bind | `config.bind()` | `config.bind<T>()` | `config.bind::<T>()` |
+| Namespace | `config.namespace()` | `config.namespace()` | `config.namespace()` |
 
-> **Parameter passing style:** Each language should use its idiomatic parameter passing convention. Python uses keyword arguments (`mount("ns", from_file="path")`), TypeScript uses an options object (`mount('ns', { fromFile: 'path' })`), Rust uses enum variants (`mount("ns", MountSource::File(...))`), Go uses functional options or helper constructors, and Java uses builder or overloaded methods. The semantic contract is identical; only the surface syntax varies.
+> **Parameter passing style:** Each language uses its idiomatic parameter passing convention. Python uses keyword arguments (`mount("ns", from_file="path")`), TypeScript uses an options object (`mount('ns', { fromFile: 'path' })`), and Rust uses enum variants (`mount("ns", MountSource::File(...))`). The semantic contract is identical; only the surface syntax varies.
 
 #### 9.12.3 Thread Safety
 
@@ -7776,7 +7733,7 @@ Implementations **MUST** use the following error codes (extensions to §8). All 
 | `CONFIG_INVALID` | Validation failure, including namespace-level schema validation errors and strict-mode unknown namespace errors | §8.2 |
 | `CONFIG_NAMESPACE_DUPLICATE` | `register_namespace` called twice for the same namespace name | This section |
 | `CONFIG_NAMESPACE_RESERVED` | Attempt to register `apcore` or `_config` | This section |
-| `CONFIG_ENV_PREFIX_CONFLICT` | Duplicate `env_prefix`, or `env_prefix` matches `^APCORE_[A-Z0-9]` (collides with the `apcore` namespace's `APCORE_` prefix) | This section |
+| `CONFIG_ENV_PREFIX_CONFLICT` | An `env_prefix` already registered by another namespace (§9.8.2 rule 1) | This section |
 | `CONFIG_MOUNT_ERROR` | Mount source file not found, invalid YAML in mount file, or mount to `_config` | This section |
 | `CONFIG_BIND_ERROR` | Typed deserialization failure in `bind()` — missing fields or type mismatch between namespace data and target type | This section |
 | `CONFIG_ENV_MAP_CONFLICT` | An env var name in `env_map` is already claimed by another `env_map` (global or namespace) | This section |
@@ -7796,7 +7753,7 @@ from apcore import Config
 Config.register_namespace(
     "apcore-mcp",
     schema=_resolve_schema_path("apcore-mcp.schema.json"),
-    env_prefix="APCORE_MCP",   # double underscore to avoid APCORE_ prefix collision
+    env_prefix="APCORE_MCP",   # shares APCORE_ with the apcore namespace; longest-prefix match dispatches it (§9.8.2)
     defaults={"transport": "streamable-http", "port": 8000},
 )
 ```
@@ -7806,7 +7763,7 @@ Config.register_namespace(
 | Package | Namespace | Env Prefix | Conflict? | Schema |
 |---------|-----------|------------|-----------|--------|
 | apcore (core) | `apcore` | `APCORE` | — | `apcore-config.schema.json` |
-| apcore-mcp | `apcore-mcp` | `APCORE_MCP` | Yes — `APCORE_` is a prefix of `APCORE_MCP_`; use `APCORE_MCP` to disambiguate | `apcore-mcp.schema.json` |
+| apcore-mcp | `apcore-mcp` | `APCORE_MCP` | Shared leading `APCORE_`, resolved by longest-prefix match (§9.8.2) | `apcore-mcp.schema.json` |
 | apcore-a2a | `apcore-a2a` | `APCORE_A2A` | Same as above | `apcore-a2a.schema.json` |
 | apcore-cli | `apcore-cli` | `APCORE_CLI` | Same as above | `apcore-cli.schema.json` |
 | apflow | `apflow` | `APFLOW` | No — disjoint from `APCORE_` | `apflow.schema.json` |
@@ -7816,7 +7773,7 @@ Config.register_namespace(
 | nestjs-apcore | `nestjs-apcore` | `NESTJS_APCORE` | No — no `NESTJS` namespace registered | `nestjs-apcore.schema.json` |
 | axum-apcore | `axum-apcore` | `AXUM_APCORE` | No — no `AXUM` namespace registered | `axum-apcore.schema.json` |
 
-> **Why `APCORE_MCP` and not `APCORE_MCP`?** The prefix `APCORE_` (for the `apcore` namespace) is a string prefix of `APCORE_MCP_`. An env var like `APCORE_MCP_TRANSPORT` is ambiguous: does it set `apcore → mcp.transport` or `apcore-mcp → transport`? The double-underscore convention (`APCORE_MCP_`) breaks the ambiguity because `APCORE_` never matches `APCORE_MCP_TRANSPORT` as an apcore key (the double underscore creates an invalid key path `_mcp.transport`). Framework integrations like `DJANGO_APCORE` do not have this problem because no `DJANGO` namespace is registered, so `DJANGO_APCORE_*` is unambiguous.
+> **Why `APCORE_MCP` can share `APCORE_`.** The prefix `APCORE_` (for the `apcore` namespace) is a string prefix of `APCORE_MCP_`, so `APCORE_MCP_TRANSPORT` could be read as `apcore → mcp.transport` or as `apcore-mcp → transport`. Dispatch among registered prefixes is by longest match (§9.8.2), which gives it to `apcore-mcp`, and no apcore key begins with `mcp.`, so the other reading names no apcore key. Framework integrations like `DJANGO_APCORE` do not meet the question at all: no `DJANGO` namespace is registered, so `DJANGO_APCORE_*` is unambiguous.
 
 #### 9.13.2 Third-Party Package Integration
 
@@ -8001,8 +7958,8 @@ Config.register_namespace(
 
 ```text
 APCORE_OBSERVABILITY_TRACING_STRATEGY=error_first
-APCORE_OBSERVABILITY_LOGGING_LEVEL=debug
-APCORE_OBSERVABILITY_METRICS_EXPORTER=prometheus
+APCORE_OBSERVABILITY_TRACING_ENABLED=true
+APCORE_OBSERVABILITY_TRACING_SAMPLING_RATE=0.25
 ```
 
 **Ecosystem adoption** — adapter packages **SHOULD** read from this namespace rather than maintaining their own observability defaults:
@@ -8068,7 +8025,7 @@ Config.register_namespace(
 
 ```text
 APCORE_SYS_ENABLED=true
-APCORE_SYS_USAGE_RETENTION__HOURS=336
+APCORE_SYS_EVENTS_THRESHOLDS_ERROR_RATE=0.05
 APCORE_SYS_EVENTS_ENABLED=false
 ```
 
@@ -8104,6 +8061,7 @@ The following are the canonical event type names, payload keys, and severity for
 | `apcore.module.toggled` | `module_health_changed` (toggle usage) | `info`/`warn` | `system.control.toggle_feature` | `module_id`, `enabled` |
 | `apcore.module.reloaded` | `config_changed` (reload usage) | `info` | `system.control.reload_module` | `module_id`, `previous_version`, `new_version` |
 | `apcore.config.updated` | `config_changed` (key-update usage) | `info` | `system.control.update_config` | `key`, `old_value`, `new_value` |
+| `apcore.config.reloaded` | — | `info` | `system.control.reload_module` with `reload_config: true`, in an implementation that offers it (D-44) | `reason` |
 | `apcore.health.error_threshold_exceeded` | `apcore.error.threshold_exceeded` | `error` | `PlatformNotifyMiddleware` | `module_id`, `error_rate`, `threshold` |
 | `apcore.health.latency_threshold_exceeded` | `apcore.latency.threshold_exceeded` | `warn` | `PlatformNotifyMiddleware` | `module_id`, `p99_latency_ms`, `threshold` |
 | `apcore.health.recovered` | `module_health_changed` (recovery usage) | `info` | `PlatformNotifyMiddleware` | `module_id`, `error_rate` |
@@ -8116,7 +8074,7 @@ The following are the canonical event type names, payload keys, and severity for
 | `apcore.circuit.opened` | — | `warn` | `CircuitBreakerMiddleware` | `module_id`, `caller_id`, `error_rate` |
 | `apcore.circuit.closed` | — | `info` | `CircuitBreakerMiddleware` | `module_id`, `caller_id`, `error_rate` |
 | `apcore.subscriber.circuit_opened` | — | `warn` | Event delivery (per-subscriber breaker) | `subscriber_id`, `subscriber_type`, `consecutive_failures` |
-| `apcore.subscriber.circuit_closed` | — | `info` | Event delivery (per-subscriber breaker) | `subscriber_id`, `subscriber_type` |
+| `apcore.subscriber.circuit_closed` | — | `info` | Event delivery (per-subscriber breaker) | `subscriber_id`, `subscriber_type`, `recovery_attempt` |
 | `apcore.event.delivery_failed` | — | `error` | Event bus (dead-letter path) | `subscriber_type`, `subscriber_id`, `original_event`, `error`, `attempt_count`, `timestamp` — the full payload is specified in [features/event-system.md](../features/event-system.md#dead-letter-event-apcoreeventdelivery_failed) § Dead-Letter Event on Permanent Failure, which is authoritative |
 
 > **Governance events.** `apcore.approval.decision`, `apcore.policy.override`, and `apcore.acl.denied` make the governance chain (ACL → policy → approval) observable on the event bus. They are emitted **only** when an event emitter is configured, are best-effort side channels (execution outcome **MUST NOT** depend on their delivery), and follow the skip contract: the approval gate emits `apcore.approval.decision` only when it actually adjudicates (never on a skipped gate), and `apcore.acl.denied` is **NOT** emitted during a dry-run `validate()` preflight. See §7.9 (Execution Policy) for the policy layer that drives `apcore.policy.override`.
@@ -8165,10 +8123,10 @@ tracing:
 
   # Span creation rules
   spans:
-    - name: "module.execute"
+    - name: "apcore.module.execute"
       attributes: [module_id, method, duration_ms, success]
 
-    - name: "module.validate"
+    - name: "apcore.module.validate"
       attributes: [module_id, valid, error_count]
 
   # Propagation methods
@@ -8555,57 +8513,33 @@ middleware:
 
 ### 11.2 Middleware Registration and Priority
 
+Middleware is registered in code, on the client or on the Executor. No key in `apcore.yaml` registers a
+middleware; the one middleware configuration can install is the tracing middleware of §10.1.1.
+
 ```yaml
 middleware_registration:
-  # Registration methods
+  # Registration (code only)
   methods:
-    # 1. Configuration file registration
-    config:
-      location: "apcore.yaml"
-      example:
-        middleware:
-          - id: "logging"
-            class: "apcore.middleware.LoggingMiddleware"
-            priority: 100
-            config:
-              level: "info"
+    add: "use(middleware)"                    # client or Executor
+    add_callback: "use_before(fn) / use_after(fn)"   # single-phase adapters, priority 100
+    remove: "remove(middleware)"              # removes exactly the registered instance
 
-          - id: "tracing"
-            class: "apcore.middleware.TracingMiddleware"
-            priority: 90
-
-          - id: "custom"
-            class: "my_project.middleware.CustomMiddleware"
-            priority: 50
-
-    # 2. Code registration (runtime)
-    code:
-      example: |
-        registry.add_middleware(
-            id="custom",
-            middleware=CustomMiddleware(),
-            priority=50
-        )
-
-  # Priority rules
+  # Priority is a property of the middleware, not an argument of use()
   priority:
     range: "0-1000"
-    higher_first: true           # Higher number executes first
+    higher_first: true           # Higher number executes first in the before phase
     default: 100
-
-    # Recommended values
-    recommended:
-      framework: "900-1000"      # Framework built-in
-      security: "800-899"        # Security-related
-      logging: "700-799"         # Logging/tracing
-      validation: "600-699"      # Additional validation
-      custom: "0-599"            # User-defined
+    ties: "Equal priorities keep registration order"
+    out_of_range: "Rejected at construction or registration"
 
   # Execution order example
   execution_order:
     request: "[1000] → [900] → [800] → [100] → Module"
     response: "Module → [100] → [800] → [900] → [1000]"
 ```
+
+Each SDK's method names and the duplicate-registration rules are in
+[middleware-system.md § Registration and Removal](../features/middleware-system.md#registration-and-removal).
 
 ### 11.3 Custom Extension Points
 
@@ -8654,10 +8588,9 @@ extension_points:
 
     code:
       example: |
-        registry.set_extension(
-            point="schema_loader",
-            implementation=RemoteSchemaLoader(url="https://...")
-        )
+        extensions = ExtensionManager()
+        extensions.register("discoverer", RemoteDiscoverer(url="https://..."))
+        extensions.apply(registry, executor)
 
   # Extension point chaining (multiple implementations)
   chaining:
@@ -8830,19 +8763,19 @@ Implementations **MUST** handle middleware edge cases according to the following
 | `after()` returns `None` | Keep `result` unchanged, continue chain | **MUST** |
 | `after()` returns partial field dict | Replace `result` entirely | **MUST** |
 | `after()` throws `ModuleError` | Trigger `on_error()` chain, replace original result | **MUST** |
-| `after()` returns value not matching `output_schema` | Trigger `SCHEMA_VALIDATION_ERROR` | **MUST** |
+| `after()` returns value not matching `output_schema` | Returned as is. `output_validation` (Step 9) runs before `middleware_after` (Step 10), so a replacement output from `after()` is not validated against `output_schema` (§7.4); a middleware that replaces the output owns its shape | **MUST** |
 
 #### 11.8.4 Timeout Related
 
 | Scenario | Behavior | Level |
 |------|------|------|
-| Timeout occurs in `before()` phase | Throw `MODULE_TIMEOUT`, trigger `on_error()` chain | **MUST** |
-| Timeout occurs in `execute()` phase | Throw `MODULE_TIMEOUT`, trigger `on_error()` chain | **MUST** |
-| Timeout occurs in `after()` phase | Throw `MODULE_TIMEOUT`, trigger `on_error()` chain | **MUST** |
-| `on_error()` handling timeout itself times out | Log ERROR, stop `on_error()` chain, throw original `MODULE_TIMEOUT` | **MUST** |
+| `before()` runs past the global deadline | `before()` is not interrupted. `execute` (Step 8) checks the deadline before invoking the module and throws `MODULE_TIMEOUT`; the `on_error()` chain runs | **MUST** |
+| `execute()` exceeds its timeout | Throw `MODULE_TIMEOUT` (§12.7.5); the `on_error()` chain runs | **MUST** |
+| `after()` runs past the global deadline | `after()` is not interrupted and no `MODULE_TIMEOUT` is thrown | **MUST** |
+| `on_error()` is slow | `on_error()` is not timed | **MUST** |
 
 **Note**:
-- Timeout timer should start at first `before()` call
+- The per-module timeout covers the module's `execute()` only. The global deadline is set by `context_creation` (Step 1) and inherited by nested calls, so time spent in Steps 2–7, `before()` included, consumes it
 - Timeout enforcement algorithm see §12.7.5 and algorithms.md A22
 
 ---
@@ -9024,7 +8957,9 @@ Interface: Executor
    * and module.preview() for advisory warnings and predicted changes
    * (§12.8.5.1).
    *
-   * MUST NOT: execute module code, run middleware, or modify external state.
+   * MUST NOT: invoke the module's execute(), run middleware, invoke the
+   * ApprovalHandler, or modify external state. The module's own preflight()
+   * and preview() are the only module code it runs (§12.8.5.1).
    *
    * All check failures are collected into the result rather than thrown,
    * so the caller_id can see every problem in a single round-trip.
@@ -9044,7 +8979,12 @@ Interface: Executor
  * written against ValidationResult can read it unchanged.
  */
 Type: PreflightCheckResult
-  check: String              // "module_id" | "module_lookup" | "call_chain" | "acl" | "approval" | "schema" | "module_preflight" | "module_preview"
+  check: String              // "executor_binding" | "module_id" | "module_preflight" | "module_preview",
+                             // or the check a pure pipeline step reports under: context_creation → "context",
+                             // call_chain_guard → "call_chain", module_lookup → "module_lookup",
+                             // acl_check → "acl", approval_gate → "approval", input_validation → "schema";
+                             // any other pure step (output_validation, return_result, a custom step)
+                             // reports under its own step name
   passed: Boolean
   error: Map?                // Error details when passed=false; null when passed=true
   warnings: List<String>     // Non-fatal advisory messages (default: empty list)
@@ -9154,14 +9094,21 @@ An implementation in another language applies the same rule: the canonical name 
 
 #### Standard Registry Event Names
 
-Registry implementations **MUST** support exactly two standard events:
+The registry event set is closed (D-80). Registry implementations **MUST** support `register` and
+`unregister`, and **MUST** support `file_changed` when their `watch()` emits it:
 
 | Event Name | Triggered | Callback Signature |
 |-----------|-----------|-------------------|
 | `"register"` | After module successfully registered | `(module_id, module) -> None` |
 | `"unregister"` | Before module is removed | `(module_id, module) -> None` |
+| `"file_changed"` | A watched file changed and `watch()` does not re-register the module itself | `(module_id, {file_path}) -> None` |
 
-All SDKs **MUST** export these event names as named constants (e.g., TypeScript: `REGISTRY_EVENTS.REGISTER`, Python: `REGISTRY_EVENTS["REGISTER"]`, Rust: `RegistryEvents::REGISTER`). Consumers **MUST NOT** hardcode event name strings.
+An implementation whose `watch()` re-registers the module emits `unregister` / `register` and **MUST NOT**
+also emit `file_changed` for the same change. `on` / `off` **MUST** reject any event name the
+implementation does not support with `GENERAL_INVALID_INPUT`. The full contract is in
+[registry-system.md § Registry events](../features/registry-system.md#registry-events).
+
+All SDKs **MUST** export the event names they support as named constants (e.g., TypeScript: `REGISTRY_EVENTS.REGISTER`, Python: `REGISTRY_EVENTS["REGISTER"]`, Rust: `RegistryEvents::REGISTER`). Consumers **MUST NOT** hardcode event name strings.
 
 #### Error Code Constants Export Requirement
 
@@ -9264,8 +9211,8 @@ Consistency Test Suite:
    - $ref reference resolution (including circular reference detection)
 
 3. ACL Tests:
-   - Wildcard matching (*, **)
-   - deny takes precedence over allow
+   - Wildcard matching (`*` matches any run of characters, `.` included — Algorithm A08)
+   - First-match-wins evaluation: rule order, not effect, decides
    - Default policy takes effect
    - Identity type matching (user, service, agent, api_key, system)
 
@@ -9294,10 +9241,10 @@ Consistency Test Suite:
    - Unknown module → module_lookup check failed, early return
    - ACL denial → acl check failed, valid=false
    - ACL denial → NO module_preflight / module_preview check, predicted_changes empty (§12.8.5.1)
-   - Module with requires_approval → requiresApproval=true, approval check still passed
+   - Module with requires_approval → requires_approval=true; the ApprovalHandler is not invoked
    - Schema validation failure → schema check failed with error details
    - PreflightResult.errors matches filtered failed checks (duck-type ValidationResult)
-   - validate() MUST NOT execute module code or run middleware
+   - validate() MUST NOT invoke the module's execute() or run middleware
 ```
 
 ### 12.5 Implementation Roadmap
@@ -9498,7 +9445,7 @@ Return:
 | Operation A | Operation B | Behavior | Description |
 |--------|--------|------|------|
 | `call()` | `unregister()` | If A already started execution, continue to completion; if not started, throw `MODULE_NOT_FOUND` | **MUST** |
-| `register()` | `register()` same ID | Latter throws `GENERAL_INVALID_INPUT` | **MUST** |
+| `register()` | `register()` same ID | Latter throws `DUPLICATE_MODULE_ID` | **MUST** |
 | `unregister()` | `unregister()` same ID | Idempotent, succeed silently | **MUST** |
 | `get()` | `unregister()` | If get executes first, return instance; if unregister executes first, throw `MODULE_NOT_FOUND` | **SHOULD** |
 
@@ -9639,7 +9586,7 @@ class DatabaseModule:
 ### 12.8 Executor.validate() Cross-Language Implementation Guide
 
 The `validate()` preflight method (§12.2, SHOULD level) runs Steps 1–5 and Step 7 of the Executor pipeline
-(plus the optional module-level `preflight()` and `preview()` of §12.8.5.1) without executing module code or middleware. This section provides language-specific guidance for
+(plus the optional module-level `preflight()` and `preview()` of §12.8.5.1) without invoking the module's `execute()` or middleware. This section provides language-specific guidance for
 SDK implementers.
 
 #### 12.8.1 Design Principles
@@ -9867,7 +9814,7 @@ Migration types:
 
 **Compatibility Rules:**
 
-1. **SDK MUST** ignore unknown configuration fields and Schema properties (forward compatibility foundation)
+1. **SDK MUST** load a configuration carrying keys it does not declare (forward compatibility foundation): under the default `_config.strict: false` an unknown key is retained and readable through `get()`, and under `_config.strict: true` it is rejected with `CONFIG_INVALID` (§9.6.3, §9.10). Documents whose key set this specification closes — an ACL rule (§6.1.5), an execution policy (§7.9.1), the `pipeline` section (§5.16.1) — reject an unknown key regardless of `_config.strict`. **SDK MUST** ignore unknown Schema properties.
 2. **SDK MUST** provide reasonable defaults for all new fields (backward compatibility foundation)
 3. **SDK SHOULD** gracefully handle unknown error codes
 4. **SDK MUST NOT** remove published public APIs in minor/patch versions
@@ -10066,6 +10013,7 @@ The specification is versioned independently of the SDK release line (`0.x`); `C
 
 | Version | Date | Summary | Records |
 |---|---|---|---|
+| 1.62.0 | 2026-09-30 | The specification is corrected to behaviour all three SDKs share, including MUSTs no implementation met: reserved words apply to the first segment only and `__` is allowed (§2.5, §2.7); entry-point failures raise `MODULE_LOAD_ERROR` (§5.2); schema inference follows each language's type source (§5.12.5); `APCORE_`-prefixed `env_prefix` values are allowed, only duplicates are rejected (§9.8.2); unknown configuration fields are retained unless `_config.strict` (§13.5); duplicate registration raises `DUPLICATE_MODULE_ID` (§12.7.4); `after()` output is not re-validated and timeouts wrap `execute()` only (§11.8); `validate()` must not invoke `execute()` (§12.2). No behaviour change. | D-132 |
 | 1.61.0 | 2026-09-30 | **Security:** providers are bound into the gate they configure, and `governance_state()` reports what the running gate holds (§6.6.5.5); `configure` cannot weaken `acl_check` / `approval_gate` (§5.16.1); built-in logging middleware logs redacted values (§10.6.1 req. 5). | D-129 – D-131 |
 | 1.60.0 | 2026-09-30 | Editorial: history and implementation narrative removed from normative text; revision history condensed; the declarative-configuration and ephemeral-module documents merged into this specification. No behaviour change. | — |
 | 1.59.0 | 2026-09-18 | The deprecation warning is emitted when a definition is read, and its dedupe key includes the notice. | D-89 |

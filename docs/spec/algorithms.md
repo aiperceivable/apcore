@@ -466,10 +466,12 @@ Steps:
   2. Otherwise, auto-infer:
      a. file ← filename from file_path (without extension)
      b. class_name ← convert file from snake_case to PascalCase
-     c. If language == "python": search file for class inheriting from Module
-     d. If found unique match → return that class
-     e. If found multiple matches → throw AMBIGUOUS_ENTRY_POINT error
-     f. If no match found → throw NO_MODULE_CLASS error
+     c. If the language loads module files at runtime: candidates ← the classes the
+        file provides that satisfy the Module interface (protocol-spec §5.6 — duck-typed,
+        no base class is required)
+     d. If exactly one candidate → return that class
+     e. If more than one candidate → throw MODULE_LOAD_ERROR (ambiguous entry point)
+     f. If no candidate → throw MODULE_LOAD_ERROR (no module class in the file)
   3. Return entry_point
 ```
 
@@ -484,8 +486,8 @@ Steps:
 
 - `entry_point` format is `"filename:ClassName"` (e.g., `"db_params:DbParamsValidator"`)
 - snake_case → PascalCase conversion must follow acronym rules (§2.3)
-- In Python implementation, "finding class inheriting from Module" can be done via AST parsing or reflection
-- Other languages may have different class discovery mechanisms (e.g., Rust trait implementation, Go interface implementation)
+- Candidates are found by reflection over the loaded file (Python `inspect`, ECMAScript module exports) and matched by the Module interface's shape, not by inheritance
+- A language that cannot load a module file at runtime (Rust) resolves only the entry-point name — from `entry_point`, or by step 2b — and obtains the module from an application-supplied factory keyed by that name (protocol-spec §5.2)
 
 ---
 
