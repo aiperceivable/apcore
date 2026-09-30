@@ -1,12 +1,12 @@
 ---
-description: "The canonical, normative apcore protocol specification (RFC 2119, v1.60.0): module, schema, naming, ACL, approval, error, config, and observability requirements for all conforming SDKs."
+description: "The canonical, normative apcore protocol specification (RFC 2119, v1.61.0): module, schema, naming, ACL, approval, error, config, and observability requirements for all conforming SDKs."
 ---
 
 # apcore — AI-Perceivable Core Standard Specification
 
 > **Canonical specification.** This document is the single normative source for the apcore protocol. Where any other document disagrees with it, this document wins.
 
-> Version: 1.60.0
+> Version: 1.61.0
 > Status: Active — the 1.x line adds requirements compatibly; breaking changes are reserved for 2.0
 > Last Updated: 2026-09-30
 
@@ -3764,6 +3764,8 @@ pipeline:
 
 **`configure`.** Each key is a step name; each value overrides fields of that step, which keeps its position (requirement 3). The configurable field set is closed — exactly `match_modules`, `ignore_errors`, `pure` and `timeout_ms` (`$defs/ConfigurableStepFields`) — and it applies to any step present, built-in steps included. Implementations **MUST** fail the load with `PIPELINE_CONFIGURATION_ERROR`, naming every offending key, when an entry carries any other key or names a step not present in the strategy.
 
+**Governance gates cannot be weakened by `configure` (D-130).** On the built-in gate steps `acl_check` and `approval_gate`, implementations **MUST** fail the load with `PIPELINE_CONFIGURATION_ERROR`, naming the step and the key, for `ignore_errors: true` and for any `match_modules` (an empty list included), and on `approval_gate` for `pure: true`. The same values **MUST** be rejected when set through a programmatic step-configuration API. `timeout_ms` remains configurable, and writing a field's default value is accepted. Rationale: `ignore_errors` turns a denial into a warning and runs the call, `match_modules` exempts every module it does not match, and `pure: true` makes `validate()` run the approval gate and consult the `ApprovalHandler` during a dry run (§12.8). Removing a gate step stays possible and warns (requirement 7) — an explicit removal is visible in `governance_state()`, a weakened gate is not. Pinned by `../../conformance/fixtures/gate_step_configure.json`.
+
 The other step-entry fields are structural (`name`, `type`, `handler`, `after`, `before`) or constructor arguments (`config`), and none of them means anything for a step that already exists. A step's `requires` / `provides` capability contract is declared by its implementation and is not configurable: configuration able to rewrite it would disable the `PIPELINE_DEPENDENCY_ERROR` check ([execution-pipeline.md § ExecutionStrategy](../features/execution-pipeline.md#executionstrategy)).
 
 The canonical spelling of every field is snake_case, as in the schema. An implementation **MAY** additionally accept its idiomatic spelling (for example camelCase) at its programmatic API boundary, but **MUST** accept the canonical spelling; a configuration file carries the canonical spelling only.
@@ -3795,7 +3797,7 @@ The optional `validation.pipeline.*` limits bound the step names and timeouts th
 
 | Error Code | Trigger Condition |
 |--------|---------|
-| `PIPELINE_CONFIGURATION_ERROR` | `remove` or `configure` names a step not in the strategy; a `configure` key outside the four configurable fields; a `steps` key outside the ten; an entry with no anchor; an anchor naming no step |
+| `PIPELINE_CONFIGURATION_ERROR` | `remove` or `configure` names a step not in the strategy; a `configure` key outside the four configurable fields; `ignore_errors: true` or `match_modules` configured on `acl_check` / `approval_gate`, or `pure: true` on `approval_gate`; a `steps` key outside the ten; an entry with no anchor; an anchor naming no step |
 | `PIPELINE_HANDLER_NOT_SUPPORTED` | `handler` in an implementation that cannot load code at runtime |
 | `STEP_NOT_REMOVABLE` | `remove` names a step the strategy marks non-removable |
 | `STEP_NAME_DUPLICATE` | An inserted step's name is already in the strategy |
@@ -4788,11 +4790,11 @@ Eight observations, each a plain fact about the executor's current state, plus o
 |---|---|
 | `control_modules_registered` | At least one `system.control.*` module is in the registry. This is a fact about the **registry**, not about configuration: the two `sys_modules` flags of §6.6.3 are the usual cause, but internal or manual registration can produce one without them, and the accessor **MUST** report what is registered either way. |
 | `read_modules_registered` | At least one read-only `system.*` module (`system.health.*`, `system.usage.*`, `system.manifest.*`) is in the registry. |
-| `acl_configured` | An ACL object is attached to this executor. |
+| `acl_configured` | An ACL is in force for this executor: the built-in ACL gate of the running strategy holds an ACL, or — when no built-in ACL gate is wired — an ACL is attached to the executor (§6.6.5.5). |
 | `builtin_acl_gate_wired` | The **running** strategy contains a step the executor recognises as the built-in ACL gate. See §6.6.5.2 — this is a type/capability test, never a name test. |
-| `approval_handler_configured` | An `ApprovalHandler` is attached. |
+| `approval_handler_configured` | An `ApprovalHandler` is in force: the built-in approval gate of the running strategy holds one, or — when no built-in approval gate is wired — one is attached to the executor (§6.6.5.5). |
 | `builtin_approval_gate_wired` | The running strategy contains a step recognised as the built-in approval gate. |
-| `policy_strict` | An `ExecutionPolicy` with `strict = true` (§7.9) is attached, which makes the approval gate fail closed **for a call the gate engages on**. |
+| `policy_strict` | An `ExecutionPolicy` with `strict = true` (§7.9) is in force — held by the built-in approval gate of the running strategy, or attached to the executor when no such gate is wired (§6.6.5.5) — which makes the approval gate fail closed **for a call the gate engages on**. |
 | `all_control_modules_require_approval` | **Every** registered `system.control.*` module declares `annotations.requires_approval = true`. Read from module metadata; `false` when no control module is registered. See §6.6.5.1.1 — without this the approval half of the derived flag is unsound. |
 | `unprotected_control_surface` | Derived; defined below. |
 
@@ -4864,6 +4866,18 @@ Pinned by `../../conformance/fixtures/governance_state.json`. Every field, the d
 - **control modules with a custom step named `acl_check` that is not the built-in gate** — `builtin_acl_gate_wired` MUST be `false`.
 
 The last case is the one that decides whether an implementation satisfies §6.6.5.2 or merely appears to.
+
+##### 6.6.5.5 Providers reach the gate they configure
+
+An ACL, an `ApprovalHandler` and an `ExecutionPolicy` are *providers*; the built-in `acl_check` and `approval_gate` steps are where they take effect. The two **MUST NOT** drift apart (D-129):
+
+1. **Binding.** A provider given to an executor — through its constructor or through `set_acl()` / `set_approval_handler()` / the policy setter — **MUST** be bound into the corresponding built-in gate step of the running strategy, located by type (§6.6.5.2). This holds however the strategy was supplied: by default, by preset name, from a `pipeline:` section, or as a pre-built strategy instance. A provider given to the executor replaces the one the step already held. An executor given no provider leaves the step's provider unchanged.
+2. **Strategy replacement.** When the running strategy is replaced, the executor's providers **MUST** be bound into the new strategy's built-in gate steps by the same rule.
+3. **Reporting.** `governance_state()` **MUST** report what the running built-in gate step holds, not what the executor was given (§6.6.5.1). A gate enforcing a provider the executor never saw is reported as configured; a provider the executor holds that no running gate enforces is reported as configured and not wired.
+
+Rationale: `acl_configured && builtin_acl_gate_wired` is read as "this gate stands in front of the call". If a provider can sit on the executor while the running gate holds nothing, the pair reports a gate that does not exist — the false `false` §6.6.5.2 forbids — and the call runs ungated.
+
+Pinned by `../../conformance/fixtures/gate_provider_binding.json`.
 
 ### 6.7 Canonical System Module Catalogue
 
@@ -8463,6 +8477,13 @@ descended into, and sensitive fields inside it are still redacted.
    rules as an input; a two-argument signature that cannot receive them does not satisfy
    requirement 1.
 
+5. **Built-in logging middleware logs the captured values (D-131).** A logging middleware
+   shipped by an implementation **MUST** log `context.redacted_inputs` and
+   `context.redacted_output` — never the raw `inputs` or `output` it is handed — so that the
+   `x-sensitive` rule and the configured rules both apply to what it writes. A field marked
+   `x-sensitive` **MUST NOT** appear in its output unredacted, whether or not a redaction
+   configuration was supplied.
+
 ### 10.7 Sampling Strategy
 
 Implementations **MUST** support the following four sampling strategies, named by
@@ -10045,6 +10066,7 @@ The specification is versioned independently of the SDK release line (`0.x`); `C
 
 | Version | Date | Summary | Records |
 |---|---|---|---|
+| 1.61.0 | 2026-09-30 | **Security:** providers are bound into the gate they configure, and `governance_state()` reports what the running gate holds (§6.6.5.5); `configure` cannot weaken `acl_check` / `approval_gate` (§5.16.1); built-in logging middleware logs redacted values (§10.6.1 req. 5). | D-129 – D-131 |
 | 1.60.0 | 2026-09-30 | Editorial: history and implementation narrative removed from normative text; revision history condensed; the declarative-configuration and ephemeral-module documents merged into this specification. No behaviour change. | — |
 | 1.59.0 | 2026-09-18 | The deprecation warning is emitted when a definition is read, and its dedupe key includes the notice. | D-89 |
 | 1.58.0 | 2026-09-18 | The audit-entry schema declares `correlation_id`. | D-111 |

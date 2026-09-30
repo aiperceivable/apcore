@@ -66,6 +66,22 @@
         "rust"
       ],
       "why": "§6.1.4.1: the case carries `targets_raw` as a bare string with `skip_if_unrepresentable`, exercising the typo that grants access — a `callers` written as a string is iterable in several host languages, so `\"admin.*\"` iterates character by character and its `*` matches everything. Measured in apcore-python, that typo granted an unrelated caller under `default_effect: deny`. apcore-rust cannot represent the value at all: `ACLRule::targets` is `Vec<String>`, so serde rejects a bare string at deserialization and the compiler rejects one in a struct literal. §6.1.4.1 says such an implementation “satisfies this clause by construction and needs no runtime check”, and the driver records the same reasoning in `SKIPPED_UNREPRESENTABLE`. Required to skip, not failing to run. Recorded 2026-09-11, after check_case_pinning.py stopped under-measuring and surfaced these four as gaps for the first time."
+    },
+    {
+      "fixture": "gate_provider_binding.json",
+      "case": "executor_acl_overrides_instance_acl",
+      "sdks": [
+        "rust"
+      ],
+      "why": "`strategy_form: instance:own_acl` builds a strategy whose gate step holds its own provider. apcore-rust's built-in gate steps are zero-size and read the ACL / handler / policy from the executor through the PipelineContext on every call, so a gate cannot hold a provider and the form is not constructible; the driver's INEXPRESSIBLE_FORMS list names both cases and `gate_steps_cannot_hold_a_provider` fails the moment a gate gains a provider field. Python and TypeScript pin both."
+    },
+    {
+      "fixture": "gate_provider_binding.json",
+      "case": "instance_own_acl_is_reported",
+      "sdks": [
+        "rust"
+      ],
+      "why": "`strategy_form: instance:own_acl` builds a strategy whose gate step holds its own provider. apcore-rust's built-in gate steps are zero-size and read the ACL / handler / policy from the executor through the PipelineContext on every call, so a gate cannot hold a provider and the form is not constructible; the driver's INEXPRESSIBLE_FORMS list names both cases and `gate_steps_cannot_hold_a_provider` fails the moment a gate gains a provider field. Python and TypeScript pin both."
     }
   ]
 }

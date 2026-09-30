@@ -321,7 +321,7 @@ The following requirements are not met by the current SDK releases (apcore-pytho
 
 ## 8. Conformance Test Fixtures
 
-The repository ships **80 cross-language fixture files** under `conformance/fixtures/` covering **982 test cases**. `conformance-integrity` checks these two numbers, §8.1's per-fixture counts and its Total row against the fixtures themselves. Each fixture is consumed by all three SDK test runners (§5.2). An SDK declaring a conformance level **MUST** pass every fixture whose tested feature is required at that level (§5.3).
+The repository ships **82 cross-language fixture files** under `conformance/fixtures/` covering **999 test cases**. `conformance-integrity` checks these two numbers, §8.1's per-fixture counts and its Total row against the fixtures themselves. Each fixture is consumed by all three SDK test runners (§5.2). An SDK declaring a conformance level **MUST** pass every fixture whose tested feature is required at that level (§5.3).
 
 ### 8.1 Fixture Inventory
 
@@ -363,6 +363,8 @@ The repository ships **80 cross-language fixture files** under `conformance/fixt
 | [`event_management_hardening`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/event_management_hardening.json) | 15 | SubscriberFactory parity, built-in subscribers |
 | [`event_naming`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/event_naming.json) | 7 | Event-name canonicalization (spec §9.16, D-34) |
 | [`executor_trace_cancellation`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/executor_trace_cancellation.json) | 1 | `call_with_trace()` cancellation short-circuit (D-19 / D-20) |
+| [`gate_provider_binding`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/gate_provider_binding.json) | 9 | Governance providers reach the gate they configure: an ACL, handler or policy given to the executor is enforced by the running built-in gate however the strategy was supplied, and `governance_state()` reports what the gate holds (spec §6.6.5.5, D-129) |
+| [`gate_step_configure`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/gate_step_configure.json) | 8 | `configure` cannot weaken `acl_check` / `approval_gate`: `ignore_errors: true`, `match_modules` and `pure: true` are rejected at load (spec §5.16.1, D-130) |
 | [`governance_state`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/governance_state.json) | 13 | `Executor.governance_state()` — configured vs. actually wired (spec §6.6.5) |
 | [`identity_system`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/identity_system.json) | 8 | Identity construction and propagation (spec §5.7) |
 | [`multi_root_discovery`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/multi_root_discovery.json) | 6 | `extensions.roots` multi-root discovery with namespace isolation (§9.1.1, D-70) |
@@ -407,7 +409,7 @@ The repository ships **80 cross-language fixture files** under `conformance/fixt
 | [`usage_contract`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/usage_contract.json) | 11 | `system.usage.*` value semantics no schema can assert (spec §6.7.1) |
 | [`usage_exporter`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/usage_exporter.json) | 3 | `UsageExporter` push interface (D-55) |
 | [`version_negotiation`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/version_negotiation.json) | 10 | Version negotiation (Algorithm A14) |
-| **Total** | **982** | **80 fixtures** |
+| **Total** | **999** | **82 fixtures** |
 
 ### 8.2 Loading Fixtures from a Test Runner
 

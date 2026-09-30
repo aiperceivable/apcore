@@ -46,6 +46,7 @@ Decision records are history, not guidance; protocol-spec wins on any conflict.
 | Document | Status | Description |
 |---|---|---|
 | [Decision Register](./decision-register.md) | Reference | Every decision ID with its status, spec version and record. Start here. |
+| [Divergence decisions (D-129 onward)](./2026-09-divergence-decisions.md) | Historical | Spec/SDK divergences found by the 2026-09-30 documentation audit. |
 | [Cross-language alignment decisions (D-01 – D-65)](./2026-05-decision-log.md) | Historical | The 2026-05 sync run. |
 | [Consistency audit decisions (E-01 – E-03)](./2026-09-decision-log.md) | Historical | The 2026-09-05 consistency audit. |
 | [Configuration surface decisions (D-66 – D-73)](./2026-09-config-surface-decisions.md) | Historical | The apcore#118 configuration-key audit. |

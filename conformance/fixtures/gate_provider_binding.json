@@ -1,0 +1,62 @@
+{
+  "description": "Governance providers reach the gate they configure (PROTOCOL_SPEC 6.6.5.4, decision D-129). An ACL, ApprovalHandler or ExecutionPolicy given to an Executor MUST be bound into the built-in gate step of the RUNNING strategy, however that strategy was supplied -- by preset name, by default, or as a pre-built strategy instance -- and governance_state() MUST report the provider the running gate step actually holds. Before D-129 an explicit strategy instance received none of the executor's providers: a deny-all ACL let every call through while governance_state() reported acl_configured and builtin_acl_gate_wired as true.",
+  "driver_contract": {
+    "path": "Construct a real Executor through the public constructor, register the module `demo.target` (a trivial module returning {\"ok\": true}), make one real call as caller `@external` (no caller_id), then read governance_state(). Asserting only governance_state() is not enough: the defect this fixture pins is a call that RAN while the accessor said a gate stood in front of it.",
+    "strategy_form": "`preset:standard` -- pass the preset NAME. `preset:internal` -- pass the `internal` preset name (acl_check and approval_gate removed). `instance:bare` -- build the standard strategy with the SDK's public builder WITHOUT passing any provider, then pass that instance to the Executor. `instance:own_acl` -- build the standard strategy passing `strategy_acl` to the builder, then pass the instance. `default` -- pass no strategy.",
+    "providers": "`executor_acl` / `strategy_acl`: `deny_all` = an ACL with no rules and default_effect deny; `allow_all` = one rule callers [\"*\"] targets [\"*\"] effect allow, default_effect deny; null = none. `approval_handler`: `always_deny` = the SDK's AlwaysDenyHandler; null = none. `policy_strict`: true = ExecutionPolicy(strict=true) passed to the Executor.",
+    "module": "`requires_approval` sets annotations.requires_approval on demo.target.",
+    "expected": "`call` is `ok` (the call returned {\"ok\": true}) or the error_code the call raised. `governance` lists the governance_state() fields asserted; fields not listed are not asserted by that case."
+  },
+  "test_cases": [
+    {
+      "id": "preset_name_binds_acl",
+      "setup": {"strategy_form": "preset:standard", "executor_acl": "deny_all", "strategy_acl": null, "approval_handler": null, "policy_strict": false, "requires_approval": false},
+      "expected": {"call": "ACL_DENIED", "governance": {"acl_configured": true, "builtin_acl_gate_wired": true}}
+    },
+    {
+      "id": "default_strategy_binds_acl",
+      "setup": {"strategy_form": "default", "executor_acl": "deny_all", "strategy_acl": null, "approval_handler": null, "policy_strict": false, "requires_approval": false},
+      "expected": {"call": "ACL_DENIED", "governance": {"acl_configured": true, "builtin_acl_gate_wired": true}}
+    },
+    {
+      "id": "instance_binds_executor_acl",
+      "note": "The D-129 defect: a pre-built instance never received the executor's ACL, and the call ran.",
+      "setup": {"strategy_form": "instance:bare", "executor_acl": "deny_all", "strategy_acl": null, "approval_handler": null, "policy_strict": false, "requires_approval": false},
+      "expected": {"call": "ACL_DENIED", "governance": {"acl_configured": true, "builtin_acl_gate_wired": true}}
+    },
+    {
+      "id": "executor_acl_overrides_instance_acl",
+      "note": "API argument beats the provider already on the step (same precedence as set_acl()).",
+      "setup": {"strategy_form": "instance:own_acl", "executor_acl": "deny_all", "strategy_acl": "allow_all", "approval_handler": null, "policy_strict": false, "requires_approval": false},
+      "expected": {"call": "ACL_DENIED", "governance": {"acl_configured": true, "builtin_acl_gate_wired": true}}
+    },
+    {
+      "id": "instance_own_acl_is_reported",
+      "note": "The step enforces an ACL the executor was never given; governance_state() MUST report what the running gate holds, not the executor field.",
+      "setup": {"strategy_form": "instance:own_acl", "executor_acl": null, "strategy_acl": "deny_all", "approval_handler": null, "policy_strict": false, "requires_approval": false},
+      "expected": {"call": "ACL_DENIED", "governance": {"acl_configured": true, "builtin_acl_gate_wired": true}}
+    },
+    {
+      "id": "instance_without_any_acl",
+      "setup": {"strategy_form": "instance:bare", "executor_acl": null, "strategy_acl": null, "approval_handler": null, "policy_strict": false, "requires_approval": false},
+      "expected": {"call": "ok", "governance": {"acl_configured": false, "builtin_acl_gate_wired": true}}
+    },
+    {
+      "id": "instance_binds_approval_handler",
+      "setup": {"strategy_form": "instance:bare", "executor_acl": null, "strategy_acl": null, "approval_handler": "always_deny", "policy_strict": false, "requires_approval": true},
+      "expected": {"call": "APPROVAL_DENIED", "governance": {"approval_handler_configured": true, "builtin_approval_gate_wired": true}}
+    },
+    {
+      "id": "instance_binds_strict_policy",
+      "note": "No handler, strict policy: the gate MUST fail closed, which it can only do if the policy reached the step.",
+      "setup": {"strategy_form": "instance:bare", "executor_acl": null, "strategy_acl": null, "approval_handler": null, "policy_strict": true, "requires_approval": true},
+      "expected": {"call": "APPROVAL_DENIED", "governance": {"policy_strict": true, "builtin_approval_gate_wired": true}}
+    },
+    {
+      "id": "preset_without_gates_still_reports_configured",
+      "note": "Unchanged semantics: configured but not wired is reported as such, and the call runs.",
+      "setup": {"strategy_form": "preset:internal", "executor_acl": "deny_all", "strategy_acl": null, "approval_handler": null, "policy_strict": false, "requires_approval": false},
+      "expected": {"call": "ok", "governance": {"acl_configured": true, "builtin_acl_gate_wired": false}}
+    }
+  ]
+}

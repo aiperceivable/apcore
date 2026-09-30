@@ -9,7 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-> Ships `PROTOCOL_SPEC` **v1.60.0** — an editorial release: no behaviour change.
+> Ships `PROTOCOL_SPEC` **v1.60.0 → v1.61.0**. v1.60.0 is editorial (no behaviour change); v1.61.0
+> closes three ways a governance gate could silently stop gating (D-129–D-131). Reasoning is in
+> [`docs/spec/2026-09-divergence-decisions.md`](./docs/spec/2026-09-divergence-decisions.md).
+
+### Security
+
+- **An ACL, approval handler or policy given to an executor did not reach a pre-built strategy's gates** (D-129) — with a deny-all ACL the call ran while `governance_state()` reported the gate as configured and wired. Providers are now bound into the running built-in gate however the strategy was supplied, and `governance_state()` reports what the gate holds. Fixture `gate_provider_binding.json`.
+- **`pipeline.configure` could disable a governance gate** (D-130) — `ignore_errors: true` on `acl_check` turned a denial into a warning. `ignore_errors: true` and `match_modules` on `acl_check` / `approval_gate`, and `pure: true` on `approval_gate`, are now rejected with `PIPELINE_CONFIGURATION_ERROR`. Fixture `gate_step_configure.json`.
+- **Built-in logging middleware could write `x-sensitive` values in plain text** (D-131) — it now logs `context.redacted_inputs` / `redacted_output`.
 
 ### Changed — documentation
 

@@ -808,6 +808,66 @@
         ]
       },
       "discriminates": "The two registrations must be EQUAL BY VALUE and DISTINCT BY IDENTITY, and each test asserts both preconditions so it cannot silently degrade into the test it replaced. That is the entire discriminator, and its absence is why nothing caught the defect: all three SDKs already had a test named `unregister.removes.identity` and not one could tell the two semantics apart, because each registered two DEFAULT-EQUALITY stubs whose `==` / `toEqual` / value comparison IS identity. apcore-typescript's asserted with `toEqual`, a deep structural comparison — the very semantics under test.\n\nPython uses a dataclass middleware (equality generated), TypeScript two structurally identical stubs asserted `toEqual` but `not.toBe`, Rust two `NamedMiddleware` with the same name asserted `!Arc::ptr_eq`.\n\nEach carries a CONTROL: an equal-but-never-registered object must be a no-op. Without it, 'removal is by identity' is also satisfied by an implementation that removes the LAST value-equal entry — still wrong, and still passing the main test whenever only one registration exists.\n\nVerified red in all three by restoring value-equality removal: `list.remove` in Python, a structural `findIndex` in TypeScript, a discriminant+Debug comparison in Rust."
+    },
+    "D-129": {
+      "title": "providers reach the gate they configure",
+      "kind": "behavioural",
+      "cases": [
+        "gate_provider_binding.json#instance_binds_executor_acl",
+        "gate_provider_binding.json#instance_own_acl_is_reported",
+        "gate_provider_binding.json#instance_binds_approval_handler",
+        "gate_provider_binding.json#instance_binds_strict_policy"
+      ],
+      "discriminates": "Each case makes a REAL call with a pre-built strategy instance and a provider given only to the executor (or only to the step). An implementation that assigns the executor field without binding the step runs the call (`ok` instead of ACL_DENIED / APPROVAL_DENIED); one that reports the executor field instead of the step's provider fails instance_own_acl_is_reported. Both directions are covered.",
+      "sdk_tests": {
+        "python": [
+          "tests/test_gate_provider_binding.py"
+        ],
+        "typescript": [
+          "tests/test-gate-provider-binding.test.ts"
+        ],
+        "rust": [
+          "tests/test_gate_provider_binding.rs"
+        ]
+      }
+    },
+    "D-130": {
+      "title": "`configure` cannot weaken a governance gate",
+      "kind": "behavioural",
+      "cases": [
+        "gate_step_configure.json#acl_check_ignore_errors_rejected",
+        "gate_step_configure.json#approval_gate_pure_true_rejected",
+        "gate_step_configure.json#non_gate_step_unaffected"
+      ],
+      "discriminates": "The rejected cases are red for an implementation that accepts the weakening field; non_gate_step_unaffected and gate_timeout_ms_accepted are red for one that over-rejects every configure entry on a gate.",
+      "sdk_tests": {
+        "python": [
+          "tests/test_gate_step_configure.py"
+        ],
+        "typescript": [
+          "tests/test-gate-step-configure.test.ts"
+        ],
+        "rust": [
+          "tests/test_gate_step_configure.rs"
+        ]
+      }
+    },
+    "D-131": {
+      "title": "built-in logging middleware logs the captured values",
+      "kind": "behavioural",
+      "cases": [],
+      "sdk_tests": {
+        "python": [
+          "tests/test_logging_middleware_redaction.py"
+        ],
+        "typescript": [
+          "tests/test-logging-middleware-redaction.test.ts"
+        ],
+        "rust": [
+          "tests/test_logging_middleware_redaction.rs"
+        ]
+      },
+      "discriminates": "Per-SDK because log record formats differ by language. Each test drives a real executor call on a module whose input and output carry an `x-sensitive` field whose NAME is outside the default sensitive_keys list, with no RedactionConfig, and asserts the logged record holds the replacement marker and not the value — so the logger's key-based pass cannot mask a middleware that logs the raw payload."
     }
   }
 }

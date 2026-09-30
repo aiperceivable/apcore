@@ -1,5 +1,5 @@
 ---
-description: "Index of every apcore decision ID (D-01–D-128, E-01–E-03, O-1) with its status, the spec version or release that carries it, and a link to its record."
+description: "Index of every apcore decision ID (D-01–D-131, E-01–E-03, O-1) with its status, the spec version or release that carries it, and a link to its record."
 ---
 
 # Decision Register
@@ -22,6 +22,7 @@ Records: [2026-05 log](./2026-05-decision-log.md) (D-01–D-65) ·
 [2026-09 audit log](./2026-09-decision-log.md) (E-01–E-03) ·
 [config-surface log](./2026-09-config-surface-decisions.md) (D-66–D-73) ·
 [deep-chain log](./2026-09-deep-chain-decisions.md) (D-74–D-128, O-1) ·
+[divergence log](./2026-09-divergence-decisions.md) (D-129 onward) ·
 [CHANGELOG 0.22.0](https://github.com/aiperceivable/apcore/blob/main/CHANGELOG.md#0220---2026-05-27)
 (D-17–D-24, the executor and async-task hardening decisions, which have no log). Wave-2
 decisions D-92–D-107 are recorded as paragraphs, so their links go to the section that holds
@@ -159,6 +160,9 @@ them.
 | D-126 | A `version_hint` an implementation does not resolve by MUST NOT be silent | In force | v1.55.0 | [deep-chain log](./2026-09-deep-chain-decisions.md#d-126-a-version_hint-an-implementation-does-not-resolve-by-must-not-be-silent) |
 | D-127 | A symlink is recorded once, under its canonical real path | In force | v1.56.0 | [deep-chain log](./2026-09-deep-chain-decisions.md#o-1-resolved-as-d-127-spec-v1560) |
 | D-128 | `unregister` removes by identity, not equality | In force | v1.57.0 | [deep-chain log](./2026-09-deep-chain-decisions.md#d-128-unregister-removes-by-identity-not-equality) |
+| D-129 | Providers reach the gate they configure | In force | v1.61.0 | [divergence log](./2026-09-divergence-decisions.md#d-129-providers-reach-the-gate-they-configure) |
+| D-130 | `configure` cannot weaken a governance gate | In force | v1.61.0 | [divergence log](./2026-09-divergence-decisions.md#d-130-configure-cannot-weaken-a-governance-gate) |
+| D-131 | Built-in logging middleware logs the captured values | In force | v1.61.0 | [divergence log](./2026-09-divergence-decisions.md#d-131-built-in-logging-middleware-logs-the-captured-values) |
 | E-01 | `start_reaper` starts synchronously; only `stop()` is awaited | In force | — | [2026-09 audit log](./2026-09-decision-log.md#e-01-asynctaskmanagerstart_reaper-does-the-call-itself-need-to-be-awaited) |
 | E-02 | `APCore.discover` is sync in Python, async in TypeScript and Rust | In force | — | [2026-09 audit log](./2026-09-decision-log.md#e-02-apcorediscover-synchronous-in-all-languages-contradicted-two-of-three-implementations) |
 | E-03 | `ACL(rules=[…])` validates every rule it is handed | In force | v1.33.0 | [2026-09 audit log](./2026-09-decision-log.md#e-03-aclrules-did-not-re-validate-a-rule-mutated-before-its-first-construction) |

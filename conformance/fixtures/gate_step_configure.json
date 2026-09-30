@@ -1,0 +1,51 @@
+{
+  "description": "A pipeline `configure` entry cannot weaken a governance gate (PROTOCOL_SPEC 5.16.1, decision D-130). On the built-in gate steps `acl_check` and `approval_gate`, `ignore_errors` turns a denial into a warning and lets the call run, `match_modules` exempts every module it does not match, and `pure: true` makes validate() run the approval gate -- and consult the ApprovalHandler -- during a dry run. Each MUST be rejected with PIPELINE_CONFIGURATION_ERROR (`pure: true` only on approval_gate: acl_check is pure by default because validate() runs it) while the configuration is turned into a strategy; only `timeout_ms` is configurable on a gate step. Removing a gate step (`remove:`) stays allowed with the existing warning (5.16 requirement 7). Non-gate steps are unaffected.",
+  "driver_contract": {
+    "path": "Build the strategy from `input.yaml` through the SDK's public config path (the same path pipeline_failfast_config.json uses). Assert `expected.raises` at that point, without executing any call.",
+    "assert_the_wire_code": "Assert `expected.error_code`; the class name is not the contract.",
+    "message": "When `expected.error_message_contains` is present, every listed substring MUST appear in the error message."
+  },
+  "test_cases": [
+    {
+      "id": "acl_check_ignore_errors_rejected",
+      "input": {"yaml": {"pipeline": {"configure": {"acl_check": {"ignore_errors": true}}}}},
+      "expected": {"raises": true, "error_code": "PIPELINE_CONFIGURATION_ERROR", "error_message_contains": ["acl_check", "ignore_errors"]}
+    },
+    {
+      "id": "acl_check_match_modules_rejected",
+      "input": {"yaml": {"pipeline": {"configure": {"acl_check": {"match_modules": ["public.*"]}}}}},
+      "expected": {"raises": true, "error_code": "PIPELINE_CONFIGURATION_ERROR", "error_message_contains": ["acl_check", "match_modules"]}
+    },
+    {
+      "id": "approval_gate_ignore_errors_rejected",
+      "input": {"yaml": {"pipeline": {"configure": {"approval_gate": {"ignore_errors": true}}}}},
+      "expected": {"raises": true, "error_code": "PIPELINE_CONFIGURATION_ERROR", "error_message_contains": ["approval_gate", "ignore_errors"]}
+    },
+    {
+      "id": "approval_gate_match_modules_rejected",
+      "input": {"yaml": {"pipeline": {"configure": {"approval_gate": {"match_modules": ["finance.*"]}}}}},
+      "expected": {"raises": true, "error_code": "PIPELINE_CONFIGURATION_ERROR", "error_message_contains": ["approval_gate", "match_modules"]}
+    },
+    {
+      "id": "approval_gate_pure_true_rejected",
+      "input": {"yaml": {"pipeline": {"configure": {"approval_gate": {"pure": true}}}}},
+      "expected": {"raises": true, "error_code": "PIPELINE_CONFIGURATION_ERROR", "error_message_contains": ["approval_gate", "pure"]}
+    },
+    {
+      "id": "acl_check_ignore_errors_false_is_a_no_op",
+      "note": "Writing the default value explicitly weakens nothing and is accepted.",
+      "input": {"yaml": {"pipeline": {"configure": {"acl_check": {"ignore_errors": false}}}}},
+      "expected": {"raises": false}
+    },
+    {
+      "id": "gate_timeout_ms_accepted",
+      "input": {"yaml": {"pipeline": {"configure": {"acl_check": {"timeout_ms": 500}, "approval_gate": {"timeout_ms": 30000}}}}},
+      "expected": {"raises": false}
+    },
+    {
+      "id": "non_gate_step_unaffected",
+      "input": {"yaml": {"pipeline": {"configure": {"input_validation": {"ignore_errors": true}}}}},
+      "expected": {"raises": false}
+    }
+  ]
+}
