@@ -9,7 +9,7 @@
 ##   5. schema_ref resolved correctly
 ##   6. annotations and display fields preserved
 ##
-## See DECLARATIVE_CONFIG_SPEC.md §3.
+## See protocol-spec §5.12.
 
 spec_version: "1.0"
 bindings:

@@ -1,16 +1,17 @@
 ---
-description: "Consolidated reference index of all PROTOCOL_SPEC pseudocode algorithms (A01 canonical-ID derivation, A05 $ref resolution, etc.) with I/O types, pre/post-conditions, complexity, and notes."
+description: "Consolidated reference of the protocol-spec pseudocode algorithms A01–A25 (canonical-ID derivation, $ref resolution, ACL evaluation, etc.) with I/O types, pre/post-conditions, complexity, and notes."
 ---
 
 # apcore — Core Algorithm Reference
 
-> This document summarizes all pseudocode algorithms defined in the PROTOCOL_SPEC, providing a unified reference index.
+!!! note "Derived from protocol-spec.md; protocol-spec wins on any conflict."
+    Each algorithm here restates the corresponding algorithm in [protocol-spec.md](./protocol-spec.md) and adds implementation notes. Where an algorithm has no pseudocode in protocol-spec (A20, A23, A24), protocol-spec points here and this page is the pseudocode of record.
 
 ## 1. Overview
 
 ### 1.1 Purpose
 
-The apcore specification defines multiple algorithms that must or should be implemented across various chapters. This document consolidates these algorithms to provide SDK implementers with a unified algorithm reference, including input/output types, pre/post-conditions, pseudocode, complexity analysis, and implementation notes.
+The protocol specification defines algorithms that implementations must or should implement across various chapters. This document consolidates them to provide SDK implementers with a unified algorithm reference, including input/output types, pre/post-conditions, pseudocode, complexity analysis, and implementation notes.
 
 ### 1.2 Algorithm Index
 
@@ -20,7 +21,7 @@ The apcore specification defines multiple algorithms that must or should be impl
 | A02 | `normalize_to_canonical_id()` | Cross-language ID normalization | §2.2 | **MUST** |
 | A03 | `detect_id_conflicts()` | ID conflict detection | §2.6 | **MUST** |
 | A04 | `scan_extensions()` | Extension directory scanning | §3.6 | **MUST** |
-| A05 | `resolve_ref()` | Schema $ref reference resolution | §4.10 | **MUST** |
+| A05 | `resolve_ref()` | Schema $ref reference resolution | §4.11 | **MUST** |
 | A06 | `resolve_entry_point()` | Module entry point resolution | §5.2 | **MUST** |
 | A07 | `resolve_dependencies()` | Dependency topological sort | §5.3 | **MUST** |
 | A08 | `match_pattern()` | ACL pattern matching | §6.2 | **MUST** |
@@ -28,18 +29,18 @@ The apcore specification defines multiple algorithms that must or should be impl
 | A10 | `calculate_specificity()` | Pattern specificity scoring | §6.4 | **SHOULD** |
 | A11 | `propagate_error()` | Error propagation | §8.3 | **MUST** |
 | A12 | `validate_config()` | Configuration validation | §9.3 | **MUST** |
-| A13 | `redact_sensitive()` | Sensitive data redaction | §10.5 | **MUST** |
+| A13 | `redact_sensitive()` | Sensitive data redaction | §10.6 | **MUST** |
 | A14 | `negotiate_version()` | Version negotiation | §13.3 | **MUST** |
 | A15 | `migrate_schema()` | Schema migration | §13.4 | **SHOULD** |
 | A16 | `load_extensions()` | Extension loading | §11.7 | **MUST** |
 | A17 | `detect_error_code_collisions()` | Error code collision detection | §8.4 | **MUST** |
 | A18 | `generate_schema_from_function()` | Generate JSON Schema from function signature | §5.11.4 | **SHOULD** |
 | A19 | `resolve_target()` | Resolve binding target for function-based modules | §5.12.3 | **SHOULD** |
-| A20 | `guard_call_chain()` | Call chain safety check | §Executor | **MUST** |
+| A20 | `guard_call_chain()` | Call chain safety check | §9.1.1 keys; [features/call-chain-guard.md](../features/call-chain-guard.md) | **MUST** |
 | A21 | `safe_unregister()` | Hot-reload safe unregistration | §12.7.4 | **MUST** |
 | A22 | `enforce_timeout()` | Timeout enforcement | §12.7.5 | **MUST** |
 | A23 | `to_strict_schema()` | Strict Mode Schema conversion | §4.16 | **SHOULD** |
-| A24 | `deep_merge_chunks()` | Stream chunk aggregation (recursive deep merge, depth-capped) | §5 streaming | **MUST** |
+| A24 | `deep_merge_chunks()` | Stream chunk aggregation (recursive deep merge, depth-capped) | §12.2 Streaming Execution Protocol | **MUST** |
 | A25 | `match_glob()` | Portable glob matching for pattern-valued values | §9.2.3 | **MUST** |
 
 ### 1.3 Conventions
@@ -57,7 +58,7 @@ The apcore specification defines multiple algorithms that must or should be impl
 
 ### A01: `directory_to_canonical_id()` — Directory Path to Canonical ID
 
-**Source**: PROTOCOL_SPEC §2.1
+**Source**: protocol-spec §2.1
 
 **Description**: Converts the relative path of a module file to a dot-separated snake_case Canonical ID. This is the foundational implementation of apcore's "directory as ID" core concept.
 
@@ -67,13 +68,12 @@ The apcore specification defines multiple algorithms that must or should be impl
 |-----------|------|-------------|
 | `file_path` | `String` | Full relative path of the module file (e.g., `"extensions/executor/validator/db_params.py"`) |
 | `extensions_root` | `String` | Extension root directory name (default `"extensions"`) |
-| `namespace` | `String \| null` | Namespace prefix (used for ID isolation in multi-root mode, default `null`) |
 
 **Output:**
 
 | Return Value | Type | Description |
 |--------------|------|-------------|
-| `canonical_id` | `String` | Dot-separated module ID (e.g., `"executor.validator.db_params"`, or `"core.executor.validator.db_params"` if namespace is `"core"`) |
+| `canonical_id` | `String` | Dot-separated module ID (e.g., `"executor.validator.db_params"`) |
 
 **Preconditions:**
 
@@ -87,8 +87,8 @@ The apcore specification defines multiple algorithms that must or should be impl
 
 **Pseudocode:**
 
-```
-Algorithm: directory_to_canonical_id(file_path, extensions_root, namespace)
+```text
+Algorithm: directory_to_canonical_id(file_path, extensions_root)
 
 Steps:
   1. relative_path ← remove extensions_root + "/" prefix from file_path
@@ -98,11 +98,8 @@ Steps:
      a. If segment is empty string → throw INVALID_PATH error
      b. If segment does not match /^[a-z][a-z0-9_]*$/ → throw INVALID_SEGMENT error
   5. canonical_id ← join all segments with "."
-  6. If namespace is not null and not empty:
-     a. Validate namespace matches /^[a-z][a-z0-9_]*$/
-     b. canonical_id ← namespace + "." + canonical_id
-  7. If len(canonical_id) > 192 → throw ID_TOO_LONG error
-  8. Return canonical_id
+  6. If len(canonical_id) > 192 → throw ID_TOO_LONG error
+  7. Return canonical_id
 ```
 
 **Complexity Analysis:**
@@ -118,14 +115,14 @@ Steps:
 - Path separators must uniformly use `/`; Windows systems need to preprocess `\` to `/`
 - The regex `^[a-z][a-z0-9_]*$` implicitly prohibits double-underscore prefixes and digit prefixes
 - The constraint against double underscores requires additional checking (EBNF §2.7 note 4)
-- The `namespace` parameter is used for ID isolation in multi-root mode; pass `null` in single-root mode
-- In multi-root mode, if `namespace` is not explicitly configured, the root directory name is used by default (e.g., `./plugins` → `namespace = "plugins"`)
+- A04 calls A01 with the file's **canonical real path**, never a symlink alias (D-127)
+- In multi-root mode (`extensions.roots`) the root's namespace is prefixed to the ID A01 returns; see A04
 
 ---
 
 ### A02: `normalize_to_canonical_id()` — Cross-language ID Normalization
 
-**Source**: PROTOCOL_SPEC §2.2
+**Source**: protocol-spec §2.2
 
 **Description**: Converts module IDs from various programming language local formats to a unified Canonical ID format. Supports five languages: Python, Rust, Go, Java, and TypeScript.
 
@@ -152,7 +149,7 @@ Steps:
 
 **Pseudocode:**
 
-```
+```text
 Algorithm: normalize_to_canonical_id(local_id, language)
 
 Steps:
@@ -177,7 +174,7 @@ Steps:
 
 **Implementation Notes:**
 
-- PascalCase → snake_case conversion needs to handle acronyms (see PROTOCOL_SPEC §2.3)
+- PascalCase → snake_case conversion needs to handle acronyms (see protocol-spec §2.3)
 - Acronyms are treated as regular words: `HttpJsonParser` → `http_json_parser` (not `h_t_t_p_j_s_o_n_parser`)
 - Common acronym list: `http`, `api`, `db`, `id`, `url`, `sql`, `json`, `xml`, `html`, `css`, `tcp`, `udp`, `ip`
 
@@ -185,7 +182,7 @@ Steps:
 
 ### A03: `detect_id_conflicts()` — ID Conflict Detection
 
-**Source**: PROTOCOL_SPEC §2.6
+**Source**: protocol-spec §2.6
 
 **Description**: Detects whether a new ID conflicts with existing IDs or reserved words during module registration. Implementations **MUST** execute this algorithm during module scanning, module registration, and dynamic loading.
 
@@ -215,15 +212,15 @@ Steps:
 
 **Pseudocode:**
 
-```
+```text
 Algorithm: detect_id_conflicts(new_id, existing_ids, reserved_words)
 
 Steps:
   1. Exact duplicate detection:
      If new_id ∈ existing_ids → return { type: "duplicate_id", severity: "error" }
-  2. Reserved word detection:
-     For each segment of new_id (split by "."):
-       If segment ∈ reserved_words → return { type: "reserved_word", severity: "error" }
+  2. Reserved word detection (FIRST SEGMENT ONLY):
+     first_segment ← new_id up to the first "." (the whole ID when it has none)
+     If first_segment ∈ reserved_words → return { type: "reserved_word", severity: "error" }
   3. Case collision detection:
      normalized_new ← lowercase(new_id)
      For each existing_id ∈ existing_ids:
@@ -244,7 +241,8 @@ Steps:
 
 - Exact duplicate detection can use HashSet, O(1) lookup
 - Case collision detection can maintain a lowercase → original_id mapping in advance, optimizing lookup to O(1)
-- Reserved word set see §2.5: `system`, `internal`, `core`, `apcore`, `plugin`, `schema`, `acl`, `ephemeral` and keywords from various languages
+- Reserved words are the framework words of §2.5: `system`, `internal`, `core`, `apcore`, `plugin`, `schema`, `acl` (`ephemeral` is governed by its own namespace rule). Pinned by fixture `id_conflict_reserved_words`
+- Step 2 tests the first segment only: a reserved word claims a namespace, and only the first segment can assert one. `executor.schema.validate` is a legal ID
 
 ---
 
@@ -252,16 +250,16 @@ Steps:
 
 ### A04: `scan_extensions()` — Extension Directory Scanning
 
-**Source**: PROTOCOL_SPEC §3.6
+**Source**: protocol-spec §3.6 (symlinks §3.4, hidden files §3.5)
 
-**Description**: Recursively scans the extension root directory, discovers all module files and generates Canonical IDs. This is the core implementation of Registry's `discover()` method. Supports both single-root and multi-root directory modes.
+**Description**: Recursively scans the extensions root, discovers module files and derives their Canonical IDs. This is the core of `Registry.discover()`.
 
 **Input Parameters:**
 
 | Parameter | Type | Description |
 |------|------|------|
-| `extensions_roots` | `List<Object>` | List of extension root directories, each item contains `{ root: String, namespace: String \| null }`. Single-root mode uses a single-element list |
-| `config` | `Object` | Scanning configuration, includes `follow_symlinks`, `ignore_patterns`, `max_depth` |
+| `extensions_root` | `String` | Extensions root directory path |
+| `config` | `Object` | Scan configuration: `follow_symlinks`, `ignore_patterns`, `max_depth` |
 
 **Output:**
 
@@ -271,40 +269,45 @@ Steps:
 
 **Preconditions:**
 
-- Each `root` in `extensions_roots` exists and is a directory
+- None — a missing or non-directory root is reported by step 1
 
 **Postconditions:**
 
-- All returned `canonical_id`s pass format validation and conflict detection
-- Does not include hidden files and ignored patterns
-- In multi-root mode, modules from different roots are isolated by namespace and do not cause ID conflicts
+- Every returned `canonical_id` passed format validation and conflict detection
+- Hidden files, built-in ignored entries and `extensions.ignore_patterns` matches are excluded
+- Every recorded file's canonical real path lies inside the canonical `extensions_root`, and each real file is recorded once
 
 **Pseudocode:**
 
-```
-Algorithm: scan_extensions(extensions_roots, config)
+```text
+Algorithm: scan_extensions(extensions_root, config)
 
 Steps:
-  1. modules ← []
-  2. For each root_entry ∈ extensions_roots:
-     a. extensions_root ← root_entry.root
-     b. namespace ← root_entry.namespace
-     c. If namespace is null and len(extensions_roots) > 1:
-        - namespace ← extract directory name from extensions_root path (e.g., "./plugins" → "plugins")
-     d. If extensions_root does not exist or is not a directory → throw CONFIG_ERROR
-     e. Recursively traverse extensions_root:
-        For each entry (file or directory):
-          i.   If entry name matches ignore_patterns (§3.5) → skip
-          ii.  If entry is a symlink and config.follow_symlinks == false → skip
-          iii. If entry is a directory:
-               - If current depth >= config.max_depth (default 8) → skip and issue warning
-               - Otherwise → recurse into it
-          iv.  If entry is a file and extension belongs to supported_extensions:
-               - canonical_id ← directory_to_canonical_id(entry.path, extensions_root, namespace)
-               - If canonical_id passes validation → append (entry.path, canonical_id) to modules
-               - If validation fails → log warning
-  3. Execute detect_id_conflicts batch detection on modules
-  4. Return modules
+  1. If extensions_root doesn't exist or is not a directory → throw CONFIG_ERROR
+  2. modules ← []
+  3. Recursively traverse extensions_root:
+     For each entry (file or directory):
+       a. If entry name matches a built-in row of §3.5, or matches any
+          config.ignore_patterns entry under A25 (§9.2.3) → skip
+       b. If entry is a symbolic link:
+          - If config.follow_symlinks == false → skip
+          - Otherwise resolve it to its canonical real path. If that path is not
+            inside the canonical extensions_root → skip and issue a warning
+            (D-94). Otherwise continue with the resolved target (D-127).
+       c. If entry is a directory:
+          - If current depth >= config.max_depth (default 8) → skip and issue warning
+          - If its canonical real path has already been visited → skip (D-127:
+            this terminates a directory cycle and stops an aliased directory
+            being discovered twice)
+          - Otherwise → recurse into it
+       d. If entry is a file and its extension belongs to supported_extensions:
+          - real ← canonical real path of entry.path
+          - If real has already been recorded → skip (D-127: recorded once)
+          - canonical_id ← directory_to_canonical_id(real, extensions_root)
+          - If canonical_id passes validation → append (entry.path, canonical_id) to modules
+          - If validation fails → log warning
+  4. Perform detect_id_conflicts batch detection on modules
+  5. Return modules
 ```
 
 **Complexity Analysis:**
@@ -316,13 +319,15 @@ Steps:
 
 **Implementation Notes:**
 
-- Ignore patterns (§3.5): starting with `.`, starting with `_`, `__pycache__/`, `node_modules/`, `*.pyc`
-- `supported_extensions` depends on language: `.py`, `.rs`, `.go`, `.java`, `.ts`/`.tsx`
-- Default depth limit is 8, maximum configurable to 16
-- Symlink following is disabled by default, when enabled **MUST** detect cycles
-- Batch conflict detection should be executed uniformly after module discovery from **all root directories** to ensure cross-root ID uniqueness
-- In multi-root mode, if `namespace` is not explicitly configured, it is automatically derived from the directory name (e.g., `"./plugins"` → `"plugins"`)
-- In single-root mode (`extensions_roots` has only one element), `namespace` defaults to `null`, maintaining backward compatibility
+- Built-in ignored entries (§3.5): names starting with `.` or `_`, `__pycache__/`, `node_modules/`, `*.pyc`. `extensions.ignore_patterns` adds to them and cannot remove one; entries are matched against the entry name with A25, case-sensitively
+- `supported_extensions` depends on the SDK's language (`.py`; `.ts` / `.js`; `.rs`)
+- `max_depth` defaults to 8 and is configurable in `[1, 16]`
+- **Containment runs before the directory/file split** (step 3b), so a symlinked file and a symlinked directory are checked alike. Containment and de-duplication are both keyed on the canonical real path, and the module ID is derived from that path, never from whichever alias the traversal reached first
+- The check is made when the scanner looks, not when the loader opens the file; see [Discovery TOCTOU](./security-considerations.md#28-discovery-toctou-ot9)
+
+**Multi-root discovery (`extensions.roots`):**
+
+When the configuration declares `extensions.roots`, it takes precedence over `extensions.root`, and each entry is scanned with A04. Every entry carries a namespace — explicit in the `{ root, namespace }` form, otherwise the last path segment of the root (`./plugins` → `plugins`) — and each ID the root yields is prefixed `namespace + "."`. Two entries claiming the same namespace are a configuration error, reported before anything is scanned. Conflict detection runs across the combined result. Pinned by fixture `multi_root_discovery`.
 
 ---
 
@@ -330,9 +335,9 @@ Steps:
 
 ### A05: `resolve_ref()` — Schema $ref Reference Resolution
 
-**Source**: PROTOCOL_SPEC §4.10
+**Source**: protocol-spec §4.11
 
-**Description**: Resolves `$ref` references in JSON Schema, supporting local references, cross-file references, and Canonical ID references. **MUST** reject circular references — a `$ref` → `$ref` chain that never reaches a schema body — and **MUST** preserve self-references as lazy `$ref` nodes. PROTOCOL_SPEC §4.15 ("Self-reference vs. circular reference") is the sole authority on which re-entry is which.
+**Description**: Resolves `$ref` references in JSON Schema, supporting local references, cross-file references, and Canonical ID references. **MUST** reject circular references — a `$ref` → `$ref` chain that never reaches a schema body — and **MUST** preserve self-references as lazy `$ref` nodes. protocol-spec §4.15 ("Self-reference vs. circular reference") is the sole authority on which re-entry is which.
 
 **Input Parameters:**
 
@@ -363,7 +368,7 @@ Steps:
 
 **Pseudocode:**
 
-```
+```text
 Algorithm: resolve_ref(ref_string, current_file, schemas_dir, visited_refs,
                        depth, from_ref_chain)
 
@@ -376,6 +381,13 @@ Steps:
   3. visited_refs ← visited_refs ∪ {ref_string}
   4. Parse ref_string into (file_part, json_pointer):
      a. If starts with "#" → file_part = current_file, json_pointer = ref_string[1:]
+        Resolve the pointer against the FILE ROOT first; if it does not resolve
+        there, fall back to the schema node being resolved (the `input_schema` /
+        `output_schema` document itself) (D-104). The fallback is available ONLY
+        while resolution is still inside the document the schema node belongs
+        to; once a reference has been followed into another document, a local
+        pointer that does not resolve in THAT document MUST throw
+        SCHEMA_NOT_FOUND (D-124).
      b. If contains "#" → split by "#" into file_part and json_pointer
      c. If starts with "apcore://" → convert to file path under schemas_dir
      d. Otherwise → file_part is relative to current_file's directory
@@ -406,6 +418,9 @@ Steps:
   - Canonical ID reference: `apcore://common.types.error/ErrorDetail`
 - `apcore://` protocol conversion rule: `apcore://{canonical_id}/{pointer}` → `{schemas_dir}/{canonical_id}.schema.yaml#/{pointer}`
 - JSON Pointer follows RFC 6901 specification
+- **Both local-pointer layouts are supported** (D-104): definitions at the top level of the schema file beside `input_schema` (file root), and `$defs` nested inside `input_schema` (schema node). The two lookups cannot collide — a pointer either resolves at the file root or it does not
+- **The node fallback is per document, not per resolver** (D-124). Carry it with each hop rather than on the resolver object; otherwise a pointer inside an external schema binds to a same-named definition in the calling module's schema
+- **Sibling keys beside a `$ref` are preserved** and applied to the resolved node (D-98). §10.6 reads `x-sensitive` from the resolved schema, so dropping a sibling `x-sensitive` leaks the field into logs
 
 ---
 
@@ -413,7 +428,7 @@ Steps:
 
 ### A06: `resolve_entry_point()` — Module Entry Point Resolution
 
-**Source**: PROTOCOL_SPEC §5.2
+**Source**: protocol-spec §5.2
 
 **Description**: Resolves the code entry point (filename and class name) of a module. Prioritizes explicit configuration in metadata files, otherwise auto-infers.
 
@@ -441,7 +456,7 @@ Steps:
 
 **Pseudocode:**
 
-```
+```text
 Algorithm: resolve_entry_point(meta_yaml, file_path, language)
 
 Steps:
@@ -476,9 +491,9 @@ Steps:
 
 ### A07: `resolve_dependencies()` — Dependency Topological Sort
 
-**Source**: PROTOCOL_SPEC §5.3
+**Source**: protocol-spec §5.3
 
-**Description**: Uses topological sort (Kahn's algorithm) to resolve module loading order. **MUST** detect circular dependencies.
+**Description**: Uses topological sort (Kahn's algorithm) to resolve module loading order. **MUST** detect circular dependencies, and **MUST** distinguish a real cycle from a sort that stalls for another reason (§5.15.2).
 
 **Input Parameters:**
 
@@ -499,11 +514,11 @@ Steps:
 **Postconditions:**
 
 - For any module M in `load_order`, all dependencies of M are placed before M
-- Throws error if circular dependencies exist
+- A real cycle throws `CIRCULAR_DEPENDENCY` with the actual cycle path; a stall with no cycle throws `MODULE_LOAD_ERROR` naming the blocked modules
 
 **Pseudocode:**
 
-```
+```text
 Algorithm: resolve_dependencies(modules)
 
 Steps:
@@ -519,7 +534,10 @@ Steps:
         - If in_degree[dependent] == 0 → queue.enqueue(dependent)
   6. If len(load_order) < len(modules):
      - remaining ← modules not in load_order
-     - Throw CIRCULAR_DEPENDENCY error with cycle path
+     - cycle ← a dependency cycle among remaining (back-edge search), or null
+     - If cycle is not null → throw CIRCULAR_DEPENDENCY with cycle_path = cycle
+     - Otherwise → throw MODULE_LOAD_ERROR naming remaining; MUST NOT report
+       CIRCULAR_DEPENDENCY and MUST NOT fabricate a cycle_path (D-79)
   7. Return load_order
 ```
 
@@ -532,9 +550,9 @@ Steps:
 
 **Implementation Notes:**
 
-- Circular dependency detection should provide meaningful error messages, including cycle path (e.g., `A → B → C → A`)
-- Optional dependencies (`optional: true`) should be skipped rather than error when missing
-- Version constraints (`version: ">=1.0.0"`) need to be resolved before building dependency graph
+- A cycle error carries the real cycle path (e.g., `A → B → C → A`). A sort can also stall with no cycle — e.g. a batch member depends on a module that is registered but not in this batch, so its in-degree never reaches zero — and that case needs the opposite fix (add the missing dependency, not break an edge)
+- A missing required dependency throws `DEPENDENCY_NOT_FOUND`; a missing optional dependency (`optional: true`) is skipped (§5.15.2)
+- Version constraints (`version: ">=1.0.0"`) are checked before building the dependency graph; a required dependency whose registered version does not satisfy the constraint throws `DEPENDENCY_VERSION_MISMATCH`, an optional one is skipped with a warning (§5.15.2)
 - Modules with same in-degree have no guaranteed order, implementations **may** sort by ID alphabetically for stable output
 
 ---
@@ -543,9 +561,9 @@ Steps:
 
 ### A08: `match_pattern()` — ACL Pattern Matching
 
-**Source**: PROTOCOL_SPEC §6.2
+**Source**: protocol-spec §6.2
 
-**Description**: Matches ACL rule patterns with module Canonical IDs. Supports `*` wildcard.
+**Description**: Matches one ACL rule pattern (or one `match_modules` pattern, §5.16) against a module Canonical ID. `*` is the only metacharacter.
 
 **Input Parameters:**
 
@@ -570,7 +588,7 @@ Steps:
 
 **Pseudocode:**
 
-```
+```text
 Algorithm: match_pattern(pattern, module_id)
 
 Steps:
@@ -598,6 +616,8 @@ Steps:
 **Implementation Notes:**
 
 - `*` matches any number of any characters (including `.`), meaning `api.*` can match `api.handler.task_submit` (cross-level)
+- **Every other character is a literal**, `?`, `[`, `]`, `{`, `}` and `\` included. A pattern containing `?` can never match (§2.7 forbids `?` in a module ID); loading such a rule warns and `validate_rules()` reports it, but its meaning is unchanged (§6.2.2)
+- A08 matches one pattern string. The compound forms `["$or", …]` and `["$not", p]` are array-level operators handled before A08 is called (§6.2.1)
 - If pattern starts with `*`, first segment is empty, matching starts from beginning of module_id
 - Exact match (no wildcard) should prioritize string comparison to avoid unnecessary splitting
 - Match results can be cached for performance (pattern and module_id combination as cache key)
@@ -606,9 +626,9 @@ Steps:
 
 ### A09: `evaluate_acl()` — ACL Rule Evaluation
 
-**Source**: PROTOCOL_SPEC §6.3
+**Source**: protocol-spec §6.3 (conditions §6.1.1, compound pattern arrays §6.2.1, approval requirement §6.9)
 
-**Description**: Evaluates a set of ACL rules to decide whether to allow a specific call. This is the core algorithm of the ACL engine.
+**Description**: Evaluates an ordered rule list to decide whether a call is allowed. This is the core algorithm of the ACL engine.
 
 **Input Parameters:**
 
@@ -616,18 +636,20 @@ Steps:
 |------|------|------|
 | `caller_id` | `String \| null` | Caller module ID (`null` means external call) |
 | `target_id` | `String` | Callee module ID |
-| `rules` | `List<Rule>` | List of rules |
+| `rules` | `List<Rule>` | Rules in definition order |
 | `default_effect` | `String` | Default policy (`"allow"` \| `"deny"`) |
+| `context` | `Context \| null` | Execution context, used for condition evaluation |
 
-Where `Rule` structure is:
+Where `Rule` structure is (the key set is closed, §6.1.5):
 
-```
+```text
 Rule {
-  id: String,
-  callers: List<String>,   // Pattern list
-  targets: List<String>,   // Pattern list
-  actions: List<String>,
-  effect: "allow" | "deny"
+  callers:     List<String>,        // pattern array (§6.2.1)
+  targets:     List<String>,        // pattern array (§6.2.1)
+  effect:      "allow" | "deny",
+  description: String,              // SHOULD
+  conditions:  Object | null,       // MAY (§6.1)
+  approval:    "required" | "not_required" | null   // MAY (§6.1.6)
 }
 ```
 
@@ -640,29 +662,43 @@ Rule {
 **Preconditions:**
 
 - `target_id` conforms to Canonical ID format
+- Every rule passed §6.1.4's structural precheck at load (an arity or key fault is rejected with `ACLRuleError` before evaluation)
 
 **Postconditions:**
 
-- Returns deterministic decision result
+- Returns a deterministic decision
+- An unevaluable condition never lets an `allow` rule grant
 
 **Pseudocode:**
 
-```
-Algorithm: evaluate_acl(caller_id, target_id, rules, default_effect)
+```text
+Algorithm: evaluate_acl(caller_id, target_id, rules, default_effect, context)
 
 Steps:
-  1. effective_caller ← caller_id ?? "@external"
-  2. For each rule ∈ rules (insertion order, first-match-wins):
+  1. effective_caller_id ← caller_id ?? "@external"
+  2. For each rule ∈ rules (in definition order):
      a. caller_matched ← false
         For each pattern ∈ rule.callers:
-          If match_pattern(pattern, effective_caller) → caller_matched ← true; break
+          If pattern is "@external" and caller_id is null → caller_matched ← true; break
+          If pattern is "@system" and context.identity.type == "system" → caller_matched ← true; break
+          If match_pattern(pattern, effective_caller_id) → caller_matched ← true; break
      b. target_matched ← false
         For each pattern ∈ rule.targets:
           If match_pattern(pattern, target_id) → target_matched ← true; break
      c. If caller_matched and target_matched:
-        → return { effect: rule.effect, matched_rule: rule }
+        If rule.conditions is not empty:
+          verdict ← evaluate_conditions(rule.conditions, context)
+              // verdict ∈ { SATISFIED, UNSATISFIED, UNEVALUABLE }   (§6.1.1)
+          If verdict is UNSATISFIED → continue
+          If verdict is UNEVALUABLE:
+            record handler_error on the audit entry and warn (§6.1.1)
+            If rule.effect == "deny" → Return { effect: "deny", matched_rule: rule }
+            Else                     → continue          // an allow rule MUST NOT grant
+        → Return { effect: rule.effect, matched_rule: rule }
   3. Return { effect: default_effect, matched_rule: null }
 ```
+
+The per-pattern loops above show plain pattern arrays. An array whose index 0 is `$or` or `$not` is evaluated as that operator over its operands (§6.2.1).
 
 **Complexity Analysis:**
 
@@ -674,19 +710,20 @@ Steps:
 **Implementation Notes:**
 
 - When `caller_id` is `null`, it **MUST** be replaced with `"@external"`
-- Rules are evaluated in **insertion order** (first-match-wins). Implementations that insert at the front of the list (e.g., `add_rule` prepending) thereby grant newer rules higher precedence — this is the intended convention; do not sort by priority.
-- Missing `actions` field is treated as `["*"]` (matches all operations)
-- Empty `callers` or `targets` array means the rule never matches
+- Rules are evaluated in **definition order**, first match wins. There is no `priority` field and no deny tie-break (D-60); `id`, `actions` and `priority` are reserved keys and are rejected at load (§6.1.5)
+- A rule whose `callers` or `targets` array is empty, or otherwise outside §6.2.1's shape, is rejected with `ACLRuleError` at every entry point (§6.5)
+- `evaluate_conditions` has three outcomes, not two. An implementation whose evaluator returns a boolean **MUST** carry UNEVALUABLE some other way (§6.3)
+- When `conditions` are present but the call carries no context, the rule does not match; this is not UNEVALUABLE (§6.5)
 - Modules calling themselves also need ACL checking
-- Rationale for dropping the `priority` field and deny-tiebreak: see `docs/spec/2026-05-decision-log.md` D-60. Insertion-order semantics match all 3 SDK implementations and produce the same results in the common case.
+- The approval requirement is a separate result from the decision; see §6.1.6 and §6.9 for how a matched rule's `approval` composes with pending requirements
 
 ---
 
 ### A10: `calculate_specificity()` — Pattern Specificity Scoring
 
-**Source**: PROTOCOL_SPEC §6.4
+**Source**: protocol-spec §6.4
 
-**Description**: Calculates the specificity score of an ACL pattern, used to further distinguish rule matching precision within the same priority. Higher score means more specific pattern.
+**Description**: Calculates the specificity score of a module-ID pattern. Higher score means more specific pattern. ACL evaluation itself is first-match-wins and does not use it; `ExecutionPolicy` rule selection does (§7.9.1).
 
 **Input Parameters:**
 
@@ -711,7 +748,7 @@ Steps:
 
 **Pseudocode:**
 
-```
+```text
 Algorithm: calculate_specificity(pattern)
 
 Steps:
@@ -735,8 +772,8 @@ Steps:
 **Implementation Notes:**
 
 - Scoring examples: `"*"` → 0, `"api.*"` → 2, `"api.handler.*"` → 4, `"api.handler.task_submit"` → 6
-- This algorithm is **SHOULD** level, Level 0 implementations can skip
-- Specificity scoring is mainly used for ACL debugging and conflict analysis
+- This algorithm is **SHOULD** level for the ACL (§6.4) and required wherever `ExecutionPolicy` is implemented (§7.9.1)
+- Beyond policy selection, specificity is useful for ACL debugging and conflict analysis
 
 ---
 
@@ -744,7 +781,7 @@ Steps:
 
 ### A11: `propagate_error()` — Error Propagation
 
-**Source**: PROTOCOL_SPEC §8.3
+**Source**: protocol-spec §8.3
 
 **Description**: Wraps raw errors/exceptions generated during module execution into standardized ModuleError objects, preserving error chain and trace information.
 
@@ -773,7 +810,7 @@ Steps:
 
 **Pseudocode:**
 
-```
+```text
 Algorithm: propagate_error(error, module_id, context)
 
 Steps:
@@ -815,7 +852,7 @@ Steps:
 
 ### A17: `detect_error_code_collisions()` — Error Code Collision Detection
 
-**Source**: PROTOCOL_SPEC §8.4
+**Source**: protocol-spec §8.4
 
 **Description**: Detects conflicts between module custom error codes and framework reserved error codes as well as other module error codes.
 
@@ -842,7 +879,7 @@ Steps:
 
 **Pseudocode:**
 
-```
+```text
 Algorithm: detect_error_code_collisions(framework_codes, module_codes_map)
 
 Steps:
@@ -864,7 +901,7 @@ Steps:
 
 **Implementation Notes:**
 
-- Framework reserved error code prefixes include `MODULE_`, `SCHEMA_`, `ACL_`, `GENERAL_`, `CONFIG_`, `CIRCULAR_`, `DEPENDENCY_`
+- The reserved framework prefixes are the fourteen of §8.4: `ACL_`, `APPROVAL_`, `BINDING_`, `CALL_`, `CIRCULAR_`, `CONFIG_`, `DEPENDENCY_`, `ERROR_CODE_`, `FUNC_`, `GENERAL_`, `MIDDLEWARE_`, `MODULE_`, `SCHEMA_`, `VERSION_`. A module code with a reserved prefix is rejected, as is a one-off code equal to an exact framework code (fixture `error_codes`)
 - Module error code naming **SHOULD** follow `{MODULE_PREFIX}_{ERROR_NAME}` format
 - This detection should be executed during framework startup, report error immediately upon finding conflict
 
@@ -874,9 +911,9 @@ Steps:
 
 ### A12: `validate_config()` — Configuration Validation
 
-**Source**: PROTOCOL_SPEC §9.3
+**Source**: protocol-spec §9.3
 
-**Description**: Validates merged configuration object (environment variables + config file + defaults) during framework startup, ensuring all required fields exist, types are correct, and constraints are satisfied.
+**Description**: Validates the configuration during framework startup: required fields are present in the declared document, types are correct, and constraints are satisfied.
 
 **Input Parameters:**
 
@@ -892,7 +929,7 @@ Steps:
 
 **Preconditions:**
 
-- Configuration object has been merged by priority (env > file > defaults)
+- Configuration object has been merged by priority (env > file > defaults); the declared document (before defaults) is still available for step 1
 
 **Postconditions:**
 
@@ -902,12 +939,16 @@ Steps:
 
 **Pseudocode:**
 
-```
+```text
 Algorithm: validate_config(config)
 
 Steps:
-  1. For each required field (MUST):
-     If missing → throw CONFIG_INVALID with missing field path
+  1. For each required field — `version` and `project.name`, the only two keys
+     with no canonical default (§9.1):
+     If missing from the DECLARED document (before the default table is merged)
+       → throw CONFIG_INVALID with the missing field path
+     A key that carries a default in defaults.schema.json is NEVER required;
+     checking it after merging defaults is a no-op and MUST NOT be relied on.
   2. Type validation:
      For each field, validate value type conforms to Schema definition
   3. Constraint validation:
@@ -932,9 +973,10 @@ Steps:
 **Implementation Notes:**
 
 - Configuration merge priority: environment variables > config file > defaults (see §9.2)
-- Environment variable naming convention: `APCORE_{SECTION}_{KEY}`, all uppercase, hyphens converted to underscores
-- Required field list: `version`, `extensions.root`, `schema.root`, `acl.root`, `acl.default_effect`, `project.name`
+- Environment variable naming convention: `APCORE_{SECTION}_{KEY}`, all uppercase, hyphens converted to underscores (§9.2; namespace mode §9.8)
+- `acl.default_effect` in `apcore.yaml` is validated but inert; the effective `default_effect` is the ACL file's own (§6.1)
 - Validation errors should collect all errors before reporting, rather than stopping at first error
+- The namespace-mode variant is A12-NS (§9.10)
 
 ---
 
@@ -942,7 +984,7 @@ Steps:
 
 ### A13: `redact_sensitive()` — Sensitive Data Redaction
 
-**Source**: PROTOCOL_SPEC §10.5
+**Source**: protocol-spec §10.6 (configured rules §10.6.1)
 
 **Description**: Redacts fields marked with `x-sensitive` in log and trace output, replacing sensitive values with `"***REDACTED***"`.
 
@@ -970,7 +1012,7 @@ Steps:
 
 **Pseudocode:**
 
-```
+```text
 Algorithm: redact_sensitive(data, schema)
 
 Steps:
@@ -995,11 +1037,14 @@ Steps:
 
 **Implementation Notes:**
 
-- Redaction **MUST** operate on copy, **forbidden** to modify original data
-- Replacement value is fixed as `"***REDACTED***"`, must not leak length information of original value
+- Redaction **MUST** operate on a copy and **MUST NOT** modify the original data
+- The replacement is a constant token (`"***REDACTED***"` by default) and must not leak the length of the original value
 - `x-sensitive` fields in nested objects must also be recursively processed
 - Each element in array needs independent redaction (if items schema contains `x-sensitive`)
-- If `data` contains fields not defined in Schema, these fields are not redacted
+- If `data` contains fields not defined in Schema, A13 does not redact them; the configured rules below may
+- `schema` is the **resolved** schema. A05 preserves `x-sensitive` written beside a `$ref` (D-98) and never binds an external document's pointer to the caller's definitions (D-124); either defect turns a sensitive field into plaintext here
+- A13 is one of three rules applied as a union: `x-sensitive` (A13), `obs.redaction.sensitive_keys` against field names, and `obs.redaction.regex_patterns` against string values. The union applies at log emission **and** at the executor's input/output capture point; with no configuration the default `sensitive_keys` list still applies. The correlation fields `trace_id`, `span_id`, `caller_id`, `module_id` and `target_id` are never redacted (§10.6.1)
+- Setting `obs.redaction.sensitive_keys` replaces the default list rather than extending it
 
 ---
 
@@ -1007,7 +1052,7 @@ Steps:
 
 ### A14: `negotiate_version()` — Version Negotiation
 
-**Source**: PROTOCOL_SPEC §13.3
+**Source**: protocol-spec §13.3
 
 **Description**: Performs version negotiation when SDK loads configuration or Schema, determines effective version number. Ensures major version compatibility, provides appropriate handling for minor version differences.
 
@@ -1035,7 +1080,7 @@ Steps:
 
 **Pseudocode:**
 
-```
+```text
 Algorithm: negotiate_version(declared_version, sdk_version)
 
 Steps:
@@ -1066,12 +1111,13 @@ Steps:
 - `max()` comparison follows semver specification: major > minor > patch > prerelease
 - Deprecation warning threshold is minor version difference > 2 (e.g., SDK 1.5.0 loading config declared as 1.2.0)
 - Framework **SHOULD** log version negotiation result
+- The three SDKs export `negotiate_version()` but do not yet call it when loading configuration or schema files ([conformance.md §7](./conformance.md#7-known-deviations))
 
 ---
 
 ### A15: `migrate_schema()` — Schema Migration
 
-**Source**: PROTOCOL_SPEC §13.4
+**Source**: protocol-spec §13.4
 
 **Description**: Automatically performs migration when Schema version changes. Converts Schema from old version to target version through migration function chain.
 
@@ -1101,7 +1147,7 @@ Steps:
 
 **Pseudocode:**
 
-```
+```text
 Algorithm: migrate_schema(schema, from_version, to_version)
 
 Steps:
@@ -1138,7 +1184,7 @@ Steps:
 
 ### A16: `load_extensions()` — Extension Loading
 
-**Source**: PROTOCOL_SPEC §11.7
+**Source**: protocol-spec §11.7
 
 **Description**: Loads extension point implementations by priority and strategy. Supports three strategies: `first_success` (first successful takes effect), `all` (execute all), `fallback` (fallback chain).
 
@@ -1151,7 +1197,7 @@ Steps:
 
 Where `ExtensionImpl` structure is:
 
-```
+```text
 ExtensionImpl {
   class: String,          // Implementation class name
   priority: Integer,      // Priority
@@ -1173,7 +1219,7 @@ ExtensionImpl {
 
 **Pseudocode:**
 
-```
+```text
 Algorithm: load_extensions(config, extension_points)
 
 Steps:
@@ -1194,12 +1240,7 @@ Steps:
 
 **Implementation Notes:**
 
-- Framework default implementations as follows (see §11.3):
-  - `SchemaLoader` → `YAMLSchemaLoader`
-  - `ModuleLoader` → `DirectoryModuleLoader`
-  - `IDConverter` → `DefaultIDConverter`
-  - `ACLChecker` → `YAMLACLChecker`
-  - `Executor` → `LocalExecutor`
+- The SDKs' `ExtensionManager` exposes six extension points — `discoverer`, `middleware`, `acl`, `span_exporter`, `module_validator`, `approval_handler` (§11.3). No SDK implements A16's priority ordering or chaining strategies yet ([conformance.md §7](./conformance.md#7-known-deviations))
 - `first_success` strategy: stop when loading succeeds, suitable for Schema loading (cache → filesystem)
 - `all` strategy: all implementations execute, suitable for notification extensions
 - `fallback` strategy: similar to `first_success`, but continues trying next on failure
@@ -1211,7 +1252,7 @@ Steps:
 
 ### A18: generate_schema_from_function — Generate Schema from Function Signature
 
-**Source Section:** PROTOCOL_SPEC §5.11.4
+**Source**: protocol-spec §5.11.4
 
 **Input:**
 
@@ -1239,7 +1280,7 @@ Steps:
 
 **Pseudocode:**
 
-```
+```text
 Algorithm: generate_schema_from_function(callable)
 
 Steps:
@@ -1282,7 +1323,7 @@ Steps:
 
 ### A19: resolve_target — Resolve Binding Target
 
-**Source Section:** PROTOCOL_SPEC §5.12.3
+**Source**: protocol-spec §5.12.3
 
 **Input:**
 
@@ -1306,7 +1347,7 @@ Steps:
 
 **Pseudocode:**
 
-```
+```text
 Algorithm: resolve_target(target_string)
 
 Steps:
@@ -1346,9 +1387,9 @@ Steps:
 
 ### A20: `guard_call_chain()` — Call Chain Safety Check
 
-**Source**: Executor API §6.1
+**Source**: pipeline step `call_chain_guard` (Step 2); limits `executor.max_call_depth` / `executor.max_module_repeat` (protocol-spec §9.1.1); contract in [features/call-chain-guard.md](../features/call-chain-guard.md). protocol-spec carries no pseudocode for A20; this section is the pseudocode of record.
 
-**Description**: Three-layer call chain protection executed by Executor on each `call()`: depth limit, cycle detection, frequency detection. This algorithm unifies previously scattered security check logic in modules, ensuring all module calls are automatically protected. Frequency detection mainly defends against non-strict cyclic patterns in AI orchestration scenarios (e.g., A→B→C→B→C→B→C...).
+**Description**: Three-layer call chain protection executed by the executor on each call: depth limit, cycle detection, frequency detection. Cycle detection rejects any re-entry separated by another module (A→B→A); frequency detection bounds direct self-recursion (A→A→A).
 
 **Input Parameters:**
 
@@ -1386,7 +1427,7 @@ Steps:
 
 **Pseudocode:**
 
-```
+```text
 Algorithm: guard_call_chain(module_id, call_chain, max_call_depth, max_module_repeat)
 
 Precondition: call_chain[-1] == module_id (appended by Context.child())
@@ -1394,12 +1435,7 @@ Precondition: call_chain[-1] == module_id (appended by Context.child())
 Steps:
   0. Limit floors (before inspecting the chain):
      If max_call_depth < 1 OR max_module_repeat < 1:
-       → reject as invalid input
-     Each SDK raises its own idiomatic invalid-input error here rather than a
-     shared wire code — Python ValueError, TypeScript Error, Rust
-     ModuleError(GENERAL_INVALID_INPUT). Recorded as divergence T-B-005;
-     call_chain.json labels the expectation INVALID_LIMIT, which is a fixture
-     label and NOT a wire code.
+       → throw GENERAL_INVALID_INPUT (D-84)
 
   1. Depth check:
      If len(call_chain) > max_call_depth:
@@ -1450,9 +1486,8 @@ Steps:
 - `max_module_repeat` default value is 3, configurable via `apcore.yaml`'s `executor.max_module_repeat`, range `[1, 100]`
 - Step 2 cycle detection covers direct cycle (A→B→A) and indirect cycle (A→B→C→A). It does **not** flag an immediate self-repeat (A→A), which step 3 governs instead
 - Both step 1 and step 3 compare strictly (`>`), so a chain sitting exactly on a limit passes. `default_depth_32_ok` and `frequency_within_limit` in `conformance/fixtures/call_chain.json` pin this boundary
-- Step 3 frequency detection covers non-cycle repeated calls (e.g., same module called multiple times in parallel orchestration then re-entered)
+- Because step 2 rejects every repeat separated by another module, a chain that reaches step 3 with `count > 1` is direct self-recursion; step 3 bounds how deep a module may recurse into itself
 - If step 2 already threw `CIRCULAR_CALL`, step 3 won't execute (short-circuit)
-- For modules with legitimate multiple call needs (e.g., retry logic), can configure `max_repeat_override` in module metadata to override default limit
 - All errors **MUST** carry complete `call_chain` copy for debugging and observability
 
 **Configuration Reference:**
@@ -1464,18 +1499,19 @@ executor:
   max_module_repeat: 3        # Maximum occurrences of same module
 ```
 
-**Error Example:**
+**Examples:**
 
-```
-Scenario: AI orchestrator repeatedly calls B and C
+```text
+call_chain: ["orchestrator.ai_planner", "executor.b", "executor.c", "executor.b"]
+module_id:  "executor.b"
+→ prior chain holds "executor.b" at index 1, with "executor.c" after it
+→ CIRCULAR_CALL (step 2)
 
-call_chain: ["orchestrator.ai_planner", "executor.b", "executor.c", "executor.b", "executor.c", "executor.b"]
-                                                                                                         ↑
-Target: executor.c → count("executor.c") == 2 → still within limit (< 3)
-
-call_chain: ["orchestrator.ai_planner", "executor.b", "executor.c", "executor.b", "executor.c", "executor.b", "executor.c"]
-                                                                                                                          ↑
-Target: executor.b → count("executor.b") == 3 → triggers CALL_FREQUENCY_EXCEEDED
+call_chain: ["orchestrator.ai_planner", "executor.retry", "executor.retry", "executor.retry", "executor.retry"]
+module_id:  "executor.retry"
+→ no other module between the repeats, so step 2 passes
+→ count("executor.retry") == 4 > max_module_repeat (3)
+→ CALL_FREQUENCY_EXCEEDED (step 3)
 ```
 
 ---
@@ -1484,9 +1520,10 @@ Target: executor.b → count("executor.b") == 3 → triggers CALL_FREQUENCY_EXCE
 
 The following diagram shows the calling/dependency relationships between algorithms:
 
-```
+```text
 scan_extensions() ──────────────────┐
-  ├── directory_to_canonical_id(namespace)  │
+  ├── match_glob()  (ignore_patterns)│
+  ├── directory_to_canonical_id()   │
   └── detect_id_conflicts()         │
                                     ▼
                               Registry.discover()
@@ -1494,27 +1531,30 @@ scan_extensions() ──────────────────┐
                               ┌─────┴──────┐
                               ▼            ▼
                     resolve_entry_point()  resolve_dependencies()
-                              │
-                              ▼
-                        Executor.execute()
-                          ├── validate_config()  (at startup)
-                          ├── guard_call_chain()  (per call)
-                          ├── evaluate_acl()
-                          │     └── match_pattern()
-                          │           └── calculate_specificity()
-                          ├── resolve_ref()      (during Schema loading)
-                          ├── redact_sensitive()  (during log output)
-                          └── propagate_error()   (on error)
 
-negotiate_version() ←── framework startup / Schema loading
-migrate_schema()    ←── when Schema version mismatch
-load_extensions()   ←── framework startup
+validate_config()  ←── framework startup
+resolve_ref()      ←── Schema loading
 
-detect_error_code_collisions() ←── framework startup (after all modules loaded)
+Executor pipeline (per call)
+  ├── guard_call_chain()            Step 2
+  ├── evaluate_acl()                Step 4
+  │     └── match_pattern()
+  ├── input/output validation       Steps 7, 9
+  ├── redact_sensitive()            capture point and log output
+  ├── enforce_timeout()             around Step 8
+  ├── deep_merge_chunks()           stream() only
+  └── propagate_error()             on error
+
+negotiate_version()             ←── configuration / Schema loading
+migrate_schema()                ←── Schema version mismatch
+load_extensions()               ←── framework startup
+detect_error_code_collisions()  ←── framework startup (after all modules loaded)
+safe_unregister()               ←── unregister / hot reload
 
 generate_schema_from_function() ←── module() registration / Binding auto_schema
 resolve_target()                ←── Binding file loading
 to_strict_schema()              ←── export_schema(strict=true)
+calculate_specificity()         ←── ExecutionPolicy rule selection
 ```
 
 ---
@@ -1523,277 +1563,136 @@ to_strict_schema()              ←── export_schema(strict=true)
 
 ### A21: `safe_unregister()` — Hot-reload Safe Unregistration
 
-**Source**: PROTOCOL_SPEC §12.7.4
+**Source**: protocol-spec §12.7.4
 
-**Purpose**: Safely unregister module when it may be executing, avoiding race conditions and resource leaks.
+**Purpose**: Unregister a module that may be executing, without racing in-flight calls or leaking resources.
 
 **Signature**:
 
-```
-safe_unregister(module_id: string, registry: Registry) → bool
+```text
+safe_unregister(module_id: string, registry: Registry) → (bool, state | null)
 ```
 
 **Input**:
+
 - `module_id`: Module ID to unregister
 - `registry`: Registry instance
 
 **Output**:
-- `true`: Successfully unregistered
-- `false`: Timeout or failure
+
+- `true, state`: Unloaded cleanly; `state` is what `on_suspend()` returned (or `null`)
+- `false, null`: The wait timed out and the module was force-unloaded
 
 **Preconditions**:
+
 - Registry is initialized
 
 **Postconditions**:
-- If returns `true`, module is completely unregistered, `on_unload()` has been called
-- If returns `false`, module may not be completely cleaned up (resource leak risk)
+
+- New calls to `module_id` throw `MODULE_NOT_FOUND` from step 2 onward
+- Calls that had already started run to completion (or until the timeout)
+- `on_unload()` has been called
 
 **Pseudocode**:
 
-```
+```text
 Algorithm: safe_unregister(module_id, registry)
 
-Input: module_id (string), registry (Registry instance)
-Output: boolean (whether successfully unregistered)
-
 Steps:
-  1. If module_id not in registry:
-     return true  # Idempotent
+  1. Mark module as "unloading" state
+  2. Remove from registry (new call() will throw MODULE_NOT_FOUND)
+  3. Wait for all executing calls to complete:
+     - Maintain reference count (number of executing calls)
+     - Block until count reaches zero or timeout (default 5 seconds)
+  4. Call on_suspend() hook (if implemented) → save returned state
+  5. Call on_unload() hook
+  6. Release module instance
 
-  2. module ← registry.get(module_id)
-
-  3. Atomic operation: mark module.state ← "UNLOADING"
-
-  4. Remove module_id from registry.modules
-     # New call() will throw MODULE_NOT_FOUND
-
-  5. Wait for execution to complete:
-     timeout ← 30 seconds
-     start_time ← now()
-     Loop:
-       If module.ref_count == 0:
-         break  # All calls completed
-       If (now() - start_time) > timeout:
-         log ERROR: "Module {module_id} unregister timeout, force unloading"
-         return false  # Timeout, force unload
-       sleep(100ms)  # Wait
-
-  6. Call module.on_unload():
-     try:
-       module.on_unload()
-     catch exception e:
-       log ERROR: "on_unload() failed: {e}"
-
-  7. Release module instance (GC reclaim)
-
-  8. return true
+Return:
+  - If successfully unloaded → true, state (dict or null)
+  - If timeout → Log ERROR, force unload, return false, null
 ```
 
 **Complexity Analysis**:
-- Time complexity: O(1) + wait time (up to 30 seconds)
+
+- Time complexity: O(1) + wait time (up to the timeout)
 - Space complexity: O(1)
 
 **Implementation Notes**:
 
-1. **Reference count maintenance**:
-   - At `call()` start `ref_count++`
-   - At `call()` end (whether success/failure) `ref_count--`
-   - Use atomic operations to ensure thread safety
-
-2. **Timeout handling**:
-   - Default 30 seconds adjustable via configuration
-   - After timeout **MUST** log detailed info (module_id, current ref_count)
-
-3. **Idempotency**:
-   - Multiple `unregister()` of same ID should silently succeed
-
-**Example**:
-
-```python
-# Python example
-import time
-import threading
-
-class Registry:
-    def __init__(self):
-        self.modules = {}
-        self.locks = {}
-
-    def safe_unregister(self, module_id):
-        if module_id not in self.modules:
-            return True  # Idempotent
-
-        module = self.modules[module_id]
-        module.state = "UNLOADING"
-
-        # Remove from registry (new calls will fail)
-        del self.modules[module_id]
-
-        # Wait for execution to complete
-        timeout = 30
-        start = time.time()
-        while module.ref_count > 0:
-            if time.time() - start > timeout:
-                logger.error(f"Module {module_id} unregister timeout")
-                return False
-            time.sleep(0.1)
-
-        # Call hook
-        try:
-            module.on_unload()
-        except Exception as e:
-            logger.error(f"on_unload() failed: {e}")
-
-        return True
-```
+1. **Reference count maintenance**: increment when a call starts and decrement when it ends, whether it succeeds or fails. Use atomic operations or a lock.
+2. **Timeout handling**: the default wait is 5 seconds. On timeout, log the module ID and the remaining reference count.
+3. **Hook failures**: an `on_unload()` that throws is logged at ERROR and the unload continues (§5.15.3).
+4. **Concurrency table**: `unregister()` of an absent or already-removed ID succeeds silently; `call()` racing `unregister()` completes if it had started and otherwise throws `MODULE_NOT_FOUND` (§12.7.4).
 
 ---
 
 ### A22: `enforce_timeout()` — Timeout Enforcement
 
-**Source**: PROTOCOL_SPEC §12.7.5
+**Source**: protocol-spec §12.7.5
 
-**Purpose**: Ensure module execution completes within specified time, cooperative cancellation or forced termination after timeout.
+**Purpose**: Ensure module execution completes within the configured time, using cooperative cancellation first and forced termination where the language supports it.
 
 **Signature**:
 
-```
+```text
 enforce_timeout(module_id: string, inputs: dict, context: Context, timeout_ms: int) → dict | error
 ```
 
 **Input**:
+
 - `module_id`: Module ID
 - `inputs`: Input parameters
 - `context`: Execution context
-- `timeout_ms`: Timeout duration (milliseconds)
+- `timeout_ms`: Timeout duration (milliseconds); `0` disables the per-module limit (`executor.default_timeout`)
 
 **Output**:
+
 - Success: Module output (dict)
 - Failure: `MODULE_TIMEOUT` error
 
 **Preconditions**:
-- `timeout_ms > 0`
+
 - Module is registered
 
 **Postconditions**:
-- If completes within time limit, returns normal output
-- If timeout, throws `MODULE_TIMEOUT` error
+
+- If execution completes within the limit, returns its output
+- If the limit is reached, throws `MODULE_TIMEOUT`
 
 **Pseudocode**:
 
-```
+```text
 Algorithm: enforce_timeout(module_id, inputs, context, timeout_ms)
 
-Input: module_id (string), inputs (dict), context (Context), timeout_ms (integer)
-Output: Module output (dict) or MODULE_TIMEOUT error
-
 Steps:
-  1. If timeout_ms == 0:
-     # Disable timeout
-     return execute_with_middleware(module_id, inputs, context)
+  1. Start timer (from first before() middleware)
+  2. Concurrent execution:
+     a. Main task: execute_with_middleware(module_id, inputs, context)
+     b. Timeout monitor: sleep(timeout_ms)
+  3. If main task completes first → Cancel timer, return result
+  4. If timeout triggers first:
+     - Send cancellation signal (cooperative)
+     - Wait maximum grace_period (default 5 seconds)
+     - If still hasn't exited → Forcibly terminate (if supported)
+     - Throw MODULE_TIMEOUT error
 
-  2. Create cancellation token: cancel_token ← new CancellationToken()
-
-  3. Start main task (async):
-     task ← async execute_with_middleware(
-       module_id, inputs, context, cancel_token
-     )
-
-  4. Start timeout monitor (async):
-     timeout_task ← async sleep(timeout_ms)
-
-  5. Wait for race:
-     result ← await race(task, timeout_task)
-
-  6. If task completes first:
-     cancel timeout_task
-     return result  # Normal return
-
-  7. If timeout_task completes first (timeout):
-     a. Send cancellation signal: cancel_token.cancel()
-     b. Wait grace_period (default 5 seconds):
-        try:
-          result ← await wait(task, timeout=5000ms)
-          return result  # Module responded to cancellation, normal exit
-        catch timeout:
-          continue to step c
-
-     c. Force termination (if language supports):
-        If supports thread/coroutine termination:
-          force terminate task
-          log ERROR: "Module {module_id} force killed after timeout"
-        Otherwise:
-          log WARN: "Module {module_id} timeout but cannot be killed"
-
-     d. Throw error:
-        throw MODULE_TIMEOUT(
-          message: f"Module {module_id} execution timeout ({timeout_ms}ms)",
-          module_id: module_id,
-          timeout: timeout_ms
-        )
+Return:
+  - Success → Module output
+  - Failure → MODULE_TIMEOUT error
 ```
 
 **Complexity Analysis**:
-- Time complexity: O(1) + module execution time (up to timeout_ms + grace_period)
+
+- Time complexity: O(1) + module execution time (up to `timeout_ms` + grace period)
 - Space complexity: O(1)
 
 **Implementation Notes**:
 
-1. **Cooperative cancellation first**:
-   - Module should check `cancel_token.is_cancelled()` and actively exit
-   - Example (Python):
-     ```python
-     async def execute(self, inputs, context):
-         for i in range(1000):
-             if context.cancel_token.is_cancelled():
-                 raise CancelledError()
-             await process_item(i)
-     ```
-
-2. **Force termination risk**:
-   - Force termination may cause resource leaks (unclosed files, unreleased locks)
-   - **SHOULD** only use after cooperative cancellation fails
-   - Some languages (e.g., Java, Go) don't recommend forcing thread termination
-
-3. **Timeout timing start point**:
-   - From first `before()` middleware
-   - Includes total time for Schema validation, ACL checking, all middleware and `execute()`
-
-**Example**:
-
-```python
-# Python example
-import asyncio
-
-async def enforce_timeout(module_id, inputs, context, timeout_ms):
-    if timeout_ms == 0:
-        return await execute_with_middleware(module_id, inputs, context)
-
-    cancel_token = CancellationToken()
-
-    # Main task
-    task = asyncio.create_task(
-        execute_with_middleware(module_id, inputs, context, cancel_token)
-    )
-
-    # Timeout monitor
-    try:
-        result = await asyncio.wait_for(task, timeout=timeout_ms / 1000)
-        return result
-    except asyncio.TimeoutError:
-        # Cooperative cancellation
-        cancel_token.cancel()
-        try:
-            result = await asyncio.wait_for(task, timeout=5)  # grace period
-            return result
-        except asyncio.TimeoutError:
-            # Force termination (Python doesn't support, only log)
-            logger.error(f"Module {module_id} timeout, cannot force kill")
-            raise ModuleError(
-                code="MODULE_TIMEOUT",
-                message=f"Module {module_id} timeout ({timeout_ms}ms)"
-            )
-```
+1. **Cooperative cancellation first**: a long-running module checks `context.cancel_token` and exits when it is cancelled.
+2. **Forced termination** may leak resources (open files, held locks). Use it only after cooperative cancellation fails, and log ERROR with `module_id` and the timeout after doing so.
+3. **Two limits**: the per-module limit (`executor.default_timeout`, or the module's declared `resources.timeout`) and the call-chain limit (`executor.global_timeout`), which covers before + execute + after for the whole chain. `0` disables either.
+4. **Grace period**: no SDK currently waits the step 4 grace period; see [conformance.md §7](./conformance.md#7-known-deviations).
 
 ---
 
@@ -1801,7 +1700,7 @@ async def enforce_timeout(module_id, inputs, context, timeout_ms):
 
 ### A23: `to_strict_schema()` — Strict Mode Schema Conversion
 
-**Source**: PROTOCOL_SPEC §4.16
+**Source**: protocol-spec §4.16
 
 **Description**: Converts apcore standard JSON Schema (with `x-*` extension fields and optional properties) to OpenAI / Anthropic Strict Mode compatible JSON Schema. Strict Mode requires all nested objects to set `additionalProperties: false`, all properties must be in `required` array, optional fields expressed through nullable types.
 
@@ -1831,7 +1730,7 @@ async def enforce_timeout(module_id, inputs, context, timeout_ms):
 
 **Pseudocode:**
 
-```
+```text
 Algorithm: to_strict_schema(schema)
 
 Steps:
@@ -1911,11 +1810,11 @@ Steps:
 
 **Implementation Notes:**
 
-- Conversion **MUST** be performed on copy, **forbidden** to modify original Schema
-- `x-llm-description` **SHOULD** first replace corresponding field's `description` before stripping (see §4.3 export rules), then execute `strip_extensions()`
+- Conversion **MUST** be performed on a copy and **MUST NOT** modify the original Schema
+- `x-llm-description` **SHOULD** first replace corresponding field's `description` before stripping (see §4.3), then execute `strip_extensions()`
 - Pure `$ref` nodes (no `type`) use **`anyOf`** wrapping when making nullable, rather than directly adding `type`. `anyOf`, not `oneOf`: OpenAI structured outputs — the consumer strict mode exists to feed — accepts only `anyOf` as the nullable-union spelling. A `oneOf` the module author wrote is preserved untouched inside the wrapper; rewriting it would drop the exclusivity their contract asserts
 - An author-written `oneOf` / `anyOf` on an optional property is **wrapped** by the same rule, never appended to. There is exactly one nullable spelling — `{anyOf: [<original>, {type: "null"}]}` — and pushing a `null` branch into the author's union rewrites the contract they declared (for `oneOf`, it also changes the exclusivity count the validator counts branches against)
-- **`properties` alone identifies an object schema.** A node carrying `properties` **MUST** be hardened when it has no `type` keyword at all, or when its `type` declares `"object"` in either the string form (`"object"`) or the array form (`["object", "null"]` — which is exactly what the nullable wrapping in step 2e produces for an optional nested object). Requiring a literal `type: "object"` let `{"properties": {…}}` through with neither `additionalProperties: false` nor a `required` list, which OpenAI structured outputs then rejects. Conversely, `properties` sitting beside a **non-object** `type` is inert (TYPE_MAPPING §17.1 R2) and **MUST NOT** be hardened
+- **`properties` alone identifies an object schema.** A node carrying `properties` **MUST** be hardened when it has no `type` keyword at all, or when its `type` declares `"object"` in either the string form (`"object"`) or the array form (`["object", "null"]` — which is exactly what the nullable wrapping in step 2e produces for an optional nested object). A node with `properties` and no hardening is rejected by OpenAI structured outputs. Conversely, `properties` sitting beside a **non-object** `type` is inert ([type-mapping §17.1](./type-mapping.md#171-general-rules) R2) and **MUST NOT** be hardened
 - If `additionalProperties` already exists and is `true`, **MUST** change to `false`
 - For fields already in `type: ["string", "null"]` form, should not add `"null"` again
 - `object` inside `items` also need recursive processing, and so does an `object` at a `prefixItems` tuple position — the Draft 2020-12 tuple form is not an exception
@@ -1974,20 +1873,20 @@ additionalProperties: false
 
 ---
 
-## A24. Stream Chunk Aggregation
+## 17. Stream Aggregation Algorithm
 
-### A24.1 deep_merge_chunks (Recursive Deep Merge with Depth Cap)
+### A24: `deep_merge_chunks()` — Stream Chunk Aggregation {#a24-stream-chunk-aggregation}
+
+**Source**: protocol-spec §12.2, Streaming Execution Protocol. protocol-spec points here for the pseudocode. Pinned by `conformance/fixtures/stream_aggregation.json`.
 
 **Purpose.** Aggregate the chunks yielded by a streaming module's `stream()` generator into the final output dict that the executor validates against `output_schema`.
 
-**Source section.** PROTOCOL_SPEC §5 streaming semantics. Verified by `conformance/fixtures/stream_aggregation.json` (10 cases).
-
-```
+```text
 Algorithm: deep_merge_chunks(chunks, max_depth=32)
 
 Input:
   chunks    — Ordered list of dict objects yielded by module.stream()
-  max_depth — Maximum recursion depth (canonical default 32)
+  max_depth — Maximum recursion depth (stream.max_merge_depth, default 32)
 
 Output:
   result — A single dict that is the recursive deep-merge of all chunks
@@ -2003,10 +1902,6 @@ Helper: deep_merge(base, override, depth, max_depth)
        For each (key, value) in override:
          base[key] ← value        (assign wholesale; do NOT recurse further)
        Return
-     A bare `Return` here would DISCARD the override at the cap, contradicting
-     both the Properties note below and streaming.md — "If nesting exceeds this
-     limit, the right value replaces the left at that level". The truncation
-     stops traversal; it does not drop data.
   2. For each (key, value) in override:
        a. If key NOT in base:
             base[key] ← value
@@ -2014,28 +1909,24 @@ Helper: deep_merge(base, override, depth, max_depth)
             deep_merge(base[key], value, depth+1, max_depth)
        c. Else:
             base[key] ← value   (overwrite — arrays REPLACE, primitives overwrite)
-
-Properties:
-  - Arrays are replaced (not concatenated) at matching keys.
-  - null overwrites (does not delete) the previous value.
-  - Recursion is depth-capped to prevent stack exhaustion via adversarial input.
-  - Beyond the depth cap, sub-objects are assigned wholesale from the override
-    (the truncation point loses no data, only stops further traversal). Pinned
-    by `deep_merge_depth_cap_right_wins` in
-    `conformance/fixtures/stream_aggregation.json`, which records divergence
-    T-B-002: apcore-rust implements this, apcore-python and apcore-typescript
-    currently drop the override at the cap.
 ```
+
+**Properties:**
+
+- Arrays are replaced (not concatenated) at matching keys.
+- `null` overwrites (does not delete) the previous value.
+- Recursion is depth-capped to prevent stack exhaustion via adversarial input.
+- At the depth cap all three SDKs assign the override's values wholesale (right value wins): traversal stops, but no data is dropped (fixture case `deep_merge_depth_cap_right_wins`).
 
 **Reference implementations:**
 
-- `apcore-python/src/apcore/executor.py` — `_deep_merge()` (`_MAX_MERGE_DEPTH = 32`)
-- `apcore-typescript/src/executor.ts` — `deepMergeChunk()`
-- `apcore-rust/src/executor.rs` — `deep_merge_chunks_checked()` and `deep_merge_value()`
+- apcore-python `executor.py` — `_deep_merge()`
+- apcore-typescript `executor.ts` — `deepMergeChunk()`
+- apcore-rust `executor.rs` — `deep_merge_chunks_checked()` and `deep_merge_value()`
 
 **Notes:**
 
-- Implementations **MUST** reject a non-object chunk (array, string, number, boolean, null) *before* delivering it to the consumer, raising `InvalidInputError` with `code=GENERAL_INVALID_INPUT` and `details.code = STREAM_CHUNK_NOT_OBJECT`. Python, TypeScript, and Rust all enforce this with a per-chunk shape check in the streaming loop, so the invalid chunk is never yielded. See `../features/streaming.md` §Returns (D-58).
+- Implementations **MUST** reject a non-object chunk (array, string, number, boolean, null) *before* delivering it to the consumer, raising `InvalidInputError` with `code=GENERAL_INVALID_INPUT` and `details.code = STREAM_CHUNK_NOT_OBJECT`, so the invalid chunk is never yielded. See [features/streaming.md](../features/streaming.md) (D-58).
 - The merge is performed in-place on an accumulator dict; iteration over the chunk stream is single-pass.
 
 ---
@@ -2044,18 +1935,15 @@ Properties:
 
 ### A25: `match_glob()` — Portable Glob Matching
 
-**Source**: PROTOCOL_SPEC §9.2.3
+**Source**: protocol-spec §9.2.3
 
 **Description**: Matches a **pattern-valued** configuration value or system-module input
 against a name — a filename, a field name, an event type, a module ID. A25 is the matcher
 for every pattern-valued value in this specification **except** ACL rule patterns and
 `match_modules`, which are module-ID matching and use A08.
 
-A25 exists because the specification previously typed these values only with the word
-"glob" and named no algorithm, so each SDK delegated to whichever matcher its host language
-offered — `pathlib.Path.glob`, `fnmatch`, the `glob` crate, a translated `RegExp` — and
-inherited that library's dialect. Those dialects disagree, so one declared type became three
-contracts (#116, #117). Two of the resulting divergences were silent redaction bypasses.
+Naming the algorithm, not only the syntax, is what keeps the SDKs in agreement: host-language
+glob libraries each implement a different dialect.
 
 **Input Parameters:**
 
@@ -2090,7 +1978,7 @@ no escape character.
 
 **Pseudocode:**
 
-```
+```text
 Algorithm: match_glob(pattern, value)
 
 Steps:
@@ -2126,9 +2014,8 @@ Steps:
 **Implementation Notes:**
 
 - **Do not delegate to the host library.** `fnmatch`, `pathlib.Path.glob`, the `glob` crate
-  and a hand-translated `RegExp` each differ from A25 and from one another, and every one of
-  them was the source of a divergence this algorithm replaces. Roughly twenty lines per
-  language, no dependency.
+  and a hand-translated `RegExp` each differ from A25 and from one another. A25 is roughly
+  twenty lines per language, with no dependency.
 - **Step 4 is leftmost-first and does not backtrack**, which is the same greedy strategy A08
   specifies. Stating the procedure — not only the syntax — is the point: two matchers can
   both honour `*` and `?` and still disagree on `a*a` against `aaa`.
@@ -2159,18 +2046,18 @@ reported instead.
 
 ---
 
-## 17. References
+## 19. References
 
-- [PROTOCOL_SPEC §2 — Naming Specification](./protocol-spec.md#2-naming-specification)
-- [PROTOCOL_SPEC §3 — Directory Specification](./protocol-spec.md#3-directory-specification)
-- [PROTOCOL_SPEC §4 — Schema Specification](./protocol-spec.md#4-schema-specification)
-- [PROTOCOL_SPEC §5 — Module Specification](./protocol-spec.md#5-module-specification)
-- [PROTOCOL_SPEC §5.11 — Function-based Module Definition](./protocol-spec.md#511-function-based-module-definition-function-based-module-definition)
-- [PROTOCOL_SPEC §5.12 — External Schema Binding](./protocol-spec.md#512-external-schema-binding-external-schema-binding)
-- [PROTOCOL_SPEC §6 — ACL Specification](./protocol-spec.md#6-acl-specification)
-- [PROTOCOL_SPEC §7 — Approval System](./protocol-spec.md#7-approval-system)
-- [PROTOCOL_SPEC §8 — Error Handling Specification](./protocol-spec.md#8-error-handling-specification)
-- [PROTOCOL_SPEC §9 — Configuration Specification](./protocol-spec.md#9-configuration-specification)
-- [PROTOCOL_SPEC §10 — Observability Specification](./protocol-spec.md#10-observability-specification)
-- [PROTOCOL_SPEC §11 — Extension Mechanism](./protocol-spec.md#11-extension-mechanism)
-- [PROTOCOL_SPEC §13 — Versioning](./protocol-spec.md#13-versioning)
+- [protocol-spec §2 — Naming Specification](./protocol-spec.md#2-naming-specification)
+- [protocol-spec §3 — Directory Specification](./protocol-spec.md#3-directory-specification)
+- [protocol-spec §4 — Schema Specification](./protocol-spec.md#4-schema-specification)
+- [protocol-spec §5 — Module Specification](./protocol-spec.md#5-module-specification)
+- [protocol-spec §5.11 — Function-based Module Definition](./protocol-spec.md#511-function-based-module-definition-function-based-module-definition)
+- [protocol-spec §5.12 — External Schema Binding](./protocol-spec.md#512-external-schema-binding-external-schema-binding)
+- [protocol-spec §6 — ACL Specification](./protocol-spec.md#6-acl-specification)
+- [protocol-spec §7 — Approval System](./protocol-spec.md#7-approval-system)
+- [protocol-spec §8 — Error Handling Specification](./protocol-spec.md#8-error-handling-specification)
+- [protocol-spec §9 — Configuration Specification](./protocol-spec.md#9-configuration-specification)
+- [protocol-spec §10 — Observability Specification](./protocol-spec.md#10-observability-specification)
+- [protocol-spec §11 — Extension Mechanism](./protocol-spec.md#11-extension-mechanism)
+- [protocol-spec §13 — Versioning](./protocol-spec.md#13-versioning)

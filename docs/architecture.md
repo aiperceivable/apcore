@@ -14,7 +14,7 @@ apcore's architecture comprises two orthogonal dimensions: **framework technical
 
 The framework's own technical layering, defining the complete flow from module registration to execution:
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────────┐
 │                    Application Layer                              │
 │   ┌─────────────────┐  ┌─────────────────┐  ┌────────────────┐  │
@@ -58,7 +58,7 @@ The framework's own technical layering, defining the complete flow from module r
 
 In the `extensions/` directory, it is recommended to divide modules by responsibility (enforced by ACL):
 
-```
+```text
 extensions/
 │
 ├── api/                    # API Layer: handles external requests
@@ -112,8 +112,8 @@ The heart of apcore is the **Execution Pipeline**. Every call, whether from a RE
 3.  **Module Lookup**: Retrieve the module from the Registry.
 4.  **ACL Enforcement**: Verify that the caller is authorized to invoke the target.
 5.  **Approval Gate**: If `requires_approval` is set, pause for human-in-the-loop consent.
-6.  **Input Validation**: Strict validation against the `input_schema`.
-7.  **Middleware (Before)**: Execute global and per-module pre-hooks.
+6.  **Middleware (Before)**: Execute `before()` hooks, which may replace the inputs.
+7.  **Input Validation**: Strict validation of the (possibly replaced) inputs against `input_schema`.
 8.  **Execution**: The actual business logic (Module code).
 9.  **Output Validation**: Strict validation against the `output_schema`.
 10. **Middleware (After)**: Execute post-hooks (observability, cleanup, etc.).
@@ -121,11 +121,11 @@ The heart of apcore is the **Execution Pipeline**. Every call, whether from a RE
 
 ---
 
-### 2.3 Module (The Logic Unit)
+### 2.3 Registry
 
 Registry is responsible for module discovery, registration, and management.
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────┐
 │                         Registry                             │
 ├─────────────────────────────────────────────────────────────┤
@@ -159,11 +159,11 @@ Registry is responsible for module discovery, registration, and management.
 
 ---
 
-### 2.3 Executor
+### 2.4 Executor
 
 Executor is responsible for module invocation and execution.
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────┐
 │                         Executor                             │
 ├─────────────────────────────────────────────────────────────┤
@@ -240,11 +240,11 @@ Executor is responsible for module invocation and execution.
 
 ---
 
-### 2.4 Context
+### 2.5 Context
 
 Context flows through the entire call chain, carrying tracing and user information.
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────┐
 │                         Context                              │
 ├─────────────────────────────────────────────────────────────┤
@@ -261,7 +261,7 @@ Context flows through the entire call chain, carrying tracing and user informati
 
 **Context Propagation:**
 
-```
+```text
 Top-level call (trace_id: "abc", caller_id: None, call_chain: [])
     │
     ▼
@@ -284,11 +284,11 @@ Module A (trace_id: "abc", caller_id: None, call_chain: ["A"])
 
 ---
 
-### 2.5 ACL (Access Control)
+### 2.6 ACL (Access Control)
 
 ACL controls call permissions between modules.
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────┐
 │                           ACL                                │
 ├─────────────────────────────────────────────────────────────┤
@@ -309,7 +309,7 @@ ACL controls call permissions between modules.
 
 **Matching Process:**
 
-```
+```text
 check("api.handler", "executor.email")
 
 Rule 1: "admin.*" vs "api.handler" → No match
@@ -320,11 +320,11 @@ Rule 2: "api.*" vs "api.handler" → Match!
 
 ---
 
-### 2.6 Middleware
+### 2.7 Middleware
 
 Middleware executes in an onion model.
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────┐
 │                       Middleware Chain                       │
 ├─────────────────────────────────────────────────────────────┤
@@ -360,7 +360,7 @@ Middleware executes in an onion model.
 
 ### 3.1 Module Discovery Flow
 
-```
+```text
 ┌─────────────┐     ┌─────────────┐     ┌─────────────┐
 │ extensions/ │────▶│  Discoverer │────▶│  ID Map     │
 │  structure  │     │  scan files │     │  convert ID │
@@ -375,7 +375,7 @@ Middleware executes in an onion model.
 
 ### 3.2 Module Call Flow
 
-```
+```text
 ┌─────────┐     ┌─────────┐     ┌─────────┐     ┌──────────┐
 │ Client  │────▶│Executor │────▶│  ACL    │────▶│Middleware│
 │         │     │ .call() │     │ .check()│     │  .before │
@@ -396,7 +396,7 @@ Middleware executes in an onion model.
 
 ### 3.3 Error Handling Flow
 
-```
+```text
 Module.execute() throws exception
         │
         ▼
@@ -419,64 +419,11 @@ Throw ModuleError
 
 ---
 
-## 4. Directory Structure
+## 4. Project Layout
 
-### 4.1 Framework Source Structure
+### 4.1 Application Project Structure
 
-```
-apcore/
-├── __init__.py           # Public API
-├── module.py             # Module base class
-├── decorator.py          # Module decorator and FunctionModule
-├── bindings.py           # YAML binding loader for zero-code integration
-├── executor.py           # Executor implementation
-├── context.py            # Context definition
-├── acl.py                # ACL implementation
-├── errors.py             # Exception definitions
-├── config.py             # Config loading
-│
-├── registry/             # Module discovery & registration
-│   ├── __init__.py
-│   ├── registry.py       # Central Registry class
-│   ├── types.py          # ModuleDescriptor, DiscoveredModule, DependencyInfo
-│   ├── scanner.py        # Directory/file scanning
-│   ├── validation.py     # Module interface validation
-│   ├── metadata.py       # Module metadata extraction
-│   ├── dependencies.py   # Dependency resolution & load order
-│   ├── entry_point.py    # Entry point resolution
-│   └── schema_export.py  # Schema export helpers
-│
-├── schema/               # Schema processing
-│   ├── __init__.py
-│   ├── types.py          # SchemaStrategy, ExportProfile, type definitions
-│   ├── loader.py         # Schema loading
-│   ├── validator.py      # Schema validation
-│   ├── exporter.py       # Schema export (JSON/YAML)
-│   ├── ref_resolver.py   # $ref resolution
-│   ├── strict.py         # Strict mode transformation
-│   └── annotations.py    # x-* annotation handling
-│
-├── middleware/           # Middleware
-│   ├── __init__.py       # Public API
-│   ├── base.py           # Middleware base class
-│   ├── adapters.py       # BeforeMiddleware, AfterMiddleware adapters
-│   ├── manager.py        # MiddlewareManager pipeline engine
-│   └── logging.py        # Logging middleware
-│
-├── observability/        # Observability
-│   ├── __init__.py
-│   ├── tracing.py        # Distributed tracing
-│   ├── metrics.py        # Metrics collection
-│   └── context_logger.py # Context-aware logging
-│
-└── utils/                # Utilities
-    ├── __init__.py
-    └── pattern.py        # Wildcard matching
-```
-
-### 4.2 Application Project Structure
-
-```
+```text
 my-project/
 ├── apcore.yaml           # Framework config
 ├── extensions/           # Extensions directory
@@ -573,41 +520,38 @@ Rust-specific descriptor-only discovery path.
 ### 5.3 Custom Validator
 
 ```python
+from typing import Any
+
 from apcore.registry.validation import validate_module
 
 
 class StrictValidator:
-    """Strict module validator"""
+    """Require every module to carry at least one tag."""
 
-    def validate(self, module_class: Type[Module]) -> list[str]:
-        errors = validate_module(module_class)
-
-        # Custom rules
-        if len(module_class.tags) == 0:
+    def validate(self, module: Any) -> list[str]:
+        errors = validate_module(module)
+        if not getattr(module, "tags", None):
             errors.append("Module must have at least one tag")
-
         return errors
 ```
 
 ### 5.4 Custom ACL
 
 ```python
-from apcore import ACL
+from apcore import ACL, Context
 
 
 class RBACAuthorizer(ACL):
     """Role-based access control"""
 
-    def check(self, caller_id: str, target_id: str, context: Context) -> bool:
-        if not context.identity:
+    def check(self, caller_id: str | None, target_id: str, context: Context | None = None, **kwargs) -> bool:
+        if context is None or context.identity is None:
             return False
 
         required_roles = self._get_required_roles(target_id)
 
         return bool(set(context.identity.roles) & set(required_roles))
 ```
-
-> **Backward compatibility note:** The informal patterns shown above (subclassing, function-based APIs) continue to work. The `ExtensionManager` provides a formal unified API on top of these patterns for implementations that need programmatic extension point management.
 
 ---
 
@@ -616,14 +560,14 @@ class RBACAuthorizer(ACL):
 ### 6.1 Schema-Driven
 
 All modules must define explicit schemas, ensuring:
-- AI/LLM can understand module functionality
-- Automatic validation of inputs/outputs
-- Automatic documentation and SDK generation
+- Callers (agents or code) can read what a module accepts and returns
+- Inputs and outputs are validated on every call
+- Adapters can generate tool definitions, CLI arguments and API docs from the same schemas
 
 ### 6.2 Zero-Configuration Priority
 
 - Directory as ID: file paths automatically become module IDs
-- Auto-discovery: scan directories to auto-register modules
+- Discovery: `discover()` scans the extensions roots and registers every module it finds
 - Convention over configuration: reasonable defaults
 
 ### 6.3 Pluggable
@@ -657,9 +601,9 @@ All modules must define explicit schemas, ensuring:
 
 ### 7.2 Concurrent Execution Model
 
-```
+```text
 Single call: serial execution
-  Executor.call() → ACL → Validate → Before MW → Execute → After MW → Return
+  Executor.call() → guard → lookup → ACL → approval → before MW → validate → execute → validate → after MW → return
 
 Concurrent calls: independent contexts per call
   Thread 1: Executor.call(A) → [independent ACL/Validate/MW chain]
@@ -707,13 +651,11 @@ apcore supports mixed sync/async module calls, with automatic bridging:
 
 ```python
 # Async calling sync module (thread pool offload)
-async def async_caller():
-    executor = Executor()
+async def async_caller(executor: Executor):
     result = await executor.call_async("sync_module", {})  # Auto offload to thread pool
 
 # Sync calling async module (blocking wait)
-def sync_caller():
-    executor = Executor()
+def sync_caller(executor: Executor):
     result = executor.call("async_module", {})  # Auto await
 ```
 
@@ -721,23 +663,12 @@ def sync_caller():
 
 ### 7.4 Timeout and Cancellation
 
-**Timeout Levels:**
+**Timeouts** (configured in `apcore.yaml`):
 
-- **Global timeout**: includes before + execute + after (default 60 seconds)
-- **ACL check timeout**: independent timing (default 1 second)
-- Timing starts from first `before()` middleware
+- `executor.default_timeout` — per-module execution timeout, default 30 000 ms
+- `executor.global_timeout` — budget for the whole call tree, default 60 000 ms
 
-**Cancellation Strategy:** Cooperative cancellation is implemented in both SDKs via `CancelToken`. Forced termination fallback is not yet implemented.
-
-1. **Cooperative cancellation** (implemented):
-   - Module checks `context.cancel_token.is_cancelled()` and actively exits
-   - Suitable for long-running tasks (loops, I/O, etc.)
-
-2. **Forced termination** (fallback, not yet implemented):
-   - After cooperative cancellation fails, wait grace period (default 5 seconds)
-   - If still not exited, force terminate thread/coroutine (may cause resource leaks)
-
-See [PROTOCOL_SPEC §12.7.5 Timeout Enforcement](./spec/protocol-spec.md#1275-timeout-enforcement)
+**Cancellation** is cooperative in all three SDKs: a module checks `context.cancel_token` between units of work and exits when it is cancelled, and a timeout cancels the token. See [Cancellation](./features/cancellation.md). The grace period and forced termination described in [protocol-spec §12.7.5](./spec/protocol-spec.md#1275-timeout-enforcement) are not implemented by any SDK yet.
 
 ## 8. Memory Model
 
@@ -747,7 +678,7 @@ See [PROTOCOL_SPEC §12.7.5 Timeout Enforcement](./spec/protocol-spec.md#1275-ti
 |------|---------|---------|---------|
 | Registry | App startup | App shutdown | App-level |
 | Executor | App startup | App shutdown | App-level |
-| Module instance | discover() or first call (lazy load) | unregister() or app shutdown | App-level |
+| Module instance | `discover()` or `register()` | `unregister()` or app shutdown | App-level |
 | Context | Each call() | After call() returns | Request-level |
 | Middleware | App startup | App shutdown | App-level |
 
@@ -795,18 +726,6 @@ See [PROTOCOL_SPEC §12.7.2 Context.data Sharing Semantics](./spec/protocol-spec
 - Avoid storing large objects (> 1MB) in `context.data`, use external cache
 - Module instances are singleton (one instance per ID), resident in memory
 - Schema objects cached after loading, not reparsed
-
-## 9. Performance Characteristics
-
-| Operation | Expected Latency | Description |
-|------|---------|------|
-| Registry.get() | < 1μs | Hash table lookup |
-| ACL.check() | < 100μs | Rule linear scan (< 50 rules) |
-| Schema validation | < 1ms | Depends on schema complexity |
-| Middleware chain | < 1ms | Depends on middleware count and complexity |
-| Module execution | Depends on business | Framework overhead < 5ms |
-
----
 
 ## Next Steps
 

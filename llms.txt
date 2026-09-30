@@ -10,12 +10,9 @@ apcore is a governed, protocol-neutral runtime and module standard for applicati
 - Adopters: https://github.com/aiperceivable/apcore/blob/main/ADOPTERS.md
 - Documentation: https://apcore.aiperceivable.com/
 
-## Current baseline
+## Versions
 
-- Protocol: 1.9.0-draft
-- Python SDK: 0.26.0
-- TypeScript SDK (`apcore-js`): 0.26.0
-- Rust SDK: 0.26.0
+Current protocol and SDK versions: https://apcore.aiperceivable.com/ (documentation home).
 
 ## Runtime contract
 

@@ -27,7 +27,7 @@ The Extension System provides a pluggable architecture for customizing and exten
 
 ### Type Safety
 - Each extension point declares an expected type (protocol/interface). Registration of a value that does not satisfy the expected type **MUST** raise an error.
-- SDKs **MAY** use runtime type checking mechanisms appropriate to the language (e.g., `isinstance` in Python, duck-type guards in TypeScript, trait bounds in Rust).
+- SDKs use the language's own mechanism: `isinstance` against a runtime-checkable Protocol in Python, duck-type guards in TypeScript, and the `ExtensionKind` enum variant in Rust (the variant must match the point name).
 
 ## Technical Design
 
@@ -134,22 +134,34 @@ The Extension System provides a pluggable architecture for customizing and exten
     ```
 === "Rust"
     ```rust
-    use apcore::extensions::ExtensionManager;
+    use std::sync::Arc;
+
+    use apcore::{ExtensionKind, ExtensionManager};
 
     let mut manager = ExtensionManager::new();
 
-    // Register extensions
-    manager.register("discoverer", Box::new(my_discoverer))?;
-    manager.register("module_validator", Box::new(my_validator))?;
-    manager.register("middleware", Box::new(logging_middleware))?;
-    manager.register("middleware", Box::new(metrics_middleware))?;
-    manager.register("span_exporter", Box::new(stdout_exporter))?;
-    manager.register("acl", Box::new(my_acl))?;
-    manager.register("approval_handler", Box::new(my_approval_handler))?;
+    // Each extension is wrapped in the ExtensionKind variant for its point;
+    // register() returns a handle usable with unregister_handle().
+    manager.register("discoverer", ExtensionKind::Discoverer(Arc::new(my_discoverer)))?;
+    manager.register("module_validator", ExtensionKind::ModuleValidator(Arc::new(my_validator)))?;
+    let logging = manager.register("middleware", ExtensionKind::Middleware(Arc::new(logging_middleware)))?;
+    manager.register("middleware", ExtensionKind::Middleware(Arc::new(metrics_middleware)))?;
+    manager.register("span_exporter", ExtensionKind::SpanExporter(Arc::new(stdout_exporter)))?;
+    manager.register("acl", ExtensionKind::Acl(Arc::new(my_acl)))?;
+    manager.register("approval_handler", ExtensionKind::ApprovalHandler(Arc::new(my_approval_handler)))?;
+
+    // Retrieve extensions
+    let discoverer = manager.get("discoverer")?;        // Option<&ExtensionKind>
+    let all_mw = manager.get_all("middleware")?;        // &[ExtensionKind]
+
+    // Unregister by handle
+    manager.unregister_handle(logging);
 
     // Wire everything into registry and executor
-    manager.apply(&mut registry, &mut executor)?;
+    manager.apply(&registry, &mut executor)?;
     ```
+
+    The placeholders (`my_discoverer`, `logging_middleware`, …) stand for values implementing the corresponding trait (`Discoverer`, `Middleware`, `SpanExporter`, `ModuleValidator`, `ApprovalHandler`) or an `ACL`.
 
 ### Wiring Behavior (`apply`)
 
@@ -160,26 +172,10 @@ When `apply(registry, executor)` is called, the manager performs the following i
 3. **ACL** → `executor.set_acl(ext)` — replaces the executor's ACL provider.
 4. **Approval Handler** → `executor.set_approval_handler(ext)` — replaces the executor's approval handler.
 5. **Middleware** → `executor.use(mw)` for each registered middleware — appends to the middleware chain.
-6. **Span Exporters** → Locates the `TracingMiddleware` in the executor's middleware chain and sets the exporter:
+6. **Span Exporters** → Locates the `TracingMiddleware` already in the executor's middleware chain and sets its exporter:
    - If a single exporter is registered, it is set directly.
-   - If multiple exporters are registered, they are wrapped in a `CompositeExporter` that delegates to all underlying exporters. Failures in one exporter do not affect others.
-
-### CompositeExporter (Internal)
-
-When multiple span exporters are registered, they are composed into a single `CompositeExporter`:
-
-```python
-class _CompositeExporter:
-    def __init__(self, exporters: list[SpanExporter]) -> None: ...
-
-    def export(self, span: Span) -> None:
-        """Export span to all underlying exporters. Failures are logged but not raised."""
-        for exporter in self._exporters:
-            try:
-                exporter.export(span)
-            except Exception:
-                pass  # Log and continue
-```
+   - If multiple exporters are registered, they are wrapped in a composite exporter that delegates to all of them. A failure in one exporter is logged and does not affect the others.
+   - If the chain has no `TracingMiddleware`, a warning is logged and the exporters are not applied — `apply` does not add one.
 
 ## Contract: ExtensionManager.register
 
@@ -188,11 +184,11 @@ class _CompositeExporter:
 - `extension` (Any/unknown/Box<dyn Trait>, required) — must satisfy the extension point's declared type; type checking is performed at registration time
 
 ### Errors
-- `InvalidInputError` (`code=GENERAL_INVALID_INPUT`, `Err(ModuleError)` in Rust) — `point_name` is not a registered extension point. Python raised a bare `KeyError` and TypeScript a bare `Error` until D-108 was implemented; neither carries a code, so a caller could not tell a misspelled point name from any other failure.
-- `ExtensionTypeError` (or `TypeError` / `Err(ModuleError)`) — `extension` does not satisfy the point's expected type/trait
+- `InvalidInputError` (`code=GENERAL_INVALID_INPUT`; Rust `Err(ModuleError)` with `ErrorCode::GeneralInvalidInput`) — `point_name` is not a registered extension point (D-108)
+- `TypeError` (Python, TypeScript) / `Err(ModuleError)` with `ErrorCode::GeneralInvalidInput` (Rust: the `ExtensionKind` variant does not match the point) — `extension` does not satisfy the point's expected type
 
 ### Returns
-- On success: void/None/() — extension is stored; for single-cardinality points, replaces any prior registration
+- On success: void/None (Python, TypeScript); `ExtensionHandle` (Rust), accepted by `unregister_handle`. For single-cardinality points the new extension replaces any prior registration.
 
 ### Properties
 - async: false
@@ -207,7 +203,7 @@ class _CompositeExporter:
 
 ### Errors
 - `InvalidInputError` (`code=GENERAL_INVALID_INPUT`) — `point_name` is not a registered extension point
-- No error for a registered point that currently holds nothing; returns `None`/`null`/`None`. See ["An unknown extension point is an error; an empty one is not"](#an-unknown-extension-point-is-an-error-an-empty-one-is-not) — this row used to state only the second half, and one SDK read it as covering the first.
+- No error for a registered point that currently holds nothing; returns `None`/`null`/`None`. See [An unknown extension point is an error; an empty one is not](#an-unknown-extension-point-is-an-error-an-empty-one-is-not).
 
 ### Returns
 - On success: the registered extension object, or `None`/`null`/`None`
@@ -242,7 +238,7 @@ class _CompositeExporter:
 
 ### Errors
 - `InvalidInputError` (`code=GENERAL_INVALID_INPUT`) — `point_name` is not a registered extension point
-- No error if the POINT is registered and does not hold the given extension — that is a silent `false`. See ["An unknown extension point is an error; an empty one is not"](#an-unknown-extension-point-is-an-error-an-empty-one-is-not); this row is the one that was read as covering an unknown point name too.
+- No error if the point is registered and does not hold the given extension — that is a silent `false`. See [An unknown extension point is an error; an empty one is not](#an-unknown-extension-point-is-an-error-an-empty-one-is-not).
 
 ### Returns
 - On success: `True`/`true`/`Ok(true)` when the extension was removed, `False`/`false`/`Ok(false)` when the point does not hold it
@@ -254,50 +250,23 @@ class _CompositeExporter:
 
 ## An unknown extension point is an error; an empty one is not
 
-> **Added in spec v1.51.0** (D-108).
-
 `get`, `get_all` and `unregister` **MUST** reject an extension point name that is
-not registered, with `InvalidInputError(code=GENERAL_INVALID_INPUT)`.
-
-They **MUST NOT** raise for a point that exists but currently holds nothing:
-`get` returns null, `get_all` returns an empty collection, `unregister` returns
-false. That distinction is the whole of this decision, and it is why the
-`### Errors` row of those contracts previously read "No errors raised" — the row
-was written about the EMPTY case, and one implementation read it as covering the
-UNKNOWN case too, returning a silent empty answer for a misspelled point name.
-
-A typo then becomes a wiring bug that first surfaces at `apply()`, far from the
-`get("middlewares")` that caused it, with nothing naming the mistake.
+not registered, with `InvalidInputError(code=GENERAL_INVALID_INPUT)`, so a
+misspelled point name fails where it is written rather than surfacing later as
+a wiring bug at `apply()`. They **MUST NOT** raise for a point that exists but
+currently holds nothing: `get` returns null, `get_all` returns an empty
+collection, `unregister` returns false (D-108).
 
 ## Removal must be expressible
 
-> **Added in spec v1.49.0** (D-91).
+`unregister(point_name, extension)` identifies its target by **identity** —
+Python `is`, TypeScript `===`, pointer address in Rust — never by value
+equality: two registrations that compare equal are two registrations (D-128).
 
-`unregister(point_name, extension)` identifies its target by IDENTITY against a
-value the caller supplies. In a language where the manager **owns** its
-extensions, a caller cannot borrow one back out of the manager and hand it to a
-method that also needs mutable access — so an implementation whose only removal
-signature takes a borrowed extension has a method that compiles but that no
-caller outside the manager can invoke for a positive removal.
-
-> **D-128 (v1.57.0) — identity, not equality.** This paragraph used to read
-> "by identity/equality", contradicting its own Inputs row above ("identity
-> comparison") two paragraphs earlier, and one SDK took the permissive
-> reading. apcore-python removed with `list.remove`, which compares using
-> `__eq__`: for any extension type that defines equality — a dataclass
-> middleware, for one — `unregister(second)` deleted `first`. A host removing
-> the second of two identically-configured middlewares **kept the one it
-> wanted gone and lost the one it wanted kept**, with nothing raised and
-> nothing logged. Implementations **MUST** compare by identity (Python `is`,
-> TypeScript `===`, a pointer address or a registration handle in Rust) and
-> **MUST NOT** treat value equality as authorising a removal. Two registrations
-> that compare equal are two registrations.
-
-An implementation **MUST** provide at least one removal path a host can actually
-reach: the identity form where the language allows it, or an equivalent keyed on
-something the caller holds independently (the handle returned by `register`, or an
-index/name). "Provided but uncallable" does not satisfy the contract, and is not
-detectable by a signature-level parity check — only by trying to write the call.
+Every implementation **MUST** offer a removal path a host can actually call. In
+Rust, where the manager owns its extensions, that path is
+`unregister_handle(handle)` with the `ExtensionHandle` returned by `register`
+(D-91).
 
 ## Contract: ExtensionManager.apply
 
@@ -306,7 +275,7 @@ detectable by a signature-level parity check — only by trying to write the cal
 - `executor` (Executor, required) — executor to wire extensions into (acl, approval_handler, middleware, span_exporter)
 
 ### Errors
-- `ExtensionApplyError` (or propagated from Registry/Executor) — wiring a span exporter fails because no `TracingMiddleware` is present in the executor chain; or Registry/Executor APIs raise
+- Errors raised by the Registry / Executor setters propagate (Rust: `Err(ModuleError)`, e.g. a rejected middleware). A registered span exporter with no `TracingMiddleware` in the chain is **not** an error: it is logged as a warning and skipped.
 
 ### Returns
 - On success: void/None/() — all registered extensions wired in the documented order (discoverer → module_validator → acl → approval_handler → middleware chain → span exporters)
@@ -317,23 +286,14 @@ detectable by a signature-level parity check — only by trying to write the cal
 3. `executor.set_acl(ext)` if acl registered
 4. `executor.set_approval_handler(ext)` if approval_handler registered
 5. `executor.use(mw)` for each middleware in registration order
-6. Locate `TracingMiddleware` in executor chain; set single exporter directly or wrap multiple in `CompositeExporter`
+6. Locate `TracingMiddleware` in the executor chain; set a single exporter directly or wrap several in a composite exporter; warn and skip if there is none
 
 ### Postconditions
 
-> **Added in spec v1.49.0** (D-78). This section did not exist, and one SDK
-> consequently consumed the store while two read it.
-
-`apply` **MUST NOT** consume the extension store. After it returns, the manager
-still holds every registration it held before: `get`, `get_all` and `count`
-report the same extensions, and applying the same manager to a SECOND registry /
-executor pair wires the same set again.
-
-This is not a free choice. The `idempotent: false` row below states that calling
-`apply` twice *stacks* middleware — an observable that only a non-consuming
-implementation can produce. A draining implementation makes the second `apply`
-a silent no-op, so a host wiring two executors from one manager gets extensions
-on the first and none on the second, with no error to say so.
+`apply` **MUST NOT** consume the extension store (D-78). After it returns, the
+manager still holds every registration: `get` and `get_all` report the same
+extensions, and applying the same manager to a second registry / executor pair
+wires the same set again.
 
 ### Properties
 - async: false
@@ -350,66 +310,121 @@ A custom `Discoverer` replaces the default filesystem scan. `discover()` receive
 === "Python"
 
     ```python
-    from apcore import Registry
-    from apcore.registry.registry import Discoverer
+    from pydantic import BaseModel
+
+    from apcore import Context, Discoverer, Registry
+
+
+    class HelloInput(BaseModel):
+        name: str
+
+
+    class HelloOutput(BaseModel):
+        message: str
+
+
+    class HelloModule:
+        input_schema = HelloInput
+        output_schema = HelloOutput
+        description = "Say hello"
+
+        def execute(self, inputs: dict, context: Context) -> dict:
+            return {"message": f"Hello, {inputs['name']}!"}
+
 
     class CustomDiscoverer(Discoverer):
         """Return a list of dicts, each with 'module_id' and 'module' keys."""
 
         def discover(self, roots: list[str]) -> list[dict]:
-            return [
-                {"module_id": "custom.hello", "module": HelloModule()},
-            ]
+            return [{"module_id": "custom.hello", "module": HelloModule()}]
 
-    registry = Registry(extensions_dir="./extensions")
+
+    registry = Registry()
     registry.set_discoverer(CustomDiscoverer())
-    registry.discover()  # returns the count of successfully registered modules
+    count = registry.discover()  # number of modules registered
     ```
 
 === "TypeScript"
 
     ```typescript
-    import { Registry, Discoverer } from "apcore-js";
+    import { Type } from "@sinclair/typebox";
+    import { Registry, type Context, type Discoverer, type Module } from "apcore-js";
+
+    const hello: Module = {
+      inputSchema: Type.Object({ name: Type.String() }),
+      outputSchema: Type.Object({ message: Type.String() }),
+      description: "Say hello",
+      execute: (inputs: Record<string, unknown>, _context: Context) => ({ message: `Hello, ${String(inputs.name)}!` }),
+    };
 
     const discoverer: Discoverer = {
-      async discover(roots: string[]) {
-        return [{ moduleId: "custom.hello", module: new HelloModule() }];
+      async discover(_roots: string[]) {
+        return [{ moduleId: "custom.hello", module: hello }];
       },
     };
 
-    const registry = new Registry({ extensionsDir: "./extensions" });
+    const registry = new Registry();
     registry.setDiscoverer(discoverer);
-    await registry.discover();
+    const count = await registry.discover(); // number of modules registered
     ```
 
 === "Rust"
 
     ```rust
-    use apcore::registry::registry::{DiscoveredModule, Discoverer, Registry};
-    use apcore::errors::ModuleError;
-    use async_trait::async_trait;
     use std::sync::Arc;
+
+    use apcore::registry::{DiscoveredModule, Discoverer, ModuleDescriptor, Registry};
+    use apcore::{Context, Module, ModuleError};
+    use async_trait::async_trait;
+    use serde_json::{json, Value};
+
+    struct HelloModule;
+
+    #[async_trait]
+    impl Module for HelloModule {
+        fn description(&self) -> &str { "Say hello" }
+        fn input_schema(&self) -> Value {
+            json!({ "type": "object", "properties": { "name": { "type": "string" } }, "required": ["name"] })
+        }
+        fn output_schema(&self) -> Value {
+            json!({ "type": "object", "properties": { "message": { "type": "string" } } })
+        }
+        async fn execute(&self, inputs: Value, _ctx: &Context<Value>) -> Result<Value, ModuleError> {
+            Ok(json!({ "message": format!("Hello, {}!", inputs["name"].as_str().unwrap_or("")) }))
+        }
+    }
 
     struct CustomDiscoverer;
 
     #[async_trait]
     impl Discoverer for CustomDiscoverer {
-        async fn discover(
-            &self,
-            _roots: &[String],
-        ) -> Result<Vec<DiscoveredModule>, ModuleError> {
+        async fn discover(&self, _roots: &[String]) -> Result<Vec<DiscoveredModule>, ModuleError> {
+            let module = HelloModule;
+            // ModuleDescriptor has no Default; unspecified fields take their serde defaults.
+            let descriptor: ModuleDescriptor = serde_json::from_value(json!({
+                "module_id": "custom.hello",
+                "description": module.description(),
+                "input_schema": module.input_schema(),
+                "output_schema": module.output_schema(),
+            }))
+            .map_err(|e| ModuleError::new(apcore::ErrorCode::GeneralInvalidInput, e.to_string()))?;
             Ok(vec![DiscoveredModule {
                 name: "custom.hello".to_string(),
                 source: "in-memory".to_string(),
-                descriptor: /* build a ModuleDescriptor for this module */ todo!(),
-                module: Arc::new(HelloModule) as Arc<dyn apcore::module::Module>,
+                descriptor,
+                module: Arc::new(module),
             }])
         }
     }
 
-    let registry = Registry::new();
-    registry.set_discoverer(Box::new(CustomDiscoverer));
-    let count = registry.discover_internal().await?;
+    #[tokio::main]
+    async fn main() -> Result<(), ModuleError> {
+        let registry = Registry::new();
+        registry.set_discoverer(Box::new(CustomDiscoverer));
+        let count = registry.discover_internal().await?; // runs the configured discoverer
+        println!("registered {count} module(s)");
+        Ok(())
+    }
     ```
 
 !!! tip "Out-of-process modules"
@@ -417,28 +432,81 @@ A custom `Discoverer` replaces the default filesystem scan. `discover()` receive
 
 ### Custom Module Validator
 
-Override the default structural conformance check with a stricter rule set:
+A custom module validator replaces the registry's default module validation with rules of your own (keep the structural checks in it if you still want them). It receives the module — in Python, the class during discovery and the instance at `register()` — and returns its errors (a list of strings in Python and TypeScript, a `ValidationResult` in Rust); any error rejects the module — at `register()` (`GENERAL_INVALID_INPUT` in Python and TypeScript, `MODULE_LOAD_ERROR` in Rust) and during discovery (the module is skipped with a warning).
 
-```python
-from apcore import Registry, ModuleValidator
+=== "Python"
 
-class StrictValidator(ModuleValidator):
-    def validate(self, module_class: Type[Module]) -> list[str]:
-        errors = super().validate(module_class)
+    ```python
+    from typing import Any
 
-        if not module_class.tags:
-            errors.append("Module must have at least one tag")
-        if not module_class.__doc__ or len(module_class.__doc__) < 20:
-            errors.append("Module description must be at least 20 characters")
+    from apcore import ModuleValidator, Registry
 
-        return errors
 
-registry = Registry(extensions_dir="./extensions")
-registry.set_validator(StrictValidator())
-registry.discover()
-```
+    class StrictValidator(ModuleValidator):
+        def validate(self, module: Any) -> list[str]:
+            errors: list[str] = []
+            if not getattr(module, "tags", None):
+                errors.append("Module must have at least one tag")
+            if len(getattr(module, "description", "") or "") < 20:
+                errors.append("Module description must be at least 20 characters")
+            return errors
 
-> Available in apcore-python v0.5.1+ and apcore-typescript v0.3.0+.
+
+    registry = Registry(extensions_dir="./extensions")
+    registry.set_validator(StrictValidator())
+    registry.discover()
+    ```
+
+=== "TypeScript"
+
+    ```typescript
+    import { Registry, type ModuleValidator } from "apcore-js";
+
+    const strict: ModuleValidator = {
+      validate(module: unknown): string[] {
+        const m = module as { tags?: string[]; description?: string };
+        const errors: string[] = [];
+        if (!m.tags || m.tags.length === 0) errors.push("Module must have at least one tag");
+        if ((m.description ?? "").length < 20) errors.push("Module description must be at least 20 characters");
+        return errors;
+      },
+    };
+
+    const registry = new Registry({ extensionsDir: "./extensions" });
+    registry.setValidator(strict);
+    await registry.discover();
+    ```
+
+=== "Rust"
+
+    ```rust
+    use apcore::registry::{ModuleDescriptor, ModuleValidator, Registry};
+    use apcore::{Module, ValidationErrorDetail, ValidationResult};
+
+    struct StrictValidator;
+
+    impl ModuleValidator for StrictValidator {
+        fn validate(&self, module: &dyn Module, _descriptor: Option<&ModuleDescriptor>) -> ValidationResult {
+            let mut errors = Vec::new();
+            if module.tags().is_empty() {
+                errors.push(ValidationErrorDetail::message_only("Module must have at least one tag"));
+            }
+            if module.description().len() < 20 {
+                errors.push(ValidationErrorDetail::message_only("Module description must be at least 20 characters"));
+            }
+            // ValidationResult is #[non_exhaustive]: start from Default and set fields.
+            let mut result = ValidationResult::default();
+            result.valid = errors.is_empty();
+            result.errors = errors;
+            result
+        }
+    }
+
+    fn main() {
+        let registry = Registry::new();
+        registry.set_validator(Box::new(StrictValidator));
+    }
+    ```
 
 ## Dependencies
 

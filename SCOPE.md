@@ -17,17 +17,17 @@
 > Require `input_schema`, `output_schema`, and `description`, then enforce ACL, approval, validation, middleware, and observability in one execution pipeline.
 
 **Positioning**:
-```
+```text
 apcore = governed capability runtime + module standard + enforced schemas
 
 Not: A framework that can only be used in AI scenarios
 But: A protocol-neutral definition and execution boundary for application capabilities
 ```
 
-**Analogy**:
-- apcore is similar to "Django/Spring" (defines how to build modules)
-- MCP is similar to "HTTP protocol" (defines communication format)
-- apflow is "an application built on apcore"
+**Relationships**:
+- MCP and A2A define communication surfaces; apcore defines and governs the capability behind a surface (see [Positioning](./docs/POSITIONING.md))
+- Surface adapters (`apcore-mcp`, `apcore-a2a`, `apcore-cli`) and framework integrations are separate, independently versioned projects
+- Applications such as apflow are consumers of apcore, not part of the standard
 
 ---
 
@@ -36,37 +36,37 @@ But: A protocol-neutral definition and execution boundary for application capabi
 > This section uses RFC 2119 keywords; see [docs/spec/protocol-spec.md §1.5](./docs/spec/protocol-spec.md#15-specification-keywords) for their meanings.
 
 ### 2.1 Module Standardization
-- [ ] **Definition (MUST)**: All modules **must** define ID, input_schema, output_schema, and description
-- [ ] **Discovery (MUST)**: Implementations **must** support automatic module discovery based on directory scanning
-- [ ] **Loading (SHOULD)**: Implementations **should** support lazy loading and dependency injection
-- [ ] **Invocation (MUST)**: Implementations **must** automatically perform input validation, output validation, and error handling upon invocation
+- **Definition (MUST)**: All modules **must** define ID, input_schema, output_schema, and description
+- **Discovery (MUST)**: Implementations **must** support automatic module discovery based on directory scanning
+- **Loading (SHOULD)**: Implementations **should** load modules in dependency order and run their lifecycle hooks
+- **Invocation (MUST)**: Implementations **must** automatically perform input validation, output validation, and error handling upon invocation
 
 ### 2.2 Schema System
-- [ ] **Definition (MUST)**: All modules **must** define input_schema / output_schema, based on JSON Schema Draft 2020-12
-- [ ] **Validation (MUST)**: Implementations **must** perform Schema validation on input and output at runtime
-- [ ] **Conversion (SHOULD)**: Implementations **should** support conversion from YAML Schema to language-native types
+- **Definition (MUST)**: All modules **must** define input_schema / output_schema, based on JSON Schema Draft 2020-12
+- **Validation (MUST)**: Implementations **must** perform Schema validation on input and output at runtime
+- **Conversion (SHOULD)**: Implementations **should** support conversion from YAML Schema to language-native types
 
 ### 2.3 Naming and Addressing
-- [ ] **Directory as ID (MUST)**: The directory path **must** serve as the single source of truth for the module ID
-- [ ] **ID Map (SHOULD)**: Implementations **should** provide automatic cross-language ID conversion, and **may** allow overrides via YAML configuration
+- **Directory as ID (MUST)**: The directory path **must** serve as the single source of truth for the module ID
+- **ID Map (SHOULD)**: Implementations **should** provide automatic cross-language ID conversion, and **may** allow overrides via YAML configuration
 
 ### 2.4 Access Control
-- [ ] **ACL (MUST)**: Implementations **must** provide an inter-module invocation access control mechanism
-- [ ] **Audit (SHOULD)**: Implementations **should** support invocation audit logs
+- **ACL (MUST)**: Implementations **must** provide an inter-module invocation access control mechanism
+- **Audit (SHOULD)**: Implementations **should** support invocation audit logs
 
 ### 2.5 Observability
-- [ ] **Tracing (MUST)**: trace_id **must** be propagated throughout the call chain
-- [ ] **Logging (SHOULD)**: Implementations **should** provide structured logging support
-- [ ] **Metrics (MAY)**: Implementations **may** collect metrics such as invocation count, latency, etc.
+- **Tracing (MUST)**: trace_id **must** be propagated throughout the call chain
+- **Logging (SHOULD)**: Implementations **should** provide structured logging support
+- **Metrics (MAY)**: Implementations **may** collect metrics such as invocation count, latency, etc.
 
 ### 2.6 Extension Mechanism
-- [ ] **Middleware (MUST)**: Implementations **must** provide before/after/on_error middleware hooks
-- [ ] **Extension Points (SHOULD)**: Implementations **should** provide replaceable extension points such as loaders, executors, etc.
+- **Middleware (MUST)**: Implementations **must** provide before/after/on_error middleware hooks
+- **Extension Points (SHOULD)**: Implementations **should** provide replaceable extension points such as loaders, executors, etc.
 
 ### 2.7 Existing Application Integration
-- [ ] **`module()` Registration (MUST)**: Implementations **must** provide a `module()` mechanism to wrap existing callables (functions or methods) as standard modules; languages that support Decorator syntax should provide it in Decorator form, while languages that don't should provide it as a function call
-- [ ] **External Schema Binding (MUST)**: The standard **must** support YAML binding files to map existing functions as modules with zero code modification
-- [ ] **Type Inference (MUST)**: Implementations **must** support automatic JSON Schema generation from language-native type information
+- **`module()` Registration (MUST)**: Implementations **must** provide a `module()` mechanism to wrap existing callables (functions or methods) as standard modules; languages that support Decorator syntax should provide it in Decorator form, while languages that don't should provide it as a function call
+- **External Schema Binding (MUST)**: The standard **must** support YAML binding files to map existing functions as modules with zero code modification
+- **Type Inference (MUST)**: Implementations **must** support automatic JSON Schema generation from language-native type information
 
 ---
 
@@ -114,7 +114,7 @@ Things explicitly **not within the project scope**:
 Use these scenarios to validate whether our boundaries are correct:
 
 ### Scenario 1: Python Developer Building an AI Application
-```
+```text
 ✅ I defined a database query module and it was automatically discovered by the framework
 ✅ The framework automatically validates input and output
 ✅ I can invoke other modules from my code
@@ -123,30 +123,30 @@ Use these scenarios to validate whether our boundaries are correct:
 ```
 
 ### Scenario 2: Go Developer Wants to Use a Python Module
-```
+```text
 ✅ The framework defines a cross-language ID specification
 ✅ The framework defines a Schema specification
 ⚡ Cross-language invocation requires RPC (provided by extension packages)
 ```
 
 ### Scenario 3: Team Wants to Define Workflows with YAML
-```
+```text
 ✅ The core framework provides standardized module invocation capabilities
 ❌ Workflow engine is not within apcore's scope (implemented by upstream projects like apflow)
 ✅ The team can use any workflow solution (apflow, custom-built, etc.)
 ```
 
 ### Scenario 4: Wanting to Expose Modules to Claude/ChatGPT
-```
+```text
 ✅ Modules have standard Schema, inherently MCP/OpenAI compatible
-❌ MCP Server adapter is not within apcore's scope
-✅ Refer to the appendix mapping documentation to implement adapters on your own
+✅ The ecosystem adapter apcore-mcp serves registered modules as MCP tools
+❌ The core SDK itself does not run an MCP server
 ```
 
 ### Scenario 5: Existing Python Application Wants AI-Perceivable Capabilities
-```
+```text
 ✅ Add the @module decorator to existing functions to automatically become apcore modules
-✅ Use module(service.method, id=...) to register existing class methods without modifying source code
+✅ Use module() to register existing class methods without modifying source code
 ✅ The framework automatically generates Schema from type annotations
 ✅ Existing code logic remains completely unchanged
 ✅ Can also use YAML binding files with absolutely no source code modification
@@ -176,7 +176,7 @@ Use these scenarios to validate whether our boundaries are correct:
 | **A2A Adapter** | ⚡ Ecosystem ([apcore-a2a](https://github.com/aiperceivable/apcore-a2a)) | Protocol adaptation |
 | **CLI Adapter** | ⚡ Ecosystem ([apcore-cli](https://github.com/aiperceivable/apcore-cli)) | Surface adaptation |
 | **Rate Limiting** | ⚡ Ecosystem (apcore-toolkit) | Runtime resilience; implemented as middleware |
-| **Circuit Breaker** | ✅ Core (`CircuitBreakerMiddleware`) | Resilience middleware shipped in core across all three SDKs since v0.20.0; SCOPE reconciled with shipped code in v0.22.0 |
+| **Circuit Breaker** | ✅ Core (`CircuitBreakerMiddleware`) | Resilience middleware shipped in all three SDKs |
 | **Secret Injection** | ⚡ Ecosystem (apcore-toolkit) | Runtime infrastructure; `x-sensitive` marking is Core |
 | **Testing Framework** | ⚡ Ecosystem ([apcore-testing](https://github.com/aiperceivable/apcore-testing)) | Developer tooling: MockModule, ContractTest, fixtures |
 | **OpenAPI / AsyncAPI Export** | ⚡ Ecosystem (apcore-toolkit) | Additional export formats beyond built-in SchemaExporter |
@@ -217,30 +217,27 @@ Use these scenarios to validate whether our boundaries are correct:
 - [x] Workflow: **Won't Do** (application-layer logic, implemented by upstream projects like apflow)
 - [x] MCP/A2A/CLI adaptation: **Ecosystem** (apcore-mcp, apcore-a2a, apcore-cli as independent adapter projects)
 - [x] Distributed execution: **Won't Do** (runtime feature, not protocol core)
-- [ ] Schema and Meta files: Keep separated
+- [x] Schema and meta files: **Separate** (schemas in `schemas/`, per-module metadata in a sibling `*_meta.yaml`)
 - [x] Existing application integration: **Core** (`module()` registration and external Schema binding are core standards)
 - [x] Framework adapters: **Won't Do** (independent repositories, apcore only provides adapter interface specification)
 - [x] API naming: **No prefix** (rely on language namespaces; languages without namespace mechanisms use `apcore_` prefix)
 - [x] Behavior annotations (cacheable, paginated): **Core** (AI-Perceivable behavior hints for agent decision-making)
 - [x] AI metadata conventions (x-preconditions, x-cost-per-call, etc.): **Core** (recommended metadata keys, not enforced)
 - [x] Rate limiting: **Ecosystem** (runtime middleware, not module definition)
-- [x] Circuit breaker: **Core** (shipped as `CircuitBreakerMiddleware` in all three SDKs since v0.20.0; SCOPE reconciled with code reality in v0.22.0)
+- [x] Circuit breaker: **Core** (`CircuitBreakerMiddleware` in all three SDKs)
 - [x] Secret injection: **Ecosystem** (runtime infrastructure; `x-sensitive` marking remains Core)
 - [x] Testing framework: **Ecosystem** (apcore-testing — MockModule, ContractTest, fixtures)
 - [x] Token counting / context window: **Won't Do** (LLM-specific, apcore stays AI-neutral)
 
 ## 9. Document Structure
 
-```
+```text
 apcore/
-├── docs/spec/protocol-spec.md          # Core protocol specification (14 chapters)
-├── SCOPE.md                  # Scope definition
-├── README.md                 # Project introduction
-└── docs/                     # Detailed documentation
-    ├── concepts.md           # Core concepts
-    ├── architecture.md       # Internal architecture
-    ├── api/                  # API reference
-    ├── features/             # Feature specifications
-    ├── guides/               # Usage guides
-    └── spec/                 # Standard specification
+├── docs/spec/          # Normative specification, conformance, type mapping, decision records
+├── docs/features/      # One reference page per runtime subsystem
+├── docs/guides/        # Tutorials and cookbooks
+├── schemas/            # Canonical JSON Schemas
+├── conformance/        # Cross-language fixtures and guard scripts
+├── SCOPE.md            # This file
+└── README.md           # Project introduction
 ```

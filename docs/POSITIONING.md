@@ -53,7 +53,7 @@ Behavioral annotations describe properties such as `readonly`, `destructive`, `i
 
 ### Consistent execution
 
-The execution pipeline applies lookup, safety checks, access control, approval, input validation, middleware, execution, output validation, and result handling in a specified order.
+Every call runs one fixed pipeline: call-chain safety checks, module lookup, access control, approval, `before` middleware, input validation, execution, output validation, `after` middleware, and result handling.
 
 ### Operational evidence
 

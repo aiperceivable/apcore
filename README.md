@@ -4,9 +4,9 @@
 
 # apcore — AI-Perceivable Core
 
-> **AI-Perceivable**: application capabilities expose machine-readable contracts and behavioral metadata so agents do not need to infer basic invocation rules from prose.
+> **Define a governed capability once. Expose it through any supported surface.**
 
-**[📖 Full Documentation](https://aiperceivable.github.io/apcore/)** · [Getting Started](https://aiperceivable.github.io/apcore/getting-started/) · [Protocol Spec](./docs/spec/protocol-spec.md)
+**[📖 Documentation](https://apcore.aiperceivable.com/)** · [Getting Started](https://apcore.aiperceivable.com/getting-started/) · [Protocol Specification](./docs/spec/protocol-spec.md)
 
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/12294/badge)](https://www.bestpractices.dev/projects/12294)
@@ -14,1241 +14,173 @@
 [![TypeScript Version](https://img.shields.io/badge/TypeScript-Node_18%2B-blue)](https://github.com/aiperceivable/apcore-typescript)
 [![Rust Version](https://img.shields.io/badge/Rust-1.75%2B-blue)](https://github.com/aiperceivable/apcore-rust)
 
+apcore is a **governed, protocol-neutral runtime and module standard** for application capabilities that agents or code can call.
 
+You define a capability once — a description, an input schema, an output schema and behavioral annotations. The runtime then applies identity, access control, approval, validation, middleware, execution, structured errors and trace context on every call. Surface adapters project the same capability to MCP, A2A, CLI, HTTP or direct code.
 
-> **Define a governed capability once. Expose it through any supported surface.**
+MCP tells an agent what it *can* call. apcore decides whether *this* call — with these arguments, by this identity — should run at all, and leaves evidence that it did.
 
-A governed, protocol-neutral runtime and module standard for agent-callable application capabilities.
-
-apcore enforces schemas, behavioral annotations, ACL rules, approval gates, middleware, and observability at the execution boundary. Surface adapters then project the same capability to MCP, A2A, CLI, HTTP, or direct code.
-
-MCP tells an agent what it *can* call. apcore decides whether this call — with these arguments, in this environment, by this identity — should happen at all, and leaves evidence that it did.
-
-**apcore is a protocol specification.** Language implementations are maintained in separate repositories:
+This repository holds the **protocol specification**, JSON Schemas and cross-language conformance fixtures. The runtimes live in separate repositories:
 
 | SDK | Language | Install | Repository |
 |-----|----------|---------|------------|
-| **apcore** | Python | `pip install apcore` | [github.com/aiperceivable/apcore-python](https://github.com/aiperceivable/apcore-python) |
-| **apcore-js** | TypeScript | `npm install apcore-js` | [github.com/aiperceivable/apcore-typescript](https://github.com/aiperceivable/apcore-typescript) |
-| **apcore** | Rust | `cargo add apcore` | [github.com/aiperceivable/apcore-rust](https://github.com/aiperceivable/apcore-rust) |
+| `apcore` | Python 3.11+ | `pip install apcore` | [apcore-python](https://github.com/aiperceivable/apcore-python) |
+| `apcore-js` | TypeScript (Node 18+) | `npm install apcore-js` | [apcore-typescript](https://github.com/aiperceivable/apcore-typescript) |
+| `apcore` | Rust 1.75+ | `cargo add apcore` | [apcore-rust](https://github.com/aiperceivable/apcore-rust) |
 
----
-
-## Table of Contents
-
-- [What is apcore?](#what-is-apcore)
-  - [The Concept: Cognitive Interface](#the-concept-cognitive-interface)
-  - [How apcore Complements MCP](#how-apcore-complements-mcp)
-- [Why AI-Perceivable?](#why-ai-perceivable)
-  - [The AI Collaboration Lifecycle](#the-ai-collaboration-lifecycle)
-- [Core Principles](#core-principles)
-- [Architecture Overview](#architecture-overview)
-- [Quick Start](#quick-start)
-- [Module Development](#module-development)
-  - [Two Integration Paths](#two-integration-paths)
-  - [Class-based Modules](#1-class-based-modules)
-  - [@module Decorator](#2-module-decorator)
-  - [module() Function Call](#3-module-function-call)
-  - [External Binding (Zero Code Modification)](#4-external-binding-zero-code-modification)
-- [Schema System](#schema-system)
-  - [Three-Layer Metadata Design](#three-layer-metadata-design)
-  - [Module Annotations](#module-annotations)
-  - [LLM Extension Fields](#llm-extension-fields)
-- [Context Object](#context-object)
-- [ACL Access Control](#acl-access-control)
-- [Middleware](#middleware)
-- [Configuration](#configuration)
-- [Observability](#observability)
-- [Error Handling & AI Guidance](#error-handling--ai-guidance)
-- [Cross-Language Support](#cross-language-support)
-- [Relationship with Other Tools](#relationship-with-other-tools)
-- [Implementations](#implementations)
-- [Ecosystem](#ecosystem)
-- [Documentation Index](#documentation-index)
-- [Contributing](#contributing)
-- [License](#license)
-
----
-
-## What is apcore?
-
-apcore is a **governed capability runtime and module standard**. It gives agents and code a machine-readable contract while enforcing validation and governance before business logic runs.
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                apcore — AI-Perceivable Core                 │
-│                                                             │
-│  Governed capability runtime + enforced schemas            │
-│  - Directory as ID (zero-config module discovery)          │
-│  - Schema-driven (input/output mandatory)                  │
-│  - ACL / Observability / Middleware                        │
-└─────────────────────────────────────────────────────────────┘
-                            ↓ Modules callable by
-      ┌──────────┬──────────┬──────────┬──────────┐
-      │          │          │          │          │
-  Legacy Code  AI/LLM    HTTP API    CLI Tool   MCP Server
-   (import)    (agent)     (REST)    (terminal)  (client)
-```
-
-**A protocol-neutral execution contract, not an agent framework or transport protocol.**
-
-### The Concept: Cognitive Interface
-
-Traditional software provides UI for humans and APIs for programs. apcore adds an **agent-readable capability contract**:
-- **Machine-readable intent**: descriptions and schemas expose what an operation accepts and returns.
-- **Strict contracts**: mandatory schemas let the runtime validate every input and output.
-- **Behavioral metadata**: annotations such as `readonly` and `destructive` inform policy and callers.
-
-### How apcore Complements MCP
-
-MCP defines client-server communication and tool metadata. apcore addresses a different boundary: defining and executing application capabilities consistently before they are exposed through MCP or another surface.
-
-| Concern | MCP | apcore |
-|---|---|---|
-| **Primary role** | Client-server protocol and tool surface | Capability definition and governed execution runtime |
-| **Schema and hints** | Tool input/output schemas and annotations | Required schemas plus runtime-enforced validation and governance |
-| **Access and approval** | Implemented by the server or deployment | ACL and approval gates enforced by the execution pipeline |
-| **Auditability** | Implemented by the server or deployment | Trace context, structured errors, events, and usage hooks |
-| **Language model** | Protocol SDKs | Semantically aligned Python, TypeScript, and Rust SDKs |
-
-Use MCP directly when a protocol server is all you need. Add apcore when the same business capability must retain validation, access, approval, and audit semantics across MCP, CLI, HTTP, and direct code.
-
-### Core Problem
-
-Traditional module development faces a fundamental contradiction:
-
-```
-Traditional modules: callers depend on code-specific signatures and prose
-apcore modules: callers receive a structured contract enforced at runtime
-```
-
-Agents have become important callers in software systems, but many application operations lack a portable, enforced contract. apcore addresses this by requiring `input_schema`, `output_schema`, and `description`, then applying governance in the execution pipeline.
-
-### One-Sentence Summary
-
-> apcore solves **how to build modules** (module standard), not how to call tools (communication protocol).
-> Once modules are built, they can be called by code / AI / HTTP / CLI / MCP or any other means.
-
----
-
-## Why AI-Perceivable?
-
-Machine-readable metadata reduces avoidable interface guessing. Model selection and semantic understanding remain caller responsibilities.
-
-| Stage | Meaning | apcore Mechanism |
-|-------|---------|-----------------|
-| **Perceived** | AI can discover and read the module | Schema-enforced `description`, `input_schema`, `output_schema` |
-| **Interpreted** | A caller can inspect intended use and behavioral hints | Behavioral annotations (`x-when-to-use`, `x-common-mistakes`) |
-| **Governed** | The runtime decides whether and how the call executes | ACL, `requires_approval`, validation, structured errors |
-
-### The AI Collaboration Lifecycle
-
-apcore organizes module metadata into a coherent lifecycle that guides an Agent through every stage of a task:
-
-1.  **Discovery (Identity) — `description`**: Helps the Agent find the right tool for its intent.
-2.  **Strategy (Wisdom) — `metadata`**: Teaches the Agent *when* and *how* to use the tool correctly (e.g., `x-when-to-use`, `x-common-mistakes`).
-3.  **Governance (Safety) — `requires_approval`**: Sets the safety boundary for sensitive operations.
-4.  **Recovery (Resilience) — `ai_guidance`**: Provides a clear path for the Agent to fix errors autonomously.
-
-### Real-World Scenarios
-
-| Scenario | Without apcore | With apcore |
-|------|------------|------------|
-| LLM calling your business functions | Manually duplicate tool descriptions and parameter maps | Adapters project the enforced module schema |
-| New team members onboarding | Read source code, guess parameters | Clear from Schema + annotations |
-| Cross-team module reuse | Outdated docs, unclear interfaces | Schema is doc, enforced validation |
-| Security audit | Manually trace call relationships | ACL + call chain auto-tracked |
-| Expose as MCP Server | Rewrite interface definitions | Adapter reads Schema directly |
-
-### Design Decision
-
-```
-Reality: AI has become a key caller in software systems
-Decision: Enforce input_schema / output_schema / description
-Result: One machine-readable contract can be validated across supported surfaces
-```
-
----
-
-## Core Principles
-
-| Principle | Description |
-|------|------|
-| **Schema-Driven** | All modules enforce `input_schema` / `output_schema` / `description` |
-| **Directory as ID** | Directory path auto-maps to module ID, zero config |
-| **AI-Perceivable** | Schema enables AI/LLM perception and understanding—a design requirement, not optional |
-| **Universal Standard** | Modules callable by code/AI/HTTP/CLI or any other means |
-| **Progressive Integration** | Existing code gains AI-Perceivable capability via decorators, function calls, or YAML binding |
-| **Cross-Language Spec** | Language-agnostic protocol specification, any language can implement conformant SDK |
-
-### Differences from Traditional Frameworks
-
-| | Traditional Frameworks | apcore |
-|---|---------|--------|
-| **Schema** | Optional | **Enforced** |
-| **AI-Perceivable** | Not guaranteed | **Guaranteed** |
-| **Module Discovery** | Manual registration | Auto-discovery from directory |
-| **Input Validation** | Implement yourself | Framework automatic |
-| **Behavior Annotations** | None | `readonly` / `destructive` / `requires_approval` etc. |
-| **Call Tracing** | Implement yourself | `trace_id` auto-propagated |
-
----
-
-## Architecture Overview
-
-apcore's architecture consists of two orthogonal dimensions: **Framework Technical Architecture** (vertical) and **Business Layering Recommendations** (horizontal).
-
-### Framework Technical Architecture (Vertical)
-
-The technical layers of the standard itself, defining the complete flow from module registration to execution:
-
-```
-┌─────────────────────────────────────────────────┐
-│      Application Layer                          │
-│   HTTP API / CLI / MCP Server / Custom Interface│
-└─────────────────────┬───────────────────────────┘
-                      ↓ calls
-┌─────────────────────────────────────────────────┐
-│      Execution Layer                            │
-│  ACL check → Input validation → Middleware chain│
-│  → Execute → Output validation                  │
-└──────────┬──────────────────────────────────────┘
-           ↓ lookup module
-┌─────────────────────────────────────────────────┐
-│      Registry Layer                             │
-│  Scan & discover → ID mapping → Interface       │
-│  validation → Module storage                    │
-└──────────┬──────────────────────────────────────┘
-           ↓ read
-┌─────────────────────────────────────────────────┐
-│      Module Layer                               │
-│  User-written business modules (conforming to   │
-│  Module interface specification)                │
-└─────────────────────────────────────────────────┘
-```
-
-### Business Layering Recommendations (Horizontal)
-
-Under the `extensions/` directory, modules should be organized by responsibility (enforced by ACL):
-
-```
-extensions/
-├── api/                    # API Layer: Handle external requests
-│   └── ACL: Can only call orchestrator.*
-│
-├── orchestrator/           # Orchestration Layer: Compose business flows
-│   └── ACL: Can only call executor.* and common.*
-│
-├── executor/               # Execution Layer: Concrete business operations
-│   └── ACL: Can call common.*, can connect to external systems
-│
-└── common/                 # Common Layer: Shared utilities and helpers
-    └── ACL: Read-only operations, called by all layers
-```
-
-**Key Points**:
-- Framework technical architecture (Application → Execution → Registry → Module) is apcore's **implementation mechanism**
-- Business layering (api → orchestrator → executor → common) is a **best practice recommendation**, enforced through ACL configuration
-- The two are orthogonal: any business layer module (api/orchestrator/executor/common) goes through the same framework layer processing
-
-### Execution Flow
-
-A module call goes through a rigorous **Execution Pipeline**:
-
-```
-executor.call("executor.email.send_email", inputs, context)
-   │
-   ├─  1.  Context processing: Create/update call context (trace_id, caller_id, call_chain)
-   ├─  2.  Safety checks: Verify call depth and detect circular calls
-   ├─  3.  Lookup module: Find target module from Registry
-   ├─  4.  ACL check: Verify caller has permission to call target module
-   ├─  5.  Approval Gate: Check requires_approval, await human decision
-   ├─  6.  Input validation: Validate input parameters against input_schema
-   ├─  7.  Middleware before: Execute middleware before() hooks in sequence
-   ├─  8.  Module execution: Call module.execute(inputs, context)
-   ├─  9.  Output validation: Validate output result against output_schema
-   ├─ 10.  Middleware after: Execute middleware after() hooks in reverse order
-   ├─ 11.  Return result
-   │
-   └─ (on error: middleware on_error hooks in reverse order)
-```
-
-### Directory as ID
-
-Module IDs are automatically generated from relative paths under the **module root directory** (default root is `extensions/`, multiple roots can be configured):
-
-```
-File path:                                   Canonical ID:
-extensions/api/handler/user.py           →  api.handler.user
-extensions/executor/email/send_email.py  →  executor.email.send_email
-extensions/common/util/validator.py      →  common.util.validator
-
-Rules:
-1. Remove module root prefix (default `extensions/`)
-2. Remove file extension
-3. Replace `/` with `.`
-4. Must match: ^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$
-5. Maximum length: 192 characters
-
-**Multiple Roots and Namespaces**
-
-- If multiple module root directories are configured, each root directory automatically uses the directory name as a **namespace**, ensuring Module ID uniqueness within the same Registry.
-- For example: `extensions_roots: ["./extensions", "./plugins"]` → `extensions.executor.email.send_email`, `plugins.my_tool`.
-- Automatic namespacing can be overridden with explicit configuration (e.g., `{root: "./extensions", namespace: "core"}` → `core.executor.email.send_email`).
-- Single root mode has no namespace by default (backward compatible); in multi-root mode, at most one root can set `namespace: ""` to omit the prefix.
-
-**Cross-Project Conflicts**
-
-- Same IDs from different projects **will not conflict**, unless they are merged into the same Registry / call domain (e.g., unified gateway or shared executor).
-```
+Current versions are listed on the [documentation home](./docs/index.md).
 
 ---
 
 ## Quick Start
 
-For a detailed multi-language guide, visit the **[Getting Started Guide](https://aiperceivable.github.io/apcore/getting-started.html)**.
-
-=== "Python"
-
-    ```bash
-    pip install apcore
-    ```
-
-    ```python
-    import apcore
-
-    # Use the global client for easy registration and calling
-    @apcore.module(id="math.add", description="Add two integers")
-    def add(a: int, b: int) -> int:
-        return a + b
-
-    # Call directly
-    print(apcore.call("math.add", {"a": 10, "b": 5}))  # {'result': 15}
-    ```
-
-    Or use the explicit client:
-
-    ```python
-    from apcore import APCore
-
-    client = APCore()
-
-    @client.module(id="math.add")
-    def add(a: int, b: int) -> int:
-        return a + b
-
-    print(client.call("math.add", {"a": 10, "b": 5}))
-    ```
-
-=== "TypeScript"
-
-    ```bash
-    npm install apcore-js
-    ```
-
-    ```typescript
-    import { Type } from '@sinclair/typebox';
-    import { FunctionModule, Registry, Executor } from 'apcore-js';
-
-    const add = new FunctionModule({
-      moduleId: 'math.add',
-      description: 'Add two numbers',
-      inputSchema: Type.Object({ a: Type.Number(), b: Type.Number() }),
-      outputSchema: Type.Object({ sum: Type.Number() }),
-      execute: (inputs) => ({ sum: (inputs.a as number) + (inputs.b as number) }),
-    });
-
-    const registry = new Registry();
-    registry.register('math.add', add);
-    const executor = new Executor({ registry });
-    console.log(await executor.call('math.add', { a: 10, b: 5 })); // { sum: 15 }
-    ```
-
-### Project Directory Structure
-
-```
-my-project/
-├── apcore.yaml               # Framework configuration
-├── extensions/               # Module directory (directory path = module ID)
-│   ├── api/                  # API layer
-│   ├── orchestrator/         # Orchestration layer
-│   └── executor/             # Execution layer
-├── schemas/                  # Schema definitions (YAML, shared across languages)
-└── acl/                      # Permission configuration
-```
-
----
-
-## Module Development
-
-> Detailed definitions: [Module Interface](./docs/features/module-interface.md) | [Creating Modules Guide](./docs/guides/creating-modules.md)
-
-### Two Integration Paths
-
-1.  **Native SDK (Recommended)**: Best for new projects. Full type safety and lifecycle control.
-2.  **Zero-Intrusion Patch**: Best for legacy code. Upgrade via decorators or YAML bindings **without rewriting business logic**.
-
-### Implementation Approaches
-
-apcore provides four ways to define modules, suitable for different scenarios:
-
-#### 1. Class-based Modules
-
-The most complete approach, supporting all features:
+### Python
 
 ```python
-# extensions/executor/email/send_email.py
-# Module ID auto-generated: executor.email.send_email
+from apcore import APCore
 
-from apcore import Module, ModuleAnnotations, Context
-from pydantic import BaseModel, Field
+client = APCore()
 
-class SendEmailInput(BaseModel):
-    """LLM understands what parameters are needed through this Schema"""
-    to: str = Field(..., description="Recipient email address")
-    subject: str = Field(..., description="Email subject")
-    body: str = Field(..., description="Email body")
+@client.module(id="math.add", description="Add two numbers")
+def add(a: int, b: int) -> dict:
+    return {"sum": a + b}
 
-class SendEmailOutput(BaseModel):
-    """LLM understands what is returned through this Schema"""
-    success: bool
-    message_id: str = None
-
-class SendEmailModule(Module):
-    """Send email module
-
-    Detailed documentation:
-    - Supports text and HTML format emails
-    - Uses SMTP protocol to connect to external mail server
-    - Configuration items: smtp_host, smtp_port, smtp_user, smtp_pass
-
-    Usage example:
-      Input: {"to": "user@example.com", "subject": "Hello", "body": "World"}
-      Output: {"success": true, "message_id": "msg_123"}
-
-    Notes:
-    - SMTP server information must be configured in the configuration file
-    - Gmail limits 500 emails/day, other providers may have different limits
-    - EmailSendError exception will be raised on send failure
-    """
-
-    # Core layer (must be defined)
-    input_schema = SendEmailInput
-    output_schema = SendEmailOutput
-    description = "Send email to specified recipient. Uses SMTP protocol, non-idempotent operation, requires mail server configuration."
-
-    # Optional: Detailed documentation (for complex modules)
-    documentation = """
-# Features
-Send emails via SMTP protocol, supporting plain text and HTML formats.
-
-## Version Compatibility
-
-The repositories below are the current maintained release lines as of
-**2026-07-16**. Core SDKs are version-aligned; adapters have independent
-version lines and declare their supported core range in their package metadata.
-
-| Component | Version | Notes |
-|---|---|---|
-| **Protocol specification** | 1.17.0 | `docs/spec/protocol-spec.md` |
-| apcore Python / TypeScript / Rust | 0.27.0 | Core SDK release line |
-| apcore-mcp Python / TypeScript / Rust | 0.18.1 | MCP surface adapters |
-| apcore-a2a Python / TypeScript / Rust | 0.6.0 | A2A surface adapters |
-| apcore-cli Python / TypeScript / Rust | 0.10.5 | CLI surface adapters |
-| apcore-toolkit Python / TypeScript / Rust | 0.10.1 | Adapter-building utilities |
-
-## Configuration Requirements
-- SMTP server information must be configured in apcore.yaml
-- Valid SMTP authentication credentials required
-
-## Use Cases
-- Send notification emails, verification codes, reports
-
-## Limitations
-- Gmail: 500 emails/day
-- Attachment size: ≤25MB
-"""
-
-    # Annotation layer (optional, type-safe)
-    annotations = ModuleAnnotations(
-        readonly=False,        # Has side effects
-        destructive=False,     # Won't delete/overwrite data
-        idempotent=False,      # Repeated calls will send repeatedly
-        requires_approval=True, # Requires user confirmation
-        open_world=True,       # Connects to external system (SMTP)
-    )
-    tags = ["email", "notification"]
-
-    def execute(self, inputs: dict, context: Context) -> dict:
-        validated = SendEmailInput(**inputs)
-        # ... send email logic ...
-        return SendEmailOutput(success=True, message_id="msg_123").model_dump()
+print(client.call("math.add", {"a": 10, "b": 5}))  # {'sum': 15}
 ```
 
-**This module automatically has:**
-- LLM-understandable Schema and behavior annotations
-- Auto-generated ID (`executor.email.send_email`)
-- Input/output validation
-- Call chain tracing, observability
+### TypeScript
 
-#### 2. @module Decorator
+```typescript
+import { Type } from '@sinclair/typebox';
+import { APCore } from 'apcore-js';
 
-Suitable for scenarios where **source code can be modified**, one-line integration:
+const client = new APCore();
 
-```python
-# Before: Plain function
-def send_email(to: str, subject: str, body: str) -> dict:
-    """Send email"""
-    return {"success": True, "message_id": "msg_123"}
+client.module({
+  id: 'math.add',
+  description: 'Add two numbers',
+  inputSchema: Type.Object({ a: Type.Number(), b: Type.Number() }),
+  outputSchema: Type.Object({ sum: Type.Number() }),
+  execute: (inputs) => ({ sum: (inputs.a as number) + (inputs.b as number) }),
+});
 
-# After: Add one line decorator, automatically becomes an apcore module
-from apcore import module
-
-@module(id="email.send", tags=["email"])
-def send_email(to: str, subject: str, body: str) -> dict:
-    """Send email"""
-    return {"success": True, "message_id": "msg_123"}
-# Schema automatically inferred from type annotations
+console.log(await client.call('math.add', { a: 10, b: 5 })); // { sum: 15 }
 ```
 
-#### 3. module() Function Call
-
-Suitable for scenarios where **you don't want to modify source code**, completely non-invasive to existing code:
-
-```python
-from apcore import module
-
-# Existing business code, no modification needed
-class EmailService:
-    def send(self, to: str, subject: str, body: str) -> dict:
-        """Send email"""
-        return {"success": True}
-
-service = EmailService()
-module(service.send, id="email.send")  # Register as apcore module
-```
-
-#### 4. External Binding (Zero Code Modification)
-
-Suitable for scenarios where **source code cannot be modified** (third-party libraries, legacy systems, etc.), pure YAML configuration:
-
-```yaml
-# bindings/email.binding.yaml
-bindings:
-  - module_id: "email.send"
-    target_id: "myapp.services.email:send_email"   # Callable object path
-    description: "Send email"
-    auto_schema: true     # Auto-generate Schema from type annotations
-    annotations:
-      open_world: true
-      requires_approval: true
-    tags: ["email"]
-```
-
-#### Comparison of Four Approaches
-
-| Approach | Code Invasiveness | Use Case | Schema Definition |
-|------|-----------|---------|------------|
-| Class-based | High (write new class) | New module development | Manual definition (most complete) |
-| `@module` Decorator | Low (add one line) | Modifiable code | Inferred from type annotations |
-| `module()` Function Call | Very low (don't modify original function) | Existing classes/methods | Inferred from type annotations |
-| External Binding | Zero | Cannot modify source code scenarios | Auto-inferred or manually specified |
-
----
-
-## Schema System
-
-> Detailed definitions: [Schema Definition Guide](./docs/guides/schema-definition.md) | [ModuleAnnotations](./docs/features/module-interface.md#moduleannotations)
-
-### Three-Layer Metadata Design
-
-Each module's metadata is divided into three layers, progressing from required to optional:
-
-```
-┌──────────────────────────────────────────────────┐
-│ Core Layer (REQUIRED)                            │
-│ input_schema / output_schema / description       │
-│ → AI understands "what this module does"         │
-│                                                  │
-│ + documentation (OPTIONAL, detailed docs)        │
-│ → AI understands "detailed use cases and         │
-│   constraints"                                   │
-├──────────────────────────────────────────────────┤
-│ Annotation Layer (OPTIONAL, type-safe)           │
-│ annotations / examples / tags / version          │
-│ → AI understands "how to use correctly"          │
-├──────────────────────────────────────────────────┤
-│ Extension Layer (OPTIONAL, free dictionary)      │
-│ metadata: dict[str, Any]                         │
-│ → Custom requirements (framework doesn't         │
-│   validate); AI tactical wisdom                  │
-│   (x-when-to-use, etc.) also lives here          │
-└──────────────────────────────────────────────────┘
-```
-
-### Description and Documentation Fields
-
-**Borrowing from Claude Skill's Progressive Disclosure design, apcore uses two fields to organize module documentation:**
-
-| Field | Required | Length Limit | Markdown | Purpose |
-|------|--------|----------|----------|------|
-| `description` | **Required** | ≤200 characters | No | Brief module function description for AI quick matching and understanding |
-| `documentation` | Optional | ≤5000 characters | Yes | Detailed documentation including use cases, constraints, configuration requirements |
-
-- **Module discovery phase**: AI reads all modules' `description`, quickly determines candidate modules
-- **Call decision phase**: AI loads `documentation` on-demand, learns detailed usage and constraints
-
-> Complete format rules and correspondence with Claude Skill / OpenAPI: see [Protocol Specification §4.8](./docs/spec/protocol-spec.md#48-description-and-documentation-field-specification). Code examples: see [Class-based Modules](#1-class-based-modules) above.
-
-### Schema Definition
-
-Schema is based on **JSON Schema Draft 2020-12**, supports YAML format definition (shared across languages). Schema files are placed in the `schemas/` directory, with paths corresponding to module IDs.
-
-> Complete Schema format and YAML examples: see [Schema Definition Guide](./docs/guides/schema-definition.md) | [Protocol Specification §4](./docs/spec/protocol-spec.md#4-schema-specification).
-
-### Module Annotations
-
-Annotations describe module **behavior characteristics**, helping AI make safer call decisions:
-
-| Annotation | Type | Description | AI Behavior Impact |
-|------|------|------|------------|
-| `readonly` | bool | No side effects, read-only operation | AI can safely call autonomously |
-| `destructive` | bool | May delete or overwrite data | AI should request user confirmation before calling |
-| `idempotent` | bool | Repeated calls have same result | AI can safely retry |
-| `requires_approval` | bool | Requires explicit user consent | AI must wait for human approval (enforced by Executor) |
-| `open_world` | bool | Connects to external systems | AI should inform user of external interaction |
-| `streaming` | bool | Supports streaming execution | AI can use streaming response mode |
-| `cacheable` | bool | Output can be cached | AI can reuse previous results within `cache_ttl` |
-| `cache_ttl` | int | Cache duration in seconds | AI knows how long cached results remain valid |
-| `paginated` | bool | Returns paginated results | AI knows to pass cursor/offset and expect partial results |
-| `cache_key_fields` | list[str] | Input fields used as cache key | AI knows which inputs affect caching |
-| `pagination_style` | str | Pagination style: `cursor`, `offset`, or `page` | AI knows which pagination parameters to use |
-
-```python
-# Read-only query - AI can call autonomously
-annotations = ModuleAnnotations(readonly=True)
-
-# Delete operation - AI needs to request confirmation
-annotations = ModuleAnnotations(destructive=True, requires_approval=True)
-
-# External API call - AI needs to inform user
-annotations = ModuleAnnotations(open_world=True, idempotent=True)
-
-# Cacheable query with 5-minute TTL
-annotations = ModuleAnnotations(readonly=True, cacheable=True, cache_ttl=300)
-
-# Paginated list endpoint
-annotations = ModuleAnnotations(readonly=True, paginated=True, pagination_style="cursor")
-```
-
-### LLM Extension Fields
-
-Fields with `x-` prefix in Schema are LLM-specific extensions, don't affect standard JSON Schema validation:
-
-| Field | Description | Example |
-|------|------|------|
-| `x-llm-description` | Extended description for LLM (more detailed than description) | `"User's login password, at least 8 characters"` |
-| `x-examples` | Example values to help LLM understand format | `["user@example.com"]` |
-| `x-sensitive` | Mark sensitive fields (password, API Key, etc.) | `true` |
-| `x-constraints` | Business constraints described in natural language | `"Must be a registered user"` |
-| `x-deprecated` | Deprecation information | `{"since": "2.0", "use": "new_field"}` |
-
-> Complete usage and examples: see [Schema Definition Guide](./docs/guides/schema-definition.md) | [Protocol Specification §4.3](./docs/spec/protocol-spec.md#43-llm-extension-fields).
-
-### AI Metadata Conventions
-
-In the extension layer (`metadata` dictionary), you can provide optional AI metadata to help agents understand *when*, *how*, and *at what cost* to use the module. These are conventions, not enforced by the framework.
-
-**Intent & Planning:**
-
-| Key | Purpose |
-|-----|---------|
-| `x-when-to-use` | Positive guidance: scenarios where this module is the right choice |
-| `x-when-not-to-use` | Negative guidance: scenarios where a different module should be used |
-| `x-common-mistakes` | Known pitfalls that AI agents frequently encounter |
-| `x-workflow-hints` | Suggested pre/post steps or related modules in a typical workflow |
-| `x-preconditions` | What must be true before calling (e.g., "User must be authenticated") |
-| `x-postconditions` | What will be true after successful execution |
-| `x-side-effects` | External state changes caused by this module |
-
-**Performance, Cost & Trust:**
-
-| Key | Purpose |
-|-----|---------|
-| `x-cost-per-call` | Estimated cost per invocation |
-| `x-avg-latency-ms` | Average execution latency in milliseconds |
-| `x-max-latency-ms` | Maximum expected latency in milliseconds |
-| `x-sla` | SLA targets (availability, latency percentiles) |
-| `x-output-source` | Data provenance: `database`, `api`, `generated`, `cached`, `computed` |
-| `x-verification-hint` | How to cross-check the output for correctness |
-
-> Detailed usage: see [Protocol Specification §4.6](./docs/spec/protocol-spec.md#46-module-extension-metadata-metadata).
-
----
-
-## Context Object
-
-Context is the execution context that runs through the entire call chain, carrying tracing, permissions, and shared data:
-
-```python
-class Context:
-  trace_id: str           # Call trace ID (32-char lowercase hex, W3C Trace Context compatible)
-    caller_id: str | None   # Caller module ID (None for top-level calls)
-    call_chain: list[str]   # Call chain (accumulated in call order)
-    executor: Executor      # Executor reference (entry point for inter-module calls)
-    identity: Identity      # Caller identity
-    data: dict              # Shared data (reference-shared within call chain)
-```
-
-### Call Chain Propagation
-
-```python
-# Top-level call
-context = Context(trace_id="abc-123", identity=Identity(id="user_1", roles=["admin"]))
-
-# Module A is called
-#   trace_id: "abc-123"        ← Stays the same
-#   caller_id: None            ← No caller at top level
-#   call_chain: ["module_a"]
-
-# Module A internally calls Module B
-result = context.executor.call("module_b", inputs, context)
-#   trace_id: "abc-123"        ← Stays the same
-#   caller_id: "module_a"      ← Caller is module_a
-#   call_chain: ["module_a", "module_b"]
-
-# Module B internally calls Module C
-#   trace_id: "abc-123"        ← Same trace_id for entire chain
-#   caller_id: "module_b"
-#   call_chain: ["module_a", "module_b", "module_c"]
-```
-
-**Key Feature:** `context.data` is **reference-shared** throughout the entire call chain, allowing modules to pass intermediate results and implement pipeline-style data flow.
-
----
-
-## ACL Access Control
-
-> Detailed definitions: [ACL Configuration Guide](./docs/guides/acl-configuration.md) | [Protocol Specification §6](./docs/spec/protocol-spec.md#6-acl-specification)
-
-ACL (Access Control List) controls which modules can call which modules, default deny:
-
-```yaml
-# acl/global_acl.yaml
-rules:
-  # API layer can only call orchestration layer
-  - callers: ["api.*"]
-    targets: ["orchestrator.*"]
-    effect: allow
-
-  # Orchestration layer can call execution layer
-  - callers: ["orchestrator.*"]
-    targets: ["executor.*"]
-    effect: allow
-
-  # Forbid cross-layer calls (API directly calling execution layer)
-  - callers: ["api.*"]
-    targets: ["executor.*"]
-    effect: deny
-
-  # System internal modules unrestricted
-  - callers: ["@system"]
-    targets: ["*"]
-    effect: allow
-
-default_effect: deny  # Default deny when no rules match
-```
-
-> **`audit:` is deprecated and has never done anything.** An `audit:` block in an ACL file
-> is read by no apcore SDK — auditing is wired programmatically, by passing an audit logger
-> to the `ACL` constructor. The same three settings are *also* declared as `acl.audit.*` in
-> `apcore.yaml`, and are equally inert there. One of the two declarations is removed no
-> earlier than v2.0; loading a file that carries the block now warns.
-> See [PROTOCOL_SPEC §9.2.4.1](./docs/spec/protocol-spec.md) and
-> [apcore#118](https://github.com/aiperceivable/apcore/issues/118).
-
-### Special Caller Identifiers
-
-| Identifier | Description |
-|------|------|
-| `@external` | Top-level external call (HTTP request, CLI command, etc.) |
-| `@system` | Framework internal call |
-| `*` | Wildcard, matches all |
-
-### Conditional Rules
-
-```yaml
-rules:
-  - callers: ["api.*"]
-    targets: ["executor.payment.*"]
-    effect: allow
-    conditions:
-      identity_types: ["user"]      # Only user identity
-      roles: ["admin", "finance"]   # Only admin or finance roles
-      max_call_depth: 5             # Maximum call depth
-```
-
----
-
-## Middleware
-
-> Detailed definitions: [Middleware Guide](./docs/guides/middleware.md)
-
-Middleware uses the **Onion Model**, allowing custom logic to be inserted before and after module execution:
-
-```
-Request → [MW1.before → [MW2.before → [MW3.before →
-          [Module.execute()]
-← MW3.after] ← MW2.after] ← MW1.after] ← Response
-```
-
-```python
-class LoggingMiddleware(Middleware):
-    def before(self, module_id: str, inputs: dict, context: Context) -> dict:
-        log.info(f"Calling {module_id} with trace_id={context.trace_id}")
-        return inputs  # Can modify inputs
-
-    def after(self, module_id: str, inputs: dict, output: dict, context: Context) -> dict:
-        log.info(f"Result from {module_id}: success")
-        return output  # Can modify output
-
-    def on_error(self, module_id: str, inputs: dict, error: Exception, context: Context):
-        log.error(f"Error in {module_id}: {error}")
-        # Return None to continue error propagation
-        # Return a dict to stop propagation and use it as recovery output
-        return None
-```
-
-Typical middleware scenarios: logging, performance monitoring, caching, rate limiting, retry, auditing.
-
----
-
-## Configuration
-
-### Single-Package Configuration
-
-The runtime is configured through `apcore.yaml` (legacy mode — fully backward compatible):
-
-```yaml
-# apcore.yaml
-version: "1.0.0"
-
-project:
-  name: "my-ai-project"
-  version: "0.1.0"
-
-extensions:
-  root: "./extensions"       # Module root directory
-  auto_discover: true        # Auto-scan and discover
-  lazy_load: true            # Lazy load (load module only on first call)
-  max_depth: 8               # Maximum directory depth
-
-schema:
-  root: "./schemas"
-  strategy: "yaml_first"     # yaml_first | native_first | yaml_only
-  max_ref_depth: 32          # $ref resolution depth cap
-
-acl:
-  root: "./acl"
-  default_effect: "deny"     # Default deny
-```
-
-### Configuration keys that do nothing
-
-Ten declared keys reach no consumer in any SDK. They parse, they validate, they pass strict
-mode — and setting them has **no effect**. They are deprecated as of spec v1.39.0 and are
-removed no earlier than v2.0; loading a configuration that declares one now warns.
-
-```yaml
-# None of the following does anything today. Shown so you can recognise it.
-logging:
-  level: "info"              # inert — configure your host application's logger
-  format: "json"             # inert
-
-observability:
-  tracing:
-    enabled: true            # inert — install TracingMiddleware yourself
-    sampling_rate: 0.1       # inert, and the sharpest case: sampling is decided by
-                             # `sampling_strategy`, a constructor argument with no
-                             # configuration key at all, which defaults to full. Ask
-                             # for 10% here and you still get 100%.
-    exporter: "stdout"       # inert — an exporter is an object, not a name
-  metrics:
-    enabled: true            # inert
-    exporter: "prometheus"   # inert
-
-acl:
-  audit:
-    enabled: true            # inert — pass an audit logger to the ACL constructor
-    include_denied: true     # inert
-    log_level: "info"        # inert
-```
-
-Observability and audit logging **do** work — they are wired programmatically. See
-[features/observability.md](./docs/features/observability.md) and
-[features/acl-system.md](./docs/features/acl-system.md). Tracking:
-[apcore#118](https://github.com/aiperceivable/apcore/issues/118).
-
-### Config Bus — Unified Ecosystem Configuration
-
-When using multiple apcore ecosystem packages, a single `project.yaml` can configure everything through the **Config Bus** (see [PROTOCOL_SPEC §9.4–9.14](./docs/spec/protocol-spec.md#94-config-bus-architecture)):
-
-```yaml
-# project.yaml — one file, all packages
-apcore:
-  version: "1.0.0"
-  extensions:
-    root: ./extensions
-  project:
-    name: my-project
-
-apflow:
-  api:
-    server_url: http://localhost:8000
-    timeout: 30.0
-
-apcore-mcp:
-  transport: streamable-http
-  port: 8000
-
-apcore-a2a:
-  name: "My Agent"
-  url: http://localhost:9000
-```
-
-Each package registers its own namespace with `Config.register_namespace()`. Third-party projects can also participate via `config.mount()` without modifying their existing configuration files. See the protocol spec for the full integration spectrum — from zero-coupling to full unification.
-
-**Environment variable overrides** work per namespace: `APCORE_EXECUTOR_DEFAULT__TIMEOUT=5000` for apcore, `APFLOW_API_TIMEOUT=60` for apflow, `APCORE_MCP_PORT=9000` for apcore-mcp.
-
----
-
-## Observability
-
-apcore has built-in three pillars of observability, compatible with OpenTelemetry:
-
-### Tracing
-
-- `trace_id` is automatically generated and propagated through the call chain
-- Span naming convention: `apcore.{component}.{operation}`
-- Supports export to stdout / OTLP / Jaeger
-
-### Logging
-
-- Structured logging, automatically includes `trace_id`
-- Fields marked with `x-sensitive` are automatically redacted (e.g., passwords show as `***REDACTED***`)
-- Executor automatically provides `context.redacted_inputs`, middleware and logs should use redacted data
-
-### Metrics
-
-| Metric Name | Type | Description |
-|--------|------|------|
-| `apcore_module_calls_total` | Counter | Total module calls |
-| `apcore_module_duration_seconds` | Histogram | Module execution duration distribution |
-| `apcore_module_errors_total` | Counter | Total module errors |
-
----
-
-## Error Handling & AI Guidance
-
-apcore defines a unified error format including **`ai_guidance`**. While standard errors tell a program *what* went wrong, `ai_guidance` tells the Agent **how to fix it and retry**, enabling **Self-Healing** Agents.
-
-Self-Healing serves two higher-level goals: **Self-Repair** (autonomous error correction within a single interaction) and **Self-Evolution** (continuous system adaptation through health monitoring, feedback loops, and runtime reconfiguration).
-
-### Error Format
-
-```json
-{
-  "code": "SCHEMA_VALIDATION_ERROR",
-  "message": "Input validation failed",
-  "details": {"field": "email", "reason": "invalid format"},
-  "cause": "ValidationError: value is not a valid email address",
-  "ai_guidance": "Please ask the user for a valid email address.",
-  "trace_id": "abc-123",
-  "timestamp": "2026-01-01T00:00:00Z"
+### Rust
+
+```rust
+use apcore::errors::ModuleError;
+use apcore::{APCore, Context, Module};
+use async_trait::async_trait;
+use serde_json::{json, Value};
+
+struct AddModule;
+
+#[async_trait]
+impl Module for AddModule {
+    fn description(&self) -> &str { "Add two numbers" }
+
+    fn input_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {"a": {"type": "integer"}, "b": {"type": "integer"}},
+            "required": ["a", "b"]
+        })
+    }
+
+    fn output_schema(&self) -> Value {
+        json!({"type": "object", "properties": {"sum": {"type": "integer"}}})
+    }
+
+    async fn execute(&self, inputs: Value, _ctx: &Context<Value>) -> Result<Value, ModuleError> {
+        let a = inputs["a"].as_i64().unwrap_or(0);
+        let b = inputs["b"].as_i64().unwrap_or(0);
+        Ok(json!({"sum": a + b}))
+    }
+}
+
+#[tokio::main]
+async fn main() -> Result<(), ModuleError> {
+    let client = APCore::new();
+    client.register("math.add", Box::new(AddModule))?;
+    let result = client.call("math.add", json!({"a": 10, "b": 5}), None, None).await?;
+    println!("{result}"); // {"sum":15}
+    Ok(())
 }
 ```
 
-### Standard Error Codes
-
-| Category | Error Code | Description | Retryable |
-|------|--------|------|--------|
-| Module | `MODULE_NOT_FOUND` | Module does not exist | No |
-| Module | `MODULE_EXECUTE_ERROR` | Execution exception | Depends |
-| Module | `MODULE_TIMEOUT` | Execution timeout | Yes |
-| Schema | `SCHEMA_VALIDATION_ERROR` | Input/output validation failed | No |
-| Schema | `SCHEMA_NOT_FOUND` | Schema file does not exist | No |
-| ACL | `ACL_DENIED` | Permission denied | No |
-| Binding | `BINDING_INVALID_TARGET` | Invalid binding target path | No |
-| Binding | `BINDING_CALLABLE_NOT_FOUND` | Bound callable object not found | No |
-| Approval | `APPROVAL_DENIED` | Approval explicitly denied | No |
-| Approval | `APPROVAL_TIMEOUT` | Approval request timed out | Yes |
-| Approval | `APPROVAL_PENDING` | Approval still pending | Yes |
-| General | `GENERAL_INTERNAL_ERROR` | Internal error | Yes |
+The [Getting Started guide](https://apcore.aiperceivable.com/getting-started/) continues with preflight validation, streaming, directory-based discovery, middleware and system modules.
 
 ---
 
-## Cross-Language Support
+## What the Runtime Enforces
 
-apcore is a **language-agnostic module standard**. Canonical IDs are automatically adapted to local naming conventions in different languages:
+| Concern | Mechanism | Reference |
+|---|---|---|
+| **Contract** | Every module declares `description`, `input_schema` and `output_schema` (JSON Schema Draft 2020-12); inputs and outputs are validated on every call | [Schema System](./docs/features/schema-system.md) |
+| **Behavior** | Annotations such as `readonly`, `destructive`, `idempotent`, `requires_approval`, `open_world`, `streaming`, `cacheable`, `paginated` | [Module Interface](./docs/features/module-interface.md) |
+| **Access** | Pattern-based ACL rules evaluated first-match-wins, with identity, role and call-depth conditions; `default_effect: deny` | [ACL System](./docs/features/acl-system.md) |
+| **Approval** | A human-in-the-loop gate for modules that require approval, through a pluggable `ApprovalHandler` | [Approval System](./docs/features/approval-system.md) |
+| **Safety** | Call-depth limits and circular-call detection across nested calls | [Call Chain Guard](./docs/features/call-chain-guard.md) |
+| **Extension** | Onion-model middleware and a configurable step pipeline | [Middleware](./docs/features/middleware-system.md) · [Execution Pipeline](./docs/features/execution-pipeline.md) |
+| **Evidence** | W3C trace context, tracing, metrics, usage, redaction of `x-sensitive` fields, events and audit | [Observability](./docs/features/observability.md) |
+| **Recovery** | Structured errors with `retryable`, `ai_guidance`, `user_fixable` and `suggestion` | [Error System](./docs/features/error-system.md) |
 
+Every call runs the same eleven-step pipeline:
+
+```text
+ 1. context_creation    trace_id, caller_id, call_chain, identity
+ 2. call_chain_guard    depth limit and circular-call detection
+ 3. module_lookup       resolve the module in the registry
+ 4. acl_check           caller → target permission
+ 5. approval_gate       human approval when required
+ 6. middleware_before   before() hooks, in order
+ 7. input_validation    validate inputs against input_schema
+ 8. execute             module.execute() (or stream())
+ 9. output_validation   validate output against output_schema
+10. middleware_after    after() hooks, in reverse order
+11. return_result
+    on error: on_error() hooks in reverse order
 ```
-Canonical ID (universal): executor.email.send_email
 
-Local representation:
-Python:     executor/email/send_email.py      class SendEmailModule
-Rust:       executor/email/send_email.rs       struct SendEmailModule
-Go:         executor/email/send_email.go       type SendEmailModule
-Java:       executor/email/SendEmail.java      class SendEmailModule
-TypeScript: executor/email/sendEmail.ts        class SendEmailModule
-```
-
-### ID Mapping Rules
-
-- Automatic language detection (based on file extension)
-- Case conversion (PascalCase ↔ snake_case ↔ camelCase)
-- Path separator normalization (`/` vs `::` vs `.`)
-- Supports manual override (`id_map` configuration)
-
-### Conformance Levels
-
-Any language SDK implementation can choose different conformance levels:
-
-| Level | Scope | Includes |
-|------|------|------|
-| **Level 0 (Core)** | Minimally viable | ID mapping, Schema loading, Registry, Executor |
-| **Level 1 (Standard)** | Production ready | + ACL, middleware, error handling, observability |
-| **Level 2 (Full)** | Complete implementation | + Extension point system, async task management, W3C Trace Context, Prometheus metrics, version negotiation, schema migration, module isolation, multi-version coexistence |
-
-**Reference Implementation**: [apcore-python](https://github.com/aiperceivable/apcore-python)
+Module IDs derive from the file path under the extensions root — `extensions/executor/email/send_email.py` becomes `executor.email.send_email` — so the same directory layout yields the same IDs in every language.
 
 ---
 
-## Relationship with Other Tools
+## Surface Adapters
 
-### apcore vs MCP
+Adapters are independently versioned and available for Python, TypeScript and Rust under the same package name.
 
-| | apcore | MCP |
-|---|--------|-----|
-| **Positioning** | Module standard | Communication protocol |
-| **Solves** | How to **build** modules | How to **call** tools |
-| **Focus** | Code organization, Schema, ACL, observability | Transport format, RPC |
-| **Relationship** | apcore modules can be exposed as MCP Server | MCP is one exposure method |
+| Adapter | Projects modules as | Repository |
+|---|---|---|
+| `apcore-mcp` | MCP tools (with a Tool Explorer UI) | [apcore-mcp](https://github.com/aiperceivable/apcore-mcp) |
+| `apcore-a2a` | A2A skills and Agent Card metadata | [apcore-a2a](https://github.com/aiperceivable/apcore-a2a) |
+| `apcore-cli` | CLI commands and arguments | [apcore-cli](https://github.com/aiperceivable/apcore-cli) |
+| `apcore-toolkit` | Shared scanners, schema extraction and output writers for adapter authors | [apcore-toolkit](https://github.com/aiperceivable/apcore-toolkit) |
 
-### apcore vs LangChain / LlamaIndex
+Framework integrations bind HTTP endpoints to modules: `fastapi-apcore`, `django-apcore`, `flask-apcore`, `nestjs-apcore`, `express-apcore`, `hono-apcore`, `axum-apcore`. To write your own, see the [Adapter Development guide](./docs/guides/adapter-development.md).
 
-| | apcore | LangChain etc. |
-|---|--------|-------------|
-| **Positioning** | AI-Perceivable module standard | LLM application development framework |
-| **Focus** | Module standardization, Schema, permissions | Chaining, Prompt, RAG |
-| **Relationship** | Complementary — apcore modules can serve as LangChain Tools | |
-
-### apcore vs CrewAI / AutoGen
-
-| | apcore | CrewAI etc. |
-|---|--------|----------|
-| **Positioning** | AI-Perceivable module standard | Agent orchestration framework |
-| **Focus** | Standardizing individual modules | Multi-agent collaboration strategies |
-| **Relationship** | Complementary — Agents can call apcore modules | |
-
-**In short:** apcore focuses on **building standardized, AI-understandable modules**, complementary rather than competitive with upper-layer AI protocols/frameworks.
+Use a protocol SDK directly when a single protocol server is all you need. Use apcore when validation, access, approval and audit rules must stay the same across more than one caller or surface — see [Positioning](./docs/POSITIONING.md).
 
 ---
 
-## Implementations
+## Documentation
 
-Language SDK implementations of the apcore protocol specification:
+| Start here | Build | Reference |
+|---|---|---|
+| [Getting Started](./docs/getting-started.md) | [Guides](./docs/guides/index.md) — creating modules, schemas, ACL, middleware, testing, cookbooks | [Feature reference](./docs/features/index.md) — one page per subsystem |
+| [Core Concepts](./docs/concepts.md) | [Troubleshooting](./docs/guides/troubleshooting.md) | [Specification](./docs/spec/index.md) — normative protocol, conformance, type mapping |
+| [Architecture](./docs/architecture.md) | [Multi-language development](./docs/guides/multi-language.md) | [Decision register](./docs/spec/decision-register.md) — why the spec says what it says |
+| [Glossary](./docs/glossary.md) | | [CHANGELOG](./CHANGELOG.md) |
 
-| Language | Repository | Features | Install |
-|------|------|------|------|
-| **Python** | [apcore-python](https://github.com/aiperceivable/apcore-python) | Schema validation, Registry, Executor, @module decorator, YAML bindings, ACL, Middleware, Observability, Async support | `pip install apcore` |
-| **Typescript** | [apcore-typescript](https://github.com/aiperceivable/apcore-typescript) | Schema validation, Registry, Executor, @module decorator, YAML bindings, ACL, Middleware, Observability, Async support | `npm install apcore-js` |
-| **Rust** | [apcore-rust](https://github.com/aiperceivable/apcore-rust) | Schema validation, Registry, Executor, #[module] macro, YAML bindings, ACL, Middleware, Observability, Async support | `cargo add apcore` |
-
-> Interested in implementing apcore for another language? See the [Protocol Specification](./docs/spec/protocol-spec.md) and [Conformance Definition](./docs/spec/conformance.md).
-
----
-
-## Ecosystem
-
-The apcore ecosystem uses a **core + independent adapters** architecture. The core does not include any framework-specific implementations; adapters are developed in independent repositories by official or community contributors. All packages share a unified configuration system via the **Config Bus** (§9.4).
-
-```
-                        apcore (Protocol Spec)
-                       Config Bus (§9.4–9.14)
-                               │
-          ┌────────────────────┼────────────────────┐
-          ▼                    ▼                    ▼
-   apcore-python        apcore-typescript      apcore-rust
-          │                    │                    │
-          └───────────┬────────┴───────────┬────────┘
-                      │                    │
-        ┌─────────────┼─────────────┬──────┴──────┐
-        ▼             ▼             ▼             ▼
-   apcore-mcp    apcore-a2a    apcore-cli      (others)
-  (MCP Server)  (A2A Agent)     (CLI)
-```
-
-### Official Surface Adapters
-
-| Adapter | Description | Python | TypeScript | Install |
-|---------|-------------|--------|------------|---------|
-| **[apcore-mcp](https://github.com/aiperceivable/apcore-mcp)** | Expose apcore modules as MCP Server — auto-discovery, annotation mapping, display overlay (§5.13), Tool Explorer UI | [apcore-mcp-python](https://github.com/aiperceivable/apcore-mcp-python) | [apcore-mcp-typescript](https://github.com/aiperceivable/apcore-mcp-typescript) | `pip install apcore-mcp` / `npm install apcore-mcp` |
-| **[apcore-a2a](https://github.com/aiperceivable/apcore-a2a)** | Expose apcore modules as A2A Agent — auto Agent Card, skill mapping, display overlay (§5.13), streaming, push notifications | [apcore-a2a-python](https://github.com/aiperceivable/apcore-a2a-python) | [apcore-a2a-typescript](https://github.com/aiperceivable/apcore-a2a-typescript) | `pip install apcore-a2a` / `npm install apcore-a2a` |
-| **[apcore-cli](https://github.com/aiperceivable/apcore-cli)** | Expose apcore modules as CLI commands — auto command routing from display overlay (§5.13), descriptor cache, JSON output | [apcore-cli-python](https://github.com/aiperceivable/apcore-cli-python) | [apcore-cli-typescript](https://github.com/aiperceivable/apcore-cli-typescript) | `pip install apcore-cli` / `npm install apcore-cli` |
-
-**One module definition, multiple protocol endpoints:**
-
-```python
-# Define once with apcore
-@module(id="email.send", description="Send email")
-def send_email(to: str, subject: str, body: str) -> dict:
-    return {"success": True}
-
-# Expose as MCP Server (for Claude, Cursor, etc.)
-from apcore_mcp import serve as mcp_serve
-mcp_serve(registry)
-
-# Expose as A2A Agent (for agent-to-agent communication)
-from apcore_a2a import serve as a2a_serve
-a2a_serve(registry)
-
-# Expose as CLI commands (for terminal usage)
-from apcore_cli import serve as cli_serve
-cli_serve(registry)
-```
-
-### Developer Tooling
-
-| Project | Description | Install |
-|---------|-------------|---------|
-| **[apcore-toolkit](https://github.com/aiperceivable/apcore-toolkit)** | Shared scanner, schema extraction, display resolver, and output writers — used by framework integrations and surface adapters | `pip install apcore-toolkit` / `npm install apcore-toolkit` |
-
-### Community Adapter Types
-
-| Type | Examples | Description |
-|------|------|------|
-| **Web Frameworks** | `nestjs-apcore`, `flask-apcore`, `express-apcore` | Expose modules as HTTP APIs |
-| **AI Protocols** | `apcore-openai-tools` | Expose modules as OpenAI-compatible tools |
-| **RPC** | `apcore-grpc`, `apcore-thrift` | Expose modules as RPC services |
-
-All adapters are built on the core's `module()` and External Binding mechanisms.
-Development guide: see [Adapter Development Guide](./docs/guides/adapter-development.md).
-
----
-
-## Documentation Index
-
-### Core Documentation
-
-| Document | Description |
-|------|------|
-| [Protocol Specification](./docs/spec/protocol-spec.md) | Complete standard specification (RFC 2119 Conformant) |
-| [Getting Started](./docs/getting-started.md) | Install the Python, TypeScript, or Rust SDK and build your first module |
-| [Glossary](./docs/glossary.md) | Single-page glossary of apcore terminology, cross-referenced to the spec |
-| [Site Map](./docs/site-map.md) | Navigable map of the whole documentation tree |
-| [Scope Definition](./SCOPE.md) | Responsibility boundaries (what's in/out of scope) |
-| [Positioning](./docs/POSITIONING.md) | Where apcore sits in the stack — relationship to MCP, A2A, CLI, REST |
-| [Roadmap](./ROADMAP.md) | Project roadmap, milestones, and the path to 1.0 |
-| [Adopters](./ADOPTERS.md) | Projects and organizations building on apcore (add yourself) |
-| [Migration Guide — v0.18.0](./MIGRATION-v0.18.md) | Consolidated breaking-change migration guide for the v0.18.0 release (annotations wire format, apcore-rust Config restructure, apcore-python event aliases) |
-
-### Concepts & Architecture
-
-| Document | Description |
-|------|------|
-| [Core Concepts](./docs/concepts.md) | Design philosophy and core concepts explained |
-| [Architecture Design](./docs/architecture.md) | Internal architecture, component interaction, memory model |
-
-### Feature Specifications
-
-| Document | Description |
-|------|------|
-| [Module Interface](./docs/features/module-interface.md) | Module Protocol contract: required attributes, lifecycle hooks, function-based form |
-| [Context Object](./docs/features/context-object.md) | Per-invocation execution context: trace, identity, call chain, redaction, shared `data` |
-| [APCore Client](./docs/features/apcore-client.md) | Unified high-level client managing Registry, Executor, and subsystems |
-| [ACL System](./docs/features/acl-system.md) | Pattern-based Access Control List with first-match-wins evaluation |
-| [Approval System](./docs/features/approval-system.md) | Runtime enforcement of `requires_approval` via pluggable ApprovalHandler |
-| [Async Task Management](./docs/features/async-tasks.md) | Background module execution with concurrency limiting and task lifecycle |
-| [Call Chain Guard](./docs/features/call-chain-guard.md) | Depth limiting, circular detection, and frequency throttling |
-| [Cancellation](./docs/features/cancellation.md) | Cooperative cancellation via CancelToken with executor timeout integration |
-| [Config Bus](./docs/features/config-bus.md) | Unified multi-package configuration with per-namespace env overrides |
-| [Core Executor](./docs/features/core-executor.md) | Central execution engine with a secured execution lifecycle |
-| [Decorator & YAML Bindings](./docs/features/decorator-bindings.md) | `@module` decorator and YAML-based module creation |
-| [Display Overlay](./docs/spec/protocol-spec.md#513-display-overlay-surface-facing-presentation) | §5.13 — sparse `display` section in binding entries for per-surface alias, description, guidance, and tags |
-| [Error System](./docs/features/error-system.md) | Structured error hierarchy with AI guidance fields and error code registry |
-| [Event System](./docs/features/event-system.md) | Event emission, subscription, delivery lifecycle |
-| [Extension System](./docs/features/extension-system.md) | Pluggable extension points for discoverers, middleware, ACL, exporters |
-| [Identity System](./docs/features/identity-system.md) | Caller identity with types, roles, and ContextFactory protocol |
-| [Middleware System](./docs/features/middleware-system.md) | Composable middleware pipeline with onion execution model |
-| [Multi-Module Discovery](./docs/features/multi-module-discovery.md) | Opt-in multi-class discovery: multiple Module classes per file, each with a snake_case-derived ID |
-| [Observability](./docs/features/observability.md) | Distributed tracing, metrics, and structured logging |
-| [Registry System](./docs/features/registry-system.md) | Module discovery, registration, and querying |
-| [Schema System](./docs/features/schema-system.md) | Schema loading, validation, `$ref` resolution, and export |
-| [Streaming](./docs/features/streaming.md) | Three-phase streaming pipeline with deep merge accumulation |
-| [System Modules](./docs/features/system-modules.md) | Built-in system.* modules for health, manifest, usage, control |
-
-### Usage Guides
-
-| Document | Description |
-|------|------|
-| [Creating Modules](./docs/guides/creating-modules.md) | Module creation tutorial (including four approaches) |
-| [Schema Definition](./docs/guides/schema-definition.md) | Complete Schema usage |
-| [ACL Configuration](./docs/guides/acl-configuration.md) | Access control configuration |
-| [Middleware](./docs/guides/middleware.md) | Middleware development |
-| [Adapter Development](./docs/guides/adapter-development.md) | Framework adapter development |
-| [Testing Modules](./docs/guides/testing-modules.md) | Module testing guide |
-| [Multi-Language Development](./docs/guides/multi-language.md) | Cross-language development guide |
-| [Integrating Existing Projects](./docs/guides/integrating-existing-projects.md) | Incremental adoption in apps with existing request/correlation IDs (dual-ID model) |
-| [Cookbook — Approval Flow](./docs/guides/cookbook-approval-flow.md) | Approval-gated modules end to end: sync block-until-decided and async pending resume |
-| [Cookbook — Cancellation](./docs/guides/cookbook-cancellation.md) | Cooperative cancellation of long-running modules, with cleanup via middleware |
-| [Cookbook — Streaming](./docs/guides/cookbook-streaming.md) | Streaming modules emitting partial chunks, deep-merged by the executor |
-| [Cookbook — Observability](./docs/guides/cookbook-observability.md) | OpenTelemetry traces and structured logs with PII auto-redaction |
-| [Troubleshooting](./docs/guides/troubleshooting.md) | FAQ for discovery failures, unexpected ACL_DENIED, and validation errors |
-
-### Specification Documents
-
-| Document | Description |
-|------|------|
-| [Type Mapping](./docs/spec/type-mapping.md) | Cross-language type mapping |
-| [API Surface & Naming Conventions](./docs/spec/api-surface-conventions.md) | When a symbol is public API; why cross-boundary contract members MUST NOT carry a private name; per-language visibility-vs-discoverability idioms |
-| [Conformance Definition](./docs/spec/conformance.md) | Implementation conformance levels |
-| [RFC — `preview()` Method](./docs/spec/rfc-preview-method.md) | Accepted RFC: optional `Module.preview()` for structured pre-execution diff (promoted to protocol-spec in v0.21.0) |
-| [RFC — Ephemeral Modules](./docs/spec/rfc-ephemeral-modules.md) | Accepted RFC: `ephemeral.*` namespace + `discoverable` annotation for runtime-registered modules (promoted to protocol-spec in v0.21.0) |
-| [RFC — `include:` Config Composition](./docs/spec/rfc-config-include.md) | Proposed RFC (D-65, #75): top-level `include:` for cross-file `apcore.yaml` composition — relative paths, deep-merge local-wins, cycle detection |
-| [Algorithm Reference](./docs/spec/algorithms.md) | Core algorithm summary (including namespace, redaction, etc.) |
-| [Durability Boundary](./docs/spec/design-durability-boundary.md) | Stable hooks and explicit non-goals for retry/replay/workflow layers built on apcore |
-| [Declarative Config Specification](./docs/spec/DECLARATIVE_CONFIG_SPEC.md) | The three declarative YAML surfaces: binding files, `apcore.yaml` pipeline, entry-point config |
-| [Security Considerations](./docs/spec/security-considerations.md) | RFC 3552-style threat model, in-scope mitigations, residual risks, production audit guidance |
-| [Execution Pipeline Design](./docs/spec/design-execution-pipeline.md) | Configurable pipeline as a flat ordered step list, with AI decision support |
-| [Context-Annotations-ACL Design](./docs/spec/design-context-annotations-acl.md) | Historical v0.17 design rationale, superseded by the spec but retained for context |
-| [Decision Log — 2026-05](./docs/spec/2026-05-decision-log.md) | Maintainer decisions from the 2026-05 cross-language alignment run |
-| [Decision Log — 2026-09](./docs/spec/2026-09-decision-log.md) | Maintainer decisions from the 2026-09-05 consistency audit |
-| [Config Surface Decisions — 2026-09](./docs/spec/2026-09-config-surface-decisions.md) | Keep-or-withdraw calls on declared config surfaces no SDK reaches (#118) |
-| [Deep-Chain Decisions — D-74–D-91](./docs/spec/2026-09-deep-chain-decisions.md) | Eighteen cross-language divergences settled in spec v1.49.0, from the 2026-09-14 deep-chain audit |
+Project documents: [Scope](./SCOPE.md) · [Roadmap](./ROADMAP.md) · [Adopters](./ADOPTERS.md) · [Governance](./GOVERNANCE.md) · [Maintainers](./MAINTAINERS.md) · [Security](./SECURITY.md) · [Code of Conduct](./CODE_OF_CONDUCT.md)
 
 ---
 
 ## Contributing
 
-Have a question, an idea, or want to introduce your project? Start a thread in [GitHub Discussions](https://github.com/aiperceivable/apcore/discussions).
-
-Contributions are welcome in the following forms:
-
-- **Specification Feedback**: Suggest improvements to the protocol specification in Issues
-- **SDK Implementation**: Implement SDKs for other languages based on [Protocol Specification](./docs/spec/protocol-spec.md)
-- **Adapter Development**: Develop adapters for web frameworks or AI protocols
-- **Documentation Improvements**: Fix, translate, or supplement documentation
-
-New contributors should read [CONTRIBUTING.md](./CONTRIBUTING.md) first. Project governance is
-documented in:
-
-- [GOVERNANCE.md](./GOVERNANCE.md) — decision-making and the contributor → reviewer → maintainer ladder
-- [MAINTAINERS.md](./MAINTAINERS.md) — current maintainers and sub-project ownership
-- [CODE_OF_CONDUCT.md](./CODE_OF_CONDUCT.md) — community standards
-- [SECURITY.md](./SECURITY.md) — reporting vulnerabilities (never open public issues for these)
-- [ADOPTERS.md](./ADOPTERS.md) — who builds on apcore
-
----
+Questions and ideas go to [GitHub Discussions](https://github.com/aiperceivable/apcore/discussions). Specification feedback, new SDKs, adapters and documentation fixes are welcome — read [CONTRIBUTING.md](./CONTRIBUTING.md) first. Never report a vulnerability in a public issue; follow [SECURITY.md](./SECURITY.md).
 
 ## License
 

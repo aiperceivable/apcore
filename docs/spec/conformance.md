@@ -1,18 +1,16 @@
 ---
-description: "Defines apcore's three conformance levels (Level 0 Core, Level 1 Standard, Level 2 Full) with per-level MUST/SHOULD/MAY components, test suite requirements, and conformance declaration rules."
+description: "Defines apcore's three conformance levels (Level 0 Core, Level 1 Standard, Level 2 Full) with per-level MUST/SHOULD/MAY components, the cross-language fixture suite that verifies them, known deviations, and conformance declaration rules."
 ---
 
 # apcore — Conformance Definitions
 
-> This document defines conformance levels for apcore framework implementations, test suite requirements, and conformance declaration specifications.
+> This document defines conformance levels for apcore SDK implementations, the conformance fixture suite, and the conformance declaration format. [protocol-spec.md](./protocol-spec.md) is the single source of truth; where this page and the protocol spec disagree, the protocol spec wins.
 
 ## 1. Overview
 
 ### 1.1 Purpose
 
-As a cross-language AI-Perceivable module standard, apcore needs to ensure behavioral consistency among SDK implementations in various languages. This conformance specification defines three progressive conformance levels, with each level clearly listing **MUST**, **SHOULD**, and **may** implement components, as well as corresponding test requirements.
-
-Implementers can choose their target conformance level based on their needs and verify conformance through the corresponding test suite.
+apcore is implemented in several languages, and every implementation has to behave the same way. This specification defines three progressive conformance levels. Each level lists the components an implementation **MUST**, **SHOULD** and **MAY** provide, and the shared fixture suite (§5, §8) verifies them.
 
 ### 1.2 Conformance Level Overview
 
@@ -24,7 +22,9 @@ Implementers can choose their target conformance level based on their needs and 
 
 ### 1.3 Terminology and Keywords
 
-The keywords used in this document follow [RFC 2119](https://www.rfc-editor.org/rfc/rfc2119) definitions, consistent with [PROTOCOL_SPEC §1.5](./protocol-spec.md).
+The keywords used in this document follow [RFC 2119](https://www.rfc-editor.org/rfc/rfc2119), consistent with [protocol-spec §1.5](./protocol-spec.md#15-specification-keywords).
+
+Pipeline steps are referred to by name and number from the standard execution strategy: `context_creation` (1), `call_chain_guard` (2), `module_lookup` (3), `acl_check` (4), `approval_gate` (5), `middleware_before` (6), `input_validation` (7), `execute` (8), `output_validation` (9), `middleware_after` (10), `return_result` (11).
 
 ---
 
@@ -32,62 +32,55 @@ The keywords used in this document follow [RFC 2119](https://www.rfc-editor.org/
 
 ### 2.1 Overview
 
-Level 0 defines the minimal viable implementation of apcore. SDKs reaching this level can complete module definition, registration, discovery, and basic execution, but do not include advanced features such as permission control, middleware, and observability.
+Level 0 defines the minimal viable implementation of apcore. SDKs reaching this level can complete module definition, registration, discovery, and basic execution, but do not include access control, approval, middleware, or observability.
 
 ### 2.2 Must Implement (MUST)
 
 | Component | Responsibility | Reference Section |
 |------|------|---------|
-| **Module interface** | Module base class/interface, includes `execute()`, `input_schema`, `output_schema`, `description` | PROTOCOL_SPEC §5.6 |
-| **Schema validation** | Input/output validation based on JSON Schema Draft 2020-12, supports `type`, `properties`, `required`, `enum`, `$ref` (local references) | PROTOCOL_SPEC §4.2 |
-| **Registry** | Module discovery (directory scanning), registration, retrieval (`discover()`, `get()`, `list()`) | PROTOCOL_SPEC §12.2 |
-| **Executor** | Module call execution, includes input validation, module location, execution, output validation | PROTOCOL_SPEC §12.2 |
-| **Directory as ID** | `directory_to_canonical_id()` algorithm implementation, directory path automatically maps to Canonical ID | PROTOCOL_SPEC §2.1 |
-| **ID format validation** | EBNF syntax validation for Canonical ID | PROTOCOL_SPEC §2.7 |
-| **ID conflict detection** | `detect_id_conflicts()` algorithm, detects duplicate IDs and reserved word conflicts | PROTOCOL_SPEC §2.6 |
-| **Basic error handling** | Unified error format (`code`, `message`), framework error codes (MODULE_*, SCHEMA_*, GENERAL_*) | PROTOCOL_SPEC §8.1, §8.2 |
-| **Error propagation** | `propagate_error()` algorithm, module errors wrapped as ModuleError | PROTOCOL_SPEC §8.3 |
-| **Configuration loading** | `apcore.yaml` basic configuration loading and validation | PROTOCOL_SPEC §9.1 |
-| **Schema loading** | YAML Schema file loading and parsing | PROTOCOL_SPEC §4.9 |
-| **Scanning algorithm** | `scan_extensions()` directory scanning algorithm | PROTOCOL_SPEC §3.6 |
-| **Hidden file filtering** | Ignore hidden files and special directories when scanning | PROTOCOL_SPEC §3.5 |
-| **Function-based module definition** | `module()` mechanism, wraps callable as standard module, auto-generates Schema from type annotations | PROTOCOL_SPEC §5.11 |
-| **External Schema binding** | YAML binding file loading, target resolution, Schema validation | PROTOCOL_SPEC §5.12 |
-| **Type inference Schema generation** | `generate_schema_from_function()` algorithm, generates JSON Schema from function signature | PROTOCOL_SPEC §5.11.4 |
+| **Module interface** | Module base class/interface, includes `execute()`, `input_schema`, `output_schema`, `description` | protocol-spec §5.6 |
+| **Schema validation** | Input/output validation based on JSON Schema Draft 2020-12, supports `type`, `properties`, `required`, `enum`, `$ref` (local references) | protocol-spec §4.2 |
+| **Registry** | Module discovery (directory scanning), registration, retrieval (`discover()`, `get()`, `list()`) | protocol-spec §12.2 |
+| **Executor** | Runs the pipeline steps `context_creation` (1), `module_lookup` (3), `input_validation` (7), `execute` (8), `output_validation` (9) and `return_result` (11) | protocol-spec §5.16, §12.2 |
+| **Directory as ID** | `directory_to_canonical_id()` algorithm implementation, directory path automatically maps to Canonical ID | protocol-spec §2.1 |
+| **ID format validation** | EBNF syntax validation for Canonical ID | protocol-spec §2.7 |
+| **ID conflict detection** | `detect_id_conflicts()` algorithm, detects duplicate IDs and reserved-word conflicts on the first segment | protocol-spec §2.6 |
+| **Basic error handling** | Unified error format (`code`, `message`), framework error codes (MODULE_*, SCHEMA_*, GENERAL_*) | protocol-spec §8.1, §8.2 |
+| **Error propagation** | `propagate_error()` algorithm, module errors wrapped as ModuleError | protocol-spec §8.3 |
+| **Configuration loading** | `apcore.yaml` loading and validation; every declared key reaches its mechanism | protocol-spec §9.1, §9.1.3 |
+| **Schema loading** | YAML Schema file loading and parsing | protocol-spec §4.9 |
+| **Scanning algorithm** | `scan_extensions()` directory scanning, including symlink containment on the canonical real path | protocol-spec §3.4, §3.6 |
+| **Hidden file filtering** | Ignore hidden files and special directories when scanning | protocol-spec §3.5 |
+| **Function-based module definition** | `module()` mechanism, wraps callable as standard module, auto-generates Schema from type annotations | protocol-spec §5.11 |
+| **External Schema binding** | YAML binding file loading, target resolution, Schema validation | protocol-spec §5.12 |
+| **Type inference Schema generation** | `generate_schema_from_function()` algorithm, generates JSON Schema from function signature | protocol-spec §5.11.4 |
 
 ### 2.3 Should Implement (SHOULD)
 
 | Component | Responsibility | Reference Section |
 |------|------|---------|
-| **ID Map cross-language conversion** | `normalize_to_canonical_id()` algorithm, supports at least two languages | PROTOCOL_SPEC §2.2 |
-| **Entry point auto-inference** | `resolve_entry_point()` algorithm | PROTOCOL_SPEC §5.2 |
-| **Dependency resolution** | `resolve_dependencies()` topological sort algorithm | PROTOCOL_SPEC §5.3 |
-| **Schema version declaration** | `version` field support in Schema files | PROTOCOL_SPEC §4.11 |
-| **Environment variable override** | `APCORE_*` environment variables override configuration | PROTOCOL_SPEC §9.2 |
-| **Schema $ref cross-file references** | `resolve_ref()` algorithm, supports relative path references | PROTOCOL_SPEC §4.10 |
-| **`additionalProperties` validation** | additionalProperties handling in input_schema | PROTOCOL_SPEC §4.2 |
+| **ID Map cross-language conversion** | `normalize_to_canonical_id()` algorithm, supports at least two languages | protocol-spec §2.2 |
+| **Entry point auto-inference** | `resolve_entry_point()` algorithm | protocol-spec §5.2 |
+| **Dependency resolution** | `resolve_dependencies()` topological sort algorithm | protocol-spec §5.3 |
+| **Schema version declaration** | `version` field support in Schema files | protocol-spec §4.12 |
+| **Environment variable override** | `APCORE_*` environment variables override configuration | protocol-spec §9.2 |
+| **Schema $ref cross-file references** | `resolve_ref()` algorithm, supports relative path references | protocol-spec §4.11 |
+| **`additionalProperties` validation** | additionalProperties handling in input_schema | protocol-spec §4.2 |
 
 ### 2.4 May Implement (MAY)
 
 | Component | Responsibility | Reference Section |
 |------|------|---------|
-| **Module metadata files** | `*_meta.yaml` metadata file loading | PROTOCOL_SPEC §5.2 |
-| **Annotations** | Behavior annotations | PROTOCOL_SPEC §4.4 |
-| **Examples** | Usage examples | PROTOCOL_SPEC §4.5 |
-| **Metadata** | Extension metadata | PROTOCOL_SPEC §4.6 |
-| **Version number handling** | Filename version suffix parsing | PROTOCOL_SPEC §2.4 |
-| **LLM extension fields** | `x-llm-description`, `x-examples`, etc. | PROTOCOL_SPEC §4.3 |
+| **Module metadata files** | `*_meta.yaml` metadata file loading | protocol-spec §5.2 |
+| **Annotations** | Behavior annotations | protocol-spec §4.4 |
+| **Examples** | Usage examples | protocol-spec §4.5 |
+| **Metadata** | Extension metadata | protocol-spec §4.6 |
+| **Version number handling** | Filename version suffix parsing | protocol-spec §2.4 |
+| **LLM extension fields** | `x-llm-description`, `x-examples`, etc. | protocol-spec §4.3 |
 
-### 2.5 Level 0 Required Test Categories
+### 2.5 Level 0 Verification
 
-- **ID naming tests** (10+ cases)
-- **Directory scanning tests** (5+ cases)
-- **Schema validation tests** (15+ cases)
-- **Module registration and execution tests** (10+ cases)
-- **Error handling tests** (10+ cases)
-- **Configuration loading tests** (5+ cases)
-- **Function-based module definition tests** (10+ cases)
-- **External Binding tests** (8+ cases)
+Every case of every fixture in §8.1 that tests a Level 0 component (§5.3).
 
 ---
 
@@ -95,7 +88,7 @@ Level 0 defines the minimal viable implementation of apcore. SDKs reaching this 
 
 ### 3.1 Overview
 
-Level 1 adds permission control, middleware, basic observability, and structured logging on top of Level 0. SDKs reaching this level meet the needs of most production environments.
+Level 1 adds the governance pipeline steps (call-chain guard, ACL, approval), middleware, tracing and structured logging on top of Level 0. SDKs reaching this level meet the needs of most production environments.
 
 ### 3.2 Must Implement (MUST)
 
@@ -103,57 +96,54 @@ Level 1 adds permission control, middleware, basic observability, and structured
 
 | Component | Responsibility | Reference Section |
 |------|------|---------|
-| **ACL engine** | Permission rule loading, pattern matching (`match_pattern()`), rule evaluation (`evaluate_acl()`) | PROTOCOL_SPEC §6.2, §6.3 |
-| **ACL default policy** | Support `default_effect: deny \| allow` | PROTOCOL_SPEC §6.1 |
-| **ACL edge cases** | When caller_id is null, treat as `@external`, empty rules use default policy | PROTOCOL_SPEC §6.5 |
-| **Middleware framework** | Onion model middleware chain, supports `before`, `after`, `on_error` hooks | PROTOCOL_SPEC §11.1 |
-| **Middleware priority** | Higher numbers execute first | PROTOCOL_SPEC §11.2 |
-| **Built-in middleware (required)** | `schema_validation` (priority 1000), `acl_check` (priority 999) | PROTOCOL_SPEC §11.4 |
-| **Trace ID** | `trace_id` generation (32-char lowercase hex, W3C Trace Context), propagation (child calls inherit) | PROTOCOL_SPEC §10.4 |
-| **Structured logging** | JSON format logs, includes `timestamp`, `level`, `message`, `trace_id`, `module_id` | PROTOCOL_SPEC §10.2 |
-| **Context complete implementation** | `trace_id`, `caller_id`, `call_chain`, `executor`, `identity`, `data` | PROTOCOL_SPEC §5.7 |
-| **Circular call detection** | Detect circular calls based on `call_chain` | PROTOCOL_SPEC §5.7 |
-| **Call depth limit** | Limit maximum call depth based on `call_chain` | PROTOCOL_SPEC §5.7 |
-| **Error hierarchy system** | Flat error hierarchy under `ModuleError` base class | PROTOCOL_SPEC §8.7 |
-| **Custom error codes** | Module custom error code registration and collision detection | PROTOCOL_SPEC §8.4 |
-| **ID Map all-language conversion** | Support ID conversion for all five languages | PROTOCOL_SPEC §2.2 |
-| **Dependency resolution** | `resolve_dependencies()` topological sort and circular dependency detection | PROTOCOL_SPEC §5.3 |
-| **Configuration validation algorithm** | `validate_config()` complete implementation | PROTOCOL_SPEC §9.3 |
+| **Governance steps** | The standard strategy contains `call_chain_guard` (2), `acl_check` (4) and `approval_gate` (5). Removing `acl_check` or `approval_gate` through `pipeline.remove` emits a diagnostic; an attached ACL or handler under a strategy without its step is reported through the governance-posture accessor | protocol-spec §5.16, §6.6.3.2, §6.6.5 |
+| **Pipeline control flow** | Fail-fast on step error, O(1) step lookup, replace semantics for `configure`, `run_until`, and a configured `pipeline:` section applied to the running strategy | protocol-spec §5.16 |
+| **ACL engine** | Permission rule loading, pattern matching (`match_pattern()`), rule evaluation (`evaluate_acl()`) | protocol-spec §6.2, §6.3 |
+| **ACL default policy** | `default_effect: deny \| allow` in the ACL file; a missing ACL file attaches no ACL | protocol-spec §6.1, §6.6.3.1 |
+| **ACL edge cases** | When caller_id is null, treat as `@external`, empty rules use default policy | protocol-spec §6.5 |
+| **Approval gate (Phase A)** | `ApprovalHandler` protocol; the gate fires on the union of every governance source and is skipped with a warning when no handler is configured | protocol-spec §7.2, §7.4, §7.8 |
+| **Middleware framework** | `middleware_before` (6) and `middleware_after` (10) run an onion-model chain with `before`, `after` and `on_error` hooks | protocol-spec §11.1, §11.5 |
+| **Middleware priority** | Higher numbers execute first | protocol-spec §11.2 |
+| **Trace ID** | `trace_id` generation (32-char lowercase hex, W3C Trace Context), propagation (child calls inherit) | protocol-spec §10.5 |
+| **Tracing from configuration** | `observability.tracing.enabled: true` installs a tracing middleware built from `observability.tracing.*`, with the four sampling strategies | protocol-spec §10.1.1, §10.7 |
+| **Structured logging** | JSON format logs, includes `timestamp`, `level`, `message`, `trace_id`, `module_id` | protocol-spec §10.2 |
+| **Sensitive data redaction** | `redact_sensitive()` for `x-sensitive` fields, plus the configured `obs.redaction.*` rules, at log emission and at the input/output capture point | protocol-spec §10.6, §10.6.1 |
+| **Context complete implementation** | `trace_id`, `caller_id`, `call_chain`, `executor`, `identity`, `data` | protocol-spec §5.7 |
+| **Call-chain guard** | Circular-call detection, depth limit (`executor.max_call_depth`) and repeat limit (`executor.max_module_repeat`) based on `call_chain` | protocol-spec §5.7, §9.1.1; [algorithms.md A20](./algorithms.md#a20-guard_call_chain-call-chain-safety-check) |
+| **Error hierarchy system** | Flat error hierarchy under `ModuleError` base class | protocol-spec §8.7 |
+| **Custom error codes** | Module custom error code registration and collision detection | protocol-spec §8.4 |
+| **ID Map all-language conversion** | Support ID conversion for all five languages | protocol-spec §2.2 |
+| **Dependency resolution** | `resolve_dependencies()` topological sort and circular dependency detection | protocol-spec §5.3 |
+| **Configuration validation algorithm** | `validate_config()` complete implementation | protocol-spec §9.3 |
+| **System read modules** | Ship `system.health.*`, `system.manifest.*` and `system.usage.*` (registered when `sys_modules.enabled` is true) | protocol-spec §6.7 |
 
 ### 3.3 Should Implement (SHOULD)
 
 | Component | Responsibility | Reference Section |
 |------|------|---------|
-| **ACL pattern specificity** | `calculate_specificity()` algorithm | PROTOCOL_SPEC §6.4 |
-| **ACL audit logs** | Record permission check results, including denied calls | PROTOCOL_SPEC §6.1 |
-| **Built-in middleware (default enabled)** | `tracing`, `logging`, `metrics`, `error_wrapper` | PROTOCOL_SPEC §11.4 |
-| **Middleware disabling** | Disable default-enabled built-in middleware via configuration | PROTOCOL_SPEC §11.4 |
-| **Sensitive data redaction** | `redact_sensitive()` algorithm, redact `x-sensitive` fields in logs | PROTOCOL_SPEC §10.5 |
-| **Trace Span** | Span creation and ending, follow naming conventions | PROTOCOL_SPEC §10.7 |
-| **Metrics collection** | Basic counter and histogram metrics | PROTOCOL_SPEC §10.3 |
-| **Retry semantics** | Classify error code retryability and reject inappropriate retries | PROTOCOL_SPEC §8.6 |
-| **Annotation conflict rules** | YAML takes precedence over code, code takes precedence over defaults | PROTOCOL_SPEC §4.12 |
-| **Schema validation error format** | Structured validation errors (path, message, constraint, expected, actual) | PROTOCOL_SPEC §4.13 |
+| **ACL pattern specificity** | `calculate_specificity()` algorithm | protocol-spec §6.4 |
+| **ACL audit** | Audit record per decision, delivered through a callback or the ACL file's `audit:` block | protocol-spec §6.3.1, §6.3.2 |
+| **Observability middleware** | Logging, tracing and metrics middleware the host can install | protocol-spec §10.1, §10.2, §10.3 |
+| **Span naming** | `apcore.{component}.{operation}` span names | protocol-spec §10.8 |
+| **Metrics collection** | Basic counter and histogram metrics | protocol-spec §10.3 |
+| **Retry semantics** | Classify error code retryability and reject inappropriate retries | protocol-spec §8.6 |
+| **Annotation conflict rules** | YAML takes precedence over code, code takes precedence over defaults | protocol-spec §4.13 |
+| **Schema validation error format** | Structured validation errors (path, message, constraint, expected, actual) | protocol-spec §4.14 |
+| **Preflight** | `Executor.validate()` runs Steps 1–5 and 7 without executing the module | protocol-spec §12.3, §12.8 |
+| **Step-level middleware** | Middleware scoped to individual pipeline steps | protocol-spec §5.16 |
 
 ### 3.4 May Implement (MAY)
 
 | Component | Responsibility | Reference Section |
 |------|------|---------|
-| **Middleware code registration** | Runtime dynamic middleware registration | PROTOCOL_SPEC §11.2 |
-| **W3C Trace Context** | Distributed tracing standard compliance | PROTOCOL_SPEC §10.4 |
-| **Sampling strategies** | Full/proportional/error-first sampling | PROTOCOL_SPEC §10.6 |
-| **Module describe interface** | `describe()` method returns LLM-usable complete description | PROTOCOL_SPEC §5.6 |
-| **Symlink handling** | Configurable symlink following and cycle detection | PROTOCOL_SPEC §3.4 |
+| **Middleware code registration** | Runtime dynamic middleware registration | protocol-spec §11.2 |
+| **W3C Trace Context** | Distributed tracing standard compliance | protocol-spec §10.5 |
+| **Module describe interface** | `describe()` method returns LLM-usable complete description | protocol-spec §5.6 |
+| **Symlink following** | `extensions.follow_symlinks: true` with loop detection and containment | protocol-spec §3.4, §3.6 |
 
-### 3.5 Level 1 Required Test Categories
+### 3.5 Level 1 Verification
 
-**All tests from Level 0**, plus:
-
-- **ACL tests** (15+ cases)
-- **Middleware tests** (10+ cases)
-- **Observability tests** (10+ cases)
-- **Context propagation tests** (5+ cases)
-- **Error guidance tests** (3+ cases): Verify framework errors include `ai_guidance` field with actionable recovery hints
+All Level 0 verification, plus every case of every fixture in §8.1 that tests a Level 1 component (§5.3).
 
 ---
 
@@ -161,7 +151,7 @@ Level 1 adds permission control, middleware, basic observability, and structured
 
 ### 4.1 Overview
 
-Level 2 adds all extension points, async modules, hot loading, and advanced observability on top of Level 1. Conformance at this level confirms feature coverage; deployment suitability still depends on workload testing, operational controls, and the implementation's support policy.
+Level 2 adds extension points, async modules, the control-plane system modules, and version management on top of Level 1. Conformance at this level confirms feature coverage; deployment suitability still depends on workload testing, operational controls, and the implementation's support policy.
 
 ### 4.2 Must Implement (MUST)
 
@@ -169,317 +159,80 @@ Level 2 adds all extension points, async modules, hot loading, and advanced obse
 
 | Component | Responsibility | Reference Section |
 |------|------|---------|
-| **Extension point framework** | All five extension points (discoverer, middleware, acl, span_exporter, module_validator) via `ExtensionManager` with `register()`, `get()`, `get_all()`, `unregister()`, `apply()`, `list_points()`. Note: these names map to actual runtime extension needs rather than the original theoretical design names (SchemaLoader, ModuleLoader, IDConverter, ACLChecker, Executor). | PROTOCOL_SPEC §11.3, §11.6 |
-| **Extension point chain** | `first_success`, `all`, `fallback` strategies | PROTOCOL_SPEC §11.3 |
-| **Extension loading order** | `load_extensions()` algorithm | PROTOCOL_SPEC §11.7 |
-| **Async modules** | `submit()`, `get_status()`, `cancel()`, `list_tasks()` via `AsyncTaskManager` | PROTOCOL_SPEC §5.8 |
-| **Async state machine** | State transition rules (PENDING → RUNNING → COMPLETED/FAILED/CANCELLED) via `TaskStatus` enum | PROTOCOL_SPEC §5.8 |
-| **Middleware state machine** | Complete state transitions (init → before → execute → after → done, with error branches) | PROTOCOL_SPEC §11.5 |
-| **Version negotiation** | `negotiate_version()` algorithm | PROTOCOL_SPEC §13.3 |
-| **Schema migration** | `migrate_schema()` algorithm | PROTOCOL_SPEC §13.4 |
-| **Compatibility matrix** | Backward/forward compatibility rules | PROTOCOL_SPEC §13.5 |
-| **Context serialization** | Cross-process Context JSON serialization/deserialization | PROTOCOL_SPEC §5.7 |
-| **All framework built-in middleware** | schema_validation, acl_check, tracing, logging, metrics, error_wrapper | PROTOCOL_SPEC §11.4 |
+| **Extension point framework** | Six extension points (`discoverer`, `middleware`, `acl`, `span_exporter`, `module_validator`, `approval_handler`) via `ExtensionManager` with `register()`, `get()`, `get_all()`, `unregister()`, `apply()`, `list_points()`. An unknown point is `GENERAL_INVALID_INPUT`; a known point holding nothing is not an error | protocol-spec §11.3, §11.6 |
+| **Extension point chain** | `first_success`, `all`, `fallback` strategies | protocol-spec §11.3 |
+| **Extension loading order** | `load_extensions()` algorithm | protocol-spec §11.7 |
+| **Async modules** | `submit()`, `get_status()`, `cancel()`, `list_tasks()` via `AsyncTaskManager` | protocol-spec §5.8 |
+| **Async state machine** | State transition rules (PENDING → RUNNING → COMPLETED/FAILED/CANCELLED) via `TaskStatus` enum | protocol-spec §5.8 |
+| **Middleware state machine** | Complete state transitions (init → before → execute → after → done, with error branches) | protocol-spec §11.5 |
+| **Version negotiation** | `negotiate_version()` algorithm | protocol-spec §13.3 |
+| **Compatibility matrix** | Backward/forward compatibility rules | protocol-spec §13.5 |
+| **Context serialization** | Cross-process Context JSON serialization/deserialization | protocol-spec §5.7 |
+| **System control modules** | Ship `system.control.update_config`, `system.control.reload_module` and `system.control.toggle_feature` | protocol-spec §6.7 |
+| **Execution strategies** | Strategy presets, custom step insertion and removal, and the `pipeline:` configuration section | protocol-spec §5.16, §6.6.3.2 |
 
 ### 4.3 Should Implement (SHOULD)
 
 | Component | Responsibility | Reference Section |
 |------|------|---------|
-| **Module hot loading** | Runtime reload modules without restart | PROTOCOL_SPEC §12.5 Phase 4 |
-| **OpenTelemetry integration** | Standard OTLP exporter | PROTOCOL_SPEC §10.1 |
-| **Prometheus metrics export** | Standard metrics format | PROTOCOL_SPEC §10.3 |
-| **Advanced sampling strategies** | Error-first sampling | PROTOCOL_SPEC §10.6 |
-| **W3C Trace Context** | `traceparent` header propagation | PROTOCOL_SPEC §10.4 |
-| **Module isolation** | Process-level or container-level isolation | PROTOCOL_SPEC §5.5 |
-| **Multi-version coexistence** | Multiple versions of same module running | PROTOCOL_SPEC §5.4 |
-| **Schema deprecation markers** | `x-deprecated` handling and warnings | PROTOCOL_SPEC §4.11 |
-| **Async callbacks** | `on_progress`, `on_complete`, `on_error` callbacks | PROTOCOL_SPEC §5.8 |
+| **Schema migration** | `migrate_schema()` algorithm | protocol-spec §13.4 |
+| **Module hot loading** | Runtime reload of modules without restart, with safe unregister | protocol-spec §12.7.3, §12.7.4 |
+| **OpenTelemetry integration** | OTLP exporter selected by `observability.tracing.exporter` | protocol-spec §10.1.1 |
+| **Prometheus metrics export** | Standard metrics format | protocol-spec §10.3 |
+| **W3C Trace Context** | `traceparent` header propagation | protocol-spec §10.5 |
+| **Approval Phase B and Execution Policy** | `check_approval` / `_approval_token`, `CallbackApprovalHandler`, `ExecutionPolicy` (`gate_destructive`, `strict`) | protocol-spec §7.8, §7.9 |
+| **Module isolation** | Process-level or container-level isolation | protocol-spec §5.5 |
+| **Multi-version coexistence** | Multiple versions of same module running | protocol-spec §5.4 |
+| **Schema deprecation markers** | `x-deprecated` handling and warnings | protocol-spec §4.12 |
+| **Async callbacks** | `on_progress`, `on_complete`, `on_error` callbacks | protocol-spec §5.8 |
 
 ### 4.4 May Implement (MAY)
 
 | Component | Responsibility | Reference Section |
 |------|------|---------|
-| **Protocol adapters** | MCP / A2A / OpenAI / Anthropic / LangChain mapping | PROTOCOL_SPEC §D |
-| **CLI tools** | `init`, `create`, `run` and other developer tools | PROTOCOL_SPEC §12.5 Phase 3 |
-| **Schema code generation** | Generate language native types from YAML Schema | PROTOCOL_SPEC §4.9 |
-| **Remote module loading** | Load modules from remote services/repositories | PROTOCOL_SPEC §11.3 |
-| **Distributed execution** | Cross-process/cross-network module execution | PROTOCOL_SPEC §11.3 |
-| **Container-level isolation** | Docker/Wasm sandbox | PROTOCOL_SPEC §5.5 |
+| **Protocol adapters** | MCP / A2A / OpenAI / Anthropic / LangChain mapping | protocol-spec Appendix D |
+| **CLI tools** | `init`, `create`, `run` and other developer tools | protocol-spec §12.5 |
+| **Schema code generation** | Generate language native types from YAML Schema | protocol-spec §4.9 |
+| **Remote module loading** | Load modules from remote services/repositories | protocol-spec §11.3 |
+| **Distributed execution** | Cross-process/cross-network module execution | protocol-spec §11.3 |
+| **Container-level isolation** | Docker/Wasm sandbox | protocol-spec §5.5 |
 
-### 4.5 Level 2 Required Test Categories
+### 4.5 Level 2 Verification
 
-**All tests from Level 1**, plus:
-
-- **Extension point tests** (10+ cases)
-- **Async module tests** (10+ cases)
-- **Version compatibility tests** (5+ cases)
-- **Middleware state machine tests** (5+ cases)
-- **Schema export round-trip tests** (3+ cases): Verify field preservation across export profiles (especially `default` values in non-strict exports)
+All Level 1 verification, plus every case of every fixture in §8.1 that tests a Level 2 component (§5.3).
 
 ---
 
-## 5. Test Suite Design
+## 5. Conformance Test Suite
 
-### 5.1 Test Category Definitions
+The conformance suite is the fixture set in `conformance/fixtures/`, inventoried in §8.1. There is no separate per-level test catalogue: a fixture belongs to the level of the component it tests.
 
-| Number | Category Name | English ID | Applicable Level | Minimum Cases |
-|------|---------|---------|---------|-----------|
-| T01 | Naming specification tests | `naming` | Level 0+ | 10 |
-| T02 | Directory scanning tests | `directory` | Level 0+ | 5 |
-| T03 | Schema validation tests | `schema` | Level 0+ | 15 |
-| T04 | Module lifecycle tests | `module` | Level 0+ | 10 |
-| T05 | ACL permission tests | `acl` | Level 1+ | 15 |
-| T06 | Error handling tests | `error` | Level 0+ | 10 |
-| T07 | Configuration loading tests | `config` | Level 0+ | 5 |
-| T08 | Observability tests | `observability` | Level 1+ | 10 |
-| T09 | Middleware tests | `middleware` | Level 1+ | 10 |
-| T10 | Extension point tests | `extension` | Level 2 | 10 |
-| T11 | Async module tests | `async` | Level 2 | 10 |
-| T12 | Version compatibility tests | `versioning` | Level 2 | 5 |
+### 5.1 Fixture format
 
-### 5.2 Test Case Format
+Each fixture is a JSON document `{ "description": "...", "test_cases": [...] }`. Every case carries a stable `id`, its input fields, and the expected outcome — `expected`, or `expected_error` naming a wire error code. Some fixtures use extended patterns (`expected_valid`, `expected_features`, `sub_cases`, a shared root-level `schema`), and many carry a root-level `driver_contract` stating which SDK entry point the driver must call and how to compare results. These are listed in [`conformance/README.md` § Non-Standard Test Patterns](https://github.com/aiperceivable/apcore/blob/main/conformance/README.md#non-standard-test-patterns). `binding_yaml_canonical.yaml` is a binding document read by binding-loader tests, not a case container.
 
-Each test case **MUST** contain the following structure:
+### 5.2 How SDKs run the suite
 
-```yaml
-test_case:
-  # Unique identifier, format: T{category_number}-{sequence}
-  id: "T01-001"
+Each SDK keeps its fixture drivers in its own test suite and runs them in CI against the spec repository, checked out beside the SDK and located as §8.2.1 specifies:
 
-  # Test name
-  name: "Directory path conversion to Canonical ID - standard path"
+| SDK | Drivers | Runner |
+|---|---|---|
+| apcore-python | `tests/conformance/test_*.py`, `tests/test_conformance.py` | `pytest` |
+| apcore-typescript | `tests/conformance-*.test.ts` | `vitest run` |
+| apcore-rust | `tests/*conformance*.rs` | `cargo test` |
 
-  # Category
-  category: "naming"
+A driver loads a fixture, drives each case through the SDK's public API (or the entry point its `driver_contract` names), and asserts the expected outcome — the wire error code, never an SDK-local class name.
 
-  # Minimum conformance level
-  level: 0
+This repository's CI guards the seam between fixtures and drivers: every fixture is driven by all three SDKs, every `expected` key is read by some driver, and a clause one SDK skips while another exercises it is recorded. A scheduled mutation sweep checks that each case can actually fail. See [`conformance/README.md` § Guards](https://github.com/aiperceivable/apcore/blob/main/conformance/README.md#guards).
 
-  # Whether mandatory test
-  mandatory: true
-
-  # Preconditions
-  preconditions:
-    - "Extension root directory is 'extensions'"
-    - "'extensions/executor/validator/db_params.py' exists in filesystem"
-
-  # Execution steps
-  steps:
-    - action: "Call directory_to_canonical_id('extensions/executor/validator/db_params.py', 'extensions')"
-
-  # Expected result
-  expected:
-    result: "executor.validator.db_params"
-    error: null
-
-  # Tags
-  tags: [id, conversion, basic]
-```
-
-### 5.3 Detailed Test Cases by Category
-
-#### T01: Naming Specification Tests (`naming`)
-
-| Case ID | Name | Input | Expected Result | Mandatory |
-|---------|------|------|---------|------|
-| T01-001 | Standard path conversion | `extensions/executor/validator/db_params.py` | `executor.validator.db_params` | Yes |
-| T01-002 | Multi-level path conversion | `extensions/api/handler/task_submit.py` | `api.handler.task_submit` | Yes |
-| T01-003 | Invalid path - empty segment | `extensions/executor//db_params.py` | INVALID_PATH error | Yes |
-| T01-004 | Invalid path - uppercase letter | `extensions/Executor/Validator.py` | INVALID_SEGMENT error | Yes |
-| T01-005 | Invalid path - digit prefix | `extensions/123module/test.py` | INVALID_SEGMENT error | Yes |
-| T01-006 | ID too long (>192 chars) | Overlong path | ID_TOO_LONG error | Yes |
-| T01-007 | Reserved word detection | `extensions/system/core.py` | reserved_word conflict | Yes |
-| T01-008 | Case collision detection | Register `A.B` after `a.b` | case_collision warning | Yes |
-| T01-009 | Duplicate ID detection | Register same ID twice | duplicate_id error | Yes |
-| T01-010 | Cross-language ID conversion (Rust) | `executor::validator::db_params` | `executor.validator.db_params` | No |
-| T01-011 | Cross-language ID conversion (PascalCase) | `DbParamsValidator` | `db_params_validator` | No |
-
-#### T02: Directory Scanning Tests (`directory`)
-
-| Case ID | Name | Scenario | Expected Result | Mandatory |
-|---------|------|------|---------|------|
-| T02-001 | Standard directory scan | Normal directory structure | Discover all modules | Yes |
-| T02-002 | Hidden file ignore | Contains `.git/`, `__pycache__/` | Does not include hidden directories | Yes |
-| T02-003 | Maximum depth limit | Over 8 levels of nesting | Skip deep directories and warn | Yes |
-| T02-004 | Empty directory | Extension directory exists but empty | Return empty list | Yes |
-| T02-005 | Directory does not exist | Extension root directory missing | CONFIG_ERROR | Yes |
-
-#### T03: Schema Validation Tests (`schema`)
-
-| Case ID | Name | Scenario | Expected Result | Mandatory |
-|---------|------|------|---------|------|
-| T03-001 | Valid input passes validation | Input fully conforms to Schema | Validation passes | Yes |
-| T03-002 | Missing required field | Missing `required` field | SCHEMA_VALIDATION_ERROR | Yes |
-| T03-003 | Type mismatch | Pass integer to string field | SCHEMA_VALIDATION_ERROR | Yes |
-| T03-004 | Extra field rejection | Pass extra field when `additionalProperties: false` | SCHEMA_VALIDATION_ERROR | Yes |
-| T03-005 | Enum value validation | Pass value not in enum | SCHEMA_VALIDATION_ERROR | Yes |
-| T03-006 | Number range validation | `minimum`/`maximum` validation | Validation fails when out of range | Yes |
-| T03-007 | String pattern validation | Regex constraint | Validation fails when not matching | Yes |
-| T03-008 | Nested object validation | Nested object field validation | Deep error path correct | Yes |
-| T03-009 | Array element validation | Array items type validation | Validation fails on element type error | Yes |
-| T03-010 | Default value filling | Optional field uses default value | Default value filled correctly | Yes |
-| T03-011 | $ref local reference | Same file `#/definitions/...` | Reference resolves correctly | Yes |
-| T03-012 | $ref circular reference detection | `$ref` → `$ref` chain that reaches no schema body | SCHEMA_CIRCULAR_REF error | No |
-| T03-012b | $ref self-reference (recursive schema) | `$ref` re-entered through `properties` / `items` (`#`, root `$id`, `#/$defs/…`) | Reference preserved lazily and bound at validation time; no error | No |
-| T03-013 | $ref cross-file reference | Relative path reference | Reference resolves correctly | No |
-| T03-014 | x-sensitive marker recognition | Field with `x-sensitive: true` | Marker correctly recognized | No |
-| T03-015 | Output Schema validation | Module return value doesn't conform to output_schema | Validation fails | Yes |
-
-#### T04: Module Lifecycle Tests (`module`)
-
-| Case ID | Name | Scenario | Expected Result | Mandatory |
-|---------|------|------|---------|------|
-| T04-001 | Module registration and retrieval | Retrieve by ID after registration | Successfully retrieve | Yes |
-| T04-002 | Module list | List after registering multiple modules | Return all registered IDs | Yes |
-| T04-003 | Module does not exist | Get unregistered module ID | MODULE_NOT_FOUND | Yes |
-| T04-004 | Normal execution | Valid input, module executes normally | Return result conforming to output_schema | Yes |
-| T04-005 | Input validation failure | Input doesn't conform to input_schema | SCHEMA_VALIDATION_ERROR | Yes |
-| T04-006 | Module execution exception | Module throws exception internally | MODULE_EXECUTE_ERROR | Yes |
-| T04-007 | Inter-module call | Call other module via context.executor | Successfully call and propagate context | Yes |
-| T04-008 | Entry point inference | No meta.yaml, auto-infer entry point | Correctly find module class | No |
-| T04-009 | Lifecycle hooks | on_load / on_unload | Hooks called correctly | No |
-| T04-010 | Dependency ordering | Modules with dependencies | Load in topological order | No |
-
-#### T05: ACL Permission Tests (`acl`)
-
-| Case ID | Name | Scenario | Expected Result | Mandatory |
-|---------|------|------|---------|------|
-| T05-001 | Exact match allow | caller and target exactly match allow rule | Allow | Yes |
-| T05-002 | Exact match deny | caller and target exactly match deny rule | Deny | Yes |
-| T05-003 | Wildcard `*` match | `api.*` matches `api.handler.task_submit` | Match succeeds | Yes |
-| T05-004 | Global wildcard | `*` matches all IDs | Match succeeds | Yes |
-| T05-005 | deny takes precedence over allow | Same priority deny and allow both match | deny takes effect | Yes |
-| T05-006 | Priority ordering | High priority allow, low priority deny | allow takes effect | Yes |
-| T05-007 | Default policy deny | No matching rule, default deny | Deny | Yes |
-| T05-008 | Default policy allow | No matching rule, default allow | Allow | Yes |
-| T05-009 | External call | caller_id is null | Treat as `@external` | Yes |
-| T05-010 | Empty rule list | rules is empty | Use default policy | Yes |
-| T05-011 | Empty callers/targets | Rule has empty callers array | Rule doesn't match | Yes |
-| T05-012 | Middle wildcard | `*.validator.*` matches | Match succeeds | Yes |
-| T05-013 | Self call | Module calls itself | Normal ACL check execution | Yes |
-| T05-014 | Specificity scoring | Exact match vs wildcard | Score correct | No |
-| T05-015 | ACL audit log | ACL check triggers audit | Log includes check result | No |
-
-#### T06: Error Handling Tests (`error`)
-
-| Case ID | Name | Scenario | Expected Result | Mandatory |
-|---------|------|------|---------|------|
-| T06-001 | Unified error format | Any framework error | Contains code, message | Yes |
-| T06-002 | trace_id attached | Error includes trace_id | Yes | Yes |
-| T06-003 | Error propagation | Module exception wrapped | ModuleError format | Yes |
-| T06-004 | Error chain | Nested call error | cause field preserves original error | Yes |
-| T06-005 | Framework error codes not overridable | Module defines MODULE_* error code | Collision detection error | Yes |
-| T06-006 | Error type mapping | SchemaValidationError → SCHEMA_VALIDATION_ERROR | Mapping correct | Yes |
-| T06-007 | ACLDeniedError mapping | ACL denial → ACL_DENIED | Mapping correct | Yes |
-| T06-008 | TimeoutError mapping | Timeout → MODULE_TIMEOUT | Mapping correct | Yes |
-| T06-009 | Custom error code registration | Module registers custom error code | Registration succeeds | No |
-| T06-010 | Error code collision detection | Two modules register same error code | Collision error | No |
-
-#### T07: Configuration Loading Tests (`config`)
-
-| Case ID | Name | Scenario | Expected Result | Mandatory |
-|---------|------|------|---------|------|
-| T07-001 | Valid configuration loading | Complete apcore.yaml | Load succeeds | Yes |
-| T07-002 | Missing required field | Missing `extensions.root` | CONFIG_INVALID | Yes |
-| T07-003 | Type error | `max_depth: "abc"` | CONFIG_INVALID | Yes |
-| T07-004 | Environment variable override | Set APCORE_EXTENSIONS_ROOT | Environment variable takes precedence | No |
-| T07-005 | Default value fallback | Not specify `auto_discover` in config | Use default value true | Yes |
-
-#### T08: Observability Tests (`observability`)
-
-| Case ID | Name | Scenario | Expected Result | Mandatory |
-|---------|------|------|---------|------|
-| T08-001 | trace_id generation | Top-level call | Auto-generate 32-char lowercase hex | Yes |
-| T08-002 | trace_id propagation | Child call | Inherit parent call's trace_id | Yes |
-| T08-003 | Structured logging | Module execution log | JSON format, contains necessary fields | Yes |
-| T08-004 | Log level | Configure level: warn | Don't output info level logs | Yes |
-| T08-005 | Sensitive data redaction | x-sensitive field | Log shows `***REDACTED***` | No |
-| T08-006 | Nested object redaction | x-sensitive in nested object | Recursively redact | No |
-| T08-007 | Span creation | Module execution | Create `apcore.module.execute` Span | No |
-| T08-008 | Span attributes | Span ends | Includes module_id, duration_ms, success | No |
-| T08-009 | Metrics counter | After module execution | `apcore_module_calls_total` increments | No |
-| T08-010 | Metrics histogram | After module execution | `apcore_module_duration_seconds` records | No |
-
-#### T09: Middleware Tests (`middleware`)
-
-| Case ID | Name | Scenario | Expected Result | Mandatory |
-|---------|------|------|---------|------|
-| T09-001 | Onion model order | Multiple middleware | before in priority descending, after in ascending | Yes |
-| T09-002 | before modifies input | Middleware modifies inputs | Module receives modified input | Yes |
-| T09-003 | after modifies output | Middleware modifies output | Caller receives modified output | Yes |
-| T09-004 | before abort | Middleware throws exception | Skip subsequent before and execute | Yes |
-| T09-005 | on_error fallback | Error handling returns fallback result | Stop error propagation | Yes |
-| T09-006 | Priority ordering | Different priority middleware | High priority executes first | Yes |
-| T09-007 | Non-disableable middleware | Try to disable schema_validation | Disable fails/invalid | Yes |
-| T09-008 | Disableable middleware | Disable metrics | metrics doesn't execute | No |
-| T09-009 | Runtime registration | Register middleware via code | Registration succeeds and executes | No |
-| T09-010 | Middleware state machine | Error branch transition | on_error triggers correctly | No |
-
-#### T10: Extension Point Tests (`extension`)
-
-| Case ID | Name | Scenario | Expected Result | Mandatory |
-|---------|------|------|---------|------|
-| T10-001 | Custom SchemaLoader | Replace default Schema loader | Custom loader takes effect | Yes |
-| T10-002 | Custom ModuleLoader | Replace default module loader | Custom loader takes effect | Yes |
-| T10-003 | Custom ACLChecker | Replace default ACL checker | Custom checker takes effect | Yes |
-| T10-004 | Extension chain first_success | Multiple loaders, first succeeds | Use first successful result | Yes |
-| T10-005 | Extension chain fallback | First fails, second succeeds | Fall back to second implementation | Yes |
-| T10-006 | No available implementation | Extension point has no registered implementation | Use framework default implementation | Yes |
-| T10-007 | Extension priority | Multiple implementations different priorities | High priority tries first | Yes |
-| T10-008 | Configuration-registered extension | Register via apcore.yaml | Registration succeeds | No |
-| T10-009 | Code-registered extension | Runtime code registration | Registration succeeds | No |
-| T10-010 | Custom Executor | Replace execution method | Custom executor takes effect | No |
-
-#### T11: Async Module Tests (`async`)
-
-| Case ID | Name | Scenario | Expected Result | Mandatory |
-|---------|------|------|---------|------|
-| T11-001 | Async execution start | Call call_async() on an async module | Return task_id and pending status | Yes |
-| T11-002 | Status query | Query running task | Return running and progress | Yes |
-| T11-003 | Success completion | Task completes normally | Status is completed, contains result | Yes |
-| T11-004 | Execution failure | Task execution exception | Status is failed, contains error | Yes |
-| T11-005 | Cancel task | Call cancel() | Status is cancelled | Yes |
-| T11-006 | Forbidden state transition | Try to transition after completed | Reject transition | Yes |
-| T11-007 | Skip pending | idle directly to running | Reject transition | Yes |
-| T11-008 | Progress callback | Set on_progress callback | Callback triggered | No |
-| T11-009 | Completion callback | Set on_complete callback | Callback triggered | No |
-| T11-010 | Retry | Resubmit failed status | Transition to pending | No |
-
-#### T12: Version Compatibility Tests (`versioning`)
-
-| Case ID | Name | Scenario | Expected Result | Mandatory |
-|---------|------|------|---------|------|
-| T12-001 | Same major version compatible | declared: 1.0.0, sdk: 1.3.0 | Compatible, use 1.0.0 | Yes |
-| T12-002 | Different major version incompatible | declared: 2.0.0, sdk: 1.3.0 | VERSION_INCOMPATIBLE | Yes |
-| T12-003 | SDK version too low | declared: 1.5.0, sdk: 1.3.0 | VERSION_INCOMPATIBLE | Yes |
-| T12-004 | Deprecation warning | declared: 1.0.0, sdk: 1.5.0 | DEPRECATION_WARNING | No |
-| T12-005 | Schema migration | Migrate from 1.0 to 1.2 | Migration succeeds | No |
-
-### 5.4 Passing Standards
-
-#### Level 0 Passing Standard
+### 5.3 Passing standard
 
 | Standard | Requirement |
 |------|------|
-| Mandatory test pass rate | **100%** (all tests with `mandatory: true` **MUST** pass) |
-| Overall test pass rate | **>=80%** (including non-mandatory tests) |
-| Coverage categories | All mandatory tests from T01, T02, T03, T04, T06, T07 |
-
-#### Level 1 Passing Standard
-
-| Standard | Requirement |
-|------|------|
-| Mandatory test pass rate | **100%** |
-| Overall test pass rate | **>=85%** |
-| Coverage categories | Level 0 categories + all mandatory tests from T05, T08, T09 |
-
-#### Level 2 Passing Standard
-
-| Standard | Requirement |
-|------|------|
-| Mandatory test pass rate | **100%** |
-| Overall test pass rate | **>=90%** |
-| Coverage categories | Level 1 categories + all mandatory tests from T10, T11, T12 |
+| Applicable fixtures | Every fixture that tests a component required at the declared level (MUST rows of that level and all lower levels) |
+| Pass rate | **100%** of the cases in every applicable fixture. There is no percentage threshold |
+| SHOULD / MAY components | A fixture that tests a SHOULD or MAY component is applicable once the implementation ships that component |
+| Skipped cases | Count as failures unless listed in the declaration's `known_deviations` (§6.1) |
 
 ---
 
@@ -495,64 +248,34 @@ When declaring conformance, implementers **MUST** include the following structur
 # Implementation information
 implementation:
   name: "apcore-python"              # Implementation name
-  version: "0.1.0"                   # Implementation version
+  version: "0.31.0"                  # Implementation version
   language: "python"                 # Implementation language
-  spec_version: "1.2.0-draft"       # Corresponding PROTOCOL_SPEC version
-  maintainer: "AI Perceivable"        # Maintainer
+  spec_version: "1.60.0"             # Corresponding protocol-spec version
+  maintainer: "AI Perceivable"       # Maintainer
   repository: "https://github.com/aiperceivable/apcore-python"  # Repository address
 
 # Conformance declaration
 conformance:
   level: 1                           # Declared conformance level (0 | 1 | 2)
-  date: "2026-02-07"                 # Declaration date
+  date: "2026-09-30"                 # Declaration date
 
-  # Test results summary
-  test_results:
-    total: 120                       # Total tests
-    passed: 115                      # Passed
-    failed: 3                        # Failed
-    skipped: 2                       # Skipped
-    mandatory_passed: 85             # Mandatory tests passed
-    mandatory_total: 85              # Mandatory tests total
-
-  # Category results
-  categories:
-    naming:
-      passed: 11
-      total: 11
-    directory:
-      passed: 5
-      total: 5
-    schema:
-      passed: 14
-      total: 15
-    module:
-      passed: 10
-      total: 10
-    acl:
-      passed: 15
-      total: 15
-    error:
-      passed: 10
-      total: 10
-    config:
-      passed: 5
-      total: 5
-    observability:
-      passed: 9
-      total: 10
-    middleware:
-      passed: 10
-      total: 10
+  # Fixture results against the spec_version above
+  fixture_results:
+    fixtures: 80                     # Applicable fixtures run
+    cases: 982                       # Cases in those fixtures
+    passed: 982
+    failed: 0
+    skipped: 0
+    report: "https://github.com/aiperceivable/apcore-python/actions"  # Reproducible CI run
 
   # Known deviations (if any)
-  # Format: - { id: "T03-xxx", reason: "...", severity: "minor|major" }
+  # Format: - { feature: "...", spec: "§x.y", reason: "...", severity: "minor|major" }
   known_deviations: []
 
   # Optional feature support
   optional_features:
     - name: "hot_reload"
-      supported: false
+      supported: true
     - name: "opentelemetry"
       supported: true
     - name: "distributed_execution"
@@ -563,17 +286,17 @@ conformance:
 
 | Rule | Level | Description |
 |------|------|------|
-| Declared level **MUST** be consistent with test results | **MUST** | Cannot falsely claim conformance level |
-| Mandatory tests **MUST** all pass | **MUST** | Cannot claim that level if any mandatory test fails |
+| Declared level **MUST** be consistent with fixture results | **MUST** | Cannot falsely claim conformance level |
+| Every applicable fixture case **MUST** pass | **MUST** | Cannot claim a level if any applicable case fails, except a listed deviation |
 | Known deviations **MUST** be listed honestly | **MUST** | — |
 | Declaration **SHOULD** be accompanied by reproducible test results | **SHOULD** | Such as CI report link |
 | Declaration **SHOULD** be regularly updated | **SHOULD** | At least once per minor version |
 
 ### 6.3 Conformance Badges
 
-Implementations that pass conformance verification **may** use the following badges in documentation:
+Implementations that pass conformance verification **MAY** use the following badges in documentation:
 
-```
+```text
 apcore Conformant — Level 0 (Core)
 apcore Conformant — Level 1 (Standard)
 apcore Conformant — Level 2 (Full)
@@ -583,110 +306,106 @@ apcore Conformant — Level 2 (Full)
 
 ## 7. Known Deviations
 
-The following features are specified in PROTOCOL_SPEC but not yet fully implemented in current SDK releases (apcore-python, apcore-typescript). Implementers **SHOULD** document these deviations in their conformance declarations.
+The following requirements are not met by the current SDK releases (apcore-python, apcore-typescript and apcore-rust). Each applies to all three unless the row says otherwise. Implementations declaring conformance **MUST** list the ones that apply in `known_deviations`.
 
-| Feature | Spec Reference | Current Status |
-|---------|---------------|----------------|
-| `Config` class (YAML loading, env override, schema validation) | PROTOCOL_SPEC §9.1, §9.2, §9.3 | Stub implementation only. YAML loading, environment variable override, and `validate_config()` schema validation are not implemented. |
-| Registry schema query/export methods (`get_schema`, `export_schema`, etc.) | PROTOCOL_SPEC §12.2 | Not on `Registry`. A standalone `SchemaExporter` class is available for schema export. |
-| Error codes `GENERAL_NOT_IMPLEMENTED` and `DEPENDENCY_NOT_FOUND` | PROTOCOL_SPEC §8.2, §8.7 | Implemented in both SDKs as `FeatureNotImplementedError` and `DependencyNotFoundError`. |
-| Version negotiation | PROTOCOL_SPEC §13.3 | `negotiate_version()` algorithm not yet implemented. |
-| Schema migration | PROTOCOL_SPEC §13.4 | `migrate_schema()` algorithm not yet implemented. |
-| Module isolation | PROTOCOL_SPEC §5.5 | Process-level or container-level isolation not yet implemented. |
-| Multi-version coexistence | PROTOCOL_SPEC §5.4 | Multiple versions of the same module running concurrently not yet implemented. |
-| `AsyncTaskManager.submit()` / `cancel()` sync vs async | PROTOCOL_SPEC §5.8 | Python `AsyncTaskManager.submit()` and `cancel()` are async methods; TypeScript equivalents are synchronous. |
-
-Implementations declaring conformance **MUST** list any of these deviations that apply in their `known_deviations` section.
+| Requirement | Spec reference | Level | Current status |
+|---|---|---|---|
+| Version negotiation on load | protocol-spec §13.3 | Level 2 MUST | `negotiate_version()` is exported as a function in all three SDKs, but no SDK calls it when loading configuration or schema files. |
+| Extension point chaining and loading order | protocol-spec §11.3, §11.7 | Level 2 MUST | `ExtensionManager` holds one implementation per single-valued point and a list per multi-valued point. There is no priority ordering, no `first_success` / `all` / `fallback` strategy, and no registration from `apcore.yaml`. |
+| Timeout grace period | protocol-spec §12.7.5 | MUST | The SDKs raise `MODULE_TIMEOUT` as soon as the timer fires; none waits the grace period of `enforce_timeout` step 4 for the module to exit. |
+| Schema migration | protocol-spec §13.4 | Level 2 SHOULD | `migrate_schema()` is not implemented. |
+| Module isolation | protocol-spec §5.5 | Level 2 SHOULD | Process- or container-level isolation is not implemented; modules run in the host process. |
+| Multi-version coexistence | protocol-spec §5.4 | Level 2 SHOULD | apcore-python resolves a `version_hint` on `Registry.get`. apcore-typescript accepts the hint, ignores it, and warns that it is deprecated. apcore-rust takes no hint. |
 
 ---
 
 ## 8. Conformance Test Fixtures
 
-The repository ships **80 cross-language fixture files** under `conformance/fixtures/` covering **982 test cases**. These two numbers are checked against the fixtures themselves by `conformance-integrity`, together with §8.1's per-fixture counts and its Total row — a count nobody verifies reads as coverage in every review and every inventory built from it. Each fixture is a JSON document of shape `{ "description": "...", "test_cases": [...] }` consumed by all three SDK test runners (apcore-python, apcore-typescript, apcore-rust). A SDK declaring a conformance level **MUST** pass every fixture whose tested feature is required at that level (see §2 Level 0, §3 Level 1, §4 Level 2 for the per-feature breakdown).
+The repository ships **80 cross-language fixture files** under `conformance/fixtures/` covering **982 test cases**. `conformance-integrity` checks these two numbers, §8.1's per-fixture counts and its Total row against the fixtures themselves. Each fixture is consumed by all three SDK test runners (§5.2). An SDK declaring a conformance level **MUST** pass every fixture whose tested feature is required at that level (§5.3).
 
 ### 8.1 Fixture Inventory
 
 | Fixture | Cases | Tested feature |
 |---------|------:|----------------|
 | [`acl_agent_scoping`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/acl_agent_scoping.json) | 19 | Agent-scoped ACL governance: per-agent caller patterns and scoping rules (spec §6) |
-| [`allow_unknown_namespaces`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/allow_unknown_namespaces.json) | 8 | `_config.allow_unknown`: drop or store an unregistered namespace (§9.6.3, #118 D-69) |
-| [`acl_audit_delivery`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/acl_audit_delivery.json) | 17 | ACL audit delivery: one effective sink, containment, the wire record (§6.3.2, #118 D-66) |
+| [`allow_unknown_namespaces`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/allow_unknown_namespaces.json) | 8 | `_config.allow_unknown`: drop or store an unregistered namespace (§9.6.3, D-69) |
+| [`acl_audit_delivery`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/acl_audit_delivery.json) | 17 | ACL audit delivery: one effective sink, containment, the wire record (§6.3.2, D-66) |
 | [`acl_evaluation`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/acl_evaluation.json) | 19 | ACL rule evaluation, first-match-wins (spec §6) |
 | [`acl_handler_error`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/acl_handler_error.json) | 15 | An unevaluable ACL condition resolves toward refusing access; `handler_error` names the condition path (spec §6.1.1 / §6.1.4 / §6.1.4.1) |
 | [`acl_argument_scoped_approval`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/acl_argument_scoped_approval.json) | 25 | Authorization and approval requirement are two orthogonal results; the built-in `arguments` condition scopes a rule to this call; an unevaluable rule's requirement is pending, not discarded (spec §6.1.1/§6.1.6/§6.1.7/§6.1.8/§6.9) |
 | [`acl_rule_key_closure`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/acl_rule_key_closure.json) | 10 | ACL rule keys are a closed set; an unknown or reserved key fails the load (spec §6.1) |
 | [`acl_effect_value_closure`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/acl_effect_value_closure.json) | 10 | A rule's `effect` value is a closed set at every entry point — file loading, direct construction and runtime insertion; `default_effect` on the same terms (spec §6.1.5) |
 | [`acl_pattern_arity`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/acl_pattern_arity.json) | 51 | A `callers` / `targets` pattern array's shape is a closed set at every entry point, plus a validator-only tier for well-formed arrays that match nothing (spec §6.2.1) |
-| [`acl_root_discovery`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/acl_root_discovery.json) | 10 | `ACL.discover()` config-driven `acl.root` resolution; missing path MUST attach nothing (spec §6) |
-| [`annotations_extra_round_trip`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/annotations_extra_round_trip.json) | 11 | `ModuleAnnotations.extra` wire-format round-trip (spec §4.4) |
-| [`approval_gate`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/approval_gate.json) | 8 | Approval gate enforcement at Executor Step 5 |
-| [`approval_request_fields`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/approval_request_fields.json) | 2 | `ApprovalRequest` carries `caller_id` (read straight off `Context.caller_id` — null on a top-level call, never the `@external` ACL sentinel) and `action` (= `module_id`), populated by the approval gate at Executor Step 4.5 (spec §7.3.1, decision D-03) |
+| [`acl_root_discovery`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/acl_root_discovery.json) | 10 | `ACL.discover()` config-driven `acl.root` resolution; missing path MUST attach nothing (spec §6.6.3.1, D-64) |
+| [`annotations_extra_round_trip`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/annotations_extra_round_trip.json) | 11 | `ModuleAnnotations.extra` wire-format round-trip (spec §4.4.1) |
+| [`approval_gate`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/approval_gate.json) | 8 | Approval gate enforcement at Executor Step 5 (spec §7.4) |
+| [`approval_request_fields`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/approval_request_fields.json) | 2 | `ApprovalRequest` carries `caller_id` (read straight off `Context.caller_id` — null on a top-level call, never the `@external` ACL sentinel) and `action` (= `module_id`), populated by the approval gate at Executor Step 5 (spec §7.3.1, D-03) |
 | [`async_task_cancellation`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/async_task_cancellation.json) | 2 | `AsyncTaskManager.cancel()` real abort via CancelToken (D-18) |
 | [`async_task_evolution`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/async_task_evolution.json) | 10 | Pluggable `TaskStore`, retry with backoff |
 | [`bindings_dir_resolution`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/bindings_dir_resolution.json) | 13 | Binding-directory resolution: a loader invoked without an explicit directory resolves `bindings.dir` / `bindings.pattern` under §9.2 precedence, an explicit argument wins, and no scan happens at client initialisation (spec §5.12.6) |
-| [`binding_errors`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/binding_errors.json) | 6 | Binding error message conformance (DECLARATIVE_CONFIG_SPEC §7.2) |
+| [`binding_errors`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/binding_errors.json) | 6 | Binding error message conformance (protocol-spec §5.12.8) |
 | [`call_chain`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/call_chain.json) | 11 | Call-chain safety guard (Algorithm A20) |
-| [`config_defaults`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/config_defaults.json) | 18 | Config default values cross-SDK identity |
+| [`config_defaults`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/config_defaults.json) | 18 | Config default values cross-SDK identity (spec §9.1.1) |
 | [`config_env`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/config_env.json) | 13 | Env-var → Config path mapping (Algorithm A12-NS, spec §9.8) |
 | [`config_key_governance`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/config_key_governance.json) | 6 | Configuration key surface governance (§9.1 / §9.3 / §9.15.3) |
 | [`config_path_typed_keys`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/config_path_typed_keys.json) | 7 | Closed set of path-typed configuration keys (§9.2.1) |
-| [`config_project_root`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/config_project_root.json) | 14 | The project root that path-typed values will resolve against from v2.0 — config-file directory for §9.14 tiers 1-5, CWD for the user-level tiers 6-7 and when no file is found; one case per tier, plus the narrow deprecation-warning condition (spec §9.2.2) |
-| [`context_create`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/context_create.json) | 15 | `Context.create()` canonical 6-parameter factory (Issue #66) |
+| [`config_project_root`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/config_project_root.json) | 14 | The project root that path-typed values resolve against from v2.0 — config-file directory for §9.14 tiers 1-5, CWD for the user-level tiers 6-7 and when no file is found; one case per tier, plus the deprecation-warning condition (spec §9.2.2) |
+| [`context_create`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/context_create.json) | 15 | `Context.create()` canonical 6-parameter factory and executor binding |
 | [`context_serialization`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/context_serialization.json) | 8 | Context JSON round-trip (spec §5.7) |
-| [`context_trace_parent`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/context_trace_parent.json) | 10 | `Context.create` trace_parent input handling |
-| [`contextual_audit`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/contextual_audit.json) | 10 | Contextual audit trail for control-plane modules (#45.2) |
-| [`dependency_version_constraints`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/dependency_version_constraints.json) | 18 | Dependency version constraint enforcement (spec §5) |
+| [`context_trace_parent`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/context_trace_parent.json) | 10 | `Context.create` trace_parent input handling (spec §10.5) |
+| [`contextual_audit`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/contextual_audit.json) | 10 | Contextual audit trail for control-plane modules (D-35) |
+| [`dependency_version_constraints`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/dependency_version_constraints.json) | 18 | Dependency version constraint enforcement (spec §5.3, §5.15.2) |
 | [`error_codes`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/error_codes.json) | 19 | Error code collision detection (Algorithm A17, spec §8.4) |
 | [`error_fingerprinting`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/error_fingerprinting.json) | 6 | Error fingerprint composition for ErrorHistory dedup |
 | [`error_recovery_metadata`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/error_recovery_metadata.json) | 19 | `retryable` / `ai_guidance` / `user_fixable` / `suggestion` recovery metadata (spec §8) |
 | [`error_serialization`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/error_serialization.json) | 2 | `ModuleError.to_dict()` snake_case wire form (spec §8) |
-| [`event_delivery_semantics`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/event_delivery_semantics.json) | 6 | Event retry, DLQ and `apcore.event.delivery_failed` (spec §7) |
+| [`event_delivery_semantics`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/event_delivery_semantics.json) | 6 | Event retry, DLQ and `apcore.event.delivery_failed` (spec §9.16) |
 | [`event_management_hardening`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/event_management_hardening.json) | 15 | SubscriberFactory parity, built-in subscribers |
-| [`event_naming`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/event_naming.json) | 7 | Event-name canonicalization (Issue #36 / D-34) |
+| [`event_naming`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/event_naming.json) | 7 | Event-name canonicalization (spec §9.16, D-34) |
 | [`executor_trace_cancellation`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/executor_trace_cancellation.json) | 1 | `call_with_trace()` cancellation short-circuit (D-19 / D-20) |
 | [`governance_state`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/governance_state.json) | 13 | `Executor.governance_state()` — configured vs. actually wired (spec §6.6.5) |
-| [`identity_system`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/identity_system.json) | 8 | Identity construction, propagation (AC-014, AC-015) |
-| [`multi_root_discovery`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/multi_root_discovery.json) | 6 | `extensions.roots` multi-root discovery with namespace isolation (§9.1.1, #118 D-70) |
+| [`identity_system`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/identity_system.json) | 8 | Identity construction and propagation (spec §5.7) |
+| [`multi_root_discovery`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/multi_root_discovery.json) | 6 | `extensions.roots` multi-root discovery with namespace isolation (§9.1.1, D-70) |
 | [`middleware_hardening`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/middleware_hardening.json) | 11 | Context namespacing, CircuitBreaker |
 | [`middleware_on_error_recovery`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/middleware_on_error_recovery.json) | 4 | Middleware after-chain error recovery |
-| [`multi_module_discovery`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/multi_module_discovery.json) | 8 | Multi-class discovery, snake_case conversion, conflict detection |
+| [`multi_module_discovery`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/multi_module_discovery.json) | 8 | Multi-class discovery, snake_case conversion, conflict detection (spec §2.1.1) |
 | [`normalize_id`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/normalize_id.json) | 16 | ID normalization (Algorithm A02) |
-| [`id_map_from_config`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/id_map_from_config.json) | 4 | `id_map.overrides` reaches the ID-map mechanism (§9.1.1, #118 D-71) |
+| [`id_map_from_config`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/id_map_from_config.json) | 4 | `id_map.overrides` reaches the ID-map mechanism (§9.1.1, D-71) |
 | [`id_conflict_reserved_words`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/id_conflict_reserved_words.json) | 9 | Reserved-word ID conflicts on the first segment only; later segments unrestricted (spec §2.6 step 2) |
 | [`observability_hardening`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/observability_hardening.json) | 10 | Pluggable storage, BatchSpan, OTel parity |
-| [`openai_strict_compat`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/openai_strict_compat.json) | 30 | OpenAI structured-outputs strict-mode incompatibility detection (DECLARATIVE_CONFIG_SPEC §6.2 / §6.6) |
+| [`openai_strict_compat`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/openai_strict_compat.json) | 30 | OpenAI structured-outputs strict-mode incompatibility detection (protocol-spec §5.12.5) |
 | [`overrides_store`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/overrides_store.json) | 5 | OverridesStore pluggable persistence |
 | [`pattern_matching`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/pattern_matching.json) | 12 | ACL / `match_modules` module-ID pattern matching (Algorithm A08) |
-| [`extension_point_lookup`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/extension_point_lookup.json) | 12 | An unknown extension point is an error, an empty one is not (D-108, spec v1.51.0) |
+| [`extension_point_lookup`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/extension_point_lookup.json) | 12 | An unknown extension point is an error, an empty one is not (D-108) |
 | [`glob_matching`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/glob_matching.json) | 30 | Portable glob matching for pattern-valued values (Algorithm A25, §9.2.3) |
-| [`pipeline_failfast_config`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/pipeline_failfast_config.json) | 7 | Pipeline configuration fail-fast (Issue #33) |
-| [`pipeline_hardening`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/pipeline_hardening.json) | 5 | Pipeline execution hardening: fail-fast, replace-step, run_until |
-| [`pipeline_section_wiring`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/pipeline_section_wiring.json) | 6 | A configured `pipeline:` section reaches the running strategy (§5.16 requirements 6 and 7, #118 D-72) |
-| [`pipeline_step_middleware`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/pipeline_step_middleware.json) | 9 | Pipeline StepMiddleware lifecycle (Issue #33) |
+| [`pipeline_failfast_config`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/pipeline_failfast_config.json) | 7 | Pipeline configuration fail-fast (spec §5.16) |
+| [`pipeline_hardening`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/pipeline_hardening.json) | 5 | Pipeline execution hardening: fail-fast, replace-step, run_until (spec §5.16) |
+| [`pipeline_section_wiring`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/pipeline_section_wiring.json) | 6 | A configured `pipeline:` section reaches the running strategy (§5.16 requirements 6 and 7, D-72) |
+| [`pipeline_step_middleware`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/pipeline_step_middleware.json) | 9 | Pipeline StepMiddleware lifecycle (spec §5.16 requirement 5) |
 | [`preflight_disclosure`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/preflight_disclosure.json) | 4 | `validate()` withholds `preflight()` / `preview()` from an ACL-denied caller (spec §12.8.5.1) |
-| [`redaction_config`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/redaction_config.json) | 13 | Redaction config via `obs.redaction.regex_patterns` / `sensitive_keys` |
+| [`redaction_config`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/redaction_config.json) | 13 | Redaction config via `obs.redaction.regex_patterns` / `sensitive_keys` (spec §10.6.1) |
 | [`registry_load_ordering`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/registry_load_ordering.json) | 4 | Discovery load order and dependency topological sort (Algorithm A07) |
 | [`reload_path_filter`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/reload_path_filter.json) | 10 | Granular reload via `path_filter` glob (`system.control.reload_module`) |
 | [`schema_content_hash`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/schema_content_hash.json) | 5 | Schema content-hash cache key — key-order invariant (spec §4) |
 | [`schema_export_envelope`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/schema_export_envelope.json) | 5 | `Registry.export_schema` envelope parity (§4.16) |
 | [`schema_hardening_cache`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/schema_hardening_cache.json) | 5 | Content-addressable schema cache (SHA-256 of canonical JSON) |
 | [`schema_hardening_constraints`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/schema_hardening_constraints.json) | 12 | Numerical constraints (minimum/maximum/exclusive*, multipleOf) |
-| [`schema_hardening_formats`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/schema_hardening_formats.json) | 9 | Semantic format validation (date-time, date, email, uri, uuid, etc.) |
+| [`schema_hardening_formats`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/schema_hardening_formats.json) | 9 | `format` values (date-time, date, email, uri, uuid, ipv4, ipv6) are annotations and never fail validation ([type-mapping §11](./type-mapping.md#11-format-constraint-mappings)) |
 | [`schema_hardening_recursive`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/schema_hardening_recursive.json) | 6 | Recursive schema support (`$ref` self-reference, depth 1–5) |
 | [`schema_hardening_union`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/schema_hardening_union.json) | 8 | Union type evaluation (anyOf / oneOf / allOf) |
-| [`schema_keyword_parity`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/schema_keyword_parity.json) | 122 | JSON Schema 2020-12 keyword conformance at the validation boundary (TYPE_MAPPING §17) |
+| [`schema_keyword_parity`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/schema_keyword_parity.json) | 122 | JSON Schema 2020-12 keyword conformance at the validation boundary ([type-mapping §17](./type-mapping.md#17-validation-keyword-conformance)) |
 | [`schema_strict_conversion`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/schema_strict_conversion.json) | 16 | `to_strict_schema()` output parity (Algorithm A23 / spec §4.16) |
 | [`schema_validation`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/schema_validation.json) | 22 | Schema validation edge cases (spec §4.15) |
 | [`sensitive_keys_default`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/sensitive_keys_default.json) | 4 | Canonical default `obs.redaction.sensitive_keys` list (D-54) |
 | [`specificity`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/specificity.json) | 10 | ACL pattern specificity scoring (Algorithm A10) |
 | [`storage_backend`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/storage_backend.json) | 7 | StorageBackend pluggable persistence (shared by ErrorHistory) |
-| [`stream_aggregation`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/stream_aggregation.json) | 10 | Stream chunk aggregation (recursive deep merge) |
-| [`system_modules_hardening`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/system_modules_hardening.json) | 16 | System modules hardening: persistence, audit, Prometheus |
-| [`toggle_state_isolation`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/toggle_state_isolation.json) | 4 | Per-instance `ToggleState` isolation (#71) |
-| [`tracing_from_config`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/tracing_from_config.json) | 12 | `observability.tracing.*` reaches the running middleware (§10.1.1, #118 D-68 C') |
-| [`trace_context`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/trace_context.json) | 8 | W3C TraceContext alignment (Issue #35) |
+| [`stream_aggregation`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/stream_aggregation.json) | 10 | Stream chunk aggregation (recursive deep merge, Algorithm A24) |
+| [`system_modules_hardening`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/system_modules_hardening.json) | 16 | System modules hardening: persistence, audit, Prometheus (spec §6.7) |
+| [`toggle_state_isolation`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/toggle_state_isolation.json) | 4 | Per-instance `ToggleState` isolation |
+| [`tracing_from_config`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/tracing_from_config.json) | 12 | `observability.tracing.*` reaches the running middleware (§10.1.1, D-68) |
+| [`trace_context`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/trace_context.json) | 8 | W3C TraceContext alignment (spec §10.5) |
 | [`usage_contract`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/usage_contract.json) | 11 | `system.usage.*` value semantics no schema can assert (spec §6.7.1) |
-| [`usage_exporter`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/usage_exporter.json) | 3 | `UsageExporter` push interface (#45 §3, D-55) |
+| [`usage_exporter`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/usage_exporter.json) | 3 | `UsageExporter` push interface (D-55) |
 | [`version_negotiation`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/version_negotiation.json) | 10 | Version negotiation (Algorithm A14) |
 | **Total** | **982** | **80 fixtures** |
 
@@ -780,16 +499,16 @@ An SDK's conformance runner **MUST** resolve `conformance/fixtures/` in this ord
 | 2 | Environment | `CONFORMANCE_SPEC_REPO` | The spec repo **root**; `conformance/fixtures` is appended |
 | 3 | Filesystem | — | `../apcore/conformance/fixtures` beside the SDK repo |
 
-1. `CONFORMANCE_FIXTURES` **MUST** take precedence over `CONFORMANCE_SPEC_REPO`. It names a directory of fixture files with no repository around it, which is what makes it useful: a driver can be run against a **synthesised** fixture set — an older shape, a single edited case, a mutation — without producing a whole spec repo to hold it. An SDK that supports only the repo-root form forces that verification to fabricate a repo, and in practice means it is not done.
-2. A variable that is set but does not resolve **MUST** fail loudly, naming the variable **that was actually set**. Falling through to the next source would silently test against different fixtures than the operator named, which is worse than not running.
-3. `APCORE_FIXTURES` and `APCORE_SPEC_REPO` are **transitional** fallbacks for 1 and 2 (apcore#86 / apcore#88). They are not the canonical names and **MUST NOT** be documented to users: PROTOCOL_SPEC §9.2 makes every `APCORE_*` variable a configuration override, so `APCORE_SPEC_REPO=/path` injected `spec.repo` into the config document §9.1's required-field check runs against. A test locator is infrastructure, not configuration.
+1. `CONFORMANCE_FIXTURES` **MUST** take precedence over `CONFORMANCE_SPEC_REPO`. It names a directory of fixture files with no repository around it, which is what makes it useful: a driver can be run against a **synthesised** fixture set — an older shape, a single edited case, a mutation — without producing a whole spec repo to hold it.
+2. A variable that is set but does not resolve **MUST** fail loudly, naming the variable **that was actually set**. Falling through to the next source would silently test against different fixtures than the operator named.
+3. `APCORE_FIXTURES` and `APCORE_SPEC_REPO` are **transitional** fallbacks for 1 and 2. They are not the canonical names and **MUST NOT** be documented to users: protocol-spec §9.2 makes every `APCORE_*` variable a configuration override, so a test locator under that prefix leaks into the configuration document. A test locator is infrastructure, not configuration.
 4. Resolution for **other** spec-repo subdirectories — `schemas/`, most importantly — **MUST NOT** consult `CONFORMANCE_FIXTURES`. It names one directory, not a repo, so there is nothing to append to.
 
 !!! warning "Drivers land before fixtures, so a driver MUST tolerate the older fixture"
 
     A new fixture turns CI red in all three SDK repositories until every driver exists, so the landing order is **drivers first, fixture last** (§8.3). A driver therefore runs against a fixture that predates the keys it reads, and **MUST** degrade rather than fail: an absent expectation key means "this case does not pin that property", never "compare against nothing".
 
-    This cannot be verified from a working tree, which already holds the newer fixture — it is exactly what `CONFORMANCE_FIXTURES` is for. Point it at a copy with the new keys removed and the suite **MUST** still pass. Measured: a strict `!== null` check on a key absent from the older fixture failed 19 of 20 cases in apcore-typescript, green locally and red in CI.
+    This cannot be verified from a working tree, which already holds the newer fixture — it is exactly what `CONFORMANCE_FIXTURES` is for. Point it at a copy with the new keys removed and the suite **MUST** still pass.
 
     A fixture that pins a **shared constant** rather than new behaviour inverts the order: it **MUST** land *before* the SDKs. `acl_rule_key_closure.json` carries the closed ACL rule-key set, so an SDK that adds a key before the fixture lists it goes red against the set it is meant to agree with.
 
@@ -798,15 +517,16 @@ An SDK's conformance runner **MUST** resolve `conformance/fixtures/` in this ord
 1. Create `conformance/fixtures/<name>.json` with `{ "description": "...", "test_cases": [...] }`.
 2. Each case **MUST** carry a stable `id`, the input fields, and the `expected` outcome (`{ "expected": ... }` or `{ "expected_error": "<CODE>" }`).
 3. Use canonical terminology: `caller_id` / `target_id` (never bare `caller` / `target`).
-4. Add a row to the table in §8.1 above; bump the total.
-5. Reference the fixture from the relevant spec section so the bidirectional traceability is maintained.
+4. Add a row to the table in §8.1 with its case count, update the Total row and the file and case counts in §8's opening sentence, and add a row to `conformance/README.md`. `conformance-integrity` fails until all of them match.
+5. Land drivers in all three SDKs, respecting the landing order in §8.2.1.
+6. Reference the fixture from the relevant spec section so the bidirectional traceability is maintained.
 
 ---
 
 ## 9. References
 
-- [PROTOCOL_SPEC §12 — SDK Implementation Guide](./protocol-spec.md#12-sdk-implementation-guide)
-- [PROTOCOL_SPEC §12.4 — Consistency Testing Requirements](./protocol-spec.md#124-consistency-testing-requirements)
-- [PROTOCOL_SPEC §12.5 — Implementation Roadmap](./protocol-spec.md#125-implementation-roadmap)
-- [PROTOCOL_SPEC §1.5 — Specification Keywords](./protocol-spec.md#15-specification-keywords)
+- [protocol-spec §12 — SDK Implementation Guide](./protocol-spec.md#12-sdk-implementation-guide)
+- [protocol-spec §12.4 — Consistency Testing Requirements](./protocol-spec.md#124-consistency-testing-requirements)
+- [protocol-spec §1.5 — Specification Keywords](./protocol-spec.md#15-specification-keywords)
+- [conformance/README.md](https://github.com/aiperceivable/apcore/blob/main/conformance/README.md) — fixture catalogue, non-standard patterns, guards
 - [RFC 2119 — Key words for use in RFCs to Indicate Requirement Levels](https://www.rfc-editor.org/rfc/rfc2119)

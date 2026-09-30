@@ -1,97 +1,78 @@
 ---
-description: "Defining apcore module input/output schemas — Pydantic models, YAML JSON Schema Draft 2020-12, x-* LLM extension fields, runtime validation, and cross-language schema sharing."
+description: "Defining apcore module input/output schemas with Pydantic, TypeBox, or serde_json and in shared YAML files: field types, constraints, x-* LLM extension fields, references, and AI-friendly design."
 ---
 
-# Schema Definition Explained
+# Schema Definition Guide
 
-> Schema is the core of apcore, defining the input and output structure of modules.
+> Every apcore module declares an input schema and an output schema. This guide shows how to write them well in each SDK.
 
-## 1. Why is Schema Mandatory?
+## 1. Why Schemas Are Required
 
-```
-Traditional Module:
-    def process(data):  # What is data? Unknown
-        return result   # What is result? Unknown
+```text
+A plain function:
+    def process(data):      # What is data? Unknown
+        return result       # What is result? Unknown
 
-apcore Module:
-    input_schema = ProcessInput    # Input structure is clear
-    output_schema = ProcessOutput  # Output structure is clear
+An apcore module:
+    input_schema  = ProcessInput     # input structure is declared
+    output_schema = ProcessOutput    # output structure is declared
 
     def execute(inputs, context):
-        # inputs are validated, structure is known
-        return {...}  # Output will be validated
+        # inputs were validated before this runs
+        return {...}                 # the output is validated after it returns
 ```
 
-**Purpose of Schema:**
-
-| Purpose | Description |
+| Purpose | What the schema gives you |
 |------|------|
-| **AI Understanding** | LLM knows how to call the module through Schema |
-| **Auto Validation** | Framework automatically validates input and output |
-| **Documentation Generation** | Automatically generate API documentation |
-| **Type Safety** | Type hints available during development |
-| **Cross-Language** | YAML Schema can be shared across languages |
+| **AI understanding** | An LLM learns how to call the module from the schema and its descriptions |
+| **Validation** | The executor validates inputs before `execute()` and outputs after it |
+| **Documentation** | Schemas are exported for tool listings and API docs |
+| **Type safety** | Native types (Pydantic, TypeBox `Static<>`, serde structs) during development |
+| **Cross-language contracts** | A YAML schema file can be loaded by all three SDKs |
+
+All schemas are JSON Schema Draft 2020-12 plus `x-` extension fields ([protocol-spec §4.2](../spec/protocol-spec.md#42-schema-format)).
 
 ---
 
-## 2. Schema Definition Methods
+## 2. Two Ways to Write a Schema
 
-### 2.1 Native Schema Construction (Recommended)
+### 2.1 In Code (Recommended)
 
-**The preferred method when defining schemas directly in code.** Each SDK uses the idiomatic schema construction approach for its language: Pydantic for Python, TypeBox for TypeScript, and `serde_json::json!` for Rust.
+Each SDK uses its language's natural tool: **Pydantic** in Python, **TypeBox** in TypeScript, and `serde_json::json!` in Rust.
 
 === "Python"
 
     ```python
-    from pydantic import BaseModel, Field
     from typing import Literal
+
+    from pydantic import BaseModel, Field
 
 
     class Address(BaseModel):
-        """Address information"""
+        """Shipping address."""
+
         province: str = Field(..., description="Province")
         city: str = Field(..., description="City")
         district: str = Field(..., description="District")
-        detail: str = Field(..., description="Detailed address")
+        detail: str = Field(..., description="Street address")
         postal_code: str = Field(..., description="Postal code", pattern=r"^\d{6}$")
 
 
     class OrderInput(BaseModel):
-        """Order creation input"""
+        """Order creation input."""
 
-        # Required fields
-        product_id: str = Field(
-            ...,                          # ... means required
-            description="Product ID",
-            min_length=1,
-            max_length=50,
-        )
+        # Required fields (`...` means required)
+        product_id: str = Field(..., description="Product ID", min_length=1, max_length=50)
+        quantity: int = Field(..., description="Purchase quantity", ge=1, le=100)
 
-        quantity: int = Field(
-            ...,
-            description="Purchase quantity",
-            ge=1,                         # >= 1
-            le=100,                       # <= 100
-        )
-
-        # Optional fields (must have default value)
-        note: str | None = Field(
-            None,                         # Default value
-            description="Order note",
-            max_length=500,
-        )
-
-        # Enum type
+        # Optional fields carry a default
+        note: str | None = Field(None, description="Order note", max_length=500)
         payment_method: Literal["alipay", "wechat", "card"] = Field(
-            "alipay",
-            description="Payment method",
+            "alipay", description="Payment method"
         )
 
         # Nested object
-        shipping_address: Address = Field(
-            ...,
-            description="Shipping address",
-        )
+        shipping_address: Address = Field(..., description="Shipping address")
     ```
 
 === "TypeScript"
@@ -99,50 +80,33 @@ apcore Module:
     ```typescript
     import { Type } from '@sinclair/typebox';
 
-    // Address sub-schema
     const Address = Type.Object({
       province: Type.String({ description: 'Province' }),
       city: Type.String({ description: 'City' }),
       district: Type.String({ description: 'District' }),
-      detail: Type.String({ description: 'Detailed address' }),
-      postal_code: Type.String({
-        description: 'Postal code',
-        pattern: '^\\d{6}$',
-      }),
+      detail: Type.String({ description: 'Street address' }),
+      postal_code: Type.String({ description: 'Postal code', pattern: '^\\d{6}$' }),
     });
 
-    // Order creation input
-    const OrderInput = Type.Object({
+    export const OrderInput = Type.Object({
       // Required fields
-      product_id: Type.String({
-        description: 'Product ID',
-        minLength: 1,
-        maxLength: 50,
-      }),
-      quantity: Type.Integer({
-        description: 'Purchase quantity',
-        minimum: 1,
-        maximum: 100,
-      }),
+      product_id: Type.String({ description: 'Product ID', minLength: 1, maxLength: 50 }),
+      quantity: Type.Integer({ description: 'Purchase quantity', minimum: 1, maximum: 100 }),
 
-      // Optional fields (must have default value)
+      // Optional fields
       note: Type.Optional(
         Type.Union([Type.String({ maxLength: 500 }), Type.Null()], {
           description: 'Order note',
           default: null,
         }),
       ),
-
-      // Enum type
       payment_method: Type.Union(
         [Type.Literal('alipay'), Type.Literal('wechat'), Type.Literal('card')],
         { description: 'Payment method', default: 'alipay' },
       ),
 
-      // Nested object
-      shipping_address: Type.Composite([Address], {
-        description: 'Shipping address',
-      }),
+      // Nested object (Composite copies Address and adds a description)
+      shipping_address: Type.Composite([Address], { description: 'Shipping address' }),
     });
     ```
 
@@ -151,51 +115,36 @@ apcore Module:
     ```rust
     use serde_json::{json, Value};
 
-    // Address sub-schema
     fn address_schema() -> Value {
         json!({
             "type": "object",
             "properties": {
-                "province":    {"type": "string", "description": "Province"},
-                "city":        {"type": "string", "description": "City"},
-                "district":    {"type": "string", "description": "District"},
-                "detail":      {"type": "string", "description": "Detailed address"},
-                "postal_code": {
-                    "type": "string",
-                    "description": "Postal code",
-                    "pattern": "^\\d{6}$"
-                }
+                "province":    { "type": "string", "description": "Province" },
+                "city":        { "type": "string", "description": "City" },
+                "district":    { "type": "string", "description": "District" },
+                "detail":      { "type": "string", "description": "Street address" },
+                "postal_code": { "type": "string", "description": "Postal code", "pattern": "^\\d{6}$" }
             },
             "required": ["province", "city", "district", "detail", "postal_code"]
         })
     }
 
-    // Order creation input
-    fn order_input_schema() -> Value {
+    pub fn order_input_schema() -> Value {
+        let mut shipping_address = address_schema();
+        shipping_address["description"] = json!("Shipping address");
         json!({
             "type": "object",
             "properties": {
                 // Required fields
-                "product_id": {
-                    "type": "string",
-                    "description": "Product ID",
-                    "minLength": 1,
-                    "maxLength": 50
-                },
-                "quantity": {
-                    "type": "integer",
-                    "description": "Purchase quantity",
-                    "minimum": 1,
-                    "maximum": 100
-                },
-                // Optional fields (with default)
+                "product_id": { "type": "string", "description": "Product ID", "minLength": 1, "maxLength": 50 },
+                "quantity":   { "type": "integer", "description": "Purchase quantity", "minimum": 1, "maximum": 100 },
+                // Optional fields
                 "note": {
                     "type": ["string", "null"],
                     "description": "Order note",
                     "maxLength": 500,
                     "default": null
                 },
-                // Enum type
                 "payment_method": {
                     "type": "string",
                     "description": "Payment method",
@@ -203,27 +152,26 @@ apcore Module:
                     "default": "alipay"
                 },
                 // Nested object
-                "shipping_address": address_schema()
+                "shipping_address": shipping_address
             },
             "required": ["product_id", "quantity", "shipping_address"]
         })
     }
     ```
 
-### 2.2 YAML Schema (Cross-Language)
+!!! note "Python validates strictly"
+    The Python executor validates inputs with Pydantic in strict mode and passes the inputs **as sent** to `execute()`. Two consequences: a `datetime`, `date`, `time`, or `Enum` field rejects the plain JSON string a caller sends, so declare those fields as `str` (with a `format`) or `Literal[...]` and parse them inside `execute()`; and a validator can reject a value but cannot rewrite what `execute()` receives. See [§3.4](#34-enum-types), [§3.5](#35-date-and-time), and [§7](#7-custom-validation).
 
-**Used for sharing Schema definitions across languages.**
+### 2.2 In a YAML Schema File (Cross-Language)
+
+A `*.schema.yaml` file under `schema.root` holds a module's schemas so that every SDK can load the same contract at runtime (see [Multi-Language § Sharing a YAML Schema](./multi-language.md#3-sharing-a-yaml-schema)):
 
 ```yaml
 # schemas/executor/order/create_order.schema.yaml
-
 $schema: "https://apcore.dev/schema/v1"
 version: "1.0.0"
 module_id: "executor.order.create_order"
-
-description: |
-  Order creation module
-  Supports multiple payment methods and shipping address configuration.
+description: "Create an order for one product and ship it to an address"
 
 input_schema:
   type: object
@@ -233,30 +181,26 @@ input_schema:
       description: "Product ID"
       minLength: 1
       maxLength: 50
-
     quantity:
       type: integer
       description: "Purchase quantity"
       minimum: 1
       maximum: 100
-
     note:
-      type: string
+      type: ["string", "null"]
       description: "Order note"
       maxLength: 500
       default: null
-
     payment_method:
       type: string
       description: "Payment method"
       enum: ["alipay", "wechat", "card"]
       default: "alipay"
-
     shipping_address:
-      $ref: "#/definitions/Address"
+      $ref: "#/$defs/Address"
       description: "Shipping address"
-
   required: [product_id, quantity, shipping_address]
+  additionalProperties: false
 
 output_schema:
   type: object
@@ -264,24 +208,20 @@ output_schema:
     order_id:
       type: string
       description: "Order ID"
-
     status:
       type: string
       description: "Order status"
       enum: ["created", "pending", "paid", "failed"]
-
     total_amount:
       type: number
       description: "Total order amount"
-
     created_at:
       type: string
       format: date-time
       description: "Creation time"
-
   required: [order_id, status, total_amount, created_at]
 
-definitions:
+$defs:
   Address:
     type: object
     properties:
@@ -296,7 +236,7 @@ definitions:
         description: "District"
       detail:
         type: string
-        description: "Detailed address"
+        description: "Street address"
       postal_code:
         type: string
         description: "Postal code"
@@ -304,33 +244,30 @@ definitions:
     required: [province, city, district, detail, postal_code]
 ```
 
+`description`, `input_schema`, and `output_schema` are required; `description` is at most 200 characters. A local `#/$defs/...` reference resolves against the file root, and keys written beside a `$ref` (such as `description` above) are kept.
+
 ---
 
 ## 3. Field Types
+
+How each JSON Schema type maps to a native type in each SDK is specified once, in the [Type Mapping Specification](../spec/type-mapping.md). The examples below show how to declare each kind of field.
 
 ### 3.1 Basic Types
 
 === "Python"
 
     ```python
-    from pydantic import BaseModel, Field
     from typing import Any
 
+    from pydantic import BaseModel, Field
+
+
     class BasicTypes(BaseModel):
-        # String
-        name: str = Field(..., description="Name")
-
-        # Integer
-        age: int = Field(..., description="Age")
-
-        # Float
-        price: float = Field(..., description="Price")
-
-        # Boolean
-        active: bool = Field(..., description="Is active")
-
-        # Any type (avoid when possible)
-        data: Any = Field(..., description="Any data")
+        name: str = Field(..., description="Name")               # string
+        age: int = Field(..., description="Age")                 # integer
+        price: float = Field(..., description="Price")           # number
+        active: bool = Field(..., description="Is active")       # boolean
+        data: Any = Field(..., description="Any data")           # any value (avoid when possible)
     ```
 
 === "TypeScript"
@@ -338,21 +275,12 @@ definitions:
     ```typescript
     import { Type } from '@sinclair/typebox';
 
-    const BasicTypes = Type.Object({
-      // String
-      name: Type.String({ description: 'Name' }),
-
-      // Integer
-      age: Type.Integer({ description: 'Age' }),
-
-      // Float
-      price: Type.Number({ description: 'Price' }),
-
-      // Boolean
-      active: Type.Boolean({ description: 'Is active' }),
-
-      // Any type (avoid when possible)
-      data: Type.Unknown({ description: 'Any data' }),
+    export const BasicTypes = Type.Object({
+      name: Type.String({ description: 'Name' }),          // string
+      age: Type.Integer({ description: 'Age' }),           // integer
+      price: Type.Number({ description: 'Price' }),        // number
+      active: Type.Boolean({ description: 'Is active' }),  // boolean
+      data: Type.Unknown({ description: 'Any data' }),     // any value (avoid when possible)
     });
     ```
 
@@ -361,58 +289,38 @@ definitions:
     ```rust
     use serde_json::{json, Value};
 
-    fn basic_types_schema() -> Value {
+    pub fn basic_types_schema() -> Value {
         json!({
             "type": "object",
             "properties": {
-                // String
-                "name":   {"type": "string",  "description": "Name"},
-                // Integer
-                "age":    {"type": "integer", "description": "Age"},
-                // Float
-                "price":  {"type": "number",  "description": "Price"},
-                // Boolean
-                "active": {"type": "boolean", "description": "Is active"},
-                // Any type (avoid when possible)
-                "data":   {"description": "Any data"}
+                "name":   { "type": "string",  "description": "Name" },
+                "age":    { "type": "integer", "description": "Age" },
+                "price":  { "type": "number",  "description": "Price" },
+                "active": { "type": "boolean", "description": "Is active" },
+                // any value (avoid when possible)
+                "data":   { "description": "Any data" }
             },
             "required": ["name", "age", "price", "active", "data"]
         })
     }
     ```
 
-**Corresponding JSON Schema:**
+### 3.2 Optional and Nullable Fields
 
-```yaml
-properties:
-  name:
-    type: string
-  age:
-    type: integer
-  price:
-    type: number
-  active:
-    type: boolean
-  data: {}  # Any type
-```
-
-### 3.2 Optional Types
+A field is **optional** when it is not listed in `required`; it is **nullable** when its `type` includes `"null"`. JSON Schema has no `nullable` keyword — write `type: [T, "null"]`.
 
 === "Python"
 
     ```python
     from pydantic import BaseModel, Field
-    from typing import Optional
+
 
     class OptionalTypes(BaseModel):
-        # Method 1: | None
+        # Optional and nullable: may be absent or null
         email: str | None = Field(None, description="Email")
 
-        # Method 2: Optional (equivalent to above)
-        phone: Optional[str] = Field(None, description="Phone")
-
-        # Non-None field with default value
-        count: int = Field(default=0, description="Count")
+        # Optional, never null: absent means the default
+        count: int = Field(0, description="Count")
     ```
 
 === "TypeScript"
@@ -420,19 +328,14 @@ properties:
     ```typescript
     import { Type } from '@sinclair/typebox';
 
-    const OptionalTypes = Type.Object({
-      // Nullable optional
+    export const OptionalTypes = Type.Object({
+      // Optional and nullable: may be absent or null
       email: Type.Optional(
         Type.Union([Type.String(), Type.Null()], { description: 'Email', default: null }),
       ),
 
-      // Same shape, alternate spelling
-      phone: Type.Optional(
-        Type.Union([Type.String(), Type.Null()], { description: 'Phone', default: null }),
-      ),
-
-      // Non-null field with default value
-      count: Type.Integer({ description: 'Count', default: 0 }),
+      // Optional, never null: absent means the default
+      count: Type.Optional(Type.Integer({ description: 'Count', default: 0 })),
     });
     ```
 
@@ -441,29 +344,28 @@ properties:
     ```rust
     use serde_json::{json, Value};
 
-    fn optional_types_schema() -> Value {
+    pub fn optional_types_schema() -> Value {
         json!({
             "type": "object",
             "properties": {
-                // Nullable optional
-                "email": {"type": ["string", "null"], "description": "Email", "default": null},
-                // Same shape, alternate spelling
-                "phone": {"type": ["string", "null"], "description": "Phone", "default": null},
-                // Non-null field with default value
-                "count": {"type": "integer", "description": "Count", "default": 0}
+                // Optional and nullable: may be absent or null
+                "email": { "type": ["string", "null"], "description": "Email", "default": null },
+                // Optional, never null: absent means the default
+                "count": { "type": "integer", "description": "Count", "default": 0 }
             }
-            // No "required" array — all fields are optional
+            // No "required" array: both fields are optional
         })
     }
     ```
 
-### 3.3 Lists and Dictionaries
+### 3.3 Lists and Maps
 
 === "Python"
 
     ```python
-    from pydantic import BaseModel, Field
     from typing import Any
+
+    from pydantic import BaseModel, Field
 
 
     class OrderItem(BaseModel):
@@ -473,17 +375,10 @@ properties:
 
 
     class CollectionTypes(BaseModel):
-        # String list
-        tags: list[str] = Field(default=[], description="Tag list")
-
-        # Object list
+        tags: list[str] = Field(default_factory=list, description="Tag list")
         items: list[OrderItem] = Field(..., description="Order items")
-
-        # Dictionary
-        metadata: dict[str, Any] = Field(default={}, description="Metadata")
-
-        # Dictionary with specified value type
-        scores: dict[str, int] = Field(default={}, description="Score mapping")
+        metadata: dict[str, Any] = Field(default_factory=dict, description="Metadata")
+        scores: dict[str, int] = Field(default_factory=dict, description="Score per user")
     ```
 
 === "TypeScript"
@@ -497,24 +392,15 @@ properties:
       price: Type.Number({ description: 'Unit price' }),
     });
 
-    const CollectionTypes = Type.Object({
-      // String list
-      tags: Type.Array(Type.String(), { description: 'Tag list', default: [] }),
-
-      // Object list
+    export const CollectionTypes = Type.Object({
+      tags: Type.Optional(Type.Array(Type.String(), { description: 'Tag list', default: [] })),
       items: Type.Array(OrderItem, { description: 'Order items' }),
-
-      // Dictionary
-      metadata: Type.Record(Type.String(), Type.Unknown(), {
-        description: 'Metadata',
-        default: {},
-      }),
-
-      // Dictionary with specified value type
-      scores: Type.Record(Type.String(), Type.Integer(), {
-        description: 'Score mapping',
-        default: {},
-      }),
+      metadata: Type.Optional(
+        Type.Record(Type.String(), Type.Unknown(), { description: 'Metadata', default: {} }),
+      ),
+      scores: Type.Optional(
+        Type.Record(Type.String(), Type.Integer(), { description: 'Score per user', default: {} }),
+      ),
     });
     ```
 
@@ -523,47 +409,39 @@ properties:
     ```rust
     use serde_json::{json, Value};
 
-    fn order_item_schema() -> Value {
+    pub fn collection_types_schema() -> Value {
         json!({
             "type": "object",
             "properties": {
-                "product_id": {"type": "string",  "description": "Product ID"},
-                "quantity":   {"type": "integer", "description": "Quantity"},
-                "price":      {"type": "number",  "description": "Unit price"}
-            },
-            "required": ["product_id", "quantity", "price"]
-        })
-    }
-
-    fn collection_types_schema() -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                // String list
                 "tags": {
                     "type": "array",
-                    "items": {"type": "string"},
+                    "items": { "type": "string" },
                     "description": "Tag list",
                     "default": []
                 },
-                // Object list
                 "items": {
                     "type": "array",
-                    "items": order_item_schema(),
-                    "description": "Order items"
+                    "description": "Order items",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "product_id": { "type": "string",  "description": "Product ID" },
+                            "quantity":   { "type": "integer", "description": "Quantity" },
+                            "price":      { "type": "number",  "description": "Unit price" }
+                        },
+                        "required": ["product_id", "quantity", "price"]
+                    }
                 },
-                // Dictionary
                 "metadata": {
                     "type": "object",
                     "additionalProperties": true,
                     "description": "Metadata",
                     "default": {}
                 },
-                // Dictionary with specified value type
                 "scores": {
                     "type": "object",
-                    "additionalProperties": {"type": "integer"},
-                    "description": "Score mapping",
+                    "additionalProperties": { "type": "integer" },
+                    "description": "Score per user",
                     "default": {}
                 }
             },
@@ -572,101 +450,45 @@ properties:
     }
     ```
 
-**Corresponding JSON Schema:**
-
-```yaml
-properties:
-  tags:
-    type: array
-    items:
-      type: string
-    default: []
-
-  items:
-    type: array
-    items:
-      $ref: "#/definitions/OrderItem"
-
-  metadata:
-    type: object
-    additionalProperties: true
-    default: {}
-
-  scores:
-    type: object
-    additionalProperties:
-      type: integer
-    default: {}
-```
+A map is an `object` whose values are described by `additionalProperties`; a list is an `array` whose elements are described by `items`.
 
 ### 3.4 Enum Types
 
 === "Python"
 
     ```python
-    from pydantic import BaseModel, Field
     from typing import Literal
-    from enum import Enum
 
-    # Method 1: Literal (recommended)
-    class Order1(BaseModel):
-        status: Literal["pending", "paid", "shipped", "done"] = Field(
-            ...,
-            description="Order status",
-        )
+    from pydantic import BaseModel, Field
 
-        priority: Literal[1, 2, 3] = Field(
-            default=2,
-            description="Priority: 1-high 2-medium 3-low",
-        )
+    OrderStatus = Literal["pending", "paid", "shipped", "done"]  # reusable alias
 
-    # Method 2: Enum
-    class OrderStatus(str, Enum):
-        PENDING = "pending"
-        PAID = "paid"
-        SHIPPED = "shipped"
-        DONE = "done"
 
-    class Order2(BaseModel):
+    class Order(BaseModel):
         status: OrderStatus = Field(..., description="Order status")
+        priority: Literal[1, 2, 3] = Field(2, description="Priority: 1 high, 2 medium, 3 low")
     ```
+
+    Use `Literal[...]` rather than an `Enum` class: under strict validation an `Enum` field rejects the plain string a caller sends.
 
 === "TypeScript"
 
     ```typescript
-    import { Type } from '@sinclair/typebox';
+    import { Type, type TSchema } from '@sinclair/typebox';
 
-    // Method 1: Union of literal values (recommended)
-    const Order1 = Type.Object({
-      status: Type.Union(
-        [
-          Type.Literal('pending'),
-          Type.Literal('paid'),
-          Type.Literal('shipped'),
-          Type.Literal('done'),
-        ],
-        { description: 'Order status' },
-      ),
+    // Reusable enum: a factory lets each use site add its own description.
+    const orderStatus = (options: { description: string }): TSchema =>
+      Type.Union(
+        [Type.Literal('pending'), Type.Literal('paid'), Type.Literal('shipped'), Type.Literal('done')],
+        options,
+      );
 
-      priority: Type.Union(
-        [Type.Literal(1), Type.Literal(2), Type.Literal(3)],
-        { description: 'Priority: 1-high 2-medium 3-low', default: 2 },
-      ),
-    });
-
-    // Method 2: Reused enum constant
-    const OrderStatus = Type.Union(
-      [
-        Type.Literal('pending'),
-        Type.Literal('paid'),
-        Type.Literal('shipped'),
-        Type.Literal('done'),
-      ],
-      { $id: 'OrderStatus' },
-    );
-
-    const Order2 = Type.Object({
-      status: Type.Composite([OrderStatus], { description: 'Order status' }),
+    export const Order = Type.Object({
+      status: orderStatus({ description: 'Order status' }),
+      priority: Type.Union([Type.Literal(1), Type.Literal(2), Type.Literal(3)], {
+        description: 'Priority: 1 high, 2 medium, 3 low',
+        default: 2,
+      }),
     });
     ```
 
@@ -675,41 +497,27 @@ properties:
     ```rust
     use serde_json::{json, Value};
 
-    // Method 1: enum keyword on a string field (recommended)
-    fn order1_schema() -> Value {
+    // Reusable enum: a function lets each use site add its own description.
+    fn order_status(description: &str) -> Value {
+        json!({
+            "type": "string",
+            "enum": ["pending", "paid", "shipped", "done"],
+            "description": description
+        })
+    }
+
+    pub fn order_schema() -> Value {
         json!({
             "type": "object",
             "properties": {
-                "status": {
-                    "type": "string",
-                    "description": "Order status",
-                    "enum": ["pending", "paid", "shipped", "done"]
-                },
+                "status": order_status("Order status"),
                 "priority": {
                     "type": "integer",
-                    "description": "Priority: 1-high 2-medium 3-low",
                     "enum": [1, 2, 3],
+                    "description": "Priority: 1 high, 2 medium, 3 low",
                     "default": 2
                 }
             },
-            "required": ["status"]
-        })
-    }
-
-    // Method 2: reused enum sub-schema
-    fn order_status_schema() -> Value {
-        json!({
-            "type": "string",
-            "enum": ["pending", "paid", "shipped", "done"]
-        })
-    }
-
-    fn order2_schema() -> Value {
-        let mut status = order_status_schema();
-        status["description"] = json!("Order status");
-        json!({
-            "type": "object",
-            "properties": { "status": status },
             "required": ["status"]
         })
     }
@@ -717,28 +525,26 @@ properties:
 
 ### 3.5 Date and Time
 
+Dates and times travel as ISO 8601 strings. `format` documents the expected shape but does not reject a non-conforming value (see [§4.1](#41-string-constraints)); add a `pattern` when the shape must be enforced.
+
 === "Python"
 
     ```python
-    from datetime import datetime, date, time
+    from datetime import datetime
+
     from pydantic import BaseModel, Field
 
+
     class DateTimeTypes(BaseModel):
-        # Datetime
-        created_at: datetime = Field(..., description="Creation time")
+        created_at: str = Field(..., description="Creation time (ISO 8601)", json_schema_extra={"format": "date-time"})
+        birth_date: str = Field(..., description="Birth date", json_schema_extra={"format": "date"})
+        alarm_time: str = Field(..., description="Alarm time", json_schema_extra={"format": "time"})
+        date_str: str = Field(..., description="Date, YYYY-MM-DD", pattern=r"^\d{4}-\d{2}-\d{2}$")
 
-        # Date only
-        birth_date: date = Field(..., description="Birth date")
 
-        # Time only
-        alarm_time: time = Field(..., description="Alarm time")
-
-        # Date string format (needs to be parsed manually)
-        date_str: str = Field(
-            ...,
-            description="Date string",
-            pattern=r"^\d{4}-\d{2}-\d{2}$",  # YYYY-MM-DD
-        )
+    def parse_created_at(inputs: dict) -> datetime:
+        """Parse inside execute(); the module receives the string the caller sent."""
+        return datetime.fromisoformat(inputs["created_at"])
     ```
 
 === "TypeScript"
@@ -746,30 +552,11 @@ properties:
     ```typescript
     import { Type } from '@sinclair/typebox';
 
-    const DateTimeTypes = Type.Object({
-      // Datetime (ISO 8601)
-      created_at: Type.String({
-        description: 'Creation time',
-        format: 'date-time',
-      }),
-
-      // Date only
-      birth_date: Type.String({
-        description: 'Birth date',
-        format: 'date',
-      }),
-
-      // Time only
-      alarm_time: Type.String({
-        description: 'Alarm time',
-        format: 'time',
-      }),
-
-      // Date string format (custom pattern)
-      date_str: Type.String({
-        description: 'Date string',
-        pattern: '^\\d{4}-\\d{2}-\\d{2}$', // YYYY-MM-DD
-      }),
+    export const DateTimeTypes = Type.Object({
+      created_at: Type.String({ description: 'Creation time (ISO 8601)', format: 'date-time' }),
+      birth_date: Type.String({ description: 'Birth date', format: 'date' }),
+      alarm_time: Type.String({ description: 'Alarm time', format: 'time' }),
+      date_str: Type.String({ description: 'Date, YYYY-MM-DD', pattern: '^\\d{4}-\\d{2}-\\d{2}$' }),
     });
     ```
 
@@ -778,68 +565,19 @@ properties:
     ```rust
     use serde_json::{json, Value};
 
-    fn datetime_types_schema() -> Value {
+    pub fn datetime_types_schema() -> Value {
         json!({
             "type": "object",
             "properties": {
-                // Datetime (ISO 8601)
-                "created_at": {
-                    "type": "string",
-                    "description": "Creation time",
-                    "format": "date-time"
-                },
-                // Date only
-                "birth_date": {
-                    "type": "string",
-                    "description": "Birth date",
-                    "format": "date"
-                },
-                // Time only
-                "alarm_time": {
-                    "type": "string",
-                    "description": "Alarm time",
-                    "format": "time"
-                },
-                // Date string format (custom pattern)
-                "date_str": {
-                    "type": "string",
-                    "description": "Date string",
-                    "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
-                }
+                "created_at": { "type": "string", "description": "Creation time (ISO 8601)", "format": "date-time" },
+                "birth_date": { "type": "string", "description": "Birth date", "format": "date" },
+                "alarm_time": { "type": "string", "description": "Alarm time", "format": "time" },
+                "date_str":   { "type": "string", "description": "Date, YYYY-MM-DD", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" }
             },
             "required": ["created_at", "birth_date", "alarm_time", "date_str"]
         })
     }
     ```
-
-### 3.6 Cross-Language Type Mapping Quick Reference
-
-!!! note "The `format:` rows are aspirational"
-    No SDK maps a `format` to a native type today — apcore-python annotates a `format: date-time` field as `str`, not `datetime`. `format` is an **annotation, not an assertion** ([TYPE_MAPPING §11](../spec/type-mapping.md#111-format-keyword)): a non-conforming value emits a warning and **still validates**. To make a format binding, use `pattern` or `enum` instead.
-
-| JSON Schema Type | Python | Rust | Go | Java | TypeScript |
-|-----------------|--------|------|----|------|------------|
-| `string` | `str` | `String` | `string` | `String` | `string` |
-| `integer` | `int` | `i64` | `int64` | `long` / `Long` | `number` |
-| `number` | `float` | `f64` | `float64` | `double` / `Double` | `number` |
-| `boolean` | `bool` | `bool` | `bool` | `boolean` / `Boolean` | `boolean` |
-| `null` | `None` | `()` | `nil` | `null` | `null` |
-| `object` (with `properties`) | `BaseModel` subclass | `struct` | `struct` | `class` | `z.object({})` |
-| `additionalProperties` | `dict[str, V]` | `HashMap<String, V>` | `map[string]V` | `Map<String, V>` | `Record<string, V>` |
-| `array` | `list[T]` | `Vec<T>` | `[]T` | `List<T>` | `T[]` |
-| `string` + `format: date-time` | `datetime` | `DateTime<Utc>` | `time.Time` | `OffsetDateTime` | `Date` / `string` |
-| `string` + `format: date` | `date` | `NaiveDate` | `civil.Date` | `LocalDate` | `string` |
-| `string` + `format: time` | `time` | `NaiveTime` | Custom | `LocalTime` | `string` |
-| `string` + `format: email` | `str` + warning | `String` + warning | `string` + warning | `String` + warning | `string` + warning |
-| `string` + `format: uri` | `str` + warning | `String` + warning | `string` + warning | `String` + warning | `string` + warning |
-| `string` + `format: uuid` | `UUID` | `Uuid` | `uuid.UUID` | `UUID` | `string` + warning |
-| `string enum` | `Literal[...]` / `StrEnum` | `enum` | `type T string` + const | `enum` | union type |
-| `integer enum` | `IntEnum` | `enum` | `type T int64` + iota | `enum` | union type |
-| `oneOf` | Discriminated Union | `enum` (tagged) | `interface{}` | Sealed Class | discriminated union |
-| `anyOf` | Union type | `enum` (untagged) | `interface{}` | `Object` | union type |
-| `T \| null` | `T \| None` | `Option<T>` | `*T` | `@Nullable T` | `T \| null` |
-
-> This table is a quick reference. For complete type mapping specifications (including serialization fidelity and edge cases), see [docs/spec/type-mapping.md](../spec/type-mapping.md).
 
 ---
 
@@ -852,35 +590,13 @@ properties:
     ```python
     from pydantic import BaseModel, Field
 
+
     class StringConstraints(BaseModel):
-        # Length constraints
-        username: str = Field(
-            ...,
-            description="Username",
-            min_length=3,          # Minimum length
-            max_length=20,         # Maximum length
-        )
-
-        # Regular expression
-        email: str = Field(
-            ...,
-            description="Email",
-            pattern=r"^[\w\.-]+@[\w\.-]+\.\w+$",
-        )
-
-        phone: str = Field(
-            ...,
-            description="Phone number",
-            pattern=r"^1[3-9]\d{9}$",
-        )
-
-        # Format (JSON Schema standard format)
-        website: str = Field(
-            ...,
-            description="Website",
-            json_schema_extra={"format": "uri"},
-            # Common formats: email, uri, date, time, date-time, uuid
-        )
+        username: str = Field(..., description="Username", min_length=3, max_length=20)
+        email: str = Field(..., description="Email", pattern=r"^[\w\.-]+@[\w\.-]+\.\w+$")
+        phone: str = Field(..., description="Mobile number", pattern=r"^1[3-9]\d{9}$")
+        # Annotation only: documents the shape, does not reject other strings
+        website: str = Field(..., description="Website", json_schema_extra={"format": "uri"})
     ```
 
 === "TypeScript"
@@ -888,31 +604,12 @@ properties:
     ```typescript
     import { Type } from '@sinclair/typebox';
 
-    const StringConstraints = Type.Object({
-      // Length constraints
-      username: Type.String({
-        description: 'Username',
-        minLength: 3,
-        maxLength: 20,
-      }),
-
-      // Regular expression
-      email: Type.String({
-        description: 'Email',
-        pattern: '^[\\w\\.-]+@[\\w\\.-]+\\.\\w+$',
-      }),
-
-      phone: Type.String({
-        description: 'Phone number',
-        pattern: '^1[3-9]\\d{9}$',
-      }),
-
-      // Format (JSON Schema standard format)
-      website: Type.String({
-        description: 'Website',
-        format: 'uri',
-        // Common formats: email, uri, date, time, date-time, uuid
-      }),
+    export const StringConstraints = Type.Object({
+      username: Type.String({ description: 'Username', minLength: 3, maxLength: 20 }),
+      email: Type.String({ description: 'Email', pattern: '^[\\w\\.-]+@[\\w\\.-]+\\.\\w+$' }),
+      phone: Type.String({ description: 'Mobile number', pattern: '^1[3-9]\\d{9}$' }),
+      // Annotation only: documents the shape, does not reject other strings
+      website: Type.String({ description: 'Website', format: 'uri' }),
     });
     ```
 
@@ -921,40 +618,23 @@ properties:
     ```rust
     use serde_json::{json, Value};
 
-    fn string_constraints_schema() -> Value {
+    pub fn string_constraints_schema() -> Value {
         json!({
             "type": "object",
             "properties": {
-                // Length constraints
-                "username": {
-                    "type": "string",
-                    "description": "Username",
-                    "minLength": 3,
-                    "maxLength": 20
-                },
-                // Regular expression
-                "email": {
-                    "type": "string",
-                    "description": "Email",
-                    "pattern": "^[\\w\\.-]+@[\\w\\.-]+\\.\\w+$"
-                },
-                "phone": {
-                    "type": "string",
-                    "description": "Phone number",
-                    "pattern": "^1[3-9]\\d{9}$"
-                },
-                // Format (JSON Schema standard format)
-                "website": {
-                    "type": "string",
-                    "description": "Website",
-                    "format": "uri"
-                    // Common formats: email, uri, date, time, date-time, uuid
-                }
+                "username": { "type": "string", "description": "Username", "minLength": 3, "maxLength": 20 },
+                "email":    { "type": "string", "description": "Email", "pattern": "^[\\w\\.-]+@[\\w\\.-]+\\.\\w+$" },
+                "phone":    { "type": "string", "description": "Mobile number", "pattern": "^1[3-9]\\d{9}$" },
+                // Annotation only: documents the shape, does not reject other strings
+                "website":  { "type": "string", "description": "Website", "format": "uri" }
             },
             "required": ["username", "email", "phone", "website"]
         })
     }
     ```
+
+!!! note "`format` is an annotation"
+    A value that does not match a recognised `format` (`email`, `uri`, `date-time`, `uuid`, …) is accepted, with at most a warning. When a shape must be enforced, use `pattern` or `enum` ([type-mapping §11.1](../spec/type-mapping.md#111-format-keyword)).
 
 ### 4.2 Numeric Constraints
 
@@ -963,28 +643,11 @@ properties:
     ```python
     from pydantic import BaseModel, Field
 
+
     class NumberConstraints(BaseModel):
-        # Range constraints
-        age: int = Field(
-            ...,
-            description="Age",
-            ge=0,       # >= 0
-            le=150,     # <= 150
-        )
-
-        price: float = Field(
-            ...,
-            description="Price",
-            gt=0,           # > 0
-            lt=1_000_000,   # < 1000000
-        )
-
-        # Multiple constraint
-        quantity: int = Field(
-            ...,
-            description="Quantity (must be multiple of 10)",
-            multiple_of=10,
-        )
+        age: int = Field(..., description="Age", ge=0, le=150)                      # 0 <= age <= 150
+        price: float = Field(..., description="Price", gt=0, lt=1_000_000)          # 0 < price < 1000000
+        quantity: int = Field(..., description="Quantity, multiple of 10", multiple_of=10)
     ```
 
 === "TypeScript"
@@ -992,26 +655,10 @@ properties:
     ```typescript
     import { Type } from '@sinclair/typebox';
 
-    const NumberConstraints = Type.Object({
-      // Range constraints (inclusive)
-      age: Type.Integer({
-        description: 'Age',
-        minimum: 0,    // >= 0
-        maximum: 150,  // <= 150
-      }),
-
-      // Range constraints (exclusive)
-      price: Type.Number({
-        description: 'Price',
-        exclusiveMinimum: 0,        // > 0
-        exclusiveMaximum: 1000000,  // < 1000000
-      }),
-
-      // Multiple constraint
-      quantity: Type.Integer({
-        description: 'Quantity (must be multiple of 10)',
-        multipleOf: 10,
-      }),
+    export const NumberConstraints = Type.Object({
+      age: Type.Integer({ description: 'Age', minimum: 0, maximum: 150 }),
+      price: Type.Number({ description: 'Price', exclusiveMinimum: 0, exclusiveMaximum: 1_000_000 }),
+      quantity: Type.Integer({ description: 'Quantity, multiple of 10', multipleOf: 10 }),
     });
     ```
 
@@ -1020,30 +667,13 @@ properties:
     ```rust
     use serde_json::{json, Value};
 
-    fn number_constraints_schema() -> Value {
+    pub fn number_constraints_schema() -> Value {
         json!({
             "type": "object",
             "properties": {
-                // Range constraints (inclusive)
-                "age": {
-                    "type": "integer",
-                    "description": "Age",
-                    "minimum": 0,
-                    "maximum": 150
-                },
-                // Range constraints (exclusive)
-                "price": {
-                    "type": "number",
-                    "description": "Price",
-                    "exclusiveMinimum": 0,
-                    "exclusiveMaximum": 1000000
-                },
-                // Multiple constraint
-                "quantity": {
-                    "type": "integer",
-                    "description": "Quantity (must be multiple of 10)",
-                    "multipleOf": 10
-                }
+                "age":      { "type": "integer", "description": "Age", "minimum": 0, "maximum": 150 },
+                "price":    { "type": "number", "description": "Price", "exclusiveMinimum": 0, "exclusiveMaximum": 1000000 },
+                "quantity": { "type": "integer", "description": "Quantity, multiple of 10", "multipleOf": 10 }
             },
             "required": ["age", "price", "quantity"]
         })
@@ -1057,26 +687,17 @@ properties:
     ```python
     from pydantic import BaseModel, Field, field_validator
 
+
     class ListConstraints(BaseModel):
-        # Length constraints
-        tags: list[str] = Field(
-            ...,
-            description="Tags",
-            min_length=1,    # At least 1
-            max_length=10,   # At most 10
-        )
+        tags: list[str] = Field(..., description="Tags", min_length=1, max_length=10)
+        unique_ids: list[str] = Field(..., description="Unique ID list")
 
-        # Unique elements (requires custom validation in Pydantic)
-        unique_ids: list[str] = Field(
-            ...,
-            description="Unique ID list",
-        )
-
+        # Pydantic has no uniqueItems constraint for lists; check it in a validator.
         @field_validator("unique_ids")
         @classmethod
-        def check_unique(cls, v):
+        def check_unique(cls, v: list[str]) -> list[str]:
             if len(v) != len(set(v)):
-                raise ValueError('List elements must be unique')
+                raise ValueError("List elements must be unique")
             return v
     ```
 
@@ -1085,19 +706,9 @@ properties:
     ```typescript
     import { Type } from '@sinclair/typebox';
 
-    const ListConstraints = Type.Object({
-      // Length constraints
-      tags: Type.Array(Type.String(), {
-        description: 'Tags',
-        minItems: 1,    // At least 1
-        maxItems: 10,   // At most 10
-      }),
-
-      // Unique elements — JSON Schema `uniqueItems` keyword
-      unique_ids: Type.Array(Type.String(), {
-        description: 'Unique ID list',
-        uniqueItems: true,
-      }),
+    export const ListConstraints = Type.Object({
+      tags: Type.Array(Type.String(), { description: 'Tags', minItems: 1, maxItems: 10 }),
+      unique_ids: Type.Array(Type.String(), { description: 'Unique ID list', uniqueItems: true }),
     });
     ```
 
@@ -1106,22 +717,20 @@ properties:
     ```rust
     use serde_json::{json, Value};
 
-    fn list_constraints_schema() -> Value {
+    pub fn list_constraints_schema() -> Value {
         json!({
             "type": "object",
             "properties": {
-                // Length constraints
                 "tags": {
                     "type": "array",
-                    "items": {"type": "string"},
+                    "items": { "type": "string" },
                     "description": "Tags",
                     "minItems": 1,
                     "maxItems": 10
                 },
-                // Unique elements — JSON Schema `uniqueItems` keyword
                 "unique_ids": {
                     "type": "array",
-                    "items": {"type": "string"},
+                    "items": { "type": "string" },
                     "description": "Unique ID list",
                     "uniqueItems": true
                 }
@@ -1135,25 +744,33 @@ properties:
 
 ## 5. LLM Extension Fields
 
-**These fields help AI/LLM better understand Schema.**
+These `x-` fields help an AI agent use a field correctly. They are defined in [protocol-spec §4.3](../spec/protocol-spec.md#43-llm-extension-fields).
 
-### 5.1 x-llm-description
+| Field | Purpose |
+|------|------|
+| `x-llm-description` | Longer guidance written for the model, beside the short human `description` |
+| `x-examples` | Example values that show the expected range and shape |
+| `x-constraints` | A business rule the schema cannot express |
+| `x-sensitive` | Marks a value (password, token) that must not appear in logs or traces |
+
+### 5.1 `x-llm-description`
 
 === "Python"
 
     ```python
     from pydantic import BaseModel, Field
 
-    class LLMFriendlyInput(BaseModel):
+
+    class QueryInput(BaseModel):
         sql: str = Field(
             ...,
             description="SQL statement",
             json_schema_extra={
                 "x-llm-description": (
-                    "SQL query statement to execute.\n"
-                    "- Only SELECT statements allowed\n"
-                    "- DROP, DELETE, UPDATE and other modification operations are not allowed\n"
-                    "- Table names must use schema.table format"
+                    "SQL query to execute.\n"
+                    "- Only SELECT statements are allowed\n"
+                    "- DROP, DELETE, UPDATE and other modifications are rejected\n"
+                    "- Table names use schema.table form"
                 ),
             },
         )
@@ -1164,14 +781,14 @@ properties:
     ```typescript
     import { Type } from '@sinclair/typebox';
 
-    const LLMFriendlyInput = Type.Object({
+    export const QueryInput = Type.Object({
       sql: Type.String({
         description: 'SQL statement',
         'x-llm-description': [
-          'SQL query statement to execute.',
-          '- Only SELECT statements allowed',
-          '- DROP, DELETE, UPDATE and other modification operations are not allowed',
-          '- Table names must use schema.table format',
+          'SQL query to execute.',
+          '- Only SELECT statements are allowed',
+          '- DROP, DELETE, UPDATE and other modifications are rejected',
+          '- Table names use schema.table form',
         ].join('\n'),
       }),
     });
@@ -1182,7 +799,7 @@ properties:
     ```rust
     use serde_json::{json, Value};
 
-    fn llm_friendly_input_schema() -> Value {
+    pub fn query_input_schema() -> Value {
         json!({
             "type": "object",
             "properties": {
@@ -1190,10 +807,10 @@ properties:
                     "type": "string",
                     "description": "SQL statement",
                     "x-llm-description": concat!(
-                        "SQL query statement to execute.\n",
-                        "- Only SELECT statements allowed\n",
-                        "- DROP, DELETE, UPDATE and other modification operations are not allowed\n",
-                        "- Table names must use schema.table format"
+                        "SQL query to execute.\n",
+                        "- Only SELECT statements are allowed\n",
+                        "- DROP, DELETE, UPDATE and other modifications are rejected\n",
+                        "- Table names use schema.table form"
                     )
                 }
             },
@@ -1202,46 +819,38 @@ properties:
     }
     ```
 
-**Corresponding YAML:**
+In YAML:
 
 ```yaml
 sql:
   type: string
   description: "SQL statement"
   x-llm-description: |
-    SQL query statement to execute.
-    - Only SELECT statements allowed
-    - DROP, DELETE, UPDATE and other modification operations are not allowed
-    - Table names must use schema.table format
+    SQL query to execute.
+    - Only SELECT statements are allowed
+    - DROP, DELETE, UPDATE and other modifications are rejected
+    - Table names use schema.table form
 ```
 
-### 5.2 x-examples
+### 5.2 `x-examples`
 
 === "Python"
 
     ```python
     from pydantic import BaseModel, Field
 
-    class WithExamples(BaseModel):
+
+    class ContactInput(BaseModel):
         email: str = Field(
             ...,
             description="Email address",
-            json_schema_extra={
-                "x-examples": [
-                    "user@example.com",
-                    "admin@company.org",
-                    "test.user@domain.co.jp",
-                ],
-            },
+            json_schema_extra={"x-examples": ["user@example.com", "admin@company.org"]},
         )
-
         phone: str = Field(
             ...,
-            description="China mainland mobile number",
+            description="Mainland China mobile number",
             pattern=r"^1[3-9]\d{9}$",
-            json_schema_extra={
-                "x-examples": ["13800138000", "15912345678"],
-            },
+            json_schema_extra={"x-examples": ["13800138000", "15912345678"]},
         )
     ```
 
@@ -1250,18 +859,13 @@ sql:
     ```typescript
     import { Type } from '@sinclair/typebox';
 
-    const WithExamples = Type.Object({
+    export const ContactInput = Type.Object({
       email: Type.String({
         description: 'Email address',
-        'x-examples': [
-          'user@example.com',
-          'admin@company.org',
-          'test.user@domain.co.jp',
-        ],
+        'x-examples': ['user@example.com', 'admin@company.org'],
       }),
-
       phone: Type.String({
-        description: 'China mainland mobile number',
+        description: 'Mainland China mobile number',
         pattern: '^1[3-9]\\d{9}$',
         'x-examples': ['13800138000', '15912345678'],
       }),
@@ -1273,22 +877,18 @@ sql:
     ```rust
     use serde_json::{json, Value};
 
-    fn with_examples_schema() -> Value {
+    pub fn contact_input_schema() -> Value {
         json!({
             "type": "object",
             "properties": {
                 "email": {
                     "type": "string",
                     "description": "Email address",
-                    "x-examples": [
-                        "user@example.com",
-                        "admin@company.org",
-                        "test.user@domain.co.jp"
-                    ]
+                    "x-examples": ["user@example.com", "admin@company.org"]
                 },
                 "phone": {
                     "type": "string",
-                    "description": "China mainland mobile number",
+                    "description": "Mainland China mobile number",
                     "pattern": "^1[3-9]\\d{9}$",
                     "x-examples": ["13800138000", "15912345678"]
                 }
@@ -1298,31 +898,18 @@ sql:
     }
     ```
 
-### 5.3 x-sensitive
+### 5.3 `x-sensitive`
 
 === "Python"
 
     ```python
     from pydantic import BaseModel, Field
 
-    class WithSensitive(BaseModel):
+
+    class LoginInput(BaseModel):
         username: str = Field(..., description="Username")
-
-        password: str = Field(
-            ...,
-            description="Password",
-            json_schema_extra={
-                "x-sensitive": True,  # Mark as sensitive field
-            },
-        )
-
-        api_key: str = Field(
-            ...,
-            description="API key",
-            json_schema_extra={
-                "x-sensitive": True,
-            },
-        )
+        password: str = Field(..., description="Password", json_schema_extra={"x-sensitive": True})
+        api_key: str = Field(..., description="API key", json_schema_extra={"x-sensitive": True})
     ```
 
 === "TypeScript"
@@ -1330,18 +917,10 @@ sql:
     ```typescript
     import { Type } from '@sinclair/typebox';
 
-    const WithSensitive = Type.Object({
+    export const LoginInput = Type.Object({
       username: Type.String({ description: 'Username' }),
-
-      password: Type.String({
-        description: 'Password',
-        'x-sensitive': true, // Mark as sensitive field
-      }),
-
-      api_key: Type.String({
-        description: 'API key',
-        'x-sensitive': true,
-      }),
+      password: Type.String({ description: 'Password', 'x-sensitive': true }),
+      api_key: Type.String({ description: 'API key', 'x-sensitive': true }),
     });
     ```
 
@@ -1350,31 +929,20 @@ sql:
     ```rust
     use serde_json::{json, Value};
 
-    fn with_sensitive_schema() -> Value {
+    pub fn login_input_schema() -> Value {
         json!({
             "type": "object",
             "properties": {
-                "username": {"type": "string", "description": "Username"},
-                "password": {
-                    "type": "string",
-                    "description": "Password",
-                    "x-sensitive": true
-                },
-                "api_key": {
-                    "type": "string",
-                    "description": "API key",
-                    "x-sensitive": true
-                }
+                "username": { "type": "string", "description": "Username" },
+                "password": { "type": "string", "description": "Password", "x-sensitive": true },
+                "api_key":  { "type": "string", "description": "API key", "x-sensitive": true }
             },
             "required": ["username", "password", "api_key"]
         })
     }
     ```
 
-**Handling of sensitive fields:**
-- Automatically masked in logs
-- Not recorded in trace data
-- AI/LLM is advised not to store
+**What `x-sensitive` does:** after input validation the executor keeps a redacted copy of the inputs in `context.redacted_inputs`, with every `x-sensitive` value (including values nested in objects and arrays) replaced by `***REDACTED***`. Logging, tracing, and audit output read that copy. The module itself still receives the real value in `execute()`. Redaction rules, including the configurable `obs.redaction.*` keys, are specified in [protocol-spec §10.6](../spec/protocol-spec.md#106-sensitive-data-redaction); the [Observability cookbook](./cookbook-observability.md) shows them end to end.
 
 ---
 
@@ -1387,24 +955,22 @@ sql:
     ```python
     from pydantic import BaseModel, Field
 
+
     class Address(BaseModel):
-        """Address information"""
         city: str = Field(..., description="City")
         street: str = Field(..., description="Street")
         postal_code: str = Field(..., description="Postal code")
 
 
     class Company(BaseModel):
-        """Company information"""
         name: str = Field(..., description="Company name")
-        address: Address = Field(..., description="Company address")  # Nested
+        address: Address = Field(..., description="Company address")
 
 
     class Employee(BaseModel):
-        """Employee information"""
         name: str = Field(..., description="Name")
-        company: Company = Field(..., description="Company")  # Multi-level nesting
-        home_address: Address = Field(..., description="Home address")  # Reuse
+        company: Company = Field(..., description="Employer")          # two levels deep
+        home_address: Address = Field(..., description="Home address")  # reused model
     ```
 
 === "TypeScript"
@@ -1412,24 +978,21 @@ sql:
     ```typescript
     import { Type } from '@sinclair/typebox';
 
-    // Address information — reusable
     const Address = Type.Object({
       city: Type.String({ description: 'City' }),
       street: Type.String({ description: 'Street' }),
       postal_code: Type.String({ description: 'Postal code' }),
     });
 
-    // Company information
     const Company = Type.Object({
       name: Type.String({ description: 'Company name' }),
-      address: Type.Composite([Address], { description: 'Company address' }), // Nested
+      address: Type.Composite([Address], { description: 'Company address' }),
     });
 
-    // Employee information
-    const Employee = Type.Object({
+    export const Employee = Type.Object({
       name: Type.String({ description: 'Name' }),
-      company: Type.Composite([Company], { description: 'Company' }),       // Multi-level nesting
-      home_address: Type.Composite([Address], { description: 'Home address' }), // Reuse
+      company: Type.Composite([Company], { description: 'Employer' }),            // two levels deep
+      home_address: Type.Composite([Address], { description: 'Home address' }), // reused schema
     });
     ```
 
@@ -1438,45 +1001,38 @@ sql:
     ```rust
     use serde_json::{json, Value};
 
-    // Address information — reusable
-    fn address_schema() -> Value {
+    fn address_schema(description: &str) -> Value {
         json!({
             "type": "object",
+            "description": description,
             "properties": {
-                "city":        {"type": "string", "description": "City"},
-                "street":      {"type": "string", "description": "Street"},
-                "postal_code": {"type": "string", "description": "Postal code"}
+                "city":        { "type": "string", "description": "City" },
+                "street":      { "type": "string", "description": "Street" },
+                "postal_code": { "type": "string", "description": "Postal code" }
             },
             "required": ["city", "street", "postal_code"]
         })
     }
 
-    // Company information
-    fn company_schema() -> Value {
-        let mut address = address_schema();
-        address["description"] = json!("Company address");
+    fn company_schema(description: &str) -> Value {
         json!({
             "type": "object",
+            "description": description,
             "properties": {
-                "name":    {"type": "string", "description": "Company name"},
-                "address": address
+                "name":    { "type": "string", "description": "Company name" },
+                "address": address_schema("Company address")
             },
             "required": ["name", "address"]
         })
     }
 
-    // Employee information
-    fn employee_schema() -> Value {
-        let mut company = company_schema();
-        company["description"] = json!("Company");
-        let mut home = address_schema();
-        home["description"] = json!("Home address");
+    pub fn employee_schema() -> Value {
         json!({
             "type": "object",
             "properties": {
-                "name":         {"type": "string", "description": "Name"},
-                "company":      company,
-                "home_address": home
+                "name":         { "type": "string", "description": "Name" },
+                "company":      company_schema("Employer"),         // two levels deep
+                "home_address": address_schema("Home address")      // reused schema
             },
             "required": ["name", "company", "home_address"]
         })
@@ -1486,101 +1042,102 @@ sql:
 ### 6.2 References in YAML
 
 ```yaml
-# Using $ref references
 input_schema:
   type: object
   properties:
     shipping_address:
-      $ref: "#/definitions/Address"
+      $ref: "#/$defs/Address"
+      description: "Where to ship"
     billing_address:
-      $ref: "#/definitions/Address"
+      $ref: "#/$defs/Address"
+      description: "Where to send the invoice"
 
-definitions:
+$defs:
   Address:
     type: object
     properties:
       city:
         type: string
+        description: "City"
       street:
         type: string
+        description: "Street"
+    required: [city, street]
 ```
 
 ### 6.3 Cross-File References
 
+A relative path in `$ref` is resolved against the file that contains it:
+
 ```yaml
-# schemas/order.schema.yaml
+# schemas/executor/order/create_order.schema.yaml
 input_schema:
   type: object
   properties:
     customer:
-      $ref: "./common/customer.schema.yaml#/definitions/Customer"
+      $ref: "../../common/customer.schema.yaml#/$defs/Customer"
     items:
       type: array
       items:
-        $ref: "./common/product.schema.yaml#/definitions/OrderItem"
+        $ref: "../../common/product.schema.yaml#/$defs/OrderItem"
 ```
+
+Reference chains are limited by `schema.max_ref_depth` (see [§8](#8-schema-loading-strategy)). The full resolution algorithm is in [protocol-spec §4.11](../spec/protocol-spec.md#411-schema-references-ref).
 
 ---
 
 ## 7. Custom Validation
 
-### 7.1 Field Validators
+JSON Schema covers structure and simple constraints. Cross-field checks and business rules go in code:
 
-For validation rules that go beyond what JSON Schema can express (cross-field checks, normalization, business rules), use the language's native validation hooks. In Python this is Pydantic's `field_validator`; in TypeScript and Rust the convention is to run validation inside `execute()` and raise/return a structured error before processing.
+- **Python**: Pydantic `field_validator` / `model_validator` run during input validation. A validator can **reject** a value (the call fails with `SCHEMA_VALIDATION_ERROR`), but `execute()` receives the inputs as sent, so do any normalization (lower-casing, trimming) inside `execute()`.
+- **TypeScript and Rust**: put the check in a plain function and call it at the start of `execute()`, returning a structured error when it fails.
+
+### 7.1 Field Checks
 
 === "Python"
 
     ```python
     from pydantic import BaseModel, Field, field_validator
 
-    class UserInput(BaseModel):
-        username: str = Field(..., description="Username")
-        email: str = Field(..., description="Email")
-        password: str = Field(..., description="Password")
-        confirm_password: str = Field(..., description="Confirm password")
 
-        @field_validator('username')
+    class UserInput(BaseModel):
+        username: str = Field(..., description="Username, letters and digits only")
+        email: str = Field(..., description="Email")
+
+        @field_validator("username")
         @classmethod
         def username_alphanumeric(cls, v: str) -> str:
             if not v.isalnum():
-                raise ValueError('Username can only contain letters and numbers')
+                raise ValueError("Username can only contain letters and numbers")
             return v
 
-        @field_validator('email')
+        @field_validator("email")
         @classmethod
-        def email_valid(cls, v: str) -> str:
-            if '@' not in v:
-                raise ValueError('Email format is incorrect')
-            return v.lower()  # Convert to lowercase
+        def email_has_at(cls, v: str) -> str:
+            if "@" not in v:
+                raise ValueError("Email format is incorrect")
+            return v
+
+
+    def normalize(inputs: dict) -> dict:
+        """Call from execute(): validators reject, they do not rewrite inputs."""
+        return {**inputs, "email": inputs["email"].lower()}
     ```
 
 === "TypeScript"
 
     ```typescript
-    import { Type } from '@sinclair/typebox';
+    import { Type, type Static } from '@sinclair/typebox';
 
-    // Schema declares structure and basic constraints (alphanumeric via pattern,
-    // email via format). Cross-field rules go in execute().
-    const UserInput = Type.Object({
-      username: Type.String({
-        description: 'Username',
-        pattern: '^[A-Za-z0-9]+$', // alphanumeric only
-      }),
-      email: Type.String({ description: 'Email', format: 'email' }),
-      password: Type.String({ description: 'Password' }),
-      confirm_password: Type.String({ description: 'Confirm password' }),
+    export const UserInput = Type.Object({
+      // pattern is enforced by the schema itself
+      username: Type.String({ description: 'Username, letters and digits only', pattern: '^[A-Za-z0-9]+$' }),
+      email: Type.String({ description: 'Email' }),
     });
 
-    // Custom normalization / cross-field validation runs in execute().
-    function normalizeUserInput(inputs: {
-      username: string;
-      email: string;
-      password: string;
-      confirm_password: string;
-    }) {
-      if (!/^[A-Za-z0-9]+$/.test(inputs.username)) {
-        throw new Error('Username can only contain letters and numbers');
-      }
+    // Call from execute(): checks and normalization the schema cannot express.
+    export function normalizeUserInput(inputs: Static<typeof UserInput>): Static<typeof UserInput> {
       if (!inputs.email.includes('@')) {
         throw new Error('Email format is incorrect');
       }
@@ -1593,35 +1150,21 @@ For validation rules that go beyond what JSON Schema can express (cross-field ch
     ```rust
     use serde_json::{json, Value};
 
-    // Schema declares structure and basic constraints. Cross-field rules
-    // run inside execute().
-    fn user_input_schema() -> Value {
+    pub fn user_input_schema() -> Value {
         json!({
             "type": "object",
             "properties": {
-                "username": {
-                    "type": "string",
-                    "description": "Username",
-                    "pattern": "^[A-Za-z0-9]+$"
-                },
-                "email": {
-                    "type": "string",
-                    "description": "Email",
-                    "format": "email"
-                },
-                "password":         {"type": "string", "description": "Password"},
-                "confirm_password": {"type": "string", "description": "Confirm password"}
+                // pattern is enforced by the schema itself
+                "username": { "type": "string", "description": "Username, letters and digits only", "pattern": "^[A-Za-z0-9]+$" },
+                "email":    { "type": "string", "description": "Email" }
             },
-            "required": ["username", "email", "password", "confirm_password"]
+            "required": ["username", "email"]
         })
     }
 
-    fn normalize_user_input(mut inputs: Value) -> Result<Value, String> {
-        let username = inputs["username"].as_str().unwrap_or("");
-        if !username.chars().all(|c| c.is_ascii_alphanumeric()) {
-            return Err("Username can only contain letters and numbers".into());
-        }
-        let email = inputs["email"].as_str().unwrap_or("");
+    // Call from execute(): checks and normalization the schema cannot express.
+    pub fn normalize_user_input(mut inputs: Value) -> Result<Value, String> {
+        let email = inputs["email"].as_str().unwrap_or_default().to_string();
         if !email.contains('@') {
             return Err("Email format is incorrect".into());
         }
@@ -1630,70 +1173,7 @@ For validation rules that go beyond what JSON Schema can express (cross-field ch
     }
     ```
 
-### 7.2 Model Validators
-
-Model-level validation enforces rules that span multiple fields. Python uses Pydantic's `model_validator`; TypeScript and Rust express the same logic as a plain function invoked from `execute()`.
-
-=== "Python"
-
-    ```python
-    from pydantic import BaseModel, Field, model_validator
-
-    class PasswordInput(BaseModel):
-        password: str = Field(..., description="Password")
-        confirm_password: str = Field(..., description="Confirm password")
-
-        @model_validator(mode='after')
-        def passwords_match(self) -> 'PasswordInput':
-            if self.password != self.confirm_password:
-                raise ValueError('Password entries do not match')
-            return self
-    ```
-
-=== "TypeScript"
-
-    ```typescript
-    import { Type } from '@sinclair/typebox';
-
-    const PasswordInput = Type.Object({
-      password: Type.String({ description: 'Password' }),
-      confirm_password: Type.String({ description: 'Confirm password' }),
-    });
-
-    function validatePasswordInput(
-      inputs: { password: string; confirm_password: string },
-    ): void {
-      if (inputs.password !== inputs.confirm_password) {
-        throw new Error('Password entries do not match');
-      }
-    }
-    ```
-
-=== "Rust"
-
-    ```rust
-    use serde_json::{json, Value};
-
-    fn password_input_schema() -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "password":         {"type": "string", "description": "Password"},
-                "confirm_password": {"type": "string", "description": "Confirm password"}
-            },
-            "required": ["password", "confirm_password"]
-        })
-    }
-
-    fn validate_password_input(inputs: &Value) -> Result<(), String> {
-        if inputs["password"] != inputs["confirm_password"] {
-            return Err("Password entries do not match".into());
-        }
-        Ok(())
-    }
-    ```
-
-### 7.3 Complex Business Validation
+### 7.2 Cross-Field Checks
 
 === "Python"
 
@@ -1709,27 +1189,15 @@ Model-level validation enforces rules that span multiple fields. Python uses Pyd
 
     class OrderInput(BaseModel):
         items: list[OrderItem] = Field(..., description="Order items")
-        coupon_code: str | None = Field(None, description="Coupon")
+        coupon_code: str | None = Field(None, description="Coupon code")
         total_amount: float = Field(..., description="Total amount")
 
-        @model_validator(mode='after')
-        def validate_order(self) -> 'OrderInput':
-            # Calculate total product price
-            calculated_total = sum(item.price * item.quantity for item in self.items)
-
-            # Validate total amount
-            if abs(self.total_amount - calculated_total) > 0.01:
-                raise ValueError(f'Total amount is incorrect, should be {calculated_total}')
-
-            # Validate coupon
-            if self.coupon_code and not self._is_valid_coupon(self.coupon_code):
-                raise ValueError('Coupon is invalid or expired')
-
+        @model_validator(mode="after")
+        def check_total(self) -> "OrderInput":
+            calculated = sum(item.price * item.quantity for item in self.items)
+            if abs(self.total_amount - calculated) > 0.01:
+                raise ValueError(f"Total amount is incorrect, should be {calculated}")
             return self
-
-        def _is_valid_coupon(self, code: str) -> bool:
-            # Coupon validation logic
-            return True
     ```
 
 === "TypeScript"
@@ -1743,34 +1211,19 @@ Model-level validation enforces rules that span multiple fields. Python uses Pyd
       price: Type.Number({ description: 'Unit price' }),
     });
 
-    const OrderInput = Type.Object({
+    export const OrderInput = Type.Object({
       items: Type.Array(OrderItem, { description: 'Order items' }),
       coupon_code: Type.Optional(
-        Type.Union([Type.String(), Type.Null()], {
-          description: 'Coupon',
-          default: null,
-        }),
+        Type.Union([Type.String(), Type.Null()], { description: 'Coupon code', default: null }),
       ),
       total_amount: Type.Number({ description: 'Total amount' }),
     });
 
-    type OrderInputT = Static<typeof OrderInput>;
-
-    function isValidCoupon(_code: string): boolean {
-      // Coupon validation logic
-      return true;
-    }
-
-    function validateOrder(input: OrderInputT): void {
-      const calculatedTotal = input.items.reduce(
-        (sum, it) => sum + it.price * it.quantity,
-        0,
-      );
-      if (Math.abs(input.total_amount - calculatedTotal) > 0.01) {
-        throw new Error(`Total amount is incorrect, should be ${calculatedTotal}`);
-      }
-      if (input.coupon_code && !isValidCoupon(input.coupon_code)) {
-        throw new Error('Coupon is invalid or expired');
+    // Call from execute().
+    export function checkTotal(input: Static<typeof OrderInput>): void {
+      const calculated = input.items.reduce((sum, it) => sum + it.price * it.quantity, 0);
+      if (Math.abs(input.total_amount - calculated) > 0.01) {
+        throw new Error(`Total amount is incorrect, should be ${calculated}`);
       }
     }
     ```
@@ -1780,115 +1233,87 @@ Model-level validation enforces rules that span multiple fields. Python uses Pyd
     ```rust
     use serde_json::{json, Value};
 
-    fn order_item_schema() -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "product_id": {"type": "string",  "description": "Product ID"},
-                "quantity":   {"type": "integer", "description": "Quantity"},
-                "price":      {"type": "number",  "description": "Unit price"}
-            },
-            "required": ["product_id", "quantity", "price"]
-        })
-    }
-
-    fn order_input_schema() -> Value {
+    pub fn order_input_schema() -> Value {
         json!({
             "type": "object",
             "properties": {
                 "items": {
                     "type": "array",
-                    "items": order_item_schema(),
-                    "description": "Order items"
+                    "description": "Order items",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "product_id": { "type": "string",  "description": "Product ID" },
+                            "quantity":   { "type": "integer", "description": "Quantity" },
+                            "price":      { "type": "number",  "description": "Unit price" }
+                        },
+                        "required": ["product_id", "quantity", "price"]
+                    }
                 },
-                "coupon_code": {
-                    "type": ["string", "null"],
-                    "description": "Coupon",
-                    "default": null
-                },
-                "total_amount": {"type": "number", "description": "Total amount"}
+                "coupon_code":  { "type": ["string", "null"], "description": "Coupon code", "default": null },
+                "total_amount": { "type": "number", "description": "Total amount" }
             },
             "required": ["items", "total_amount"]
         })
     }
 
-    fn is_valid_coupon(_code: &str) -> bool {
-        // Coupon validation logic
-        true
-    }
-
-    fn validate_order(input: &Value) -> Result<(), String> {
+    // Call from execute().
+    pub fn check_total(input: &Value) -> Result<(), String> {
         let items = input["items"].as_array().ok_or("items must be an array")?;
         let calculated: f64 = items
             .iter()
-            .map(|it| {
-                it["price"].as_f64().unwrap_or(0.0)
-                    * it["quantity"].as_f64().unwrap_or(0.0)
-            })
+            .map(|it| it["price"].as_f64().unwrap_or(0.0) * it["quantity"].as_f64().unwrap_or(0.0))
             .sum();
-
         let total = input["total_amount"].as_f64().unwrap_or(0.0);
         if (total - calculated).abs() > 0.01 {
-            return Err(format!("Total amount is incorrect, should be {}", calculated));
-        }
-
-        if let Some(code) = input["coupon_code"].as_str() {
-            if !is_valid_coupon(code) {
-                return Err("Coupon is invalid or expired".into());
-            }
+            return Err(format!("Total amount is incorrect, should be {calculated}"));
         }
         Ok(())
     }
     ```
 
+To report a failed check from `execute()` in a way an AI agent can act on, raise a `ModuleError` with `ai_guidance` — see [Creating Modules § Error Handling](./creating-modules.md#error-handling).
+
 ---
 
 ## 8. Schema Loading Strategy
 
-**apcore supports multiple Schema loading methods:**
+YAML schema files are read by `SchemaLoader`, which takes its settings from the `schema` section of `apcore.yaml`:
 
 ```yaml
 # apcore.yaml
 schema:
-  # Loading strategy
-  strategy: "yaml_first"  # yaml_first | native_first | yaml_only
-
-  # yaml_first: Load from YAML first, native implementation can override
-  # native_first: Prefer Python class definition, YAML as fallback
-  # yaml_only: YAML only (pure cross-language scenarios)
-
-  # Directory the YAML schema files are resolved against
-  root: "./schemas"
-
-  # Maximum $ref resolution depth
-  max_ref_depth: 32
+  root: "./schemas"        # directory schema files are resolved against
+  strategy: "yaml_first"   # yaml_first | native_first | yaml_only
+  max_ref_depth: 32        # maximum $ref chain length, 1-100
 ```
 
-`root`, `strategy` and `max_ref_depth` are the whole `schema` namespace —
-`defaults.schema.json` declares it `additionalProperties: false`, so any other
-key is a configuration error. In particular there is no `schema.validation`
-block: whether an undeclared property is rejected, and whether `"42"` counts as
-an integer, are properties of the *contract*, not of the host that loaded it
-(PROTOCOL_SPEC §4.9, TYPE_MAPPING §17.3).
+| Strategy | Behaviour |
+|------|------|
+| `yaml_first` (default) | Use the YAML file when one exists; fall back to the schema written in code |
+| `native_first` | Use the schema written in code when there is one; fall back to the YAML file |
+| `yaml_only` | Use only YAML files (for purely cross-language contracts) |
+
+`root`, `strategy`, and `max_ref_depth` are the whole `schema` section; any other key is a configuration error. Whether undeclared properties are rejected, or whether `"42"` counts as an integer, is decided by the schema itself (`additionalProperties`, `type`), never by configuration ([protocol-spec §4.9](../spec/protocol-spec.md#49-schema-loading-strategy), [type-mapping §17.3](../spec/type-mapping.md#173-no-type-coercion-at-the-module-boundary)).
 
 ---
 
 ## 9. Best Practices
 
-### 9.1 Every Field Should Have a Description
+### 9.1 Every Field Has a Description
 
 === "Python"
 
     ```python
     from pydantic import BaseModel, Field
 
-    # ✅ Good
-    class GoodSchema(BaseModel):
-        name: str = Field(..., description="User name, 2-50 characters")
-        age: int = Field(..., description="User age, 0-150 years")
 
-    # ❌ Bad
-    class BadSchema(BaseModel):
+    class Good(BaseModel):
+        name: str = Field(..., description="User name, 2-50 characters")
+        age: int = Field(..., description="User age in years")
+
+
+    class Bad(BaseModel):  # the model has to guess what these mean
         name: str
         age: int
     ```
@@ -1898,17 +1323,13 @@ an integer, are properties of the *contract*, not of the host that loaded it
     ```typescript
     import { Type } from '@sinclair/typebox';
 
-    // ✅ Good
-    const GoodSchema = Type.Object({
+    export const Good = Type.Object({
       name: Type.String({ description: 'User name, 2-50 characters' }),
-      age: Type.Integer({ description: 'User age, 0-150 years' }),
+      age: Type.Integer({ description: 'User age in years' }),
     });
 
-    // ❌ Bad — no descriptions
-    const BadSchema = Type.Object({
-      name: Type.String(),
-      age: Type.Integer(),
-    });
+    // The model has to guess what these mean.
+    export const Bad = Type.Object({ name: Type.String(), age: Type.Integer() });
     ```
 
 === "Rust"
@@ -1916,126 +1337,47 @@ an integer, are properties of the *contract*, not of the host that loaded it
     ```rust
     use serde_json::{json, Value};
 
-    // ✅ Good
-    fn good_schema() -> Value {
+    pub fn good() -> Value {
         json!({
             "type": "object",
             "properties": {
-                "name": {"type": "string",  "description": "User name, 2-50 characters"},
-                "age":  {"type": "integer", "description": "User age, 0-150 years"}
+                "name": { "type": "string",  "description": "User name, 2-50 characters" },
+                "age":  { "type": "integer", "description": "User age in years" }
             },
             "required": ["name", "age"]
         })
     }
 
-    // ❌ Bad — no descriptions
-    fn bad_schema() -> Value {
+    // The model has to guess what these mean.
+    pub fn bad() -> Value {
         json!({
             "type": "object",
-            "properties": {
-                "name": {"type": "string"},
-                "age":  {"type": "integer"}
-            },
+            "properties": { "name": { "type": "string" }, "age": { "type": "integer" } },
             "required": ["name", "age"]
         })
     }
     ```
 
-### 9.2 Use Explicit Types
+### 9.2 Use Precise Types and Constraints
 
 === "Python"
 
     ```python
-    from pydantic import BaseModel
     from typing import Any, Literal
 
-    # ✅ Good: Clear types
-    class GoodSchema(BaseModel):
-        status: Literal["active", "inactive", "pending"]
-        count: int
-        price: float
-
-    # ❌ Bad: Vague types
-    class BadSchema(BaseModel):
-        status: str  # Can be any string
-        count: Any   # Unknown type
-        price: Any
-    ```
-
-=== "TypeScript"
-
-    ```typescript
-    import { Type } from '@sinclair/typebox';
-
-    // ✅ Good: Clear types
-    const GoodSchema = Type.Object({
-      status: Type.Union([
-        Type.Literal('active'),
-        Type.Literal('inactive'),
-        Type.Literal('pending'),
-      ]),
-      count: Type.Integer(),
-      price: Type.Number(),
-    });
-
-    // ❌ Bad: Vague types
-    const BadSchema = Type.Object({
-      status: Type.String(),  // Can be any string
-      count: Type.Unknown(),  // Unknown type
-      price: Type.Unknown(),
-    });
-    ```
-
-=== "Rust"
-
-    ```rust
-    use serde_json::{json, Value};
-
-    // ✅ Good: Clear types
-    fn good_schema() -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "status": {"type": "string", "enum": ["active", "inactive", "pending"]},
-                "count":  {"type": "integer"},
-                "price":  {"type": "number"}
-            },
-            "required": ["status", "count", "price"]
-        })
-    }
-
-    // ❌ Bad: Vague types
-    fn bad_schema() -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "status": {"type": "string"}, // Can be any string
-                "count":  {},                  // Unknown type
-                "price":  {}
-            },
-            "required": ["status", "count", "price"]
-        })
-    }
-    ```
-
-### 9.3 Set Reasonable Constraints
-
-=== "Python"
-
-    ```python
     from pydantic import BaseModel, Field
 
-    # ✅ Good: Has reasonable constraints
-    class GoodSchema(BaseModel):
-        username: str = Field(..., min_length=3, max_length=20)
-        age: int = Field(..., ge=0, le=150)
-        email: str = Field(..., pattern=r"^[\w\.-]+@[\w\.-]+\.\w+$")
 
-    # ❌ Bad: No constraints
-    class BadSchema(BaseModel):
-        username: str  # Can be empty string or very long
-        age: int       # Can be negative or absurd number
-        email: str     # Can be any string
+    class Good(BaseModel):
+        status: Literal["active", "inactive", "pending"] = Field(..., description="Account status")
+        username: str = Field(..., description="Username", min_length=3, max_length=20)
+        age: int = Field(..., description="Age", ge=0, le=150)
+
+
+    class Bad(BaseModel):
+        status: str      # any string at all
+        username: str    # empty or megabytes long
+        age: Any         # not even a number
     ```
 
 === "TypeScript"
@@ -2043,18 +1385,18 @@ an integer, are properties of the *contract*, not of the host that loaded it
     ```typescript
     import { Type } from '@sinclair/typebox';
 
-    // ✅ Good: Has reasonable constraints
-    const GoodSchema = Type.Object({
-      username: Type.String({ minLength: 3, maxLength: 20 }),
-      age: Type.Integer({ minimum: 0, maximum: 150 }),
-      email: Type.String({ pattern: '^[\\w\\.-]+@[\\w\\.-]+\\.\\w+$' }),
+    export const Good = Type.Object({
+      status: Type.Union([Type.Literal('active'), Type.Literal('inactive'), Type.Literal('pending')], {
+        description: 'Account status',
+      }),
+      username: Type.String({ description: 'Username', minLength: 3, maxLength: 20 }),
+      age: Type.Integer({ description: 'Age', minimum: 0, maximum: 150 }),
     });
 
-    // ❌ Bad: No constraints
-    const BadSchema = Type.Object({
-      username: Type.String(), // Can be empty string or very long
-      age: Type.Integer(),     // Can be negative or absurd number
-      email: Type.String(),    // Can be any string
+    export const Bad = Type.Object({
+      status: Type.String(),   // any string at all
+      username: Type.String(), // empty or megabytes long
+      age: Type.Unknown(),     // not even a number
     });
     ```
 
@@ -2063,263 +1405,75 @@ an integer, are properties of the *contract*, not of the host that loaded it
     ```rust
     use serde_json::{json, Value};
 
-    // ✅ Good: Has reasonable constraints
-    fn good_schema() -> Value {
+    pub fn good() -> Value {
         json!({
             "type": "object",
             "properties": {
-                "username": {"type": "string",  "minLength": 3, "maxLength": 20},
-                "age":      {"type": "integer", "minimum": 0,    "maximum": 150},
-                "email":    {"type": "string",  "pattern": "^[\\w\\.-]+@[\\w\\.-]+\\.\\w+$"}
+                "status":   { "type": "string", "enum": ["active", "inactive", "pending"], "description": "Account status" },
+                "username": { "type": "string", "minLength": 3, "maxLength": 20, "description": "Username" },
+                "age":      { "type": "integer", "minimum": 0, "maximum": 150, "description": "Age" }
             },
-            "required": ["username", "age", "email"]
+            "required": ["status", "username", "age"]
         })
     }
 
-    // ❌ Bad: No constraints
-    fn bad_schema() -> Value {
+    pub fn bad() -> Value {
         json!({
             "type": "object",
             "properties": {
-                "username": {"type": "string"},
-                "age":      {"type": "integer"},
-                "email":    {"type": "string"}
+                "status":   { "type": "string" }, // any string at all
+                "username": { "type": "string" }, // empty or megabytes long
+                "age":      {}                    // not even a number
             },
-            "required": ["username", "age", "email"]
-        })
-    }
-    ```
-
-### 9.4 Separate Complex Schemas
-
-=== "Python"
-
-    ```python
-    from pydantic import BaseModel, Field
-
-    # ✅ Good: Reusable and clear
-    class Address(BaseModel):
-        """Address - reusable"""
-        city: str = Field(..., description="City")
-        street: str = Field(..., description="Street")
-
-    class OrderInputGood(BaseModel):
-        shipping_address: Address
-        billing_address: Address
-
-    # ❌ Bad: Duplicate definitions
-    class OrderInputBad(BaseModel):
-        shipping_city: str
-        shipping_street: str
-        billing_city: str
-        billing_street: str
-    ```
-
-=== "TypeScript"
-
-    ```typescript
-    import { Type } from '@sinclair/typebox';
-
-    // ✅ Good: Reusable and clear
-    const Address = Type.Object({
-      city: Type.String({ description: 'City' }),
-      street: Type.String({ description: 'Street' }),
-    });
-
-    const OrderInputGood = Type.Object({
-      shipping_address: Type.Composite([Address]),
-      billing_address: Type.Composite([Address]),
-    });
-
-    // ❌ Bad: Duplicate definitions
-    const OrderInputBad = Type.Object({
-      shipping_city: Type.String(),
-      shipping_street: Type.String(),
-      billing_city: Type.String(),
-      billing_street: Type.String(),
-    });
-    ```
-
-=== "Rust"
-
-    ```rust
-    use serde_json::{json, Value};
-
-    // ✅ Good: Reusable and clear
-    fn address_schema() -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "city":   {"type": "string", "description": "City"},
-                "street": {"type": "string", "description": "Street"}
-            },
-            "required": ["city", "street"]
-        })
-    }
-
-    fn order_input_good_schema() -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "shipping_address": address_schema(),
-                "billing_address":  address_schema()
-            },
-            "required": ["shipping_address", "billing_address"]
-        })
-    }
-
-    // ❌ Bad: Duplicate definitions
-    fn order_input_bad_schema() -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "shipping_city":   {"type": "string"},
-                "shipping_street": {"type": "string"},
-                "billing_city":    {"type": "string"},
-                "billing_street":  {"type": "string"}
-            },
-            "required": ["shipping_city", "shipping_street", "billing_city", "billing_street"]
+            "required": ["status", "username", "age"]
         })
     }
     ```
+
+### 9.3 Reuse Sub-Schemas
+
+Define a shared shape once (a Pydantic model, a TypeBox constant, a Rust function, or a YAML `$defs` entry) and reference it, instead of flattening copies into prefixed fields such as `shipping_city` / `billing_city`. See [§6](#6-nesting-and-references).
 
 ---
 
-## 10. Edge Case Handling
+## 10. Edge Cases
 
-### 10.1 null vs Empty String
+The normative rules live in [protocol-spec §4.15](../spec/protocol-spec.md#415-edge-case-handling) and the [Type Mapping Specification](../spec/type-mapping.md). In short:
 
-| Scenario | JSON Value | Meaning |
-|------|---------|------|
-| Field value is `null` | `{"name": null}` | Field exists but has no value |
-| Field does not exist | `{}` | Field is missing |
-| Empty string | `{"name": ""}` | Field exists and value is empty string |
+- **`null`, empty, and missing are different.** `{"name": null}`, `{"name": ""}`, and `{}` are three inputs. `required` controls whether a field must be present; including `"null"` in `type` controls whether `null` is allowed. There is no `nullable` keyword.
+- **Large integers.** Integers above `2^53 - 1` lose precision in JavaScript. Send them as strings with a digits-only `pattern` ([type-mapping §14.1](../spec/type-mapping.md#141-large-integer-precision-loss)). Exact decimals such as money are also best sent as strings or as integer minor units.
+- **`$ref` depth.** A reference chain longer than `schema.max_ref_depth` (default 32, configurable from 1 to 100) fails with `SCHEMA_MAX_DEPTH_EXCEEDED`; a `$ref` → `$ref` loop fails with `SCHEMA_CIRCULAR_REF`. A recursive schema whose `$ref` sits under `properties` or `items` is legal.
+- **`format` never rejects.** A value that does not match its `format` is accepted, with at most a warning.
+- **Unknown `x-` keywords are ignored**, so extensions are forward compatible.
 
-Implementations **must** distinguish these three cases. The `required` constraint checks if the field exists, `nullable` controls whether `null` is allowed.
-
-### 10.2 Large Number Handling
-
-apcore specifies **2^53 - 1** (`9007199254740991`) as the cross-language integer safe boundary (determined by JavaScript `Number.MAX_SAFE_INTEGER`).
-
-| Scenario | Schema Definition | Description |
-|------|------------|------|
-| Within safe range (≤ 2^53 - 1) | `type: integer` | Use directly, lossless across all languages |
-| Beyond safe range | `type: string` + `format: int64` | 64-bit integer, transmitted as string |
-| Arbitrary precision integer | `type: string` + `format: bigint` | Like blockchain nonce |
-| High precision decimal | `type: string` + `format: decimal` | Like currency, exchange rate |
-
-=== "Python"
-
-    ```python
-    from pydantic import BaseModel, Field
-
-    class PaymentInput(BaseModel):
-        # Within safe range — use int directly
-        user_id: int = Field(..., description="User ID", ge=0)
-
-        # Beyond safe range — use string + format
-        order_no: str = Field(
-            ...,
-            description="Snowflake order number",
-            pattern=r"^\d+$",
-            json_schema_extra={"format": "int64"},
-        )
-
-        # High precision amount
-        amount: str = Field(
-            ...,
-            description="Payment amount (accurate to cent)",
-            pattern=r"^-?\d+\.\d{2}$",
-            json_schema_extra={"format": "decimal"},
-        )
-    ```
-
-=== "TypeScript"
-
-    ```typescript
-    import { Type } from '@sinclair/typebox';
-
-    const PaymentInput = Type.Object({
-      // Within safe range — use integer directly
-      user_id: Type.Integer({ description: 'User ID', minimum: 0 }),
-
-      // Beyond safe range — use string + format
-      order_no: Type.String({
-        description: 'Snowflake order number',
-        pattern: '^\\d+$',
-        format: 'int64',
-      }),
-
-      // High precision amount
-      amount: Type.String({
-        description: 'Payment amount (accurate to cent)',
-        pattern: '^-?\\d+\\.\\d{2}$',
-        format: 'decimal',
-      }),
-    });
-    ```
-
-=== "Rust"
-
-    ```rust
-    use serde_json::{json, Value};
-
-    fn payment_input_schema() -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                // Within safe range — use integer directly
-                "user_id": {
-                    "type": "integer",
-                    "description": "User ID",
-                    "minimum": 0
-                },
-                // Beyond safe range — use string + format
-                "order_no": {
-                    "type": "string",
-                    "description": "Snowflake order number",
-                    "pattern": "^\\d+$",
-                    "format": "int64"
-                },
-                // High precision amount
-                "amount": {
-                    "type": "string",
-                    "description": "Payment amount (accurate to cent)",
-                    "pattern": "^-?\\d+\\.\\d{2}$",
-                    "format": "decimal"
-                }
-            },
-            "required": ["user_id", "order_no", "amount"]
-        })
-    }
-    ```
-
-> For complete large number type mapping specifications, see [docs/spec/type-mapping.md §14.1](../spec/type-mapping.md#141-large-integer-precision-loss).
-
-### 10.3 Unicode Handling
-
-- All `string` types **must** support UTF-8 encoding
-- `minLength` / `maxLength` **should** count by Unicode characters (code points), not bytes
-- When containing Emoji and combining characters, implementations **should** use NFC normalized form
-
-### 10.4 Nesting Depth Limit
-
-- Schema object nesting depth **should** not exceed 16 levels
-- `$ref` recursion depth **must** not exceed 32 levels
-- Implementations **should** issue warnings when detecting excessive nesting
+```yaml
+properties:
+  user_id:
+    type: integer               # safely below 2^53
+    minimum: 0
+    description: "User ID"
+  order_no:
+    type: string                # 64-bit snowflake ID, sent as digits
+    pattern: "^\\d+$"
+    description: "Snowflake order number"
+  amount:
+    type: string                # exact decimal
+    pattern: "^-?\\d+\\.\\d{2}$"
+    description: "Amount, exact to the cent"
+```
 
 ---
 
 ## 11. AI-Friendly Schema Design
 
-> All mainstream AI protocols (MCP, OpenAI, Anthropic, Gemini, LangChain) are based on JSON Schema. apcore's use of JSON Schema Draft 2020-12 is the correct choice. This section provides design guidelines to make Schema easier for AI/LLM to correctly understand and call.
+Tool-calling LLM APIs consume JSON Schema, so the same schema that validates a call also teaches the model how to make it. These guidelines make that easier.
 
-### 11.1 Flat is Better Than Nested
+### 11.1 Flat Is Better Than Nested
 
-AI/LLM accuracy significantly decreases with deeply nested structures. input_schema **should** keep nesting within 2-3 levels.
+Models fill deeply nested structures less accurately. Keep an AI-facing `input_schema` to two or three levels.
 
 ```yaml
-# ❌ Bad: Deep nesting, hard for AI to fill accurately
+# Bad: four levels for two values
 input_schema:
   type: object
   properties:
@@ -2332,12 +1486,10 @@ input_schema:
             connection:
               type: object
               properties:
-                host:
-                  type: string
-                port:
-                  type: integer
+                host: { type: string }
+                port: { type: integer }
 
-# ✅ Good: Flat, clear for AI
+# Good: flat and self-describing
 input_schema:
   type: object
   properties:
@@ -2351,113 +1503,61 @@ input_schema:
       default: 5432
 ```
 
-> **Reference**: §10.4 specifies nesting depth limit of 16 levels, but modules for AI calling **should** not exceed 3 levels.
+### 11.2 Descriptions Explain Meaning, Not Type
 
-### 11.2 Description Quality Rules
+A `description` should answer "what does the model need to know to fill this field correctly?"
 
-Each field's `description` should answer "**What does the AI need to know to correctly fill this field?**"
-
-| Rule | Description |
+| Do | Example |
 |------|------|
-| Explain semantics, not type | Schema already declares `type: string`, description doesn't need to repeat "string type" |
-| Explain value range | Like "Supported formats: png, jpg, gif" |
-| Explain default behavior | Like "If not filled, send to all subscribers" |
-| Explain related constraints | Like "When format is html, template_id must be provided" |
+| Explain semantics, not the type | Not "a string"; the schema already says so |
+| State the accepted values | "Supported formats: png, jpg, gif" |
+| State the default behaviour | "If omitted, sends to all subscribers" |
+| State related constraints | "When format is html, template_id is required" |
 
-=== "Python"
+```yaml
+# Bad: repeats the type, gives no guidance
+body:
+  type: string
+  description: "Email body, string type"
 
-    ```python
-    from pydantic import Field
-
-    # ❌ Bad: Repeats type information, no actual guidance
-    body_bad = Field(
-        ...,
-        description="Email body, string type",
-    )
-
-    # ✅ Good: Explains semantics and usage
-    body_good = Field(
-        ...,
-        description="Email body content, supports plain text or HTML. HTML format requires html=true",
-    )
-    ```
-
-=== "TypeScript"
-
-    ```typescript
-    import { Type } from '@sinclair/typebox';
-
-    // ❌ Bad: Repeats type information, no actual guidance
-    const bodyBad = Type.String({
-      description: 'Email body, string type',
-    });
-
-    // ✅ Good: Explains semantics and usage
-    const bodyGood = Type.String({
-      description:
-        'Email body content, supports plain text or HTML. HTML format requires html=true',
-    });
-    ```
-
-=== "Rust"
-
-    ```rust
-    use serde_json::{json, Value};
-
-    // ❌ Bad: Repeats type information, no actual guidance
-    fn body_bad() -> Value {
-        json!({"type": "string", "description": "Email body, string type"})
-    }
-
-    // ✅ Good: Explains semantics and usage
-    fn body_good() -> Value {
-        json!({
-            "type": "string",
-            "description": "Email body content, supports plain text or HTML. HTML format requires html=true"
-        })
-    }
-    ```
+# Good: explains meaning and usage
+body:
+  type: string
+  description: "Email body, plain text or HTML. Set html=true when sending HTML."
+```
 
 ### 11.3 Token Awareness
 
-AI protocols serialize Schema and inject it into the prompt, consuming context tokens. Reducing unnecessary token consumption can improve AI reasoning.
+Tool-calling APIs put the schema into the prompt, so every word costs context.
 
-| Recommendation | Description |
+| Recommendation | Why |
 |------|------|
-| Avoid repeating type info in description | `type: string` already declares type, description doesn't need to mention it |
-| Use x-llm-description when enum has more than 5 values | Avoid AI guessing enum meanings one by one |
-| Use first sentence description in compact mode | See [Schema System](../features/schema-system.md) compact export |
-| Send simplified Schema during module discovery | Load full Schema after module is selected (progressive disclosure) |
+| Don't repeat type information in `description` | It is already in `type` |
+| Add `x-llm-description` when an enum has more than about five values | The model should not guess what each value means |
+| Export compact schemas during discovery | See the export profiles in [Schema System](../features/schema-system.md) |
+| Send full schemas only after a module is selected | Progressive disclosure keeps early prompts small |
 
 ```yaml
-# ❌ Bad: Many enum values without explanation
-status:
-  type: string
-  enum: ["draft", "pending_review", "in_review", "approved", "rejected",
-         "published", "archived", "suspended", "deleted"]
-
-# ✅ Good: Use x-llm-description to explain usage scenarios
 status:
   type: string
   enum: ["draft", "pending_review", "in_review", "approved", "rejected",
          "published", "archived", "suspended", "deleted"]
   description: "Article status"
   x-llm-description: |
-    Article lifecycle status. Use draft when creating, pending_review for submission,
-    approved after review, published for going live.
-    Other statuses (archived/suspended/deleted) are for admin operations, generally not used during creation.
+    Use draft when creating, pending_review to submit for review, and
+    published to go live. archived, suspended, and deleted are for
+    administrators and are not used when creating an article.
 ```
 
-### 11.4 Required Field Priority
+### 11.4 Required Fields First
 
-In the `properties` block, list required fields (`required`) first, then optional fields. This helps AI grasp core parameters faster when reading Schema.
+List required properties before optional ones so the essential parameters are read first:
 
 ```yaml
-# ✅ Recommended: Required fields first
 input_schema:
   type: object
   properties:
-    # --- Required fields ---
+    # Required
     to:
       type: string
       description: "Recipient email address"
@@ -2467,7 +1567,7 @@ input_schema:
     body:
       type: string
       description: "Email body"
-    # --- Optional fields ---
+    # Optional
     cc:
       type: array
       items: { type: string }
@@ -2475,75 +1575,68 @@ input_schema:
       default: []
     html:
       type: boolean
-      description: "Is HTML format"
+      description: "Send the body as HTML"
       default: false
   required: [to, subject, body]
 ```
 
-### 11.5 Design Checklist
+### 11.5 Checklist
 
-Before publishing modules for AI calling, it's recommended to check against the following checklist:
+Before exposing a module to AI callers:
 
-- [ ] input_schema nesting does not exceed 3 levels
-- [ ] Every field has description, and does not repeat type information
-- [ ] Required fields are listed before optional fields in properties
-- [ ] Provide x-llm-description when enum has more than 5 values
-- [ ] Complex modules (oneOf/anyOf, 5+ required fields) provide examples
-- [ ] Sensitive fields marked with x-sensitive
-- [ ] Numeric fields declare `minimum`/`maximum` and `default` where applicable (Pydantic: `Field(ge=, le=)`)
-- [ ] String fields with fixed options use `enum` or `Literal[...]` instead of free-form text
+- [ ] `input_schema` is at most three levels deep
+- [ ] Every field has a `description` that does not just restate its type
+- [ ] Required fields are listed before optional ones
+- [ ] Enums with more than about five values have an `x-llm-description`
+- [ ] Complex inputs (`oneOf`/`anyOf`, five or more required fields) have `x-examples` or module examples
+- [ ] Secrets are marked `x-sensitive`
+- [ ] Numeric fields declare `minimum`/`maximum` and a `default` where one makes sense
+- [ ] Fields with a fixed set of values use `enum` (`Literal[...]` in Python)
 
 ---
 
-## 12. Cross-Protocol Compatibility
+## 12. Compatibility with Other Tool-Calling APIs
 
-> apcore uses JSON Schema Draft 2020-12, but some AI protocols (like MCP) are still based on Draft 7. Modules aimed at broad AI protocol compatibility **should** prioritize using the common subset of both versions.
+apcore schemas are JSON Schema Draft 2020-12. When a module is exported to an external LLM or agent API, the receiving side may support only part of JSON Schema. Staying within a widely supported subset avoids surprises.
 
-### 12.1 Safe Features (Draft 7 + 2020-12 Common)
+### 12.1 Widely Supported Keywords
 
-The following keywords can be safely used in all mainstream AI protocols:
-
-| Keyword | Description |
+| Keyword | Purpose |
 |--------|------|
 | `type` | Type declaration |
-| `properties` | Object property definition |
-| `required` | Required field list |
-| `enum` | Enum values |
-| `const` | Constant value |
-| `description` | Field description |
-| `default` | Default value |
+| `properties` / `required` | Object shape |
+| `enum` / `const` | Fixed values |
+| `description` / `default` | Documentation and defaults |
 | `minimum` / `maximum` | Numeric range |
-| `minLength` / `maxLength` | String length |
-| `pattern` | Regular expression constraint |
-| `items` | Array element definition |
-| `$ref` | Reference (local reference) |
-| `oneOf` / `anyOf` / `allOf` | Combined types |
-| `additionalProperties` | Allow additional properties |
-| `format` | Format annotation (like `date-time`, `email`) |
+| `minLength` / `maxLength` / `pattern` | String constraints |
+| `items` | Array element schema |
+| `$ref` (local) | Reference within the same document |
+| `oneOf` / `anyOf` / `allOf` | Combinations |
+| `additionalProperties` | Extra keys |
+| `format` | Annotation such as `date-time` or `email` |
 
-### 12.2 Use with Caution (Draft 2020-12 Specific)
+### 12.2 Use With Care
 
-The following keywords are only available in Draft 2020-12, some AI protocols may not support:
-
-| Keyword | Description | Risk |
+| Keyword | Introduced in | Risk |
 |--------|------|------|
-| `if` / `then` / `else` | Conditional Schema | MCP Draft 7 doesn't support; some AI protocols ignore |
-| `$dynamicRef` / `$dynamicAnchor` | Dynamic reference | Most AI protocols don't support |
-| `prefixItems` | Tuple definition (replaces old `items` array form) | Draft 7 uses `items` array form |
-| `$anchor` | Named anchor | Draft 7 uses `$id` |
-| `dependentRequired` / `dependentSchemas` | Dependency declaration | Draft 7 uses `dependencies` |
+| `if` / `then` / `else` | Draft 7 | Often ignored by tool-calling APIs |
+| `$anchor` | 2019-09 | Not understood by Draft 7 consumers, which use `$id` |
+| `dependentRequired` / `dependentSchemas` | 2019-09 | Draft 7 consumers expect `dependencies` |
+| `prefixItems` | 2020-12 | Draft 7 consumers expect the array form of `items` |
+| `$dynamicRef` / `$dynamicAnchor` | 2020-12 | Rarely supported outside full validators |
 
 ### 12.3 Recommendations
 
-- Modules aimed at broad AI protocol compatibility **SHOULD** limit to the safe subset in §12.1
-- Modules used only within apcore and not exported to external AI protocols can freely use all Draft 2020-12 features
-- When using `oneOf`/`anyOf`, **SHOULD** provide `examples` to help AI understand branch meanings
-- Cross-file `$ref` **SHOULD** be inlined when exported, as most AI protocols don't support external reference resolution
+- For modules that will be exported, stay within §12.1.
+- Modules used only inside apcore can use all of Draft 2020-12.
+- With `oneOf`/`anyOf`, add examples so the model can tell the branches apart.
+- Inline cross-file `$ref`s before export; most consumers cannot fetch external references. The [strict-mode export](../spec/protocol-spec.md#416-strict-mode-export) produces a schema that OpenAI and Anthropic strict mode accept.
 
 ---
 
 ## Next Steps
 
-- [Creating Modules Guide](./creating-modules.md) - Complete module creation tutorial
-- [Module Interface](../features/module-interface.md) - Module Protocol contract
-- [ACL Configuration Guide](./acl-configuration.md) - Access control configuration
+- [Creating Modules Guide](./creating-modules.md) — Module creation tutorial
+- [Multi-Language Guide](./multi-language.md) — Sharing schemas across SDKs
+- [Schema System](../features/schema-system.md) — Loader, validator, and exporter reference
+- [Type Mapping Specification](../spec/type-mapping.md) — Canonical type mapping

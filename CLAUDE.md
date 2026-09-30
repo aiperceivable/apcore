@@ -20,9 +20,9 @@ apcore/
 ├── schemas/                   # Canonical JSON Schema files (*.schema.json)
 ├── conformance/fixtures/      # Cross-language test fixtures (*.json)
 ├── docs/
-│   ├── features/              # Feature-level specs (one file per feature) — module interface, context object, executor, registry, ACL, etc.
-│   ├── guides/                # How-to tutorials for SDK users
-│   └── spec/                  # Cross-language algorithms, type mapping, conformance
+│   ├── features/              # One reference page per runtime subsystem (current behaviour, 3-language examples)
+│   ├── guides/                # How-to tutorials and cookbooks for SDK users
+│   └── spec/                  # Normative spec, conformance, type mapping, algorithms, decision records
 ├── planning/                  # Internal only — implementation task tracking
 │   └── <feature>/             # index.md + plan.md + state.json + tasks/NN-*.md
 └── mkdocs.yml                 # Doc site navigation and extensions
@@ -51,8 +51,8 @@ Deploy: push to `main` → GitHub Actions builds and deploys to GitHub Pages aut
 ### Adding a new documentation page
 1. Create the `.md` file in the correct `docs/` subdirectory
 2. Add entry to `mkdocs.yml` `nav:` section
-3. Add entry to `README.md` Documentation Index if user-facing
-4. Verify internal links resolve: `mkdocs build` should produce no warnings
+3. Add it to its section index page (`docs/features/index.md`, `docs/guides/index.md` or `docs/spec/index.md`). README links only to the section indexes — do not list individual pages there
+4. Verify internal links and anchors resolve: `mkdocs build --strict` (anchor validation is enabled) must produce no warnings
 
 ### Adding a conformance fixture
 1. Create `conformance/fixtures/<name>.json` with structure: `{ "description": "...", "test_cases": [...] }`
@@ -94,7 +94,7 @@ All feature docs must show Python, TypeScript, and Rust examples using MkDocs ta
 
 ### Terminology
 Use standardized terms consistently:
-- `caller_id` / `target_id` (not `caller` / `target` alone)
+- `caller_id` / `target_id` (not `caller` / `target` alone) **in prose**. Never rename a literal schema field to match: a binding entry's field is `target`, ACL rules use `callers` / `targets` — a `target_id:` key in a binding example fails validation
 - `module` (not `extension` when referring to the abstract concept)
 - `default_effect: deny` (always — never show `allow` as default without a warning)
 
@@ -112,7 +112,8 @@ Use standardized terms consistently:
 
 ### ACL & Security
 - Do NOT change `default_effect` from `deny` to `allow` without a prominent warning
-- Do NOT show ACL examples that skip the audit block
+- Do NOT show ACL file examples that skip the `audit:` block — the ACL file is the one audit configuration home (spec §6.3.2); `acl.audit.*` and `acl.default_effect` in `apcore.yaml` are deprecated and do nothing
+- Do NOT show a config key as working without checking `conformance/config_key_consumers.json` — 16 declared keys are inert
 - Do NOT bypass `requires_approval` enforcement at the Executor level
 
 ### Architecture
@@ -122,8 +123,10 @@ Use standardized terms consistently:
 
 ### Documentation
 - Do NOT add user-facing docs to `planning/` — internal only
-- Do NOT create top-level `.md` files without updating `README.md` Documentation Index
+- Do NOT create top-level `.md` files without linking them from `README.md`
 - Do NOT use Schema drafts other than Draft 2020-12 in examples
+- Do NOT write history into current-state docs (guides, features, concepts, README). Describe what the product does now; a rule may cite its decision as `(D-xx)`. Backstory — "previously", "SDK X used to", version-tagged notes, audit narratives — belongs only in `CHANGELOG.md` and the decision records under `docs/spec/`
+- Do NOT write versions anywhere but `docs/index.md` (and the spec header / CHANGELOG)
 
 ## Changelog Format
 
@@ -147,6 +150,6 @@ These are the five pillars — read the linked docs before modifying related con
 
 1. **Module ID = Directory Path** — `executor.email.send_email` derived from file path. See `docs/spec/protocol-spec.md` §"Module ID Specification"
 2. **Three-Layer Metadata** — Core (required: `input_schema`/`output_schema`/`description`) → Annotation → Extension (`x-` prefix). See `docs/features/schema-system.md`
-3. **Execution Pipeline** — 11 ordered stages, strict invariants. See `docs/features/core-executor.md`
+3. **Execution Pipeline** — 11 ordered steps (`middleware_before` runs before `input_validation`). See `docs/features/core-executor.md` and `docs/features/execution-pipeline.md`
 4. **ACL Default-Deny** — All inter-module calls require explicit `allow`. See `docs/features/acl-system.md`
 5. **Layer Hierarchy** — `api.*` → `orchestrator.*` → `executor.*` → `common.*`. Downward only.

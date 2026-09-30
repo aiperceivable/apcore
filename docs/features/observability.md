@@ -1,2240 +1,540 @@
 ---
-description: "Middleware-based observability: distributed tracing with Span/sampling and OTLP/stdout/in-memory exporters, thread-safe Prometheus-export metrics, ContextLogger with trace/redaction."
+description: "Observability overview: config-driven and programmatic tracing, sampling, span exporters and processors, W3C trace context propagation, and the ContextLogger."
 ---
 
-# Observability System
+# Observability
 
-<!-- preamble-tier-doc -->
-> **Type:** Implementation guide. **Normative spec:** [PROTOCOL_SPEC](../spec/protocol-spec.md) §10 Observability Specification.
+> **Normative spec:** [protocol-spec §10 Observability](../spec/protocol-spec.md#10-observability-specification). This page describes how the three SDKs implement it.
 
+apcore instruments module calls through ordinary middleware, so observability plugs into the same [middleware pipeline](./middleware-system.md) as everything else. Each concern has one page:
 
-## Overview
+| Concern | Main types | Page |
+|---|---|---|
+| Tracing — spans, sampling, exporters, processors, W3C propagation | `TracingMiddleware`, `BatchSpanProcessor`, `TraceContext` | this page |
+| Structured logging | `ContextLogger`, `ObsLoggingMiddleware` | this page |
+| Metrics, usage analytics, Prometheus, storage backends | `MetricsCollector`, `UsageCollector`, `PrometheusExporter`, `StorageBackend` | [Metrics and Usage](./metrics-and-usage.md) |
+| Recent-error tracking and fingerprints | `ErrorHistory`, `ErrorHistoryMiddleware` | [Error History](./error-history.md) |
+| Secret redaction in logs and captured I/O | `x-sensitive`, `obs.redaction.*`, `RedactionConfig` | [Redaction](./redaction.md) |
 
-Comprehensive observability with distributed tracing, metrics collection, and structured context logging. The system is implemented as a set of middleware components that plug into the apcore middleware pipeline, providing automatic per-module instrumentation. It includes an OpenTelemetry bridge for production tracing, Prometheus-format metrics export, and a standalone structured logger with trace context injection and sensitive field redaction.
+## Which config keys work
 
-## Requirements
+Only the keys below touch observability. The authoritative per-key status is `conformance/config_key_consumers.json`; every other spelling is undeclared and is rejected under `_config.strict`.
 
-### Tracing
-- Provide a `Span` dataclass capturing trace ID, span ID, parent span ID, name, timing, status, attributes, and events.
-- Implement `TracingMiddleware` using stack-based span management in `context.data` to correctly handle nested module-to-module calls.
-- Support four sampling strategies: `full` (always export), `proportional` (random sampling at configurable rate), `error_first` (always export errors, proportional for successes), and `off` (never export).
-- Inherit sampling decisions from parent spans in nested calls.
-- Define a `SpanExporter` protocol with three implementations: `StdoutExporter` (JSON lines to stdout), `InMemoryExporter` (bounded in-memory collection for testing), and `OTLPExporter` (OpenTelemetry bridge).
-- `InMemoryExporter` MUST be bounded (deque with configurable maxlen, default 10,000) to prevent unbounded memory growth.
+| Key | Status | Effect |
+|---|---|---|
+| `observability.tracing.enabled` | live | `true` installs a `TracingMiddleware` at client construction ([below](#tracing-from-configuration)) |
+| `observability.tracing.strategy` | live | `full` (default) · `proportional` · `error_first` · `off` |
+| `observability.tracing.sampling_rate` | live | Probability used by `proportional` and `error_first` (default `1.0`) |
+| `observability.tracing.exporter` | live | `stdout` (default) · `otlp` · `jaeger` |
+| `observability.tracing.otlp_endpoint` | live | OTLP target; only valid with `exporter: otlp` |
+| `obs.redaction.sensitive_keys` · `regex_patterns` · `replacement` | live | See [Redaction](./redaction.md#configured-rules-obsredaction) |
+| `sys_modules.error_history.max_entries_per_module` · `max_total_entries` | live | Limits of the auto-created `ErrorHistory` ([Error History](./error-history.md#configuration)) |
+| `sys_modules.events.thresholds.error_rate` · `latency_p99_ms` | live | Alert thresholds of `PlatformNotifyMiddleware` ([Metrics and Usage](./metrics-and-usage.md#threshold-alerts)) |
+| `observability.metrics.enabled` · `observability.metrics.exporter` | **inert** | Read by nothing; deprecated ([§9.2.4](../spec/protocol-spec.md#924-deprecated-configuration-keys)). Metrics come from a `MetricsCollector` you construct. |
+| `logging.level` · `logging.format` | **inert** | Withdrawn ([§9.2.4](../spec/protocol-spec.md#924-deprecated-configuration-keys)). Pass level and format to `ContextLogger` directly. |
+| `sys_modules.usage.retention_hours` · `sys_modules.usage.bucketing_strategy` | **inert** | Read by nothing. Retention is a `UsageCollector` constructor argument. |
 
-#> **D-106 (v1.50.0) — p99 when no bucket reaches the threshold.** When the
-> nearest-rank target falls beyond the largest finite histogram bucket — every
-> observation overflowed it — the estimate **MUST** be the largest finite bucket
-> bound, not zero. Returning `0.0` reports the *fastest possible* latency for
-> the *slowest* modules, and since latency alerting compares the estimate
-> against a threshold, it disables the alert precisely for the modules that
-> should fire it. apcore-rust returned `0.0` and pinned that in a unit test
-> (`estimate_p99_from_histogram_no_bucket_exceeds_threshold_returns_zero`),
-> which is why a green suite did not catch it. An implementation **SHOULD** also
-> emit the `+Inf` bucket in its snapshot, so a consumer can tell "no data" from
-> "all overflow".
+Keys that do not exist and are often guessed: a top-level `tracing:` block, `observability.prometheus.*`, `observability.health.*`, `observability.redaction.*`, `obs.otel.*`.
 
-## Storage backend namespaces, and the error-timestamp format
+## Quick start
 
-> **Added in spec v1.51.0** (D-113, D-120).
+Turn on tracing without writing code:
 
-**D-113 — each collector writes under one named namespace.** §1.1 makes the
-`StorageBackend` constructor argument a MUST and requires `InMemoryStorageBackend`
-when it is omitted, but never NAMED the namespaces — so of nine
-collector/SDK combinations only four wrote at all, the two SDKs that did write
-disagreed (`errors` vs `error_history` for the same records), and only one
-honoured the omitted-argument default. The namespaces are now fixed:
+```yaml
+# apcore.yaml
+apcore:
+  version: "1.0.0"
 
-| Collector | Namespace |
-|---|---|
-| `MetricsCollector` | `metrics` |
-| `UsageCollector` | `usage` |
-| `ErrorHistory` | `error_history` |
-
-When the argument is omitted, `InMemoryStorageBackend` **MUST** be used — not
-`None`, which made `.storage.list(...)` raise on one SDK and return nothing on
-another for the same code the spec prints as its example.
-
-> **Migration.** apcore-python currently writes `ErrorHistory` records under
-> `errors`. Adopting `error_history` orphans anything already persisted by a
-> network-backed store. Implementations **SHOULD** read from both names for one
-> minor version, writing only the new one, and **MUST** state the rename in
-> their migration notes. A namespace rename is invisible until someone queries
-> old data and finds nothing.
-
-**D-120 — error timestamps are UTC with a `Z` suffix and millisecond
-precision** — `2026-09-16T10:30:00.123Z`. Three SDKs rendered three spellings
-(`+00:00` microseconds, `Z` milliseconds, `+00:00` nanoseconds), so a
-string-ordering or strict-parsing consumer saw three formats. Fixing the suffix
-alone would leave three precisions behind the same `Z` — the same defect, now
-harder to see — so the precision is part of the requirement. The fix belongs in
-`ErrorHistory`, where the timestamps are produced: a renderer at the
-`system.health.*` surface changes one reader and leaves the others.
-
-## Metrics
-- Implement a `MetricsCollector` with thread-safe counters and histograms (with configurable bucket boundaries).
-- Provide convenience methods for standard apcore metrics: `increment_calls()` → `apcore_module_calls_total`, `increment_errors()` → `apcore_module_errors_total`, `observe_duration()` → `apcore_module_duration_seconds`.
-- Support Prometheus text exposition format export via `export_prometheus()`.
-- Implement `MetricsMiddleware` that automatically records call counts (success/error), error codes, and execution duration for each module call.
-- Use stack-based timing in `context.data` for correct nested call support.
-
-### Structured Logging
-- Implement `ContextLogger` as a standalone structured logger with JSON and text output formats.
-- Support log levels: trace, debug, info, warn, error, fatal.
-- Inject trace context (trace_id, module_id, caller_id) into every log entry.
-- Automatically redact sensitive data using two mechanisms:
-  1. `x-sensitive` schema annotation: used by the Executor to redact annotated fields from input/output before logging.
-  2. `_secret_` key prefix: used by `ContextLogger` to redact matching keys in log extras when `redact_sensitive=True`.
-- Provide `ContextLogger.from_context()` factory for automatic context extraction.
-- Implement `ObsLoggingMiddleware` using `ContextLogger` with stack-based timing and configurable input/output logging.
-
-## Technical Design
-
-### Tracing Architecture
-
-The tracing system uses a stack-based approach stored in `context.data["_apcore.mw.tracing.spans"]`. This correctly handles nested module calls within the same trace:
-
-```
-TracingMiddleware.before("mod.a"):
-  Stack: [Span(mod.a)]
-
-  TracingMiddleware.before("mod.b"):
-    Stack: [Span(mod.a), Span(mod.b)]
-    Span(mod.b).parent_span_id = Span(mod.a).span_id
-
-  TracingMiddleware.after("mod.b"):
-    Pop Span(mod.b), export if sampled
-    Stack: [Span(mod.a)]
-
-TracingMiddleware.after("mod.a"):
-  Pop Span(mod.a), export if sampled
-  Stack: []
+observability:
+  tracing:
+    enabled: true
+    strategy: proportional
+    sampling_rate: 0.1
+    exporter: otlp
+    otlp_endpoint: "http://otel-collector:4318/v1/traces"
 ```
 
-#### Sampling Decision Flow
+Pass the loaded file to the client — Python `APCore(config=Config.load("apcore.yaml"))`, TypeScript `new APCore({ config: Config.load("apcore.yaml") })`, Rust `APCore::from_path("apcore.yaml")?`.
 
-```
-_should_sample(context):
-  1. Check context.data["_apcore.mw.tracing.sampled"] -- if exists, inherit decision
-  2. If "full" strategy -> always True
-  3. If "off" strategy -> always False
-  4. If "proportional" or "error_first" -> random.random() < sampling_rate
-  5. Store decision in context.data for child spans to inherit
-```
-
-For `error_first`, the sampling decision only affects success spans. Error spans in `on_error()` are always exported regardless of the stored decision.
-
-#### Span Exporters
-
-- **`StdoutExporter`**: Serializes the span to a dictionary and writes it as a single JSON line to stdout.
-- **`InMemoryExporter`**: Thread-safe ring buffer with configurable maximum capacity (`max_spans`) and lock protection. Provides `get_spans()`, `clear()` methods.
-- **`OTLPExporter`**: Bridges apcore spans to OpenTelemetry. Creates an OTel `TracerProvider` with an OTLP HTTP exporter, converts apcore span attributes (including `apcore.trace_id`, `apcore.span_id`, `apcore.parent_span_id` for correlation), replays events, and maps status codes. Non-primitive attributes are stringified for OTel compatibility.
-
-### Metrics Architecture
-
-`MetricsCollector` maintains three internal dictionaries protected by a single lock:
-- `_counters`: Maps `(name, labels_tuple)` to integer counts.
-- `_histogram_sums`/`_histogram_counts`: Maps `(name, labels_tuple)` to sum/count values.
-- `_histogram_buckets`: Maps `(name, labels_tuple, bucket_boundary)` to bucket counts, including a `+Inf` bucket that is always incremented.
-
-`MetricsMiddleware` uses a stack (`context.data["_apcore.mw.metrics.starts"]`) to track start times for nested calls. In `after()`, it pops the start time, computes duration, and records success metrics. In `on_error()`, it additionally extracts the error code (from `ModuleError.code` or `type(error).__name__`).
-
-### Logging Architecture
-
-`ContextLogger` supports two output formats:
-- **JSON**: Emits a single JSON object per line with fields: `timestamp`, `level`, `message`, `trace_id`, `module_id`, `caller_id`, `logger`, `extra`.
-- **Text**: Emits formatted lines: `{timestamp} [{LEVEL}] [trace={trace_id}] [module={module_id}] {message} {extras}`.
-
-Redaction applies to any key in `extra` that starts with `_secret_`, replacing the value with `***REDACTED***`.
-
-`ObsLoggingMiddleware` wraps `ContextLogger` and uses the same stack-based timing pattern as `MetricsMiddleware` via `context.data["_apcore.mw.logging.starts"]`.
-
-### Recommended Registration Order
-
-As documented in the package `__init__.py`:
-1. `TracingMiddleware` -- Captures total wall-clock time (outermost).
-2. `MetricsMiddleware` -- Captures execution timing.
-3. `ObsLoggingMiddleware` -- Logs with timing already set up (innermost).
-
-### W3C Trace Context
-
-apcore supports [W3C Trace Context](https://www.w3.org/TR/trace-context/) for distributed tracing interoperability. The `TraceContext` class provides methods to inject and extract `traceparent` headers, enabling trace propagation across service boundaries.
-
-| Method | Description |
-|--------|-------------|
-| `TraceContext.inject(context)` | Convert an apcore `Context` into a headers dict (`dict[str, str]` / `Record<string, string>`) containing a `traceparent` key |
-| `TraceContext.extract(headers)` | Parse a `traceparent` header from an incoming request headers dict and return a `TraceParent` |
-| `TraceContext.from_traceparent(str)` | Strict parsing of a `traceparent` string into a `TraceParent` object |
-
-Integration with `Context.create()`:
-
-=== "Python"
-    ```python
-    from apcore import Context
-    from apcore import TraceContext
-
-    # Extract trace parent from incoming request
-    trace_parent = TraceContext.extract(request.headers)
-
-    # Create context with propagated trace
-    context = Context.create(trace_parent=trace_parent)
-
-    # Inject trace parent into outgoing request headers
-    outgoing_headers = TraceContext.inject(context)
-    # outgoing_headers = {"traceparent": "00-<trace_id>-<span_id>-01"}
-    ```
-=== "TypeScript"
-    ```typescript
-    import { Context } from "apcore-js";
-    import { TraceContext } from "apcore-js";
-
-    // Extract trace parent from incoming request
-    const traceParent = TraceContext.extract(request.headers);
-
-    // Create context with propagated trace
-    const context = Context.create(null, traceParent);
-
-    // Inject trace parent into outgoing request headers
-    const outgoingHeaders = TraceContext.inject(context);
-    // outgoingHeaders = { traceparent: "00-<trace_id>-<span_id>-01" }
-    ```
-=== "Rust"
-    ```rust
-    use apcore::context::Context;
-    use apcore::TraceContext;
-
-    // Extract trace parent from incoming request
-    let trace_parent = TraceContext::extract(&request.headers)?;
-
-    // Create context with propagated trace
-    let context = Context::create(None, Some(trace_parent), None, None, Value::Null, None);
-
-    // Inject trace parent into outgoing request headers
-    let outgoing_headers = TraceContext::inject(&context);
-    // outgoing_headers = {"traceparent": "00-<trace_id>-<span_id>-01"}
-    ```
-
-The `traceparent` header follows the W3C format: `{version}-{trace_id}-{parent_id}-{trace_flags}`.
-
-#### W3C Alignment Rules (Issue #35)
-
-The following rules harden `TraceContext.extract` / `TraceContext.inject` for production
-W3C interoperability across Python, TypeScript, and Rust SDKs.
-
-##### Tracestate Propagation
-
-- Implementations MUST parse the `tracestate` header alongside `traceparent` during
-  `extract()`. Each entry is a `key=value` pair separated by `,`. Whitespace around the
-  separators MUST be tolerated (per W3C Trace Context §3.3.1.1).
-- The parsed result MUST be an ordered list of `(key, value)` pairs preserving the
-  on-the-wire order of the originating header. Order is significant — the W3C spec uses
-  position to identify the most recently mutating vendor.
-- Implementations MUST cap retained entries at **32**; entries beyond the 32nd MUST be
-  dropped from the head of the list per the W3C `tracestate` size limit.
-- Malformed entries (missing `=`, empty key, or non-printable characters) MUST be dropped
-  silently while leaving valid neighboring entries intact.
-- `inject()` MUST serialize the stored list back to a `tracestate` header preserving order
-  and entry count, so that an `extract → inject` round-trip is lossless for any input that
-  already satisfies the rules above.
-
-##### Case-Insensitive Header Lookup
-
-- `extract()` MUST treat header keys case-insensitively. Callers may pass any of
-  `traceparent`, `Traceparent`, `TRACEPARENT`, `tracestate`, `Tracestate`, or `TRACESTATE`
-  and the lookup MUST succeed. This matches RFC 7230 §3.2 (HTTP header field names are
-  case-insensitive) and the practical reality of WSGI/ASGI/Node/Actix header maps.
-- The injected output of `inject()` MUST always use the canonical lowercase header keys
-  `traceparent` and (when present) `tracestate`.
-
-##### Dynamic Sampling Flag Honoring
-
-- `extract()` MUST preserve the `trace_flags` byte from the incoming `traceparent` (`01`
-  sampled, `00` unsampled). Implementations MUST NOT hardcode a sampling flag.
-- `inject()` MUST emit the same `trace_flags` byte that was extracted, so that the upstream
-  caller's sampling decision propagates downstream untouched.
-- When no incoming `traceparent` exists and `inject()` is called against a fresh context,
-  the implementation MAY choose its own flag according to the local sampling strategy
-  (`full` → `01`, `off` → `00`, `proportional` / `error_first` → flag derived from the
-  middleware's sampling decision for the current span).
-
-##### Optional `parent_id` Override on `inject()`
-
-- `inject()` MUST accept an optional `parent_id` argument. When provided, the value MUST
-  match the regex `^[0-9a-f]{16}$` (16 lowercase hex characters). Non-matching values MUST
-  raise an error with code `INVALID_PARENT_ID` (Python `ValueError`, TypeScript `Error`,
-  Rust `Err(TraceContextError::InvalidParentId)`).
-- When `parent_id` is omitted, implementations MUST derive the parent id automatically
-  from the top-of-stack span (`context.data["_apcore.mw.tracing.spans"][-1].span_id` if
-  present, otherwise a freshly generated 16-hex value).
-- The override is intended for callers that wrap apcore with their own span manager and
-  need to anchor the outgoing `traceparent` to a span id apcore did not create.
-
-=== "Python"
-    ```python
-    from apcore import Context
-    from apcore.trace_context import TraceContext
-
-    # Case-insensitive extract preserves tracestate order and flags
-    incoming = {
-        "Traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-00",
-        "TRACESTATE": "vendor1=opaque1,vendor2=opaque2",
-    }
-    trace_parent = TraceContext.extract(incoming)
-    assert trace_parent is not None
-    assert trace_parent.trace_flags == "00"  # honored, not hardcoded
-
-    # Build a context that carries the propagated trace + state
-    context = Context.create(trace_parent=trace_parent)
-
-    # Inject with default (auto-derived) parent_id
-    headers = TraceContext.inject(context)
-    # headers == {
-    #   "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-<auto>-00",
-    #   "tracestate": "vendor1=opaque1,vendor2=opaque2",
-    # }
-
-    # Optional override: pin the outgoing parent_id to a caller-managed span
-    headers = TraceContext.inject(context, parent_id="aaaaaaaaaaaaaaaa")
-    assert headers["traceparent"].split("-")[2] == "aaaaaaaaaaaaaaaa"
-
-    # Malformed override raises immediately
-    try:
-        TraceContext.inject(context, parent_id="ZZZZ")
-    except ValueError as exc:
-        assert "INVALID_PARENT_ID" in str(exc)
-    ```
-=== "TypeScript"
-    ```typescript
-    import { Context } from "apcore-js";
-    import { TraceContext } from "apcore-js";
-
-    // Case-insensitive extract preserves tracestate order and flags
-    const incoming: Record<string, string> = {
-        Traceparent: "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-00",
-        TRACESTATE: "vendor1=opaque1,vendor2=opaque2",
-    };
-    const traceParent = TraceContext.extract(incoming);
-    if (traceParent === null) throw new Error("expected parent");
-    console.assert(traceParent.traceFlags === "00"); // honored, not hardcoded
-
-    // Build a context that carries the propagated trace + state
-    const context = Context.create(null, traceParent);
-
-    // Inject with default (auto-derived) parent_id
-    let headers = TraceContext.inject(context);
-    // headers == {
-    //   traceparent: "00-4bf92f3577b34da6a3ce929d0e0e4736-<auto>-00",
-    //   tracestate: "vendor1=opaque1,vendor2=opaque2",
-    // }
-
-    // Optional override: pin the outgoing parent_id
-    headers = TraceContext.inject(context, { parentId: "aaaaaaaaaaaaaaaa" });
-    console.assert(headers.traceparent.split("-")[2] === "aaaaaaaaaaaaaaaa");
-
-    // Malformed override raises immediately
-    try {
-        TraceContext.inject(context, { parentId: "ZZZZ" });
-    } catch (err) {
-        console.assert((err as Error).message.includes("INVALID_PARENT_ID"));
-    }
-    ```
-=== "Rust"
-    ```rust
-    use apcore::context::Context;
-    use apcore::errors::ErrorCode;
-    use apcore::TraceContext;
-    use serde_json::Value;
-    use std::collections::HashMap;
-
-    // Case-insensitive extract preserves tracestate order and flags
-    let mut incoming: HashMap<String, String> = HashMap::new();
-    incoming.insert(
-        "Traceparent".to_string(),
-        "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-00".to_string(),
-    );
-    incoming.insert(
-        "TRACESTATE".to_string(),
-        "vendor1=opaque1,vendor2=opaque2".to_string(),
-    );
-
-    let trace_parent = TraceContext::extract(&incoming).expect("present");
-    assert_eq!(trace_parent.trace_flags, "00"); // honored, not hardcoded
-
-    // Build a context that carries the propagated trace + state
-    let context = Context::create(None, Some(trace_parent), None, None, Value::Null, None);
-
-    // Inject with default (auto-derived) parent_id. Note: plain `inject` takes
-    // ONLY `context` in this SDK — there is no 2-arg `inject(context, parent_id)`
-    // overload here, unlike Python/TypeScript.
-    let headers = TraceContext::inject(&context);
-    // headers["traceparent"] -> "00-4bf92f3577b34da6a3ce929d0e0e4736-<auto>-00"
-    // headers["tracestate"]  -> "vendor1=opaque1,vendor2=opaque2"
-
-    // Optional override: pin the outgoing parent_id via `inject_with_options`
-    // (parent_id, trace_flags, tracestate).
-    let headers = TraceContext::inject_with_options(&context, Some("aaaaaaaaaaaaaaaa"), None, None);
-    assert_eq!(headers["traceparent"].split('-').nth(2).unwrap(), "aaaaaaaaaaaaaaaa");
-
-    // Malformed override: `inject_with_options` silently falls back to a fresh
-    // random parent_id instead of raising (kept for backward compatibility).
-    // To reject a malformed override, use `inject_checked`, which fails with a
-    // `ModuleError` carrying `ErrorCode::InvalidParentId` (wire code
-    // `INVALID_PARENT_ID`, D-51). It takes the same four arguments.
-    match TraceContext::inject_checked(&context, Some("ZZZZ"), None, None) {
-        Err(e) if e.code == ErrorCode::InvalidParentId => {}
-        _ => panic!("expected INVALID_PARENT_ID"),
-    }
-    ```
-
-## Contract: TraceContext.inject
-
-### Inputs
-- `context` (Context, required) — apcore Context carrying the `trace_id` (and, when present, inbound `trace_flags`/`tracestate`) to serialize into outbound headers
-- `parent_id` (str, optional) — 16-lowercase-hex override for the outbound parent span id
-  - **Cross-language note:** Python's `inject(context, parent_id=None)` and TypeScript's `inject(context, parentId?)` accept this as a second argument directly. Rust's `inject(context)` takes **only** `context` — the parent_id/trace_flags/tracestate overrides live on a separate method, `inject_with_options(context, parent_id, trace_flags, tracestate)`, and its validating counterpart `inject_checked` (same four arguments) — see Errors.
-
-### Errors
-- `InvalidParentIdError` / `INVALID_PARENT_ID` (Python: `InvalidParentIdError`, a `ValueError` subclass; TypeScript: `Error` with `code = "INVALID_PARENT_ID"`) — `parent_id` is provided and does not match `^[0-9a-f]{16}$`
-- Rust's `inject` / `inject_with_options` do **not** raise on a malformed `parent_id` — they silently fall back to a fresh random one, preserved for backward compatibility. Only `inject_checked` returns `Err(ModuleError(code=InvalidParentId))` for a malformed override. This is a real cross-language behavioral difference, not merely a naming one: code relying on rejection of bad input is not portable to Rust's plain `inject`/`inject_with_options`.
-
-### Returns
-- On success: `dict[str, str]` / `Record<string, string>` / `HashMap<String, String>` — always contains `traceparent`; contains `tracestate` only when the context carries inbound vendor state (Rust: or when passed explicitly to `inject_with_options`/`inject_checked`)
-
-### Properties
-- async: false
-- thread_safe: true — pure computation over the given `context`'s already-populated fields
-- pure: false — an omitted `parent_id` is drawn from a random source, so the same `context` does not always produce the same output
-- idempotent: false when `parent_id` is omitted (a fresh parent id is generated per call); true when an explicit valid `parent_id` is supplied
-
-## Contract: TraceContext.extract
-
-### Inputs
-- `headers` (mapping/dict/Record/HashMap, required) — incoming request headers; `traceparent` (and, where supported, `tracestate`) are looked up **case-insensitively**
-
-### Errors
-- No errors raised. A missing or malformed `traceparent` header returns `None`/`null`, never raises.
-
-### Returns
-- On success: `TraceParent` — `version`, `trace_id`, `parent_id`, `trace_flags`, and `tracestate` (an ordered list of `(key, value)` pairs, capped at 32 entries). **Rust exception:** its `extract` populates `tracestate` as empty — the paired `tracestate` header is parsed only by the separate `extract_context`, which returns a `TraceContext` wrapping the same `TraceParent` with `tracestate` filled in.
-- On missing/malformed header: `None`/`null` — covers a missing key, a version byte of `ff`, an all-zero `trace_id`, or an all-zero `parent_id`
-
-### Properties
-- async: false
-- thread_safe: true
-- pure: true — depends only on `headers`
-- idempotent: true
-
-## Contract: TraceContext.from_traceparent
-
-**SDK Scope:** Python and TypeScript only. apcore-rust has no equivalent entry point — its `TraceContext::extract` returns `Option` rather than raising, and this SDK has no strict/raising parse function for a bare `traceparent` string.
-
-### Inputs
-- `traceparent` (str/string, required) — a single `traceparent` header **value** (not a headers map) to parse strictly
-
-### Errors
-- `ValueError` (Python) / `Error` (TypeScript) — the string does not match `{2-hex}-{32-hex}-{16-hex}-{2-hex}`, the version byte is `ff`, or `trace_id`/`parent_id` is all-zero. Deliberately a bare, codeless error — not `InvalidParentIdError`/`INVALID_PARENT_ID` — because D-51 reserves that code for one thing only: a caller-supplied `parent_id` override on `inject()`. A malformed inbound header is a different failure.
-
-### Returns
-- On success: `TraceParent` — same fields as a successful `TraceContext.extract`, but `tracestate` is not populated (this method parses only the `traceparent` string, not a headers map)
-
-### Properties
-- async: false
-- thread_safe: true
-- pure: true
-- idempotent: true
-
-### Error History
-
-`ErrorHistory` is a ring-buffer tracker for recent module errors, providing deduplication and per-module querying. It is automatically created and wired by `register_sys_modules()` when system modules are enabled.
-
-**Architecture:**
-- Uses a ring-buffer data structure with configurable per-module capacity (`max_entries_per_module`, default 50) and total capacity (`max_total_entries`, default 1000).
-- Deduplication by `(code, message)` tuple — repeated errors increment `count` and update `last_occurred` instead of creating new entries.
-- Thread-safe via locking.
-
-**API:**
-
-| Method | Description |
-|--------|-------------|
-| `record(error: ModuleError)` | Record an error instance with deduplication |
-| `get(module_id) → list[ErrorEntry]` | Return entries for a module (newest first) |
-| `get_all() → list[ErrorEntry]` | Return all entries sorted by `last_occurred` |
-
-**ErrorEntry dataclass:**
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `module_id` | str | Source module |
-| `code` | str | Error code |
-| `message` | str | Error message |
-| `ai_guidance` | str \| None | AI guidance from the error |
-| `count` | int | Number of occurrences (deduplicated) |
-| `first_occurred` | str | ISO timestamp of first occurrence |
-| `last_occurred` | str | ISO timestamp of most recent occurrence |
-
-**ErrorHistoryMiddleware** records `ModuleError` instances into `ErrorHistory` on every `on_error()` call. Generic exceptions (non-`ModuleError`) are ignored. The middleware never recovers from errors (always returns `None`).
-
-## Contract: ErrorHistory.record
-
-### Inputs
-- `error` (ModuleError, required) — the error instance to record
-
-### Errors
-- None documented — recording MUST NOT raise, since `ErrorHistoryMiddleware` calls this from every `on_error()` hook and an exception here would itself become an unhandled error inside error handling
-
-### Returns
-- On success: void/None/()
-
-### Properties
-- async: false
-- thread_safe: true (via locking, per the Architecture note above)
-- pure: false — mutates the ring buffer; deduplicates by `(code, message)`, incrementing `count` and updating `last_occurred` on a repeat rather than appending a new entry
-- idempotent: false — repeated calls change `count`/`last_occurred`, even for identical errors
-
-## Contract: ErrorHistory.get
-
-### Inputs
-- `module_id` (str, required) — module to query
-
-### Errors
-- None documented — a `module_id` with no recorded errors returns an empty list rather than raising
-
-### Returns
-- On success: `list[ErrorEntry]` — entries for `module_id`, newest first (by `last_occurred`)
-
-### Properties
-- async: false
-- thread_safe: true
-- pure: true — read-only
-- idempotent: true
-
-## Contract: ErrorHistory.get_all
-
-### Inputs
-- No inputs
-
-### Errors
-- None documented
-
-### Returns
-- On success: `list[ErrorEntry]` — all recorded entries across all modules, sorted by `last_occurred`
-
-### Properties
-- async: false
-- thread_safe: true
-- pure: true
-- idempotent: true
-
-### Usage Collector
-
-`UsageCollector` is a thread-safe in-memory tracker for per-module call counting, latency measurement, and hourly trend data. It is automatically created and wired by `register_sys_modules()`.
-
-**Architecture:**
-- Hourly bucketed storage with configurable retention (`retention_hours`, default 168 = 7 days).
-- Trend computation compares current period vs previous period: `stable`, `rising`, `declining`, `new`, `inactive`.
-- Thread-safe via locking.
-
-**API:**
-
-| Method | Description |
-|--------|-------------|
-| `record(module_id, caller_id, latency_ms, success)` | Record a usage event |
-| `get_summary(period="24h") → list[ModuleUsageSummary]` | Aggregated summary for all modules |
-| `UsageCollector.get_module(module_id, period="24h") → ModuleUsageDetail` | Detailed usage with caller breakdown and hourly distribution |
-| `get_latencies(module_id, period="24h") → list[float]` | Raw latency values within the period, for p99 computation |
-
-**UsageMiddleware** records usage in `before()` (start timestamp), `after()` (success + latency), and `on_error()` (failure + latency) hooks.
-
-**Normative output semantics.** The collector is the source of the values `system.usage.summary` and `system.usage.module` report, so its bucket key, its period filter and its percentile are all pinned by [PROTOCOL_SPEC §6.7.1](../spec/protocol-spec.md#671-usage-module-output-contract):
-
-| Concern | Rule |
-|---|---|
-| Hourly bucket key | `YYYY-MM-DDTHH` (UTC), e.g. `2026-03-08T14`. Emitted verbatim as `hourly_distribution[].hour` — the sys-module layer MUST NOT reformat it. |
-| `period` | `^[1-9][0-9]*[hd]$`. Every accessor that takes one MUST filter to `[now − period, now]`; an accessor that ignores it while the module echoes it back is a silent conformance failure. |
-| p99 | Nearest-rank: `sorted[min(ceil(0.99·N), N) − 1]`, no interpolation, `0` for an empty sample set. |
-| Unattributed call | Recorded under the literal `caller_id` `"unknown"`. |
-| Trend thresholds | `> 1.2` rising, `< 0.8` declining, zero-cases first (§6.7.1.5). |
-
-## Contract: UsageCollector.record
-
-### Inputs
-- `module_id` (str, required)
-- `caller_id` (str, required) — recorded as the literal `"unknown"` when the call had no caller identity; never `null` or omitted
-- `latency_ms` (float, required)
-- `success` (bool, required)
-
-### Errors
-- None documented — `UsageMiddleware` calls this from `before()`/`after()`/`on_error()`, all on the hot execution path, so recording MUST NOT raise
-
-### Returns
-- On success: void/None/()
-
-### Properties
-- async: false
-- thread_safe: true (via locking, per the Architecture note above)
-- pure: false — mutates hourly-bucketed storage (default `retention_hours=168`)
-- idempotent: false — each call adds one more data point
-
-## Contract: UsageCollector.get_summary
-
-### Inputs
-- `period` (str, optional, default `"24h"`) — MUST match `^[1-9][0-9]*[hd]$`
-
-### Errors
-- `SCHEMA_VALIDATION_ERROR` — `period` does not match the required pattern (enforced at the `system.usage.summary` module boundary; see [Contract: system.usage.summary](./system-modules.md#contract-systemusagesummary))
-
-### Returns
-- On success: `list[ModuleUsageSummary]` — one entry per module with recorded calls, every field computed over `[now − period, now]` — never over full retained history ([PROTOCOL_SPEC §6.7.1.1](../spec/protocol-spec.md#6711-period-is-a-filter-not-an-echo))
-
-### Properties
-- async: false
-- thread_safe: true
-- pure: true — read-only aggregation over already-recorded data
-- idempotent: not bitwise-stable across time — the window is relative to the caller's `now`, which advances between calls
-
-## Contract: UsageCollector.get_module
-
-### Inputs
-- `module_id` (str, required)
-- `period` (str, optional, default `"24h"`) — same grammar and filter semantics as `get_summary`
-
-### Errors
-- `SCHEMA_VALIDATION_ERROR` — `period` does not match the required pattern
-- No error documented for a `module_id` with no recorded calls — the "new" / "inactive" trend classifications and zero-filled `hourly_distribution` buckets exist precisely to represent that case without raising
-
-### Returns
-- On success: `ModuleUsageDetail` — caller breakdown and the fixed 24-entry `hourly_distribution`, filtered to `[now − period, now]`
-
-### Properties
-- async: false
-- thread_safe: true
-- pure: true
-- idempotent: not bitwise-stable across time (see `get_summary`)
-
-## Contract: UsageCollector.get_latencies
-
-### Inputs
-- `module_id` (str, required)
-- `period` (str, optional, default `"24h"`)
-
-### Errors
-- `SCHEMA_VALIDATION_ERROR` — `period` does not match the required pattern
-
-### Returns
-- On success: `list[float]` — raw latency values recorded for `module_id` within `period`; the caller (not this method) computes the nearest-rank p99 as `sorted[min(ceil(0.99·N), N) − 1]`, `0` for an empty set
-
-### Properties
-- async: false
-- thread_safe: true
-- pure: true
-- idempotent: not bitwise-stable across time
-
-## UsageExporter (push-style)
-
-The `UsageExporter` interface lets you **push** periodic `UsageCollector` summaries to external sinks (HTTP, Kafka, ClickHouse, custom). It is distinct from the **pull-style** `PrometheusExporter` documented in [`PrometheusExporter.export`](#contract-prometheusexporterexport): Prometheus scrapes; `UsageExporter` ships (decision **D-55**, Issue #45 §3).
-
-**Lifecycle:**
-
-- `start()` spawns a background task (Python `asyncio.Task` / TypeScript `setInterval`+timer / Rust `tokio::task::spawn`) that polls `UsageCollector.summary()` at a configurable interval (**default 1 hour**) and calls `exporter.export(summary)` for each registered exporter.
-- `stop()` halts the background loop and awaits `exporter.shutdown()` for graceful drain.
-- The default registered exporter is `NoopUsageExporter`, which silently drops summaries — apcore does **NOT** ship HTTP, Kafka, or other transport-bound exporters; implementations are user responsibility.
-- A bundled `PeriodicUsageExporter` wraps the timer + polling logic and accepts any user-supplied `UsageExporter` as its sink.
-
-**Normative rules:**
-
-- All 3 SDKs **MUST** ship a `UsageExporter` Protocol (Python) / interface (TypeScript) / trait (Rust) with two methods: `export(summary)` and `shutdown()`.
-- All 3 SDKs **MUST** ship `NoopUsageExporter` as the default.
-- All 3 SDKs **MUST** ship `PeriodicUsageExporter` as the bundled timer wrapper. Default `interval_seconds: 3600` (1 hour).
-- `stop()` **MUST** await `exporter.shutdown()`; in-flight `export()` calls **MUST** complete or be cancelled before `shutdown()` returns.
-- `PeriodicUsageExporter` **MUST** be safe to call `stop()` multiple times (idempotent).
-- apcore SDKs **MUST NOT** ship transport-specific exporters (HTTP/Kafka/etc.); these are explicitly out-of-tree and a user concern.
-
-=== "Python"
-    ```python
-    from typing import Protocol
-    from apcore.observability import (
-        UsageCollector,
-        NoopUsageExporter,
-        PeriodicUsageExporter,
-    )
-
-    class UsageExporter(Protocol):
-        async def export(self, summary: list) -> None: ...
-        async def shutdown(self) -> None: ...
-
-    class HttpUsageExporter:
-        def __init__(self, url: str) -> None:
-            self._url = url
-
-        async def export(self, summary: list) -> None:
-            # POST summary to self._url; user-implemented.
-            ...
-
-        async def shutdown(self) -> None:
-            # Close any pooled connections.
-            ...
-
-    collector = UsageCollector()
-    exporter = HttpUsageExporter("https://metrics.example.com/usage")
-    periodic = PeriodicUsageExporter(
-        collector=collector,
-        exporter=exporter,
-        interval_seconds=3600,  # default
-    )
-    await periodic.start()
-    # ... application runs ...
-    await periodic.stop()  # awaits exporter.shutdown()
-    ```
-
-=== "TypeScript"
-    ```typescript
-    import {
-        UsageCollector,
-        NoopUsageExporter,
-        PeriodicUsageExporter,
-        UsageExporter,
-    } from "apcore-js";
-
-    class HttpUsageExporter implements UsageExporter {
-        constructor(private readonly url: string) {}
-
-        async export(summary: Record<string, unknown>): Promise<void> {
-            // POST to this.url; user-implemented.
-        }
-
-        async shutdown(): Promise<void> {
-            // Close pooled connections.
-        }
-    }
-
-    const collector = new UsageCollector();
-    const exporter = new HttpUsageExporter("https://metrics.example.com/usage");
-    const periodic = new PeriodicUsageExporter({
-        collector,
-        exporter,
-        intervalSeconds: 3600,  // default
-    });
-    await periodic.start();
-    // ... application runs ...
-    await periodic.stop();  // awaits exporter.shutdown()
-    ```
-
-=== "Rust"
-    ```rust
-    use std::sync::Arc;
-    use apcore::observability::{
-        UsageCollector,
-        UsageExporter,
-        NoopUsageExporter,
-        PeriodicUsageExporter,
-    };
-    use apcore::errors::ModuleError;
-    use async_trait::async_trait;
-    use serde_json::Value;
-
-    pub struct HttpUsageExporter {
-        url: String,
-    }
-
-    // The snapshot arrives as a `serde_json::Value`, not a typed collection:
-    // `PeriodicUsageExporter` hands over
-    // `serde_json::to_value(&UsageCollector::get_all_summaries())`, so an
-    // exporter forwards it without needing to know the summary's shape.
-    #[async_trait]
-    impl UsageExporter for HttpUsageExporter {
-        async fn export(&self, _summary: &Value) -> Result<(), ModuleError> {
-            // POST to self.url; user-implemented.
-            Ok(())
-        }
-
-        async fn shutdown(&self) -> Result<(), ModuleError> {
-            // Close pooled connections.
-            Ok(())
-        }
-    }
-
-    let collector = Arc::new(UsageCollector::new());
-    let exporter: Arc<dyn UsageExporter> = Arc::new(HttpUsageExporter {
-        url: "https://metrics.example.com/usage".into(),
-    });
-    let periodic = PeriodicUsageExporter::builder()
-        .collector(collector)
-        .exporter(exporter)
-        .interval_seconds(3600)  // default
-        .build();
-    periodic.start().await?;
-    // ... application runs ...
-    periodic.stop().await?;  // awaits exporter.shutdown()
-    ```
-
-## Contract: UsageExporter.export
-
-### Inputs
-- `summary` (list/`Record<string, unknown>`/`&Value`, required) — the `UsageCollector` summary snapshot to push to the sink. Rust hands over `serde_json::to_value(&UsageCollector::get_all_summaries())`, so an implementation forwards it without needing to know its shape ahead of time.
-
-### Errors
-- Implementation-defined. Rust's trait method returns `Result<(), ModuleError>`; a Python/TypeScript implementation may raise from user code. This contract does not pin specific error codes because the sink (HTTP, Kafka, ClickHouse, …) is entirely user-supplied — apcore ships no transport-bound exporter.
-
-### Returns
-- On success: void/None/() (Rust: `Ok(())`)
-
-### Properties
-- async: true — Python/TypeScript return a `Promise`/awaitable; Rust is `#[async_trait]`
-- thread_safe: implementation-defined (user-supplied sink)
-- pure: false — pushes to an external sink by definition
-- idempotent: implementation-defined
-
-## Contract: UsageExporter.shutdown
-
-### Inputs
-- No inputs
-
-### Errors
-- Implementation-defined (Rust: `Result<(), ModuleError>`)
-
-### Returns
-- On success: void/None/() (Rust: `Ok(())`)
-
-### Properties
-- async: true
-- thread_safe: implementation-defined
-- pure: false — releases resources (e.g., closes pooled connections)
-- idempotent: not specified for the interface itself; `PeriodicUsageExporter.stop()` calls it at most once per `stop()` call
-
-## Contract: PeriodicUsageExporter.start
-
-### Inputs
-- No inputs — `collector`, `exporter`, and `interval_seconds` (default `3600`) are supplied at construction
-
-### Errors
-- Not normatively specified
-
-### Returns
-- On success: void/None/() — Rust: `Result<(), ModuleError>` per the usage example's `?`
-
-### Properties
-- async: true
-- thread_safe: not separately specified
-- pure: false — spawns a background task/timer (Python `asyncio.Task` / TypeScript `setInterval` / Rust `tokio::task::spawn`) that polls `UsageCollector.summary()` at `interval_seconds` and calls `exporter.export(summary)` for each registered exporter
-- idempotent: not specified — calling `start()` a second time on an already-started instance is not documented as a no-op or an error
-
-## Contract: PeriodicUsageExporter.stop
-
-### Inputs
-- No inputs
-
-### Errors
-- Not normatively specified
-
-### Returns
-- On success: void/None/()
-
-### Properties
-- async: true — MUST await `exporter.shutdown()` for graceful drain before returning; in-flight `export()` calls MUST complete or be cancelled before `shutdown()` returns
-- thread_safe: not separately specified
-- pure: false — halts the background loop
-- idempotent: true — MUST be safe to call multiple times
-
-### Platform Notify Middleware
-
-`PlatformNotifyMiddleware` is a threshold-based sensor that emits events when module error rates or latency exceed configured thresholds.
-
-**Configuration:**
-
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `error_rate_threshold` | 0.1 (10%) | Error rate that triggers alert |
-| `latency_p99_threshold_ms` | 5000.0 | p99 latency that triggers alert |
-
-**Events emitted:**
-
-| Event | Trigger |
-|-------|---------|
-| `apcore.health.error_threshold_exceeded` | Error rate >= threshold |
-| `apcore.health.latency_threshold_exceeded` | p99 latency >= threshold |
-| `apcore.health.recovered` | Recovery: error rate < threshold × 0.5 |
-
-**Hysteresis:** Once an alert fires for a module, it will not re-fire until the module recovers below `threshold × 0.5`, then crosses the threshold again. This prevents alert storms.
-
-## Usage
+Or build the stack yourself. Register the middlewares outermost first — tracing, then metrics, then logging — so each one wraps the next:
 
 === "Python"
     ```python
     from apcore import APCore
     from apcore.observability import (
-        TracingMiddleware,
-        MetricsMiddleware,
-        ObsLoggingMiddleware,
         InMemoryExporter,
         MetricsCollector,
+        MetricsMiddleware,
+        ObsLoggingMiddleware,
+        TracingMiddleware,
     )
 
-    # Build observability stack
     exporter = InMemoryExporter()
-    tracing = TracingMiddleware(exporter=exporter, strategy="proportional", sampling_rate=0.1)
     metrics = MetricsCollector()
-    metrics_mw = MetricsMiddleware(collector=metrics)
-    logging_mw = ObsLoggingMiddleware(log_inputs=True, log_outputs=True)
 
-    # Register in recommended order (outermost first)
     client = APCore()
-    client.use(tracing)
-    client.use(metrics_mw)
-    client.use(logging_mw)
+    client.use(TracingMiddleware(exporter=exporter, sampling_rate=1.0, sampling_strategy="full"))
+    client.use(MetricsMiddleware(metrics))
+    client.use(ObsLoggingMiddleware(log_inputs=True, log_outputs=True))
+
 
     @client.module(id="math.add", description="Add two numbers")
     def add(a: int, b: int) -> dict:
         return {"sum": a + b}
 
+
     client.call("math.add", {"a": 3, "b": 4})
 
-    # Inspect collected spans and metrics
-    spans = exporter.get_spans()
-    prometheus_text = metrics.export_prometheus()
-    print(prometheus_text)
+    print(exporter.get_spans()[0].name)  # apcore.module.execute
+    print(metrics.export_prometheus())
     ```
+
 === "TypeScript"
     ```typescript
-    import { APCore } from "apcore-js";
+    import { Type } from "@sinclair/typebox";
     import {
-        TracingMiddleware,
-        MetricsMiddleware,
-        ObsLoggingMiddleware,
-        InMemoryExporter,
-        MetricsCollector,
+      APCore,
+      InMemoryExporter,
+      MetricsCollector,
+      MetricsMiddleware,
+      ObsLoggingMiddleware,
+      TracingMiddleware,
     } from "apcore-js";
 
-    // Build observability stack
     const exporter = new InMemoryExporter();
-    const tracing = new TracingMiddleware({ exporter, strategy: "proportional", samplingRate: 0.1 });
-    const collector = new MetricsCollector();
-    const metricsMw = new MetricsMiddleware({ collector });
-    const loggingMw = new ObsLoggingMiddleware({ logInputs: true, logOutputs: true });
+    const metrics = new MetricsCollector();
 
-    // Register in recommended order (outermost first)
     const client = new APCore();
-    client.use(tracing);
-    client.use(metricsMw);
-    client.use(loggingMw);
+    client.use(new TracingMiddleware(exporter, 1.0, "full"));
+    client.use(new MetricsMiddleware(metrics));
+    client.use(new ObsLoggingMiddleware({ logInputs: true, logOutputs: true }));
 
     client.module({
-        id: "math.add",
-        description: "Add two numbers",
-        inputSchema: { type: "object", properties: { a: { type: "number" }, b: { type: "number" } } },
-        outputSchema: { type: "object", properties: { sum: { type: "number" } } },
-        execute: ({ a, b }: { a: number; b: number }) => ({ sum: a + b }),
+      id: "math.add",
+      description: "Add two numbers",
+      inputSchema: Type.Object({ a: Type.Number(), b: Type.Number() }),
+      outputSchema: Type.Object({ sum: Type.Number() }),
+      execute: (inputs) => ({ sum: (inputs.a as number) + (inputs.b as number) }),
     });
 
     await client.call("math.add", { a: 3, b: 4 });
 
-    // Inspect collected spans and metrics
-    const spans = exporter.getSpans();
-    const prometheusText = collector.exportPrometheus();
-    console.log(prometheusText);
+    console.log(exporter.getSpans()[0].name); // apcore.module.execute
+    console.log(metrics.exportPrometheus());
     ```
+
 === "Rust"
     ```rust
-    use apcore::APCore;
+    use apcore::context::Context;
+    use apcore::errors::ModuleError;
+    use apcore::module::Module;
     use apcore::observability::{
-        TracingMiddleware, MetricsMiddleware, ObsLoggingMiddleware,
-        InMemoryExporter, MetricsCollector, SamplingStrategy,
+        ContextLogger, InMemoryExporter, MetricsCollector, MetricsMiddleware,
+        ObsLoggingMiddleware, SamplingStrategy, TracingMiddleware,
     };
-    use std::sync::Arc;
+    use apcore::APCore;
+    use async_trait::async_trait;
+    use serde_json::{json, Value};
 
-    // Build observability stack
-    let exporter = Arc::new(InMemoryExporter::new(10_000));
-    let tracing = TracingMiddleware::new(exporter.clone(), SamplingStrategy::Proportional(0.1));
-    let collector = Arc::new(MetricsCollector::new());
-    let metrics_mw = MetricsMiddleware::new(collector.clone());
-    let logging_mw = ObsLoggingMiddleware::new(true, true);
+    struct AddModule;
 
-    // Register in recommended order (outermost first)
-    let mut client = APCore::new();
-    client.use_middleware(Box::new(tracing));
-    client.use_middleware(Box::new(metrics_mw));
-    client.use_middleware(Box::new(logging_mw));
+    #[async_trait]
+    impl Module for AddModule {
+        fn input_schema(&self) -> Value {
+            json!({
+                "type": "object",
+                "properties": { "a": { "type": "integer" }, "b": { "type": "integer" } },
+                "required": ["a", "b"]
+            })
+        }
+        fn output_schema(&self) -> Value {
+            json!({ "type": "object", "properties": { "sum": { "type": "integer" } } })
+        }
+        fn description(&self) -> &str {
+            "Add two numbers"
+        }
+        async fn execute(&self, input: Value, _ctx: &Context<Value>) -> Result<Value, ModuleError> {
+            let a = input["a"].as_i64().unwrap_or(0);
+            let b = input["b"].as_i64().unwrap_or(0);
+            Ok(json!({ "sum": a + b }))
+        }
+    }
 
-    // After calling modules, inspect results
-    let spans = exporter.get_spans();
-    let prometheus_text = collector.export_prometheus();
-    println!("{}", prometheus_text);
+    #[tokio::main]
+    async fn main() -> Result<(), ModuleError> {
+        let exporter = InMemoryExporter::new();
+        let metrics = MetricsCollector::new();
+
+        let client = APCore::new();
+        // InMemoryExporter and MetricsCollector are cheap handles over shared
+        // state, so the clones handed to the middlewares feed the originals.
+        client.use_middleware(Box::new(TracingMiddleware::with_sampling(
+            Box::new(exporter.clone()),
+            SamplingStrategy::Always,
+            1.0,
+        )))?;
+        client.use_middleware(Box::new(MetricsMiddleware::new(metrics.clone())))?;
+        client.use_middleware(Box::new(ObsLoggingMiddleware::with_options(
+            ContextLogger::new("apcore.obs_logging"),
+            true,
+            true,
+        )))?;
+        client.register("math.add", Box::new(AddModule))?;
+
+        client.call("math.add", json!({ "a": 3, "b": 4 }), None, None).await?;
+
+        println!("{}", exporter.get_spans()[0].name); // apcore.module.execute
+        println!("{}", metrics.export_prometheus());
+        Ok(())
+    }
     ```
 
-## Dependencies
+## Tracing
 
-- `apcore.middleware.Middleware` -- Base class for all three observability middlewares.
-- `apcore.context.Context` -- Provides `trace_id`, `caller_id`, `call_chain`, and `data` dict for per-call state.
-- `apcore.errors.ModuleError` -- Used by `MetricsMiddleware` to extract structured error codes.
-- An OpenTelemetry SDK is required only when the `OTLPExporter` is used; SDKs SHOULD lazy-load it and fail with a clear error if missing.
+### Tracing from configuration
 
-??? info "Python SDK reference"
-    The following tables are **not protocol requirements** — they document the Python SDK's source layout and runtime dependencies for implementers/users of `apcore-python`.
+When the loaded configuration sets `observability.tracing.enabled: true`, the client builds a `TracingMiddleware` from the five `observability.tracing.*` keys at construction and installs it. With the key absent or `false` (the default) nothing is installed. The full rules are [protocol-spec §10.1.1](../spec/protocol-spec.md#1011-tracing-from-configuration-observabilitytracing); in practice:
 
-    **Source files:**
+| `exporter` | What gets installed |
+|---|---|
+| `stdout` (default) | `StdoutExporter` — one JSON line per span on standard output |
+| `otlp` | `OTLPExporter` sending to `otlp_endpoint`, or `http://localhost:4318/v1/traces` when that is `null` |
+| `jaeger` | Nothing. A warning names the value and suggests `otlp` pointed at Jaeger's OTLP port. |
 
-    | File | Lines | Purpose |
-    |------|-------|---------|
-    | `src/apcore/observability/__init__.py` | 37 | Package re-exports and recommended middleware ordering |
-    | `src/apcore/observability/tracing.py` | 293 | `Span`, `SpanExporter`, `StdoutExporter`, `InMemoryExporter`, `OTLPExporter`, `TracingMiddleware` |
-    | `src/apcore/observability/metrics.py` | 195 | `MetricsCollector`, `MetricsMiddleware`, Prometheus export |
-    | `src/apcore/observability/context_logger.py` | 170 | `ContextLogger`, `ObsLoggingMiddleware` |
-    | `src/apcore/observability/error_history.py` | — | `ErrorHistory`, `ErrorEntry` |
-    | `src/apcore/observability/usage.py` | — | `UsageCollector`, `UsageMiddleware`, `ModuleUsageSummary`, `ModuleUsageDetail` |
-    | `src/apcore/middleware/error_history.py` | — | `ErrorHistoryMiddleware` |
-    | `src/apcore/middleware/platform_notify.py` | — | `PlatformNotifyMiddleware` |
+- `otlp_endpoint` set with any exporter other than `otlp` is rejected when the configuration loads, with `CONFIG_INVALID` naming both keys.
+- If the named exporter cannot be built in this installation — `otlp` in Python without the OpenTelemetry packages, or in Rust without the `events` feature — the client logs a warning and installs **no** middleware rather than substituting another exporter.
+- `strategy` and `sampling_rate` reach the sampling decision exactly as in [Sampling strategies](#sampling-strategies).
+- Code wins over configuration. Configuration-driven tracing is skipped when you pass your own `Executor`, and a `TracingMiddleware` you add with `use()` / `use_middleware()` is kept. A `span_exporter` extension reconfigures the installed middleware's exporter instead of adding a second middleware.
+- The in-memory exporter cannot be selected by name; it is for tests that construct it directly.
 
-    **External dependencies:**
+### Tracing architecture
 
-    - `collections` (stdlib) -- `deque` for bounded `InMemoryExporter`.
-    - `dataclasses` (stdlib) -- `asdict()` for span serialization in `StdoutExporter`.
-    - `threading` (stdlib) -- Locks for thread-safe `InMemoryExporter` and `MetricsCollector`.
-    - `time` (stdlib) -- Wall-clock timing for span and middleware duration measurements.
-    - `json` (stdlib) -- JSON serialization for `StdoutExporter` and `ContextLogger`.
-    - `random` (stdlib) -- Proportional sampling decision in `TracingMiddleware`.
-    - `opentelemetry-sdk` / `opentelemetry-exporter-otlp-proto-http` (optional) -- Required only for `OTLPExporter`. Lazy-imported at instantiation time with a clear `ImportError` message.
+`TracingMiddleware` opens a span in `before()` and closes it in `after()` or `on_error()`. Spans for nested module-to-module calls are kept on a per-trace stack, so each child span records its parent:
 
-## Testing Strategy
-
-### Tracing Tests (`tests/observability/test_tracing.py`)
-
-- **Span dataclass**: Required field creation, 16-char hex span_id generation, defaults (end_time=None, status="ok", empty attributes/events/parent_span_id), and mutability of end_time/status.
-- **StdoutExporter**: Validates JSON line output and presence of all required fields (trace_id, span_id, name, attributes, timing).
-- **InMemoryExporter**: Tests export/get_spans/clear lifecycle, thread-safe concurrent export (10 threads x 100 spans), bounded deque behavior (oldest spans dropped at capacity), and default maxlen of 10,000.
-- **SpanExporter protocol**: Verifies that both `StdoutExporter` and `InMemoryExporter` satisfy the `runtime_checkable` `SpanExporter` protocol.
-- **OTLPExporter**: Tests `ImportError` when OpenTelemetry packages are missing, span-to-OTel conversion (timestamps, attributes, correlation IDs), error status mapping, event replay, None end_time handling, non-primitive attribute stringification, None parent_span_id skipping, and `shutdown()` delegation.
-- **Sampling strategies**: Full (always), off (never), proportional (statistical test over 1000 iterations), error_first (always exports errors, proportional for successes), and sampling decision inheritance from parent context.
-- **TracingMiddleware lifecycle**: before() creates span and pushes to stack, after() pops/finalizes/exports, on_error() pops/sets error status/exports, stack-based nested calls with parent-child relationships, span name convention, attribute inclusion, duration computation, and empty-stack guard (logs warning, returns None).
-
-### Metrics Tests (`tests/observability/test_metrics.py`)
-
-- **MetricsCollector.increment()**: Counter creation, same-label accumulation, different-label separation.
-- **MetricsCollector.observe()**: Histogram recording (_sum, _count), correct bucket increments (only buckets >= value), always-increment +Inf bucket.
-- **Snapshot and reset**: Snapshot returns dict with counters and histograms, reset clears all state.
-- **Prometheus export**: Text format conventions, HELP/TYPE comment lines, +Inf bucket, _sum/_count suffixed lines.
-- **Configuration**: Custom bucket boundaries respected.
-- **Thread safety**: 100 threads x 100 increments producing correct total of 10,000.
-- **Convenience methods**: `increment_calls()`, `increment_errors()`, `observe_duration()` map to correct metric names and labels.
-- **MetricsMiddleware**: before() pushes start time, after() records success and duration, on_error() records error calls and error counts (with `ModuleError.code` and generic `type(error).__name__`), returns None from on_error(), and nested calls produce isolated independent metrics.
-
-### Context Logger Tests (`tests/observability/test_context_logger.py`)
-
-- **Creation**: Default settings, `from_context()` extraction (trace_id, module_id from call_chain[-1], caller_id), empty call_chain handling.
-- **Level filtering**: Each level emits correctly, lower levels suppressed, full matrix test across all 6 levels.
-- **JSON format**: Valid JSON output, all fields present (timestamp, level, message, trace_id, module_id, caller_id, logger, extra), non-serializable extras handled via `default=str`.
-- **Text format**: Pattern matching for [LEVEL], [trace=...], [module=...], message, and key=val extras.
-- **Redaction**: `_secret_` prefix keys redacted to `***REDACTED***`, no redaction when disabled.
-- **Custom output**: Writing to custom `io.StringIO` target.
-- **ObsLoggingMiddleware**: Is Middleware subclass, before() pushes start and logs, after() pops and logs completion with duration, on_error() pops and logs failure with error type, input/output logging toggles, stack-based nested calls (4 log entries for 2 nested calls), and auto-creates ContextLogger when None.
-
-## Contract: Tracer.start_span
-
-> ⚠️ **NOT IMPLEMENTED in any SDK, and the type itself is near-absent.** `Tracer`
-> appears in 1 apcore-python file, 0 in apcore-typescript, 0 in apcore-rust.
-> Span-creation equivalents are equally thin: one `start_span`, one `span(`, one
-> `Span::new` across all three repos combined — no shared public entry point.
->
-> This block is the weakest of the unimplemented set: unlike the others there is no
-> substantial equivalent hiding under a different name. Treat it as aspirational
-> (mark planned, with a target version) or remove it.
-
-### Inputs
-- `name` (str/string/&str, required) — span name; MUST NOT be empty
-- `parent` (Span/SpanContext, optional) — parent span for distributed tracing; creates a root span when absent
-
-### Errors
-- No errors raised (span creation failures are silently swallowed and return a no-op span)
-
-### Returns
-- On success: `Span` — active span; MUST be ended with `.end()` or used as a context manager
-
-### Properties
-- async: false
-- thread_safe: true
-- pure: false (registers span in the active trace context)
-
-## Contract: MetricsCollector.record
-
-> **Heading corrected.** No SDK defines a `MetricsEmitter` type. The class is
-> `MetricsCollector` in all three — apcore-python `observability/metrics.py:154`,
-> apcore-typescript `observability/metrics.ts:56`, apcore-rust
-> `observability/metrics.rs:68` — and it is widely used (124 references across the
-> three SDKs). This is the same class of defect as the former
-> `SubscriberCircuitBreaker` heading: a spec block describing real, implemented
-> behaviour under a type name that has never existed, which made every consistency
-> check report it as unimplemented in 3/3.
->
-> ⚠️ **The method name still needs reconciling.** The recording surface is not uniform:
-> `record(`, `recordMetric(`, `recordError(`, `increment(`, `incrementCalls(`,
-> `observe(`, `observeDuration(` all appear across the three SDKs. Confirm which one
-> this contract binds before treating the rename as complete.
-
-### Inputs
-- `metric_name` (str/string/&str, required) — metric key; MUST be a registered metric constant
-- `value` (float/number/f64, required) — numeric measurement
-- `labels` (dict/object/HashMap, optional) — dimensional labels for the metric
-
-### Errors
-- No errors raised (metric emission failures are silently swallowed)
-
-### Returns
-- On success: void/None/()
-
-### Properties
-- async: false
-- thread_safe: true
-- pure: false (side-effect: metric emitted to configured backend)
-
----
-
-## Observability Hardening (Issue #43)
-
-### 1.1 Pluggable Observability Storage
-
-`ErrorHistory`, `UsageCollector`, and `MetricsCollector` MUST accept an optional pluggable storage backend at construction time so that production deployments can persist observability data outside the process.
-
-!!! note "Renamed in v0.20.0 (D-39)"
-    Earlier drafts of this section described the abstraction under the names `ObservabilityStore` / `InMemoryObservabilityStore` / `RedisObservabilityStore` / `SqlObservabilityStore` with domain-specific `record_error` / `get_errors` / `record_metric` / `get_metrics` methods. As of v0.20.0 the canonical cross-SDK trait is the generic, namespaced key/value `StorageBackend` (`save` / `get` / `list` / `delete`). See the full normative contract in [§ Pluggable storage backends](#pluggable-storage-backends) below.
-
----
-
-### 1.2 BatchSpanProcessor for Non-Blocking OTEL Export
-
-The current span exporter is synchronous — blocking the calling thread during each export. `BatchSpanProcessor` moves export to a background thread/task, keeping the hot path non-blocking.
-
-#### Normative Rules
-
-- Implementations MUST support a `BatchSpanProcessor` that buffers spans in an internal queue and exports them asynchronously in background batches.
-- `BatchSpanProcessor` MUST have the following configurable parameters:
-
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `max_queue_size` | 2048 | Maximum number of spans held in the buffer |
-| `schedule_delay_ms` | 5000 | Delay between successive export attempts (milliseconds) |
-| `max_export_batch_size` | 512 | Maximum spans per single export call |
-| `export_timeout_ms` | 30000 | Deadline for the final flush on shutdown |
-
-- When the queue is full, new spans MUST be dropped (not block) and a counter `spans_dropped` MUST be incremented.
-- `BatchSpanProcessor` MUST flush all remaining buffered spans on shutdown, within the `export_timeout_ms` deadline. Spans not flushed within the deadline MUST be discarded.
-- `SimpleSpanProcessor` (synchronous, immediate export) MUST remain available as an alternative for development and testing environments.
-
-#### Processor Comparison
-
-| Property | SimpleSpanProcessor | BatchSpanProcessor |
-|----------|--------------------|--------------------|
-| Use case | Development / testing | Production |
-| Blocking | Yes — blocks caller per span | No — enqueues and returns immediately |
-| Memory | O(1) — no buffer | O(max_queue_size) |
-| Reliability | Guaranteed delivery (synchronous) | Best-effort (drops on full queue) |
-
-#### Configuration (YAML)
-
-```yaml
-tracing:
-  processor: "batch"
-  batch:
-    max_queue_size: 2048
-    schedule_delay_ms: 5000
-    max_export_batch_size: 512
-    export_timeout_ms: 30000
+```text
+TracingMiddleware.before("mod.a")        stack: [a]
+  TracingMiddleware.before("mod.b")      stack: [a, b]    b.parent_span_id = a.span_id
+  TracingMiddleware.after("mod.b")       stack: [a]       b ended, exported if sampled
+TracingMiddleware.after("mod.a")         stack: []        a ended, exported if sampled
 ```
+
+Python and TypeScript keep the stack in `context.data["_apcore.mw.tracing.spans"]` and the sampling decision in `context.data["_apcore.mw.tracing.sampled"]`; Rust keeps both inside the middleware, keyed by `trace_id`, and honours a decision already present under that `context.data` key. Either way every child call inherits the root's decision.
+
+Every span follows the [§10.8 naming convention](../spec/protocol-spec.md#108-span-naming-convention):
+
+| Field | Value |
+|---|---|
+| `name` | `apcore.module.execute` |
+| `trace_id` | The context's 32-char lowercase hex trace id ([§10.5](../spec/protocol-spec.md#105-trace-id-format)) |
+| `span_id` / `parent_span_id` | 16-char lowercase hex |
+| `status` | `ok` or `error` |
+| attributes | `module_id`, `method` (`"execute"`), `caller_id`, `duration_ms`, `success`, and `error_code` on failure |
+
+### Sampling strategies
+
+| `strategy` | Decision | `sampling_rate` |
+|---|---|---|
+| `full` (default) | every call chain is recorded | not consulted |
+| `proportional` | recorded with probability `sampling_rate` | consulted |
+| `error_first` | failed spans always exported; successful ones with probability `sampling_rate` | consulted |
+| `off` | nothing is recorded | not consulted |
+
+The decision is made once at the root of a call chain; child calls inherit it ([§10.7](../spec/protocol-spec.md#107-sampling-strategy)). Rust names the strategies with the `SamplingStrategy` enum — `Always` (`full`), `Probabilistic` (`proportional`), `ErrorFirst` (`error_first`), `Never` (`off`) — and serializes them to the configuration spellings.
+
+### TracingMiddleware
+
+| | Constructor |
+|---|---|
+| Python | `TracingMiddleware(exporter=None, sampling_rate=1.0, sampling_strategy="full", *, processor=None, priority=100)` — pass `exporter` (wrapped in a `SimpleSpanProcessor`) or `processor`; `sampling_rate` outside `[0, 1]` or an unknown strategy raises `ValueError` |
+| TypeScript | `new TracingMiddleware(exporter, samplingRate = 1.0, samplingStrategy = "full")` — throws on an out-of-range rate or unknown strategy |
+| Rust | `TracingMiddleware::new(exporter)` (`Always`) or `TracingMiddleware::with_sampling(exporter, strategy, rate)`; `exporter` is a `Box<dyn SpanExporter>` and `rate` is clamped to `[0, 1]` |
+
+`set_exporter()` / `setExporter()` swaps the exporter of an already-registered middleware; the `span_exporter` extension point uses it.
+
+### Span exporters
+
+A span exporter receives finished spans. The SDKs ship:
+
+| Exporter | Behaviour |
+|---|---|
+| `StdoutExporter` | Writes each span as one JSON line (Python/Rust: stdout; TypeScript: `console.info`). |
+| `InMemoryExporter` | Bounded buffer for tests; `get_spans()` / `getSpans()` and `clear()`. Default capacity 10,000 in Python (`InMemoryExporter(max_spans=…)`) and TypeScript (`new InMemoryExporter(maxSpans)`), 1,000 in Rust (`InMemoryExporter::with_max_spans(n)`). |
+| `OTLPExporter` | OTLP/HTTP. **Python** bridges to the OpenTelemetry SDK — `OTLPExporter(endpoint=None, service_name="apcore", attribute_allowlist=None)`, requires `opentelemetry-sdk` and `opentelemetry-exporter-otlp-proto-http`, and takes the full traces URL. **TypeScript** posts JSON with `fetch` — `new OTLPExporter({ endpoint, serviceName, headers, timeoutMs })`, full traces URL, default `http://localhost:4318/v1/traces`. **Rust** — `OTLPExporter::new(base_url)` appends `/v1/traces` itself and needs the `events` feature; without it every span is discarded with a warning. |
+| `CompositeExporter` | Rust only: fans each span out to several exporters with per-exporter error isolation. |
+
+A custom exporter implements `export(span)` (Python protocol `SpanExporter`, TypeScript interface `SpanExporter`, Rust async trait `SpanExporter` with `export` and `shutdown`).
+
+### Span processors
+
+A processor sits between the middleware and the exporter and decides when spans are exported.
+
+| | `SimpleSpanProcessor` | `BatchSpanProcessor` |
+|---|---|---|
+| Use | development, tests | production |
+| Export | synchronously, on the calling thread/task | in background batches |
+| Memory | no buffer | up to `max_queue_size` spans |
+| Queue full | — | span dropped, `spans_dropped` incremented; never blocks |
+
+`BatchSpanProcessor` tunables and defaults (identical in all three SDKs):
+
+| Parameter | Default | Meaning |
+|---|---|---|
+| `max_queue_size` | `2048` | Spans buffered before new ones are dropped |
+| `schedule_delay_ms` | `5000` | Interval between background flushes |
+| `max_export_batch_size` | `512` | Spans exported per flush |
+| `export_timeout_ms` | `30000` | Deadline for the final flush in `shutdown()` |
+
+Lifecycle methods:
+
+| Method | Behaviour |
+|---|---|
+| `on_span_end(span)` (TypeScript `onSpan`) | Enqueue and return immediately; drop and count when the queue is full. Never raises. |
+| `force_flush(timeout_ms = 30000)` (TypeScript `forceFlush`) | Drain the queue now; returns `true` if it emptied before the deadline, `false` otherwise. The processor keeps running. Python is synchronous; TypeScript and Rust are awaited. |
+| `shutdown()` | Stop the background worker and flush what is left within `export_timeout_ms`. Python and Rust also call the exporter's `shutdown()`. |
+
+Python passes a processor straight to `TracingMiddleware(processor=…)`. In Rust both processors implement `SpanExporter`, so they go where an exporter goes. TypeScript's `TracingMiddleware` takes an exporter, so wrap the processor in a one-line adapter:
 
 === "Python"
     ```python
-    from apcore.observability import (
-        BatchSpanProcessor,
-        SimpleSpanProcessor,
-        OTLPExporter,
-        TracingMiddleware,
-    )
+    from apcore.observability import BatchSpanProcessor, OTLPExporter, TracingMiddleware
 
-    # Production: non-blocking batch export to OTLP endpoint
-    exporter = OTLPExporter(endpoint="http://otel-collector:4318")
     processor = BatchSpanProcessor(
-        exporter=exporter,
+        exporter=OTLPExporter(endpoint="http://otel-collector:4318/v1/traces"),
         max_queue_size=2048,
         schedule_delay_ms=5000,
         max_export_batch_size=512,
         export_timeout_ms=30000,
     )
-    tracing = TracingMiddleware(processor=processor, strategy="proportional", sampling_rate=0.1)
+    tracing = TracingMiddleware(processor=processor, sampling_rate=0.1, sampling_strategy="proportional")
 
-    # Development: synchronous simple processor
-    dev_processor = SimpleSpanProcessor(exporter=OTLPExporter(endpoint="http://localhost:4318"))
-    dev_tracing = TracingMiddleware(processor=dev_processor, strategy="full")
+    # ... register `tracing` with client.use(tracing) and serve traffic ...
+
+    processor.force_flush()  # drain now, e.g. before a test assertion
+    processor.shutdown()  # final flush within export_timeout_ms
     ```
+
 === "TypeScript"
     ```typescript
-    import {
-        BatchSpanProcessor,
-        SimpleSpanProcessor,
-        OTLPExporter,
-        TracingMiddleware,
-    } from "apcore-js";
+    import { BatchSpanProcessor, OTLPExporter, TracingMiddleware } from "apcore-js";
 
-    // Production: non-blocking batch export to OTLP endpoint
-    const exporter = new OTLPExporter({ endpoint: "http://otel-collector:4318" });
     const processor = new BatchSpanProcessor({
-        exporter,
-        maxQueueSize: 2048,
-        scheduleDelayMs: 5000,
-        maxExportBatchSize: 512,
-        exportTimeoutMs: 30000,
+      exporter: new OTLPExporter({ endpoint: "http://otel-collector:4318/v1/traces" }),
+      maxQueueSize: 2048,
+      scheduleDelayMs: 5000,
+      maxExportBatchSize: 512,
+      exportTimeoutMs: 30000,
     });
-    const tracing = new TracingMiddleware({ processor, strategy: "proportional", samplingRate: 0.1 });
+    const tracing = new TracingMiddleware(
+      { export: (span) => processor.onSpan(span) },
+      0.1,
+      "proportional",
+    );
 
-    // Development: synchronous simple processor
-    const devProcessor = new SimpleSpanProcessor({
-        exporter: new OTLPExporter({ endpoint: "http://localhost:4318" }),
-    });
-    const devTracing = new TracingMiddleware({ processor: devProcessor, strategy: "full" });
+    // ... register `tracing` with client.use(tracing) and serve traffic ...
+
+    await processor.forceFlush(); // drain now, e.g. before a test assertion
+    await processor.shutdown(); // final flush within exportTimeoutMs
     ```
+
 === "Rust"
     ```rust
-    use apcore::observability::{
-        BatchSpanProcessor, SimpleSpanProcessor,
-        OTLPExporter, TracingMiddleware, SamplingStrategy,
-    };
     use std::sync::Arc;
 
-    // Production: non-blocking batch export to OTLP endpoint
-    let exporter = Arc::new(OTLPExporter::new("http://otel-collector:4318"));
-    let processor = BatchSpanProcessor::builder(exporter.clone())
-        .max_queue_size(2048)
-        .schedule_delay_ms(5000)
-        .max_export_batch_size(512)
-        .export_timeout_ms(30000)
-        .build();
-    let tracing = TracingMiddleware::new(
-        Box::new(processor),
-        SamplingStrategy::Proportional(0.1),
-    );
+    use apcore::errors::ModuleError;
+    use apcore::observability::{
+        BatchSpanProcessor, OTLPExporter, SamplingStrategy, SpanProcessor, TracingMiddleware,
+    };
 
-    // Development: synchronous simple processor
-    let dev_processor = SimpleSpanProcessor::new(exporter.clone());
-    let dev_tracing = TracingMiddleware::new(
-        Box::new(dev_processor),
-        SamplingStrategy::Full,
-    );
-    ```
-
----
-
-### 1.3 O(log N) ErrorHistory Eviction with Min-Heap
-
-The current ring-buffer eviction is O(M) where M = `max_total_entries`. At scale (millions of calls per day) this causes measurable latency spikes. Replacing the ring buffer with a min-heap keyed on `last_seen_at` reduces eviction cost to O(log N).
-
-#### Normative Rules
-
-- Implementations MUST maintain a min-heap of `ErrorEntry` objects keyed on `last_seen_at` timestamp.
-- When the total entry count exceeds `max_total_entries`, the entry with the OLDEST `last_seen_at` MUST be evicted (min-heap pop). This is a normative data structure requirement, not a recommendation, because O(M) eviction causes measurable latency at production scale.
-- Heap operations MUST be protected by a lock in multi-threaded environments.
-- The public API (`record`, `get_errors`, `count`) MUST remain unchanged from the existing spec.
-
-#### Data Structure
-
-```
-ErrorHistory:
-  heap: min-heap[ErrorEntry] keyed on last_seen_at
-  index: dict[module_id → list[ErrorEntry ref]]  # O(1) module lookup
-```
-
-The `index` provides O(1) lookup by `module_id` for `get_errors(module_id)` without requiring a heap scan. Both the heap and the index reference the same `ErrorEntry` objects; eviction removes from both structures atomically under the lock.
-
-!!! note "Why this is a MUST, not a SHOULD"
-    At 1M calls/day with `max_total_entries=1000`, eviction fires ~1000 times/day. O(1000) per eviction with a naive ring buffer amounts to 1M comparisons/day in the eviction path alone. The min-heap reduces this to ~10 comparisons per eviction. This difference is measurable in profiling at sustained high throughput.
-
----
-
-### 1.4 Error Fingerprinting for Deduplication
-
-Current deduplication is keyed on `(code, message)` tuple, which fails to deduplicate errors whose messages contain ephemeral values (UUIDs, timestamps, numeric IDs). Content-addressable fingerprinting normalizes these values before hashing.
-
-#### Normative Rules
-
-- Implementations MUST compute an error fingerprint as: `SHA-256(error_code + ":" + module_id + ":" + normalized_message)`, encoded as a 64-character lowercase hex string.
-- `normalized_message` MUST be produced by the normalization algorithm below.
-- When recording an error, if an entry with the same fingerprint already exists, implementations MUST increment its `count` and update its `last_seen_at`. Implementations MUST NOT create a duplicate entry.
-- The fingerprint MUST be stored in `ErrorEntry` as a `fingerprint` field (64-char hex string).
-
-#### Normalization Algorithm
-
-```
-normalize_message(msg):
-  1. Replace UUID patterns (8-4-4-4-12 hex, hyphenated) with <UUID>
-  2. Replace ISO 8601 timestamps (date, datetime, datetime+timezone) with <TIMESTAMP>
-  3. Replace integer runs of >= 4 digits with <ID>
-  4. Strip leading/trailing whitespace
-  5. Lowercase entire string
-  Return normalized string
-
-  Step order is significant: timestamps MUST be replaced before the integer step,
-  otherwise a 4-digit year (e.g. 2026) is consumed by <ID> before the timestamp
-  regex can match. All three SDKs implement this order; the fingerprint is only
-  cross-language-equal if every SDK applies the steps identically.
-```
-
-=== "Python"
-    ```python
-    import hashlib
-    import re
-
-    def normalize_message(msg: str) -> str:
-        # Step 1: UUID patterns (with or without hyphens)
-        msg = re.sub(
-            r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}",
-            "<UUID>", msg,
-        )
-        # Step 2: integers > 3 digits
-        msg = re.sub(r"\b\d{4,}\b", "<ID>", msg)
-        # Step 3: ISO 8601 timestamps
-        msg = re.sub(
-            r"\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})?)?",
-            "<TIMESTAMP>", msg,
-        )
-        return msg.strip().lower()
-
-    def compute_fingerprint(error_code: str, module_id: str, message: str) -> str:
-        normalized = normalize_message(message)
-        raw = f"{error_code}:{module_id}:{normalized}"
-        return hashlib.sha256(raw.encode("utf-8")).hexdigest()
-
-    # Example usage
-    fp = compute_fingerprint(
-        "DB_TIMEOUT",
-        "executor.db.query",
-        "Connection to host 192.168.1.100 timed out after 30000ms (request-id: a1b2c3d4-e5f6-7890-abcd-ef1234567890)",
-    )
-    # normalized: "connection to host <id>.<id>.<id>.<id> timed out after <id>ms (request-id: <uuid>)"
-    print(fp)  # 64-char hex string
-    ```
-=== "TypeScript"
-    ```typescript
-    import { createHash } from "crypto";
-
-    function normalizeMessage(msg: string): string {
-        // Step 1: UUID patterns
-        msg = msg.replace(
-            /[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/g,
-            "<UUID>",
+    #[tokio::main]
+    async fn main() -> Result<(), ModuleError> {
+        let processor = BatchSpanProcessor::builder(Arc::new(OTLPExporter::new("http://otel-collector:4318")))
+            .max_queue_size(2048)
+            .schedule_delay_ms(5000)
+            .max_export_batch_size(512)
+            .export_timeout_ms(30000)
+            .build();
+        let tracing = TracingMiddleware::with_sampling(
+            Box::new(processor.clone()),
+            SamplingStrategy::Probabilistic,
+            0.1,
         );
-        // Step 2: integers > 3 digits
-        msg = msg.replace(/\b\d{4,}\b/g, "<ID>");
-        // Step 3: ISO 8601 timestamps
-        msg = msg.replace(
-            /\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})?)?/g,
-            "<TIMESTAMP>",
+
+        // ... register `tracing` with client.use_middleware(Box::new(tracing))? ...
+        drop(tracing);
+
+        processor.force_flush(30_000).await; // drain now, e.g. before a test assertion
+        processor.shutdown().await?; // final flush within export_timeout_ms
+        Ok(())
+    }
+    ```
+
+!!! warning "Rust: keep the `BatchSpanProcessor` handle alive"
+    Clones share one queue and one worker, and dropping **any** clone signals the worker to stop. Keep the handle you created for as long as the middleware runs, then call `shutdown()`.
+
+### W3C trace context propagation
+
+`TraceContext` carries a trace across process boundaries with the W3C `traceparent` / `tracestate` headers (`traceparent: 00-{trace_id}-{parent_id}-{trace_flags}`). Pass an extracted `TraceParent` to `Context.create` so the call joins the upstream trace; inject headers into outgoing requests. Behaviour, pinned by `conformance/fixtures/trace_context.json`:
+
+- **Header names are case-insensitive** on extraction (`traceparent`, `Traceparent`, `TRACEPARENT` …); injected headers always use the lowercase names.
+- **`trace_flags` is preserved**: the flags byte extracted from an inbound `traceparent` is what `inject()` emits for that trace. A root context emits `01`.
+- **`tracestate` is kept in order**, capped at 32 entries; malformed entries are dropped without affecting their neighbours; an extract → inject round trip is lossless.
+- **`parent_id` override**: `inject()` accepts an explicit 16-lowercase-hex parent id for callers that manage their own spans. A malformed override fails with `INVALID_PARENT_ID`. Without an override, Python and TypeScript use the span on top of the tracing stack (or a fresh id); Rust generates a fresh id.
+- A missing or malformed inbound `traceparent` — bad syntax, version `ff`, all-zero trace or parent id — extracts as `None` / `null`; `Context.create` then generates a new trace id ([§10.5](../spec/protocol-spec.md#105-trace-id-format)).
+
+=== "Python"
+    ```python
+    from apcore import Context, InvalidParentIdError, TraceContext
+
+    incoming = {
+        "Traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-00",
+        "TRACESTATE": "vendor1=opaque1,vendor2=opaque2",
+    }
+    trace_parent = TraceContext.extract(incoming)
+    assert trace_parent is not None and trace_parent.trace_flags == "00"
+
+    context = Context.create(trace_parent=trace_parent)
+
+    headers = TraceContext.inject(context)
+    # {"traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-<new parent>-00",
+    #  "tracestate": "vendor1=opaque1,vendor2=opaque2"}
+
+    headers = TraceContext.inject(context, parent_id="aaaaaaaaaaaaaaaa")
+    assert headers["traceparent"].split("-")[2] == "aaaaaaaaaaaaaaaa"
+
+    try:
+        TraceContext.inject(context, parent_id="ZZZZ")
+    except InvalidParentIdError as exc:
+        assert exc.code == "INVALID_PARENT_ID"
+    ```
+
+=== "TypeScript"
+    ```typescript
+    import { Context, TraceContext } from "apcore-js";
+
+    const incoming: Record<string, string> = {
+      Traceparent: "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-00",
+      TRACESTATE: "vendor1=opaque1,vendor2=opaque2",
+    };
+    const traceParent = TraceContext.extract(incoming);
+    if (traceParent === null || traceParent.traceFlags !== "00") throw new Error("unexpected");
+
+    const context = Context.create(null, traceParent);
+
+    let headers = TraceContext.inject(context);
+    // { traceparent: "00-4bf92f3577b34da6a3ce929d0e0e4736-<new parent>-00",
+    //   tracestate: "vendor1=opaque1,vendor2=opaque2" }
+
+    headers = TraceContext.inject(context, "aaaaaaaaaaaaaaaa");
+    console.assert(headers.traceparent.split("-")[2] === "aaaaaaaaaaaaaaaa");
+
+    try {
+      TraceContext.inject(context, "ZZZZ");
+    } catch (err) {
+      console.assert((err as { code?: string }).code === "INVALID_PARENT_ID");
+    }
+    ```
+
+=== "Rust"
+    ```rust
+    use std::collections::HashMap;
+
+    use apcore::context::Context;
+    use apcore::errors::ErrorCode;
+    use apcore::TraceContext;
+    use serde_json::Value;
+
+    fn main() {
+        let mut incoming: HashMap<String, String> = HashMap::new();
+        incoming.insert(
+            "Traceparent".into(),
+            "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-00".into(),
         );
-        return msg.trim().toLowerCase();
-    }
+        incoming.insert("TRACESTATE".into(), "vendor1=opaque1,vendor2=opaque2".into());
 
-    function computeFingerprint(errorCode: string, moduleId: string, message: string): string {
-        const normalized = normalizeMessage(message);
-        const raw = `${errorCode}:${moduleId}:${normalized}`;
-        return createHash("sha256").update(raw, "utf8").digest("hex");
-    }
+        // `extract_context` parses traceparent AND tracestate; `extract` parses traceparent only.
+        let trace_parent = TraceContext::extract_context(&incoming).expect("valid header").traceparent;
+        assert_eq!(trace_parent.trace_flags, 0x00);
 
-    // Example usage
-    const fp = computeFingerprint(
-        "DB_TIMEOUT",
-        "executor.db.query",
-        "Connection to host 192.168.1.100 timed out after 30000ms (request-id: a1b2c3d4-e5f6-7890-abcd-ef1234567890)",
-    );
-    console.log(fp); // 64-char hex string
-    ```
-=== "Rust"
-    ```rust
-    use sha2::{Sha256, Digest};
-    use regex::Regex;
+        let context: Context<Value> = Context::create(None, Some(trace_parent), None, None, Value::Null, None);
 
-    fn normalize_message(msg: &str) -> String {
-        let uuid_re = Regex::new(
-            r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
-        ).unwrap();
-        let id_re = Regex::new(r"\b\d{4,}\b").unwrap();
-        let ts_re = Regex::new(
-            r"\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})?)?"
-        ).unwrap();
+        let headers = TraceContext::inject(&context);
+        assert_eq!(headers["tracestate"], "vendor1=opaque1,vendor2=opaque2");
 
-        let msg = uuid_re.replace_all(msg, "<UUID>");
-        let msg = id_re.replace_all(&msg, "<ID>");
-        let msg = ts_re.replace_all(&msg, "<TIMESTAMP>");
-        msg.trim().to_lowercase()
-    }
+        let headers = TraceContext::inject_checked(&context, Some("aaaaaaaaaaaaaaaa"), None, None).unwrap();
+        assert_eq!(headers["traceparent"].split('-').nth(2), Some("aaaaaaaaaaaaaaaa"));
 
-    fn compute_fingerprint(error_code: &str, module_id: &str, message: &str) -> String {
-        let normalized = normalize_message(message);
-        let raw = format!("{}:{}:{}", error_code, module_id, normalized);
-        let mut hasher = Sha256::new();
-        hasher.update(raw.as_bytes());
-        format!("{:x}", hasher.finalize())
-    }
-
-    // Example usage
-    let fp = compute_fingerprint(
-        "DB_TIMEOUT",
-        "executor.db.query",
-        "Connection to host 192.168.1.100 timed out after 30000ms",
-    );
-    println!("{}", fp); // 64-char hex string
-    ```
-
----
-
-### 1.5 Configurable Redaction Rules
-
-Currently redaction is driven solely by `x-sensitive: true` schema annotations. Runtime-configurable rules extend this to cover field name patterns and value patterns without requiring schema changes.
-
-#### Normative Rules
-
-- Implementations MUST support a `RedactionConfig` with three fields:
-  - `field_patterns` — list of glob patterns matching field names to redact (e.g., `"*password*"`)
-  - `value_patterns` — list of regex patterns matching field values to redact (e.g., `"^Bearer .*"`)
-  - `replacement` — string substituted for redacted values; default `"***REDACTED***"`
-- When logging inputs/outputs, the redaction engine MUST apply both schema-level (`x-sensitive`) and config-level (`RedactionConfig`) rules. The union of all matched fields and values is redacted.
-- Implementations MUST NOT redact `trace_id`, `caller_id`, or `module_id` — these fields are required for observability correlation and MUST always appear in logs unmodified.
-
-#### Configuration (YAML)
-
-```yaml
-obs:
-  redaction:
-    sensitive_keys:            # field NAMES — glob (A25) if it has * or ?, else substring
-      - "*password*"
-      - "*token*"
-      - "*secret*"
-      - "*api_key*"
-    regex_patterns:            # STRING field values — unanchored, case-insensitive search
-      - "^Bearer .*"
-      - "^sk-[A-Za-z0-9]+"
-    replacement: "***REDACTED***"
-```
-
-!!! warning "`observability.redaction.*` is the legacy spelling, and it is not a declared key"
-    Earlier revisions of this section showed `observability.redaction.field_patterns` /
-    `value_patterns`. That spelling is **not in the canonical key surface**, so
-    `_config.strict: true` rejects it — measured. It is also read inconsistently:
-    apcore-typescript and apcore-rust honour it as a legacy fallback with a deprecation
-    warning, and apcore-python deliberately does **not**. Write the canonical `obs.redaction.*`
-    keys above; they are declared, they are read by all three, and their semantics are pinned
-    in [PROTOCOL_SPEC §10.6.1](../spec/protocol-spec.md).
-
-=== "Python"
-    ```python
-    from apcore.observability import RedactionConfig, ObsLoggingMiddleware
-
-    redaction = RedactionConfig(
-        field_patterns=["*password*", "*token*", "*secret*", "*api_key*"],
-        value_patterns=[r"^Bearer .*", r"^sk-[A-Za-z0-9]+"],
-        replacement="***REDACTED***",
-    )
-    logging_mw = ObsLoggingMiddleware(
-        log_inputs=True,
-        log_outputs=True,
-        redaction_config=redaction,
-    )
-    ```
-=== "TypeScript"
-    ```typescript
-    import { RedactionConfig, ObsLoggingMiddleware } from "apcore-js";
-
-    const redaction = new RedactionConfig({
-        fieldPatterns: ["*password*", "*token*", "*secret*", "*api_key*"],
-        valuePatterns: [/^Bearer .*/, /^sk-[A-Za-z0-9]+/],
-        replacement: "***REDACTED***",
-    });
-    const loggingMw = new ObsLoggingMiddleware({
-        logInputs: true,
-        logOutputs: true,
-        redactionConfig: redaction,
-    });
-    ```
-=== "Rust"
-    ```rust
-    use apcore::observability::{RedactionConfig, ObsLoggingMiddleware};
-
-    let redaction = RedactionConfig::builder()
-        .field_patterns(vec!["*password*", "*token*", "*secret*", "*api_key*"])
-        .value_patterns(vec![r"^Bearer .*", r"^sk-[A-Za-z0-9]+"])
-        .replacement("***REDACTED***")
-        .build();
-    let logging_mw = ObsLoggingMiddleware::new(true, true)
-        .with_redaction_config(redaction);
-    ```
-
----
-
-### 1.6 K8s/Prometheus Integration Hooks
-
-#### Normative Rules
-
-- Implementations MUST provide a Prometheus exporter that serves a `/metrics` HTTP endpoint in Prometheus text format. It is **constructed and started by the application**, not by configuration — see the per-SDK examples below.
-- That exporter SHOULD also serve a `/healthz` liveness endpoint and a `/readyz` readiness endpoint.
-- The Prometheus `/metrics` endpoint MUST include the following standard apcore metrics: `apcore_module_calls_total`, `apcore_module_errors_total`, `apcore_module_duration_seconds` (histogram).
-- Implementations SHOULD document the required K8s ServiceMonitor annotation `prometheus.io/scrape: "true"` so that Prometheus Operator can auto-discover the endpoint.
-
-#### There is no YAML for this
-
-!!! danger "`observability.prometheus.*` and `observability.health.*` do not exist"
-    Earlier revisions of this section showed a YAML block configuring the exporter's port and
-    paths. **Those five keys are declared nowhere and read by nothing** — measured across all
-    three SDKs — so a configuration carrying them is *rejected* under `_config.strict: true`
-    rather than merely ignored:
-
-    ```
-    - Unknown key 'observability.prometheus' (strict mode enabled)
-    - Unknown key 'observability.health' (strict mode enabled)
-    ```
-
-    The requirement above is stated in terms of the exporter, which exists, rather than of a
-    configuration trigger, which does not. Construct and start the exporter from your
-    application; its port and paths are constructor arguments. Whether they should *become*
-    configuration is open — see
-    [apcore#118](https://github.com/aiperceivable/apcore/issues/118).
-
-#### K8s ServiceMonitor annotations
-
-```yaml
-# Kubernetes Pod/Deployment annotation for Prometheus auto-discovery
-annotations:
-  prometheus.io/scrape: "true"
-  prometheus.io/port: "9090"
-  prometheus.io/path: "/metrics"
-```
-
-!!! tip "Wire the UsageCollector for full /metrics coverage"
-    Attaching a `UsageCollector` to the `PrometheusExporter` is what makes
-    the `apcore_usage_calls_total`, `apcore_usage_error_rate`, and
-    `apcore_usage_p{50,95,99}_latency_ms` series appear on `/metrics`.
-    Omitting it limits `/metrics` to the module-level metrics from the
-    `MetricsCollector` only.
-
-=== "Python"
-    ```python
-    from apcore import APCore
-    from apcore.observability import MetricsCollector, PrometheusExporter, UsageCollector
-
-    collector = MetricsCollector()
-    usage_collector = UsageCollector()
-    exporter = PrometheusExporter(collector=collector, usage_collector=usage_collector)
-
-    # Start the metrics HTTP server (non-blocking, runs in background thread)
-    exporter.start(port=9090, path="/metrics")
-
-    # Health endpoints are served on the same port
-    # GET /healthz → 200 OK  (liveness)
-    # GET /readyz  → 200 OK  (readiness, after APCore finishes loading modules)
-
-    # The exporter scrapes the collector directly; hand the SAME collector to
-    # APCore so module calls feed it. There is no configure_observability().
-    client = APCore(metrics_collector=collector)
-    ```
-=== "TypeScript"
-    ```typescript
-    import { APCore } from "apcore-js";
-    import { MetricsCollector, PrometheusExporter, UsageCollector } from "apcore-js";
-
-    const collector = new MetricsCollector();
-    const usageCollector = new UsageCollector();
-    const exporter = new PrometheusExporter({ collector, usageCollector });
-
-    // Start the metrics HTTP server (non-blocking; start() returns void)
-    exporter.start({ port: 9090, path: "/metrics" });
-
-    // Health endpoints served on same port:
-    // GET /healthz → 200 OK  (liveness)
-    // GET /readyz  → 200 OK  (readiness)
-
-    // The exporter scrapes the collector directly; hand the SAME collector to
-    // APCore so module calls feed it. There is no configureObservability().
-    const client = new APCore({ metricsCollector: collector });
-    ```
-=== "Rust"
-    ```rust
-    use apcore::APCore;
-    use apcore::observability::{MetricsCollector, PrometheusExporter, UsageCollector};
-    use std::sync::Arc;
-
-    let collector = Arc::new(MetricsCollector::new());
-    let usage_collector = Arc::new(UsageCollector::new());
-    let exporter = PrometheusExporter::new(collector.clone())
-        .with_usage_collector(usage_collector.clone());
-
-    // Start the metrics HTTP server (non-blocking, spawns background task)
-    exporter.start(9090, "/metrics").await?;
-
-    // Health endpoints served on same port:
-    // GET /healthz → 200 OK  (liveness)
-    // GET /readyz  → 200 OK  (readiness)
-
-    // The exporter scrapes the collector directly; hand the SAME collector to
-    // APCore so module calls feed it. There is no configure_observability().
-    let client = APCore::with_options(None, None, None, Some((*collector).clone()));
-    ```
-
-## Contract: PrometheusExporter.export
-
-### Inputs
-- `collector` (MetricsCollector, required) — source of metrics data
-
-### Errors
-- None — export errors MUST be logged and MUST NOT propagate to callers
-
-### Returns
-- On success: str/string/String — Prometheus text exposition format, UTF-8
-
-### Properties
-- async: false
-- thread_safe: true
-- pure: false (reads from live collector state)
-- idempotent: true
-
----
-
-## Batch span processing
-
-`BatchSpanProcessor` is the production-grade non-blocking span exporter. The deeper normative spec for queue/drop behavior, configuration, and lifecycle lives in [§1.2 BatchSpanProcessor for Non-Blocking OTEL Export](#12-batchspanprocessor-for-non-blocking-otel-export). This section restates the **cross-SDK parity contract** so SDK maintainers can verify their implementation at a glance.
-
-### Cross-SDK parity
-
-- All three SDKs (Python, TypeScript, Rust) MUST ship a non-blocking `BatchSpanProcessor` as part of the observability surface. Prior to Issue #43 only TypeScript and Rust shipped one; Python now reaches parity.
-- The TypeScript and Rust BatchSpanProcessors are wired to the OpenTelemetry-API conventions for batch export. The Python BatchSpanProcessor MUST behave identically as a black box (same default tunables, same drop semantics, same flush/shutdown ordering) so cross-language conformance fixtures pass without per-SDK conditionals.
-- `SimpleSpanProcessor` MUST also remain available in all three SDKs as the synchronous fallback for development and testing.
-
-### Default tunables
-
-Every SDK MUST default the four tunables to the values below. These match the upstream OpenTelemetry SDK defaults and are the values verified by the `observability_hardening.json` conformance fixture.
-
-| Parameter | Default | Notes |
-|-----------|---------|-------|
-| `max_queue_size` | `2048` | Maximum spans buffered. New spans dropped when full. |
-| `max_export_batch_size` | `512` | MUST be `<= max_queue_size`. Maximum spans per single export call. |
-| `schedule_delay_ms` | `5000` | Worker idle delay between export attempts. |
-| `export_timeout_ms` | `30000` | Final flush deadline on shutdown. |
-
-### Lifecycle
-
-The processor exposes three normative methods:
-
-| Method | Behavior |
-|--------|----------|
-| `on_end(span)` | Called by `TracingMiddleware` when a span ends. MUST enqueue the span and return immediately (non-blocking). When the queue is at `max_queue_size`, the span MUST be dropped and `spans_dropped` MUST be incremented. |
-| `force_flush(timeout_ms?)` | Drains the queue synchronously up to the optional timeout. MUST return `true` if the queue was fully drained within the deadline, `false` otherwise. Idempotent. |
-| `shutdown(timeout_ms?)` | Calls `force_flush` with `export_timeout_ms` (or the supplied timeout), then stops the worker. After `shutdown` returns, `on_end` MUST treat further spans as dropped without enqueuing. |
-
-### Cross-language usage
-
-=== "Python"
-    ```python
-    from apcore.observability import (
-        BatchSpanProcessor,
-        OTLPExporter,
-        TracingMiddleware,
-    )
-
-    exporter = OTLPExporter(endpoint="http://otel-collector:4318")
-    processor = BatchSpanProcessor(
-        exporter=exporter,
-        max_queue_size=2048,
-        max_export_batch_size=512,
-        schedule_delay_ms=5000,
-        export_timeout_ms=30000,
-    )
-    tracing = TracingMiddleware(processor=processor, strategy="proportional", sampling_rate=0.1)
-
-    # Lifecycle:
-    #   on_end(span) is called automatically by TracingMiddleware.after()
-    #   force_flush() drains the queue (e.g. before a synchronous test assertion)
-    #   shutdown() flushes within export_timeout_ms then stops the worker
-    processor.force_flush()
-    processor.shutdown()
-    ```
-=== "TypeScript"
-    ```typescript
-    import {
-        BatchSpanProcessor,
-        OTLPExporter,
-        TracingMiddleware,
-    } from "apcore-js";
-
-    const exporter = new OTLPExporter({ endpoint: "http://otel-collector:4318" });
-    const processor = new BatchSpanProcessor({
-        exporter,
-        maxQueueSize: 2048,
-        maxExportBatchSize: 512,
-        scheduleDelayMs: 5000,
-        exportTimeoutMs: 30000,
-    });
-    const tracing = new TracingMiddleware({ processor, strategy: "proportional", samplingRate: 0.1 });
-
-    // Lifecycle:
-    //   onEnd(span) is called automatically by TracingMiddleware.after()
-    //   forceFlush() drains the queue before assertions in tests
-    //   shutdown() flushes within exportTimeoutMs and stops the worker
-    await processor.forceFlush();
-    await processor.shutdown();
-    ```
-=== "Rust"
-    ```rust
-    use apcore::observability::{
-        BatchSpanProcessor, OTLPExporter, TracingMiddleware, SamplingStrategy,
-    };
-    use std::sync::Arc;
-
-    let exporter = Arc::new(OTLPExporter::new("http://otel-collector:4318"));
-    let processor = BatchSpanProcessor::builder(exporter.clone())
-        .max_queue_size(2048)
-        .max_export_batch_size(512)
-        .schedule_delay_ms(5000)
-        .export_timeout_ms(30000)
-        .build();
-    let tracing = TracingMiddleware::new(
-        Box::new(processor.clone()),
-        SamplingStrategy::Proportional(0.1),
-    );
-
-    // Lifecycle:
-    //   on_end(span) is called automatically by TracingMiddleware.after()
-    //   force_flush() drains the queue before test assertions
-    //   shutdown() flushes within export_timeout_ms then stops the worker task
-    processor.force_flush(None).await;
-    processor.shutdown(None).await;
-    ```
-
-## Contract: BatchSpanProcessor.on_span_end
-
-> **Heading corrected.** No SDK defines `on_end`. apcore-python
-> (`observability/batch_span_processor.py:131`) and apcore-rust
-> (`observability/processor.rs:44`) both name it `on_span_end`; that is the canonical
-> name and this contract is binding under it.
->
-> ⚠️ **apcore-typescript diverges on the NAME, not the behaviour**: it defines
-> `onSpan` (`observability/batch-span-processor.ts:68`), which normalizes to
-> `on_span`, not `on_span_end`. Per the naming rules this is a cross-language
-> inconsistency to fix in the SDK — rename to `onSpanEnd` — not something this spec
-> should accommodate by listing two canonical names.
-
-### Inputs
-- `span` (Span, required) — the span that just ended, to enqueue for asynchronous export
-
-### Errors
-- None — `on_end` MUST enqueue and return immediately; it MUST NOT raise when the queue is full (see Properties for drop behavior)
-
-### Returns
-- On success: void/None/() — always returns immediately regardless of queue state
-
-### Properties
-- async: false — non-blocking by construction; this is the property `BatchSpanProcessor` exists to provide over `SimpleSpanProcessor`
-- thread_safe: true
-- pure: false — enqueues into the internal buffer, or, when the queue is at `max_queue_size` (default 2048), drops the span and increments `spans_dropped` instead
-- idempotent: false — each call enqueues (or drops) one more span
-
-## Contract: BatchSpanProcessor.force_flush
-
-> ⚠️ **Implemented in apcore-python only.** `force_flush(timeout_ms=30000) -> bool`
-> exists at `observability/batch_span_processor.py:163`. apcore-typescript and
-> apcore-rust define neither `force_flush` nor `forceFlush` on this type — Rust has
-> only a private `flush_batch` helper (`observability/processor.rs:223`), which is not
-> an equivalent because it is not reachable by a caller.
->
-> This is a genuine **missing API in 2 of 3 SDKs**, not a naming mismatch. It is left
-> in place deliberately: the contract is correct and the two SDKs should grow the
-> method. Until they do, consistency checks will report it as missing for
-> apcore-typescript and apcore-rust, which is the accurate result.
-
-### Inputs
-- `timeout_ms` (int, optional) — deadline for draining the queue; an SDK-specific default applies when omitted
-
-### Errors
-- None documented — a timed-out flush is reported via the return value, not an exception
-
-### Returns
-- On success: `bool` — `true` if the queue was fully drained within the deadline, `false` otherwise
-
-### Properties
-- async: SDK-dependent (TypeScript/Rust return an awaitable per the usage examples above; the call does not block the caller's event loop/thread regardless)
-- thread_safe: true
-- pure: false — drains the internal queue by exporting its contents
-- idempotent: true — calling it again with nothing left to flush returns `true` without further side effects
-
-## Contract: BatchSpanProcessor.shutdown
-
-### Inputs
-- `timeout_ms` (int, optional) — deadline passed through to the internal `force_flush`; defaults to `export_timeout_ms` (default 30000) when omitted
-
-### Side Effects (ordered)
-1. Calls `force_flush` with `export_timeout_ms` (or the supplied `timeout_ms`)
-2. Stops the background worker (thread/task)
-
-### Errors
-- None documented
-
-### Returns
-- On success: void/None/()
-
-### Postconditions
-- After `shutdown` returns, `on_end` MUST treat further spans as dropped without enqueuing them
-
-### Properties
-- async: SDK-dependent (awaited in TypeScript/Rust per the usage examples above)
-- thread_safe: true
-- pure: false — flushes the queue and permanently stops the worker
-- idempotent: not specified for repeated `shutdown()` calls, but the post-shutdown drop behavior above holds regardless of how many times it is called
-
----
-
-## Pluggable storage backends
-
-`ErrorHistory`, `UsageCollector`, and `MetricsCollector` are designed around a small key/value persistence surface called `StorageBackend`. The trait/interface lets the same observability primitives run with the bundled in-process default in tests, or with an external store (Redis, Postgres, S3, …) in production — without any code change inside the collectors themselves.
-
-This section documents the cross-SDK shape of the abstraction. Concrete network-backed implementations (Redis, Postgres, S3) are explicitly **out of tree** — apcore does not ship them. Users who need them implement `StorageBackend` against their preferred client library, or pull a community-maintained adapter.
-
-### Normative rules
-
-- All three SDKs MUST expose a `StorageBackend` trait/interface/protocol with the following methods:
-    - `save(namespace, key, value)` — create or overwrite a record
-    - `get(namespace, key) → value | None` — retrieve a record
-    - `list(namespace, prefix?) → list[(key, value)]` — list entries; optional key prefix filter
-    - `delete(namespace, key)` — remove a record (idempotent — deleting an absent key is a no-op)
-- `value` MUST be a **JSON object** — `dict` in Python, `Record<string, unknown>` in TypeScript, a `serde_json::Value` holding an object in Rust. All three collectors (`ErrorHistory`, `UsageCollector`, `MetricsCollector`) store records, never scalars or opaque bytes. A backend that stores bytes MUST serialize on `save` and deserialize on `get` / `list`, so that a value written as an object is read back as an object: the collectors index into the returned value, and handing them raw bytes fails at the call site, not at the backend. Rust's signature is structurally wider than an object because `serde_json::Value` is the only JSON carrier in the crate; the object requirement still holds.
-- All three SDKs MUST provide `InMemoryStorageBackend` as the default implementation. It MUST be thread-safe and namespace-isolated (entries written under one `namespace` MUST NOT be visible from another).
-- `ErrorHistory`, `UsageCollector`, and `MetricsCollector` MUST accept an optional `StorageBackend` at construction time. When omitted, `InMemoryStorageBackend` MUST be used.
-- The backend MUST NOT be reassigned after construction.
-- apcore SDKs MUST NOT ship Redis, Postgres, S3, or other network-backed implementations. Users implement those externally; the package surface remains free of optional heavy dependencies.
-
-### Cross-SDK examples
-
-=== "Python"
-    ```python
-    import json
-
-    from apcore.observability import (
-        ErrorHistory,
-        UsageCollector,
-        MetricsCollector,
-        InMemoryStorageBackend,
-        StorageBackend,
-    )
-
-    # Default: every collector gets its own in-memory backend
-    history = ErrorHistory()
-    usage = UsageCollector()
-    metrics = MetricsCollector()
-
-    # Or share one backend across collectors (namespace-isolated internally)
-    backend = InMemoryStorageBackend()
-    history = ErrorHistory(storage=backend)
-    usage = UsageCollector(storage=backend)
-    metrics = MetricsCollector(storage=backend)
-
-    # Out-of-tree: implement your own backend (Redis shown, not bundled)
-    class RedisStorageBackend(StorageBackend):
-        def __init__(self, client):
-            self._client = client
-
-        # Redis stores bytes; the contract is JSON objects, so encode at the
-        # boundary. Returning the raw bytes here would break every collector.
-        def save(self, namespace: str, key: str, value: dict) -> None:
-            self._client.hset(namespace, key, json.dumps(value))
-
-        def get(self, namespace: str, key: str) -> dict | None:
-            raw = self._client.hget(namespace, key)
-            return None if raw is None else json.loads(raw)
-
-        def list(self, namespace: str, prefix: str = "") -> list[tuple[str, dict]]:
-            entries = self._client.hgetall(namespace).items()
-            return [
-                (k.decode() if isinstance(k, bytes) else k, json.loads(v))
-                for k, v in entries
-                if (k.decode() if isinstance(k, bytes) else k).startswith(prefix)
-            ]
-
-        def delete(self, namespace: str, key: str) -> None:
-            self._client.hdel(namespace, key)
-
-    backend = RedisStorageBackend(my_redis_client)
-    history = ErrorHistory(storage=backend)
-    ```
-=== "TypeScript"
-    ```typescript
-    import {
-        ErrorHistory,
-        UsageCollector,
-        MetricsCollector,
-        InMemoryStorageBackend,
-        StorageBackend,
-    } from "apcore-js";
-
-    // Default: every collector gets its own in-memory backend
-    const history = new ErrorHistory();
-    const usage = new UsageCollector();
-    const metrics = new MetricsCollector();
-
-    // Or share one backend across collectors (namespace-isolated internally)
-    const backend = new InMemoryStorageBackend();
-    const sharedHistory = new ErrorHistory({ storage: backend });
-    const sharedUsage = new UsageCollector({ storage: backend });
-    const sharedMetrics = new MetricsCollector({ storage: backend });
-
-    // Out-of-tree: implement your own backend (Redis shown, not bundled)
-    class RedisStorageBackend implements StorageBackend {
-        constructor(private readonly client: RedisClient) {}
-
-        // Redis stores strings; the contract is JSON objects, so encode at the
-        // boundary. Returning the raw string would break every collector.
-        async save(
-            namespace: string,
-            key: string,
-            value: Record<string, unknown>,
-        ): Promise<void> {
-            await this.client.hset(namespace, key, JSON.stringify(value));
-        }
-
-        async get(
-            namespace: string,
-            key: string,
-        ): Promise<Record<string, unknown> | null> {
-            const raw = await this.client.hget(namespace, key);
-            return raw == null ? null : (JSON.parse(raw) as Record<string, unknown>);
-        }
-
-        async list(
-            namespace: string,
-            prefix = "",
-        ): Promise<Array<[string, Record<string, unknown>]>> {
-            const all = await this.client.hgetall(namespace);
-            return Object.entries(all)
-                .filter(([k]) => k.startsWith(prefix))
-                .map(([k, v]) => [k, JSON.parse(v as string) as Record<string, unknown>]);
-        }
-
-        async delete(namespace: string, key: string): Promise<void> {
-            await this.client.hdel(namespace, key);
-        }
-    }
-
-    const redisBackend = new RedisStorageBackend(myRedisClient);
-    const prodHistory = new ErrorHistory({ storage: redisBackend });
-    ```
-=== "Rust"
-    ```rust
-    use apcore::observability::{
-        ErrorHistory, UsageCollector, MetricsCollector,
-        InMemoryStorageBackend, StorageBackend,
-    };
-    use std::sync::Arc;
-
-    // Default: every collector gets its own in-memory backend
-    let history = ErrorHistory::new();
-    let usage = UsageCollector::new();
-    let metrics = MetricsCollector::new();
-
-    // Or share one backend across collectors (namespace-isolated internally)
-    let backend: Arc<dyn StorageBackend> = Arc::new(InMemoryStorageBackend::new());
-    let shared_history = ErrorHistory::with_storage(backend.clone());
-    let shared_usage = UsageCollector::with_storage(backend.clone());
-    let shared_metrics = MetricsCollector::with_storage(backend.clone());
-
-    // Out-of-tree: implement your own backend (Redis shown, not bundled)
-    // The trait is async and requires Send + Sync + Debug, so the impl needs
-    // #[async_trait] and a Debug derive — a plain `impl StorageBackend` does
-    // not compile.
-    #[derive(Debug)]
-    pub struct RedisStorageBackend {
-        client: redis::Client,
-    }
-
-    #[async_trait::async_trait]
-    impl StorageBackend for RedisStorageBackend {
-        async fn save(
-            &self,
-            namespace: &str,
-            key: &str,
-            value: serde_json::Value,
-        ) -> Result<(), StorageError> {
-            // Redis stores strings; encode the JSON object at the boundary.
-            let _ = (namespace, key, serde_json::to_string(&value));
-            Ok(())
-        }
-
-        async fn get(
-            &self,
-            namespace: &str,
-            key: &str,
-        ) -> Result<Option<serde_json::Value>, StorageError> {
-            let _ = (namespace, key);
-            Ok(None)
-        }
-
-        async fn list(
-            &self,
-            namespace: &str,
-            prefix: &str,
-        ) -> Result<Vec<(String, serde_json::Value)>, StorageError> {
-            let _ = (namespace, prefix);
-            Ok(vec![])
-        }
-
-        async fn delete(&self, namespace: &str, key: &str) -> Result<(), StorageError> {
-            let _ = (namespace, key);
-            Ok(())
-        }
+        let err = TraceContext::inject_checked(&context, Some("ZZZZ"), None, None).unwrap_err();
+        assert_eq!(err.code, ErrorCode::InvalidParentId);
     }
     ```
 
-### Relationship to `ObservabilityStore` (Issue #43 §1.1)
+#### TraceContext API
 
-The `ObservabilityStore` interface defined in [§1.1](#11-pluggable-observability-storage) is a higher-level convenience that bundles the error-record / metric-record API together. `StorageBackend` is the lower-level primitive that all three collectors share. Implementations MAY layer `ObservabilityStore` on top of a `StorageBackend`, or implement `ObservabilityStore` directly — both are conformant.
+| Operation | Python | TypeScript | Rust | Result / errors |
+|---|---|---|---|---|
+| Parse headers | `TraceContext.extract(headers)` | `TraceContext.extract(headers)` (plain object, `Headers` or `Map`) | `TraceContext::extract(&headers)`; `extract_context(&headers)` also fills `tracestate` | `TraceParent` or `None`/`null`; never raises |
+| Build headers | `TraceContext.inject(context, parent_id=None)` | `TraceContext.inject(context, parentId?)` | `inject(&ctx)`; `inject_checked(&ctx, parent_id, trace_flags, tracestate)` | `traceparent` (+ `tracestate` when the context carries one). Bad override: Python `InvalidParentIdError` (a `ValueError`), TypeScript `Error` with `code = "INVALID_PARENT_ID"`, Rust `inject_checked` → `Err` with `ErrorCode::InvalidParentId` |
+| Strict parse of one `traceparent` value | `TraceContext.from_traceparent(value)` | `TraceContext.fromTraceparent(value)` | `TraceParent::parse(value)` | `TraceParent` without `tracestate`; malformed input raises a codeless `ValueError` / `Error` (Rust: `Err` with `GENERAL_INVALID_INPUT`) |
 
----
+`TraceParent` carries `version`, `trace_id`, `parent_id`, `trace_flags` and the ordered `tracestate` pairs; Rust stores `version` and `trace_flags` as `u8`, the other SDKs as two-character hex strings. Rust also has `inject_with_options`, which takes the same overrides as `inject_checked` but silently replaces a malformed `parent_id` with a fresh one — prefer `inject_checked`. All of these are synchronous and thread-safe.
 
-## ErrorHistory eviction performance
+## Logging
 
-The `ErrorHistory` ring buffer described in [Error History](#error-history) above MUST evict the entry with the oldest `last_seen_at` whenever total entries exceed `max_total_entries`. Implementations use a min-heap keyed on `last_seen_at` to make this a O(log N) operation, with an auxiliary `module_id → list[ErrorEntry ref]` index for O(1) per-module lookup.
+### ContextLogger
 
-**Lazy-deletion semantics.** Heap entries are not physically removed when their `count` is updated by deduplication. Instead, a duplicate record updates `last_seen_at` in place and pushes a *fresh* heap node referencing the same `ErrorEntry`. On eviction, the heap-pop loop checks each popped node against the current `ErrorEntry.last_seen_at` and discards stale nodes (where the heap key does not match the record's current `last_seen_at`) before evicting a real entry. Stale nodes accumulate at most O(N) at any time and are amortized away by subsequent evictions.
+`ContextLogger` is a standalone structured logger that stamps every record with the call's correlation fields ([§10.2](../spec/protocol-spec.md#102-logging)).
 
-This is a performance note, not a normative requirement: the public API of `ErrorHistory.record / get / get_all` is unchanged. Implementations MAY use any data structure that achieves the same asymptotic bound and observable behavior.
+- **Levels:** `trace`, `debug`, `info`, `warn`, `error`, `fatal` (default threshold `info`).
+- **JSON format** (default): one object per line with `timestamp`, `level`, `message`, `trace_id`, `module_id`, `caller_id`, `logger` and an `extra` object.
+- **Text format:** `{timestamp} [{LEVEL}] [trace={trace_id}] [module={module_id}] {message} {extras}` in Python and TypeScript; Rust writes `{timestamp} {LEVEL} {logger} [trace={trace_id} module={module_id}] {message}` without extras.
+- **Output:** standard error by default (TypeScript: `console.error`); replaceable for tests.
+- **`from_context(context, name)`** copies `trace_id`, `caller_id` and the last entry of `call_chain` (as `module_id`) from a `Context`.
+- **Redaction:** in Python and TypeScript, `extra` is redacted recursively with a [`RedactionConfig`](./redaction.md#redactionconfig-api) — the default `sensitive_keys` list unless you pass one (`redaction_config=` / `redaction:`); `redact_sensitive=False` turns it off. Rust's `ContextLogger` redacts only top-level `extra` keys starting with `_secret_`; attach a `RedactionConfig` to `ObsLoggingMiddleware` for full rules.
 
----
+| | Construction |
+|---|---|
+| Python | `ContextLogger(name="apcore", *, output_format="json", level="info", redact_sensitive=True, output=None, redaction_config=None)`; `ContextLogger.from_context(context, name, **kwargs)` |
+| TypeScript | `new ContextLogger({ name, format, level, redactSensitive, redaction, output })`; `ContextLogger.fromContext(context, name, options)` |
+| Rust | `ContextLogger::new(name)` then `set_level`, `set_format(LogFormat::Text)`, `set_writer`; `ContextLogger::from_context(&ctx, name)`; `emit(level, message, Some(&extra))` logs with extra fields |
 
-## Error fingerprinting
+`logging.level` and `logging.format` in `apcore.yaml` do not configure this logger — they are inert.
 
-`ErrorHistory` deduplicates structurally similar errors using a content-addressable fingerprint. The fingerprint replaces the legacy `(code, message)` tuple key (which over-counted any message containing a UUID, timestamp, or numeric ID) and is shared across all three SDKs.
+### ObsLoggingMiddleware
 
-**Fingerprint composition (canonical — identical to [§1.4](#14-error-fingerprinting-for-deduplication)):**
+`ObsLoggingMiddleware` writes one record when a call starts, one when it completes (with `duration_ms`) and one when it fails (with the error), through a `ContextLogger`, optionally including inputs and outputs. Timings are tracked per call, so nested calls are measured independently.
 
-```
-fingerprint = SHA-256(
-    error_code + ":" +
-    module_id + ":" +
-    normalized_message
-)
-```
+What it logs as inputs and outputs:
 
-| Component | Source | Purpose |
-|-----------|--------|---------|
-| `error_code` | `ModuleError.code` (e.g., `DB_TIMEOUT`) | Primary discriminator |
-| `module_id` | the module the error is recorded against | Scopes deduplication to the originating module |
-| `normalized_message` | Output of the §1.4 normalizer (UUIDs → `<UUID>`, ISO timestamps → `<TIMESTAMP>`, integer runs ≥ 4 digits → `<ID>`, trimmed, lowercased) | Collapses ephemeral values so repeated errors hash identically |
+- Python logs `context.redacted_inputs` (the executor's capture, see [Redaction](./redaction.md#where-redaction-applies)) and the raw output; TypeScript logs `context.redactedInputs` and `context.redactedOutput`. The logger's own pass then applies its `RedactionConfig`.
+- Rust logs the raw inputs and output, redacted only by a `RedactionConfig` attached with `with_redaction_config` — attach one in production.
+- An attached `RedactionConfig` is applied to the logged inputs/outputs and, in Python and TypeScript, also replaces the logger's own rules so the whole record uses one rule set.
 
-**Behavior:**
+| | Construction |
+|---|---|
+| Python | `ObsLoggingMiddleware(logger=None, log_inputs=True, log_outputs=True, redaction_config=None)` |
+| TypeScript | `new ObsLoggingMiddleware({ logger, logInputs, logOutputs, redactionConfig })` |
+| Rust | `ObsLoggingMiddleware::new(logger)` or `::with_options(logger, log_inputs, log_outputs)`, then `.with_redaction_config(config)` |
 
-- Two errors that differ only in UUID values, timestamps, or numeric IDs collapse into a single entry (count is incremented, `last_seen_at` is updated).
-- Two errors with **different** `error_code` values never collapse, even if message text is identical after normalization.
+### Recommended middleware order
 
-**Call-site disambiguation is NOT part of the fingerprint.** A `top_frame_hash` (file/function/line from a stack trace) is **not portable across languages** — Python tracebacks, V8 stacks, and Rust backtraces produce different frame identities for the same logical error — so including it would make the fingerprint differ per SDK and defeat the shared cross-language dedup contract. An SDK **MAY** expose a top-frame hash as a **separate, language-local** `ErrorEntry` field for diagnostics, but it **MUST NOT** be an input to the cross-language `fingerprint`. Likewise the normalization MUST be exactly the five-step §1.4 algorithm (no additional steps such as hex-run collapsing) so that every SDK hashes identically.
+Register outermost first; with equal priorities the registration order is the execution order:
 
-The full normalization algorithm and the single per-SDK reference implementation are defined in [§1.4 Error Fingerprinting for Deduplication](#14-error-fingerprinting-for-deduplication) and are authoritative; they are not duplicated here to avoid drift.
+1. `TracingMiddleware` — covers total wall-clock time.
+2. `MetricsMiddleware` — records counts and duration.
+3. `ObsLoggingMiddleware` — logs with timing already set up.
 
----
+`ErrorHistoryMiddleware`, `UsageMiddleware` and `PlatformNotifyMiddleware` are registered for you when system modules are enabled; see [System Modules](./system-modules.md).
 
-## Redaction configuration
+## SDK notes
 
-`ContextLogger`'s legacy redaction triggered only on the `_secret_` key prefix. This was hardcoded, undiscoverable, and required application code to opt fields into redaction by renaming. The `obs.redaction.*` config keys replace it with declarative, schema-free rules that an SRE can adjust without touching application code.
+- Python needs no extra packages except for `OTLPExporter`, which imports `opentelemetry-sdk` and `opentelemetry-exporter-otlp-proto-http` at construction and raises `ImportError` with an install hint when they are missing.
+- TypeScript's `OTLPExporter` uses the platform `fetch`; exports are fire-and-forget with a timeout (`timeoutMs`, default 5000).
+- Rust's OTLP export requires the crate's `events` feature. Middleware hooks are `async`; `use_middleware` returns a `Result`.
 
-**Config keys (all under `obs.redaction.*`):**
+## See also
 
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `obs.redaction.regex_patterns` | list[regex] | `[]` | Regular expressions matched case-insensitively against **string** field **values** by **unanchored search** — a value matches when the pattern occurs *anywhere* within it; write `^…$` for a whole-value match. A matching value is replaced by `replacement`. **Strings only:** a number, boolean, `null`, object or array is never tested and never stringified in order to test it (§10.6.1 requirement 2); containers are descended into, so a string inside one is still reached. See [PROTOCOL_SPEC §10.6.1](../spec/protocol-spec.md). |
-| `obs.redaction.sensitive_keys` | list[string] | see below | Matched case-insensitively against field **names** in `extra` dicts and module input/output, **per entry**: an entry containing `*` or `?` is a glob-dialect pattern (algorithm **A25**, anchored to the whole name); an entry containing neither is a plain substring match against the normalized name. `[`, `]`, `{`, `}` and `\` are **literals**, never a character class. See [PROTOCOL_SPEC §10.6.1](../spec/protocol-spec.md). |
-| `obs.redaction.replacement` | string | `"***REDACTED***"` | Substituted token used in place of redacted values. |
-
-**Default `obs.redaction.sensitive_keys`** (SHOULD be applied unless explicitly overridden):
-
-```yaml
-sensitive_keys:
-  - password
-  - passwd
-  - secret
-  - token
-  - api_key
-  - apikey
-  - access_key
-  - private_key
-  - authorization
-  - auth
-  - credential
-  - cookie
-  - session
-  - bearer
-```
-
-### Canonical default `sensitive_keys`
-
-The following 16-entry list is the canonical superset that all three SDKs (Python, TypeScript, Rust) **MUST** ship as the default value of `obs.redaction.sensitive_keys` when no override is provided (decision **D-54**). The leading `_secret_*` glob preserves the legacy `_secret_`-prefix behavior as a substring/prefix match while the remaining 15 entries cover the common credential vocabulary observed across HTTP, OAuth, AWS, GCP, and database client conventions.
-
-```python
-[
-    "_secret_*", "password", "passwd", "secret", "token",
-    "api_key", "apikey", "apiKey", "access_key", "private_key",
-    "authorization", "auth", "credential", "cookie", "session", "bearer"
-]
-```
-
-**Normative rules:**
-
-- Implementations **MUST** ship this exact 16-entry list as the default `obs.redaction.sensitive_keys` value when the YAML key is absent.
-- Implementations **MUST** allow operators to fully override the default by setting `obs.redaction.sensitive_keys` in `apcore.yaml` (the override **replaces** the default; it does not merge).
-- Matching is **per entry** and case-insensitive on both sides ([PROTOCOL_SPEC §10.6.1](../spec/protocol-spec.md)): the fifteen entries with no `*` or `?` are **substring** matches against the normalized field name, so `apiKey` and `apikey` both match an `Authorization-API-Key` header; the redundant `apiKey` entry is retained explicitly so test-fixture diffs across SDKs are byte-stable.
-- **`_secret_*` is a pattern, not a substring, and it is anchored.** It matches `_secret_token` and **not** `x_secret_token`, because an entry containing `*` is matched with Algorithm **A25** against the whole field name. Earlier revisions of this section described the `*` as "informational only" and the entry as a substring; that described no implementation — all three SDKs have always anchored it (`fnmatch.fnmatchcase` before v1.37.0, A25 after), and the behaviour is unchanged by the correction. The distinction matters to an operator writing their own entry: `token*` matches `token_id` and not `access_token`, while a bare `token` matches both.
-
-=== "Python"
-    ```python
-    from apcore.observability import RedactionConfig
-
-    # Default: ships with the canonical 16-entry sensitive_keys list.
-    redaction = RedactionConfig()
-    assert "password" in redaction.sensitive_keys
-    assert "_secret_*" in redaction.sensitive_keys
-    assert len(redaction.sensitive_keys) == 16
-
-    # Override (replace, not merge):
-    custom = RedactionConfig(sensitive_keys=["password", "internal_token"])
-    ```
-
-=== "TypeScript"
-    ```typescript
-    import { RedactionConfig } from "apcore-js";
-
-    // Default: ships with the canonical 16-entry sensitiveKeys list.
-    const redaction = new RedactionConfig();
-    console.assert(redaction.sensitiveKeys.includes("password"));
-    console.assert(redaction.sensitiveKeys.includes("_secret_*"));
-    console.assert(redaction.sensitiveKeys.length === 16);
-
-    // Override (replace, not merge):
-    const custom = new RedactionConfig({ sensitiveKeys: ["password", "internal_token"] });
-    ```
-
-=== "Rust"
-    ```rust
-    use apcore::observability::RedactionConfig;
-
-    // Default: ships with the canonical 16-entry sensitive_keys list.
-    let redaction = RedactionConfig::default();
-    assert!(redaction.sensitive_keys.iter().any(|k| k == "password"));
-    assert!(redaction.sensitive_keys.iter().any(|k| k == "_secret_*"));
-    assert_eq!(redaction.sensitive_keys.len(), 16);
-
-    // Override (replace, not merge):
-    let custom = RedactionConfig::builder()
-        .sensitive_keys(vec!["password".into(), "internal_token".into()])
-        .build();
-    ```
-
-**Normative rules:**
-
-- Implementations MUST replace the previous `_secret_`-prefix logic with `obs.redaction.sensitive_keys` matching. The `_secret_` prefix MAY remain as a SHOULD-redact token for backward compatibility but is deprecated.
-- Redaction MUST apply both at log emission (in `ContextLogger`) and at the executor's input/output capture point.
-- Redaction MUST be applied as the **union** of: (a) `x-sensitive` schema annotations, (b) `obs.redaction.sensitive_keys` substring matches, and (c) `obs.redaction.regex_patterns` **string**-value matches.
-- `regex_patterns` MUST NOT be applied to a non-string value, and a non-string value MUST NOT be converted to a string in order to apply it (§10.6.1 requirement 2).
-- Implementations MUST NOT redact `trace_id`, `caller_id`, `module_id`, or `span_id`; these correlation fields MUST appear unmodified in every log entry.
-- The match against `sensitive_keys` MUST be case-insensitive substring (so `"X-API-Key"` matches `api_key`).
-
-#### YAML configuration
-
-```yaml
-obs:
-  redaction:
-    regex_patterns:
-      - "^Bearer\\s+[A-Za-z0-9._\\-]+$"
-      - "^sk-[A-Za-z0-9]{20,}$"
-      - "^[0-9]{12,19}$"          # naive PAN — matches a PAN sent as a STRING
-    sensitive_keys:
-      - password
-      - secret
-      - token
-      - api_key
-      - authorization
-      - cookie
-    replacement: "***REDACTED***"
-```
-
-!!! warning "`regex_patterns` never sees a value that is not a string"
-
-    The `^[0-9]{12,19}$` entry above catches `{"pan": "4111111111111111"}` and does
-    **not** catch `{"pan": 4111111111111111}` — a number is not tested, and is not
-    converted to a string in order to test it (PROTOCOL_SPEC §10.6.1 requirement 2).
-    This is deliberate and cannot be relaxed portably: Python, TypeScript and Rust
-    render the same non-string value three different ways (`{'a': 1}` / `[object
-    Object]` / `{"a":1}`; `True` / `true` / `true`), so a rule defined over that
-    rendering would be three rules rather than one.
-
-    Catch numeric secrets by **field name** instead — `sensitive_keys` matches the
-    name whatever the value's type is — or serialize the field as a string.
-
-=== "Python"
-    ```python
-    from apcore import APCore
-    from apcore.config import Config
-    from apcore.observability import RedactionConfig, ObsLoggingMiddleware
-
-    config = Config.load("apcore.yaml")  # reads obs.redaction.* keys
-    client = APCore(config=config)
-
-    # Or build programmatically:
-    redaction = RedactionConfig.from_config(config)
-    # redaction.regex_patterns == [...]
-    # redaction.sensitive_keys == ["password", "secret", "token", ...]
-    # redaction.replacement == "***REDACTED***"
-
-    logging_mw = ObsLoggingMiddleware(redaction_config=redaction, log_inputs=True, log_outputs=True)
-    client.use(logging_mw)
-    ```
-=== "TypeScript"
-    ```typescript
-    import { APCore, Config } from "apcore-js";
-    import { RedactionConfig, ObsLoggingMiddleware } from "apcore-js";
-
-    const config = Config.load("apcore.yaml");  // reads obs.redaction.* keys
-    const client = new APCore({ config });
-
-    // Or build programmatically:
-    const redaction = RedactionConfig.fromConfig(config);
-    // redaction.regexPatterns === [...]
-    // redaction.sensitiveKeys === ["password", "secret", "token", ...]
-    // redaction.replacement === "***REDACTED***"
-
-    const loggingMw = new ObsLoggingMiddleware({
-        redactionConfig: redaction,
-        logInputs: true,
-        logOutputs: true,
-    });
-    client.use(loggingMw);
-    ```
-=== "Rust"
-    ```rust
-    use apcore::APCore;
-    use apcore::config::Config;
-    use apcore::observability::{RedactionConfig, ObsLoggingMiddleware};
-
-    let config = Config::from_path("apcore.yaml")?;  // reads obs.redaction.* keys
-    let mut client = APCore::new(config.clone())?;
-
-    // Or build programmatically:
-    let redaction = RedactionConfig::from_config(&config);
-    // redaction.regex_patterns == vec![...]
-    // redaction.sensitive_keys == vec!["password", "secret", "token", ...]
-    // redaction.replacement == "***REDACTED***"
-
-    let logging_mw = ObsLoggingMiddleware::new(true, true).with_redaction_config(redaction);
-    client.use_middleware(Box::new(logging_mw));
-    ```
-
-The `obs.redaction.*` config schema supersedes the §1.5 `RedactionConfig` constructor arguments at the YAML level: §1.5 documents the in-code object; this section documents how operators provision it from `apcore.yaml`.
-
-#### Canonical Config keys (cross-SDK)
-
-`obs.redaction.regex_patterns`, `obs.redaction.sensitive_keys`, and `obs.redaction.replacement` are the **canonical** YAML keys that all three SDKs MUST read when constructing a `RedactionConfig` from `Config` (decision **D-53**). Any divergence from these keys is a conformance bug.
-
-#### TypeScript legacy keys (deprecated, accepted for backwards-compat)
-
-Pre-D-53 TypeScript builds read the following legacy keys, mirroring the §1.5 prose that pre-dated the canonical schema:
-
-| Legacy key (TS, deprecated) | Canonical replacement |
-|------------------------------|------------------------|
-| `observability.redaction.field_patterns` | `obs.redaction.sensitive_keys` |
-| `observability.redaction.value_patterns` | `obs.redaction.regex_patterns` |
-
-`RedactionConfig.fromConfig(config)` continues to honor the legacy keys for one minor cycle (v0.21.x). When a legacy key is present in `apcore.yaml`, the TypeScript SDK MUST emit a one-shot `console.warn` deprecation notice naming the legacy key and the canonical replacement, and continue applying the rule. Removal target: **v0.22.0**. **Correction (0.26 sweep):** this line previously read "Python and Rust SDKs only ever supported the canonical keys and are unaffected". That was true of apcore-python and the **exact inverse** for apcore-rust, which read *only* the legacy `observability.redaction.*` path — so an operator following this document and writing `obs.redaction.sensitive_keys` had their redaction configuration silently discarded by Rust, with no warning and no error. apcore-rust now reads canonical first with a one-shot deprecation warning on the legacy path, matching apcore-typescript. The sentence is kept rather than deleted because it is what would have told a maintainer not to check (apcore-rust#32).
+- [Metrics and Usage](./metrics-and-usage.md) · [Error History](./error-history.md) · [Redaction](./redaction.md)
+- [Middleware System](./middleware-system.md) — hook semantics and priorities
+- [Context Object](./context-object.md) — `trace_id`, `call_chain`, `data`
+- [Event System](./event-system.md) — `apcore.health.*` alert events
+- [Observability cookbook](../guides/cookbook-observability.md)

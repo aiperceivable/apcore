@@ -1,5 +1,5 @@
 {
-  "description": "Cross-language parity for OpenAI structured-outputs strict-mode compatibility detection (DECLARATIVE_CONFIG_SPEC.md §6.2 / §6.6). Drives the detector that backs BindingStrictSchemaIncompatibleError on the `auto_schema: strict` binding path.",
+  "description": "Cross-language parity for OpenAI structured-outputs strict-mode compatibility detection (protocol-spec §5.12.5). Drives the detector that backs BindingStrictSchemaIncompatibleError on the `auto_schema: strict` binding path.",
   "keyword_set_source": {
     "url": "https://developers.openai.com/api/docs/guides/structured-outputs",
     "sections": [

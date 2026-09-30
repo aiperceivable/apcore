@@ -10,105 +10,76 @@ description: "Core Executor running the 11-step call pipeline: context creation,
 
 ## Overview
 
-The Core Execution Engine is the central orchestration component of apcore. It processes module calls through a secured execution lifecycle, handling everything from context creation and safety checks to module execution with timeout enforcement and result validation. The engine supports both synchronous and asynchronous execution paths, bridging between the two via threading and an async event loop bridge.
+The Executor is the central orchestration component of apcore. Every module call runs through an ordered pipeline of steps — context creation, safety checks, lookup, access control, approval, middleware, validation, execution with timeouts, and result return. The pipeline is an `ExecutionStrategy` run by a `PipelineEngine`; this page describes what the Executor does with it. Strategies, the Step protocol, presets and the engine itself are described in [Execution Pipeline](./execution-pipeline.md).
 
 ## Requirements
 
 - Orchestrate module calls through a well-defined, sequential pipeline with clear separation of concerns at each step.
-- Enforce safety constraints including maximum call depth limits, circular call detection, and frequency throttling to prevent runaway or abusive execution.
-- Look up modules from the Registry and enforce access control lists (ACL) before execution.
-- Validate inputs and outputs using runtime model classes, with automatic redaction of fields marked as `x-sensitive`.
-- Support middleware chains that execute before and after the core module invocation, enabling cross-cutting concerns such as logging, metrics, and transformation.
-- Execute modules with configurable timeout enforcement, using daemon threads for synchronous modules and an async bridge for asynchronous modules.
-- Return structured results that include execution metadata and any errors encountered during the pipeline.
+- Enforce call-chain safety — depth limit, circular-call detection and self-recursion bound — before any module code runs.
+- Look up modules from the Registry and enforce the ACL and the approval gate before execution.
+- Validate inputs and outputs against the module schemas, and expose redacted copies (fields marked `x-sensitive`) for logging.
+- Run module-level middleware before and after the module (onion model), with error recovery through `on_error`.
+- Enforce a per-module timeout and a global deadline for the whole call tree.
+- Surface every failure to the caller as its original typed error.
 
 ## Technical Design
 
 ### Execution Pipeline
 
-The executor processes every module call through the following pipeline:
+The standard strategy runs eleven steps, in this order in all three SDKs:
 
-1. **Context Creation** -- A `Context` object is constructed carrying the caller identity, call metadata, and any propagated state from parent calls. This context flows through every subsequent step.
+1. **`context_creation`** — Derives the Context for this call: a child of the caller's Context (the target appended to `call_chain`, `caller_id` set to the previous module) or a fresh top-level one. When the Context carries no `global_deadline`, it is set from `executor.global_timeout`.
 
-2. **Call Chain Guard** -- Three safety mechanisms are evaluated before proceeding:
-   - *Call depth check*: Rejects calls that exceed the configured maximum nesting depth, preventing unbounded recursion.
-   - *Circular call detection*: Inspects the call chain recorded in the context to detect and reject circular module invocations.
-   - *Frequency throttling*: Tracks call frequency per module and rejects calls that exceed the configured rate, protecting against tight-loop abuse.
+2. **`call_chain_guard`** — Rejects the call when the chain is too deep (`executor.max_call_depth`, default 32 → `CALL_DEPTH_EXCEEDED`), circular (A→B→A → `CIRCULAR_CALL`), or a module recurses into itself more than `executor.max_module_repeat` times (default 3 → `CALL_FREQUENCY_EXCEEDED`). A cancelled `cancel_token` is also detected here. The exact rules are Algorithm A20 — see [Call Chain Guard](./call-chain-guard.md).
 
-3. **Module Lookup from Registry** -- The target module is resolved by name from the Registry. If the module is not found or not loaded, the pipeline terminates with a descriptive error.
+3. **`module_lookup`** — Resolves the module from the Registry (`MODULE_NOT_FOUND` when it is not registered, `MODULE_DISABLED` when it has been disabled through `system.control.toggle_feature`). It also resolves the registry's declared annotations, computes the governance projection of the arguments for the ACL `arguments` condition, and sets `context.redacted_inputs` from the incoming inputs so that before-middleware can log safely.
 
-4. **ACL Enforcement** -- The caller's `Identity` (extracted from the context) is checked against the module's access control list. Unauthorized calls are rejected before any execution occurs.
+4. **`acl_check`** — Evaluates the attached ACL for (`caller_id`, or `@external` when it is null; target module ID; Context). A denial raises `ACL_DENIED`. With no ACL attached the step allows the call. A rule carrying `approval: required` is recorded for Step 5.
 
-5. **Approval Gate** -- If an `ApprovalHandler` is configured and the module declares `requires_approval=true`, the handler is invoked to obtain approval before proceeding. The handler may block for human input or return immediately. Rejected, timed-out, or still-pending approvals raise `ApprovalDeniedError`, `ApprovalTimeoutError`, or `ApprovalPendingError` respectively. Skipped entirely when no handler is configured or the module does not require approval. See [Approval System](./approval-system.md).
+5. **`approval_gate`** — Engages when **any** of these requires approval: the module's `requires_approval` annotation, the registry descriptor/metadata (D-96, D-125), an ACL rule with `approval: required` ([§6.9](../spec/protocol-spec.md)), or an `ExecutionPolicy` with `gate_destructive` ([§7.9.2](../spec/protocol-spec.md)). The configured `ApprovalHandler` decides; rejected, timed-out and pending decisions raise `APPROVAL_DENIED`, `APPROVAL_TIMEOUT` and `APPROVAL_PENDING`. With no handler the gate is skipped with a warning, unless `ExecutionPolicy(strict=true)` makes it fail closed. See [Approval System](./approval-system.md).
 
-6. **Middleware Before Chain** -- All registered "before" middleware functions are executed in order. Each middleware receives the context and input, and may modify or enrich them before validation runs.
+6. **`middleware_before`** — Runs every middleware's `before()` in priority order; each may replace the inputs. A failure here runs the `on_error` chain. See [Middleware System](./middleware-system.md).
 
-7. **Input Validation + Sensitive Field Redaction** -- The call's input payload (including any modifications from middleware) is validated against the module's input schema (a dynamically generated runtime model). Fields annotated with `x-sensitive` are redacted from logs and error messages using the `redact_sensitive` utility.
+7. **`input_validation`** — Validates the (possibly middleware-modified) inputs against the module's `input_schema` (`SCHEMA_VALIDATION_ERROR`) and refreshes `context.redacted_inputs` from them.
 
-8. **Module Execution with Timeout (Dual-Timeout Model)** -- The module's handler is invoked with dual-timeout enforcement: both a per-module timeout (`resources.timeout`, default 30s) and a global deadline (`executor.global_timeout`, default 60s). The shorter of the two is applied, preventing nested call chains from exceeding the global budget. The global deadline is set on the root call and propagated to child contexts via `Context._global_deadline`.
+8. **`execute`** — Checks the cancel token once more, then invokes the module under the per-module timeout, clamped to the remaining global deadline (see [Timeouts](#timeouts)). An error from the module runs the `on_error` chain.
 
-   **Cooperative cancellation:** On timeout, the executor sends `CancelToken.cancel()` and waits a 5-second grace period before raising `ModuleTimeoutError`. Modules that check `cancel_token` in their execution loop can clean up gracefully.
+9. **`output_validation`** — Validates the output against the module's `output_schema` and sets `context.redacted_output`.
 
-9. **Output Validation** -- The module's return value is validated against its output schema. Invalid output triggers an error rather than allowing malformed data to propagate.
+10. **`middleware_after`** — Runs every middleware's `after()` in reverse order; each may replace the output.
 
-10. **Middleware After Chain** -- All registered "after" middleware functions are executed in order with access to the context, input, and output. These may perform logging, transformation, or cleanup.
+11. **`return_result`** — Returns the final output.
 
-11. **Result Return** -- The final validated output (or error) is packaged into a structured result and returned to the caller.
+`context_creation`, `module_lookup`, `execute` and `return_result` cannot be removed from a strategy; the other seven can be removed by presets (`internal`, `testing`, `performance`, `minimal`) or custom strategies. Each step also declares `match_modules`, `ignore_errors`, `pure` and `timeout_ms`. See [Execution Pipeline](./execution-pipeline.md).
 
-!!! tip "Core vs Optional Steps"
-    Of the 11 steps, only **4 are mandatory** (non-removable):
+### Key Types
 
-    - **Steps 1, 3, 8, 11** (`context_creation` → `module_lookup` → `execute` → `return_result`)
-
-    The remaining 7 steps (guard, ACL, approval, middleware, validation) are **optional** and can be removed via strategy presets or custom strategies. The `minimal` strategy retains only the 4 core steps for maximum throughput on pre-validated internal hot paths. See [Execution Pipeline Design](../spec/design-execution-pipeline.md) for the full strategy reference.
-
-!!! info "Step Metadata"
-    Each pipeline step declares four metadata fields:
-
-    | Field | Type | Default | Purpose |
-    |-------|------|---------|---------|
-    | `match_modules` | module-ID patterns (A08) or null | `null` (all) | Only run this step for matching module IDs |
-    | `ignore_errors` | bool | `false` | If true, step failure logs warning and continues |
-    | `pure` | bool | `false` | If true, safe to run during `validate()` dry-run mode |
-    | `timeout_ms` | int | `0` | Per-step timeout in milliseconds (0 = no limit) |
-
-    These fields enable targeted step application, fault-tolerant pipelines, and dry-run validation without code changes.
-
-### Key Classes
-
-- **Executor** -- The main engine class that implements the execution pipeline. Manages middleware registration, timeout configuration, and the execution loop.
-- **Context** -- Immutable data class carrying call metadata: caller identity, call chain history, depth counter, and propagated key-value state.
-- **Identity** -- Represents the caller's identity for ACL enforcement. Carries `id`, `type`, `roles`, and extensible `attrs` dict.
-- **Config** -- Configuration data class holding executor-level settings such as max call depth, timeout defaults, and throttle limits.
+- **Executor** — Runs the pipeline; owns the middleware chain, the ACL, the approval handler, the optional `ExecutionPolicy` and the timeout settings.
+- **Context** — Per-call state: `trace_id`, `caller_id`, `call_chain`, `identity`, the shared `data` map and the redacted copies. See [Context Object](./context-object.md).
+- **Identity** — The caller identity the ACL evaluates. See [Identity System](./identity-system.md).
+- **Config** — Supplies `executor.default_timeout`, `executor.global_timeout`, `executor.max_call_depth`, `executor.max_module_repeat`, `pipeline.*` and the redaction rules.
 
 ### Sync/Async Bridge
 
-The executor exposes both `call()` (sync) and `call_async()` (async) entry points. Internally:
-- Synchronous modules called from an async context are dispatched to a worker thread to avoid blocking the event loop.
-- Asynchronous modules called from a synchronous context are executed through a temporary event loop on a worker thread.
-- A cache lock protects concurrent access to shared module state.
-
-These mechanics are SDK-specific; languages without an async/await split (e.g., Rust with a single runtime) MAY implement the bridge differently.
+Python exposes both `call()` (blocking) and `call_async()` (coroutine). The blocking form runs the async pipeline on a cached event loop, or on a background thread when it is called from inside a running loop. Synchronous module functions called from the async pipeline run in a worker thread so they do not block the loop. TypeScript and Rust have a single async `call()`.
 
 ### Sensitive Field Redaction
 
-The `redact_sensitive` utility walks the input/output dictionaries and replaces values of fields marked `x-sensitive: true` in the schema with a placeholder string. This ensures sensitive data never appears in logs or error reports.
+`redacted_inputs` / `redacted_output` are copies of the payload with fields marked `x-sensitive: true` — and keys matching the configured `obs.redaction.*` rules — replaced by `***REDACTED***`. The module always receives the real values. Redaction rules are described in [Redaction](./redaction.md).
 
 ### Error Propagation (Algorithm A11)
 
-All execution paths (sync, async, stream) wrap exceptions via `propagate_error()`, ensuring middleware always receives `ModuleError` instances with trace context attached. This guarantees consistent error handling regardless of the execution mode.
+Every execution path (sync, async, stream) wraps exceptions via `propagate_error()`, so middleware always receives a `ModuleError` carrying the trace context. Internally, a failing step is wrapped in `PipelineStepError` (see [Fail-Fast Error Handling](#fail-fast-error-handling)); the Executor unwraps it, so callers catch the original typed error.
 
 ### Deep Merge for Streaming
 
-Streaming chunk accumulation uses recursive deep merge (depth-capped at 32) instead of shallow merge. This correctly handles nested response structures where chunks contribute to different levels of the output tree.
+Streamed chunks are accumulated with a recursive deep merge, capped at `stream.max_merge_depth` (default 32), so chunks can contribute to different levels of the output tree. See [Streaming](./streaming.md).
 
 ### Validation (Preflight)
 
-The `validate()` method provides a non-destructive preflight check: **6 pipeline checks plus an optional module-level preflight** (no execution, no middleware). It runs Steps 1–5 and Step 7 of the canonical 11-step pipeline (module ID format, module lookup, call chain safety, ACL, approval detection, input schema validation), explicitly skipping Step 6 Middleware Before Chain, and then optionally invokes `module.preflight()` for advisory warnings. It returns a `PreflightResult` with per-check results and a `requires_approval` flag. The result is duck-type compatible with the legacy `ValidationResult` — `.valid` and `.errors` properties work identically. See [PROTOCOL_SPEC §12.8](../spec/protocol-spec.md#128-executorvalidate-cross-language-implementation-guide) for the cross-language implementation guide.
+`validate()` is a non-destructive preflight: it runs Steps 1–5 and 7 of the pipeline — no middleware, no module execution — plus the module's optional `preflight()` hook, and returns a `PreflightResult` (`valid`, `checks`, `requires_approval`, `errors`). The pipeline runs in dry-run mode, which skips every step not declared `pure`; Step 5 is therefore evaluated as detection only — `requires_approval` reports the governance-effective requirement and no `ApprovalHandler` is invoked. A failed `acl` check suppresses the module's `preflight()` / `preview()` hooks. See [PROTOCOL_SPEC §12.8](../spec/protocol-spec.md#128-executorvalidate-cross-language-implementation-guide) and [Contract: APCore.validate](./apcore-client.md#contract-apcorevalidate).
 
 ### Execution State Machine
-
-The Executor processes each `call()` through a fixed state machine. Failures at any stage transition into either an immediate error or the `on_error` middleware chain.
 
 ```text
   ┌─────────┐
@@ -116,50 +87,51 @@ The Executor processes each `call()` through a fixed state machine. Failures at 
   └────┬────┘
        │ call()
        ▼
-  ┌──────────┐  depth/cycle/freq  ┌──────────────────────────┐
-  │call_chain│───────────────────▶│ error: DEPTH_EXCEEDED    │
-  │  guard   │                    │      / CIRCULAR_CALL     │
-  └────┬─────┘                    │      / FREQUENCY_EXCEEDED│
-       │ check passed             └──────────────────────────┘
+  ┌──────────┐  depth/cycle/freq  ┌────────────────────────────────┐
+  │call_chain│───────────────────▶│ CALL_DEPTH_EXCEEDED            │
+  │  guard   │                    │ / CIRCULAR_CALL                │
+  └────┬─────┘                    │ / CALL_FREQUENCY_EXCEEDED      │
+       │ check passed             └────────────────────────────────┘
        ▼
-  ┌─────────┐    module not exist ┌──────────────────┐
-  │ resolve │────────────────────▶│ error: NOT_FOUND │
-  └────┬────┘                     └──────────────────┘
+  ┌─────────┐   not registered    ┌──────────────────┐
+  │ lookup  │────────────────────▶│ MODULE_NOT_FOUND │
+  └────┬────┘   / disabled        │ / MODULE_DISABLED│
+       │                          └──────────────────┘
        │ module found
        ▼
-  ┌─────────┐    permission denied ┌──────────────────┐
-  │  acl    │─────────────────────▶│ error: ACL_DENIED│
-  └────┬────┘                      └──────────────────┘
-       │ permission passed
+  ┌─────────┐   denied            ┌──────────────────┐
+  │  acl    │────────────────────▶│ ACL_DENIED       │
+  └────┬────┘                     └──────────────────┘
+       │ allowed
        ▼
-  ┌──────────┐  rejected/timeout ┌──────────────────────────┐
-  │ approval │──────────────────▶│ error: APPROVAL_DENIED   │
-  │   gate   │                   │      / APPROVAL_TIMEOUT  │
-  └────┬─────┘                   │      / APPROVAL_PENDING  │
+  ┌──────────┐ rejected/timeout  ┌──────────────────────────┐
+  │ approval │──────────────────▶│ APPROVAL_DENIED          │
+  │   gate   │                   │ / APPROVAL_TIMEOUT       │
+  └────┬─────┘                   │ / APPROVAL_PENDING       │
        │                         └──────────────────────────┘
-       │ approved (or skipped)
+       │ approved (or not required)
        ▼
   ┌──────────┐
   │ before   │──── middleware error ──▶ on_error chain
   │middleware│
   └────┬─────┘
-       │ transforms applied
+       │ inputs possibly replaced
        ▼
-  ┌──────────┐   validation failed ┌──────────────────────┐
-  │ validate │────────────────────▶│ error: VALIDATION    │
-  │  input   │                     └──────────────────────┘
+  ┌──────────┐   invalid          ┌─────────────────────────┐
+  │ validate │───────────────────▶│ SCHEMA_VALIDATION_ERROR │
+  │  input   │                    └─────────────────────────┘
   └────┬─────┘
-       │ validation passed
+       │ valid
        ▼
-  ┌──────────┐   execution error  ┌──────────────────────┐
-  │ execute  │───────────────────▶│ on_error middleware  │
+  ┌──────────┐   error / timeout  ┌──────────────────────┐
+  │ execute  │───────────────────▶│ on_error chain       │
   │  module  │                    └──────────────────────┘
   └────┬─────┘
        │ success
        ▼
-  ┌──────────┐   validation failed ┌──────────────────────┐
-  │ validate │────────────────────▶│ error: VALIDATION    │
-  │  output  │                     └──────────────────────┘
+  ┌──────────┐   invalid          ┌─────────────────────────┐
+  │ validate │───────────────────▶│ SCHEMA_VALIDATION_ERROR │
+  │  output  │                    └─────────────────────────┘
   └────┬─────┘
        │
        ▼
@@ -170,125 +142,173 @@ The Executor processes each `call()` through a fixed state machine. Failures at 
        │
        ▼
   ┌──────────┐
-  │ return   │
-  │ result   │
+  │  return  │
+  │  result  │
   └──────────┘
 ```
 
-### Timeout Specification (Dual-Timeout Model)
+The `on_error` chain runs over the middlewares whose `before()` was entered; a recovery value becomes the call's output, and a `RetrySignal` re-runs the pipeline with new inputs. Cancellation bypasses it (see [Cancellation Short-Circuit](#cancellation-short-circuit)).
 
-| Setting | Default | Description |
-|---------|---------|-------------|
-| Module execution timeout | 30 000 ms | Override via `resources.timeout` |
-| Global timeout | 60 000 ms | Total budget including middleware and validation |
-| ACL check timeout | 1 000 ms | Maximum time for ACL rule evaluation |
+### Timeouts
 
-The Executor enforces a **dual-timeout model**: both the per-module timeout and a global deadline are tracked, and the shorter of the two applies. The global deadline is set on the root call and propagated to child contexts via `Context._global_deadline`, preventing nested call chains from exceeding the global budget.
+| Setting | Default | Source |
+|---------|---------|--------|
+| Per-module timeout | 30 000 ms | The module's `resources.timeout`, else `executor.default_timeout` |
+| Global deadline | 60 000 ms | `executor.global_timeout`, set on the root Context at Step 1 and inherited by child calls |
 
-- After timeout the Executor MUST raise `MODULE_TIMEOUT`.
-- Timeout counting MUST start from the first `before()` middleware.
-- Middleware execution time SHOULD count toward the total.
+The per-module timeout applies to Step 8 and is clamped to the time left before the global deadline, so a nested call tree cannot outlive its root's budget. `0` disables the per-module limit (the global deadline still applies); a negative timeout raises `GENERAL_INVALID_INPUT`.
 
-**Cooperative cancellation.** On timeout the Executor invokes `CancelToken.cancel()` and waits a 5-second grace window before raising `ModuleTimeoutError`. Modules that poll `cancel_token` can clean up gracefully:
+**On timeout** the Executor raises `MODULE_TIMEOUT` immediately. It does not signal the Context's `cancel_token`: Python cancels the module's coroutine (a synchronous module running in a worker thread keeps running to completion), TypeScript stops awaiting the module's promise, and Rust drops the module's future. The cooperative-cancel-then-grace-period sequence of [PROTOCOL_SPEC §12.7.5](../spec/protocol-spec.md#1275-timeout-enforcement) is not implemented by any SDK.
 
-```python
-@client.module(id="long.task", description="Long-running task")
-async def long_task(inputs: dict, context: Context) -> dict:
-    for item in items:
-        if context.cancel_token.is_cancelled:
-            return {"partial": True, "processed": count}
-        await process(item)
-    return {"partial": False, "processed": len(items)}
-```
+A module that wants to stop early on caller-driven cancellation checks its cancel token ([Cancellation](./cancellation.md)):
+
+=== "Python"
+    ```python
+    import asyncio
+
+    from apcore import APCore, Context
+
+    client = APCore()
+
+    @client.module(id="batch.process", description="Process items until cancelled")
+    async def process(items: list[str], context: Context) -> dict:
+        done = 0
+        for _item in items:
+            if context.cancel_token is not None and context.cancel_token.is_cancelled:
+                return {"partial": True, "processed": done}
+            await asyncio.sleep(0.01)
+            done += 1
+        return {"partial": False, "processed": done}
+
+    print(client.call("batch.process", {"items": ["a", "b", "c"]}))
+    ```
+=== "TypeScript"
+    ```typescript
+    import { Type } from "@sinclair/typebox";
+    import { APCore } from "apcore-js";
+
+    const client = new APCore();
+
+    client.module({
+        id: "batch.process",
+        description: "Process items until cancelled",
+        inputSchema: Type.Object({ items: Type.Array(Type.String()) }),
+        outputSchema: Type.Object({ partial: Type.Boolean(), processed: Type.Number() }),
+        execute: async (inputs, context) => {
+            let done = 0;
+            for (const _item of inputs.items as string[]) {
+                if (context.cancelToken?.isCancelled) {
+                    return { partial: true, processed: done };
+                }
+                await new Promise((resolve) => setTimeout(resolve, 10));
+                done += 1;
+            }
+            return { partial: false, processed: done };
+        },
+    });
+
+    console.log(await client.call("batch.process", { items: ["a", "b", "c"] }));
+    ```
+=== "Rust"
+    ```rust
+    use apcore::context::Context;
+    use apcore::errors::ModuleError;
+    use apcore::module::Module;
+    use apcore::APCore;
+    use async_trait::async_trait;
+    use serde_json::{json, Value};
+
+    struct BatchProcess;
+
+    #[async_trait]
+    impl Module for BatchProcess {
+        fn description(&self) -> &str { "Process items until cancelled" }
+        fn input_schema(&self) -> Value {
+            json!({"type": "object", "properties": {"items": {"type": "array", "items": {"type": "string"}}}})
+        }
+        fn output_schema(&self) -> Value { json!({"type": "object"}) }
+        async fn execute(&self, inputs: Value, ctx: &Context<Value>) -> Result<Value, ModuleError> {
+            let items = inputs["items"].as_array().cloned().unwrap_or_default();
+            let mut done = 0;
+            for _item in items {
+                if ctx.cancel_token.as_ref().is_some_and(|t| t.is_cancelled()) {
+                    return Ok(json!({"partial": true, "processed": done}));
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                done += 1;
+            }
+            Ok(json!({"partial": false, "processed": done}))
+        }
+    }
+
+    #[tokio::main]
+    async fn main() -> Result<(), ModuleError> {
+        let client = APCore::new();
+        client.register("batch.process", Box::new(BatchProcess))?;
+        let out = client.call("batch.process", json!({"items": ["a", "b", "c"]}), None, None).await?;
+        println!("{out}");
+        Ok(())
+    }
+    ```
 
 ### Concurrent Execution Semantics
 
 - A single Executor instance MUST tolerate concurrent calls from multiple threads/coroutines.
-- Each `call()` MUST receive its own Context (independent `call_chain` and `caller_id`).
-- `context.data` is shared by reference; concurrent calls SHOULD use distinct Context instances when isolation matters.
-- Batch `call_async()` MAY execute concurrently; ordering is not guaranteed.
+- Each call MUST receive its own derived Context (independent `call_chain` and `caller_id`).
+- `context.data` is shared by reference along a call tree; concurrent calls SHOULD use distinct top-level Contexts when isolation matters.
+- Concurrent `call_async()` calls MAY complete in any order.
 
 See [PROTOCOL_SPEC §12.7 Concurrency Model Specification](../spec/protocol-spec.md#127-concurrency-model-specification).
 
 ### Edge Cases
 
-| Scenario | Behavior | Level |
-|----------|----------|-------|
-| `timeout = 0` | Disable timeout, log WARN | MUST |
-| `timeout` is negative | Raise `GENERAL_INVALID_INPUT` | MUST |
-| `module_id` is empty string `""` | Raise `MODULE_NOT_FOUND` | MUST |
-| `inputs = null` | Treat as empty dict `{}`, continue validation | MUST |
-| `context = null` | Create a new Context (empty `call_chain`) | MUST |
-| Concurrent calls sharing one Context instance | Race condition; SHOULD log WARN | SHOULD |
-| `call()` during module `unregister()` | If execution started, continue; otherwise raise `MODULE_NOT_FOUND` | MUST |
-| `call_chain` length reaches `max_call_depth` | Raise `CALL_DEPTH_EXCEEDED` | MUST |
+| Scenario | Behavior |
+|----------|----------|
+| `module_id` is empty, malformed or over-length | `INVALID_MODULE_ID`, before the pipeline starts |
+| `inputs` is null/absent | Treated as `{}` |
+| `context` is null/absent | A new top-level Context is created |
+| Declared timeout is `0` | No per-module limit; the global deadline still applies |
+| Declared timeout is negative | `GENERAL_INVALID_INPUT` |
+| `call()` while the module is being unregistered | A call that has passed lookup completes; a later call raises `MODULE_NOT_FOUND` |
+| `call_chain` longer than `max_call_depth` | `CALL_DEPTH_EXCEEDED` |
+| One Context shared by concurrent calls | `data` is shared; synchronize externally |
 
-### Pipeline Strategy API
+### Fail-Fast Error Handling
 
-The execution pipeline is driven by an `ExecutionStrategy` — a named, ordered sequence of steps. Strategies can be swapped at construction time or registered globally for selection by name.
+When a step fails, the engine stops and wraps the error in `PipelineStepError` (carrying the step name), unless the step is configured with `ignore_errors: true` — then the failure is logged and the pipeline continues with the step's output absent. `ignore_errors` is set per step through `pipeline.configure` (D-72):
 
-| Surface | Type | Description |
-|---------|------|-------------|
-| `Executor.register_strategy(name, strategy)` | class method | Register a named strategy resolvable at construction time |
-| `executor.list_strategies() -> list[StrategyInfo]` | instance method | Returns `StrategyInfo` for the current strategy and all registered strategies |
-
-```python
-Executor.register_strategy("audit", AuditStrategy())
-
-executor = Executor(registry, strategy="audit")
-for info in executor.list_strategies():
-    print(info.name, info.step_count)
+```yaml
+pipeline:
+  configure:
+    output_validation:      # map keyed by step name
+      ignore_errors: true
 ```
 
-Built-in strategies and authoring custom ones are described in [Pipeline Hardening](#pipeline-hardening-issue-33) below.
+`PipelineStepError` is an engine-level type. `Executor.call()` unwraps it, so callers catch the typed cause — for a failed input validation, `SchemaValidationError` (`SCHEMA_VALIDATION_ERROR`) — and middleware `on_error` hooks see the same cause. It is observable directly only when driving a `PipelineEngine` yourself. Normative text: [PROTOCOL_SPEC §5.16](../spec/protocol-spec.md#516-pipeline-control-flow-requirements).
 
-## Contract: Executor.register_strategy
+### Strategies and Step-Level Extension
 
-### Inputs
-- `name` (str/string, required) — identifier the strategy is registered under; resolvable later via `strategy=name` at Executor construction
-- `strategy` (ExecutionStrategy instance, required) — the strategy to register
+The Executor is constructed with a strategy — the standard one by default, a preset by name, a custom `ExecutionStrategy`, or the strategy built from the `pipeline:` section of the Config (§5.16 requirement 6). Introspection lives on the Executor:
 
-### Errors
-- Not normatively specified. No conformance fixture pins the duplicate-`name` case; do not assume one SDK's behavior (overwrite vs. raise) generalizes to the others.
+| Surface | Description |
+|---------|-------------|
+| `Executor.register_strategy(name, strategy)` | Python / TypeScript: registers a strategy resolvable by name at construction. Rust's module-level `register_strategy(StrategyInfo)` registers introspection info only; `Executor::with_strategy_name` resolves the five built-in presets |
+| `executor.list_strategies()` | `StrategyInfo` (`name`, `step_count`, `step_names`, `description`) for the current strategy followed by every registered one |
+| `executor.describe_pipeline()` | `StrategyInfo` for the current strategy |
+| `executor.current_strategy` | The running `ExecutionStrategy` (Python property, TypeScript getter; Rust `strategy()`) |
 
-### Returns
-- On success: void/None/()
+Replacing a step (`configure_step`), step middleware (`StepMiddleware`), and the `run_until` predicate are strategy- and engine-level features:
 
-### Properties
-- async: false
-- thread_safe: implementation-defined — this is a **class-level** registration (`Executor.register_strategy`, called on the class/module, not an instance — see the Rust signature `pub fn register_strategy(name: impl Into<String>, strategy: ExecutionStrategy)`, which takes no `self`), so it mutates state shared by every Executor in the process
-- pure: false — mutates the process-global named-strategy registry
-- idempotent: not specified (see Errors)
+- **Step middleware** is registered on the strategy (Python `strategy.add_step_middleware()`, Rust `ExecutionStrategy::add_step_middleware()` before the Executor is built) or, in TypeScript, on a `PipelineEngine` instance — the Executor's own engine is not reachable from `APCore`. Its contract is in [Middleware System](./middleware-system.md#pipeline-step-middleware).
+- **[`run_until`](./execution-pipeline.md#run_until)** is a predicate over `PipelineState` that halts the pipeline after the step for which it returns `true`. It is accepted by the pipeline engine — Python `PipelineEngine().run(strategy, ctx, run_until=...)` or `PipelineContext.run_until`, TypeScript `PipelineContext.runUntil`, Rust `PipelineEngine::run_until(&strategy, &mut ctx, predicate)` / `RunOptions::run_until` — and is **not** an option of `Executor.call()` or `APCore.call()` in any SDK.
 
-## Contract: Executor.list_strategies
+See [Execution Pipeline](./execution-pipeline.md) for all three.
 
-### Inputs
-- No inputs
+## Contract: Executor.governance_state
 
-### Errors
-- No errors raised
-
-### Returns
-- On success: `list[StrategyInfo]`/`StrategyInfo[]`/`Vec<StrategyInfo>` — one entry for the executor's current strategy plus one for every strategy registered via `register_strategy` (built-in or custom). Each `StrategyInfo` carries `name`, `step_count`, `step_names`, `description` ([design-execution-pipeline.md §2.6](../spec/design-execution-pipeline.md#26-strategyinfo)) — names only, no gate-type information (see `governance_state()` below for why that distinction matters).
-
-### Properties
-- async: false
-- thread_safe: true
-- pure: true — read-only introspection; MUST NOT mutate the executor or the strategy registry
-- idempotent: true
+`acl != null` does not mean ACL evaluation runs. The ACL and approval gates are pipeline **steps**, and three of the built-in presets — `internal`, `testing` and `minimal` — remove `acl_check` ([§6.6.3.2](../spec/protocol-spec.md#6632-a-configured-layer-is-not-necessarily-an-enforced-one)). An executor can therefore hold an ACL that is never consulted. `governance_state()` separates the two questions; it is a **pure read** that never enforces, warns, throws or mutates. Normative specification: [PROTOCOL_SPEC §6.6.5](../spec/protocol-spec.md#665-governance-state-query).
 
 ### Governance State API
-
-> **Added in spec v1.15.0** ([PROTOCOL_SPEC §6.6.5](../spec/protocol-spec.md#665-governance-state-query), issue #97).
-
-`acl != null` does not mean ACL evaluation runs. The ACL and approval gates are pipeline **steps**, and three of the four built-in strategies remove them — `internal`, `testing` and `minimal` all drop `acl_check` (see [§6.6.3.2](../spec/protocol-spec.md#6632-a-configured-layer-is-not-necessarily-an-enforced-one)). An executor can therefore hold an ACL that is never consulted, which is exactly the state a naive `acl != null` check reports as "protected".
-
-`governance_state()` is the read-only accessor that separates the two questions. It is a **pure read**: it never enforces, warns, throws, or mutates.
-
-
-| Surface | Type | Description |
-|---------|------|-------------|
-| `executor.governance_state()` | instance method | Returns the current `GovernanceState` — nine booleans (eight observations plus the derived `unprotected_control_surface`), computed live |
 
 | Field | Answers |
 |---|---|
@@ -302,21 +322,21 @@ Built-in strategies and authoring custom ones are described in [Pipeline Hardeni
 | `all_control_modules_require_approval` | Does **every** registered `system.control.*` module declare `requires_approval`? |
 | `unprotected_control_surface` | Derived: control modules are registered and no recognised built-in gate is configured, wired **and actually engaged** for them. |
 
-**The two gates are not symmetric.** `acl_check` evaluates every call, so "configured + wired" really does mean the gate stands in front of `system.control.*`. `approval_gate` resolves per module and returns immediately when the module does not need approval — so a wired gate with a handler attached, or with `strict=true`, gates *nothing* for a control module that never declares `requires_approval`, and §6.7 makes that annotation a SHOULD. That is why `all_control_modules_require_approval` is a separate observation and a required conjunct of the derived flag ([§6.6.5.1.1](../spec/protocol-spec.md#66511-why-the-two-gates-are-not-symmetric)).
+**The two gates are not symmetric.** `acl_check` evaluates every call, so "configured + wired" means the gate stands in front of `system.control.*`. `approval_gate` resolves per module and returns immediately when the module does not need approval — so a wired gate with a handler attached, or with `strict=true`, gates nothing for a control module that never declares `requires_approval`. That is why `all_control_modules_require_approval` is a separate observation and a required conjunct of the derived flag ([§6.6.5.1.1](../spec/protocol-spec.md#66511-why-the-two-gates-are-not-symmetric)).
 
 === "Python"
     ```python
     from apcore import APCore, Config
 
-    client = APCore(Config())
+    client = APCore(config=Config())
     state = client.executor.governance_state()
 
-    # The distinction the flag exists for: an attached ACL that no step consults.
+    # An attached ACL that no step consults.
     if state.acl_configured and not state.builtin_acl_gate_wired:
         print("ACL attached but the running strategy has no acl_check step")
 
-    # An approval handler that the gate never reaches, because the control
-    # modules do not declare requires_approval (a SHOULD, not a MUST).
+    # An approval handler the gate never reaches, because a control module
+    # does not declare requires_approval.
     if state.approval_handler_configured and not state.all_control_modules_require_approval:
         print("approval handler attached but some system.control.* module is ungated")
 
@@ -326,17 +346,17 @@ Built-in strategies and authoring custom ones are described in [Pipeline Hardeni
 
 === "TypeScript"
     ```typescript
-    import { APCore } from 'apcore-js';
+    import { APCore } from "apcore-js";
 
     const client = new APCore();
     const state = client.executor.governanceState();
 
     if (state.aclConfigured && !state.builtinAclGateWired) {
-      console.warn('ACL attached but the running strategy has no acl_check step');
+        console.warn("ACL attached but the running strategy has no acl_check step");
     }
 
     if (state.unprotectedControlSurface) {
-      console.warn('system.control.* is registered with no recognised gate in front of it');
+        console.warn("system.control.* is registered with no recognised gate in front of it");
     }
     ```
 
@@ -344,43 +364,36 @@ Built-in strategies and authoring custom ones are described in [Pipeline Hardeni
     ```rust
     use apcore::APCore;
 
-    # fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let client = APCore::new()?;
-    let state = client.executor().governance_state();
+    fn main() {
+        let client = APCore::new();
+        let state = client.executor().governance_state();
 
-    if state.acl_configured && !state.builtin_acl_gate_wired {
-        eprintln!("ACL attached but the running strategy has no acl_check step");
-    }
+        if state.acl_configured && !state.builtin_acl_gate_wired {
+            eprintln!("ACL attached but the running strategy has no acl_check step");
+        }
 
-    if state.unprotected_control_surface {
-        eprintln!("system.control.* is registered with no recognised gate in front of it");
+        if state.unprotected_control_surface {
+            eprintln!("system.control.* is registered with no recognised gate in front of it");
+        }
     }
-    # Ok(())
-    # }
     ```
 
-**What `unprotected_control_surface` does not say.** It reports the *absence of a gate*, never the presence of protection: a wired ACL that permits every call still yields `false`. And a `true` does not mean the call will succeed — a deployment may enforce through a custom step, custom middleware, or an upstream gateway, none of which this accessor can see. Do not surface it as a security verdict, and do not add an `is_secure`-shaped inverse.
-
-**Consumers.** `apcore-mcp` ([apcore-mcp#15](https://github.com/aiperceivable/apcore-mcp/issues/15)) and `apcore-a2a` ([apcore-a2a#5](https://github.com/aiperceivable/apcore-a2a/issues/5)) specify startup warnings over exactly this condition; both should call this accessor rather than re-derive it from `describe_pipeline()` output, which carries step **names** only and cannot tell a built-in gate from a look-alike.
-
-## Contract: Executor.governance_state
-
-Normative behavioral contract. See [PROTOCOL_SPEC §6.6.5](../spec/protocol-spec.md#665-governance-state-query) for the full field-by-field specification and the `unprotected_control_surface` formula.
+**What `unprotected_control_surface` does not say.** It reports the *absence of a gate*, never the presence of protection: a wired ACL that permits every call still yields `false`. And `true` does not mean the call will succeed — a deployment may enforce through a custom step, custom middleware or an upstream gateway, none of which this accessor can see. Do not surface it as a security verdict, and do not add an `is_secure`-shaped inverse. Adapters that warn at startup about an unprotected control surface should call this accessor rather than re-derive it from `describe_pipeline()`, which reports step names only and cannot tell a built-in gate from a look-alike.
 
 ### Inputs
 - No inputs
 
 ### Errors
-- No errors raised — `governance_state()` MUST NOT enforce, warn, throw, or mutate ([§6.6.5.3](../spec/protocol-spec.md#6653-constraints), constraint 1)
+- None — `governance_state()` MUST NOT enforce, warn, throw, or mutate ([§6.6.5.3](../spec/protocol-spec.md#6653-constraints), constraint 1)
 
 ### Returns
-- On success: `GovernanceState` — eight observation booleans (`control_modules_registered`, `read_modules_registered`, `acl_configured`, `builtin_acl_gate_wired`, `approval_handler_configured`, `builtin_approval_gate_wired`, `policy_strict`, `all_control_modules_require_approval`) plus the derived `unprotected_control_surface`. MUST NOT expose the ACL object, the `ApprovalHandler`, the `ExecutionPolicy`, or any rule content ([§6.6.5.3](../spec/protocol-spec.md#6653-constraints), constraint 2).
+- `GovernanceState` — the eight observation booleans plus the derived `unprotected_control_surface`. MUST NOT expose the ACL object, the `ApprovalHandler`, the `ExecutionPolicy`, or any rule content ([§6.6.5.3](../spec/protocol-spec.md#6653-constraints), constraint 2).
 
 ### Properties
 - async: false
 - thread_safe: true
 - pure: true — a live read of current executor state, never cached ([§6.6.5.3](../spec/protocol-spec.md#6653-constraints), constraint 4)
-- idempotent: true — repeated calls with no intervening state change return an identical value
+- idempotent: true
 
 ## Contract: Executor.call
 
@@ -388,92 +401,90 @@ Normative behavioral contract. All SDK implementations MUST satisfy these guaran
 
 ### Inputs
 
-- `module_id`: string, required. Validated at method entry via `validate_module_id(allow_reserved=true)`. `system` is a reserved first segment ([PROTOCOL_SPEC §2.5](../spec/protocol-spec.md#25-reserved-words)), so the bypass is what makes `system.*` invocation legal; every other validation (empty, pattern, length) still applies. Empty / over-length / malformed IDs MUST be rejected before the pipeline context is constructed.
-- `inputs`: object, required. Payload conforming to the module's input schema.
-- `options`: object, optional. Call-site overrides (identity, trace_parent, per-call timeout).
+- `module_id`: string, required. Validated at method entry — empty, malformed and over-length IDs are rejected before the pipeline context is constructed. Reserved first segments ([§2.5](../spec/protocol-spec.md#25-reserved-words)) are not rejected here, which is what makes `system.*` modules callable.
+- `inputs`: object, optional. Payload conforming to the module's input schema; absent is `{}`.
+- `context`: Context, optional. Created when absent.
+- `version_hint`: string, optional. Preferred version (resolved in Python; TypeScript and Rust resolve the latest registered version).
 
 ### Preconditions
 
-- Entry-guard: `module_id` MUST be validated before constructing a pipeline context. Implementations MUST NOT defer this check to downstream pipeline steps.
+- Entry guard: `module_id` MUST be validated before constructing a pipeline context. Implementations MUST NOT defer this check to downstream steps.
 
 ### Side Effects (ordered)
 
-1. Validate `module_id` at method entry; reject fast with `InvalidInputError(code=INVALID_MODULE_ID)`.
-2. Construct `PipelineContext` and run the 11-step execution pipeline (see Execution Pipeline above).
-3. Emit observability spans and metrics per observability configuration.
+1. Validate `module_id`; reject with `InvalidInputError(code=INVALID_MODULE_ID)`.
+2. Bind the Executor to the Context ([Contract: Executor binding to Context](#contract-executor-binding-to-context)).
+3. Run the pipeline (see [Execution Pipeline](#execution-pipeline)), including `on_error` recovery and `RetrySignal` re-runs.
+4. Emit spans, metrics and events per configuration.
 
 ### Errors
 
-- `InvalidInputError(code=INVALID_MODULE_ID)` -- `module_id` fails entry-guard validation.
-- `ModuleNotFoundError(code=MODULE_NOT_FOUND)` -- `module_id` not present in the registry.
-- `ACLDeniedError`, `ApprovalDeniedError`, `ApprovalTimeoutError`, `ApprovalPendingError`, `ModuleTimeoutError`, `ExecutionCancelledError`, `ModuleError` -- propagated from pipeline stages.
+- `InvalidInputError(code=INVALID_MODULE_ID)` — `module_id` fails the entry guard.
+- `ModuleNotFoundError(code=MODULE_NOT_FOUND)` — `module_id` not present in the registry.
+- `ModuleDisabledError(code=MODULE_DISABLED)` — the module has been disabled at runtime.
+- `CallDepthExceededError`, `CircularCallError`, `CallFrequencyExceededError`, `ACLDeniedError`, `ApprovalDeniedError`, `ApprovalTimeoutError`, `ApprovalPendingError`, `SchemaValidationError`, `ModuleTimeoutError`, `ExecutionCancelledError`, `ContextBindingError`, and errors raised by the module or middleware — propagated as their original typed error ([Error Unwrap Rule](#error-unwrap-rule)).
 
 ### Returns
 
-- On success: validated output object conforming to the module's output schema.
+- On success: validated output conforming to the module's output schema (after-middleware applied), or an `on_error` recovery value.
 - On failure: raises (Python/TypeScript) / returns `Err` (Rust).
 
 ### Properties
 
-- `async`: SDK-specific. `call()` is synchronous in Python (wraps `call_async`); asynchronous in TypeScript and Rust. Both surfaces MUST be provided where the host language supports both.
+- `async`: synchronous in Python (`call_async` is the coroutine); asynchronous in TypeScript and Rust.
 - `thread_safe`: `true`.
-- `pure`: `false` -- pipeline stages may emit events, mutate observability state, and transitively invoke other modules.
+- `pure`: `false` — pipeline steps may emit events, mutate observability state, and transitively invoke other modules.
 
 ### Trace Variants (`call_with_trace` / `callWithTrace`)
 
-SDKs MAY expose a trace-returning variant — `call_with_trace` in Python and Rust, `callWithTrace` in TypeScript — that returns the call result paired with a `PipelineTrace` value describing per-step timings and middleware events. This variant is OPTIONAL; SDKs MAY omit it.
+SDKs MAY expose a trace-returning variant — `call_with_trace` in Python and Rust, `callWithTrace` in TypeScript — that returns the result together with a `PipelineTrace` (per-step timings and middleware events). When implemented, it MUST share **identical error-recovery semantics** with `call()` (D-19):
 
-When implemented, the trace variant MUST share **identical error-recovery semantics** with the underlying `call()`:
+- **MUST** run the same pipeline, including the `on_error` chain — a middleware that recovers in `call()` recovers here, and an error that propagates in `call()` propagates here.
+- **MUST** apply the [Cancellation Short-Circuit](#cancellation-short-circuit).
+- **MUST** apply the [Error Unwrap Rule](#error-unwrap-rule).
+- **MUST** populate the returned `PipelineTrace` with every middleware event observed, including `on_error` recovery.
 
-- **MUST** run the same 11-step pipeline, including the `on_error` middleware chain. A middleware that recovers from a `PipelineStepError` in `call()` MUST also recover in the trace variant; conversely, an error that propagates in `call()` MUST also propagate in the trace variant.
-- **MUST** apply the `ExecutionCancelledError` short-circuit (cancellation bypasses `on_error` in both surfaces — see [Cancellation Short-Circuit](#cancellation-short-circuit) below).
-- **MUST** apply the `MiddlewareChainError` unwrap rule (the original typed cause MUST be surfaced; the wrapper MUST NOT replace the cause with a generic `ModuleExecuteError` — see [Error Unwrap Rule](#error-unwrap-rule) below).
-- **MUST** populate the returned `PipelineTrace` with every middleware event observed during execution, including any `on_error` recovery — the trace is the observable record of what happened, not a sanitized projection.
-
-The trace variant differs from `call()` only in its return shape: a tuple/object pairing the result (or error) with the trace. All side-effect semantics — events emitted, metrics recorded, ACL audits written — MUST be identical. (Decision **D-19**.)
+It differs from `call()` only in its return shape; events, metrics and ACL audit records MUST be identical.
 
 ### Cancellation Short-Circuit
 
-When an execution is cancelled (via `CancelToken` triggering `ExecutionCancelledError`), the executor MUST short-circuit before invoking the `on_error` middleware chain. Rationale: cancellation is a caller-driven request to stop, not a recoverable failure; allowing `on_error` middleware to observe cancellation as an error opens the door to logging middleware swallowing it or to retry middleware reissuing a `RetrySignal` that restarts the loop. SDKs MUST detect `ExecutionCancelledError` after pipeline-error unwrap and propagate it directly, bypassing `on_error`. (Decision **D-20**.)
+When an execution is cancelled (`ExecutionCancelledError` from the `CancelToken`), the Executor MUST propagate it directly, bypassing the `on_error` chain — cancellation is a caller-driven request to stop, not a recoverable failure, and a logging or retry middleware must not be able to swallow or restart it. SDKs detect it after unwrapping `PipelineStepError` / `MiddlewareChainError` (D-20).
 
 ### Cancel Token Mid-Pipeline Check
 
-The pipeline MUST observe `cancel_token` cancellation at **two** points, in addition to honoring it inside `module.execute()` itself:
+The pipeline MUST observe `cancel_token` cancellation at two points, in addition to the module's own checks (D-21):
 
-1. **Step 2 (Call-Chain Guard)** — before any expensive validation or middleware work. If the token is already cancelled here, the pipeline short-circuits with `ExecutionCancelledError`.
-2. **Step 8 (Execute)** — immediately before invoking the module. Acts as a defensive backstop for tokens that became cancelled while earlier steps were running.
-
-SDKs MUST implement both check points. Single-check implementations leak compute (the pipeline runs through ACL/middleware/validation even though the caller has already cancelled) and are non-conforming. (Decision **D-21**.)
+1. **Step 2 (`call_chain_guard`)** — before any validation or middleware work.
+2. **Step 8 (`execute`)** — immediately before invoking the module.
 
 ### Error Unwrap Rule
 
-When a middleware (`before` / `after` / `on_error`) raises a domain-typed error such as `ApprovalDeniedError`, the underlying chain machinery may wrap it in a `MiddlewareChainError` for diagnostic purposes. The executor MUST unwrap this wrapper before propagating to the caller, surfacing the **original typed cause** unchanged. SDKs MUST NOT replace the cause with a generic `ModuleExecuteError`; doing so collapses callers' ability to dispatch on the typed error (e.g., MCP/A2A bridges keying off `APPROVAL_DENIED` vs `MODULE_EXECUTE_ERROR`). (Decision **D-22**.)
+When a middleware (`before` / `after` / `on_error`) raises a typed error such as `ApprovalDeniedError`, the chain machinery may wrap it in `MiddlewareChainError`. The Executor MUST unwrap the wrapper and surface the **original typed cause** unchanged; SDKs MUST NOT replace it with a generic `ModuleExecuteError`, which would stop callers — MCP/A2A bridges in particular — from dispatching on the error code (D-22).
 
 ## Contract: Context.create
 
-Normative behavioral contract for the canonical factory entry point used by callers producing a new top-level call context. See [Issue #66](https://github.com/aiperceivable/apcore/issues/66) for the unified-signature decision rationale.
+Normative behavioral contract for the factory that produces a new top-level call context.
 
 ### Inputs
 
-The canonical input list — across all SDKs, the public factory MUST accept **exactly** these six caller-supplied fields, named as listed (snake_case in Python/Rust, camelCase in TypeScript). Order is significant for positional languages and MUST be followed.
+Across all SDKs the factory accepts **exactly** these six caller-supplied fields, in this order (snake_case in Python/Rust, camelCase in TypeScript; positional in TypeScript and Rust):
 
 | # | Name | Type | Default | Notes |
 |---|------|------|---------|-------|
-| 1 | `identity` | Identity \| null | null | Stays **null** when absent. **D-103 (v1.50.0):** this row previously said the constructor "synthesizes an `@external` identity", contradicting this same contract's Returns clause ("All caller-supplied fields populated as provided"), the `Context` field table (`identity: Identity \| null`), and every cross-language example in `context-object.md`. `@external` is the **caller-side ACL sentinel** substituted for a null `caller_id`; it MUST NOT become an `Identity` object. A module written to the spec's own example — `if not context.identity: raise "Authentication required"` — rejects an unauthenticated call on an implementation that leaves it null and ADMITS it on one that fabricates a principal, which is the wrong way for that divergence to fail. An implementation **MUST NOT** synthesize an `Identity` for a call that supplied none. |
-| 2 | `trace_parent` | TraceParent \| null | null | W3C Trace Context entry. The TraceParent type itself carries `tracestate` (vendor state) — SDKs MUST embed `tracestate` in the `TraceParent` type, not expose it as a separate factory parameter. Invalid values (non-32-hex, all-zero, all-f) MUST log WARN and be replaced with a fresh `trace_id`. |
-| 3 | `cancel_token` | CancelToken \| null | null | External cooperative-cancellation source. When omitted, the Executor synthesizes a fresh token at pipeline entry. Adopting this parameter eliminates the post-hoc `ctx.cancel_token = token` anti-pattern that proliferated across the ecosystem. |
-| 4 | `data` | Mapping<string, Any> \| null | empty | User-propagated state carried through the call chain by reference. |
-| 5 | `services` | T \| null | null | Caller-supplied DI container. MUST NOT be used to smuggle framework-owned fields (e.g., a `cancel_token` sub-key); the `cancel_token` parameter above is now first-class. |
-| 6 | `global_deadline` | absolute timestamp \| null | null | Bounds total execution time for the call tree rooted at this context. Local-only; see §Contract: `global_deadline` distributed semantics. |
+| 1 | `identity` | Identity \| null | null | Stays null when absent. `@external` is the caller-side ACL sentinel for a null `caller_id`; an implementation MUST NOT synthesize an `Identity` for a call that supplied none (D-103). |
+| 2 | `trace_parent` | TraceParent \| null | null | W3C Trace Context entry; `tracestate` travels inside the `TraceParent`, not as a separate parameter. Invalid values (non-32-hex, all-zero, all-f) MUST log WARN and be replaced with a fresh `trace_id`. |
+| 3 | `cancel_token` | CancelToken \| null | null | External cooperative-cancellation source. |
+| 4 | `data` | Mapping<string, Any> \| null | empty | Initial shared state, carried through the call tree by reference. |
+| 5 | `services` | T \| null | null | Caller-supplied DI container. MUST NOT carry framework-owned fields. Rust takes it as a positional `T` (e.g. `Value::Null`), not an `Option`. |
+| 6 | `global_deadline` | epoch seconds \| null | null | Bounds total execution time for the call tree rooted here. Local-only (see [`global_deadline`](#global_deadline-representation-and-lifetime)). |
 
-The following Context fields are **NOT** caller inputs to `Context.create()`:
+These Context fields are **not** caller inputs:
 
-- `trace_id` — generated internally (derived from `trace_parent` when present and valid; otherwise a fresh 32-char lowercase hex value).
-- `caller_id` — top-level Contexts always have `caller_id = null`. Managed exclusively by `Context.child()`. Reserved name; future revisions MAY surface it if a use case emerges. Current SDKs MUST NOT accept it as a `Context.create()` parameter.
-- `call_chain` — empty `[]` at top-level; managed exclusively by the Executor.
-- `executor` — bound by the Executor at pipeline entry. See §Contract: Executor binding to Context.
-- `logger` — derived property; computed from `trace_id` and `caller_id`.
-- `redacted_inputs`, `redacted_output` — set by Executor pipeline steps 5 and 9 respectively. Never a caller input.
+- `trace_id` — derived from a valid `trace_parent`, otherwise a fresh 32-char lowercase hex value.
+- `caller_id` — always null at top level; managed by `Context.child()`.
+- `call_chain` — empty at top level; managed by the Executor.
+- `executor` — bound by the Executor at pipeline entry ([Contract: Executor binding to Context](#contract-executor-binding-to-context)).
+- `redacted_inputs` — set by pipeline Step 3 (`module_lookup`, from the incoming inputs) and refreshed at Step 7 (`input_validation`); `redacted_output` — set at Step 9 (`output_validation`).
 
 ### Preconditions
 
@@ -481,155 +492,93 @@ The following Context fields are **NOT** caller inputs to `Context.create()`:
 
 ### Errors
 
-None under normal operation. Invalid `trace_parent` values log a WARN and a fresh `trace_id` is generated instead of raising.
+None under normal operation.
 
 ### Returns
 
-A fresh `Context` instance with:
-
-- A 32-character lowercase hex `trace_id` (derived from a valid `trace_parent`, or newly generated otherwise).
-- `executor`, `call_chain`, `caller_id` all unset (`null` / `None` / empty list).
-- All caller-supplied fields populated as provided.
-- `redacted_inputs` / `redacted_output` unset (populated later by the Executor pipeline).
+A fresh `Context` with a 32-character lowercase hex `trace_id`; `executor`, `caller_id` unset and `call_chain` empty; the caller-supplied fields as provided; `redacted_inputs` / `redacted_output` unset.
 
 ### Properties
 
 - `async`: `false`.
-- `thread_safe`: `true` — constructor only; no shared state is mutated.
+- `thread_safe`: `true`.
 - `pure`: `false` — a new `trace_id` is generated for each call.
-- `idempotent`: `false` — each call yields a new Context with a unique `trace_id`.
+- `idempotent`: `false`.
 
 ## Contract: Executor binding to Context
 
-A Context whose `executor` field is null MAY originate from three distinct sources:
+A Context whose `executor` field is null can come from local construction (`Context.create()`), cross-process deserialization (`executor` never serializes — §5.7), or restoration from persistence after a restart. The Executor treats all three the same:
 
-1. **Local construction** via `Context.create()` (executor is intentionally not an input).
-2. **Cross-process deserialization** via `Context.deserialize()` (the `executor` field MUST NOT serialize, per PROTOCOL_SPEC §5.7).
-3. **Hot-reload survivor**, restored from persistence (async task store, task queue, etc.) after a process restart.
-
-The Executor MUST treat all three sources identically. The following normative rules apply at the Executor level (not at Context.create itself):
-
-1. **Bind** — When the Executor receives a Context whose `executor` field is null, it MUST bind itself to `context.executor` **before** pipeline step 1.
+1. **Bind** — When the Executor receives a Context whose `executor` is null, it MUST bind itself **before** pipeline Step 1.
 2. **Stability** — Once bound, `context.executor` MUST NOT change for the remainder of the call chain.
-3. **Same-executor idempotency** — If `context.executor` is non-null and refers to **the same** Executor instance (identity comparison), the rebind is a noop. The Executor MUST NOT raise. This case covers the common pattern of reusing a single Context across multiple top-level `Executor.call()` invocations.
-4. **Cross-executor conflict** — If `context.executor` is non-null and refers to a **different** Executor instance, the Executor **MUST** raise `CONTEXT_BINDING_ERROR` ([PROTOCOL_SPEC](../spec/protocol-spec.md#122-core-component-interface-contracts) §12.2, normative as of v1.11.0). Through v1.10.0 this was a SHOULD with a documented-deviation escape hatch; no SDK took it, and the alternative made the behaviour unassertable — a conformance case cannot state two legal outcomes without each driver deciding which applies to it, so all three hardcoded the raise branch and the fixture went unread (apcore#92).
-5. **Propagation** — `Context.child()` MUST propagate the bound `executor` reference to the child Context unchanged.
+3. **Same-executor idempotency** — If `context.executor` is the **same** Executor instance (identity comparison), the rebind is a no-op; the Executor MUST NOT raise. This covers reusing one Context across several top-level calls.
+4. **Cross-executor conflict** — If `context.executor` is a **different** Executor instance, the Executor MUST raise `CONTEXT_BINDING_ERROR` ([PROTOCOL_SPEC §12.2](../spec/protocol-spec.md#122-core-component-interface-contracts)).
+5. **Propagation** — `Context.child()` MUST propagate the bound `executor` unchanged.
 
-This section unifies the previously separate "re-inject after deserialize" requirement — see [Context Object §Serialization](./context-object.md#serialization) for the cross-reference — with the construction-time binding model. Implementation mechanism is language-idiomatic: mutable field assignment for Python/Rust dataclasses; copy-on-write returning a new instance for TypeScript's `readonly` fields.
+The mechanism is language-idiomatic: in-place assignment in Python and Rust, copy-on-write returning a new instance for TypeScript's `readonly` fields. See [Context Object §Serialization](./context-object.md#serialization).
 
-The binding method is a **cross-boundary contract member** — the Executor calls it, and a bridge's duck-typed `Context` MUST implement it — so it MUST be public-named in every SDK (no leading-underscore / `private` / non-`pub`). See [API Surface & Naming Conventions](../spec/api-surface-conventions.md) for the visibility-vs-discoverability rules and the worked example.
+The binding method is a cross-boundary contract member — the Executor calls it, and a bridge's duck-typed `Context` MUST implement it — so it MUST be public in every SDK. See [API Surface & Naming Conventions](../spec/api-surface-conventions.md).
 
 ### Inputs
-- `executor` (Executor instance, required) — the Executor instance to bind; passed to the Context's binding method (`bind_executor` in Python/Rust, `withExecutor` in TypeScript — see [API Surface & Naming Conventions §5](../spec/api-surface-conventions.md#5-worked-example-executor-binding-to-context))
+- `executor` (Executor instance, required) — passed to the Context's binding method (`bind_executor` in Python/Rust, `withExecutor` in TypeScript — see [API Surface & Naming Conventions §5](../spec/api-surface-conventions.md#5-worked-example-executor-binding-to-context))
 
 ### Preconditions
-- Invoked by the Executor itself, before pipeline step 1, only when `context.executor` is null at call entry (Rule 1 — Bind)
+- Invoked by the Executor itself before pipeline Step 1
 
 ### Errors
-- `CONTEXT_BINDING_ERROR` — the Executor MUST raise this when `context.executor` is non-null and refers to a **different** Executor instance (Rule 4 — Cross-executor conflict); normative as of v1.11.0
+- `CONTEXT_BINDING_ERROR` — the Context is already bound to a different Executor instance (Rule 4). `validate()` reports this as a failed `executor_binding` check instead of raising.
 
 ### Returns
-- Python / Rust (`bind_executor`, in-place mutation): void/None/() — `context.executor` is set as a side effect
-- TypeScript (`withExecutor`, copy-on-write over `readonly` fields): a new `Context` instance with `executor` populated; the original instance is left unchanged
+- Python / Rust (`bind_executor`): nothing — `context.executor` is set in place
+- TypeScript (`withExecutor`): a new `Context` with `executor` populated; the original is unchanged
 
 ### Properties
 - async: false
-- thread_safe: not separately specified; once bound, `context.executor` MUST NOT change for the remainder of the call chain (Rule 2 — Stability)
-- pure: false — Python/Rust mutate the Context in place; the TypeScript form does not mutate its input, but still produces a bound `Context` that downstream pipeline steps observe
-- idempotent: true when re-binding the **same** Executor instance to an already-bound Context — the Executor MUST NOT raise (Rule 3 — Same-executor idempotency); NOT idempotent across distinct Executor instances, which raise rather than overwrite (Rule 4)
+- thread_safe: not separately specified; once bound, `context.executor` does not change (Rule 2)
+- pure: false
+- idempotent: true for the same Executor instance (Rule 3); not across distinct instances (Rule 4)
 
 ## Distributed Cancellation Semantics
 
-`cancel_token` is runtime-only and MUST NOT serialize (per PROTOCOL_SPEC §5.7). On the receiving node of a deserialized Context:
+`cancel_token` is runtime-only and MUST NOT serialize (§5.7). On the receiving node of a deserialized Context:
 
-- The Executor MUST synthesize a fresh local `CancelToken` at pipeline entry. The remote node never observes the originating node's `CancelToken` object.
-- Distributed cancellation MUST go through **out-of-band channels** (e.g., `AsyncTaskStore` task_id lookup, a `RemoteCancelSignal` subscription, or a control plane RPC). It MUST NOT attempt to ride the in-context `cancel_token` field across process boundaries.
+- The Executor MUST synthesize a fresh local `CancelToken` at pipeline entry. The remote node never observes the originating node's token.
+- Distributed cancellation MUST go through **out-of-band channels** (an `AsyncTaskManager` task-ID lookup, a remote cancel signal, a control-plane RPC). It MUST NOT ride the in-context `cancel_token` across process boundaries.
 
-The `cancel_token` parameter on `Context.create()` exists solely for **in-process cooperation** — a request handler binding the HTTP/RPC request's abort signal to the call tree it spawns locally.
+The `cancel_token` parameter of `Context.create()` exists for **in-process cooperation** — for example binding an HTTP request's abort signal to the call tree it spawns.
 
 ## `global_deadline` Representation and Lifetime
 
-> **Added in spec v1.50.0** (D-99 – D-102). Three SDKs kept this value on three
-> different clocks, in two different places, with two different lifetimes. All
-> four rules below were already implied by existing text; none was stated where
-> an implementer would look.
-
-**D-99 — the clock is epoch seconds.** `global_deadline` is an absolute deadline
-expressed as **epoch seconds** (`float` / `number` / `f64`), as
-[design-context-annotations-acl.md](../spec/design-context-annotations-acl.md)
-has stated since the field was introduced. An implementation **MUST NOT**
-substitute a monotonic clock or millisecond units.
-
-This is not a style preference. The field is a **public `Context.create`
-parameter**, so a caller writes it; a caller following the spec writes
-`time.time() + budget`. Against a monotonic basis that value is roughly
-`1.8e9` compared against roughly `1e5`, so the deadline never fires and the call
-runs with **no budget at all** — the failure is silent and it fails open.
-Against a millisecond basis the same value expires immediately. apcore-python
-used `time.monotonic()` and apcore-typescript used `Date.now()` milliseconds;
-both were internally consistent and both made the public parameter unusable.
-
-**D-100 — the field is the storage, not a `data` key.** The deadline lives in
-the first-class `Context.global_deadline` field. An implementation **MUST NOT**
-keep it in `context.data` under a private key: `data` is caller-visible,
-caller-writable and shared by reference with child contexts, and a first-class
-field that the pipeline never reads is a parameter the caller cannot use.
-apcore-typescript wrote and read `context.data['_apcore.executor.global_deadline']`
-and never consulted its own `globalDeadline` field, so a caller-supplied
-deadline was silently replaced by the config default.
-
-**D-101 — the deadline belongs to the call tree, not to the Context.** It is
-computed onto the context the pipeline derives for THIS call, and an
-implementation **MUST NOT** write it onto a caller-supplied Context that
-outlives the call. Reusing one Context across successive top-level
-`Executor.call()` invocations is explicitly blessed above; a budget pinned to
-that object makes the second call inherit the first call's remaining time — or
-fail immediately, having already expired.
-
-**D-102 — a deserialized Context recomputes, unconditionally.** The rule below
-("the receiving Executor MUST recompute") is not conditioned on the call being
-a root call. A Context arriving from another process carries a non-empty
-`call_chain` **by definition**, so gating recomputation on an empty chain
-inverts the rule exactly where it applies: apcore-python did, and every
-cross-process sub-tree ran with no global budget. The correct guard is "the
-deadline is absent", which already preserves an in-process caller's explicit
-value.
+- **Epoch seconds.** `global_deadline` is an absolute deadline in epoch seconds (`float` / `number` / `f64`). An implementation MUST NOT use a monotonic clock or milliseconds, because callers write it as `time.time() + budget` (D-99).
+- **A first-class field.** It is stored in `Context.global_deadline`, never under a `context.data` key (D-100).
+- **Owned by the call tree.** It is computed onto the Context the pipeline derives for the call and MUST NOT be written onto a caller-supplied Context that outlives the call, so reusing a Context does not inherit a previous call's remaining budget (D-101).
+- **Recomputed when absent.** A deserialized Context carries no deadline, so the receiving Executor recomputes it from its own `executor.global_timeout`, whatever the length of `call_chain`; a caller's explicit deadline is kept (D-102).
 
 ## `global_deadline` Distributed Semantics
 
-`global_deadline` is runtime-only and MUST NOT serialize. When a deserialized Context arrives at a remote node:
+`global_deadline` is runtime-only and MUST NOT serialize. The originating node's deadline is intentionally not propagated; the receiving Executor applies its local `executor.global_timeout`.
 
-- The receiving Executor MUST recompute its own `global_deadline` from local `executor.global_timeout` config (per the dual-timeout model documented earlier in this spec).
-- The originating node's deadline intent is intentionally not propagated through the `global_deadline` field.
-
-Callers that need a wall-clock deadline to traverse process boundaries SHOULD store the absolute timestamp in `context.data` (a serializable field) under an extension key — e.g., `context.data["x-deadline"]`. The receiving SDK or middleware can read that key and translate it back into a local deadline if desired. `global_deadline` itself remains local-only by design, mirroring the same separation as `cancel_token` and `services`.
+Callers that need a wall-clock deadline to cross process boundaries SHOULD store the absolute timestamp in `context.data` under a serializable key of their own (any key not starting with `_`, which serialization drops — e.g. `ext.myapp.deadline`). The receiving side can translate it back into a local deadline.
 
 ## Usage
 
 === "Python"
     ```python
-    import apcore
-    from apcore import APCore, Config, Identity
-
-    # Build a client with default config
-    client = APCore(Config())
-
-    # Register a module
-    @client.module(
-        id="math.add",
-        description="Add two numbers",
-    )
-    def add(inputs, ctx):
-        return {"sum": inputs["a"] + inputs["b"]}
-
-    # Synchronous call
-    result = client.call("math.add", {"a": 1, "b": 2})
-    print(result)  # {"sum": 3}
-
-    # Async call
     import asyncio
 
-    async def main():
+    from apcore import APCore, Config
+
+    client = APCore(config=Config())
+
+    @client.module(id="math.add", description="Add two numbers")
+    def add(a: int, b: int) -> dict:
+        return {"sum": a + b}
+
+    # Synchronous call
+    print(client.call("math.add", {"a": 1, "b": 2}))  # {"sum": 3}
+
+    # Asynchronous call
+    async def main() -> None:
         result = await client.call_async("math.add", {"a": 10, "b": 20})
         print(result)  # {"sum": 30}
 
@@ -638,30 +587,29 @@ Callers that need a wall-clock deadline to traverse process boundaries SHOULD st
 
 === "TypeScript"
     ```typescript
-    import { APCore } from 'apcore-js';
+    import { Type } from "@sinclair/typebox";
+    import { APCore } from "apcore-js";
 
     const client = new APCore();
 
-    // Register a module
     client.module({
-        id: 'math.add',
-        description: 'Add two numbers',
-        inputSchema: { type: 'object', properties: { a: { type: 'number' }, b: { type: 'number' } }, required: ['a', 'b'] },
-        outputSchema: { type: 'object', properties: { sum: { type: 'number' } } },
-        execute: ({ a, b }: { a: number; b: number }) => ({ sum: a + b }),
+        id: "math.add",
+        description: "Add two numbers",
+        inputSchema: Type.Object({ a: Type.Number(), b: Type.Number() }),
+        outputSchema: Type.Object({ sum: Type.Number() }),
+        execute: (inputs) => ({ sum: (inputs.a as number) + (inputs.b as number) }),
     });
 
-    // Call the module
-    const result = await client.call('math.add', { a: 1, b: 2 });
+    const result = await client.call("math.add", { a: 1, b: 2 });
     console.log(result); // { sum: 3 }
     ```
 
 === "Rust"
     ```rust
-    use apcore::APCore;
     use apcore::context::Context;
     use apcore::errors::ModuleError;
     use apcore::module::Module;
+    use apcore::APCore;
     use async_trait::async_trait;
     use serde_json::{json, Value};
 
@@ -670,420 +618,54 @@ Callers that need a wall-clock deadline to traverse process boundaries SHOULD st
     #[async_trait]
     impl Module for AddModule {
         fn input_schema(&self) -> Value {
-            json!({ "type": "object", "properties": { "a": { "type": "number" }, "b": { "type": "number" } }, "required": ["a", "b"] })
+            json!({"type": "object", "properties": {"a": {"type": "number"}, "b": {"type": "number"}}, "required": ["a", "b"]})
         }
         fn output_schema(&self) -> Value {
-            json!({ "type": "object", "properties": { "sum": { "type": "number" } } })
+            json!({"type": "object", "properties": {"sum": {"type": "number"}}})
         }
-        fn description(&self) -> &'static str { "Add two numbers" }
+        fn description(&self) -> &str { "Add two numbers" }
         async fn execute(&self, input: Value, _ctx: &Context<Value>) -> Result<Value, ModuleError> {
             let a = input["a"].as_f64().unwrap_or(0.0);
             let b = input["b"].as_f64().unwrap_or(0.0);
-            Ok(json!({ "sum": a + b }))
+            Ok(json!({"sum": a + b}))
         }
     }
 
     #[tokio::main]
-    async fn main() {
-        let client = APCore::default();
-        client.register("math.add", Box::new(AddModule));
+    async fn main() -> Result<(), ModuleError> {
+        let client = APCore::new();
+        client.register("math.add", Box::new(AddModule))?;
 
-        let result = client.call("math.add", json!({"a": 1.0, "b": 2.0})).await.unwrap();
+        let result = client.call("math.add", json!({"a": 1.0, "b": 2.0}), None, None).await?;
         println!("{result}"); // {"sum":3.0}
+        Ok(())
     }
     ```
 
 ## Dependencies
 
-- **Registry** -- Module lookup (step 3) depends on the Registry system to resolve module names to loaded module instances.
-- **Schema System** -- Input and output validation (steps 7 and 9) depend on the Schema System for runtime model generation from YAML schemas.
+- **Registry** — Module lookup (Step 3).
+- **Schema System** — Input and output validation (Steps 7 and 9).
+- **ACL System**, **Approval System** — Steps 4 and 5.
+- **Middleware System** — Steps 6 and 10 and the `on_error` chain.
 
 ??? info "Python SDK reference"
-    The following tables are **not protocol requirements** — they document the Python SDK's source layout and runtime dependencies for implementers/users of `apcore-python`.
+    Not a protocol requirement — the Python SDK's source layout for users of `apcore-python`.
 
-    **Source files:**
+    | File | Purpose |
+    |------|---------|
+    | `executor.py` | `Executor`: entry points, validate, error recovery |
+    | `builtin_steps.py` | The eleven built-in steps and the preset strategies |
+    | `pipeline.py` | `PipelineEngine`, `ExecutionStrategy`, `PipelineContext`, `StepMiddleware` |
+    | `context.py` | `Context`, `Identity` |
 
-    | File | Lines | Purpose |
-    |------|-------|---------|
-    | `executor.py` | 634 | Core execution engine implementing the execution pipeline |
-    | `context.py` | 66 | Context and Identity data classes |
-    | `config.py` | 29 | Executor configuration data class |
-    | `errors.py` | 395 | Structured error types for every failure mode in the pipeline |
-
-    **Runtime dependencies:**
-
-    - `pydantic>=2.0` -- Used for input/output schema validation, dynamic model generation, and field metadata.
+    Runtime dependency: `pydantic>=2.0` for schema validation.
 
 ## Testing Strategy
 
-- **Unit tests** cover each pipeline step in isolation, verifying that context creation, safety checks, ACL enforcement, validation, middleware chains, and result packaging all behave correctly for both success and failure cases.
-- **Timeout tests** verify that both synchronous and asynchronous modules are correctly cancelled when exceeding configured timeouts, and that daemon threads do not leak.
-- **Safety check tests** exercise call depth limits, circular detection with various call chain topologies, and frequency throttle edge cases.
-- **Redaction tests** confirm that `x-sensitive` fields are properly masked in logs and error messages while remaining intact in the actual data passed to the module.
-- **Integration tests** run full pipeline executions through the executor with real Registry and Schema instances to verify end-to-end behavior.
-- Test naming follows the `test_<unit>_<behavior>` convention.
-
----
-
-## Pipeline Hardening (Issue #33)
-
-This section documents normative hardening requirements added on top of the base 11-step pipeline. These rules apply to all SDK implementations.
-
-### 1.1 Fail-Fast Error Handling
-
-When a pipeline step produces an error, implementations MUST stop pipeline execution and propagate the error **unless** the step is configured with `ignore_errors: true`. Implementations MUST NOT silently swallow errors and continue to the next step. The error MUST be wrapped in a `PipelineStepError` that includes the failing step name and the original error.
-
-When `ignore_errors: true` is set on a step, a failure logs a WARN and execution continues to the next step. The step's output is treated as absent (null/None/nil) for downstream steps.
-
-=== "Python"
-    ```python
-    # apcore.yaml — step with ignore_errors: true
-    # pipeline:
-    #   configure:
-    #     input_validation:            # map keyed by step name
-    #       ignore_errors: true
-
-    import apcore
-    from apcore import APCore, Config
-
-    client = APCore(Config.load("apcore.yaml"))
-
-    @client.module(id="demo.process", description="Process with lenient validation")
-    def process(inputs, ctx):
-        return {"result": inputs.get("value", "default")}
-
-    # Even if input_validation raises, the pipeline continues to execute.
-    result = client.call("demo.process", {"value": 42})
-    print(result)  # {"result": 42}
-
-    # Step WITHOUT ignore_errors — fail fast
-    # apcore.yaml:
-    # pipeline:
-    #   configure:
-    #     input_validation:            # map keyed by step name
-    #       ignore_errors: false       # default
-
-    # A validation failure here raises PipelineStepError immediately;
-    # no subsequent steps run.
-    try:
-        client.call("demo.process", {"unexpected_key": True})
-    except apcore.PipelineStepError as e:
-        print(e.step_name)   # "input_validation"
-        print(e.cause)       # original SchemaValidationError
-    ```
-
-=== "TypeScript"
-    ```typescript
-    // apcore.yaml — step with ignore_errors: true
-    // pipeline:
-    //   configure:
-    //     input_validation:           // map keyed by step name
-    //       ignore_errors: true
-
-    import { APCore } from 'apcore-js';
-
-    const client = new APCore({ configPath: 'apcore.yaml' });
-
-    client.module({
-        id: 'demo.process',
-        description: 'Process with lenient validation',
-        execute: ({ value }: { value?: number }) => ({ result: value ?? 'default' }),
-    });
-
-    // ignore_errors: true — pipeline continues even if input_validation fails.
-    const result = await client.call('demo.process', { value: 42 });
-    console.log(result); // { result: 42 }
-
-    // Step WITHOUT ignore_errors — fail fast
-    try {
-        await client.call('demo.process', { unexpected_key: true });
-    } catch (e) {
-        if (e instanceof PipelineStepError) {
-            console.log(e.stepName);  // "input_validation"
-            console.log(e.cause);     // original SchemaValidationError
-        }
-    }
-    ```
-
-=== "Rust"
-    ```rust
-    // apcore.yaml — step with ignore_errors: true
-    // pipeline:
-    //   configure:
-    //     input_validation:           // map keyed by step name
-    //       ignore_errors: true
-
-    use apcore::{APCore, Config};
-    use apcore::errors::ErrorCode;
-    use serde_json::json;
-
-    #[tokio::main]
-    async fn main() {
-        let client = APCore::with_config(Config::load("apcore.yaml").unwrap());
-
-        // ignore_errors: true — pipeline continues even if input_validation fails.
-        let result = client.call("demo.process", json!({"value": 42})).await.unwrap();
-        println!("{result}"); // {"result":42}
-
-        // Step WITHOUT ignore_errors — fail fast
-        match client.call("demo.process", json!({"unexpected_key": true})).await {
-            // A step failure is a `ModuleError` carrying ErrorCode::PipelineStepError,
-            // not a distinct type — so this is a code check, not a downcast. The
-            // step name and the original error live in `details`.
-            Err(e) if e.is_pipeline_step_error() => {
-                println!("{:?}", e.details.get("step_name"));  // "input_validation"
-                if let Some(cause) = e.unwrap_pipeline_step_error() {
-                    println!("{:?}", cause.code);             // SchemaValidationError
-                }
-                assert_eq!(e.code, ErrorCode::PipelineStepError);
-            }
-            _ => {}
-        }
-    }
-    ```
-
-### 1.2 Replace Semantic for Pipeline Configuration
-
-When configuring a pipeline step that already exists (same step name), implementations MUST replace the existing step definition entirely. Implementations MUST NOT create a duplicate step or append a second step with the same name. The replacement MUST preserve the step's position in the execution order.
-
-This applies to both built-in steps and custom steps. Calling `configure_step` (or the equivalent YAML `configure:` directive) twice with the same step name is idempotent with respect to count — there is always exactly one step with that name.
-
-```yaml
-# apcore.yaml — replace the built-in input_validation step with a custom handler
-pipeline:
-  configure:
-    # `configure` is an object MAP keyed by step name, per
-    # schemas/apcore-config.schema.json $defs/PipelineConfig — not an array.
-    input_validation:
-      handler: "myapp.pipeline.custom_validator:validate"
-      ignore_errors: false
-      timeout_ms: 500
-```
-
-After this configuration, the pipeline has exactly one `input_validation` step (the custom one). The built-in handler is fully replaced. The step remains at position 7 in the execution order (between the Middleware Before Chain and Module Execution steps).
-
-### 1.3 Step-Level Middleware
-
-Implementations SHOULD support step-level middleware — middleware that applies only to specific pipeline steps rather than the entire call. Step-level middleware MUST execute in the same before/after pattern as global middleware but scoped to the target step only. Global middleware MUST execute before step-level middleware in the before-phase, and after step-level middleware in the after-phase.
-
-The execution order for a step with both global and step-level middleware is:
-
-1. Global middleware — before phase (all registered global before-hooks)
-2. Step-level middleware — before phase (scoped to this step)
-3. Step handler executes
-4. Step-level middleware — after phase (scoped to this step, reverse order)
-5. Global middleware — after phase (all registered global after-hooks, reverse order)
-
-=== "Python"
-    ```python
-    import time
-    from apcore import APCore, Config, PipelineState, StepMiddleware, StepResult
-
-
-    class TimingStepMiddleware(StepMiddleware):
-        """Runs for EVERY step — filter on `step_name` to scope it.
-
-        The hooks are `(step_name, state)` / `(step_name, state, result)`:
-        there is no `inputs` parameter, because a Step is `execute(ctx)`.
-        """
-
-        def __init__(self) -> None:
-            self._started: dict[str, float] = {}
-
-        async def before_step(self, step_name: str, state: PipelineState) -> None:
-            if step_name == "input_validation":
-                self._started[step_name] = time.perf_counter()
-
-        async def after_step(self, step_name: str, state: PipelineState, result: StepResult) -> None:
-            start = self._started.pop(step_name, None)
-            if start is not None:
-                print(f"step={step_name} elapsed_ms={(time.perf_counter() - start) * 1000:.2f}")
-
-
-    client = APCore(Config())
-    client.executor.current_strategy.add_step_middleware(TimingStepMiddleware())
-
-    @client.module(id="demo.greet", description="Greet the user")
-    def greet(name: str) -> dict:
-        return {"message": f"Hello, {name}!"}
-
-    print(client.call("demo.greet", {"name": "World"}))
-    ```
-
-=== "TypeScript"
-    ```typescript
-    // apcore-typescript registers step middleware on `PipelineEngine`, which the
-    // Executor holds privately — there is currently no public path to it from the
-    // client. See features/middleware-system.md; Python and Rust expose it on the
-    // ExecutionStrategy.
-    ```
-
-=== "Rust"
-    ```rust
-    use apcore::{build_standard_strategy, Config, Executor, Registry, StepMiddleware};
-    use std::sync::Arc;
-
-    // `add_step_middleware` needs `&mut ExecutionStrategy` and `Executor::strategy()`
-    // yields only `&`, so populate the strategy before constructing the executor.
-    let mut strategy = build_standard_strategy();
-    strategy.add_step_middleware(Arc::new(TimingStepMiddleware::default()));
-
-    let executor = Executor::with_strategy(Registry::new(), Config::from_defaults(), strategy);
-    ```
-
-Step middleware is **not** scoped to a single step: every registered `StepMiddleware`
-receives a `before_step` / `after_step` / `on_step_error` callback for every step in the
-pipeline and filters on `step_name` itself. There is no `next`-style continuation, and no
-step-inputs parameter — a Step is `execute(ctx)`. `before_step` and `after_step` observe
-only; their return values are discarded. `on_step_error` is the one hook whose return
-value is read: a non-null value is a recovery result that short-circuits the remaining
-handlers. See [middleware-system.md](./middleware-system.md) for the full contract.
-
-
-### 1.4 Unified run_until Pattern
-
-Implementations MUST support a `run_until` termination condition that halts pipeline execution when a predicate returns true. The predicate receives the current `PipelineState` (step name, outputs so far, context) and MUST return a boolean. When `run_until` returns true after step N, steps N+1 onward MUST NOT execute and the pipeline MUST return the accumulated result from steps 1 through N.
-
-`run_until` is evaluated **after** each step completes (not before). If the predicate never returns true, the full pipeline runs to completion normally.
-
-=== "Python"
-    ```python
-    import apcore
-    from apcore import APCore, Config
-
-    client = APCore(Config())
-
-    @client.module(id="cache.fetch", description="Fetch from cache or compute")
-    def cache_fetch(inputs, ctx):
-        # Simulate a cache hit for known keys
-        cache = {"key_abc": {"value": 99}}
-        return {"hit": inputs["key"] in cache, "result": cache.get(inputs["key"])}
-
-    # run_until: stop as soon as we get a cache hit after module_lookup
-    def stop_on_cache_hit(state):
-        # state.step_name is the step that just completed
-        # state.outputs is a dict of step_name -> output so far
-        if state.step_name == "module_lookup":
-            # We haven't executed yet; continue
-            return False
-        # After execute step, check if we got a cache hit
-        execute_output = state.outputs.get("execute")
-        return bool(execute_output and execute_output.get("hit"))
-
-    result = client.call(
-        "cache.fetch",
-        {"key": "key_abc"},
-        options={"run_until": stop_on_cache_hit},
-    )
-    print(result)  # {"hit": True, "result": {"value": 99}}
-    # Steps after execute (output_validation, middleware_after, return_result) did NOT run.
-    ```
-
-=== "TypeScript"
-    ```typescript
-    import { APCore, PipelineState } from 'apcore-js';
-
-    const client = new APCore();
-
-    client.module({
-        id: 'cache.fetch',
-        description: 'Fetch from cache or compute',
-        execute: ({ key }: { key: string }) => {
-            const cache: Record<string, unknown> = { key_abc: { value: 99 } };
-            return { hit: key in cache, result: cache[key] ?? null };
-        },
-    });
-
-    // run_until: stop as soon as we get a cache hit
-    const stopOnCacheHit = (state: PipelineState): boolean => {
-        if (state.stepName !== 'execute') return false;
-        const output = state.outputs['execute'] as { hit?: boolean } | undefined;
-        return output?.hit === true;
-    };
-
-    const result = await client.call(
-        'cache.fetch',
-        { key: 'key_abc' },
-        { runUntil: stopOnCacheHit },
-    );
-    console.log(result); // { hit: true, result: { value: 99 } }
-    // Steps after execute did NOT run.
-    ```
-
-=== "Rust"
-    ```rust
-    use apcore::{APCore, PipelineState};
-    use serde_json::json;
-
-    #[tokio::main]
-    async fn main() {
-        let client = APCore::default();
-
-        // run_until: stop as soon as we get a cache hit
-        let stop_on_cache_hit = |state: &PipelineState| -> bool {
-            if state.step_name != "execute" {
-                return false;
-            }
-            state
-                .outputs
-                .get("execute")
-                .and_then(|o| o.get("hit"))
-                .and_then(|h| h.as_bool())
-                .unwrap_or(false)
-        };
-
-        let result = client
-            .call_with_options(
-                "cache.fetch",
-                json!({"key": "key_abc"}),
-                |opts| opts.run_until(stop_on_cache_hit),
-            )
-            .await
-            .unwrap();
-        println!("{result}"); // {"hit":true,"result":{"value":99}}
-        // Steps after execute did NOT run.
-    }
-    ```
-
-### 1.5 O(1) Control Flow Lookups
-
-Implementations MUST use O(1) lookup structures (hash maps, dictionaries) for step name resolution within the pipeline. Implementations MUST NOT use linear scans (list iteration) to find a step by name during execution. This is a **performance requirement**; violation does not cause incorrect behavior but MUST be flagged during code review.
-
-The step registry MUST be a hash map keyed by step name, built once when the pipeline is configured. Any operation that modifies the pipeline (adding, replacing, or removing a step) MUST update both the ordered list and the hash map atomically so they remain in sync.
-
-!!! warning "Code Review Requirement"
-    During code review, reviewers MUST verify that step name resolution inside the execution loop uses a hash map lookup (e.g., `steps_by_name[step_name]`) and never iterates over a list to find a step by name (e.g., `next(s for s in steps if s.name == step_name)`). Flag any violation even if tests pass.
-
----
-
-## Contract: Pipeline.configure_step
-
-Normative behavioral contract. All SDK implementations MUST satisfy these guarantees.
-
-### Inputs
-
-- `step_name` (str/string/String, required) — target step to configure or replace
-- `new_step` (PipelineStep instance, required) — replacement step object that owns its own handler / options
-
-> **Spec amendment (D10-013).** Earlier spec drafts described separate
-> `handler` and `options` arguments; no SDK implements that shape.
-> Python (`pipeline.py:300`), TypeScript (`pipeline.ts:343`), and Rust
-> (`pipeline.rs:619`) all accept a single `(step_name, new_step)` pair
-> where the step instance carries its own handler and per-step options.
-
-### Errors
-
-- `PipelineStepNotFoundError(code=PIPELINE_STEP_NOT_FOUND)` — `step_name` does not exist in the current strategy
-- `StepNotReplaceableError` — `step_name` resolves to a step marked non-replaceable by the strategy (raised by all three SDKs — `pipeline.py:310`, `pipeline.ts:349`, `pipeline.rs:635`). Cross-language note: Python and TypeScript carry the dedicated `STEP_NOT_REPLACEABLE` code; Rust reports this through `ErrorCode::GeneralInvalidInput` (`GENERAL_INVALID_INPUT`).
-- `StepNameDuplicateError` — `new_step` declares a step name that conflicts with an existing step (raised by Python+TypeScript — `pipeline.ts:357`)
-
-### Returns
-
-- On success: void/None/()
-
-### Properties
-
-- `async`: false
-- `thread_safe`: false — pipeline configuration MUST be completed before the first `call()` invocation
-- `pure`: false — mutates pipeline state
-- `idempotent`: true — replacing the same step twice with the same handler produces the same result
+- **Unit tests** cover each pipeline step in isolation for success and failure.
+- **Timeout tests** verify per-module and global-deadline enforcement for sync and async modules.
+- **Call-chain tests** exercise depth limits, circular detection and self-recursion bounds.
+- **Redaction tests** confirm that `x-sensitive` fields are masked in `redacted_inputs` / `redacted_output` while the module receives the real values.
+- **Error tests** confirm that callers receive the typed cause, not `PipelineStepError` or `MiddlewareChainError`, and that cancellation bypasses `on_error`.
+- **Integration tests** run full pipelines through the Executor with real Registry and schema instances.

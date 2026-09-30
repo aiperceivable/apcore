@@ -1,6 +1,6 @@
 {
-  "description": "Binding error message conformance (DECLARATIVE_CONFIG_SPEC.md §7.2). Each SDK must produce byte-identical messages for the same error conditions.",
-  "spec_ref": "DECLARATIVE_CONFIG_SPEC.md §7",
+  "description": "Binding error message conformance (protocol-spec §5.12.8). Each SDK must produce byte-identical messages for the same error conditions.",
+  "spec_ref": "protocol-spec §5.12.8",
   "test_cases": [
     {
       "id": "binding_file_invalid_missing_bindings_key",
@@ -19,7 +19,7 @@
         "modes_listed": ["auto_schema", "input_schema/output_schema"],
         "file_path": "bindings.yaml"
       },
-      "expected_message": "bindings.yaml: binding 'utils.format_date' specifies multiple schema modes (auto_schema, input_schema/output_schema). Choose one. See DECLARATIVE_CONFIG_SPEC.md §3.4"
+      "expected_message": "bindings.yaml: binding 'utils.format_date' specifies multiple schema modes (auto_schema, input_schema/output_schema). Choose one. See protocol-spec §5.12.2"
     },
     {
       "id": "binding_schema_inference_failed_python",
@@ -33,7 +33,7 @@
         "b.yaml",
         "app.thing",
         "auto schema inference failed for target 'myapp:func'",
-        "DECLARATIVE_CONFIG_SPEC.md §6"
+        "See protocol-spec §5.12.5"
       ]
     },
     {
@@ -48,7 +48,7 @@
         "handler",
         "not supported in apcore-rust",
         "register_step_type",
-        "DECLARATIVE_CONFIG_SPEC.md §4.4"
+        "See protocol-spec §5.16.1"
       ]
     },
     {

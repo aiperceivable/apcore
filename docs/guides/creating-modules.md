@@ -1,133 +1,122 @@
 ---
-description: "Four ways to create apcore modules — class-based, @module decorator, module() function call, and external YAML binding — spanning native SDK and zero-intrusion legacy integration paths."
+description: "Four ways to create apcore modules in Python, TypeScript, and Rust — class-based modules, module() registration of functions, wrapping existing methods, and YAML bindings that need no source changes."
 ---
 
 # Creating Modules Guide
 
-> Build or upgrade modules to be AI-perceivable.
+> Build modules that people and AI agents can discover, call, and govern.
 
 ## Choose Your Integration Path
 
-apcore supports four ways to create modules — choose the one that fits your scenario:
+apcore offers four ways to create a module. Pick the one that fits your situation:
 
-| Approach | Use Case | Code Intrusiveness | Jump To |
+| Approach | Use case | Changes to your code | Jump to |
 |------|---------|-----------|------|
-| **Class-based** (Class Definition) | New module development | High (implements Module protocol) | [Quick Start](#quick-start) |
-| **`@module` Decorator** | Functions where you can modify source code | Low (add one line decorator) | [module() Registration](#module-registration) |
-| **`module()` Function Call** | Wrapping existing classes/methods | Very Low (no changes to original function) | [module() Registration](#module-registration) |
-| **External Binding** (External Binding) | Zero-modification integration of existing apps | None (no source code changes) | [External Schema Binding](#external-schema-binding-yaml) |
+| **Class-based module** | New modules | You implement the module interface | [Quick Start](#quick-start) |
+| **`module()` on a function** | Functions you own and can annotate | One decorator (Python) or one registration call (TypeScript, Rust) | [module() Registration](#module-registration) |
+| **`module()` on an existing callable** | Existing functions or methods you import but do not edit | One registration call beside, not inside, the original code | [module() Registration](#module-registration) |
+| **External binding (YAML)** | Existing code you cannot or will not change | None — a YAML file maps a module ID to a callable | [External Schema Binding](#external-schema-binding-yaml) |
 
-These can also be grouped into two integration paths:
-
-1.  **Native SDK (Recommended)**: Best for new projects. Full type safety and lifecycle control. (Class-based, `@module` Decorator)
-2.  **Zero-Intrusion Patch**: Best for legacy code. Upgrade via function calls or YAML bindings **without rewriting business logic**. (`module()` Function Call, External Binding)
+The first two suit new code: you get full control over schemas and lifecycle. The last two are zero-intrusion: they wrap existing business logic **without rewriting it**.
 
 ---
 
 ## Designing for the AI Lifecycle
 
-To build a high-quality module, think through the **AI Collaboration Lifecycle**. Your module's metadata should guide the Agent through every stage of its task.
+A module's metadata should guide an AI agent through each stage of using it:
 
-| Lifecycle Stage | Field / Tool | Purpose |
+| Stage | Field | Purpose |
 | :--- | :--- | :--- |
-| **1. Discovery** | `description` | Helps the Agent find the right tool for its intent. |
-| **2. Strategy** | `metadata` | Teaches the Agent *when* and *how* to use the tool correctly. |
-| **3. Governance** | `requires_approval` | Sets the safety boundary for sensitive operations. |
-| **4. Recovery** | `ai_guidance` | Provides a clear path for the Agent to fix errors autonomously. |
+| **1. Discovery** | `description` | Helps the agent find the right module for its intent |
+| **2. Strategy** | `metadata` (`x-when-to-use`, …) | Tells the agent *when* and *how* to use the module |
+| **3. Governance** | annotations (`requires_approval`, `destructive`, …) | Declares the safety boundary |
+| **4. Recovery** | `ModuleError.ai_guidance` | Tells the agent how to recover from a failure |
 
----
+**1. Discovery — describe the intent, not the implementation.** The `description` should answer "what problem does this solve?"
 
-## Intent-Oriented Tips
+- Technical: "Executes a SQL SELECT query on the users table."
+- Intent-oriented: "Find a user profile by email address or user ID."
 
-### 1. Discovery: Focus on "What" not "How"
-Your module's `description` is its **Identity**. It should answer: *"What problem does this solve?"* rather than *"What does the code do?"*
-- **❌ Technical**: "Executes a SQL SELECT query on the users table."
-- **✅ Intent-Oriented**: "Find a user profile by their email address or unique ID."
+**2. Strategy — share usage guidance in `metadata`.**
 
-### 2. Strategy: Share Your Wisdom
-Use `metadata` to give the Agent tactical guidance (the **Wisdom** layer):
-- `x-when-to-use`: Describe the ideal scenario for this module.
-- `x-when-not-to-use`: Explicitly warn the Agent of misuse to prevent hallucinations.
-- `x-common-mistakes`: Warn the Agent about pitfalls others have encountered.
+- `x-when-to-use`: the situations this module is the right choice for
+- `x-when-not-to-use`: situations where another module should be used
+- `x-common-mistakes`: pitfalls callers run into
+- `x-workflow-hints`: steps that usually come before or after
 
-### 3. Governance: Set Guardrails
-Use **Annotations** to define your module's **Personality**.
-- For sensitive operations (spending money, deleting data), set `requires_approval: true`. This ensures a human always has the final word.
+**3. Governance — declare the risk.** Set `destructive: true` for irreversible operations and `requires_approval: true` for operations a human must confirm (spending money, deleting data). The executor's approval gate then asks your `ApprovalHandler` before the module runs; with no handler configured the gate is skipped with a warning. See the [Approval Flow cookbook](./cookbook-approval-flow.md).
 
-### 4. Recovery: Empower Self-Healing
-
-Self-Healing enables **Self-Repair** and **Self-Evolution** (see [Design Philosophy](../concepts.md#11-the-concept-cognitive-interface) for definitions).
-
-When an error occurs, use the `ai_guidance` field in your `ModuleError` to tell the Agent **exactly what to do next** — not what went wrong (that's `message`'s job).
+**4. Recovery — say what to do next.** When a module fails, `message` says what happened and `ai_guidance` says what the agent should do about it:
 
 | Field | Purpose | Example |
 | :--- | :--- | :--- |
 | `message` | What happened | `"Database connection failed"` |
-| `ai_guidance` | What to do next | `"Retry after 5s. If persistent, ask user to check DB credentials."` |
-| `suggestion` | Specific fix | `"Verify DB_HOST and DB_PORT environment variables"` |
-| `user_fixable` | Can user fix? | `true` |
+| `ai_guidance` | What to do next | `"Retry after 5s. If it keeps failing, ask the user to check the DB credentials."` |
+| `suggestion` | A concrete fix for a human | `"Verify DB_HOST and DB_PORT"` |
+| `user_fixable` | Whether the end user can fix it | `true` |
 
-**Anti-patterns:**
-- ❌ `ai_guidance="An error occurred while processing the request"` — restates the error, no action
-- ❌ `ai_guidance="Please try again"` — too vague, no specificity
-
-**Good patterns:**
-- ✅ `ai_guidance="Email format is invalid. Ask the user for a valid email (user@domain.com)."`
-- ✅ `ai_guidance="Retry after 5s. If still failing after 3 retries, ask user to check network connectivity."`
-- ✅ `ai_guidance="File not found. Verify the path with the user. If correct, check read permissions."`
+Weak guidance restates the error (`"An error occurred while processing the request"`) or is too vague (`"Please try again"`). Good guidance is specific: `"Email format is invalid. Ask the user for an address like user@domain.com."`
 
 ---
 
 ## Quick Start
 
-### 1. Create Project Structure
+### 1. Project Layout
 
-```bash
+```text
 my-project/
-├── apcore.yaml           # Framework configuration
-├── extensions/           # Extensions directory
-│   └── executor/         # Execution layer
-│       └── email/        # Email functionality
-│           └── send_email.py # Python module OR
-│           └── send_email.ts # TypeScript module
-└── schemas/              # Schema definitions (optional)
+├── apcore.yaml                  # framework configuration (optional for this quick start)
+├── extensions/                  # discovery root (extensions.root, default ./extensions)
+│   └── executor/
+│       └── email/
+│           ├── send_email.py    # Python module, or
+│           └── send_email.ts    # TypeScript module
+└── schemas/                     # shared YAML schemas (optional)
 ```
 
-### 2. Create Module File
+Rust modules are compiled into your binary rather than discovered from files, so a Rust project keeps them in `src/` and registers them explicitly (step 4).
 
-!!! note "Module is a structural interface"
-    In all languages, `Module` defines a structural contract — not a base class to inherit from. Python: `Module` is a `Protocol`, so `class MyModule:` without inheritance is valid. Rust: `Module` is a `trait`. TypeScript: any object matching the type shape satisfies `Module`. Explicit inheritance/implementation is convenient for IDE support but not required.
+### 2. Write the Module
+
+!!! note "What each SDK needs to recognize a module"
+    - **Python** — a class defined in the file, with class attributes `input_schema` and `output_schema` that are Pydantic `BaseModel` subclasses, a non-empty `description` string, and an `execute(inputs, context)` method. Exactly one such class per file. `Module` is a `Protocol`, so inheriting from it is optional.
+    - **TypeScript** — the file's default export (or its only matching named export) is an object with TypeBox `inputSchema` / `outputSchema`, a `description` string, and an `execute()` function — for example a `FunctionModule`.
+    - **Rust** — a type that implements the `Module` trait, registered with `client.register()`.
 
 === "Python"
 
     ```python
     # extensions/executor/email/send_email.py
     from pydantic import BaseModel, Field
-    from apcore import Module, Context
+
+    from apcore import Context, Module
+
 
     class SendEmailInput(BaseModel):
         to: str = Field(..., description="Recipient email address")
         subject: str = Field(..., description="Email subject")
         body: str = Field(..., description="Email body")
 
+
     class SendEmailOutput(BaseModel):
-        success: bool = Field(..., description="Whether successful")
-        message_id: str | None = Field(None, description="Message ID")
+        success: bool = Field(..., description="Whether the email was accepted for delivery")
+        message_id: str | None = Field(None, description="Provider message ID")
+
 
     class SendEmailModule(Module):
-        """Send email module"""
+        description = "Send an email to one recipient"
         input_schema = SendEmailInput
         output_schema = SendEmailOutput
 
         def execute(self, inputs: dict, context: Context) -> dict:
-            # Implement logic here
+            # Implement the sending logic here
             return {"success": True, "message_id": "msg_123"}
     ```
 
 === "TypeScript"
 
     ```typescript
-    // extensions/executor/email/sendEmail.ts
+    // extensions/executor/email/send_email.ts
     import { Type } from '@sinclair/typebox';
     import { FunctionModule } from 'apcore-js';
 
@@ -138,17 +127,17 @@ my-project/
     });
 
     const SendEmailOutput = Type.Object({
-      success: Type.Boolean({ description: 'Whether successful' }),
-      message_id: Type.Optional(Type.String({ description: 'Message ID' })),
+      success: Type.Boolean({ description: 'Whether the email was accepted for delivery' }),
+      message_id: Type.Optional(Type.String({ description: 'Provider message ID' })),
     });
 
     export default new FunctionModule({
       moduleId: 'executor.email.send_email',
-      description: 'Send email module',
+      description: 'Send an email to one recipient',
       inputSchema: SendEmailInput,
       outputSchema: SendEmailOutput,
-      execute: async (inputs) => {
-        // Implement logic here
+      execute: async () => {
+        // Implement the sending logic here
         return { success: true, message_id: 'msg_123' };
       },
     });
@@ -157,12 +146,12 @@ my-project/
 === "Rust"
 
     ```rust
-    // extensions/executor/email/send_email.rs
-    use apcore::{Module, Context};
+    // src/modules/send_email.rs
     use apcore::errors::{ErrorCode, ModuleError};
+    use apcore::{Context, Module};
     use async_trait::async_trait;
-    use serde::{Deserialize, Serialize};
-    use serde_json::Value;
+    use serde::Deserialize;
+    use serde_json::{json, Value};
 
     #[derive(Deserialize)]
     struct SendEmailInput {
@@ -171,394 +160,247 @@ my-project/
         body: String,
     }
 
-    #[derive(Serialize)]
-    struct SendEmailOutput {
-        success: bool,
-        message_id: Option<String>,
-    }
-
     pub struct SendEmailModule;
 
     #[async_trait]
     impl Module for SendEmailModule {
         fn description(&self) -> &str {
-            "Send email module"
+            "Send an email to one recipient"
         }
 
-        fn input_schema(&self) -> serde_json::Value {
-            serde_json::json!({
+        fn input_schema(&self) -> Value {
+            json!({
                 "type": "object",
                 "properties": {
                     "to":      { "type": "string", "description": "Recipient email address" },
-                    "subject": { "type": "string", "description": "Email subject line" },
-                    "body":    { "type": "string", "description": "Email body content" }
+                    "subject": { "type": "string", "description": "Email subject" },
+                    "body":    { "type": "string", "description": "Email body" }
                 },
                 "required": ["to", "subject", "body"],
                 "additionalProperties": false
             })
         }
 
-        fn output_schema(&self) -> serde_json::Value {
-            serde_json::json!({
+        fn output_schema(&self) -> Value {
+            json!({
                 "type": "object",
                 "properties": {
-                    "success":    { "type": "boolean", "description": "Whether the email was sent" },
+                    "success":    { "type": "boolean", "description": "Whether the email was accepted for delivery" },
                     "message_id": { "type": ["string", "null"], "description": "Provider message ID" }
                 },
-                "required": ["success"],
-                "additionalProperties": false
+                "required": ["success"]
             })
         }
 
-        async fn execute(
-            &self,
-            inputs: Value,
-            _ctx: &Context<Value>,
-        ) -> Result<Value, ModuleError> {
+        async fn execute(&self, inputs: Value, _ctx: &Context<Value>) -> Result<Value, ModuleError> {
             let input: SendEmailInput = serde_json::from_value(inputs)
                 .map_err(|e| ModuleError::new(ErrorCode::GeneralInvalidInput, e.to_string()))?;
-            // Implement logic here
-            let _ = input;
-            let output = SendEmailOutput {
-                success: true,
-                message_id: Some("msg_123".to_string()),
-            };
-            Ok(serde_json::to_value(output).unwrap())
+            // Implement the sending logic here
+            let _ = (input.to, input.subject, input.body);
+            Ok(json!({ "success": true, "message_id": "msg_123" }))
         }
     }
     ```
 
-### 3. Module ID Auto-Generation
+### 3. The Module ID Comes from the Path
 
-```
-File path: extensions/executor/email/send_email.py
-Module ID:  executor.email.send_email
+```text
+File:      extensions/executor/email/send_email.py   (or send_email.ts)
+Module ID: executor.email.send_email
 ```
 
-**No configuration needed - the file path is the ID.**
+No configuration is needed — the path under the discovery root is the ID. Name files in snake_case: the TypeScript scanner uses the file name as-is, so `sendEmail.ts` would yield `executor.email.sendEmail`, which is not a legal ID and is skipped. In Rust, the ID is the one you pass to `register()`. The rules are in [protocol-spec §2.1](../spec/protocol-spec.md#21-directory-as-id-core-rule); to rename a file's ID without moving it, see [ID Map Configuration](./multi-language.md#5-id-map-configuration).
+
+### 4. Call the Module
+
+=== "Python"
+
+    ```python
+    from apcore import APCore
+
+    client = APCore()      # discovery root defaults to ./extensions
+    client.discover()
+
+    result = client.call(
+        "executor.email.send_email",
+        {"to": "user@example.com", "subject": "Hello", "body": "World"},
+    )
+    print(result)  # {'success': True, 'message_id': 'msg_123'}
+    ```
+
+=== "TypeScript"
+
+    ```typescript
+    import { APCore } from 'apcore-js';
+
+    const client = new APCore(); // discovery root defaults to ./extensions
+    await client.discover();
+
+    const result = await client.call('executor.email.send_email', {
+      to: 'user@example.com',
+      subject: 'Hello',
+      body: 'World',
+    });
+    console.log(result); // { success: true, message_id: 'msg_123' }
+    ```
+
+    Discovery imports the `.ts` files at runtime, so run under a runtime that can load TypeScript (Node.js with type stripping, or `tsx`), or point discovery at your compiled `.js` output.
+
+=== "Rust"
+
+    ```rust
+    use apcore::errors::ModuleError;
+    use apcore::APCore;
+    use serde_json::json;
+
+    mod modules {
+        pub mod send_email;
+    }
+    use modules::send_email::SendEmailModule;
+
+    #[tokio::main]
+    async fn main() -> Result<(), ModuleError> {
+        let client = APCore::new();
+        client.register("executor.email.send_email", Box::new(SendEmailModule))?;
+
+        // call(module_id, inputs, context, version_hint)
+        let result = client
+            .call(
+                "executor.email.send_email",
+                json!({ "to": "user@example.com", "subject": "Hello", "body": "World" }),
+                None,
+                None,
+            )
+            .await?;
+        println!("{result}");
+        Ok(())
+    }
+    ```
+
+To change the discovery root or other settings, put them in `apcore.yaml` and pass the loaded config: `APCore(config=Config.load("apcore.yaml"))`, `new APCore({ config: Config.load('apcore.yaml') })`, or `APCore::from_path("apcore.yaml")?`. See [Getting Started](../getting-started.md).
 
 ---
 
 ## Detailed Steps
 
-### Step 1: Design Schema
+### Step 1: Design the Schema
 
-**First think about module inputs and outputs:**
+Decide the inputs and outputs before writing code:
 
-| Question | Example (Send Email) |
+| Question | Example (send email) |
 |------|------------------|
-| What inputs are needed? | to, subject, body, cc |
-| What outputs are returned? | success, message_id, error |
-| What constraints exist? | to must be email format, subject max 200 chars |
+| What inputs are needed? | `to`, `subject`, `body`, `cc`, `priority` |
+| What does it return? | `success`, `message_id`, `error`, `sent_at` |
+| What constraints apply? | `to` looks like an email address; `subject` is at most 200 characters |
 
-**Define Input Schema:**
+Every field gets a `description` — it is what an AI agent reads to fill the field. Constrain values with `pattern`, `maxLength`, `enum`, and ranges rather than describing the limits in prose. The [Schema Definition Guide](./schema-definition.md) covers every field type and constraint.
 
-=== "Python"
+### Step 2: Implement the Module
 
-    ```python
-    from pydantic import BaseModel, Field
-    from typing import Literal
-
-    class SendEmailInput(BaseModel):
-        """Input parameters - each field must have description."""
-
-        to: str = Field(
-            ...,                                  # ... means required
-            description="Recipient email address",
-            pattern=r"^[\w\.-]+@[\w\.-]+\.\w+$",  # Email format validation
-        )
-
-        subject: str = Field(
-            ...,
-            description="Email subject",
-            max_length=200,                       # Length limit
-        )
-
-        body: str = Field(
-            ...,
-            description="Email body, supports plain text or HTML",
-        )
-
-        cc: list[str] = Field(
-            default_factory=list,                 # Optional fields must have defaults
-            description="CC list",
-        )
-
-        priority: Literal["low", "normal", "high"] = Field(
-            default="normal",
-            description="Email priority",
-        )
-    ```
-
-=== "TypeScript"
-
-    ```typescript
-    import { Type } from '@sinclair/typebox';
-
-    // Each field carries a description; AI uses this to understand intent.
-    export const SendEmailInput = Type.Object({
-      to: Type.String({
-        description: 'Recipient email address',
-        pattern: '^[\\w\\.-]+@[\\w\\.-]+\\.\\w+$',
-      }),
-      subject: Type.String({
-        description: 'Email subject',
-        maxLength: 200,
-      }),
-      body: Type.String({
-        description: 'Email body, supports plain text or HTML',
-      }),
-      cc: Type.Array(Type.String(), {
-        description: 'CC list',
-        default: [],
-      }),
-      priority: Type.Union(
-        [Type.Literal('low'), Type.Literal('normal'), Type.Literal('high')],
-        { description: 'Email priority', default: 'normal' },
-      ),
-    });
-    ```
-
-=== "Rust"
-
-    ```rust
-    use serde_json::{json, Value};
-
-    /// Returns the JSON Schema describing the email input. Each property
-    /// carries a `description` so AI tooling can reason about intent.
-    pub fn send_email_input_schema() -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "to": {
-                    "type": "string",
-                    "description": "Recipient email address",
-                    "pattern": r"^[\w\.-]+@[\w\.-]+\.\w+$"
-                },
-                "subject": {
-                    "type": "string",
-                    "description": "Email subject",
-                    "maxLength": 200
-                },
-                "body": {
-                    "type": "string",
-                    "description": "Email body, supports plain text or HTML"
-                },
-                "cc": {
-                    "type": "array",
-                    "items": { "type": "string" },
-                    "description": "CC list",
-                    "default": []
-                },
-                "priority": {
-                    "type": "string",
-                    "enum": ["low", "normal", "high"],
-                    "description": "Email priority",
-                    "default": "normal"
-                }
-            },
-            "required": ["to", "subject", "body"],
-            "additionalProperties": false
-        })
-    }
-    ```
-
-**Define Output Schema:**
-
-=== "Python"
-
-    ```python
-    from pydantic import BaseModel, Field
-
-    class SendEmailOutput(BaseModel):
-        """Output result."""
-
-        success: bool = Field(
-            ...,
-            description="Whether email was sent successfully",
-        )
-
-        message_id: str | None = Field(
-            None,
-            description="Message ID when send is successful",
-        )
-
-        error: str | None = Field(
-            None,
-            description="Error message when send fails",
-        )
-
-        sent_at: str | None = Field(
-            None,
-            description="Send time, ISO 8601 format",
-        )
-    ```
-
-=== "TypeScript"
-
-    ```typescript
-    import { Type } from '@sinclair/typebox';
-
-    export const SendEmailOutput = Type.Object({
-      success: Type.Boolean({
-        description: 'Whether email was sent successfully',
-      }),
-      message_id: Type.Optional(
-        Type.String({ description: 'Message ID when send is successful' }),
-      ),
-      error: Type.Optional(
-        Type.String({ description: 'Error message when send fails' }),
-      ),
-      sent_at: Type.Optional(
-        Type.String({ description: 'Send time, ISO 8601 format' }),
-      ),
-    });
-    ```
-
-=== "Rust"
-
-    ```rust
-    use serde_json::{json, Value};
-
-    pub fn send_email_output_schema() -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "success": {
-                    "type": "boolean",
-                    "description": "Whether email was sent successfully"
-                },
-                "message_id": {
-                    "type": ["string", "null"],
-                    "description": "Message ID when send is successful"
-                },
-                "error": {
-                    "type": ["string", "null"],
-                    "description": "Error message when send fails"
-                },
-                "sent_at": {
-                    "type": ["string", "null"],
-                    "description": "Send time, ISO 8601 format"
-                }
-            },
-            "required": ["success"],
-            "additionalProperties": false
-        })
-    }
-    ```
-
----
-
-### Step 2: Implement Module
+A complete module file with the schema from Step 1:
 
 === "Python"
 
     ```python
     # extensions/executor/email/send_email.py
     from datetime import datetime, timezone
-    from apcore import Module, Context
+    from typing import Literal
+
+    from pydantic import BaseModel, Field
+
+    from apcore import Context, Module
+
+
+    class SendEmailInput(BaseModel):
+        to: str = Field(..., description="Recipient email address", pattern=r"^[\w\.-]+@[\w\.-]+\.\w+$")
+        subject: str = Field(..., description="Email subject", max_length=200)
+        body: str = Field(..., description="Email body, plain text or HTML")
+        cc: list[str] = Field(default_factory=list, description="CC addresses")
+        priority: Literal["low", "normal", "high"] = Field("normal", description="Delivery priority")
+
+
+    class SendEmailOutput(BaseModel):
+        success: bool = Field(..., description="Whether the email was accepted for delivery")
+        message_id: str | None = Field(None, description="Provider message ID when successful")
+        error: str | None = Field(None, description="Error message when sending failed")
+        sent_at: str | None = Field(None, description="Send time, ISO 8601")
+
 
     class SendEmailModule(Module):
-        """Send emails via SMTP or API, supports HTML format."""
-
-        # Associate Schema
+        description = "Send an email via SMTP or an HTTP email API"
         input_schema = SendEmailInput
         output_schema = SendEmailOutput
-
-        # Optional: Module metadata
-        description = "Send an email message via SMTP or HTTP API"
         tags = ["email", "notification"]
         version = "1.0.0"
 
         def execute(self, inputs: dict, context: Context) -> dict:
-            """Execute email sending.
-
-            Args:
-                inputs: Input parameters (already schema-validated)
-                context: Call context (trace_id, caller_id, executor, ...)
-
-            Returns:
-                Send result matching ``SendEmailOutput``.
-            """
-            # Option 1: read from dict directly
-            to = inputs["to"]
-            subject = inputs["subject"]
-
-            # Option 2: parse via Pydantic for typed access
-            params = self.input_schema(**inputs)
-
+            # `inputs` has already been validated against SendEmailInput.
+            # model_validate() gives typed access and fills in defaults.
+            params = SendEmailInput.model_validate(inputs)
             try:
-                message_id = self._send_email(
-                    to=params.to,
-                    subject=params.subject,
-                    body=params.body,
-                    cc=params.cc,
-                )
-                return {
-                    "success": True,
-                    "message_id": message_id,
-                    "error": None,
-                    "sent_at": datetime.now(timezone.utc).isoformat(),
-                }
-            except Exception as e:  # noqa: BLE001 — convert to structured output
-                return {
-                    "success": False,
-                    "message_id": None,
-                    "error": str(e),
-                    "sent_at": None,
-                }
+                message_id = self._send(params)
+            except OSError as exc:  # delivery failure is a business outcome, not a crash
+                return {"success": False, "message_id": None, "error": str(exc), "sent_at": None}
+            return {
+                "success": True,
+                "message_id": message_id,
+                "error": None,
+                "sent_at": datetime.now(timezone.utc).isoformat(),
+            }
 
-        def _send_email(self, to: str, subject: str, body: str, cc: list[str]) -> str:
-            """Internal method: actual sending logic (e.g. smtplib)."""
+        def _send(self, params: SendEmailInput) -> str:
+            # Replace with smtplib or your provider's client.
             return "msg_" + datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
     ```
 
 === "TypeScript"
 
     ```typescript
-    // extensions/executor/email/send-email.ts
+    // extensions/executor/email/send_email.ts
+    import { Type, type Static } from '@sinclair/typebox';
     import { FunctionModule } from 'apcore-js';
-    import type { Context } from 'apcore-js';
-    import { SendEmailInput, SendEmailOutput } from './schemas.js';
 
-    async function sendEmail(
-      to: string,
-      subject: string,
-      body: string,
-      cc: string[],
-    ): Promise<string> {
-      // Implement specific sending logic here (e.g. nodemailer, fetch).
+    const SendEmailInput = Type.Object({
+      to: Type.String({ description: 'Recipient email address', pattern: '^[\\w\\.-]+@[\\w\\.-]+\\.\\w+$' }),
+      subject: Type.String({ description: 'Email subject', maxLength: 200 }),
+      body: Type.String({ description: 'Email body, plain text or HTML' }),
+      cc: Type.Optional(Type.Array(Type.String(), { description: 'CC addresses', default: [] })),
+      priority: Type.Optional(
+        Type.Union([Type.Literal('low'), Type.Literal('normal'), Type.Literal('high')], {
+          description: 'Delivery priority',
+          default: 'normal',
+        }),
+      ),
+    });
+
+    const SendEmailOutput = Type.Object({
+      success: Type.Boolean({ description: 'Whether the email was accepted for delivery' }),
+      message_id: Type.Union([Type.String(), Type.Null()], { description: 'Provider message ID when successful' }),
+      error: Type.Union([Type.String(), Type.Null()], { description: 'Error message when sending failed' }),
+      sent_at: Type.Union([Type.String(), Type.Null()], { description: 'Send time, ISO 8601' }),
+    });
+
+    async function send(params: Static<typeof SendEmailInput>): Promise<string> {
+      // Replace with nodemailer or your provider's client.
       return `msg_${Date.now()}`;
     }
 
     export default new FunctionModule({
       moduleId: 'executor.email.send_email',
-      description: 'Send an email message via SMTP or HTTP API',
+      description: 'Send an email via SMTP or an HTTP email API',
       inputSchema: SendEmailInput,
       outputSchema: SendEmailOutput,
       tags: ['email', 'notification'],
       version: '1.0.0',
-      execute: async (inputs, _context: Context) => {
-        const to = inputs.to as string;
-        const subject = inputs.subject as string;
-        const body = inputs.body as string;
-        const cc = (inputs.cc as string[] | undefined) ?? [];
-
+      execute: async (inputs) => {
+        // `inputs` has already been validated against SendEmailInput.
+        const params = inputs as Static<typeof SendEmailInput>;
         try {
-          const messageId = await sendEmail(to, subject, body, cc);
-          return {
-            success: true,
-            message_id: messageId,
-            error: null,
-            sent_at: new Date().toISOString(),
-          };
+          const messageId = await send(params);
+          return { success: true, message_id: messageId, error: null, sent_at: new Date().toISOString() };
         } catch (e) {
-          return {
-            success: false,
-            message_id: null,
-            error: e instanceof Error ? e.message : String(e),
-            sent_at: null,
-          };
+          // Delivery failure is a business outcome, not a crash.
+          return { success: false, message_id: null, error: e instanceof Error ? e.message : String(e), sent_at: null };
         }
       },
     });
@@ -567,13 +409,13 @@ Module ID:  executor.email.send_email
 === "Rust"
 
     ```rust
-    // extensions/executor/email/send_email.rs
-    use apcore::{Context, Module};
+    // src/modules/send_email.rs
     use apcore::errors::{ErrorCode, ModuleError};
+    use apcore::{Context, Module};
     use async_trait::async_trait;
     use chrono::Utc;
-    use serde::{Deserialize, Serialize};
-    use serde_json::Value;
+    use serde::Deserialize;
+    use serde_json::{json, Value};
 
     #[derive(Debug, Deserialize)]
     struct SendEmailInput {
@@ -584,195 +426,102 @@ Module ID:  executor.email.send_email
         cc: Vec<String>,
     }
 
-    #[derive(Debug, Serialize)]
-    struct SendEmailOutput {
-        success: bool,
-        message_id: Option<String>,
-        error: Option<String>,
-        sent_at: Option<String>,
-    }
-
     pub struct SendEmailModule;
 
     #[async_trait]
     impl Module for SendEmailModule {
-        fn input_schema(&self) -> Value {
-            send_email_input_schema()
-        }
-
-        fn output_schema(&self) -> Value {
-            send_email_output_schema()
-        }
-
         fn description(&self) -> &str {
-            "Send an email message via SMTP or HTTP API"
+            "Send an email via SMTP or an HTTP email API"
         }
 
         fn tags(&self) -> Vec<String> {
             vec!["email".into(), "notification".into()]
         }
 
-        async fn execute(
-            &self,
-            inputs: Value,
-            _ctx: &Context<Value>,
-        ) -> Result<Value, ModuleError> {
-            let params: SendEmailInput = serde_json::from_value(inputs).map_err(|e| {
-                ModuleError::new(ErrorCode::GeneralInvalidInput, e.to_string())
-            })?;
+        fn input_schema(&self) -> Value {
+            json!({
+                "type": "object",
+                "properties": {
+                    "to":       { "type": "string", "description": "Recipient email address", "pattern": r"^[\w\.-]+@[\w\.-]+\.\w+$" },
+                    "subject":  { "type": "string", "description": "Email subject", "maxLength": 200 },
+                    "body":     { "type": "string", "description": "Email body, plain text or HTML" },
+                    "cc":       { "type": "array", "items": { "type": "string" }, "description": "CC addresses", "default": [] },
+                    "priority": { "type": "string", "enum": ["low", "normal", "high"], "description": "Delivery priority", "default": "normal" }
+                },
+                "required": ["to", "subject", "body"],
+                "additionalProperties": false
+            })
+        }
 
-            match send_email(&params.to, &params.subject, &params.body, &params.cc).await {
-                Ok(message_id) => {
-                    let out = SendEmailOutput {
-                        success: true,
-                        message_id: Some(message_id),
-                        error: None,
-                        sent_at: Some(Utc::now().to_rfc3339()),
-                    };
-                    Ok(serde_json::to_value(out).unwrap())
-                }
-                Err(e) => {
-                    let out = SendEmailOutput {
-                        success: false,
-                        message_id: None,
-                        error: Some(e.to_string()),
-                        sent_at: None,
-                    };
-                    Ok(serde_json::to_value(out).unwrap())
-                }
+        fn output_schema(&self) -> Value {
+            json!({
+                "type": "object",
+                "properties": {
+                    "success":    { "type": "boolean", "description": "Whether the email was accepted for delivery" },
+                    "message_id": { "type": ["string", "null"], "description": "Provider message ID when successful" },
+                    "error":      { "type": ["string", "null"], "description": "Error message when sending failed" },
+                    "sent_at":    { "type": ["string", "null"], "description": "Send time, ISO 8601" }
+                },
+                "required": ["success"],
+                "additionalProperties": false
+            })
+        }
+
+        async fn execute(&self, inputs: Value, _ctx: &Context<Value>) -> Result<Value, ModuleError> {
+            // `inputs` has already been validated against input_schema().
+            let params: SendEmailInput = serde_json::from_value(inputs)
+                .map_err(|e| ModuleError::new(ErrorCode::GeneralInvalidInput, e.to_string()))?;
+            match send(&params).await {
+                Ok(message_id) => Ok(json!({
+                    "success": true,
+                    "message_id": message_id,
+                    "error": null,
+                    "sent_at": Utc::now().to_rfc3339(),
+                })),
+                // Delivery failure is a business outcome, not a crash.
+                Err(e) => Ok(json!({ "success": false, "message_id": null, "error": e.to_string(), "sent_at": null })),
             }
         }
     }
 
-    async fn send_email(
-        _to: &str,
-        _subject: &str,
-        _body: &str,
-        _cc: &[String],
-    ) -> Result<String, std::io::Error> {
-        // Implement specific sending logic here.
+    async fn send(params: &SendEmailInput) -> Result<String, std::io::Error> {
+        // Replace with lettre or your provider's client.
+        let _ = (&params.to, &params.subject, &params.body, &params.cc);
         Ok(format!("msg_{}", Utc::now().timestamp()))
     }
     ```
 
----
+Python's input validation is strict and passes `execute()` the inputs as sent, which is why the example calls `model_validate()` for typed access; see [Schema Definition § 2.1](./schema-definition.md#21-in-code-recommended).
 
-### Step 3: Place Files
+### Step 3: Organize by Layer
 
-**Organize directories by functional layers:**
+Group modules into the four layers; calls go downward only (`api` → `orchestrator` → `executor` → `common`):
 
-```
+```text
 extensions/
-├── api/                    # API entry layer
+├── api/                          # external entry points
 │   └── handler/
-│       └── user_api.py
-│
-├── orchestrator/           # Orchestration layer
+│       └── user_api.py           → api.handler.user_api
+├── orchestrator/                 # business flows
 │   └── workflow/
-│       └── user_register.py
-│
-├── executor/               # Execution layer
+│       └── user_register.py      → orchestrator.workflow.user_register
+├── executor/                     # concrete actions and external calls
 │   ├── email/
-│   │   ├── send_email.py       → executor.email.send_email
-│   │   └── send_template.py    → executor.email.send_template
-│   ├── sms/
-│   │   └── send_sms.py         → executor.sms.send_sms
+│   │   ├── send_email.py         → executor.email.send_email
+│   │   └── send_template.py      → executor.email.send_template
 │   └── database/
-│       └── query.py            → executor.database.query
-│
-└── common/                 # Common components
+│       └── query.py              → executor.database.query
+└── common/                       # shared utilities
     └── util/
-        └── validator.py        → common.util.validator
+        └── validator.py          → common.util.validator
 ```
-
-**Layer Recommendations:**
 
 | Layer | Responsibility | Examples |
 |---|------|------|
 | `api` | External request entry | HTTP handler, GraphQL resolver |
 | `orchestrator` | Business orchestration, flow control | Registration flow, order processing |
-| `executor` | Concrete execution, external calls | Send email, call API, query database |
-| `common` | Common utilities | Validators, formatters |
-
----
-
-### Step 4: Use Module
-
-=== "Python"
-
-    ```python
-    from apcore import Registry, Executor
-
-    # 1. Create Registry and discover modules
-    registry = Registry(extensions_dir="./extensions")
-    registry.discover()
-
-    # 2. Create Executor
-    executor = Executor(registry)
-
-    # 3. Call module
-    result = executor.call(
-        module_id="executor.email.send_email",
-        inputs={
-            "to": "user@example.com",
-            "subject": "Hello",
-            "body": "World"
-        }
-    )
-    print(result)
-    ```
-
-=== "TypeScript"
-
-    ```typescript
-    import { Registry, Executor } from 'apcore-js';
-
-    // 1. Create Registry and discover modules
-    const registry = new Registry({ extensionsDir: './extensions' });
-    await registry.discover();
-
-    // 2. Create Executor
-    const executor = new Executor({ registry });
-
-    // 3. Call module
-    const result = await executor.call(
-      'executor.email.send_email',
-      {
-        to: 'user@example.com',
-        subject: 'Hello',
-        body: 'World'
-      }
-    );
-    console.log(result);
-    ```
-
-=== "Rust"
-
-    ```rust
-    use apcore::{Registry, Executor};
-    use serde_json::json;
-
-    // 1. Create Registry and discover modules
-    let registry = Registry::builder()
-        .extensions_dir("./extensions")
-        .build()?;
-    registry.discover()?;
-
-    // 2. Create Executor
-    let executor = Executor::new(&registry);
-
-    // 3. Call module
-    let result = executor.call(
-        "executor.email.send_email",
-        json!({
-            "to": "user@example.com",
-            "subject": "Hello",
-            "body": "World"
-        }),
-    )?;
-    println!("{:?}", result);
-    ```
-
+| `executor` | Concrete execution, external calls | Send email, call an API, query a database |
+| `common` | Shared utilities | Validators, formatters |
 
 ---
 
@@ -780,54 +529,64 @@ extensions/
 
 ### Using Context
 
+Every call receives a `Context` carrying the trace ID, the caller, the call chain, the caller's identity, and a `data` map shared along the call chain.
+
 === "Python"
 
     ```python
-    from apcore import Module, Context
+    from pydantic import BaseModel, Field
 
-    class SendEmailModule(Module):
+    from apcore import Context
+
+
+    class Empty(BaseModel):
+        pass
+
+
+    class Result(BaseModel):
+        success: bool = Field(..., description="Always true")
+
+
+    class ContextAwareModule:
+        description = "Show what a module can read from its context"
+        input_schema = Empty
+        output_schema = Result
+
         def execute(self, inputs: dict, context: Context) -> dict:
-            # Call chain information
             print(f"Trace ID:   {context.trace_id}")
-            print(f"Caller:     {context.caller_id}")
-            print(f"Call Chain: {context.call_chain}")
+            print(f"Caller:     {context.caller_id}")      # None for a top-level call
+            print(f"Call chain: {context.call_chain}")
 
-            # Identity information (if available)
-            if context.identity:
-                print(f"Identity: {context.identity.id} ({context.identity.type})")
+            if context.identity is not None:
+                print(f"Identity:   {context.identity.id} ({context.identity.type})")
 
-            # Shared data along the call chain
-            custom_data = context.data.get("my_data")
-
-            # ... execute logic ...
+            custom = context.data.get("ext.myapp.tenant")   # shared along the call chain
+            print(f"Tenant:     {custom}")
             return {"success": True}
     ```
 
 === "TypeScript"
 
     ```typescript
-    import { FunctionModule } from 'apcore-js';
-    import type { Context } from 'apcore-js';
+    import { Type } from '@sinclair/typebox';
+    import { FunctionModule, type Context } from 'apcore-js';
 
     export default new FunctionModule({
-      moduleId: 'executor.email.send_email',
-      description: 'Send email with context-aware logging',
-      inputSchema: /* SendEmailInput */ undefined as never,
-      outputSchema: /* SendEmailOutput */ undefined as never,
-      execute: (inputs, context: Context) => {
-        // Call chain information
+      moduleId: 'executor.demo.context_aware',
+      description: 'Show what a module can read from its context',
+      inputSchema: Type.Object({}),
+      outputSchema: Type.Object({ success: Type.Boolean({ description: 'Always true' }) }),
+      execute: (_inputs, context: Context) => {
         console.log(`Trace ID:   ${context.traceId}`);
-        console.log(`Caller:     ${context.callerId}`);
-        console.log(`Call Chain: ${context.callChain.join(' -> ')}`);
+        console.log(`Caller:     ${context.callerId}`); // null for a top-level call
+        console.log(`Call chain: ${context.callChain.join(' -> ')}`);
 
-        // Identity information (if available)
         if (context.identity) {
-          console.log(`Identity: ${context.identity.id} (${context.identity.type})`);
+          console.log(`Identity:   ${context.identity.id} (${context.identity.type})`);
         }
 
-        // Shared data along the call chain
-        const customData = context.data['my_data'];
-
+        const tenant = context.data['ext.myapp.tenant']; // shared along the call chain
+        console.log(`Tenant:     ${String(tenant)}`);
         return { success: true };
       },
     });
@@ -836,108 +595,114 @@ extensions/
 === "Rust"
 
     ```rust
-    use apcore::{Context, Module};
     use apcore::errors::ModuleError;
+    use apcore::{Context, Module};
     use async_trait::async_trait;
     use serde_json::{json, Value};
 
-    pub struct SendEmailModule;
+    pub struct ContextAwareModule;
 
     #[async_trait]
-    impl Module for SendEmailModule {
-        fn input_schema(&self) -> Value { json!({"type": "object"}) }
-        fn output_schema(&self) -> Value { json!({"type": "object"}) }
-        fn description(&self) -> &str { "Send email with context-aware logging" }
+    impl Module for ContextAwareModule {
+        fn description(&self) -> &str {
+            "Show what a module can read from its context"
+        }
 
-        async fn execute(
-            &self,
-            _inputs: Value,
-            ctx: &Context<Value>,
-        ) -> Result<Value, ModuleError> {
-            // Call chain information
+        fn input_schema(&self) -> Value {
+            json!({ "type": "object", "properties": {} })
+        }
+
+        fn output_schema(&self) -> Value {
+            json!({
+                "type": "object",
+                "properties": { "success": { "type": "boolean", "description": "Always true" } },
+                "required": ["success"]
+            })
+        }
+
+        async fn execute(&self, _inputs: Value, ctx: &Context<Value>) -> Result<Value, ModuleError> {
             println!("Trace ID:   {}", ctx.trace_id);
-            println!("Caller:     {:?}", ctx.caller_id);
-            println!("Call Chain: {:?}", ctx.call_chain);
+            println!("Caller:     {:?}", ctx.caller_id); // None for a top-level call
+            println!("Call chain: {:?}", ctx.call_chain);
 
-            // Identity information (if available)
             if let Some(identity) = &ctx.identity {
-                println!("Identity: {} ({})", identity.id(), identity.identity_type());
+                println!("Identity:   {} ({})", identity.id(), identity.identity_type());
             }
 
-            // Shared data along the call chain. Drop the guard before any await.
-            let custom_data = ctx.data.read().get("my_data").cloned();
-            let _ = custom_data;
-
-            Ok(json!({"success": true}))
+            // Shared along the call chain. Clone the value so the lock guard
+            // is dropped before any .await.
+            let tenant = ctx.data.read().get("ext.myapp.tenant").cloned();
+            println!("Tenant:     {tenant:?}");
+            Ok(json!({ "success": true }))
         }
     }
     ```
 
+Keys your application writes to `context.data` use the `ext.<vendor>.<field>` namespace; `_apcore.*` keys belong to the framework. `context.data` is visible to every module and middleware along the call chain, and `x-sensitive` marks schema fields rather than `data` entries, so keep secrets out of it — see [Context Object](../features/context-object.md).
+
 ### Calling Other Modules
+
+An orchestrator module calls other modules through the executor, passing its own context so the nested call extends the call chain and is subject to ACL, approval, and call-depth checks.
 
 === "Python"
 
     ```python
-    from apcore import Module, Context
+    from pydantic import BaseModel, Field
 
-    class UserRegisterModule(Module):
-        """User registration module."""
+    from apcore import Context
+
+
+    class RegisterInput(BaseModel):
+        email: str = Field(..., description="New user's email address")
+
+
+    class RegisterOutput(BaseModel):
+        user_id: str = Field(..., description="Created user ID")
+        email_sent: bool = Field(..., description="Whether the welcome email was sent")
+
+
+    class UserRegisterModule:
+        description = "Register a new user and send a welcome email"
+        input_schema = RegisterInput
+        output_schema = RegisterOutput
 
         def execute(self, inputs: dict, context: Context) -> dict:
-            # Create user
-            user_id = self._create_user(inputs)
+            user_id = "user_123"  # create the user here
 
-            # Call the send-email module via the executor on the context
             email_result = context.executor.call(
-                module_id="executor.email.send_email",
-                inputs={
-                    "to": inputs["email"],
-                    "subject": "Welcome",
-                    "body": "Welcome to the platform!",
-                },
-                context=context,  # Propagate context to keep the call chain
+                "executor.email.send_email",
+                {"to": inputs["email"], "subject": "Welcome", "body": "Welcome to the platform!"},
+                context,  # propagate the context to keep the call chain
             )
-
-            return {
-                "user_id": user_id,
-                "email_sent": email_result["success"],
-            }
-
-        def _create_user(self, inputs: dict) -> str:
-            return "user_123"
+            return {"user_id": user_id, "email_sent": email_result["success"]}
     ```
 
 === "TypeScript"
 
     ```typescript
-    import { FunctionModule, Executor } from 'apcore-js';
-    import type { Context } from 'apcore-js';
+    import { Type } from '@sinclair/typebox';
+    import { FunctionModule, type Context, type Executor } from 'apcore-js';
 
     export default new FunctionModule({
       moduleId: 'orchestrator.user.register',
       description: 'Register a new user and send a welcome email',
-      inputSchema: /* UserRegisterInput */ undefined as never,
-      outputSchema: /* UserRegisterOutput */ undefined as never,
+      inputSchema: Type.Object({
+        email: Type.String({ description: "New user's email address" }),
+      }),
+      outputSchema: Type.Object({
+        user_id: Type.String({ description: 'Created user ID' }),
+        email_sent: Type.Boolean({ description: 'Whether the welcome email was sent' }),
+      }),
       execute: async (inputs, context: Context) => {
-        // Create user
-        const userId = 'user_123';
+        const userId = 'user_123'; // create the user here
 
-        // Call the send-email module via the executor stored on the context
         const executor = context.executor as Executor;
         const emailResult = await executor.call(
           'executor.email.send_email',
-          {
-            to: inputs.email as string,
-            subject: 'Welcome',
-            body: 'Welcome to the platform!',
-          },
-          context, // Propagate context to keep the call chain
+          { to: inputs.email as string, subject: 'Welcome', body: 'Welcome to the platform!' },
+          context, // propagate the context to keep the call chain
         );
-
-        return {
-          user_id: userId,
-          email_sent: emailResult.success as boolean,
-        };
+        return { user_id: userId, email_sent: emailResult.success === true };
       },
     });
     ```
@@ -945,280 +710,247 @@ extensions/
 === "Rust"
 
     ```rust
-    use apcore::{Context, Executor, Module};
-    use apcore::errors::ModuleError;
+    use std::sync::{Arc, Weak};
+
+    use apcore::errors::{ErrorCode, ModuleError};
+    use apcore::{Config, Context, Executor, Module, Registry};
     use async_trait::async_trait;
     use serde_json::{json, Value};
-    use std::sync::Arc;
 
-    pub struct UserRegisterModule;
+    /// A module that calls another module holds a handle to the Executor it
+    /// runs under. `Weak` avoids a reference cycle (registry → module → executor).
+    pub struct UserRegisterModule {
+        executor: Weak<Executor>,
+    }
 
     #[async_trait]
     impl Module for UserRegisterModule {
-        fn input_schema(&self) -> Value { json!({"type": "object"}) }
-        fn output_schema(&self) -> Value { json!({"type": "object"}) }
-        fn description(&self) -> &str { "Register a new user and send a welcome email" }
+        fn description(&self) -> &str {
+            "Register a new user and send a welcome email"
+        }
 
-        async fn execute(
-            &self,
-            inputs: Value,
-            ctx: &Context<Value>,
-        ) -> Result<Value, ModuleError> {
-            // Create user
-            let user_id = "user_123".to_string();
+        fn input_schema(&self) -> Value {
+            json!({
+                "type": "object",
+                "properties": { "email": { "type": "string", "description": "New user's email address" } },
+                "required": ["email"]
+            })
+        }
 
-            // Resolve the executor stashed on the context and invoke the next module.
-            let executor = ctx
-                .executor
-                .as_ref()
-                .and_then(|any| any.clone().downcast::<Executor>().ok())
-                .ok_or_else(|| ModuleError::new(
-                    apcore::errors::ErrorCode::GeneralInvalidInput,
-                    "executor is not bound on context",
-                ))?;
+        fn output_schema(&self) -> Value {
+            json!({
+                "type": "object",
+                "properties": {
+                    "user_id":    { "type": "string", "description": "Created user ID" },
+                    "email_sent": { "type": "boolean", "description": "Whether the welcome email was sent" }
+                },
+                "required": ["user_id", "email_sent"]
+            })
+        }
+
+        async fn execute(&self, inputs: Value, ctx: &Context<Value>) -> Result<Value, ModuleError> {
+            let executor = self.executor.upgrade().ok_or_else(|| {
+                ModuleError::new(ErrorCode::GeneralInternalError, "executor has been dropped")
+            })?;
+            let user_id = "user_123"; // create the user here
 
             let email_result = executor
                 .call(
                     "executor.email.send_email",
-                    json!({
-                        "to": inputs["email"].as_str().unwrap_or_default(),
-                        "subject": "Welcome",
-                        "body": "Welcome to the platform!",
-                    }),
-                    Some(ctx),
+                    json!({ "to": inputs["email"], "subject": "Welcome", "body": "Welcome to the platform!" }),
+                    Some(ctx), // propagate the context to keep the call chain
+                    None,
                 )
                 .await?;
-
             Ok(json!({
                 "user_id": user_id,
                 "email_sent": email_result["success"].as_bool().unwrap_or(false),
             }))
         }
     }
+
+    /// Wiring: build the Registry and Executor yourself so the module can hold
+    /// a handle to the same Executor that runs it.
+    pub fn build(send_email: Box<dyn Module>) -> Result<Arc<Executor>, ModuleError> {
+        let registry = Arc::new(Registry::new());
+        let executor = Arc::new(Executor::new(Arc::clone(&registry), Config::default()));
+        registry.register_module("executor.email.send_email", send_email)?;
+        registry.register_module(
+            "orchestrator.user.register",
+            Box::new(UserRegisterModule { executor: Arc::downgrade(&executor) }),
+        )?;
+        Ok(executor)
+    }
     ```
+
+    In Rust `ctx.executor` is an identity handle, not a callable executor, so a module that makes nested calls keeps its own `Weak<Executor>`. Nested calls must go through the same Executor that is running the parent call.
 
 ### Async Modules
 
-=== "Python"
+- **Python** — declare `async def execute(...)`; the executor detects coroutines and awaits them. Synchronous `execute` methods are fine for CPU-bound or blocking work.
+- **TypeScript** — `execute` may return a value or a `Promise`.
+- **Rust** — `execute` is always `async` (`#[async_trait]`).
 
-    ```python
-    import aiohttp
-    from apcore import Module, Context
-
-    class SendEmailModule(Module):
-        """Send email module with async support."""
-
-        input_schema = SendEmailInput
-        output_schema = SendEmailOutput
-
-        # Defining `execute` as `async def` is enough — the framework
-        # auto-detects coroutines and drives them on the async path.
-        async def execute(self, inputs: dict, context: Context) -> dict:
-            params = self.input_schema(**inputs)
-            async with aiohttp.ClientSession() as session:
-                message_id = await self._send_async(session, params)
-            return {
-                "success": True,
-                "message_id": message_id,
-                "error": None,
-            }
-
-        async def _send_async(self, session, params) -> str:
-            async with session.post(
-                "https://api.example.com/email",
-                json={"to": params.to, "subject": params.subject, "body": params.body},
-            ) as resp:
-                data = await resp.json()
-                return data["id"]
-    ```
-
-=== "TypeScript"
-
-    ```typescript
-    // TypeScript modules are async by design — `execute` may return a Promise.
-    import { FunctionModule } from 'apcore-js';
-    import type { Context } from 'apcore-js';
-
-    export default new FunctionModule({
-      moduleId: 'executor.email.send_email',
-      description: 'Send email with async transport',
-      inputSchema: SendEmailInput,
-      outputSchema: SendEmailOutput,
-      execute: async (inputs, _context: Context) => {
-        const resp = await fetch('https://api.example.com/email', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            to: inputs.to,
-            subject: inputs.subject,
-            body: inputs.body,
-          }),
-        });
-        const data = (await resp.json()) as { id: string };
-        return {
-          success: true,
-          message_id: data.id,
-          error: null,
-        };
-      },
-    });
-    ```
-
-=== "Rust"
-
-    ```rust
-    // Rust modules are async by design via `#[async_trait]`.
-    use apcore::{Context, Module};
-    use apcore::errors::{ErrorCode, ModuleError};
-    use async_trait::async_trait;
-    use serde_json::{json, Value};
-
-    pub struct SendEmailModule {
-        client: reqwest::Client,
-    }
-
-    #[async_trait]
-    impl Module for SendEmailModule {
-        fn input_schema(&self) -> Value { send_email_input_schema() }
-        fn output_schema(&self) -> Value { send_email_output_schema() }
-        fn description(&self) -> &str { "Send email with async transport" }
-
-        async fn execute(
-            &self,
-            inputs: Value,
-            _ctx: &Context<Value>,
-        ) -> Result<Value, ModuleError> {
-            let resp = self
-                .client
-                .post("https://api.example.com/email")
-                .json(&inputs)
-                .send()
-                .await
-                .map_err(|e| ModuleError::new(ErrorCode::ModuleExecuteError, e.to_string()))?;
-
-            let data: serde_json::Value = resp
-                .json()
-                .await
-                .map_err(|e| ModuleError::new(ErrorCode::ModuleExecuteError, e.to_string()))?;
-
-            Ok(json!({
-                "success": true,
-                "message_id": data["id"],
-                "error": null,
-            }))
-        }
-    }
-    ```
+[Pattern 1](#pattern-1-external-api-call) shows an asynchronous module in all three languages.
 
 ### Resource Management
 
+Open long-lived resources when the module is registered and release them when it is unregistered. `on_load()` runs before the module becomes callable — raising from it aborts registration — and `on_unload()` runs after it is removed.
+
 === "Python"
 
     ```python
-    from typing import Any
-    from apcore import Module, Context
+    import json
+    from typing import TextIO
 
-    class DatabaseModule(Module):
-        """Database module that manages a connection pool."""
+    from pydantic import BaseModel, Field
 
-        _pool: Any = None
+    from apcore import Context
+
+
+    class AppendInput(BaseModel):
+        event: str = Field(..., description="Event name")
+        detail: str = Field("", description="Free-text detail")
+
+
+    class AppendOutput(BaseModel):
+        written: bool = Field(..., description="Whether the record was written")
+
+
+    class AppendRecordModule:
+        description = "Append an audit record to the local audit log"
+        input_schema = AppendInput
+        output_schema = AppendOutput
+
+        def __init__(self) -> None:
+            self._file: TextIO | None = None
 
         def on_load(self) -> None:
-            """Create the connection pool when the module is registered."""
-            self._pool = create_connection_pool(host="localhost", database="mydb")
+            # Synchronous; runs when the module is registered.
+            self._file = open("audit.jsonl", "a", encoding="utf-8")
 
         def on_unload(self) -> None:
-            """Close the connection pool when the module is unregistered."""
-            if self._pool:
-                self._pool.close()
+            if self._file is not None:
+                self._file.close()
+                self._file = None
 
         def execute(self, inputs: dict, context: Context) -> dict:
-            with self._pool.get_connection() as conn:
-                rows = conn.execute(inputs["sql"])
-                return {"rows": rows}
+            if self._file is None:
+                raise RuntimeError("audit log is not open")
+            self._file.write(json.dumps({"trace_id": context.trace_id, **inputs}) + "\n")
+            self._file.flush()
+            return {"written": True}
     ```
 
 === "TypeScript"
 
     ```typescript
-    // TypeScript: keep resources on a closure or a wrapping class. Cleanup
-    // is the host application's responsibility (e.g. on shutdown).
-    import { FunctionModule } from 'apcore-js';
-    import type { Context } from 'apcore-js';
-    import type { Pool } from 'pg';
-    import { createPool } from './db.js';
+    import { open, type FileHandle } from 'node:fs/promises';
+    import { Type } from '@sinclair/typebox';
+    import type { Context, Module } from 'apcore-js';
 
-    let pool: Pool | null = null;
-    function getPool(): Pool {
-      if (!pool) pool = createPool({ host: 'localhost', database: 'mydb' });
-      return pool;
-    }
+    class AppendRecordModule implements Module {
+      readonly description = 'Append an audit record to the local audit log';
+      readonly inputSchema = Type.Object({
+        event: Type.String({ description: 'Event name' }),
+        detail: Type.Optional(Type.String({ description: 'Free-text detail', default: '' })),
+      });
+      readonly outputSchema = Type.Object({
+        written: Type.Boolean({ description: 'Whether the record was written' }),
+      });
 
-    export async function shutdown(): Promise<void> {
-      if (pool) {
-        await pool.end();
-        pool = null;
+      private file: FileHandle | null = null;
+
+      async onLoad(): Promise<void> {
+        this.file = await open('audit.jsonl', 'a');
+      }
+
+      async onUnload(): Promise<void> {
+        await this.file?.close();
+        this.file = null;
+      }
+
+      async execute(inputs: Record<string, unknown>, context: Context): Promise<Record<string, unknown>> {
+        if (!this.file) throw new Error('audit log is not open');
+        await this.file.appendFile(`${JSON.stringify({ trace_id: context.traceId, ...inputs })}\n`);
+        return { written: true };
       }
     }
 
-    export default new FunctionModule({
-      moduleId: 'executor.database.query',
-      description: 'Execute a SQL query against the application database',
-      inputSchema: /* QueryInput */ undefined as never,
-      outputSchema: /* QueryOutput */ undefined as never,
-      execute: async (inputs, _context: Context) => {
-        const result = await getPool().query(inputs.sql as string);
-        return { rows: result.rows };
-      },
-    });
+    export default new AppendRecordModule();
     ```
 
 === "Rust"
 
     ```rust
-    // Rust: own the pool on the module struct. Drop runs at unregistration.
-    use apcore::{Context, Module};
+    use std::fs::{File, OpenOptions};
+    use std::io::Write;
+    use std::sync::Mutex;
+
     use apcore::errors::{ErrorCode, ModuleError};
+    use apcore::{Context, Module};
     use async_trait::async_trait;
     use serde_json::{json, Value};
-    use sqlx::postgres::{PgPool, PgPoolOptions};
 
-    pub struct DatabaseModule {
-        pool: PgPool,
+    pub struct AppendRecordModule {
+        file: Mutex<Option<File>>,
     }
 
-    impl DatabaseModule {
-        pub async fn connect(url: &str) -> Result<Self, ModuleError> {
-            let pool = PgPoolOptions::new()
-                .max_connections(8)
-                .connect(url)
-                .await
-                .map_err(|e| ModuleError::new(ErrorCode::ModuleExecuteError, e.to_string()))?;
-            Ok(Self { pool })
+    impl AppendRecordModule {
+        pub fn new() -> Self {
+            Self { file: Mutex::new(None) }
         }
     }
 
     #[async_trait]
-    impl Module for DatabaseModule {
-        fn input_schema(&self) -> Value { json!({"type": "object"}) }
-        fn output_schema(&self) -> Value { json!({"type": "object"}) }
-        fn description(&self) -> &str { "Execute a SQL query against the application database" }
+    impl Module for AppendRecordModule {
+        fn description(&self) -> &str {
+            "Append an audit record to the local audit log"
+        }
 
-        async fn execute(
-            &self,
-            inputs: Value,
-            _ctx: &Context<Value>,
-        ) -> Result<Value, ModuleError> {
-            let sql = inputs["sql"].as_str().unwrap_or_default();
-            let rows: Vec<(i64,)> = sqlx::query_as(sql)
-                .fetch_all(&self.pool)
-                .await
-                .map_err(|e| ModuleError::new(ErrorCode::ModuleExecuteError, e.to_string()))?;
-            Ok(json!({ "rows": rows.len() }))
+        fn input_schema(&self) -> Value {
+            json!({
+                "type": "object",
+                "properties": {
+                    "event":  { "type": "string", "description": "Event name" },
+                    "detail": { "type": "string", "description": "Free-text detail", "default": "" }
+                },
+                "required": ["event"]
+            })
+        }
+
+        fn output_schema(&self) -> Value {
+            json!({
+                "type": "object",
+                "properties": { "written": { "type": "boolean", "description": "Whether the record was written" } },
+                "required": ["written"]
+            })
+        }
+
+        fn on_load(&self) -> Result<(), ModuleError> {
+            let file = OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open("audit.jsonl")
+                .map_err(|e| ModuleError::new(ErrorCode::ModuleLoadError, e.to_string()))?;
+            *self.file.lock().unwrap() = Some(file);
+            Ok(())
         }
 
         fn on_unload(&self) {
-            // Pool is dropped along with the module struct; no manual close needed.
+            // Dropping the File closes it.
+            self.file.lock().unwrap().take();
+        }
+
+        async fn execute(&self, inputs: Value, ctx: &Context<Value>) -> Result<Value, ModuleError> {
+            let mut guard = self.file.lock().unwrap(); // no .await while the guard is held
+            let file = guard.as_mut().ok_or_else(|| {
+                ModuleError::new(ErrorCode::GeneralInternalError, "audit log is not open")
+            })?;
+            let record = json!({ "trace_id": ctx.trace_id, "event": inputs["event"], "detail": inputs["detail"] });
+            writeln!(file, "{record}")
+                .map_err(|e| ModuleError::new(ErrorCode::ModuleExecuteError, e.to_string()))?;
+            Ok(json!({ "written": true }))
         }
     }
     ```
@@ -1227,172 +959,39 @@ extensions/
 
 ## Common Patterns
 
-### Pattern 1: Simple Executor
+### Pattern 1: External API Call
 
-=== "Python"
-
-    ```python
-    from typing import Literal
-    from pydantic import BaseModel, Field
-    from apcore import Module, Context
-
-    class CalculatorModule(Module):
-        """Simple calculator — no side effects."""
-
-        class Input(BaseModel):
-            a: float = Field(..., description="First number")
-            b: float = Field(..., description="Second number")
-            op: Literal["+", "-", "*", "/"] = Field(..., description="Operator")
-
-        class Output(BaseModel):
-            result: float = Field(..., description="Calculation result")
-
-        input_schema = Input
-        output_schema = Output
-        description = "Perform basic arithmetic on two numbers"
-
-        def execute(self, inputs: dict, context: Context) -> dict:
-            a, b, op = inputs["a"], inputs["b"], inputs["op"]
-            ops = {"+": a + b, "-": a - b, "*": a * b, "/": a / b}
-            return {"result": ops[op]}
-    ```
-
-=== "TypeScript"
-
-    ```typescript
-    import { Type } from '@sinclair/typebox';
-    import { FunctionModule } from 'apcore-js';
-
-    const Input = Type.Object({
-      a: Type.Number({ description: 'First number' }),
-      b: Type.Number({ description: 'Second number' }),
-      op: Type.Union(
-        [Type.Literal('+'), Type.Literal('-'), Type.Literal('*'), Type.Literal('/')],
-        { description: 'Operator' },
-      ),
-    });
-
-    const Output = Type.Object({
-      result: Type.Number({ description: 'Calculation result' }),
-    });
-
-    export default new FunctionModule({
-      moduleId: 'executor.math.calculator',
-      description: 'Perform basic arithmetic on two numbers',
-      inputSchema: Input,
-      outputSchema: Output,
-      execute: (inputs) => {
-        const a = inputs.a as number;
-        const b = inputs.b as number;
-        const op = inputs.op as '+' | '-' | '*' | '/';
-        const ops: Record<string, number> = {
-          '+': a + b, '-': a - b, '*': a * b, '/': a / b,
-        };
-        return { result: ops[op] };
-      },
-    });
-    ```
-
-=== "Rust"
-
-    ```rust
-    use apcore::{Context, Module};
-    use apcore::errors::{ErrorCode, ModuleError};
-    use async_trait::async_trait;
-    use serde_json::{json, Value};
-
-    pub struct CalculatorModule;
-
-    #[async_trait]
-    impl Module for CalculatorModule {
-        fn input_schema(&self) -> Value {
-            json!({
-                "type": "object",
-                "properties": {
-                    "a":  { "type": "number", "description": "First number" },
-                    "b":  { "type": "number", "description": "Second number" },
-                    "op": {
-                        "type": "string",
-                        "enum": ["+", "-", "*", "/"],
-                        "description": "Operator"
-                    }
-                },
-                "required": ["a", "b", "op"]
-            })
-        }
-
-        fn output_schema(&self) -> Value {
-            json!({
-                "type": "object",
-                "properties": {
-                    "result": { "type": "number", "description": "Calculation result" }
-                },
-                "required": ["result"]
-            })
-        }
-
-        fn description(&self) -> &str {
-            "Perform basic arithmetic on two numbers"
-        }
-
-        async fn execute(
-            &self,
-            inputs: Value,
-            _ctx: &Context<Value>,
-        ) -> Result<Value, ModuleError> {
-            let a = inputs["a"].as_f64().unwrap_or(0.0);
-            let b = inputs["b"].as_f64().unwrap_or(0.0);
-            let op = inputs["op"].as_str().unwrap_or("+");
-            let result = match op {
-                "+" => a + b,
-                "-" => a - b,
-                "*" => a * b,
-                "/" => a / b,
-                _ => return Err(ModuleError::new(
-                    ErrorCode::GeneralInvalidInput,
-                    format!("unknown operator: {op}"),
-                )),
-            };
-            Ok(json!({ "result": result }))
-        }
-    }
-    ```
-
-### Pattern 2: External API Call
+Always put a timeout on outbound calls. The executor also enforces `executor.default_timeout` per call.
 
 === "Python"
 
     ```python
     import httpx
     from pydantic import BaseModel, Field
-    from apcore import Module, Context
 
-    class WeatherModule(Module):
-        """Fetch weather information from an external API."""
+    from apcore import Context
 
-        class Input(BaseModel):
-            city: str = Field(..., description="City name")
 
-        class Output(BaseModel):
-            temperature: float = Field(..., description="Temperature (Celsius)")
-            description: str = Field(..., description="Weather description")
+    class WeatherInput(BaseModel):
+        city: str = Field(..., description="City name")
 
-        input_schema = Input
-        output_schema = Output
-        description = "Get current weather for a city"
+
+    class WeatherOutput(BaseModel):
+        temperature: float = Field(..., description="Temperature in Celsius")
+        summary: str = Field(..., description="Weather description")
+
+
+    class WeatherModule:
+        description = "Get the current weather for a city"
+        input_schema = WeatherInput
+        output_schema = WeatherOutput
 
         async def execute(self, inputs: dict, context: Context) -> dict:
             async with httpx.AsyncClient(timeout=5.0) as client:
-                resp = await client.get(
-                    "https://api.weather.com/v1/current",
-                    params={"city": inputs["city"]},
-                )
+                resp = await client.get("https://api.weather.example/v1/current", params={"city": inputs["city"]})
                 resp.raise_for_status()
                 data = resp.json()
-            return {
-                "temperature": data["temp"],
-                "description": data["desc"],
-            }
+            return {"temperature": data["temp"], "summary": data["desc"]}
     ```
 
 === "TypeScript"
@@ -1401,29 +1000,21 @@ extensions/
     import { Type } from '@sinclair/typebox';
     import { FunctionModule } from 'apcore-js';
 
-    const Input = Type.Object({
-      city: Type.String({ description: 'City name' }),
-    });
-    const Output = Type.Object({
-      temperature: Type.Number({ description: 'Temperature (Celsius)' }),
-      description: Type.String({ description: 'Weather description' }),
-    });
-
     export default new FunctionModule({
       moduleId: 'executor.weather.current',
-      description: 'Get current weather for a city',
-      inputSchema: Input,
-      outputSchema: Output,
+      description: 'Get the current weather for a city',
+      inputSchema: Type.Object({ city: Type.String({ description: 'City name' }) }),
+      outputSchema: Type.Object({
+        temperature: Type.Number({ description: 'Temperature in Celsius' }),
+        summary: Type.String({ description: 'Weather description' }),
+      }),
       execute: async (inputs) => {
-        const url = new URL('https://api.weather.com/v1/current');
+        const url = new URL('https://api.weather.example/v1/current');
         url.searchParams.set('city', inputs.city as string);
         const resp = await fetch(url, { signal: AbortSignal.timeout(5_000) });
-        if (!resp.ok) throw new Error(`weather API ${resp.status}`);
+        if (!resp.ok) throw new Error(`weather API returned ${resp.status}`);
         const data = (await resp.json()) as { temp: number; desc: string };
-        return {
-          temperature: data.temp,
-          description: data.desc,
-        };
+        return { temperature: data.temp, summary: data.desc };
       },
     });
     ```
@@ -1431,19 +1022,41 @@ extensions/
 === "Rust"
 
     ```rust
-    use apcore::{Context, Module};
+    use std::time::Duration;
+
     use apcore::errors::{ErrorCode, ModuleError};
+    use apcore::{Context, Module};
     use async_trait::async_trait;
     use serde::Deserialize;
     use serde_json::{json, Value};
 
     #[derive(Deserialize)]
-    struct WeatherResp { temp: f64, desc: String }
+    struct WeatherResponse {
+        temp: f64,
+        desc: String,
+    }
 
-    pub struct WeatherModule { client: reqwest::Client }
+    pub struct WeatherModule {
+        client: reqwest::Client,
+    }
+
+    impl WeatherModule {
+        pub fn new() -> Result<Self, reqwest::Error> {
+            let client = reqwest::Client::builder().timeout(Duration::from_secs(5)).build()?;
+            Ok(Self { client })
+        }
+    }
+
+    fn upstream(e: reqwest::Error) -> ModuleError {
+        ModuleError::new(ErrorCode::ModuleExecuteError, e.to_string())
+    }
 
     #[async_trait]
     impl Module for WeatherModule {
+        fn description(&self) -> &str {
+            "Get the current weather for a city"
+        }
+
         fn input_schema(&self) -> Value {
             json!({
                 "type": "object",
@@ -1456,67 +1069,74 @@ extensions/
             json!({
                 "type": "object",
                 "properties": {
-                    "temperature": { "type": "number", "description": "Temperature (Celsius)" },
-                    "description": { "type": "string", "description": "Weather description" }
+                    "temperature": { "type": "number", "description": "Temperature in Celsius" },
+                    "summary":     { "type": "string", "description": "Weather description" }
                 },
-                "required": ["temperature", "description"]
+                "required": ["temperature", "summary"]
             })
         }
 
-        fn description(&self) -> &str { "Get current weather for a city" }
-
-        async fn execute(
-            &self,
-            inputs: Value,
-            _ctx: &Context<Value>,
-        ) -> Result<Value, ModuleError> {
+        async fn execute(&self, inputs: Value, _ctx: &Context<Value>) -> Result<Value, ModuleError> {
             let city = inputs["city"].as_str().unwrap_or_default();
-            let data: WeatherResp = self
+            let data: WeatherResponse = self
                 .client
-                .get("https://api.weather.com/v1/current")
+                .get("https://api.weather.example/v1/current")
                 .query(&[("city", city)])
                 .send()
                 .await
-                .map_err(|e| ModuleError::new(ErrorCode::ModuleExecuteError, e.to_string()))?
+                .map_err(upstream)?
                 .error_for_status()
-                .map_err(|e| ModuleError::new(ErrorCode::ModuleExecuteError, e.to_string()))?
+                .map_err(upstream)?
                 .json()
                 .await
-                .map_err(|e| ModuleError::new(ErrorCode::ModuleExecuteError, e.to_string()))?;
-            Ok(json!({ "temperature": data.temp, "description": data.desc }))
+                .map_err(upstream)?;
+            Ok(json!({ "temperature": data.temp, "summary": data.desc }))
         }
     }
     ```
 
-### Pattern 3: Data Validator
+### Pattern 2: Retrying a Flaky Dependency
+
+Retry transient failures of an outbound call inside the module, with a bounded number of attempts and exponential backoff. (To retry whole module calls instead, use the built-in `RetryMiddleware` — see [Writing Middleware](./middleware.md).)
 
 === "Python"
 
     ```python
-    import re
+    import time
+
     from pydantic import BaseModel, Field
-    from apcore import Module, Context
 
-    EMAIL_RE = re.compile(r"^[\w\.-]+@[\w\.-]+\.\w+$")
+    from apcore import Context
 
-    class EmailValidatorModule(Module):
-        """Email format validator."""
 
-        class Input(BaseModel):
-            email: str = Field(..., description="Email to validate")
+    class NotifyInput(BaseModel):
+        to: str = Field(..., description="Recipient address")
+        text: str = Field(..., description="Message text")
 
-        class Output(BaseModel):
-            valid: bool = Field(..., description="Whether the email is valid")
-            reason: str | None = Field(None, description="Reason if invalid")
 
-        input_schema = Input
-        output_schema = Output
-        description = "Validate that a string looks like an email address"
+    class NotifyOutput(BaseModel):
+        success: bool = Field(..., description="Whether the message was delivered")
+        error: str | None = Field(None, description="Last error when delivery failed")
+
+
+    class ReliableNotifyModule:
+        description = "Send a notification, retrying transient failures up to three times"
+        input_schema = NotifyInput
+        output_schema = NotifyOutput
 
         def execute(self, inputs: dict, context: Context) -> dict:
-            if EMAIL_RE.match(inputs["email"]):
-                return {"valid": True, "reason": None}
-            return {"valid": False, "reason": "Invalid email format"}
+            last_error: Exception | None = None
+            for attempt in range(3):
+                try:
+                    self._send(inputs)
+                    return {"success": True, "error": None}
+                except ConnectionError as exc:
+                    last_error = exc
+                    time.sleep(min(2**attempt, 10))  # 1s, 2s, 4s
+            return {"success": False, "error": str(last_error)}
+
+        def _send(self, inputs: dict) -> None:
+            """Call the notification provider here."""
     ```
 
 === "TypeScript"
@@ -1525,30 +1145,41 @@ extensions/
     import { Type } from '@sinclair/typebox';
     import { FunctionModule } from 'apcore-js';
 
-    const EMAIL_RE = /^[\w.-]+@[\w.-]+\.\w+$/;
+    async function withRetry<T>(fn: () => Promise<T>, attempts = 3, baseDelayMs = 1_000): Promise<T> {
+      let lastError: unknown;
+      for (let i = 0; i < attempts; i++) {
+        try {
+          return await fn();
+        } catch (e) {
+          lastError = e;
+          await new Promise((resolve) => setTimeout(resolve, Math.min(baseDelayMs * 2 ** i, 10_000)));
+        }
+      }
+      throw lastError;
+    }
 
-    const Input = Type.Object({
-      email: Type.String({ description: 'Email to validate' }),
-    });
-    const Output = Type.Object({
-      valid: Type.Boolean({ description: 'Whether the email is valid' }),
-      reason: Type.Union(
-        [Type.String(), Type.Null()],
-        { description: 'Reason if invalid' },
-      ),
-    });
+    async function send(_to: string, _text: string): Promise<void> {
+      // Call the notification provider here.
+    }
 
     export default new FunctionModule({
-      moduleId: 'common.validator.email',
-      description: 'Validate that a string looks like an email address',
-      inputSchema: Input,
-      outputSchema: Output,
-      execute: (inputs) => {
-        const email = inputs.email as string;
-        if (EMAIL_RE.test(email)) {
-          return { valid: true, reason: null };
+      moduleId: 'executor.notify.reliable_send',
+      description: 'Send a notification, retrying transient failures up to three times',
+      inputSchema: Type.Object({
+        to: Type.String({ description: 'Recipient address' }),
+        text: Type.String({ description: 'Message text' }),
+      }),
+      outputSchema: Type.Object({
+        success: Type.Boolean({ description: 'Whether the message was delivered' }),
+        error: Type.Union([Type.String(), Type.Null()], { description: 'Last error when delivery failed' }),
+      }),
+      execute: async (inputs) => {
+        try {
+          await withRetry(() => send(inputs.to as string, inputs.text as string));
+          return { success: true, error: null };
+        } catch (e) {
+          return { success: false, error: e instanceof Error ? e.message : String(e) };
         }
-        return { valid: false, reason: 'Invalid email format' };
       },
     });
     ```
@@ -1556,27 +1187,53 @@ extensions/
 === "Rust"
 
     ```rust
-    use apcore::{Context, Module};
+    use std::future::Future;
+    use std::time::Duration;
+
     use apcore::errors::ModuleError;
+    use apcore::{Context, Module};
     use async_trait::async_trait;
-    use once_cell::sync::Lazy;
-    use regex::Regex;
     use serde_json::{json, Value};
 
-    static EMAIL_RE: Lazy<Regex> =
-        Lazy::new(|| Regex::new(r"^[\w\.-]+@[\w\.-]+\.\w+$").unwrap());
+    async fn with_retry<F, Fut, T, E>(mut f: F, attempts: u32, base: Duration) -> Result<T, E>
+    where
+        F: FnMut() -> Fut,
+        Fut: Future<Output = Result<T, E>>,
+    {
+        let mut last_err = None;
+        for i in 0..attempts {
+            match f().await {
+                Ok(v) => return Ok(v),
+                Err(e) => {
+                    last_err = Some(e);
+                    tokio::time::sleep((base * 2u32.pow(i)).min(Duration::from_secs(10))).await;
+                }
+            }
+        }
+        Err(last_err.expect("attempts must be at least 1"))
+    }
 
-    pub struct EmailValidatorModule;
+    async fn send(_to: &str, _text: &str) -> Result<(), std::io::Error> {
+        // Call the notification provider here.
+        Ok(())
+    }
+
+    pub struct ReliableNotifyModule;
 
     #[async_trait]
-    impl Module for EmailValidatorModule {
+    impl Module for ReliableNotifyModule {
+        fn description(&self) -> &str {
+            "Send a notification, retrying transient failures up to three times"
+        }
+
         fn input_schema(&self) -> Value {
             json!({
                 "type": "object",
                 "properties": {
-                    "email": { "type": "string", "description": "Email to validate" }
+                    "to":   { "type": "string", "description": "Recipient address" },
+                    "text": { "type": "string", "description": "Message text" }
                 },
-                "required": ["email"]
+                "required": ["to", "text"]
             })
         }
 
@@ -1584,166 +1241,19 @@ extensions/
             json!({
                 "type": "object",
                 "properties": {
-                    "valid":  { "type": "boolean", "description": "Whether the email is valid" },
-                    "reason": { "type": ["string", "null"], "description": "Reason if invalid" }
+                    "success": { "type": "boolean", "description": "Whether the message was delivered" },
+                    "error":   { "type": ["string", "null"], "description": "Last error when delivery failed" }
                 },
-                "required": ["valid"]
+                "required": ["success", "error"]
             })
         }
 
-        fn description(&self) -> &str {
-            "Validate that a string looks like an email address"
-        }
-
-        async fn execute(
-            &self,
-            inputs: Value,
-            _ctx: &Context<Value>,
-        ) -> Result<Value, ModuleError> {
-            let email = inputs["email"].as_str().unwrap_or_default();
-            if EMAIL_RE.is_match(email) {
-                Ok(json!({ "valid": true, "reason": null }))
-            } else {
-                Ok(json!({ "valid": false, "reason": "Invalid email format" }))
-            }
-        }
-    }
-    ```
-
-### Pattern 4: Executor with Retry
-
-=== "Python"
-
-    ```python
-    from tenacity import retry, stop_after_attempt, wait_exponential
-    from apcore import Module, Context
-
-    class ReliableSendModule(Module):
-        """Wrap an external send call with bounded exponential-backoff retries."""
-
-        input_schema = SendEmailInput
-        output_schema = SendEmailOutput
-        description = "Send email with retry on transient failures"
-
-        def execute(self, inputs: dict, context: Context) -> dict:
-            try:
-                return self._execute_with_retry(inputs)
-            except Exception as e:  # noqa: BLE001
-                return {"success": False, "message_id": None, "error": str(e)}
-
-        @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10))
-        def _execute_with_retry(self, inputs: dict) -> dict:
-            message_id = self._send(inputs)
-            return {"success": True, "message_id": message_id, "error": None}
-
-        def _send(self, inputs: dict) -> str:
-            return "msg_42"
-    ```
-
-=== "TypeScript"
-
-    ```typescript
-    import { FunctionModule } from 'apcore-js';
-    import type { Context } from 'apcore-js';
-
-    async function withRetry<T>(
-      fn: () => Promise<T>,
-      attempts = 3,
-      baseDelayMs = 1_000,
-    ): Promise<T> {
-      let lastErr: unknown;
-      for (let i = 0; i < attempts; i++) {
-        try {
-          return await fn();
-        } catch (e) {
-          lastErr = e;
-          const delay = Math.min(baseDelayMs * 2 ** i, 10_000);
-          await new Promise((r) => setTimeout(r, delay));
-        }
-      }
-      throw lastErr;
-    }
-
-    export default new FunctionModule({
-      moduleId: 'executor.email.reliable_send',
-      description: 'Send email with retry on transient failures',
-      inputSchema: SendEmailInput,
-      outputSchema: SendEmailOutput,
-      execute: async (inputs, _context: Context) => {
-        try {
-          const messageId = await withRetry(() => sendEmail(inputs));
-          return { success: true, message_id: messageId, error: null };
-        } catch (e) {
-          return {
-            success: false,
-            message_id: null,
-            error: e instanceof Error ? e.message : String(e),
-          };
-        }
-      },
-    });
-
-    async function sendEmail(_inputs: Record<string, unknown>): Promise<string> {
-      return 'msg_42';
-    }
-    ```
-
-=== "Rust"
-
-    ```rust
-    use apcore::{Context, Module};
-    use apcore::errors::ModuleError;
-    use async_trait::async_trait;
-    use serde_json::{json, Value};
-    use std::time::Duration;
-
-    pub struct ReliableSendModule;
-
-    async fn send_email(_inputs: &Value) -> Result<String, std::io::Error> {
-        Ok("msg_42".to_string())
-    }
-
-    async fn with_retry<F, Fut, T, E>(mut f: F, attempts: u32, base: Duration) -> Result<T, E>
-    where
-        F: FnMut() -> Fut,
-        Fut: std::future::Future<Output = Result<T, E>>,
-    {
-        let mut last_err: Option<E> = None;
-        for i in 0..attempts {
-            match f().await {
-                Ok(v) => return Ok(v),
-                Err(e) => {
-                    last_err = Some(e);
-                    let delay = base * 2u32.pow(i);
-                    tokio::time::sleep(delay.min(Duration::from_secs(10))).await;
-                }
-            }
-        }
-        Err(last_err.expect("at least one attempt"))
-    }
-
-    #[async_trait]
-    impl Module for ReliableSendModule {
-        fn input_schema(&self) -> Value { send_email_input_schema() }
-        fn output_schema(&self) -> Value { send_email_output_schema() }
-        fn description(&self) -> &str { "Send email with retry on transient failures" }
-
-        async fn execute(
-            &self,
-            inputs: Value,
-            _ctx: &Context<Value>,
-        ) -> Result<Value, ModuleError> {
-            match with_retry(|| send_email(&inputs), 3, Duration::from_secs(1)).await {
-                Ok(message_id) => Ok(json!({
-                    "success": true,
-                    "message_id": message_id,
-                    "error": null,
-                })),
-                Err(e) => Ok(json!({
-                    "success": false,
-                    "message_id": null,
-                    "error": e.to_string(),
-                })),
+        async fn execute(&self, inputs: Value, _ctx: &Context<Value>) -> Result<Value, ModuleError> {
+            let to = inputs["to"].as_str().unwrap_or_default();
+            let text = inputs["text"].as_str().unwrap_or_default();
+            match with_retry(|| send(to, text), 3, Duration::from_secs(1)).await {
+                Ok(()) => Ok(json!({ "success": true, "error": null })),
+                Err(e) => Ok(json!({ "success": false, "error": e.to_string() })),
             }
         }
     }
@@ -1753,511 +1263,188 @@ extensions/
 
 ## Best Practices
 
-### 1. Schema Design
+### Schema Design
+
+Give every field a `description` and real constraints; prefer enums to free text. The [Schema Definition Guide](./schema-definition.md#9-best-practices) has good/bad pairs for each SDK.
+
+### Error Handling
+
+Return expected business outcomes (a rejected payment, an undeliverable email) as normal output. Raise a `ModuleError` with `ai_guidance` when the call cannot succeed as asked. Other exceptions are wrapped by the executor as `MODULE_EXECUTE_ERROR`, which gives the caller nothing to act on.
 
 === "Python"
 
     ```python
     from pydantic import BaseModel, Field
 
-    # Good design: fields have descriptions and constraints.
-    class GoodInput(BaseModel):
-        email: str = Field(
-            ..., description="User email", pattern=r"^[\w\.-]+@[\w\.-]+\.\w+$"
-        )
-        age: int = Field(..., description="User age", ge=0, le=150)
+    from apcore import Context
+    from apcore.errors import ModuleError
 
-    # Bad design: missing descriptions and constraints.
-    class BadInput(BaseModel):
-        email: str
-        age: int
+
+    class LookupInput(BaseModel):
+        email: str = Field(..., description="Email address of the user to find")
+
+
+    class LookupOutput(BaseModel):
+        user_id: str = Field(..., description="Matching user ID")
+
+
+    class FindUserModule:
+        description = "Find a user by email address"
+        input_schema = LookupInput
+        output_schema = LookupOutput
+
+        def execute(self, inputs: dict, context: Context) -> dict:
+            email = inputs["email"]
+            if "@" not in email:
+                raise ModuleError(
+                    code="USER_EMAIL_INVALID",
+                    message=f"'{email}' is not an email address",
+                    ai_guidance="Ask the user for an email address like user@domain.com, then retry.",
+                    user_fixable=True,
+                )
+            return {"user_id": "user_123"}
     ```
 
 === "TypeScript"
 
     ```typescript
     import { Type } from '@sinclair/typebox';
-
-    // Good design: fields have descriptions and constraints.
-    export const GoodInput = Type.Object({
-      email: Type.String({
-        description: 'User email',
-        pattern: '^[\\w\\.-]+@[\\w\\.-]+\\.\\w+$',
-      }),
-      age: Type.Integer({
-        description: 'User age',
-        minimum: 0,
-        maximum: 150,
-      }),
-    });
-
-    // Bad design: missing descriptions and constraints.
-    export const BadInput = Type.Object({
-      email: Type.String(),
-      age: Type.Integer(),
-    });
-    ```
-
-=== "Rust"
-
-    ```rust
-    use serde_json::{json, Value};
-
-    // Good design: properties carry descriptions and constraints.
-    pub fn good_input_schema() -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "email": {
-                    "type": "string",
-                    "description": "User email",
-                    "pattern": r"^[\w\.-]+@[\w\.-]+\.\w+$"
-                },
-                "age": {
-                    "type": "integer",
-                    "description": "User age",
-                    "minimum": 0,
-                    "maximum": 150
-                }
-            },
-            "required": ["email", "age"]
-        })
-    }
-
-    // Bad design: missing descriptions and constraints.
-    pub fn bad_input_schema() -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "email": { "type": "string" },
-                "age":   { "type": "integer" }
-            },
-            "required": ["email", "age"]
-        })
-    }
-    ```
-
-### 2. Error Handling
-
-=== "Python"
-
-    ```python
-    from apcore import Module, Context
-    from apcore.errors import ModuleError
-
-    # Good practice: convert business outcomes into structured outputs and
-    # raise ModuleError (with ai_guidance) for unrecoverable failures.
-    class GoodModule(Module):
-        def execute(self, inputs: dict, context: Context) -> dict:
-            try:
-                result = self._do_work(inputs)
-                return {"success": True, "data": result, "error": None}
-            except ValueError as e:
-                raise ModuleError(
-                    code="EMAIL_INVALID",
-                    message=f"Parameter error: {e}",
-                    ai_guidance="Ask the user for a valid email (user@domain.com).",
-                    user_fixable=True,
-                ) from e
-
-        def _do_work(self, inputs: dict) -> dict:
-            return {}
-
-    # Bad practice: let unstructured exceptions propagate up.
-    class BadModule(Module):
-        def execute(self, inputs: dict, context: Context) -> dict:
-            return self._do_work(inputs)  # Raw exception leaks framework details
-    ```
-
-=== "TypeScript"
-
-    ```typescript
     import { FunctionModule, ModuleError } from 'apcore-js';
-    import type { Context } from 'apcore-js';
 
-    // Good practice: throw ModuleError with aiGuidance for unrecoverable cases.
-    export const goodModule = new FunctionModule({
-      moduleId: 'executor.example.good',
-      description: 'Demonstrates structured error handling',
-      inputSchema: /* ... */ undefined as never,
-      outputSchema: /* ... */ undefined as never,
-      execute: async (inputs, _ctx: Context) => {
-        try {
-          const data = await doWork(inputs);
-          return { success: true, data, error: null };
-        } catch (e) {
+    export default new FunctionModule({
+      moduleId: 'executor.user.find_by_email',
+      description: 'Find a user by email address',
+      inputSchema: Type.Object({ email: Type.String({ description: 'Email address of the user to find' }) }),
+      outputSchema: Type.Object({ user_id: Type.String({ description: 'Matching user ID' }) }),
+      execute: (inputs) => {
+        const email = inputs.email as string;
+        if (!email.includes('@')) {
+          // (code, message, details, cause, traceId, retryable, aiGuidance, userFixable)
           throw new ModuleError(
-            'EMAIL_INVALID',
-            e instanceof Error ? e.message : String(e),
+            'USER_EMAIL_INVALID',
+            `'${email}' is not an email address`,
             {},
-            e instanceof Error ? e : undefined,
             undefined,
             undefined,
-            'Ask the user for a valid email (user@domain.com).',
+            false,
+            'Ask the user for an email address like user@domain.com, then retry.',
             true,
           );
         }
+        return { user_id: 'user_123' };
       },
     });
-
-    async function doWork(_inputs: Record<string, unknown>): Promise<unknown> {
-      return {};
-    }
     ```
 
 === "Rust"
 
     ```rust
-    use apcore::{Context, Module};
     use apcore::errors::{ErrorCode, ModuleError};
-    use async_trait::async_trait;
-    use serde_json::{json, Value};
-
-    // Good practice: convert errors into ModuleError with AI guidance.
-    pub struct GoodModule;
-
-    #[async_trait]
-    impl Module for GoodModule {
-        fn input_schema(&self) -> Value { json!({"type": "object"}) }
-        fn output_schema(&self) -> Value { json!({"type": "object"}) }
-        fn description(&self) -> &str { "Demonstrates structured error handling" }
-
-        async fn execute(
-            &self,
-            inputs: Value,
-            _ctx: &Context<Value>,
-        ) -> Result<Value, ModuleError> {
-            match do_work(&inputs).await {
-                Ok(data) => Ok(json!({ "success": true, "data": data, "error": null })),
-                Err(e) => Err(ModuleError::new(
-                    ErrorCode::GeneralInvalidInput,
-                    format!("Parameter error: {e}"),
-                )
-                .with_ai_guidance("Ask the user for a valid email (user@domain.com)."))
-            }
-        }
-    }
-
-    async fn do_work(_inputs: &Value) -> Result<Value, std::io::Error> {
-        Ok(json!({}))
-    }
-    ```
-
-### 3. Single Responsibility
-
-=== "Python"
-
-    ```python
-    from apcore import Module, Context
-
-    # Good design: each module does one thing.
-    class SendEmailModule(Module):       # Only sends email
-        ...
-    class ValidateEmailModule(Module):   # Only validates email
-        ...
-    class RenderTemplateModule(Module):  # Only renders template
-        ...
-
-    # Bad design: one module does too much (validation + rendering + sending).
-    class EmailModule(Module):
-        def execute(self, inputs: dict, context: Context) -> dict:
-            self._validate(inputs)
-            html = self._render(inputs)
-            return self._send(html)
-    ```
-
-=== "TypeScript"
-
-    ```typescript
-    // Good design: one module per responsibility, composed by an orchestrator.
-    export { default as sendEmailModule } from './send-email.js';        // Only sends email
-    export { default as validateEmailModule } from './validate-email.js'; // Only validates
-    export { default as renderTemplateModule } from './render-template.js'; // Only renders
-
-    // Bad design: a single module that mixes concerns.
-    import { FunctionModule } from 'apcore-js';
-    export const emailModule = new FunctionModule({
-      moduleId: 'executor.email.everything',
-      description: 'Validate, render and send email all at once (avoid)',
-      inputSchema: /* ... */ undefined as never,
-      outputSchema: /* ... */ undefined as never,
-      execute: async (inputs) => {
-        // validate, render, then send — three responsibilities in one module.
-        return {};
-      },
-    });
-    ```
-
-=== "Rust"
-
-    ```rust
-    // Good design: separate types per responsibility.
-    pub struct SendEmailModule;        // Only sends email
-    pub struct ValidateEmailModule;    // Only validates email
-    pub struct RenderTemplateModule;   // Only renders template
-
-    // Bad design: one module that mixes concerns. Prefer to split it.
     use apcore::{Context, Module};
-    use apcore::errors::ModuleError;
     use async_trait::async_trait;
     use serde_json::{json, Value};
 
-    pub struct EmailModule;
+    pub struct FindUserModule;
 
     #[async_trait]
-    impl Module for EmailModule {
-        fn input_schema(&self) -> Value { json!({"type": "object"}) }
-        fn output_schema(&self) -> Value { json!({"type": "object"}) }
-        fn description(&self) -> &str { "Validate, render and send email (avoid)" }
+    impl Module for FindUserModule {
+        fn description(&self) -> &str {
+            "Find a user by email address"
+        }
 
-        async fn execute(
-            &self,
-            _inputs: Value,
-            _ctx: &Context<Value>,
-        ) -> Result<Value, ModuleError> {
-            // validate, render, then send — three responsibilities in one module.
-            Ok(json!({}))
+        fn input_schema(&self) -> Value {
+            json!({
+                "type": "object",
+                "properties": { "email": { "type": "string", "description": "Email address of the user to find" } },
+                "required": ["email"]
+            })
+        }
+
+        fn output_schema(&self) -> Value {
+            json!({
+                "type": "object",
+                "properties": { "user_id": { "type": "string", "description": "Matching user ID" } },
+                "required": ["user_id"]
+            })
+        }
+
+        async fn execute(&self, inputs: Value, _ctx: &Context<Value>) -> Result<Value, ModuleError> {
+            let email = inputs["email"].as_str().unwrap_or_default();
+            if !email.contains('@') {
+                return Err(ModuleError::new(
+                    ErrorCode::GeneralInvalidInput,
+                    format!("'{email}' is not an email address"),
+                )
+                .with_ai_guidance("Ask the user for an email address like user@domain.com, then retry.")
+                .with_user_fixable(true));
+            }
+            Ok(json!({ "user_id": "user_123" }))
         }
     }
     ```
+
+Python and TypeScript modules may use their own error codes (avoid the framework's prefixes); Rust modules choose from `ErrorCode`. The error model is described in [Error System](../features/error-system.md).
+
+### Single Responsibility
+
+Give each module one job — validate an email, render a template, send a message — and compose them in an `orchestrator.*` module. Small modules are easier for an agent to choose between, easier to govern with ACL rules, and easier to test. A single `email.everything` module that validates, renders, and sends makes all three harder.
 
 ---
 
-## Testing Guide
+## Testing
 
-### Basic Module Testing
-
-=== "Python"
-
-    ```python
-    # test_send_email.py
-    import pytest
-    from unittest.mock import MagicMock
-    from apcore import Context
-    from apcore.context import Identity
-
-    def create_test_context(**kwargs) -> Context:
-        """Create a test Context with sensible defaults."""
-        return Context(
-            trace_id="test-trace-id",
-            caller_id=kwargs.get("caller_id"),
-            call_chain=kwargs.get("call_chain", []),
-            executor=kwargs.get("executor", MagicMock()),
-            identity=kwargs.get("identity", Identity(id="test", type="user")),
-            data=kwargs.get("data", {}),
-        )
-
-    class TestSendEmailModule:
-        def setup_method(self):
-            self.module = SendEmailModule()
-            self.context = create_test_context()
-
-        def test_successful_send(self):
-            result = self.module.execute(
-                inputs={
-                    "to": "user@example.com",
-                    "subject": "Test",
-                    "body": "Hello",
-                },
-                context=self.context,
-            )
-            assert result["success"] is True
-
-        def test_invalid_input(self):
-            with pytest.raises(Exception):
-                self.module.execute(
-                    inputs={"to": "", "subject": ""},
-                    context=self.context,
-                )
-
-        def test_calls_other_module(self):
-            mock_executor = MagicMock()
-            mock_executor.call.return_value = {"result": "ok"}
-            context = create_test_context(executor=mock_executor)
-
-            self.module.execute(
-                inputs={"to": "u@example.com", "subject": "s", "body": "b"},
-                context=context,
-            )
-
-            mock_executor.call.assert_called_once()
-    ```
-
-=== "TypeScript"
-
-    ```typescript
-    // send-email.test.ts (vitest)
-    import { describe, it, expect, vi } from 'vitest';
-    import { Context, createIdentity } from 'apcore-js';
-    import sendEmailModule from './send-email.js';
-
-    function createTestContext(overrides: Partial<{
-      callerId: string | null;
-      executor: unknown;
-      data: Record<string, unknown>;
-    }> = {}): Context {
-      return new Context(
-        'test-trace-id',
-        overrides.callerId ?? null,
-        [],
-        overrides.executor ?? { call: vi.fn() },
-        createIdentity('test', 'user'),
-        null,
-        overrides.data ?? {},
-      );
-    }
-
-    describe('sendEmailModule', () => {
-      it('returns success on valid inputs', async () => {
-        const ctx = createTestContext();
-        const result = await sendEmailModule.execute(
-          { to: 'user@example.com', subject: 'Test', body: 'Hello' },
-          ctx,
-        );
-        expect(result.success).toBe(true);
-      });
-
-      it('forwards calls to executor when nesting', async () => {
-        const call = vi.fn().mockResolvedValue({ result: 'ok' });
-        const ctx = createTestContext({ executor: { call } });
-        await sendEmailModule.execute(
-          { to: 'u@example.com', subject: 's', body: 'b' },
-          ctx,
-        );
-        // Assert here when the module under test forwards a call.
-      });
-    });
-    ```
-
-=== "Rust"
-
-    ```rust
-    // tests/send_email.rs
-    use apcore::context::{Context, Identity};
-    use apcore::module::Module;
-    use serde_json::{json, Value};
-    use std::collections::HashMap;
-
-    fn test_context() -> Context<Value> {
-        let identity = Identity::new(
-            "test".to_string(),
-            "user".to_string(),
-            vec![],
-            HashMap::new(),
-        );
-        Context::new(identity)
-    }
-
-    #[tokio::test]
-    async fn returns_success_on_valid_inputs() {
-        let module = SendEmailModule;
-        let ctx = test_context();
-        let result = module
-            .execute(
-                json!({
-                    "to": "user@example.com",
-                    "subject": "Test",
-                    "body": "Hello",
-                }),
-                &ctx,
-            )
-            .await
-            .expect("execute");
-        assert_eq!(result["success"], json!(true));
-    }
-
-    #[tokio::test]
-    async fn rejects_invalid_inputs() {
-        let module = SendEmailModule;
-        let ctx = test_context();
-        let result = module
-            .execute(json!({ "to": "", "subject": "" }), &ctx)
-            .await;
-        assert!(result.is_err() || result.unwrap()["success"] == json!(false));
-    }
-    ```
+Modules are plain objects, so you can call `execute()` directly with a test context, or run them through a real client to exercise validation, ACL, and middleware. The [Testing Modules Guide](./testing-modules.md) covers unit tests, schema tests, and integration tests in pytest, Vitest, and Rust. ACL rules are tested as described in [ACL Configuration](./acl-configuration.md).
 
 ### Debugging Tips
 
-1. **Use trace_id to track call chain**: Search for `trace_id` in logs to trace complete call path
-2. **Check call_chain**: `context.call_chain` shows the complete path of current call
-3. **Pre-validate Schema**: Use `executor.validate()` to check if inputs are valid before execution
-4. **Middleware debugging**: Add `LoggingMiddleware` to view inputs/outputs of each call
+1. **Follow the trace ID.** Every log line and span for one request carries the same `trace_id`.
+2. **Read the call chain.** `context.call_chain` shows how a nested call was reached.
+3. **Dry-run a call.** `client.validate(module_id, inputs)` runs the pre-execution checks — call-chain guard, module lookup, ACL, approval requirement, input schema — plus the module's own `preflight()`, without executing anything.
+4. **Log calls.** Add the built-in `LoggingMiddleware` with `client.use(...)` to log inputs and outputs of every call.
 
-### Performance Guide
+### Performance Tips
 
 | Recommendation | Explanation |
 |------|------|
-| Reuse connections | Create connection pool in `on_load()`, close in `on_unload()` |
-| Avoid blocking | Long operations **should** use `async def execute()` |
-| Control data size | `context.data` is shared along call chain, avoid storing large amounts of data |
-| Set timeouts | External calls **must** set reasonable timeout |
-| Idempotent design | Modules marked as `idempotent=True` should ensure repeated calls are safe |
+| Reuse connections | Open pools and clients in `on_load()` and close them in `on_unload()` |
+| Don't block the event loop | Use `async def execute()` in Python for I/O-bound work |
+| Keep `context.data` small | It is shared along the whole call chain |
+| Set timeouts | Give outbound calls their own timeout; `executor.default_timeout` bounds the whole call |
+| Make retried work idempotent | Mark a module `idempotent` only when repeating a call is safe |
 
 ---
 
 ## module() Registration
 
-> For existing functions or methods, wrap them as standard apcore modules using the `@module` decorator or `module()` function call. See [PROTOCOL_SPEC §5.11](../spec/protocol-spec.md) for detailed specification.
+`module()` turns a function into a module without writing a class. Python infers the schemas from type hints; TypeScript and Rust take them explicitly because type information is not available at runtime. The contract is in [protocol-spec §5.11](../spec/protocol-spec.md#511-function-based-module-definition-function-based-module-definition).
 
-### @module Decorator (Simple Example)
+### Registering a Function
 
-**Before (regular function):**
-
-=== "Python"
-
-    ```python
-    def send_email(to: str, subject: str, body: str) -> dict:
-        """Send email."""
-        # Business logic...
-        return {"success": True, "message_id": "msg_123"}
-    ```
-
-=== "TypeScript"
-
-    ```typescript
-    export function sendEmail(
-      to: string,
-      subject: string,
-      body: string,
-    ): { success: boolean; message_id: string } {
-      // Business logic...
-      return { success: true, message_id: 'msg_123' };
-    }
-    ```
-
-=== "Rust"
-
-    ```rust
-    pub fn send_email(_to: &str, _subject: &str, _body: &str)
-        -> serde_json::Value
-    {
-        // Business logic...
-        serde_json::json!({ "success": true, "message_id": "msg_123" })
-    }
-    ```
-
-**After (apcore module):**
+Given an ordinary `send_email(to, subject, body)` function, one registration turns it into a module:
 
 === "Python"
 
     ```python
-    from apcore import module
+    from apcore import APCore
 
-    @module(id="email.send", tags=["email", "notification"])
+    client = APCore()
+
+
+    @client.module(id="email.send", tags=["email", "notification"])
     def send_email(to: str, subject: str, body: str) -> dict:
-        """Send email."""
-        # Business logic completely unchanged.
+        """Send an email."""
+        # Business logic unchanged.
         return {"success": True, "message_id": "msg_123"}
+
+
+    print(client.call("email.send", {"to": "user@example.com", "subject": "Hi", "body": "Hello"}))
     ```
+
+    The input schema comes from the parameter types, the output schema from the return type, and the description from the first line of the docstring. `@apcore.module(...)` does the same on the process-wide default client.
 
 === "TypeScript"
 
     ```typescript
-    // TypeScript has no decorator equivalent of Python's @module — the
-    // SDK exposes `module({...})` / `client.module({...})` instead. Schemas
-    // must be supplied explicitly because TypeScript types are erased at
-    // runtime (see PROTOCOL_SPEC §5.11.6 / decorator.ts).
     import { Type } from '@sinclair/typebox';
     import { APCore } from 'apcore-js';
 
@@ -2265,102 +1452,94 @@ extensions/
 
     client.module({
       id: 'email.send',
-      description: 'Send email',
+      description: 'Send an email',
       tags: ['email', 'notification'],
       inputSchema: Type.Object({
-        to: Type.String(),
-        subject: Type.String(),
-        body: Type.String(),
+        to: Type.String({ description: 'Recipient email address' }),
+        subject: Type.String({ description: 'Email subject' }),
+        body: Type.String({ description: 'Email body' }),
       }),
       outputSchema: Type.Object({
-        success: Type.Boolean(),
-        message_id: Type.String(),
+        success: Type.Boolean({ description: 'Whether the email was accepted' }),
+        message_id: Type.String({ description: 'Provider message ID' }),
       }),
-      execute: (inputs) => ({
-        success: true,
-        message_id: 'msg_123',
-      }),
+      execute: () => ({ success: true, message_id: 'msg_123' }),
     });
+
+    console.log(await client.call('email.send', { to: 'user@example.com', subject: 'Hi', body: 'Hello' }));
     ```
 
 === "Rust"
 
     ```rust
-    // Rust has no attribute-macro equivalent — use `client.module(...)` or
-    // build a `FunctionModule::with_description` and register it. Schemas
-    // must be supplied explicitly.
+    use apcore::errors::ModuleError;
     use apcore::APCore;
     use serde_json::json;
 
-    fn register(client: &mut APCore) -> Result<(), apcore::errors::ModuleError> {
+    pub fn register(client: &mut APCore) -> Result<(), ModuleError> {
         client.module(
             "email.send",
-            "Send email",
+            "Send an email",
             json!({
                 "type": "object",
                 "properties": {
-                    "to":      { "type": "string" },
-                    "subject": { "type": "string" },
-                    "body":    { "type": "string" }
+                    "to":      { "type": "string", "description": "Recipient email address" },
+                    "subject": { "type": "string", "description": "Email subject" },
+                    "body":    { "type": "string", "description": "Email body" }
                 },
                 "required": ["to", "subject", "body"]
             }),
             json!({
                 "type": "object",
                 "properties": {
-                    "success":    { "type": "boolean" },
-                    "message_id": { "type": "string" }
+                    "success":    { "type": "boolean", "description": "Whether the email was accepted" },
+                    "message_id": { "type": "string", "description": "Provider message ID" }
                 },
                 "required": ["success", "message_id"]
             }),
-            None,
-            vec!["email".into(), "notification".into()],
-            None,
-            None,
-            vec![],
-            None,
-            |_inputs, _ctx| {
-                Box::pin(async move {
-                    Ok(json!({ "success": true, "message_id": "msg_123" }))
-                })
-            },
+            None,                                        // documentation
+            vec!["email".into(), "notification".into()], // tags
+            None,                                        // version (default "1.0.0")
+            None,                                        // metadata
+            vec![],                                      // examples
+            None,                                        // display
+            |_inputs, _ctx| Box::pin(async move { Ok(json!({ "success": true, "message_id": "msg_123" })) }),
         )?;
         Ok(())
     }
     ```
 
-In Python, adding one `@module` line turns the function into an apcore module:
+### Wrapping Existing Methods
 
-- Schema is auto-generated from type annotations
-- Description is auto-extracted from the docstring
-- The module is auto-registered to the active Registry
-
-In TypeScript and Rust the schemas are explicit because runtime type
-information is unavailable — the trade-off is more code, but the resulting
-module surface is identical.
-
-### module() Function Call (Register existing class methods)
+To register functions or methods you do not want to touch, call the function form beside them. In Python that is `apcore.decorator.module(func, id=...)`, which returns a module object you register yourself.
 
 === "Python"
 
     ```python
-    from apcore import module
+    from apcore import APCore
+    from apcore.decorator import module
 
-    # Existing business code (no modifications)
+
+    # Existing business code, unchanged
     class EmailService:
         def send(self, to: str, subject: str, body: str) -> dict:
-            """Send email."""
+            """Send an email."""
             return {"success": True}
 
         def send_template(self, template_id: str, data: dict) -> dict:
-            """Send using template."""
+            """Send an email rendered from a template."""
             return {"success": True}
 
-    # Register via module() without changing the original code
+
     service = EmailService()
-    module(service.send, id="email.send")
-    module(service.send_template, id="email.send_template")
+    client = APCore()
+
+    # module(func, id=...) returns a FunctionModule; the method itself is not modified.
+    client.register("email.send", module(service.send, id="email.send"))
+    client.register("email.send_template", module(service.send_template, id="email.send_template"))
     ```
+
+    Use this function form for bound methods. The decorator form (`@client.module(...)`) attaches the module to the function object, which a bound method does not allow.
 
 === "TypeScript"
 
@@ -2368,7 +1547,7 @@ module surface is identical.
     import { Type } from '@sinclair/typebox';
     import { APCore } from 'apcore-js';
 
-    // Existing business code (no modifications)
+    // Existing business code, unchanged
     class EmailService {
       send(to: string, subject: string, body: string) {
         return { success: true };
@@ -2381,108 +1560,79 @@ module surface is identical.
     const service = new EmailService();
     const client = new APCore();
 
-    // Wrap each method as an apcore module by passing a closure to execute.
     client.module({
       id: 'email.send',
-      description: 'Send email',
+      description: 'Send an email',
       inputSchema: Type.Object({
-        to: Type.String(),
-        subject: Type.String(),
-        body: Type.String(),
+        to: Type.String({ description: 'Recipient email address' }),
+        subject: Type.String({ description: 'Email subject' }),
+        body: Type.String({ description: 'Email body' }),
       }),
-      outputSchema: Type.Object({ success: Type.Boolean() }),
-      execute: (inputs) =>
-        service.send(
-          inputs.to as string,
-          inputs.subject as string,
-          inputs.body as string,
-        ),
+      outputSchema: Type.Object({ success: Type.Boolean({ description: 'Whether the email was accepted' }) }),
+      execute: (inputs) => service.send(inputs.to as string, inputs.subject as string, inputs.body as string),
     });
 
     client.module({
       id: 'email.send_template',
-      description: 'Send email using a template',
+      description: 'Send an email rendered from a template',
       inputSchema: Type.Object({
-        template_id: Type.String(),
-        data: Type.Record(Type.String(), Type.Unknown()),
+        template_id: Type.String({ description: 'Template ID' }),
+        data: Type.Record(Type.String(), Type.Unknown(), { description: 'Template variables' }),
       }),
-      outputSchema: Type.Object({ success: Type.Boolean() }),
+      outputSchema: Type.Object({ success: Type.Boolean({ description: 'Whether the email was accepted' }) }),
       execute: (inputs) =>
-        service.sendTemplate(
-          inputs.template_id as string,
-          inputs.data as Record<string, unknown>,
-        ),
+        service.sendTemplate(inputs.template_id as string, inputs.data as Record<string, unknown>),
     });
     ```
 
 === "Rust"
 
     ```rust
-    use apcore::APCore;
-    use serde_json::{json, Value};
     use std::sync::Arc;
 
-    // Existing business code (no modifications)
+    use apcore::errors::ModuleError;
+    use apcore::APCore;
+    use serde_json::{json, Value};
+
+    // Existing business code, unchanged
     pub struct EmailService;
+
     impl EmailService {
         pub fn send(&self, _to: &str, _subject: &str, _body: &str) -> Value {
             json!({ "success": true })
         }
-        pub fn send_template(&self, _template_id: &str, _data: &Value) -> Value {
-            json!({ "success": true })
-        }
     }
 
-    pub fn register(client: &mut APCore) -> Result<(), apcore::errors::ModuleError> {
-        let service = Arc::new(EmailService);
-
-        let s = Arc::clone(&service);
+    pub fn register(client: &mut APCore, service: Arc<EmailService>) -> Result<(), ModuleError> {
         client.module(
             "email.send",
-            "Send email",
+            "Send an email",
             json!({
                 "type": "object",
                 "properties": {
-                    "to":      { "type": "string" },
-                    "subject": { "type": "string" },
-                    "body":    { "type": "string" }
+                    "to":      { "type": "string", "description": "Recipient email address" },
+                    "subject": { "type": "string", "description": "Email subject" },
+                    "body":    { "type": "string", "description": "Email body" }
                 },
                 "required": ["to", "subject", "body"]
             }),
-            json!({"type": "object", "properties": {"success": {"type": "boolean"}}}),
-            None, vec![], None, None, vec![], None,
+            json!({
+                "type": "object",
+                "properties": { "success": { "type": "boolean", "description": "Whether the email was accepted" } }
+            }),
+            None,
+            vec![],
+            None,
+            None,
+            vec![],
+            None,
             move |inputs, _ctx| {
-                let s = Arc::clone(&s);
+                let service = Arc::clone(&service);
                 Box::pin(async move {
-                    Ok(s.send(
+                    Ok(service.send(
                         inputs["to"].as_str().unwrap_or_default(),
                         inputs["subject"].as_str().unwrap_or_default(),
                         inputs["body"].as_str().unwrap_or_default(),
-                    ))
-                })
-            },
-        )?;
-
-        let s = Arc::clone(&service);
-        client.module(
-            "email.send_template",
-            "Send email using a template",
-            json!({
-                "type": "object",
-                "properties": {
-                    "template_id": { "type": "string" },
-                    "data":        { "type": "object" }
-                },
-                "required": ["template_id", "data"]
-            }),
-            json!({"type": "object", "properties": {"success": {"type": "boolean"}}}),
-            None, vec![], None, None, vec![], None,
-            move |inputs, _ctx| {
-                let s = Arc::clone(&s);
-                Box::pin(async move {
-                    Ok(s.send_template(
-                        inputs["template_id"].as_str().unwrap_or_default(),
-                        &inputs["data"],
                     ))
                 })
             },
@@ -2491,71 +1641,63 @@ module surface is identical.
     }
     ```
 
-### Advanced Example (Annotated + async)
+### Annotations, Context, and Async
 
 === "Python"
 
     ```python
-    from apcore import module, Context
-    from apcore.module import ModuleAnnotations
     from typing import Annotated
+
     from pydantic import Field
 
-    @module(
+    from apcore import APCore, Context
+
+    client = APCore()
+
+
+    @client.module(
         id="email.send",
-        annotations=ModuleAnnotations(open_world=True, idempotent=False),
+        annotations={"open_world": True, "idempotent": False},
         tags=["email"],
     )
     async def send_email(
         to: Annotated[str, Field(description="Recipient email", pattern=r"^[\w\.-]+@[\w\.-]+\.\w+$")],
         subject: Annotated[str, Field(description="Email subject", max_length=200)],
         body: Annotated[str, Field(description="Email body")],
-        cc: Annotated[list[str], Field(description="CC list")] = [],
-        context: Context | None = None,
+        context: Context,
+        cc: Annotated[list[str] | None, Field(description="CC list")] = None,
     ) -> dict:
-        """Send email module — async via SMTP."""
-        # `async def` is auto-detected by the framework's async execution path.
-        if context is not None:
-            print(f"trace_id: {context.trace_id}")
+        """Send an email over SMTP."""
+        print(f"trace_id: {context.trace_id}")
         return {"success": True, "message_id": "msg_123"}
     ```
+
+    A parameter annotated exactly `Context` receives the call context and is left out of the input schema. It must be `Context`, not `Context | None`. `async def` functions are awaited automatically.
 
 === "TypeScript"
 
     ```typescript
     import { Type } from '@sinclair/typebox';
-    import { APCore, createAnnotations } from 'apcore-js';
-    import type { Context } from 'apcore-js';
+    import { APCore, createAnnotations, type Context } from 'apcore-js';
 
     const client = new APCore();
 
-    const SendEmailInput = Type.Object({
-      to: Type.String({
-        description: 'Recipient email',
-        pattern: '^[\\w\\.-]+@[\\w\\.-]+\\.\\w+$',
-      }),
-      subject: Type.String({ description: 'Email subject', maxLength: 200 }),
-      body: Type.String({ description: 'Email body' }),
-      cc: Type.Array(Type.String(), { description: 'CC list', default: [] }),
-    });
-
-    const SendEmailOutput = Type.Object({
-      success: Type.Boolean(),
-      message_id: Type.String(),
-    });
-
     client.module({
       id: 'email.send',
-      description: 'Send email module — async via SMTP',
+      description: 'Send an email over SMTP',
       tags: ['email'],
-      annotations: createAnnotations({
-        openWorld: true,
-        idempotent: false,
+      annotations: createAnnotations({ openWorld: true, idempotent: false }),
+      inputSchema: Type.Object({
+        to: Type.String({ description: 'Recipient email', pattern: '^[\\w\\.-]+@[\\w\\.-]+\\.\\w+$' }),
+        subject: Type.String({ description: 'Email subject', maxLength: 200 }),
+        body: Type.String({ description: 'Email body' }),
+        cc: Type.Optional(Type.Array(Type.String(), { description: 'CC list' })),
       }),
-      inputSchema: SendEmailInput,
-      outputSchema: SendEmailOutput,
-      execute: async (inputs, context: Context) => {
-        // `execute` is async by design.
+      outputSchema: Type.Object({
+        success: Type.Boolean({ description: 'Whether the email was accepted' }),
+        message_id: Type.String({ description: 'Provider message ID' }),
+      }),
+      execute: async (_inputs, context: Context) => {
         console.log(`trace_id: ${context.traceId}`);
         return { success: true, message_id: 'msg_123' };
       },
@@ -2565,57 +1707,47 @@ module surface is identical.
 === "Rust"
 
     ```rust
-    use apcore::{APCore, ModuleAnnotations};
+    use std::collections::HashMap;
+
     use apcore::errors::ModuleError;
+    use apcore::{APCore, FunctionModule, ModuleAnnotations};
     use serde_json::json;
 
-    pub fn register(client: &mut APCore) -> Result<(), ModuleError> {
-        let _annotations = ModuleAnnotations {
+    // `client.module()` registers default annotations, so build a
+    // FunctionModule when a module needs its own.
+    pub fn register(client: &APCore) -> Result<(), ModuleError> {
+        let annotations = ModuleAnnotations {
             open_world: true,
             idempotent: false,
             ..Default::default()
         };
 
-        client.module(
-            "email.send",
-            "Send email module — async via SMTP",
+        let module = FunctionModule::with_description(
+            annotations,
             json!({
                 "type": "object",
                 "properties": {
-                    "to": {
-                        "type": "string",
-                        "description": "Recipient email",
-                        "pattern": r"^[\w\.-]+@[\w\.-]+\.\w+$"
-                    },
-                    "subject": {
-                        "type": "string",
-                        "description": "Email subject",
-                        "maxLength": 200
-                    },
-                    "body": { "type": "string", "description": "Email body" },
-                    "cc": {
-                        "type": "array",
-                        "items": { "type": "string" },
-                        "description": "CC list",
-                        "default": []
-                    }
+                    "to":      { "type": "string", "description": "Recipient email", "pattern": r"^[\w\.-]+@[\w\.-]+\.\w+$" },
+                    "subject": { "type": "string", "description": "Email subject", "maxLength": 200 },
+                    "body":    { "type": "string", "description": "Email body" },
+                    "cc":      { "type": "array", "items": { "type": "string" }, "description": "CC list" }
                 },
                 "required": ["to", "subject", "body"]
             }),
             json!({
                 "type": "object",
                 "properties": {
-                    "success":    { "type": "boolean" },
-                    "message_id": { "type": "string" }
+                    "success":    { "type": "boolean", "description": "Whether the email was accepted" },
+                    "message_id": { "type": "string", "description": "Provider message ID" }
                 },
                 "required": ["success", "message_id"]
             }),
-            None,
-            vec!["email".into()],
-            None,
-            None,
-            vec![],
-            None,
+            "Send an email over SMTP",
+            None,                // documentation
+            vec!["email".into()], // tags
+            "1.0.0",             // version
+            HashMap::new(),      // metadata
+            vec![],              // examples
             |_inputs, ctx| {
                 let trace_id = ctx.trace_id.clone();
                 Box::pin(async move {
@@ -2623,45 +1755,44 @@ module surface is identical.
                     Ok(json!({ "success": true, "message_id": "msg_123" }))
                 })
             },
-        )?;
-        Ok(())
+        );
+        client.register("email.send", Box::new(module))
     }
     ```
 
-### ID Generation Rules
+### How IDs and Descriptions Are Chosen
 
-- When `id` parameter is specified: use it directly
-- When not specified: auto-generate from function's `__module__` + `__qualname__`
+| | Python | TypeScript | Rust |
+|---|---|---|---|
+| **Module ID** | `id=` if given; otherwise generated from the function's `__module__` and `__qualname__` | `id` is required | The `module_id` argument |
+| **Description** | `description=` if given; otherwise the docstring's first line; otherwise `"Module <function name>"` | `description` if given; otherwise `"Module <id>"` | The `description` argument |
+| **Schemas** | Inferred from type hints (every parameter and the return value need one) | `inputSchema` / `outputSchema` (TypeBox) | `input_schema` / `output_schema` (JSON values) |
 
-### Description Extraction
+### Class-Based Modules vs. module()
 
-1. `description` parameter (highest priority)
-2. First line of function docstring
-3. Default description generated from function name
-
-### Limitations
-
-| Feature | Class-based | module() |
+| Capability | Class-based module | `module()` |
 |------|------------|----------|
-| Lifecycle hooks (on_load/on_unload) | Supported | Not supported |
-| Custom validate() | Supported | Not supported |
-| Schema source | Pydantic Model | Auto-generated from type annotations |
-| Execution context | `self` + `context` | `context` parameter injection |
+| Lifecycle hooks (`on_load` / `on_unload`) | Supported | Not available |
+| Advisory checks during `validate()` (`preflight()`) | Supported | Not available |
+| Schema source | Declared on the class (Pydantic, TypeBox, or JSON values) | Python: inferred from type hints. TypeScript/Rust: passed explicitly |
+| State between calls | Instance fields | Closure captures |
+| Access to the call context | `execute(inputs, context)` | Python: a `Context`-typed parameter. TypeScript/Rust: the handler's second argument |
 
 ---
 
 ## External Schema Binding (YAML)
 
-> For scenarios where you cannot modify existing source code at all, use YAML binding files to map functions to apcore modules. See [PROTOCOL_SPEC §5.12](../spec/protocol-spec.md) for detailed specification.
+When you cannot change the source at all, a binding file maps a module ID to an existing callable. The format is specified in [protocol-spec §5.12](../spec/protocol-spec.md#512-external-schema-binding-external-schema-binding).
 
-### Complete Binding File Example
+### Binding File
 
 ```yaml
 # bindings/email.binding.yaml
+spec_version: "1.0"
 bindings:
   - module_id: "email.send"
     target: "myapp.services.email:send_email"
-    description: "Send email"
+    description: "Send an email"
     tags: ["email", "notification"]
     annotations:
       open_world: true
@@ -2684,73 +1815,130 @@ bindings:
       properties:
         success:
           type: boolean
+          description: "Whether the email was accepted"
         message_id:
           type: string
+          description: "Provider message ID"
       required: [success]
 
   - module_id: "email.send_template"
     target: "myapp.services.email:EmailService.send_template"
-    description: "Send email using template"
-    auto_schema: true
+    description: "Send an email rendered from a template"
+    schema_ref: "../schemas/email/send_template.schema.yaml"
 ```
 
-### auto_schema Mode
+`target` is `<module path>:<callable>` — a Python import path or a TypeScript module specifier, then the function or `Class.method` name. In Rust, `target` is the key under which you supply a handler (below).
 
-When the target function has complete type annotations, you can use `auto_schema: true` to auto-generate Schema:
+### Where the Schemas Come From
 
-```yaml
-bindings:
-  - module_id: "email.send"
-    target: "myapp.services.email:send_email"
-    auto_schema: true    # Auto-generate from send_email's type annotations
-```
+Each binding uses exactly one of these:
 
-Equivalent to `module(send_email, id="email.send")`, but requires no source code modifications.
+| Mode | How | Notes |
+|------|------|------|
+| Inline | `input_schema` + `output_schema` | Both are required together |
+| Shared file | `schema_ref: <path>` | Path is relative to the binding file; the referenced file holds `input_schema` / `output_schema` |
+| Inferred | `auto_schema: true` (or no schema at all) | Python reads the target's type hints. TypeScript reads `inputSchema`/`outputSchema` (or `<name>InputSchema`/`<name>OutputSchema`) exported beside the target. Rust cannot infer a schema from a string target and falls back to a permissive object schema with a warning, so give Rust bindings explicit schemas |
 
-### Discovery Mechanism Configuration
+`auto_schema: strict` additionally requires the inferred schema to be compatible with OpenAI/Anthropic strict mode. Setting `auto_schema: false` without another mode is an error.
+
+### Loading Binding Files
+
+Binding files are loaded with `BindingLoader`, which scans `bindings.dir` (default `./bindings`) for files matching `bindings.pattern` (default `*.binding.yaml`; `*` and `?` wildcards, matched against file names, not recursive):
 
 ```yaml
 # apcore.yaml
 bindings:
-  dir: "./bindings"              # Scan directory (default)
-  pattern: "*.binding.yaml"      # File matching pattern
-  # Or specify file list
-  files:
-    - "./bindings/email.binding.yaml"
-    - "./bindings/payment.binding.yaml"
+  dir: "./bindings"
+  pattern: "*.binding.yaml"
 ```
 
-### Multiple Binding Files Management
-
-```
+```text
 my-project/
 ├── bindings/
-│   ├── email.binding.yaml       # Email-related modules
-│   ├── payment.binding.yaml     # Payment-related modules
-│   └── user.binding.yaml        # User-related modules
+│   ├── email.binding.yaml       # one file per business domain
+│   ├── payment.binding.yaml
+│   └── user.binding.yaml
 └── apcore.yaml
 ```
 
-Each binding file is organized by business domain. The framework automatically scans all `*.binding.yaml` files in the `bindings/` directory.
+=== "Python"
+
+    ```python
+    from apcore import APCore, BindingLoader, Config
+
+    config = Config.load("apcore.yaml")
+    client = APCore(config=config)
+
+    # dir and pattern come from bindings.dir / bindings.pattern
+    BindingLoader().load_binding_dir(registry=client.registry, config=config)
+    ```
+
+=== "TypeScript"
+
+    ```typescript
+    import { APCore, BindingLoader, Config } from 'apcore-js';
+
+    const config = Config.load('apcore.yaml');
+    const client = new APCore({ config });
+
+    // dir and pattern come from bindings.dir / bindings.pattern
+    await new BindingLoader().loadBindingDir(undefined, client.registry, undefined, config);
+    ```
+
+=== "Rust"
+
+    ```rust
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    use apcore::errors::ModuleError;
+    use apcore::{APCore, BindingHandler, BindingLoader, Config};
+    use serde_json::json;
+
+    pub fn load_bindings() -> Result<APCore, ModuleError> {
+        let config = Config::load(std::path::Path::new("apcore.yaml"))?;
+
+        // dir and pattern come from bindings.dir / bindings.pattern
+        let mut loader = BindingLoader::new();
+        loader.load_binding_dir_with_config(None, None, Some(&config))?;
+
+        // Rust cannot import a callable by name, so supply a handler for every
+        // `target` in the loaded files; a missing one fails registration.
+        let mut handlers: HashMap<String, BindingHandler> = HashMap::new();
+        handlers.insert(
+            "myapp.services.email:send_email".to_string(),
+            Arc::new(|_inputs, _ctx| Box::pin(async move { Ok(json!({ "success": true, "message_id": "msg_123" })) })),
+        );
+        handlers.insert(
+            "myapp.services.email:EmailService.send_template".to_string(),
+            Arc::new(|_inputs, _ctx| Box::pin(async move { Ok(json!({ "success": true })) })),
+        );
+
+        let client = APCore::with_config(config);
+        loader.register_into_with_handlers(client.registry(), handlers)?;
+        Ok(client)
+    }
+    ```
 
 ---
 
 ## Approach Selection Comparison
 
-| Consideration | Class-based | `@module` Decorator | `module()` Function Call | External Binding |
+| Consideration | Class-based | `module()` on a function | `module()` on an existing callable | External binding |
 |------|------------|-----------------|-------------------|-----------------|
-| **New development** | Recommended | Usable | Usable | Not recommended |
-| **Wrap existing functions** | Not recommended (requires rewrite) | Recommended | Recommended | Usable |
-| **Cannot modify source** | Impossible | Impossible | Impossible | Recommended |
-| **Need lifecycle management** | Recommended | Not supported | Not supported | Not supported |
-| **Cross-language unified config** | Not applicable | Not applicable | Partially applicable | Recommended |
-| **Schema flexibility** | Highest (Pydantic) | Medium (type annotations) | Medium (type annotations) | High (hand-written YAML) |
+| **New development** | Recommended | Recommended for small modules | Usable | Not recommended |
+| **Wrapping existing functions** | Requires a rewrite | Requires editing the function (Python decorator) | Recommended | Usable |
+| **Cannot modify the source** | Not possible | Not possible | Recommended (registration lives elsewhere) | Recommended |
+| **Needs lifecycle hooks** | Recommended | Not supported | Not supported | Not supported |
+| **Schema lives in YAML shared across SDKs** | Via `SchemaLoader` | No | No | Via `schema_ref` |
+| **Schema control** | Full | Python: from type hints; TypeScript/Rust: explicit | Same as `module()` | Full (hand-written YAML) |
 
 ---
 
 ## Next Steps
 
-- [Schema Definition Details](./schema-definition.md) - Complete Schema usage
-- [ACL Configuration Guide](./acl-configuration.md) - Configure module access permissions
-- [Module Interface](../features/module-interface.md) - Module Protocol contract
-- [Adapter Development Guide](./adapter-development.md) - Framework adapter development
+- [Schema Definition Guide](./schema-definition.md) — Complete schema usage
+- [Testing Modules Guide](./testing-modules.md) — Testing your modules
+- [ACL Configuration Guide](./acl-configuration.md) — Configure who may call which module
+- [Module Interface](../features/module-interface.md) — The module contract
+- [Adapter Development Guide](./adapter-development.md) — Exposing modules through web frameworks

@@ -86,7 +86,7 @@ The contract is defined normatively in [Core Executor §Contract: Executor bindi
         def bind_executor(self, executor: Any) -> None:
             """SDK-internal contract member. Bind the Executor to this Context.
 
-            Implements PROTOCOL_SPEC §"Contract: Executor binding to Context".
+            Implements core-executor.md §"Contract: Executor binding to Context".
             Not intended for application code — invoked by the Executor before
             pipeline step 1.
             """
@@ -101,6 +101,7 @@ The contract is defined normatively in [Core Executor §Contract: Executor bindi
     ```
 
 === "TypeScript"
+    <!-- apcore-example: fragment -->
     ```typescript
     import { ContextBindingError } from './errors';
 
@@ -130,6 +131,7 @@ The contract is defined normatively in [Core Executor §Contract: Executor bindi
     ```
 
 === "Rust"
+    <!-- apcore-example: fragment -->
     ```rust
     use std::sync::Arc;
     use crate::errors::{ModuleError, ErrorCode};
@@ -137,7 +139,7 @@ The contract is defined normatively in [Core Executor §Contract: Executor bindi
     impl<T> Context<T> {
         /// SDK-internal contract member. Bind the Executor to this Context.
         ///
-        /// Implements PROTOCOL_SPEC §"Contract: Executor binding to Context".
+        /// Implements core-executor.md §"Contract: Executor binding to Context".
         /// `pub` so the Executor (and conformance harnesses) can call it;
         /// `#[doc(hidden)]` so it stays out of the rendered API reference.
         #[doc(hidden)]
@@ -161,20 +163,17 @@ Note the verb difference is intentional and rule-compliant: Python and Rust muta
 
 ---
 
-## 6. Known Divergences (migration tracking)
+## 6. Known Divergences
 
-The following reflects the state observed at apcore SDK v0.24.0 and the additive-alias migration applied on 2026-06-18. These are **non-normative** notes for SDK maintainers; resolving them brings the SDKs into line with §3. Each fix lives in the respective SDK repo, not in this spec.
+These are the places the SDKs do not yet follow §3. They are **non-normative** notes for SDK maintainers; each fix lives in the respective SDK repository.
 
-| SDK | Symbol | Issue vs. §3 | Status |
+| SDK | Symbol | Issue vs. §3 | State |
 |---|---|---|---|
-| `apcore-rust` | `pub fn bind_executor` + `#[doc(hidden)]` | Compliant — reference pattern | ✅ no change (no `_`-prefixed variant exists) |
-| `apcore-python` | `_bind_executor` | Rule 1 — leading underscore on a contract member | ✅ added public `bind_executor` (real impl); `_bind_executor` is now a `DeprecationWarning` alias; all internal callers use the new name |
-| `apcore-typescript` | `_withExecutor()` | Rule 1 & 5 — private-named member that `apcore-mcp-typescript`'s `BridgeContext` interface must declare and implement | ✅ added public `withExecutor()` (real impl); `_withExecutor()` is now a `@deprecated` alias; **Executor caller prefers the new name and falls back to the old** (per §6.1 step 3) |
-| `apcore-mcp-typescript` | `BridgeContext._withExecutor()` | Rule 5 — private-named member on a public interface | ✅ interface + impl now expose public `withExecutor()`; `_withExecutor()` kept as `@deprecated` alias for older apcore-js peers |
-| `apcore-typescript` | `_withCancelToken()` | Rule 1 — same private-name pattern | Classified **single-package internal** (no cross-file, exported-interface, or foreign-implementer use) → no alias needed; candidate for a true `private`/`#name` in a future cleanup |
+| `apcore-python` | `Context._bind_executor` | Rule 1 — leading underscore on a contract member | Deprecated alias of the public `bind_executor` (emits `DeprecationWarning`); removal waits for a major version (§6.1 step 5) |
+| `apcore-typescript` | `Context._withExecutor()` | Rule 1 — private-named contract member | `@deprecated` alias of the public `withExecutor()`; the Executor calls `withExecutor` and falls back to `_withExecutor` for foreign contexts that only have the old name (§6.1 step 3); removal waits for a major version |
+| `apcore-typescript` | `Context._withCancelToken()` | Rule 2 — a single-package internal helper exposed as a public method with a private-looking name | Used only inside apcore-js; should become a true `private` / `#name` member |
 
-!!! note "Removal of the deprecated `_`-aliases (step 5) is still pending"
-    The migrations above are non-breaking (steps 1–4). The deprecated `_bind_executor` / `_withExecutor` aliases remain callable and are exercised by existing tests. They are removed only in a later **major** version, once the deprecation window closes.
+`apcore-rust`'s `pub fn bind_executor` + `#[doc(hidden)]` is compliant and is the reference pattern.
 
 ### 6.1 Recommended migration — additive alias, no breaking change
 
@@ -272,16 +271,17 @@ The error-taxonomy difference is concrete:
     # Each failure is its own public exception class.
     from apcore import ModuleNotFoundError, ApprovalDeniedError
 
-    raise ModuleNotFoundError("executor.email.send_email not registered")
+    raise ModuleNotFoundError("executor.email.send_email")
     ```
 === "TypeScript"
     ```typescript
     // Same shape: one exported class per failure.
     import { ModuleNotFoundError, ApprovalDeniedError } from 'apcore-js';
 
-    throw new ModuleNotFoundError('executor.email.send_email not registered');
+    throw new ModuleNotFoundError('executor.email.send_email');
     ```
 === "Rust"
+    <!-- apcore-example: fragment -->
     ```rust
     // One enum of codes + one error struct. There is NO `ModuleNotFoundError`
     // type to export — `ModuleNotFound` is a variant, and that is idiomatic.
@@ -289,7 +289,7 @@ The error-taxonomy difference is concrete:
 
     return Err(ModuleError::new(
         ErrorCode::ModuleNotFound,
-        "executor.email.send_email not registered",
+        "Module not found: executor.email.send_email",
     ));
     ```
 
@@ -300,7 +300,7 @@ The error-taxonomy difference is concrete:
 This is the line between §8.1's namespace-depth divergence (fine) and a genuine break:
 
 - `apcore.observability.PrometheusExporter` — **fine**: `observability` is a public sub-package with its own `__all__`; the import path is one a caller is meant to use.
-- `apcore.registry.registry.MAX_MODULE_ID_LENGTH` — **the break this rule was written for, since fixed.** `registry.registry` is the *implementation module* inside the `registry` package. The constant was absent from both the `apcore` root and the `apcore.registry` package export list, so the only working import reached into an internal path — while the same constant was root-public in TypeScript and Rust. As of apcore-python 0.27.0 it is exported from both `apcore` and `apcore.registry`, and each names it in `__all__`, so the shallowest public path now matches the two peers. Kept here as the worked example because it is what the rule looks like when it fires, not because it is outstanding.
+- `apcore.registry.registry.MAX_MODULE_ID_LENGTH` — **would be a break** if it were the only path: `registry.registry` is the *implementation module* inside the `registry` package. The constant is therefore exported from both `apcore` and `apcore.registry` and named in each `__all__`, matching its root-public status in TypeScript and Rust.
 
 Quick test: *if the only import path that works names a module callers were never meant to import from, the symbol is private by accident — re-export it through a public path.*
 
@@ -316,7 +316,7 @@ When diffing public surfaces across SDKs, normalize before reporting, so the rec
 
 ## 9. Constructing SDK-owned Data Types
 
-Visibility governs whether foreign code can *name* a type. This section governs whether it can *build* one. The two diverge in Rust, and the divergence has produced documentation in this repository that does not compile (issue #103).
+Visibility governs whether foreign code can *name* a type. This section governs whether it can *build* one. The two diverge in Rust, where documentation that ignores the difference does not compile.
 
 ### 9.1 The Rust `#[non_exhaustive]` rule
 
@@ -324,6 +324,7 @@ apcore-rust marks most of its plain-data contract types `#[non_exhaustive]` so t
 
 This includes functional record update. From a downstream crate:
 
+<!-- apcore-example: fragment -->
 ```rust
 // DOES NOT COMPILE — E0639: cannot create non-exhaustive struct using struct expression
 let result = ApprovalResult {
@@ -334,6 +335,7 @@ let result = ApprovalResult {
 
 `..Default::default()` is not an exemption; it is a struct expression. The working cross-crate form starts from a value the defining crate produced and mutates it:
 
+<!-- apcore-example: fragment -->
 ```rust
 let mut result = ApprovalResult::default();
 result.status = "approved".to_string();
@@ -375,7 +377,7 @@ A fragment is declared by an HTML comment on the line immediately before its fen
 impl Module for DeleteUser {
     fn preview(&self, inputs: &serde_json::Value, /* … */) -> Option<PreviewResult> { … }
 }
-```
+```text
 ````
 
 The marker is machine-readable on purpose: it is what lets a compile harness skip a block without guessing, and it makes the absence of a marker mean "this is claimed to compile" rather than "nobody said". Rules:
@@ -385,28 +387,16 @@ The marker is machine-readable on purpose: it is what lets a compile harness ski
 3. The marker exempts a block from *compiling*. It exempts nothing else: rule 5's "correct in every line it does show" applies to fragments in full.
 4. Inside a tabbed section the marker is indented to the tab's content level, like the fence it precedes.
 
-!!! warning "Rule 5 is not mechanically enforced, and the existing checker is narrower than it looks"
-    `conformance/check_doc_examples.py` does **not** type-check anything, and its
-    per-language reach is uneven:
+!!! warning "Rule 5 is not mechanically enforced"
+    `conformance/check_doc_examples.py` resolves imported symbols against the SDKs; it does **not** compile or type-check anything:
 
-    | Language | What is actually checked |
+    | Language | What is checked |
     |---|---|
     | Python | `from apcore… import …`, submodules included — the module path and every imported name |
     | TypeScript | `import { … } from 'apcore-js'` and the declared subpath exports |
-    | Rust | `use apcore::{ … }` — **crate-root brace form only** — plus `ErrorCode::Variant` names |
+    | Rust | `use apcore::…` at the crate root and through nested module paths, plus `ErrorCode::Variant` names |
 
-    A nested Rust import such as `use apcore::events::{EventRetryConfig}` matches
-    nothing and is not checked at all. At the time of writing the Rust docs carry
-    56 crate-root brace imports and 56 nested ones, so roughly half of the apcore
-    imports in Rust examples are invisible to it — which is why
-    `features/event-system.md` could import a `RetryConfig` that `apcore::events`
-    does not export, and pass. That was found by hand, not by the checker.
-
-    A compile harness, a fragment-marker sweep across the 253 Rust blocks, and a
-    widened import check are tracked in
-    [#105](https://github.com/aiperceivable/apcore/issues/105). Until then rule 5
-    and §9.4 are reviewed by hand, and blocks carry the marker only where a
-    reviewer has actually established the block's status.
+    Signatures, argument counts, `async`, and whether a block compiles are reviewed by hand. There is no compile harness yet, so rule 5 and §9.4 depend on review, and blocks carry the fragment marker only where a reviewer has established the block's status.
 
 ## 10. References
 

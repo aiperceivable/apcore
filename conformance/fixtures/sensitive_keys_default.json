@@ -1,5 +1,5 @@
 {
-  "description": "Canonical default obs.redaction.sensitive_keys list (D-54). All 3 SDKs MUST ship the exact 16-entry default when no override is provided. The match is case-insensitive substring against field names. Override (via apcore.yaml obs.redaction.sensitive_keys) MUST replace the default, not merge. The leading _secret_* entry preserves the legacy _secret_-prefix behavior under the canonical default. trace_id, caller_id, target_id, module_id, span_id MUST NEVER be redacted regardless of sensitive_keys content. See docs/features/observability.md#canonical-default-sensitive_keys.",
+  "description": "Canonical default obs.redaction.sensitive_keys list (D-54). All 3 SDKs MUST ship the exact 16-entry default when no override is provided. The match is case-insensitive substring against field names. Override (via apcore.yaml obs.redaction.sensitive_keys) MUST replace the default, not merge. The leading _secret_* entry preserves the legacy _secret_-prefix behavior under the canonical default. trace_id, caller_id, target_id, module_id, span_id MUST NEVER be redacted regardless of sensitive_keys content. See docs/features/redaction.md#default-sensitive_keys.",
   "test_cases": [
     {
       "id": "default_list_is_canonical_16_entries",

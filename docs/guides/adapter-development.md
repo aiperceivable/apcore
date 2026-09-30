@@ -1,19 +1,18 @@
 ---
-description: "How to build apcore adapters for web frameworks (Flask, FastAPI, Django, Express, Axum) by implementing ContextFactory and mapping framework routes to module calls."
+description: "How to build an apcore adapter for a web framework (FastAPI, Express, Axum): scan routes, register them as modules or emit binding files, and build the request Context."
 ---
 
 # Adapter Development Guide
 
-> Develop apcore adapters for third-party web frameworks.
+> Build an apcore adapter for a third-party web framework.
 
-!!! note "Cross-language applicability"
-    This guide uses Python examples (Flask, FastAPI, Django). The adapter pattern is the same for TypeScript (Express, Fastify) and Rust (Axum, Actix) — implement `ContextFactory` to extract `Identity` from framework-specific requests, then map routes to module calls.
+An adapter turns a framework's routes into apcore modules. This guide walks through writing **your own** adapter for FastAPI (Python), Express (TypeScript) and Axum (Rust). The code is illustrative: the published adapter packages (for example `fastapi-apcore`, `express-apcore`, `axum-apcore`) have their own APIs — consult their documentation rather than this page when you use them.
 
 ## 1. Adapter Positioning
 
-The apcore core remains pure and **does not include** any web framework-specific implementations. Adapters are independent repository projects responsible for automatically mapping routes/endpoints of specific frameworks (Flask, FastAPI, Django, etc.) to apcore modules.
+The apcore core stays framework-agnostic and contains no web-framework code. Each adapter lives in its own repository and maps the routes/endpoints of one framework onto apcore modules.
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────┐
 │                  apcore (Core Framework)                     │
 │  module() / External Binding / Registry / Executor           │
@@ -21,128 +20,88 @@ The apcore core remains pure and **does not include** any web framework-specific
                            ↑ Built on core mechanisms
       ┌──────────┬──────────┬──────────┬──────────┐
       │          │          │          │          │
-   tiptap-      flask-    django-    express-    ...
-   apcore       apcore    apcore     apcore
-   (separate)   (separate)  (separate)  (separate)
+   flask-     django-   fastapi-   express-     ...
+   apcore     apcore    apcore     apcore
 ```
 
 ## 2. Adapter Responsibilities
 
-Adapters should do the following:
+An adapter:
 
-1. **Scan** framework route/endpoint definitions
-2. **Extract** route information (path, methods, parameters, return types)
-3. **Generate** Binding YAML files or call `module()` to register
-4. **Map** framework-specific types to JSON Schema
+1. **Scans** the framework's route/endpoint definitions.
+2. **Extracts** route information (path, methods, parameters, return types).
+3. **Registers** each route as a module at runtime, or **generates** binding YAML files.
+4. **Maps** framework types to JSON Schema.
+5. **Builds the request `Context`** — trace parent, correlation ID and caller identity (section 6).
 
-Adapters **should not**:
+An adapter does not:
 
-- Modify apcore core behavior
-- Re-implement Registry/Executor/Schema validation
-- Bind to specific AI protocols (MCP, A2A, etc.)
+- Change apcore core behaviour.
+- Re-implement the Registry, Executor or schema validation.
+- Tie itself to an AI protocol (MCP, A2A, …) — those are separate layers on top of apcore.
 
 ## 3. Naming Conventions
 
-### Repository Naming
+Repository and package name: `{framework}-apcore`.
 
-```
-{framework}-apcore
-```
-
-Examples: `flask-apcore`, `django-apcore`, `express-apcore`
-
-### Package Naming
-
-```
+```bash
 pip install {framework}-apcore
 npm install {framework}-apcore
+cargo add {framework}-apcore
 ```
 
-## 4. Adapter Interface Reference
+Module IDs generated from routes must be valid Canonical IDs: lowercase `snake_case` segments separated by dots (for example `api.get_user`). Normalise route or handler names before using them as ID segments.
 
-The core workflow of an adapter: scan → generate bindings → register
+## 4. Adapter Interface
+
+The core workflow is scan → register (or generate bindings). A suggested interface:
 
 === "Python"
 
     ```python
-    # Recommended adapter interface
-    from typing import Protocol, Any
+    from typing import Any, Protocol, TypedDict
 
-    class EndpointInfo(dict):
-        """Loose dict describing one scanned endpoint."""
+    from apcore import APCore
+
+
+    class EndpointInfo(TypedDict):
+        path: str
+        methods: list[str]
+        name: str
+        summary: str | None
 
 
     class FrameworkAdapter(Protocol):
-        """Framework adapter base interface"""
-
         def scan(self, app: Any) -> list[EndpointInfo]:
-            """
-            Scan framework application and extract endpoint information.
-
-            Args:
-                app: Framework application instance (e.g., FastAPI app, Flask app)
-
-            Returns:
-                List of endpoint information.
-            """
+            """Extract endpoint information from a framework application."""
             ...
 
-        def generate_bindings(self, endpoints: list[EndpointInfo]) -> dict:
-            """
-            Generate Binding YAML content from endpoint information.
-
-            Args:
-                endpoints: List of endpoint information.
-
-            Returns:
-                dict that can be written to a .binding.yaml file.
-            """
+        def register(self, app: Any, client: APCore) -> None:
+            """Register every endpoint as an apcore module."""
             ...
 
-        def register(self, app: Any, registry: Any | None = None) -> None:
-            """
-            Scan application and register modules directly via module().
-
-            Args:
-                app: Framework application instance.
-                registry: apcore Registry instance (optional).
-            """
+        def generate_bindings(self, app: Any) -> dict[str, Any]:
+            """Return the content of a .binding.yaml file for the endpoints."""
             ...
     ```
 
 === "TypeScript"
 
     ```typescript
-    // Recommended adapter interface
-    import type { APCore, Registry } from 'apcore-js';
+    import type { APCore } from 'apcore-js';
 
     export interface EndpointInfo {
       path: string;
       methods: string[];
       name: string;
       summary?: string;
-      handler: (...args: unknown[]) => unknown;
-    }
-
-    export interface BindingsFile {
-      bindings: Array<Record<string, unknown>>;
     }
 
     export interface FrameworkAdapter<App> {
-      /**
-       * Scan a framework application and extract endpoint information.
-       */
+      /** Extract endpoint information from a framework application. */
       scan(app: App): EndpointInfo[];
 
-      /**
-       * Generate Binding YAML content from endpoint information.
-       * The returned object can be serialized to a .binding.yaml file.
-       */
-      generateBindings(endpoints: EndpointInfo[]): BindingsFile;
-
-      /**
-       * Scan an application and register modules directly via APCore.module().
-       */
+      /** Register every endpoint as an apcore module. */
       register(app: App, client: APCore): void;
     }
     ```
@@ -150,13 +109,10 @@ The core workflow of an adapter: scan → generate bindings → register
 === "Rust"
 
     ```rust
-    // Recommended adapter interface
-    use apcore::APCore;
-    use apcore::errors::ModuleError;
-    use serde::Serialize;
+    use apcore::{APCore, ModuleError};
     use serde_json::Value;
 
-    #[derive(Debug, Clone, Serialize)]
+    #[derive(Debug, Clone)]
     pub struct EndpointInfo {
         pub path: String,
         pub methods: Vec<String>,
@@ -164,190 +120,144 @@ The core workflow of an adapter: scan → generate bindings → register
         pub summary: Option<String>,
     }
 
-    #[derive(Debug, Serialize)]
-    pub struct BindingsFile {
-        pub bindings: Vec<Value>,
-    }
-
-    /// Framework adapter base interface.
-    ///
-    /// `App` is the concrete framework type (e.g., `axum::Router`,
-    /// `actix_web::App`).
+    /// `App` is the framework's application or router type.
     pub trait FrameworkAdapter<App> {
-        /// Scan a framework application and extract endpoint information.
+        /// Extract endpoint information from a framework application.
         fn scan(&self, app: &App) -> Vec<EndpointInfo>;
 
-        /// Generate Binding YAML content from endpoint information.
-        /// The returned struct can be serialized to a .binding.yaml file.
-        fn generate_bindings(&self, endpoints: &[EndpointInfo]) -> BindingsFile;
-
-        /// Scan an application and register modules directly via `APCore::module()`.
+        /// Register every endpoint as an apcore module.
         fn register(&self, app: &App, client: &mut APCore) -> Result<(), ModuleError>;
+
+        /// Return the content of a .binding.yaml file for the endpoints.
+        fn generate_bindings(&self, app: &App) -> Value;
     }
     ```
 
-## 5. Example: Minimal Web-Framework Adapter Implementation
+## 5. Example: A Minimal Adapter
 
-The example below shows a minimal adapter for a popular web framework in each language: **FastAPI** for Python, **Express** for TypeScript, and **Axum** for Rust. The structure (scan → register → generate_bindings) is identical across the three.
+One minimal adapter per language: **FastAPI** (Python), **Express** (TypeScript) and **Axum** (Rust). Each registers routes at runtime; the Python and Rust ones also emit binding files.
+
+A binding `target` has the form `module_path:callable` ([protocol-spec §5.12.3](../spec/protocol-spec.md#5123-target-resolution-algorithm)):
+
+- **Python** — an importable dotted module path and a function or `Class.method` in it: `myapp.routes:get_user`.
+- **TypeScript** — an ESM specifier the host can `import()` and an export name: `@my-org/billing:refund`. Express handlers take `(req, res, next)`, not module inputs, so they cannot be binding targets; the Express adapter below registers at runtime only.
+- **Rust** — an opaque key into the handler map you pass to the binding loader: `routes:get_user`.
 
 === "Python"
 
     ```python
-    # apcore_fastapi/adapter.py
-    from apcore import APCore
+    # my_fastapi_adapter.py — your adapter
+    import re
+    from typing import Any
+
     from fastapi import FastAPI
     from fastapi.routing import APIRoute
 
+    from apcore import APCore
 
-    def scan_fastapi(app: FastAPI) -> list[dict]:
-        """Scan FastAPI application and extract route information."""
-        endpoints = []
-        for route in app.routes:
-            if isinstance(route, APIRoute):
-                endpoints.append({
-                    "path": route.path,
-                    "methods": list(route.methods or []),
-                    "name": route.name,
-                    "endpoint": route.endpoint,
-                    "summary": route.summary,
-                    "tags": list(route.tags) if route.tags else [],
-                })
-        return endpoints
+
+    def to_segment(name: str) -> str:
+        """Turn a route name into a Canonical ID segment (lowercase snake_case)."""
+        name = re.sub(r"(?<=[a-z0-9])([A-Z])", r"_\1", name).lower()
+        name = re.sub(r"[^a-z0-9_]+", "_", name).strip("_")
+        return name if name[:1].isalpha() else f"r_{name}"
 
 
     def register_fastapi(app: FastAPI, client: APCore, prefix: str = "api") -> None:
-        """
-        Register FastAPI routes as apcore modules.
-
-        Args:
-            app: FastAPI application instance.
-            client: apcore client used for registration.
-            prefix: Module ID prefix (e.g., "api" -> "api.get_user").
-        """
+        """Register every FastAPI route as an apcore module, e.g. "api.get_user"."""
         for route in app.routes:
             if not isinstance(route, APIRoute):
                 continue
-
-            endpoint = route.endpoint
-            route_name = route.name or endpoint.__name__
-            module_id = f"{prefix}.{route_name}"
-
-            # Use the @client.module decorator: it leverages FastAPI's
-            # type annotations to auto-derive input/output schemas.
+            # client.module derives the input/output schemas from the endpoint's type hints.
             client.module(
-                id=module_id,
+                id=f"{prefix}.{to_segment(route.name)}",
                 description=route.summary or f"API endpoint: {route.path}",
-                tags=list(route.tags) if route.tags else None,
-            )(endpoint)
+                tags=[str(tag) for tag in route.tags] or None,
+            )(route.endpoint)
 
 
-    def generate_bindings(app: FastAPI, prefix: str = "api") -> dict:
-        """
-        Generate Binding YAML content from a FastAPI application.
-
-        Returns a dict that can be written to a .binding.yaml file.
-        """
+    def generate_bindings(app: FastAPI, prefix: str = "api") -> dict[str, Any]:
+        """Content for a .binding.yaml file. Endpoints must be module-level functions of an importable module."""
         bindings = []
         for route in app.routes:
             if not isinstance(route, APIRoute):
                 continue
-
             endpoint = route.endpoint
-            route_name = route.name or endpoint.__name__
-            target = f"{endpoint.__module__}:{endpoint.__qualname__}"
-
-            bindings.append({
-                "module_id": f"{prefix}.{route_name}",
-                "target": target,
-                "description": route.summary or f"API endpoint: {route.path}",
-                "auto_schema": True,
-                "tags": list(route.tags) if route.tags else [],
-                "metadata": {
-                    "http_path": route.path,
-                    "http_methods": list(route.methods or []),
-                },
-            })
-
+            bindings.append(
+                {
+                    "module_id": f"{prefix}.{to_segment(route.name)}",
+                    "target": f"{endpoint.__module__}:{endpoint.__qualname__}",
+                    "description": route.summary or f"API endpoint: {route.path}",
+                    "auto_schema": True,
+                    "tags": [str(tag) for tag in route.tags],
+                    "metadata": {"http_path": route.path, "http_methods": sorted(route.methods or [])},
+                }
+            )
         return {"bindings": bindings}
     ```
 
 === "TypeScript"
 
     ```typescript
-    // express-apcore/adapter.ts
-    import { Type, type TSchema } from '@sinclair/typebox';
+    // express-adapter.ts — your adapter
+    import { Type } from '@sinclair/typebox';
     import type { APCore } from 'apcore-js';
-    import type { Express, Request, Response, RequestHandler } from 'express';
+    import type { Express, Request, RequestHandler, Response } from 'express';
 
     interface ExpressEndpoint {
       path: string;
       methods: string[];
       name: string;
-      summary: string;
       handler: RequestHandler;
     }
 
-    /**
-     * Scan an Express application and extract route information from its
-     * internal router stack.
-     */
+    /** Turn a handler name or path into a Canonical ID segment (lowercase snake_case). */
+    export function toSegment(name: string): string {
+      const snake = name
+        .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
+        .toLowerCase()
+        .replace(/[^a-z0-9_]+/g, '_')
+        .replace(/^_+|_+$/g, '');
+      return /^[a-z]/.test(snake) ? snake : `r_${snake}`;
+    }
+
+    /** Read routes from the router stack (an Express internal: app.router in v5, app._router in v4). */
     export function scanExpress(app: Express): ExpressEndpoint[] {
+      const internal = app as unknown as { _router?: { stack: unknown[] }; router?: { stack: unknown[] } };
+      const stack = (internal._router ?? internal.router)?.stack ?? [];
       const endpoints: ExpressEndpoint[] = [];
-      // express stores layers on app._router.stack
-      const stack = (app as unknown as { _router?: { stack: unknown[] } })._router?.stack ?? [];
-
-      for (const layer of stack as Array<Record<string, any>>) {
+      for (const layer of stack as Array<{ route?: { path: string; methods: Record<string, boolean>; stack: Array<{ handle: RequestHandler }> } }>) {
         if (!layer.route) continue;
-        const route = layer.route;
-        const methods = Object.keys(route.methods ?? {}).map((m) => m.toUpperCase());
-        const handler: RequestHandler = route.stack[route.stack.length - 1].handle;
-        const name: string = handler.name || `route_${route.path.replace(/\W+/g, '_')}`;
-
+        const handler = layer.route.stack[layer.route.stack.length - 1].handle;
         endpoints.push({
-          path: route.path,
-          methods,
-          name,
-          summary: `${methods.join(',')} ${route.path}`,
+          path: layer.route.path,
+          methods: Object.keys(layer.route.methods).map((m) => m.toUpperCase()),
+          name: toSegment(handler.name || layer.route.path),
           handler,
         });
       }
       return endpoints;
     }
 
-    /**
-     * Register all Express routes as apcore modules.
-     *
-     * `prefix` becomes the module-ID namespace, e.g. "api" -> "api.get_user".
-     */
-    export function registerExpress(
-      app: Express,
-      client: APCore,
-      prefix = 'api',
-    ): void {
+    /** Register every Express route as an apcore module, e.g. "api.get_user". */
+    export function registerExpress(app: Express, client: APCore, prefix = 'api'): void {
       for (const ep of scanExpress(app)) {
-        const moduleId = `${prefix}.${ep.name}`;
-
-        // Express handlers are (req, res, next) — wrap them so apcore can
-        // pass JSON inputs and receive a JSON output.
-        const inputSchema: TSchema = Type.Object({
-          params: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
-          query: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
-          body: Type.Optional(Type.Unknown()),
-        });
-        const outputSchema: TSchema = Type.Record(Type.String(), Type.Unknown());
-
         client.module({
-          id: moduleId,
-          description: ep.summary,
+          id: `${prefix}.${ep.name}`,
+          description: `${ep.methods.join(',')} ${ep.path}`,
           tags: ['http', ...ep.methods.map((m) => m.toLowerCase())],
-          inputSchema,
-          outputSchema,
+          inputSchema: Type.Object({
+            params: Type.Optional(Type.Record(Type.String(), Type.String())),
+            query: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
+            body: Type.Optional(Type.Unknown()),
+          }),
+          outputSchema: Type.Record(Type.String(), Type.Unknown()),
           execute: async (inputs) => {
-            // Build mock req/res objects so the existing Express handler runs unchanged.
+            // Run the existing handler against a minimal req/res pair and capture what it sends.
             let captured: unknown = {};
             const req = {
-              params: (inputs.params as object) ?? {},
-              query: (inputs.query as object) ?? {},
+              params: inputs.params ?? {},
+              query: inputs.query ?? {},
               body: inputs.body,
               method: ep.methods[0],
               path: ep.path,
@@ -366,149 +276,90 @@ The example below shows a minimal adapter for a popular web framework in each la
               },
             } as unknown as Response;
             await Promise.resolve(ep.handler(req, res, () => {}));
-            return (typeof captured === 'object' && captured !== null
+            return typeof captured === 'object' && captured !== null
               ? (captured as Record<string, unknown>)
-              : { result: captured });
+              : { result: captured };
           },
         });
       }
-    }
-
-    /**
-     * Generate Binding YAML content from an Express application.
-     *
-     * The returned object can be passed to `js-yaml`'s `dump()` and written
-     * to a `.binding.yaml` file.
-     */
-    export function generateBindings(
-      app: Express,
-      prefix = 'api',
-    ): { bindings: Array<Record<string, unknown>> } {
-      const bindings = scanExpress(app).map((ep) => ({
-        module_id: `${prefix}.${ep.name}`,
-        target: `./routes/${ep.name}#default`,
-        description: ep.summary,
-        auto_schema: true,
-        tags: ['http', ...ep.methods.map((m) => m.toLowerCase())],
-        metadata: {
-          http_path: ep.path,
-          http_methods: ep.methods,
-        },
-      }));
-      return { bindings };
     }
     ```
 
 === "Rust"
 
     ```rust
-    // axum-apcore/src/adapter.rs
-    use apcore::APCore;
-    use apcore::errors::ModuleError;
-    use serde::Serialize;
+    // src/adapter.rs — your adapter
+    use apcore::{APCore, Context, ModuleError};
     use serde_json::{json, Value};
 
-    /// One scanned Axum route.
-    #[derive(Debug, Clone, Serialize)]
+    /// One Axum route. Axum does not expose its route table, so the adapter
+    /// takes the list you build alongside the router.
+    #[derive(Debug, Clone)]
     pub struct AxumEndpoint {
         pub path: String,
         pub methods: Vec<String>,
-        pub name: String,
+        pub name: String, // already a Canonical ID segment, e.g. "get_user"
         pub summary: String,
     }
 
-    /// Scan an Axum router and extract route information.
-    ///
-    /// Axum's public API does not expose the internal route table, so adapters
-    /// typically build the endpoint list at the same time the router is built —
-    /// usually via a small helper macro or builder. The function below accepts
-    /// the already-collected endpoint list so it stays runtime-agnostic.
-    pub fn scan_axum(endpoints: Vec<AxumEndpoint>) -> Vec<AxumEndpoint> {
-        endpoints
+    fn input_schema() -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "params": {"type": "object"},
+                "query":  {"type": "object"},
+                "body":   {}
+            }
+        })
     }
 
-    /// Register every Axum endpoint as an apcore module.
-    ///
-    /// Each endpoint is wrapped in a `FunctionModule` that accepts a JSON
-    /// payload `{params, query, body}` and returns a JSON object.
-    pub fn register_axum(
-        endpoints: &[AxumEndpoint],
-        client: &mut APCore,
-        prefix: &str,
-    ) -> Result<(), ModuleError> {
-        for ep in endpoints {
-            let module_id = format!("{prefix}.{}", ep.name);
-            let summary = ep.summary.clone();
-            let methods = ep.methods.clone();
-            let path = ep.path.clone();
+    fn tags(ep: &AxumEndpoint) -> Vec<String> {
+        let mut tags = vec!["http".to_string()];
+        tags.extend(ep.methods.iter().map(|m| m.to_lowercase()));
+        tags
+    }
 
+    /// Register every endpoint as an apcore module, e.g. "api.get_user".
+    pub fn register_axum(endpoints: &[AxumEndpoint], client: &mut APCore, prefix: &str) -> Result<(), ModuleError> {
+        for ep in endpoints {
+            let path = ep.path.clone();
             client.module(
-                &module_id,
-                &summary,
-                json!({
-                    "type": "object",
-                    "properties": {
-                        "params": {"type": "object"},
-                        "query":  {"type": "object"},
-                        "body":   {}
-                    }
-                }),
+                &format!("{prefix}.{}", ep.name),
+                &ep.summary,
+                input_schema(),
                 json!({"type": "object"}),
-                None,
-                {
-                    let mut tags = vec!["http".to_string()];
-                    tags.extend(methods.iter().map(|m| m.to_lowercase()));
-                    tags
-                },
-                None,
-                None,
-                vec![],
-                None,
-                {
+                None,     // documentation
+                tags(ep), // tags
+                None,     // version
+                None,     // metadata
+                vec![],   // examples
+                None,     // display
+                move |inputs: Value, _ctx: &Context<Value>| {
                     let path = path.clone();
-                    let methods = methods.clone();
-                    move |inputs: Value, _ctx| {
-                        let path = path.clone();
-                        let methods = methods.clone();
-                        Box::pin(async move {
-                            // In a real adapter this would dispatch into the
-                            // matched Axum handler. Here we just echo the
-                            // request shape for illustration.
-                            Ok(json!({
-                                "path": path,
-                                "methods": methods,
-                                "received": inputs,
-                            }))
-                        })
-                    }
+                    Box::pin(async move {
+                        // A real adapter dispatches into the matched Axum handler here.
+                        Ok(json!({"path": path, "received": inputs}))
+                    })
                 },
             )?;
         }
         Ok(())
     }
 
-    /// Generate Binding YAML content from a list of Axum endpoints.
-    ///
-    /// The returned `Value` can be serialized with `serde_yaml` and written
-    /// to a `.binding.yaml` file.
+    /// Content for a .binding.yaml file. Each `target` is a handler-map key
+    /// ("routes:<name>"); load the file with a handler map that uses the same keys.
     pub fn generate_bindings(endpoints: &[AxumEndpoint], prefix: &str) -> Value {
         let bindings: Vec<Value> = endpoints
             .iter()
             .map(|ep| {
                 json!({
-                    "module_id":   format!("{prefix}.{}", ep.name),
-                    "target":      format!("crate::routes::{}", ep.name),
+                    "module_id": format!("{prefix}.{}", ep.name),
+                    "target": format!("routes:{}", ep.name),
                     "description": ep.summary,
-                    "auto_schema": true,
-                    "tags": {
-                        let mut t = vec!["http".to_string()];
-                        t.extend(ep.methods.iter().map(|m| m.to_lowercase()));
-                        t
-                    },
-                    "metadata": {
-                        "http_path": ep.path,
-                        "http_methods": ep.methods,
-                    }
+                    "input_schema": input_schema(),
+                    "output_schema": {"type": "object"},
+                    "tags": tags(ep),
+                    "metadata": {"http_path": ep.path, "http_methods": ep.methods}
                 })
             })
             .collect();
@@ -522,70 +373,69 @@ The example below shows a minimal adapter for a popular web framework in each la
 
     ```python
     from fastapi import FastAPI
+
     from apcore import APCore
-    from apcore_fastapi import register_fastapi
+    from my_fastapi_adapter import register_fastapi
 
     app = FastAPI()
     client = APCore()
 
 
-    @app.get("/users/{user_id}")
+    @app.get("/users/{user_id}", summary="Get user information")
     def get_user(user_id: int) -> dict:
-        """Get user information."""
         return {"id": user_id, "name": "Alice"}
 
 
-    @app.post("/emails/send")
+    @app.post("/emails/send", summary="Send an email")
     def send_email(to: str, subject: str, body: str) -> dict:
-        """Send an email."""
         return {"success": True}
 
 
-    # One call to register every FastAPI route as an apcore module.
     register_fastapi(app, client)
 
-    # Now any apcore caller can invoke "api.get_user" / "api.send_email".
-    print(client.call("api.get_user", {"user_id": 42}))
+    # Any apcore caller can now invoke "api.get_user" / "api.send_email".
+    print(client.call("api.get_user", {"user_id": 42}))  # {'id': 42, 'name': 'Alice'}
     ```
 
 === "TypeScript"
 
     ```typescript
     import express from 'express';
+    import type { Request, Response } from 'express';
     import { APCore } from 'apcore-js';
-    import { registerExpress } from 'express-apcore';
+    import { registerExpress } from './express-adapter.js';
 
     const app = express();
     app.use(express.json());
     const client = new APCore();
 
-    app.get('/users/:user_id', (req, res) => {
-      // Expose this handler under the function name "getUser" for the adapter.
+    // Named handlers give readable module IDs: getUser -> api.get_user.
+    function getUser(req: Request, res: Response): void {
       res.json({ id: Number(req.params.user_id), name: 'Alice' });
-    });
+    }
 
-    app.post('/emails/send', (req, res) => {
-      const { to, subject, body } = req.body ?? {};
-      void to;
-      void subject;
-      void body;
+    function sendEmail(_req: Request, res: Response): void {
       res.json({ success: true });
-    });
+    }
 
-    // One call to register every Express route as an apcore module.
+    app.get('/users/:user_id', getUser);
+    app.post('/emails/send', sendEmail);
+
     registerExpress(app, client);
 
-    // Now any apcore caller can invoke "api.<route_name>".
-    const out = await client.call('api.getUser', { params: { user_id: 42 } });
-    console.log(out);
+    // Any apcore caller can now invoke "api.get_user" / "api.send_email".
+    console.log(await client.call('api.get_user', { params: { user_id: '42' } })); // { id: 42, name: 'Alice' }
     ```
 
 === "Rust"
 
     ```rust
+    // src/main.rs — Cargo.toml: apcore, axum, serde_json, tokio
+    mod adapter; // the adapter code above, in src/adapter.rs
+
+    use adapter::{register_axum, AxumEndpoint};
     use apcore::APCore;
     use axum::{routing::get, routing::post, Router};
-    use axum_apcore::adapter::{register_axum, AxumEndpoint};
     use serde_json::json;
 
     async fn get_user() -> &'static str {
@@ -603,7 +453,7 @@ The example below shows a minimal adapter for a popular web framework in each la
             .route("/users/{user_id}", get(get_user))
             .route("/emails/send", post(send_email));
 
-        // 2. Describe the endpoints for the adapter (kept in sync with the router).
+        // 2. Describe the same endpoints for the adapter.
         let endpoints = vec![
             AxumEndpoint {
                 path: "/users/{user_id}".into(),
@@ -619,7 +469,7 @@ The example below shows a minimal adapter for a popular web framework in each la
             },
         ];
 
-        // 3. Register every endpoint as an apcore module in one call.
+        // 3. Register every endpoint as an apcore module.
         let mut client = APCore::new();
         register_axum(&endpoints, &mut client, "api")?;
 
@@ -632,31 +482,36 @@ The example below shows a minimal adapter for a popular web framework in each la
     }
     ```
 
-## 6. Interaction with apcore Core
+## 6. Request Context
 
-Adapters interact with apcore core only through the following methods:
+When the adapter also serves HTTP requests through apcore, build one `Context` per request: the W3C `traceparent` header becomes the trace parent, the project's existing correlation header goes into `context.data["x-correlation-id"]`, and the authenticated user becomes the `Identity`. Pass that context to `client.call()`. [Integrating Existing Projects](./integrating-existing-projects.md) has the Django, Express and Axum versions; [features/identity-system.md](../features/identity-system.md) covers `Identity` and `ContextFactory`.
 
-| Interaction Method | Description |
+## 7. Interaction with apcore Core
+
+Adapters use only these parts of apcore:
+
+| Interaction | Use |
 |---------|------|
-| `module()` | Register functions as modules at runtime |
-| Binding YAML | Generate binding files for framework to load |
-| `Registry` API | Query and manage registered modules |
+| `module()` / `register()` | Register handlers as modules at runtime |
+| Binding YAML | Generate binding files for the binding loader |
+| `Registry` API | Query registered modules |
+| `Context.create` | Build the per-request context |
 
-Adapters **should not** directly operate on apcore internal components (such as SchemaLoader, internal implementation of Executor).
+Adapters do not reach into apcore internals such as the schema loader or the executor's pipeline.
 
-## 7. Testing Recommendations
+## 8. Testing Recommendations
 
-Adapters should include the following tests:
+Test at least:
 
-- Completeness of route scanning (whether endpoints are missed)
-- Correctness of type mapping (framework types → JSON Schema)
-- Validity of generated module IDs
-- Validity of Binding YAML (can be validated through `binding.schema.json`)
-- Integration tests with apcore Registry
+- Route scanning is complete (no endpoint missed).
+- Framework types map to the expected JSON Schema.
+- Generated module IDs are valid Canonical IDs.
+- Generated binding files validate against `schemas/binding.schema.json` and load with the SDK's binding loader.
+- An end-to-end call through apcore reaches the framework handler.
 
 ## Next Steps
 
-- [Creating Modules Guide](./creating-modules.md) - Learn about apcore module definition methods
-- [Module Interface](../features/module-interface.md) - Module Protocol contract
-- [PROTOCOL_SPEC §5.11](../spec/protocol-spec.md) - Functional module definition specification
-- [PROTOCOL_SPEC §5.12](../spec/protocol-spec.md) - External Schema binding specification
+- [Creating Modules Guide](./creating-modules.md) — module definition styles
+- [Module Interface](../features/module-interface.md) — the module contract
+- [features/decorator-bindings.md](../features/decorator-bindings.md) — `module()` and binding files
+- [protocol-spec §5.12](../spec/protocol-spec.md#512-external-schema-binding-external-schema-binding) — binding YAML format and target resolution

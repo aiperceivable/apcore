@@ -8,7 +8,7 @@
   "properties": {
     "spec_version": {
       "type": "string",
-      "description": "Declarative config spec version (DECLARATIVE_CONFIG_SPEC.md). Optional in 1.0 with deprecation warning if absent; mandatory in 1.1. Defaults to '1.0' when omitted.",
+      "description": "Binding file format version (protocol-spec §5.12.2). '1.0' is the only supported version. Optional: when absent it defaults to '1.0' and a warning is emitted.",
       "default": "1.0",
       "examples": ["1.0"]
     },
@@ -36,7 +36,7 @@
         },
         "target": {
           "type": "string",
-          "description": "Target callable path in format 'module.path:callable_name' or 'module.path:ClassName.method_name'. Pattern relaxed in 1.0 to admit TypeScript ESM specifiers (./relative, @scope/pkg) and Rust handler-map keys. SDKs MUST add language-specific security validation (e.g., reject '..' segments). See DECLARATIVE_CONFIG_SPEC.md §2.2.",
+          "description": "Target callable path in format 'module.path:callable_name' or 'module.path:ClassName.method_name'. Pattern relaxed in 1.0 to admit TypeScript ESM specifiers (./relative, @scope/pkg) and Rust handler-map keys. SDKs MUST add language-specific security validation (e.g., reject '..' segments). See protocol-spec §5.12.3.",
           "pattern": "^[@./a-zA-Z_][-@./a-zA-Z0-9_]*:[a-zA-Z_][a-zA-Z0-9_.]*$"
         },
         "description": {
@@ -52,7 +52,7 @@
           "description": "Output JSON Schema definition. Required if auto_schema is not true."
         },
         "auto_schema": {
-          "description": "Auto-derive schema from target's type declarations. Accepts: true (alias for 'permissive'), 'permissive' (native types as-is), 'strict' (OpenAI/Anthropic strict-schema-compatible: additionalProperties=false, all required, restricted type set). When omitted entirely AND no input_schema/output_schema/schema_ref present, behavior is implicit auto_schema:true (DECLARATIVE_CONFIG_SPEC.md §3.4).",
+          "description": "Auto-derive schema from target's type declarations. Accepts: true (alias for 'permissive'), 'permissive' (native types as-is), 'strict' (OpenAI/Anthropic strict-schema-compatible: additionalProperties=false, all required, restricted type set). When omitted entirely AND no input_schema/output_schema/schema_ref present, behavior is implicit auto_schema:true (protocol-spec §5.12.2).",
           "oneOf": [
             { "type": "boolean" },
             { "type": "string", "enum": ["true", "permissive", "strict"] }
@@ -74,7 +74,7 @@
         },
         "version": {
           "type": "string",
-          "description": "Module version. SemVer format enforced by default policy (apcore.validation.binding.version_require_semver: true) — set to false in apcore.yaml to allow alternative versioning (calver, internal schemes). See DECLARATIVE_CONFIG_SPEC.md §9.",
+          "description": "Module version. SemVer format enforced by default policy (apcore.validation.binding.version_require_semver: true) — set to false in apcore.yaml to allow alternative versioning (calver, internal schemes). See protocol-spec §9.1.2.",
           "default": "1.0.0",
           "examples": ["1.0.0", "2.1.0-beta.1"]
         },
@@ -239,7 +239,7 @@
       },
       "additionalProperties": {
         "$ref": "#/$defs/SurfaceOverride",
-        "description": "Future surfaces (e.g., display.graphql, display.http) validate against the SurfaceOverride contract. See DECLARATIVE_CONFIG_SPEC.md §3.6."
+        "description": "Future surfaces (e.g., display.graphql, display.http) validate against the SurfaceOverride contract. See protocol-spec §5.13."
       }
     },
     "Annotations": {

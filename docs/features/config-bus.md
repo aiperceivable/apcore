@@ -12,7 +12,7 @@ description: "Config Bus turns Config into a namespace registry: per-package nam
 
 The Config Bus (§9.4–§9.13) turns `Config` into an ecosystem-level namespace registry. Any package can register a named configuration namespace with optional JSON Schema validation, environment variable routing, default values, and hot-reload support. Multiple sources can be merged into a namespace at runtime (YAML files, in-memory dicts).
 
-Namespace mode is activated automatically when the loaded YAML contains a top-level `apcore:` key. Legacy mode (flat YAML) is fully backward compatible.
+Namespace mode is activated automatically when the loaded YAML contains a top-level `apcore:` key; otherwise the file is read in legacy (flat) mode, where the whole file is the `apcore` framework section.
 
 ## Concepts
 
@@ -84,7 +84,7 @@ Namespaces are registered globally (class-level) before loading a config file. T
 
 When `env_prefix` is not provided (or `None`), it is auto-derived from the namespace name:
 
-```
+```text
 name.upper().replace("-", "_")
 
 "myapp"      → "MYAPP"
@@ -366,7 +366,7 @@ When `defaults` is not provided, auto falls back entirely to nested behavior.
 
 Single `_` → `.` (section separator), double `__` → literal `_`:
 
-```
+```text
 MYAPP_API_TIMEOUT=60         → myapp.api.timeout
 MYAPP_API_SERVER__URL=http:  → myapp.api.server_url
 ```
@@ -375,7 +375,7 @@ MYAPP_API_SERVER__URL=http:  → myapp.api.server_url
 
 No conversion. Suffix lowercased as-is:
 
-```
+```text
 MYAPP_DEVTO_API_KEY=abc → myapp.devto_api_key
 MYAPP_LLM_MODEL=gemini  → myapp.llm_model
 ```
@@ -392,7 +392,7 @@ MYAPP_LLM_MODEL=gemini  → myapp.llm_model
 
 Limits the nesting depth for `nested` and `auto` styles. Default: **5**. After `max_depth` segments, remaining `_` characters are preserved as literal underscores.
 
-```
+```text
 max_depth=5 (default):
   A_B_C_D_E_F_G → a.b.c.d.e_f_g  (5 segments, F_G kept literal)
 
@@ -406,7 +406,7 @@ Ignored for `flat` style.
 
 From highest to lowest:
 
-```
+```text
 env_map / env_prefix overrides  >  YAML file  >  namespace defaults
 ```
 
@@ -470,6 +470,7 @@ env_map / env_prefix overrides  >  YAML file  >  namespace defaults
 
     let plugin_cfg = config.namespace("my-plugin");
     let timeout: u64 = config.get_typed("my-plugin.timeout")?;
+    let port = config.get("port"); // from global env_map
 
     #[derive(serde::Deserialize)]
     struct PluginConfig { timeout: u64, retries: u32 }
@@ -483,13 +484,19 @@ Attach data from a file or in-memory dict to a namespace. Mounted data is merged
 === "Python"
 
     ```python
-    config.mount("my-plugin", source={"timeout": 10000})        # dict source
-    config.mount("my-plugin", source="./my-plugin.yaml")         # file source
+    from apcore import Config
+
+    config = Config.load("apcore.yaml")
+    config.mount("my-plugin", from_dict={"timeout": 10000})    # dict source
+    config.mount("my-plugin", from_file="./my-plugin.yaml")    # file source
     ```
 
 === "TypeScript"
 
     ```typescript
+    import { Config } from 'apcore-js';
+
+    const config = Config.load('apcore.yaml');
     config.mount('my-plugin', { fromDict: { timeout: 10000 } });
     config.mount('my-plugin', { fromFile: './my-plugin.yaml' });
     ```
@@ -497,7 +504,11 @@ Attach data from a file or in-memory dict to a namespace. Mounted data is merged
 === "Rust"
 
     ```rust
-    config.mount("my-plugin", MountSource::Dict(data))?;
+    use apcore::{Config, MountSource};
+    use std::path::Path;
+
+    let mut config = Config::load(Path::new("apcore.yaml"))?;
+    config.mount("my-plugin", MountSource::Dict(serde_json::json!({ "timeout": 10000 })))?;
     config.mount("my-plugin", MountSource::File("./my-plugin.yaml".into()))?;
     ```
 
@@ -522,20 +533,32 @@ Re-read the source YAML, re-detect mode, re-apply namespace defaults, env overri
 === "Python"
 
     ```python
+    from apcore import Config
+
+    config = Config.load("apcore.yaml")
     config.reload()
     ```
 
 === "TypeScript"
 
     ```typescript
+    import { Config } from 'apcore-js';
+
+    const config = Config.load('apcore.yaml');
     config.reload();
     ```
 
 === "Rust"
 
     ```rust
-    config.reload()?;
+    use apcore::Config;
+    use std::path::Path;
+
+    let mut config = Config::load(Path::new("apcore.yaml"))?;
+    config.reload()?; // `reload_from_disk()` is an alias
     ```
+
+`reload()` fails with `CONFIG_NOT_FOUND` when the file has disappeared and `CONFIG_INVALID` when it no longer parses or validates; a `Config` that was not loaded from a file cannot be reloaded.
 
 ## Built-in Namespaces (§9.15)
 
@@ -548,16 +571,19 @@ apcore pre-registers two namespaces at startup:
 
 ## Config Discovery (§9.14)
 
-`Config.discover()` (or `Config.load()` with no path) searches these locations in order:
+`Config.load()` with no path searches these locations in order (first match wins):
 
 1. `$APCORE_CONFIG_FILE` environment variable (any path/filename)
 2. `./project.yaml`
 3. `./project.yml`
 4. `./apcore.yaml`
 5. `./apcore.yml`
-6. `~/.config/apcore/config.yaml` (XDG)
+6. `~/.config/apcore/config.yaml` — user level (`~/Library/Application Support/apcore/config.yaml` on macOS)
+7. `~/.apcore/config.yaml` — legacy user level
 
-Falls back to `Config.from_defaults()` if nothing is found.
+If nothing is found it returns `Config.from_defaults()` without error. The tier that produced the file also decides the project root that relative path-typed keys resolve against (§9.2.2).
+
+The discovery entry point differs by SDK: Python exposes the search as the module function `discover_config_file()` (returns the path or `None`); TypeScript has `Config.discover()`; Rust has `Config::discover()` and `Config::load_or_discover()`.
 
 **Any YAML filename works** when loaded explicitly:
 
@@ -569,7 +595,7 @@ Falls back to `Config.from_defaults()` if nothing is found.
 
     Config.load("my-custom-config.yaml")              # explicit path
     os.environ["APCORE_CONFIG_FILE"] = "custom.yaml"  # via env var
-    Config.discover()                                  # auto-discovery
+    Config.load()                                      # auto-discovery
     ```
 
 === "TypeScript"
@@ -598,7 +624,7 @@ Falls back to `Config.from_defaults()` if nothing is found.
 
 ### Legacy Mode
 
-Standard flat YAML — backward compatible with all previous apcore versions:
+Flat YAML; the whole file is the `apcore` framework section:
 
 ```yaml
 version: "1.0.0"
@@ -617,7 +643,7 @@ apcore:
   version: "1.0.0"
 
 _config:
-  strict: true   # Reject unknown namespace keys
+  strict: true   # Reject unregistered namespaces and undeclared framework keys
 
 bindings:
   dir: "./bindings"
@@ -628,11 +654,74 @@ my-plugin:
   retries: 5
 ```
 
-The `_config` reserved namespace controls validation behavior. `strict: true` causes `validate()` to reject unknown top-level keys.
+The `_config` reserved namespace controls validation behaviour — see [Meta-configuration (`_config`)](#meta-configuration-_config).
+
+## Meta-configuration (`_config`)
+
+The reserved `_config` namespace controls the Config Bus itself (PROTOCOL_SPEC §9.6.3). Packages cannot register it.
+
+```yaml
+_config:
+  strict: false        # default
+  allow_unknown: true  # default; only consulted when strict is false
+```
+
+| `strict` | `allow_unknown` | Unregistered namespace in the file | Result |
+|---|---|---|---|
+| `true` | *(ignored)* | `billing: {db: ...}` | `CONFIG_INVALID`: namespace `billing` is not registered |
+| `false` | `true` | `billing: {db: ...}` | Stored and readable through `get()`, not validated; one warning per load names every such namespace |
+| `false` | `false` | `billing: {db: ...}` | Dropped: not stored, `get("billing.db")` returns the default |
+
+- `strict: true` also rejects any key inside a framework section that `schemas/apcore-config.schema.json` does not declare, in both modes.
+- `allow_unknown` applies to namespace mode only. In legacy mode the file root is the `apcore` section, so an unknown top-level key is a framework key and is never dropped.
+- A file with no `_config` block gets the defaults (`strict: false`, `allow_unknown: true`) (D-69).
+
+## Pipeline section (`pipeline:`)
+
+A `pipeline:` section in `apcore.yaml` reshapes the execution pipeline. When a caller does not pass an explicit strategy, the executor builds its strategy from this section (PROTOCOL_SPEC §5.16 requirement 6, D-72):
+
+```yaml
+pipeline:
+  remove: [approval_gate]          # drop built-in steps by name
+  configure:
+    input_validation:              # only match_modules, ignore_errors, pure, timeout_ms
+      timeout_ms: 2000
+  steps:
+    - name: audit_log
+      type: audit_log      # a step type registered in code with register_step_type()
+      after: acl_check     # every custom step needs `after` or `before`
+```
+
+`remove` runs first, then `configure`, then `steps`. A custom step is resolved from `type` (a step type registered with `register_step_type` / `registerStepType`); `handler: "module.path:ClassName"` is a dynamic-import alternative in Python and TypeScript and a parse-time error in Rust. Any unknown step name, anchor or field is a startup error (`PIPELINE_CONFIGURATION_ERROR`). Removing `acl_check` or `approval_gate` is allowed but logs a warning once per configuration load. The limits `validation.pipeline.step_name_max_length` and `validation.pipeline.timeout_ms_max` apply. See [Execution Pipeline](./execution-pipeline.md) for the step model.
+
+## Deprecated and inert keys
+
+Every key in `schemas/apcore-config.schema.json` is accepted, but 16 of them are read by no SDK: setting them has no effect. The authoritative record is `conformance/config_key_consumers.json`. The keys in the first group emit a deprecation warning, once per configuration load, when a loaded document declares them (§9.2.4); all keep parsing and validating until v2.0.
+
+| Key | Status | Use instead |
+|---|---|---|
+| `acl.default_effect` | deprecated, warns | `default_effect` in the ACL file |
+| `acl.audit.enabled` | deprecated, warns | `audit.enabled` in the ACL file (§6.3.2) |
+| `acl.audit.include_denied` | deprecated, warns | `audit.include_denied` in the ACL file |
+| `acl.audit.log_level` | deprecated, warns | `audit.log_level` in the ACL file |
+| `logging.level` | deprecated, warns | construct a `ContextLogger` and pass it to `ObsLoggingMiddleware(logger=...)`; log from modules through the host application's logger (D-67) |
+| `logging.format` | deprecated, warns | as for `logging.level` |
+| `observability.metrics.enabled` | deprecated, warns | pass a `MetricsCollector` to the client (`APCore(metrics_collector=...)`) |
+| `observability.metrics.exporter` | deprecated, warns | construct the exporter (e.g. `PrometheusExporter`) in code |
+| `extensions.lazy_load` | inert | — (discovery runs on an explicit `discover()` call) |
+| `extensions.namespace` | inert | — |
+| `id_map.auto_detect` | inert | — (a configured ID map is always applied) |
+| `middleware.disabled` | inert | remove middleware in code, or remove steps with `pipeline.remove` |
+| `project.version` | inert | — |
+| `sys_modules.usage.bucketing_strategy` | inert | — |
+| `sys_modules.usage.retention_hours` | inert | — |
+| `$schema` | inert by design | an editor hint; never read at runtime |
+
+`extensions.auto_discover` is **partial**: only `validate()` reads it (for a semantic warning). Setting it to `false` does not stop discovery.
 
 ## Contract: Config.validate
 
-`validate()` enforces the same required-field set and value constraints in **all three SDKs**, in both legacy and namespace mode. Any violation is reported as `ConfigError(code=CONFIG_INVALID)`. (Prior to this contract each SDK enforced a different subset, so the same config could pass in one SDK and fail in another — implementations MUST converge on the set below.)
+`validate()` enforces the same required-field set and value constraints in all three SDKs, in both legacy and namespace mode. Any violation is reported with code `CONFIG_INVALID`.
 
 ### Inputs
 
@@ -652,18 +741,14 @@ A key is required **only when it has no canonical default** (PROTOCOL_SPEC §9.1
 - `version`
 - `project.name`
 
-`extensions.root`, `schema.root`, `acl.root` and `acl.default_effect` were previously on this list. They all carry defaults in `schemas/defaults.schema.json`, so requiring them rejected configurations the framework resolves perfectly well; they were removed from `schemas/apcore-config.schema.json`'s `required` array for the same reason.
-
-**Requiredness is evaluated against the declared document, before the default table is merged.** An implementation that deep-merges its defaults into the parsed document and *then* checks for required fields can never fail the check — the merge has already supplied every key. That is not validation, it is dead code that looks like validation, and it is how all three SDKs came to ship a required-field list that could not fire. Each SDK exposes the pre-merge view for this purpose (`Config.get_declared()` / `getDeclared()`).
-
-A consequence worth stating: a defaults-only configuration (`Config.from_defaults()`) declares nothing, so `validate()` on it MUST fail. The no-config bootstrap path is unaffected — `Config.load()` with no discoverable file returns the defaults without validating them.
+**Requiredness is evaluated against the declared document, before the default table is merged** — after the merge every key is present and the check could never fail. Each SDK exposes the pre-merge view (`Config.get_declared()` / `getDeclared()`).
 
 ### Value constraints
 Out-of-range values MUST be rejected with `CONFIG_INVALID`:
 
 | Key | Constraint |
 |-----|------------|
-| `acl.default_effect` | one of `allow`, `deny` |
+| `acl.default_effect` | one of `allow`, `deny` (the key itself is inert — see [Deprecated and inert keys](#deprecated-and-inert-keys)) |
 | `observability.tracing.sampling_rate` | number `0.0 ≤ x ≤ 1.0` |
 | `extensions.max_depth` | integer in `[1, 16]` (discovery-recursion safety cap) |
 | `executor.default_timeout`, `executor.global_timeout` | integer `≥ 0` (milliseconds) |
@@ -673,17 +758,13 @@ Out-of-range values MUST be rejected with `CONFIG_INVALID`:
 | `sys_modules.events.thresholds.error_rate` | number `0.0 ≤ x ≤ 1.0` |
 | `sys_modules.events.thresholds.latency_p99_ms` | number `> 0` |
 
-> ⚠️ Booleans are rejected for all numeric fields.
->
-> **`middleware.circuit_breaker.*` is not a configuration namespace.** Earlier revisions listed four such keys here, and all three SDKs validated them — but `apcore-config.schema.json` declares `MiddlewareConfig` as `{ disabled }` with `additionalProperties: false`, so a config that set them was *rejected by the canonical schema and accepted by every SDK*, then ignored at runtime: no SDK ever read them. They have been removed from all three constraint tables. A circuit breaker is configured through its constructor options (`open_threshold` 0.5, `window_size` 20, `recovery_window_ms` 30000, `min_samples` 5 — identical in all three SDKs) or through the declarative middleware-chain config, which is per-entry rather than global.
+Booleans are rejected for all numeric fields.
+
+There is no `middleware.circuit_breaker.*` configuration: a circuit breaker is configured through its constructor options (`open_threshold` 0.5, `window_size` 20, `recovery_window_ms` 30000, `min_samples` 5).
 
 ### Namespace mode (additional)
 - For each registered namespace that declares a JSON Schema, the namespace subtree MUST validate against that schema; a failure is `CONFIG_INVALID`.
 - Under `_config.strict: true`, an unregistered top-level namespace MUST be rejected with `CONFIG_INVALID`.
-
-> **This applies to the value-constraint table above, not to the required-field set.** Every constraint listed is enforced by all three SDKs; an implementation missing one aligns **up**, and dropping a constraint weakens the configuration gate.
->
-> The required-field set is governed by a different rule and was deliberately narrowed — see above. It is anchored to PROTOCOL_SPEC §9.1 ("required only when no canonical default exists"), **not** to any reference SDK. An earlier revision of this contract anchored it to `apcore-python` as "the superset"; that was a mistake, because Python's required-field check was unreachable dead code — it merged its defaults in before checking. Deferring to whichever SDK enforces the most is only sound when that SDK's enforcement actually runs.
 
 ### Errors
 
@@ -695,7 +776,7 @@ A violation of any rule above is reported with error code **`CONFIG_INVALID`**. 
 | apcore-typescript | throws `ConfigError`, same code |
 | apcore-rust | returns `Err(ModuleError)` carrying the equivalent code — there is **no** `ConfigError` type in apcore-rust |
 
-An implementation **MUST NOT** report a validation failure under any other code, and **MUST NOT** report the first violation only when several are present if its host language can carry a list — the value of `validate()` is telling an operator everything that is wrong in one pass.
+An implementation **MUST NOT** report a validation failure under any other code, and **MUST NOT** report only the first violation when several are present if its host language can carry a list.
 
 ### Returns
 
@@ -707,7 +788,7 @@ On success the method yields nothing. The shape is the language's idiomatic "not
 | apcore-typescript | `validate(): void` |
 | apcore-rust | `pub fn validate(&self) -> Result<(), ModuleError>` — success is `Ok(())` |
 
-Rust returns a `Result` because it signals failure by return value rather than by unwinding; Python and TypeScript signal by raising. Both satisfy this contract. An SDK **MUST NOT** return a boolean or a "list of problems" in place of raising or returning an error — a caller that forgets to inspect it gets a silently invalid configuration, which is the failure mode this method exists to prevent.
+An SDK **MUST NOT** return a boolean or a "list of problems" in place of raising or returning an error — a caller that forgets to inspect it would get a silently invalid configuration.
 
 ### Properties
 
@@ -717,13 +798,11 @@ Rust returns a `Result` because it signals failure by return value rather than b
 - `idempotent`: `true` — repeated calls on an unchanged `Config` yield the same outcome.
 - `reentrant`: `true`.
 
-!!! warning "A defaults-only `Config` MUST fail validation"
-    `Config.from_defaults()` declares nothing, so the required-field check — which
-    reads the **declared** view — finds neither `version` nor `project.name`. That
-    is intended, and it is the observable difference between "the framework can
-    run with defaults" and "this configuration was written down". The no-config
-    bootstrap path is unaffected: `Config.load()` with no discoverable file
-    returns the defaults **without** validating them.
+!!! warning "A defaults-only `Config` fails validation"
+    `Config.from_defaults()` declares nothing, so the required-field check finds
+    neither `version` nor `project.name`. The no-config bootstrap path is
+    unaffected: `Config.load()` with no discoverable file returns the defaults
+    **without** validating them.
 
 ## Introspection
 
@@ -985,7 +1064,7 @@ Rust returns a `Result` because it signals failure by return value rather than b
 
 ### Errors
 - `ConfigNotFoundError(code=CONFIG_NOT_FOUND)` — path was provided but does not exist on disk
-- `ConfigInvalidError(code=CONFIG_INVALID)` — file exists but is not valid YAML or its structure cannot be parsed
+- `ConfigError(code=CONFIG_INVALID)` — the file is not valid YAML, is not a mapping, or fails validation (Python / TypeScript; Rust returns `Err(ModuleError)` with `ErrorCode::ConfigInvalid`)
 
 ### Returns
 - On success: `Config` instance with namespace data, env overrides, and defaults merged
@@ -996,30 +1075,16 @@ Rust returns a `Result` because it signals failure by return value rather than b
 - pure: false (reads filesystem and environment variables)
 - idempotent: true (loading the same file twice produces equivalent Config instances)
 
-## Registered-namespace defaults do not answer for a legacy document
+## Registered-namespace defaults apply in namespace mode only
 
-> **Added in spec v1.51.0** (D-117).
-
-A namespace registration's `defaults` tree is consulted by `get()` **only in
-namespace mode**. In legacy mode a key that no namespace owns resolves from the
-document and the canonical default table alone.
-
-apcore-rust consulted the registrations in both modes, so a legacy `apcore.yaml`
-mentioning no `sys_modules` block answered `168` for
-`sys_modules.usage.retention_hours` where apcore-python and apcore-typescript
-answered null. §9.6.3's reading is that a legacy document has no namespaces at
-all — so a namespace registration, which is a declaration ABOUT a namespace,
-has nothing to say about one. `bind()` and `namespace()` inherit this, being
-built on the same layer.
+A namespace registration's `defaults` tree is consulted by `get()`, `namespace()` and `bind()` **only in namespace mode**. In legacy mode a key resolves from the document and the canonical default table alone (D-117).
 
 ## Contract: Config.get
 
 ### Inputs
 - `key` (str/string/&str, required) — dot-path key (e.g., `"my-plugin.timeout"` or `"port"`). An empty
-  string is **not** an error: it resolves no value and therefore returns `default` (or `None`/`null`),
-  exactly like any other absent key. See D-74 — this row previously claimed the empty string was
-  "rejected with `ValueError`/`ConfigInvalidError`", which contradicted this block's own `### Errors`
-  row and described behaviour no SDK has ever had.
+  string is not an error: it resolves no value and returns `default` (or `None`/`null`) like any other
+  absent key (D-74).
 - `default` (Any/unknown/Value, optional) — value returned when key is absent; when absent and key is missing, returns `None`/`null`/`None`
 
 ### Errors
@@ -1071,7 +1136,7 @@ built on the same layer.
 
 ### Inputs
 - `namespace` (str/string/&str, required) — target namespace; must NOT be `"_config"` (reserved)
-- `source` (dict/object/MountSource, required) — either an in-memory dict or a path to a YAML file (relative paths resolved from CWD)
+- `source` (required) — an in-memory mapping or a path to a YAML file (relative paths resolved from CWD): keyword `from_dict=` / `from_file=` (Python), `{ fromDict }` / `{ fromFile }` (TypeScript), `MountSource::Dict` / `MountSource::File` (Rust)
 
 ### Errors
 - `ConfigMountError(code=CONFIG_MOUNT_ERROR)` — namespace is `_config`; or source is a file path that does not exist; or file is not a valid YAML mapping
@@ -1092,7 +1157,7 @@ built on the same layer.
 
 ### Errors
 - `ConfigNotFoundError(code=CONFIG_NOT_FOUND)` — source file no longer exists
-- `ConfigInvalidError(code=CONFIG_INVALID)` — source file is now invalid YAML
+- `ConfigError(code=CONFIG_INVALID)` — source file is now invalid YAML or fails validation (Rust: `ModuleError` with `ErrorCode::ConfigInvalid`; a `Config` not loaded from a file returns `ErrorCode::ReloadFailed`)
 
 ### Returns
 - On success: void/None/() — config is refreshed from disk; env overrides and mounts are re-applied
@@ -1107,7 +1172,7 @@ built on the same layer.
 
 | File | Purpose |
 |------|---------|
-| `src/apcore/config.py` (Python) | `Config` class, `register_namespace()`, `env_map()`, `namespace()`, `bind()`, `mount()` |
+| `src/apcore/config.py` (Python) | `Config` class, `register_namespace()`, `env_map()`, `namespace()`, `bind()`, `mount()`, `discover_config_file()` |
 | `src/config.ts` (TypeScript) | `Config` class with identical API shape |
 | `src/config.rs` (Rust) | `Config` struct, `NamespaceRegistration`, `EnvStyle`, `MountSource`, `ConfigMode` |
 
@@ -1120,5 +1185,7 @@ built on the same layer.
 - **Mount:** dict mount merge, file mount parse, `_config` rejection, missing file error.
 - **Bind:** successful deserialization, bind error on invalid data.
 - **Mode detection:** legacy YAML activates legacy mode, `apcore:` key activates namespace mode.
-- **Config discovery:** `$APCORE_CONFIG_FILE` env precedence, CWD candidates, XDG path, fallback to defaults.
+- **Config discovery:** `$APCORE_CONFIG_FILE` env precedence, CWD candidates, user-level and legacy user-level paths, fallback to defaults.
+- **Meta-configuration:** `strict` rejection, `allow_unknown: false` dropping, `allow_unknown: true` warning.
+- **Deprecated keys:** the warning fires once per load for declared keys only.
 - **Hot reload:** changes in YAML picked up, mounts re-applied.

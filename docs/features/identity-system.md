@@ -1,26 +1,26 @@
 ---
-description: "Immutable Identity (id, type, roles, attrs) for the caller, attached to Context and propagated to children; consumed by ACL for type/role decisions; ContextFactory extracts from HTTP."
+description: "Immutable Identity (id, type, roles, attrs) for the caller, attached to Context and propagated to children; consumed by ACL for type/role decisions; ContextFactory extracts it from requests."
 ---
 
 # Identity System
 
 <!-- preamble-tier-doc -->
-> **Type:** Implementation guide. **Normative spec:** [PROTOCOL_SPEC](../spec/protocol-spec.md) §5.7 Context Object (`identity` sub-schema).
+> **Type:** Implementation guide. **Normative spec:** [PROTOCOL_SPEC](../spec/protocol-spec.md) §5.7 Context Parameter Specification (`identity` sub-schema).
 
 
 ## Overview
 
-The Identity System provides a structured representation of the caller's identity that flows through the execution pipeline. Every module call can carry an `Identity` describing who (or what) initiated the request — whether a human user, a service account, or an AI agent. The identity is immutable, attached to the `Context`, and consumed by the ACL System for access control decisions.
+The Identity System gives the caller a structured representation that flows through the execution pipeline. A module call can carry an `Identity` describing who — or what — initiated it: a human user, a service account, an AI agent. The identity is immutable, attached to the `Context`, inherited by child calls, and consumed by the ACL System for access-control decisions.
 
 ## Requirements
 
-- Provide an immutable `Identity` data structure with `id`, `type`, `roles`, and `attrs` fields.
-- The `type` field **MUST** default to `"user"` and accept any string. Well-known types include `user`, `service`, `ai`, `system`, and `anonymous`.
-- The `roles` field **MUST** be an immutable sequence (tuple/readonly array) of role name strings.
-- The `attrs` field **MUST** be an immutable dictionary for arbitrary key-value metadata.
+- Provide an immutable `Identity` with `id`, `type`, `roles`, and `attrs` fields.
+- The `type` field **MUST** default to `"user"` and accept any string.
+- The `roles` field **MUST** be an immutable sequence (tuple / frozen array / owned `Vec` behind a getter) of role names.
+- The `attrs` field **MUST** be an immutable map of arbitrary key-value metadata.
 - Identity **MUST** be attachable to a `Context` and propagated to child contexts.
-- Identity **MUST** integrate with the ACL System for identity-type-based and role-based access control decisions.
-- Provide a `ContextFactory` protocol for web framework integrations to extract `Identity` from HTTP requests.
+- Identity **MUST** integrate with the ACL System for identity-type and role conditions.
+- Provide a `ContextFactory` interface for integrations that build a `Context` from a runtime request.
 
 ## Technical Design
 
@@ -28,51 +28,59 @@ The Identity System provides a structured representation of the caller's identit
 
 === "Python"
     ```python
-    from dataclasses import dataclass
+    from dataclasses import dataclass, field
     from typing import Any
 
     @dataclass(frozen=True)
     class Identity:
-        id: str                          # Unique identifier
-        type: str = "user"               # Identity type
-        roles: tuple[str, ...] = ()      # Immutable role list
-        attrs: dict[str, Any] = {}       # Additional attributes (frozen via dataclass)
+        id: str                                             # Unique identifier
+        type: str = "user"                                  # Identity type
+        roles: tuple[str, ...] = ()                         # Stored as a tuple
+        attrs: dict[str, Any] = field(default_factory=dict) # Copied on construction
     ```
+
+    `roles` passed as a list is converted to a tuple, and `attrs` is copied, so mutating the caller's objects afterwards does not change the identity.
 === "TypeScript"
     ```typescript
+    // Shape of the frozen Identity class. The package root exports it as a
+    // type; construct instances with createIdentity().
     interface Identity {
         readonly id: string;
-        readonly type: string;               // Default: "user"
-        readonly roles: readonly string[];
-        readonly attrs: Readonly<Record<string, unknown>>;
+        readonly type: string;                              // Default: "user"
+        readonly roles: readonly string[];                  // Frozen copy
+        readonly attrs: Readonly<Record<string, unknown>>;  // Frozen copy
+        getAttr<T = unknown>(key: string, defaultValue?: T): T | undefined;
     }
 
-    function createIdentity(
+    declare function createIdentity(
         id: string,
-        type?: string,      // Default: "user"
+        type?: string,                  // Default: "user"
         roles?: string[],
         attrs?: Record<string, unknown>,
     ): Identity;
-    // Returns a frozen Identity object
     ```
 === "Rust"
     ```rust
-    use std::collections::HashMap;
     use apcore::Identity;
+    use std::collections::HashMap;
 
-    // Fields are private; use getters to access
-    let identity = Identity::new(
-        "user-123".to_string(),
-        "user".to_string(),
-        vec!["admin".to_string()],
-        HashMap::new(),
-    );
+    fn main() {
+        // Fields are private; read them through getters.
+        let identity = Identity::new(
+            "user-123".to_string(),
+            "user".to_string(),
+            vec!["admin".to_string()],
+            HashMap::new(),
+        );
 
-    identity.id()             // -> &str
-    identity.identity_type()  // -> &str  (default: "user")
-    identity.roles()          // -> &[String]
-    identity.attrs()          // -> &HashMap<String, Value>
+        let _id: &str = identity.id();
+        let _kind: &str = identity.identity_type();
+        let _roles: &[String] = identity.roles();
+        let _attrs = identity.attrs(); // &HashMap<String, serde_json::Value>
+    }
     ```
+
+All three expose `get_attr(key)` (`getAttr` in TypeScript) for reading a single attribute.
 
 ### Well-Known Identity Types
 
@@ -80,30 +88,26 @@ The Identity System provides a structured representation of the caller's identit
 |------|-------------|-------------|
 | `user` | Human user (default) | Web app users, CLI operators |
 | `service` | Service account | Microservices, background jobs |
-| `ai` | AI agent or LLM | Autonomous agents, chatbots |
-| `system` | Framework-internal | System modules, health checks |
-| `anonymous` | No authenticated identity | Public endpoints, unauthenticated callers |
+| `agent` / `ai` | AI agent or LLM | Autonomous agents, chatbots |
+| `api_key` | Caller authenticated by an API key | Programmatic clients |
+| `system` | Framework-internal | System modules, health checks; matched by the `@system` ACL pattern |
 
-!!! note
-    The `type` field is a free-form string. The values above are the well-known conventions surfaced in the JSON Schema `examples` (protocol-spec.md §5.7). Applications **MAY** define custom types — implementations do not validate the value against the conventions list.
+The `type` field is a free-form string; the values above are the conventions listed in the §5.7 schema `examples`. Applications **MAY** define their own types — implementations do not validate the value. An unauthenticated caller is represented by **no identity** (`identity` is null), not by a special type.
 
-### Equality and hashability
+### Equality and Hashability
 
-`Identity` is a value type. Equality is **structural** — two identities are equal iff `id`, `type`, `roles`, and `attrs` are equal as deep value comparisons. Hashability is **implementation-defined per language**:
+`Identity` is a value type. Equality is **structural** — two identities are equal when `id`, `type`, `roles` and `attrs` are equal. Hashability differs per language (D-26):
 
-- **Rust**: `Identity` derives `Hash` and `Eq`; safe to use as a `HashMap` key.
-- **Python**: `Identity` is a frozen dataclass, but the `attrs: dict` field makes it not hashable by default; cross-language code SHOULD NOT rely on `hash(identity)` portability.
-- **TypeScript**: object literal; equality and hashing are caller's responsibility (use a stable serialization or a structural-equality helper).
-
-Resolved per `docs/spec/2026-05-decision-log.md` D-26.
+- **Rust**: derives `PartialEq`/`Eq` and implements `Hash` (attributes are hashed in key order), so it can be used as a `HashMap` key.
+- **Python**: a frozen dataclass whose `attrs` field is a `dict`, so `hash(identity)` raises `TypeError`; cross-language code SHOULD NOT rely on hashing identities.
+- **TypeScript**: a frozen class instance; `===` compares references, so structural equality and hashing are the caller's responsibility (for example via a stable serialization).
 
 ### Usage with Context
 
 === "Python"
     ```python
-    from apcore.context import Context, Identity
+    from apcore import Context, Identity
 
-    # Create identity
     admin = Identity(
         id="admin@example.com",
         type="user",
@@ -111,12 +115,12 @@ Resolved per `docs/spec/2026-05-decision-log.md` D-26.
         attrs={"department": "engineering"},
     )
 
-    # Attach to context
+    # Attach to a context
     ctx = Context.create(identity=admin)
     print(ctx.identity.id)      # "admin@example.com"
     print(ctx.identity.roles)   # ("admin", "operator")
 
-    # Identity propagates to child contexts
+    # The identity propagates to child contexts
     child = ctx.child("target.module")
     assert child.identity is ctx.identity
     ```
@@ -124,7 +128,6 @@ Resolved per `docs/spec/2026-05-decision-log.md` D-26.
     ```typescript
     import { Context, createIdentity } from "apcore-js";
 
-    // Create identity
     const admin = createIdentity(
         "admin@example.com",
         "user",
@@ -132,39 +135,42 @@ Resolved per `docs/spec/2026-05-decision-log.md` D-26.
         { department: "engineering" },
     );
 
-    // Attach to context
+    // Attach to a context
     const ctx = Context.create(admin);
     console.log(ctx.identity?.id);    // "admin@example.com"
     console.log(ctx.identity?.roles); // ["admin", "operator"]
 
-    // Identity propagates to child contexts
+    // The identity propagates to child contexts
     const child = ctx.child("target.module");
-    // child.identity === ctx.identity
+    console.log(child.identity === ctx.identity); // true
     ```
 === "Rust"
     ```rust
-    use apcore::context::{Context, Identity};
+    use apcore::{Context, Identity};
+    use serde_json::{json, Value};
     use std::collections::HashMap;
 
-    // Create identity
-    let admin = Identity::new(
-        "admin@example.com".to_string(),
-        "user".to_string(),
-        vec!["admin".to_string(), "operator".to_string()],
-        HashMap::from([("department".to_string(), serde_json::json!("engineering"))]),
-    );
+    fn main() {
+        let admin = Identity::new(
+            "admin@example.com".to_string(),
+            "user".to_string(),
+            vec!["admin".to_string(), "operator".to_string()],
+            HashMap::from([("department".to_string(), json!("engineering"))]),
+        );
 
-    // Attach to context
-    let ctx = Context::create(Some(admin), None, None, None, Value::Null, None);
-    println!("{}", ctx.identity.as_ref().unwrap().id()); // "admin@example.com"
+        // Attach to a context
+        let ctx: Context<Value> = Context::create(Some(admin), None, None, None, Value::Null, None);
+        println!("{}", ctx.identity.as_ref().map(|i| i.id()).unwrap_or_default()); // "admin@example.com"
 
-    // Identity propagates to child contexts
-    let child = ctx.child("target.module");
+        // The identity propagates to child contexts
+        let child = ctx.child("target.module");
+        assert_eq!(child.identity, ctx.identity);
+    }
     ```
 
 ### Integration with ACL
 
-The ACL System uses the Identity for access control decisions. ACL rules can match against identity properties:
+The ACL evaluates rules against the caller and, through conditions, against the identity:
 
 **Identity type conditions:**
 ```yaml
@@ -176,41 +182,44 @@ rules:
       identity_types: ["user"]   # Only human users can call admin modules
 ```
 
-**Role-based conditions:**
+**Role conditions:**
 ```yaml
 rules:
   - callers: ["*"]
     targets: ["billing.*"]
     effect: allow
     conditions:
-      roles: ["finance", "admin"]   # Requires one of these roles
+      roles: ["finance", "admin"]   # The identity must hold at least one of these roles
 ```
 
-**Special patterns:**
+**Special caller patterns:**
+
 | Pattern | Matches |
 |---------|---------|
-| `@external` | Calls with no identity (`identity is None`) |
-| `@system` | Calls where `identity.type == "system"` |
+| `@external` | Calls with no `caller_id` — top-level calls from outside any module. It is the sentinel the ACL substitutes for a null `caller_id`, whether or not the call carries an identity. |
+| `@system` | Calls whose `identity.type` is `"system"` |
 
-See [ACL System](./acl-system.md) for full condition syntax.
+See [ACL System](./acl-system.md) for the full condition syntax.
 
-### ContextFactory Protocol
+### ContextFactory
 
-The `ContextFactory` protocol enables web framework integrations to extract `Identity` from incoming HTTP requests:
+A `ContextFactory` turns a runtime-specific request (a Django `HttpRequest`, an Express `Request`, an Axum extractor) into a `Context`, extracting the identity on the way.
 
 === "Python"
     ```python
-    from apcore.context import ContextFactory, Context, Identity
-    from typing import Protocol, runtime_checkable
+    from typing import Any
 
-    @runtime_checkable
-    class ContextFactory(Protocol):
-        def create_context(self, request: Any) -> Context: ...
+    from apcore import Context, Identity
+    from apcore.context import ContextFactory
 
-    # Example: Django integration
+
     class DjangoContextFactory:
-        def create_context(self, request) -> Context:
+        """Satisfies the ContextFactory protocol."""
+
+        def create_context(self, request: Any) -> Context:
             user = request.user
+            if not user.is_authenticated:
+                return Context.create()  # no identity; the ACL decides
             identity = Identity(
                 id=str(user.id),
                 type="user",
@@ -218,76 +227,89 @@ The `ContextFactory` protocol enables web framework integrations to extract `Ide
                 attrs={"email": user.email},
             )
             return Context.create(identity=identity)
+
+
+    factory: ContextFactory = DjangoContextFactory()
     ```
 === "TypeScript"
     ```typescript
     import { Context, createIdentity } from "apcore-js";
     import type { ContextFactory } from "apcore-js";
 
-    // Example: Express integration
-    class ExpressContextFactory implements ContextFactory {
-        createContext(request: any): Context {
-            const user = request.user;
-            const identity = createIdentity(
-                user.id,
-                "user",
-                user.roles,
-                { email: user.email },
-            );
+    interface ExpressLikeRequest {
+        user?: { id: string; roles: string[]; email: string };
+    }
+
+    export class ExpressContextFactory implements ContextFactory {
+        createContext(request: unknown): Context {
+            const user = (request as ExpressLikeRequest).user;
+            if (user === undefined) {
+                return Context.create(); // no identity; the ACL decides
+            }
+            const identity = createIdentity(user.id, "user", user.roles, { email: user.email });
             return Context.create(identity);
         }
     }
     ```
 === "Rust"
     ```rust
-    use apcore::context::{Context, ContextFactory, Identity};
+    use apcore::errors::ModuleError;
+    use apcore::{Context, ContextFactory, Identity};
+    use async_trait::async_trait;
+    use serde_json::Value;
     use std::collections::HashMap;
+
+    struct AxumRequest {
+        user_id: Option<String>,
+    }
 
     struct AxumContextFactory;
 
+    #[async_trait]
     impl ContextFactory for AxumContextFactory {
-        fn create_context(&self, request: &dyn std::any::Any) -> Context<serde_json::Value> {
-            // Extract identity from framework-specific request type
-            let identity = Identity::new(
-                "extracted-user-id".to_string(),
-                "user".to_string(),
-                vec!["viewer".to_string()],
-                HashMap::new(),
-            );
-            Context::create(Some(identity), None, None, None, Value::Null, None)
+        type Request = AxumRequest;
+
+        async fn create_context(&self, request: AxumRequest) -> Result<Context<Value>, ModuleError> {
+            // An unauthenticated request still yields a usable Context with no identity.
+            let identity = request
+                .user_id
+                .map(|id| Identity::new(id, "user".to_string(), vec![], HashMap::new()));
+            Ok(Context::create(identity, None, None, None, Value::Null, None))
         }
     }
+
+    fn main() {}
     ```
 
 ### Serialization
 
-Identity is included when a Context is serialized (e.g., for distributed tracing across service boundaries):
+The identity is included when a Context is serialized for cross-process transfer:
 
 ```json
 {
-  "trace_id": "a1b2c3d4-...",
+  "_context_version": 1,
+  "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736",
+  "caller_id": null,
+  "call_chain": [],
   "identity": {
     "id": "admin@example.com",
     "type": "user",
     "roles": ["admin", "operator"],
     "attrs": {"department": "engineering"}
   },
-  "_context_version": 1
+  "data": {}
 }
 ```
 
-On deserialization, the Identity is reconstructed from the serialized form.
+Deserialization rebuilds the `Identity` from this object. See [Context Object §Serialization](./context-object.md#serialization).
 
 ## Dependencies
 
 - **Context** — Identity is a field on the Context object.
-- **ACL System** — Consumes identity type and roles for access control decisions.
-- **Observability** — Identity information (id, type) is included in trace spans and structured logs.
+- **ACL System** — Consumes the identity type and roles in rule conditions.
 
 ??? info "Python SDK reference"
-    The following table is **not a protocol requirement** — it documents the Python SDK's source layout for implementers/users of `apcore-python`.
-
-    **Source files:**
+    Not a protocol requirement — the Python SDK's source layout for users of `apcore-python`.
 
     | File | Purpose |
     |------|---------|
@@ -295,56 +317,31 @@ On deserialization, the Identity is reconstructed from the serialized form.
 
 ## Testing Strategy
 
-- **Immutability tests** verify that Identity fields cannot be modified after creation.
-- **Default tests** verify that `type` defaults to `"user"` and `roles`/`attrs` default to empty.
+- **Immutability tests** verify that Identity fields cannot be modified after creation, including through the caller's original `roles` / `attrs` objects.
+- **Default tests** verify that `type` defaults to `"user"` and `roles` / `attrs` default to empty.
 - **Context propagation tests** verify that Identity propagates through `Context.child()`.
-- **Serialization tests** verify round-trip serialization/deserialization of Identity within Context.
-- **ACL integration tests** verify that identity type conditions and role conditions produce correct allow/deny decisions.
-- **ContextFactory tests** verify that custom factories produce valid Context objects with correctly extracted Identity.
+- **Serialization tests** verify round-trip serialization of Identity within Context.
+- **ACL integration tests** verify identity-type and role conditions and the `@external` / `@system` patterns.
+- **ContextFactory tests** verify that factories produce valid Contexts, including for unauthenticated requests.
 
 ## Contract: ContextFactory.create_context
 
-> **Rewritten in spec v1.49.0** (D-76). The previous Inputs row declared
-> `(identity, caller_id, data)` — a factory **no SDK ever built**, and one that
-> misses the point of the interface. `ContextFactory` exists so a web-framework
-> integration can turn a *runtime-specific request* into a `Context`, extracting
-> the identity along the way; a signature that already takes an `Identity` has
-> had that work done for it and has nothing left to do. apcore-python and
-> apcore-typescript both take a single opaque request. apcore-rust took
-> `(identity, services)` while its own doc comment asserted the canonical name
-> was `create_context(request)`.
-
 ### Inputs
-- `request` (Any/unknown/generic, required) — the runtime-specific request object
-  (a Django `HttpRequest`, an Express `Request`, an Axum extractor, …). It is
-  **opaque to apcore**: the implementation, not the protocol, knows how to read it.
+- `request` (Any / unknown / associated type, required) — the runtime-specific request object. It is **opaque to apcore**: the implementation, not the protocol, knows how to read it. Rust expresses it as the trait's associated type `Request` (D-76).
 
 ### Errors
-- No errors raised under normal operation. Invalid or missing identity fields are
-  sanitized to the `@external` anonymous identity rather than rejected — a request
-  that cannot be authenticated still produces a usable, unprivileged `Context`, and
-  the ACL's default-deny then governs what it may reach.
-- An implementation whose request parsing can genuinely fail (I/O during extraction,
-  for example) MAY declare a fallible return; it **MUST NOT** use that channel to
-  report "not authenticated", which is the `@external` case above.
+- No errors under normal operation. A request that cannot be authenticated is **not** an error: the factory returns a usable Context with no identity, and the ACL's `@external` rules and default-deny govern what it may reach. An implementation MUST NOT synthesize an `Identity` for it (D-103).
+- An implementation whose extraction can genuinely fail (I/O during extraction, for example) MAY declare a fallible return — Rust returns `Result<Context<Value>, ModuleError>` — but MUST NOT use that channel to report "not authenticated".
 
 ### Returns
-- On success: `Context` — an initialized execution context carrying a freshly
-  assigned trace ID and the extracted caller identity.
+- A `Context` carrying a fresh `trace_id` and the extracted identity (or none).
 
 ### Properties
-- async: false for implementations whose extraction is pure (apcore-python,
-  apcore-typescript). An implementation MAY declare it async where the host
-  ecosystem's request handling is inherently asynchronous (apcore-rust's trait is
-  `#[async_trait]`); that is a language-ecosystem allowance, and it does **not**
-  license changing the parameter away from `request`.
+- async: false in Python and TypeScript; `async` in Rust (`#[async_trait]`), where request handling is inherently asynchronous. The parameter is the request in every SDK.
 - thread_safe: true
 - pure: false (generates a new trace ID on each call)
 - idempotent: false
 
 ### Additional members
 
-An implementation MAY expose further factory members (apcore-rust has `create` and
-`create_child`). Those are additive and unconstrained by this contract — but
-`create_context(request)` **MUST** be present and **MUST** take the request, so a
-context factory written against the spec ports across SDKs.
+An implementation MAY expose further factory members — apcore-rust provides `create(identity, services)` and `create_child(parent, module_name)` with default implementations. They are additive and unconstrained by this contract; `create_context(request)` **MUST** be present so a factory written against the spec ports across SDKs.

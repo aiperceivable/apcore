@@ -15,7 +15,7 @@ apcore also accepts a function-based form (`@module` decorator or `module(callab
 
 ## Requirements
 
-- Every module MUST declare an `input_schema` and `output_schema` (Pydantic `BaseModel` in Python, Zod schema in TypeScript, serde-derived struct in Rust).
+- Every module MUST declare an `input_schema` and `output_schema` (a Pydantic `BaseModel` class in Python, a TypeBox schema in TypeScript, a JSON Schema `serde_json::Value` in Rust).
 - Every module MUST provide a `description` (≤200 chars, plain text) sourced from a docstring or explicit attribute.
 - Every module MUST implement an `execute(inputs, context) -> outputs` method (sync or async — the framework auto-detects).
 - Modules MAY implement `validate()`, `preflight()`, `describe()`, `stream()` for additional capabilities.
@@ -23,7 +23,7 @@ apcore also accepts a function-based form (`@module` decorator or `module(callab
 - Modules MAY annotate behavior via `ModuleAnnotations` (read-only / destructive / idempotent / requires_approval / open_world / streaming / cacheable / paginated, plus an `extra` dict for ecosystem extensions).
 - Modules MAY supply `examples`, `tags`, `name`, `version`, and a free-form `metadata` dict.
 - Function-based modules MUST have type annotations on all parameters and the return value; the framework auto-generates the schemas from the signature.
-- The framework MUST validate structural conformance at registration time and reject modules missing required attributes.
+- Discovery rejects a module that is missing a required member (it is logged and skipped); in Rust the compiler enforces the `Module` trait.
 
 ## Technical Design
 
@@ -32,14 +32,14 @@ apcore also accepts a function-based form (`@module` decorator or `module(callab
 Modules MUST NOT inherit from an ABC. The framework checks for the required attributes and methods (`input_schema`, `output_schema`, `description`, `execute`) using language-appropriate structural mechanisms:
 
 - **Python** — `typing.Protocol` with `@runtime_checkable`.
-- **TypeScript** — Structural interfaces; conformance verified at registration via attribute checks.
+- **TypeScript** — Structural interfaces; discovery checks for the required members.
 - **Rust** — `Module` trait with required methods; the compiler enforces conformance.
 
 ### Required Attributes
 
 | Attribute | Constraint |
 |-----------|-----------|
-| `input_schema` | Schema type (Pydantic `BaseModel` / Zod schema / serde struct). Every field MUST have a `description`. |
+| `input_schema` | Schema type (Pydantic `BaseModel` / TypeBox schema / JSON Schema `Value`). Every field MUST have a `description`. |
 | `output_schema` | Same constraints as `input_schema`. The `execute()` return value MUST validate against it. |
 | `description` | Plain text, ≤200 chars. Sourced from class docstring or explicit attribute. Describes "what / when / key features". |
 | `documentation` | Optional. Markdown, ≤5000 chars. Used for richer AI-facing documentation. |
@@ -108,6 +108,8 @@ new.on_resume(state)              ← restore state (only if state is not None)
 
 `on_suspend()` return values MUST be JSON-serializable. `on_resume()` MUST tolerate missing or extra keys (versions may differ). Hook exceptions are logged but do not block reload.
 
+Which of these hooks a file-watch reload actually calls depends on the SDK — only apcore-python's `watch()` runs the full sequence above; see [Registry hot reload](./registry-system.md#hot-reload-development-mode). `system.control.reload_module` calls `on_suspend` / `on_resume` in every SDK.
+
 ### Optional Methods
 
 | Method | Purpose |
@@ -116,8 +118,8 @@ new.on_resume(state)              ← restore state (only if state is not None)
 | `preview(inputs, context) -> dict` | Returns a "low-fidelity" result without performing side effects. Used by AI agents to verify their plan before execution. |
 | `preflight(inputs, context) -> list[str]` | Advisory warnings emitted during `Executor.validate()`. Does NOT block execution. |
 | `describe() -> dict` | Module metadata for introspection. Used by `system.manifest`. Default returns `{description, input_schema, output_schema, annotations}`. |
-| `stream(inputs, context) -> AsyncIterator[dict]` | Streaming output. When defined, `Executor.stream()` calls this instead of `execute()`. Modules implementing `stream()` MUST satisfy the [`StreamingModule` interface](./streaming.md#streaming-module-interface-issue-62) for their target language (Python Protocol with `@runtime_checkable`; TypeScript interface + `Symbol.for("apcore.streaming")` marker; Rust `trait StreamingModule: Module`). Modules implementing `stream()` SHOULD set `annotations.streaming = True`. |
-| `as_streaming() -> Optional[StreamingModule]` (Rust only) | Trait-object accessor on the base `Module` trait for adapter / bridge code that needs a typed `&dyn StreamingModule` handle. Default returns `None`; streaming modules override to return `Some(self)`. MUST stay consistent with `Module::stream()` — both return `Some(_)` or both return `None` per module. See [Streaming Module Interface](./streaming.md#streaming-module-interface-issue-62). |
+| `stream(inputs, context) -> AsyncIterator[dict]` | Streaming output. When defined, `Executor.stream()` calls this instead of `execute()`. Modules implementing `stream()` MUST satisfy the [`StreamingModule` interface](./streaming.md#streaming-module-interface) for their target language (Python Protocol with `@runtime_checkable`; TypeScript interface + `Symbol.for("apcore.streaming")` marker; Rust `trait StreamingModule: Module`). Modules implementing `stream()` SHOULD set `annotations.streaming = True`. |
+| `as_streaming() -> Optional[StreamingModule]` (Rust only) | Trait-object accessor on the base `Module` trait for adapter / bridge code that needs a typed `&dyn StreamingModule` handle. Default returns `None`; streaming modules override to return `Some(self)`. MUST stay consistent with `Module::stream()` — both return `Some(_)` or both return `None` per module. See [Streaming Module Interface](./streaming.md#streaming-module-interface). |
 
 ### Sync / Async Execution
 
@@ -141,24 +143,7 @@ If a parameter is declared as `context: Context`, the framework auto-injects the
 
 For full grammar details and decorator semantics, see [PROTOCOL_SPEC §5.11](../spec/protocol-spec.md) and [Decorator & YAML Bindings](./decorator-bindings.md).
 
-> **D-115 (v1.51.0) — a malformed annotation value is tolerated and dropped,
-> never fabricated and never fatal.** Three SDKs produced three outcomes for the
-> same wire input. Given `{"readonly": true, "extra": "oops"}` — `extra` present
-> but not an object — apcore-python coerced it to `{}`, apcore-typescript
-> object-spread the STRING and fabricated `{"0":"o","1":"o","2":"p","3":"s"}`,
-> and apcore-rust failed the deserialization, which because `ModuleAnnotations`
-> is nested in `ModuleDescriptor` discarded the WHOLE descriptor. Given
-> `{"cache_ttl": -5}`, two clamped with a warning and one failed outright.
->
-> The rule is apcore-python's: **coerce or drop the offending value, keep the
-> rest, warn**. TypeScript's output is worse than lenient — it is invented data
-> a caller cannot distinguish from a real declaration. Rust's is worse than
-> strict — one out-of-range integer removes an entire module.
->
-> A note for implementations whose integer types cannot represent the malformed
-> value: deserialize as a SIGNED integer first, then apply the range handling.
-> Declaring the field `u64` puts the failure before the clamp, so the clamp the
-> contract requires is unreachable.
+A malformed annotation value (for example a non-object `extra`, or a negative `cache_ttl`) is coerced or dropped with a warning; the rest of the annotations — and the module — are kept (D-115).
 
 ## Contract: Module conformance
 
@@ -198,7 +183,7 @@ A module is supplied to the framework either as a class implementing the module 
 
 ### Timeout semantics
 
-- Module execution SHOULD complete within the configured timeout (`resources.timeout`, default 30 000 ms; global `executor.global_timeout`, default 60 000 ms).
+- Module execution SHOULD complete within its timeout: the module's `resources.timeout` if declared, otherwise `executor.default_timeout` (default 30 000 ms); the whole call chain is bounded by `executor.global_timeout` (default 60 000 ms).
 - After timeout the framework MUST raise `MODULE_TIMEOUT`.
 - Modules SHOULD support cooperative cancellation by polling the cancellation signal exposed via `context`.
 
@@ -216,18 +201,18 @@ A module is supplied to the framework either as a class implementing the module 
 
 ### Errors
 
-- `MissingRequiredAttribute` — module lacks `input_schema`, `output_schema`, `description`, or `execute`.
-- `InvalidSchemaType` — schema attribute is not a recognized schema type.
-- `DescriptionTooLong` — `description` exceeds 200 chars.
-- `DocumentationTooLong` — `documentation` exceeds 5000 chars.
-- `InvalidAnnotations` — `annotations` not of type `ModuleAnnotations`.
-- `InvalidExample` — entry in `examples` missing `title` or `inputs`.
+The protocol defines no dedicated error class per conformance violation:
+
+- A module missing `input_schema`, `output_schema`, `description` or `execute` (or, in Python, whose schemas are not `BaseModel` classes) is rejected by discovery — logged and skipped, not registered. In Rust the compiler rejects it.
+- A module declaring `annotations.streaming = true` whose `stream()` does not match the streaming interface is rejected at registration with `STREAMING_INTERFACE_MISMATCH`.
+- A custom validator installed on the registry can reject a module at registration (`GENERAL_INVALID_INPUT` in Python and TypeScript, `MODULE_LOAD_ERROR` in Rust).
+- Input and output that fail their schemas raise `SCHEMA_VALIDATION_ERROR` at pipeline steps 7 and 9.
 
 ### Returns
 
 `execute()` MUST return a dict (or language-equivalent map) that validates against `output_schema`, subject to the constraints in *Return-value constraints* above (JSON-serializable; no functions or open connections). The optional surface methods return as follows:
 
-- `validate()` — no return value; raises on a conformance violation (see *Errors*).
+- `validate(inputs)` — a `ValidationResult` (`valid` plus per-field errors); side-effect free.
 - `preflight()` — advisory warnings; MUST NOT block execution.
 - `describe()` — an introspection dict.
 - `stream()` — an async iterator yielding partial dicts that the framework deep-merges into the final output.
@@ -243,17 +228,31 @@ The full required and optional method/attribute surface — including conformanc
 
 ## Usage
 
+The examples below use a stand-in `Mailer` so they run as written; replace it with a real SMTP client.
+
 === "Python"
 
     ```python
-    from typing import Any, ClassVar, Type
+    from typing import Any, ClassVar
+    import uuid
+
     from pydantic import BaseModel, Field
-    from apcore import Module, Context, ModuleAnnotations, ModuleExample
+
+    from apcore import Context, Module, ModuleAnnotations, ModuleExample
+
+
+    class Mailer:
+        """Stand-in for an SMTP client."""
+
+        def send(self, to: str, subject: str, body: str) -> str:
+            return f"msg_{uuid.uuid4().hex[:8]}"
+
+        def close(self) -> None:
+            pass
 
 
     class SendEmailInput(BaseModel):
-        to: str = Field(..., description="Recipient email address",
-                        pattern=r"^[\w\.-]+@[\w\.-]+\.\w+$")
+        to: str = Field(..., description="Recipient email address", pattern=r"^[\w\.-]+@[\w\.-]+\.\w+$")
         subject: str = Field(..., description="Email subject", max_length=200)
         body: str = Field(..., description="Email body")
         cc: list[str] = Field(default=[], description="CC list")
@@ -266,14 +265,12 @@ The full required and optional method/attribute surface — including conformanc
 
 
     class SendEmailModule(Module):
-        """Send email to specified recipient. Uses SMTP protocol."""
-
-        input_schema: ClassVar[Type[BaseModel]] = SendEmailInput
-        output_schema: ClassVar[Type[BaseModel]] = SendEmailOutput
+        input_schema = SendEmailInput
+        output_schema = SendEmailOutput
+        description = "Send email to specified recipient. Uses SMTP protocol."
 
         tags: ClassVar[list[str]] = ["email", "notification"]
         annotations = ModuleAnnotations(open_world=True)
-
         examples = [
             ModuleExample(
                 title="Send plain text email",
@@ -283,17 +280,17 @@ The full required and optional method/attribute surface — including conformanc
         ]
 
         def on_load(self) -> None:
-            self._smtp = self._connect()
+            self._mailer = Mailer()
 
         def on_unload(self) -> None:
-            self._smtp.close()
+            self._mailer.close()
 
         def execute(self, inputs: dict[str, Any], context: Context) -> dict[str, Any]:
             params = SendEmailInput(**inputs)
             try:
-                msg_id = self._smtp.send(params.to, params.subject, params.body)
+                msg_id = self._mailer.send(params.to, params.subject, params.body)
                 return {"success": True, "message_id": msg_id, "error": None}
-            except Exception as e:
+            except Exception as e:  # report delivery failures in the output
                 return {"success": False, "message_id": None, "error": str(e)}
     ```
 
@@ -302,6 +299,11 @@ The full required and optional method/attribute surface — including conformanc
     ```typescript
     import { Type } from '@sinclair/typebox';
     import { APCore, createAnnotations, type Context } from 'apcore-js';
+
+    // Stand-in for an SMTP client.
+    async function sendEmail(to: string, subject: string, body: string): Promise<string> {
+      return `msg_${Math.random().toString(16).slice(2, 10)}`;
+    }
 
     const SendEmailInput = Type.Object({
       to: Type.String({ format: 'email', description: 'Recipient email address' }),
@@ -312,7 +314,7 @@ The full required and optional method/attribute surface — including conformanc
 
     const SendEmailOutput = Type.Object({
       success: Type.Boolean({ description: 'Whether sending was successful' }),
-      messageId: Type.Union([Type.String(), Type.Null()], { description: 'Message ID' }),
+      message_id: Type.Union([Type.String(), Type.Null()], { description: 'Message ID' }),
       error: Type.Union([Type.String(), Type.Null()], { description: 'Error message' }),
     });
 
@@ -324,12 +326,12 @@ The full required and optional method/attribute surface — including conformanc
       inputSchema: SendEmailInput,
       outputSchema: SendEmailOutput,
       annotations: createAnnotations({ openWorld: true }),
-      async execute(inputs: { to: string; subject: string; body: string }, _ctx: Context) {
+      execute: async (inputs: Record<string, unknown>, _ctx: Context) => {
         try {
-          const messageId = await sendEmail(inputs.to, inputs.subject, inputs.body);
-          return { success: true, messageId, error: null };
+          const messageId = await sendEmail(String(inputs.to), String(inputs.subject), String(inputs.body));
+          return { success: true, message_id: messageId, error: null };
         } catch (e) {
-          return { success: false, messageId: null, error: String(e) };
+          return { success: false, message_id: null, error: String(e) };
         }
       },
     });
@@ -338,11 +340,20 @@ The full required and optional method/attribute surface — including conformanc
 === "Rust"
 
     ```rust
-    use apcore::{Context, Module};
     use apcore::errors::{ErrorCode, ModuleError};
+    use apcore::{Context, Module};
     use async_trait::async_trait;
-    use serde::{Deserialize, Serialize};
+    use serde::Deserialize;
     use serde_json::{json, Value};
+
+    /// Stand-in for an SMTP client.
+    pub struct Mailer;
+
+    impl Mailer {
+        fn send(&self, _to: &str, _subject: &str, _body: &str) -> Result<String, String> {
+            Ok("msg_123".to_string())
+        }
+    }
 
     #[derive(Debug, Deserialize)]
     pub struct SendEmailInput {
@@ -353,16 +364,8 @@ The full required and optional method/attribute surface — including conformanc
         pub cc: Vec<String>,
     }
 
-    #[derive(Debug, Serialize)]
-    pub struct SendEmailOutput {
-        pub success: bool,
-        pub message_id: Option<String>,
-        pub error: Option<String>,
-    }
-
-    /// Send email to specified recipient. Uses SMTP protocol.
     pub struct SendEmailModule {
-        smtp: SmtpClient,
+        mailer: Mailer,
     }
 
     #[async_trait]
@@ -402,22 +405,19 @@ The full required and optional method/attribute surface — including conformanc
             vec!["email".into(), "notification".into()]
         }
 
-        async fn execute(
-            &self,
-            inputs: Value,
-            _ctx: &Context<Value>,
-        ) -> Result<Value, ModuleError> {
+        async fn execute(&self, inputs: Value, _ctx: &Context<Value>) -> Result<Value, ModuleError> {
             let input: SendEmailInput = serde_json::from_value(inputs)
                 .map_err(|e| ModuleError::new(ErrorCode::GeneralInvalidInput, e.to_string()))?;
-            match self.smtp.send(&input.to, &input.subject, &input.body) {
-                Ok(message_id) => Ok(json!({
-                    "success": true, "message_id": message_id, "error": null
-                })),
-                Err(e) => Ok(json!({
-                    "success": false, "message_id": null, "error": e.to_string()
-                })),
+            match self.mailer.send(&input.to, &input.subject, &input.body) {
+                Ok(message_id) => Ok(json!({ "success": true, "message_id": message_id, "error": null })),
+                Err(e) => Ok(json!({ "success": false, "message_id": null, "error": e })),
             }
         }
+    }
+
+    fn main() {
+        let module = SendEmailModule { mailer: Mailer };
+        println!("{}", module.description());
     }
     ```
 
@@ -426,9 +426,12 @@ The full required and optional method/attribute surface — including conformanc
 === "Python"
 
     ```python
-    from apcore import module, Context
+    from apcore import Context, Registry, module
 
-    @module(id="email.send", tags=["email"])
+    registry = Registry()
+
+
+    @module(id="email.send", tags=["email"], registry=registry)
     def send_email(to: str, subject: str, body: str, context: Context) -> dict:
         """Send email to specified recipient."""
         # context is auto-injected; not part of input_schema
@@ -467,37 +470,40 @@ The full required and optional method/attribute surface — including conformanc
 === "Rust"
 
     ```rust
-    // Rust has no #[module] proc macro; register the function via APCore::module().
-    use apcore::{APCore, Context};
+    // Rust has no attribute macro; register a closure with APCore::module().
     use apcore::errors::ModuleError;
+    use apcore::{APCore, Context};
     use serde_json::{json, Value};
 
-    let mut client = APCore::new();
-    client.module(
-        "email.send",
-        "Send email to specified recipient",
-        json!({ "type": "object", "properties": {
-            "to": { "type": "string" }, "subject": { "type": "string" }, "body": { "type": "string" }
-        }, "required": ["to", "subject", "body"] }),
-        json!({ "type": "object", "properties": {
-            "success": { "type": "boolean" },
-            "message_id": { "type": ["string", "null"] },
-            "error": { "type": ["string", "null"] }
-        }, "required": ["success"] }),
-        None,
-        vec!["email".into()],
-        None,
-        None,
-        vec![],
-        None,
-        |_inputs: Value, _ctx: &Context<Value>| {
-            Box::pin(async move {
-                Ok::<Value, ModuleError>(json!({
-                    "success": true, "message_id": "msg_123", "error": null
-                }))
-            })
-        },
-    )?;
+    fn main() -> Result<(), ModuleError> {
+        let mut client = APCore::new();
+        client.module(
+            "email.send",
+            "Send email to specified recipient",
+            json!({ "type": "object", "properties": {
+                "to": { "type": "string" }, "subject": { "type": "string" }, "body": { "type": "string" }
+            }, "required": ["to", "subject", "body"] }),
+            json!({ "type": "object", "properties": {
+                "success": { "type": "boolean" },
+                "message_id": { "type": ["string", "null"] },
+                "error": { "type": ["string", "null"] }
+            }, "required": ["success"] }),
+            None,
+            vec!["email".into()],
+            None,
+            None,
+            vec![],
+            None,
+            |_inputs: Value, _ctx: &Context<Value>| {
+                Box::pin(async move {
+                    Ok::<Value, ModuleError>(json!({
+                        "success": true, "message_id": "msg_123", "error": null
+                    }))
+                })
+            },
+        )?;
+        Ok(())
+    }
     ```
 
 For YAML-based bindings and decorator details, see [Decorator & YAML Bindings](./decorator-bindings.md).
@@ -540,7 +546,7 @@ Optional method. A module that does not implement it is conformant; the framewor
 
 ## Contract: Module.as_streaming
 
-**SDK Scope:** Rust only. Python and TypeScript resolve the streaming surface structurally — a `@runtime_checkable` Protocol and a `Symbol.for("apcore.streaming")` marker respectively — so neither needs an accessor to obtain a typed handle. See [Streaming Module Interface](./streaming.md#streaming-module-interface-issue-62).
+**SDK Scope:** Rust only. Python and TypeScript resolve the streaming surface structurally — a `@runtime_checkable` Protocol and a `Symbol.for("apcore.streaming")` marker respectively — so neither needs an accessor to obtain a typed handle. See [Streaming Module Interface](./streaming.md#streaming-module-interface).
 
 ### Inputs
 - No inputs (a `&self` accessor on the base `Module` trait)

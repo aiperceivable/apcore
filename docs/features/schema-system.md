@@ -1,5 +1,5 @@
 ---
-description: "Schema loading, validation, $ref resolution bridging YAML to runtime model classes; strategies yaml_first/native_first/yaml_only, x-* extensions, export to MCP/OpenAI/Anthropic formats."
+description: "Schema loading, validation, $ref resolution bridging YAML to runtime schema objects; strategies yaml_first/native_first/yaml_only, x-* extensions, strict-mode export, export to MCP/OpenAI/Anthropic formats."
 ---
 
 # Schema System
@@ -10,495 +10,206 @@ description: "Schema loading, validation, $ref resolution bridging YAML to runti
 
 ## Overview
 
-The Schema System provides complete schema loading, validation, `$ref` resolution, and export capabilities for structured module interfaces in apcore. It serves as the bridge between human-authored YAML schema definitions and the runtime model classes used by the executor for input/output validation. The system also supports exporting schemas to multiple LLM provider formats, enabling modules to describe their interfaces to external AI systems.
+The Schema System loads, validates, resolves (`$ref`) and exports the input/output schemas of apcore modules. It bridges human-authored YAML schema files and the runtime schema objects the executor validates against, and it exports schemas to LLM tool-calling formats.
 
 ## Requirements
 
-- Load module interface schemas from YAML files and convert them into validated, usable runtime representations.
-- Resolve `$ref` references within schemas, including nested and cross-file references. A self-reference (a recursive data structure) is preserved as a lazy reference; only a `$ref` → `$ref` chain that reaches no schema body is rejected as a circular reference. See PROTOCOL_SPEC §4.15 "Self-reference vs. circular reference".
-- Dynamically generate runtime model classes from JSON Schema definitions, supporting the full range of JSON Schema composition keywords (`oneOf`, `anyOf`, `allOf`). Each SDK MAY use its idiomatic validation library (e.g., Pydantic for Python, Zod for TypeScript, serde for Rust).
-- Validate arbitrary data against loaded schemas, providing clear and actionable error messages on failure.
-- Export schemas to multiple target formats: MCP, OpenAI, Anthropic, and a generic format, enabling integration with various LLM tool-calling interfaces.
-- Support LLM-specific extension fields (`x-*` fields) for annotating schemas with metadata such as sensitivity markers, display hints, and provider-specific instructions.
-- Provide configurable schema resolution strategies to control how YAML-defined and native (code-defined) schemas interact.
-- Cache loaded and generated schemas to avoid redundant parsing and model generation.
+- Load module schemas from YAML files and turn them into validated runtime representations.
+- Resolve `$ref` references, including nested and cross-file references. A self-reference (a recursive data structure) is preserved as a lazy reference; only a `$ref` → `$ref` chain that reaches no schema body is rejected as circular (PROTOCOL_SPEC §4.15).
+- Support the JSON Schema composition keywords (`oneOf`, `anyOf`, `allOf`, `not`). Each SDK uses its idiomatic representation: Pydantic models in Python, TypeBox schemas in TypeScript, `serde_json::Value` validated by the `jsonschema` crate (Draft 2020-12) in Rust.
+- Validate data against a schema and report failures as structured errors (PROTOCOL_SPEC §4.14).
+- Export schemas to the MCP, OpenAI, Anthropic and generic formats, including strict-mode export (§4.16).
+- Recognise the LLM extension fields (`x-*`) defined in §4.3.
+- Provide the three schema resolution strategies (§4.9).
+- Cache resolved schemas by content hash so identical schemas are compiled once.
 
-## Technical Design
+## Components
 
-### Components
+### SchemaLoader
 
-#### SchemaLoader (Primary Entry Point)
+`SchemaLoader` is the main entry point. It is constructed from a `Config` (reading `schema.root`, `schema.strategy` and `schema.max_ref_depth`), loads `<schema.root>/<module/id/path>.schema.yaml` for a module ID, resolves its `$ref`s and builds the runtime schema objects. The strategy decides how YAML and code-defined (native) schemas interact:
 
-The `SchemaLoader` is the main interface for loading schemas. It reads YAML schema files, resolves all `$ref` references, and generates runtime model classes from the resulting JSON Schema. It supports three resolution strategies:
-
-- **yaml_first** (default): Attempts to load from YAML; falls back to native schema if no YAML file exists.
-- **native_first**: Prefers the code-defined schema; falls back to YAML if no native schema is registered.
-- **yaml_only**: Only loads from YAML; raises an error if no YAML file is found.
-
-The loader maintains an internal cache keyed by schema path and strategy, so repeated loads of the same schema return the cached result without re-parsing.
-
-These strategies are defined as the `SchemaStrategy` enum:
+- **`yaml_first`** (default) — use the YAML file; fall back to the native schema if there is no YAML file.
+- **`native_first`** — use the native schema; fall back to YAML if none is registered.
+- **`yaml_only`** — use only YAML; raise `SCHEMA_NOT_FOUND` if the file is missing.
 
 === "Python"
     ```python
-    from apcore import SchemaStrategy
+    from apcore.schema import SchemaStrategy
 
-    class SchemaStrategy(str, Enum):
-        YAML_FIRST = "yaml_first"
-        NATIVE_FIRST = "native_first"
-        YAML_ONLY = "yaml_only"
+    strategy = SchemaStrategy.YAML_FIRST
+    # SchemaStrategy.NATIVE_FIRST, SchemaStrategy.YAML_ONLY
+    print(strategy.value)  # "yaml_first"
     ```
 === "TypeScript"
     ```typescript
     import { SchemaStrategy } from "apcore-js";
 
-    // "yaml_first" | "native_first" | "yaml_only"
-    const strategy: SchemaStrategy = "yaml_first";
+    const strategy: SchemaStrategy = SchemaStrategy.YAML_FIRST;
+    // SchemaStrategy.NATIVE_FIRST, SchemaStrategy.YAML_ONLY
+    console.log(strategy); // "yaml_first"
     ```
 === "Rust"
     ```rust
     use apcore::schema::SchemaStrategy;
 
-    let strategy = SchemaStrategy::YamlFirst;
-    // SchemaStrategy::NativeFirst
-    // SchemaStrategy::YamlOnly
+    fn main() {
+        let strategy = SchemaStrategy::YamlFirst;
+        // SchemaStrategy::NativeFirst, SchemaStrategy::YamlOnly
+        println!("{strategy:?}");
+    }
     ```
 
-#### ExportProfile Enum
+In practice the strategy is set with the `schema.strategy` config key rather than in code.
 
-The `ExportProfile` enum specifies which export format to use:
+### RefResolver
+
+`RefResolver` resolves `$ref` references:
+
+- Local references (`#/definitions/Foo`, `#/$defs/Foo`). A local reference is resolved against the schema file's root first, then against the schema node being resolved (D-104).
+- Relative-file references (`other.schema.yaml#/definitions/Bar`) and canonical references (`apcore://...`), resolved against `schema.root`.
+- Cycle classification: re-entering a reference along a `$ref` → `$ref` chain raises `SCHEMA_CIRCULAR_REF`; re-entering one after descending through a schema body is a self-reference and stays a lazy `$ref`.
+- A depth cap (`schema.max_ref_depth`, default `32`); exceeding it raises `SCHEMA_MAX_DEPTH_EXCEEDED`.
+
+Resolved fragments are inlined into a copy of the schema; the input document is never mutated.
+
+### SchemaValidator
+
+`SchemaValidator` validates data against a schema and returns a result object (`valid`, `errors`, plus an error code on failure) rather than raising. `validate_input` / `validate_output` are the raising variants the executor uses. See [Contract: SchemaValidator.validate](#contract-schemavalidatorvalidate).
+
+At the module-invocation boundary validation is strict: no type coercion is applied (TYPE_MAPPING §17.3). The validator's optional `coerce_types` flag is a library-level knob for callers validating their own untyped input, not something the executor enables.
+
+### SchemaExporter and ExportProfile
+
+`SchemaExporter.export(schema_def, profile, ...)` converts a schema definition into a target format selected by `ExportProfile` (§4.17):
+
+- **`mcp`** — MCP tool definition; keeps `x-*` fields and maps annotations to hints.
+- **`openai`** — OpenAI function-calling definition; strips `x-*`, applies strict mode.
+- **`anthropic`** — Anthropic tool-use definition.
+- **`generic`** — provider-neutral representation.
 
 === "Python"
     ```python
-    from apcore import ExportProfile
+    from apcore.schema import ExportProfile
 
-    class ExportProfile(str, Enum):
-        MCP = "mcp"
-        OPENAI = "openai"
-        ANTHROPIC = "anthropic"
-        GENERIC = "generic"
+    profile = ExportProfile.MCP
+    # ExportProfile.OPENAI, ExportProfile.ANTHROPIC, ExportProfile.GENERIC
+    print(profile.value)  # "mcp"
     ```
 === "TypeScript"
     ```typescript
     import { ExportProfile } from "apcore-js";
 
-    // "mcp" | "openai" | "anthropic" | "generic"
-    const profile: ExportProfile = "mcp";
+    const profile: ExportProfile = ExportProfile.MCP;
+    // ExportProfile.OPENAI, ExportProfile.ANTHROPIC, ExportProfile.GENERIC
+    console.log(profile); // "mcp"
     ```
 === "Rust"
     ```rust
     use apcore::schema::ExportProfile;
 
-    let profile = ExportProfile::Mcp;
-    // ExportProfile::OpenAi
-    // ExportProfile::Anthropic
-    // ExportProfile::Generic
+    fn main() {
+        let profile = ExportProfile::Mcp;
+        // ExportProfile::OpenAi, ExportProfile::Anthropic, ExportProfile::Generic
+        println!("{profile:?}");
+    }
     ```
 
-Pass an `ExportProfile` value to `SchemaExporter.export()` or `Registry.export_schema(profile=...)` to control the output format.
+`Registry.export_schema(module_id, strict)` exports a registered module's input and output schemas in the generic shape; pass `strict=true` to apply strict-mode conversion.
 
-#### RefResolver
+### LLM extension fields
 
-The `RefResolver` handles `$ref` resolution within JSON Schema documents. It supports:
+Schemas may carry the `x-*` fields defined in PROTOCOL_SPEC §4.3:
 
-- Local references (`#/definitions/Foo`).
-- Cross-file references (`other_schema.yaml#/definitions/Bar`).
-- Recursive resolution with cycle classification: a visited-set tracks resolution paths, and `max_depth=32` provides a hard limit to prevent runaway resolution. Re-entering a visited reference along a `$ref` → `$ref` chain raises `SCHEMA_CIRCULAR_REF`; re-entering one after descending through a schema body is a self-reference and is deferred instead.
+| Field | Purpose |
+|---|---|
+| `x-llm-description` | Description for LLM consumers; replaces `description` on export to AI formats |
+| `x-examples` | Example values |
+| `x-constraints` | Business rules JSON Schema keywords cannot express |
+| `x-sensitive` | Marks a field as sensitive; its value is redacted in logs, traces and `context.redacted_inputs` |
 
-When a `$ref` is resolved, the referenced schema fragment is inlined into the parent schema. The one exception is a self-reference, which stays a `$ref` node so that recursive documents remain finite — the schema-to-native converter binds those lazily against the document root (see "Recursive Schema Support" below).
+Unknown `x-*` keywords are ignored during validation (forward compatibility).
 
-#### SchemaValidator
+### Strict-mode export
 
-The `SchemaValidator` validates data dictionaries against loaded schemas. It wraps the underlying model validation with additional handling for apcore-specific extensions (such as `x-sensitive` field detection). Validation errors are collected and returned as structured objects rather than raising exceptions, enabling batch validation reporting.
-
-#### SchemaExporter
-
-The `SchemaExporter` converts loaded schemas into target-specific formats:
-
-- **MCP format**: Produces tool definitions compatible with the Model Context Protocol.
-- **OpenAI format**: Produces function-calling tool definitions for OpenAI's API.
-- **Anthropic format**: Produces tool definitions for Anthropic's tool-use API.
-- **Generic format**: A provider-agnostic representation suitable for custom integrations.
-
-Each export format strips or transforms `x-*` extension fields as appropriate for the target.
-
-#### SchemaAnnotations
-
-The `SchemaAnnotations` class manages field-level metadata extracted from `x-*` extension fields in the schema. Supported annotations include:
-
-- `x-sensitive`: Marks a field as containing sensitive data (used by the executor's redaction logic).
-- `x-display`: Hints for UI rendering.
-- `x-llm-description`: Instructions or context intended for LLM consumption.
-
-### Dynamic Model Generation
-
-The `SchemaLoader` converts JSON Schema definitions into runtime model classes (using each SDK's idiomatic validation library — e.g., Pydantic for Python, Zod for TypeScript, serde for Rust). This process handles:
-
-- Primitive types, arrays, objects, and nested objects.
-- `oneOf` / `anyOf` / `allOf` composition via union types and model inheritance.
-- Required vs. optional fields, default values, and constrained types (min/max, pattern, enum).
-- Custom validators injected for fields with `x-*` annotations.
-
-### Strict Mode
-
-The `strict` module provides a strict validation mode that rejects any fields not explicitly defined in the schema. This is useful for modules that require exact input shapes and must reject unexpected data to prevent injection or misconfiguration.
-
-### Data Flow
-
-1. A YAML schema file is located on disk (typically adjacent to the module definition).
-2. `SchemaLoader.load()` reads the YAML, parses it into a raw dictionary.
-3. `RefResolver.resolve()` walks the dictionary, inlining `$ref` targets — except self-references, which are preserved as lazy `$ref` nodes so recursive documents stay finite — and classifying `$ref` → `$ref` cycles as errors.
-4. The resolved dictionary is converted into a runtime model class.
-5. The model is cached and returned for use by the executor (validation) or exporter (format conversion).
-
-## Usage
+`to_strict_schema()` (Python, Rust) / `toStrictSchema()` (TypeScript) converts a schema to the form OpenAI and Anthropic require under `strict: true` (PROTOCOL_SPEC §4.16, Algorithm A23): every object schema gets `additionalProperties: false`, every property becomes required (optional ones become nullable), and `x-*` fields and `default` values are removed. It is an export transform — it does not change how the executor validates input.
 
 === "Python"
     ```python
-    from apcore import Config
-    from apcore.schema import ExportProfile, SchemaExporter, SchemaLoader, SchemaValidator
+    from apcore.schema import to_strict_schema
 
-    # The loader is constructed from a Config (it reads schema.root / schema.strategy)
-    # and load() takes a MODULE ID, not a file path.
-    loader = SchemaLoader(Config.load("apcore.yaml"))
-    schema_def = loader.load("executor.email.send_email")
-
-    # Validate data — validate(data, model), data first.
-    model = loader.generate_model(schema_def.input_schema, "SendEmailInput")
-    validator = SchemaValidator()
-    result = validator.validate({"to": "alice@example.com", "subject": "Hello"}, model)
-    if not result.valid:
-        print(f"Validation failed: {result.errors}")
-
-    # Export to MCP tool format — profile is positional.
-    exporter = SchemaExporter()
-    mcp_tool = exporter.export(schema_def, ExportProfile.MCP)
-    print(mcp_tool)  # {"name": "...", "description": "...", "inputSchema": {...}}
+    schema = {
+        "type": "object",
+        "properties": {
+            "to": {"type": "string", "x-examples": ["user@example.com"]},
+            "cc": {"type": "array", "items": {"type": "string"}, "default": []},
+        },
+        "required": ["to"],
+    }
+    strict = to_strict_schema(schema)
+    assert strict["additionalProperties"] is False
+    assert strict["required"] == ["cc", "to"]
+    assert strict["properties"]["cc"]["type"] == ["array", "null"]
     ```
 === "TypeScript"
     ```typescript
-    import { Config, ExportProfile, SchemaExporter, SchemaLoader, SchemaValidator } from "apcore-js";
+    import { toStrictSchema } from "apcore-js";
 
-    // The loader is constructed from a Config; load() takes a MODULE ID, not a path,
-    // and is synchronous.
-    const loader = new SchemaLoader(Config.load("apcore.yaml"));
-    const schemaDef = loader.load("executor.email.send_email");
-
-    // Validate data — validate(data, schema), data first; returns a result object.
-    const [inputSchema] = loader.resolve(schemaDef);
-    const validator = new SchemaValidator();
-    const result = validator.validate({ to: "alice@example.com", subject: "Hello" }, inputSchema);
-    if (!result.valid) {
-        console.error("Validation failed:", result.errors);
-    }
-
-    // Export to OpenAI function format — profile is positional.
-    const exporter = new SchemaExporter();
-    const openaiTool = exporter.export(schemaDef, ExportProfile.OPENAI);
-    console.log(openaiTool);
+    const schema = {
+      type: "object",
+      properties: {
+        to: { type: "string", "x-examples": ["user@example.com"] },
+        cc: { type: "array", items: { type: "string" }, default: [] },
+      },
+      required: ["to"],
+    };
+    const strict = toStrictSchema(schema);
+    console.log(strict.additionalProperties); // false
+    console.log(strict.required); // ["cc", "to"]
     ```
 === "Rust"
     ```rust
-    use apcore::schema::{ExportProfile, SchemaExporter, SchemaLoader, SchemaValidator};
-    use apcore::Config;
-
-    // with_config() wires schema.root / schema.strategy; load() takes a MODULE ID.
-    let config = Config::from_defaults();
-    let mut loader = SchemaLoader::with_config(&config, None);
-    let schema_def = loader.load("executor.email.send_email")?;
-
-    // Validate data — validate(value, schema), value first; returns ValidationResult.
-    let validator = SchemaValidator::new();
-    let result = validator.validate(
-        &serde_json::json!({"to": "alice@example.com", "subject": "Hello"}),
-        &schema_def.input_schema,
-    );
-    if !result.valid {
-        eprintln!("Validation failed: {:?}", result.errors);
-    }
-
-    // Export to Anthropic tool format — export() takes the schema Value + options.
-    let exporter = SchemaExporter::new();
-    let anthropic_tool = exporter.export(&schema_def.input_schema, ExportProfile::Anthropic, None)?;
-    println!("{anthropic_tool}");
-    ```
-
-## Dependencies
-
-- The **Executor** depends on the Schema System for input/output validation (pipeline steps 6 and 9).
-- The **Registry** uses the Schema System to load module schemas during discovery and to generate `ModuleDescriptor` objects.
-
-??? info "Python SDK reference"
-    The following tables are **not protocol requirements** — they document the Python SDK's source layout and runtime dependencies for implementers/users of `apcore-python`.
-
-    **Source files:**
-
-    | File | Lines | Purpose |
-    |------|-------|---------|
-    | `schema/loader.py` | 391 | Primary schema loading, YAML parsing, Pydantic model generation |
-    | `schema/ref_resolver.py` | 206 | `$ref` resolution with circular reference detection (max_depth=32) |
-    | `schema/validator.py` | 109 | Data validation against loaded schemas |
-    | `schema/exporter.py` | 99 | Schema export to MCP, OpenAI, Anthropic, and generic formats |
-    | `schema/types.py` | 109 | Shared type definitions and schema representation classes |
-    | `schema/strict.py` | 105 | Strict validation mode implementation |
-    | `schema/annotations.py` | 62 | Field-level `x-*` annotation extraction and management |
-
-    **Runtime dependencies:**
-
-    - `pydantic>=2.0` -- Runtime model generation and data validation.
-    - `pyyaml>=6.0` -- YAML schema file parsing.
-
-## Testing Strategy
-
-- **Loader tests** verify that YAML schemas are correctly parsed, that resolution strategies (`yaml_first`, `native_first`, `yaml_only`) behave as documented, and that caching prevents redundant work.
-- **RefResolver tests** cover local references, cross-file references, deeply nested references, and the self-reference / circular-reference split: a `$ref` re-entered through `properties` / `items` survives as a lazy reference, while a `$ref` → `$ref` cycle raises `SCHEMA_CIRCULAR_REF`. Edge cases include recursive `$id` / `#` / `#/$defs` documents and reference chains that reach the `max_depth=32` limit.
-- **Validator tests** exercise success and failure paths for all supported JSON Schema types, composition keywords (`oneOf`, `anyOf`, `allOf`), and strict mode rejection of unknown fields.
-- **Exporter tests** verify that each target format (MCP, OpenAI, Anthropic, generic) produces correct output and that `x-*` fields are appropriately handled per format.
-- **Model generation tests** confirm that dynamically created models enforce constraints (required fields, types, patterns, enums) and that `x-sensitive` annotations flow through to the executor's redaction logic.
-- Test naming follows the `test_<unit>_<behavior>` convention.
-
-## Contract: Schema.validate
-
-### Inputs
-- `data` (dict/object/Value, required) — data to validate
-- `schema` (dict/object/Value, required) — JSON Schema Draft 2020-12 schema object
-
-### Errors
-- None — `Schema.validate` does not raise. Failure is reported via the returned result object (D10-012). For a raise-on-failure variant, use `Schema.validate_input` / `Schema.validate_output` (Python+TS+Rust) or `validate_or_error` (Rust).
-
-### Returns
-- On success: `SchemaValidationResult { valid: true, errors: [] }` (Python+TS) or `ValidationResult { valid: true, errors: [] }` (Rust)
-- On failure: same result-object shape with `valid: false` and an `errors` array carrying per-failure detail objects.
-
-### Properties
-- async: false
-- thread_safe: true
-- pure: true (no side effects; deterministic given same data and schema)
-
-### Cross-language note
-
-All three SDKs return a result object rather than raising. Spec versions ≤ 0.20.0 incorrectly declared "void/None/() — raises on failure"; that text was implementation-incorrect across all SDKs and has been amended (D10-012). For the raise-on-failure semantic, use the dedicated `validate_input` / `validate_output` (or Rust `validate_or_error`) entry points which raise `SchemaValidationError(code=SCHEMA_VALIDATION_ERROR)` on a non-empty `errors` array.
-- idempotent: true
-
-## Contract: RefResolver — `$ref` resolution
-
-> **Spec amendment (D10-015).** Earlier drafts attributed `resolve_refs`
-> to the `Schema` class with a `(schema, base_uri)` signature. No SDK
-> exposes that surface. The actual `$ref` resolution lives on
-> `RefResolver` in each SDK with language-idiomatic shapes.
-
-### SDK surfaces
-
-| SDK | Class / location | Method | Inputs |
-|---|---|---|---|
-| Python | `apcore.schema.ref_resolver.RefResolver` (`apcore-python/src/apcore/schema/ref_resolver.py:46`) | `resolve_ref(ref, schema_root, ...)` | single `$ref` string + the schema document holding it |
-| TypeScript | `apcore-js/schema/ref-resolver.RefResolver` (`apcore-typescript/src/schema/ref-resolver.ts:39`) | `resolveRef(ref, schemaRoot, ...)` | same shape; camelCase |
-| Rust | `apcore::schema::ref_resolver::RefResolver` (`apcore-rust/src/schema/ref_resolver.rs:50`) | `resolve(schema)` | the full schema (no separate base_uri argument; bases are derived from `$id` claims encountered during traversal) |
-
-### Inputs
-
-The resolver is constructed with a schema search root and a recursion cap, then invoked per-reference (Python/TypeScript) or per-document (Rust).
-
-**Construction:**
-
-- `schemas_dir` / `schemasDir` (path, required — Python/TypeScript only) — root directory used to resolve relative-file and canonical (`apcore://...`) references. Resolved to an absolute path on construction. (Rust derives bases from `$id` claims encountered during traversal and takes no search-root argument.)
-- `max_depth` / `maxDepth` (integer, optional, default `32`) — maximum `$ref` recursion depth before `SCHEMA_MAX_DEPTH_EXCEEDED` is raised.
-
-**`resolve_ref(ref_string, current_file, ...)` / `resolveRef(refString, currentFile, ...)` (Python+TypeScript):**
-
-- `ref_string` / `refString` (string, required) — the single `$ref` to resolve. Supports local (`#/definitions/...`), relative-file, and canonical (`apcore://...`) reference forms.
-- `current_file` / `currentFile` (path or null, required) — the file the `$ref` was found in, used as the base for resolving relative references. `null` when resolving against an inline (in-memory) schema.
-- `visited_refs` / `visitedRefs` (set of strings, optional) — accumulated reference path used for cycle detection across recursive calls; callers normally omit it.
-- `depth` (integer, optional, default `0`) — current recursion depth, compared against `max_depth`; callers normally omit it.
-- `sibling_keys` / `siblingKeys` (object/map or null, optional) — keys that sat alongside the `$ref` and are merged onto the resolved target; callers normally omit it.
-
-**`resolve(schema)` (Rust, and the convenience whole-document method in Python+TypeScript):**
-
-- `schema` (object/map/`Value`, required) — the full schema document; every `$ref` it contains is resolved in a single traversal. The input document is never mutated (a resolved copy is returned).
-
-### Errors
-
-- `SchemaCircularRefError(code=SCHEMA_CIRCULAR_REF)` — a `$ref` → `$ref` cycle was detected. A self-reference is not an error; it resolves to a lazy `$ref` (PROTOCOL_SPEC §4.15).
-- `SchemaNotFoundError(code=SCHEMA_NOT_FOUND)` — a referenced schema cannot be resolved
-
-### Returns
-
-- On success: a schema with the requested `$ref` resolved inline, except for self-references, which are returned unchanged as lazy `$ref` nodes. Python+TypeScript variants resolve a single `$ref` per call (caller iterates); Rust resolves all `$ref` entries in one traversal.
-
-### Properties
-
-- async: false
-- thread_safe: true
-- pure: true
-- idempotent: true
-
----
-
-## Schema System Hardening (Issue #44)
-
-This section documents five normative hardening requirements introduced in Issue #44. Each requirement addresses a known behavioral gap across the Python, TypeScript, and Rust SDKs.
-
-### 1. Union Type Standardization
-
-**Problem:** Python and TypeScript currently short-circuit union evaluation — they test only the first branch of `anyOf`/`oneOf` and return success if it matches, without evaluating remaining branches. This causes `oneOf` to behave identically to `anyOf`, masking ambiguous schemas where multiple branches match.
-
-**Normative requirements:**
-
-Implementations MUST evaluate ALL branches of `anyOf`/`oneOf` before returning a result. An input MUST be accepted for `anyOf` if it matches at least one branch. An input MUST be accepted for `oneOf` if it matches exactly one branch. Implementations MUST NOT return success after testing only the first branch.
-
-For `oneOf`: if more than one branch matches, implementations MUST treat this as a validation error.
-
-These rules are **location-independent**. They apply wherever the keyword appears — at the document root, inside `properties`, inside `items`, inside `$defs`, and inside another combinator's branch — not only at the root. Two consequences follow, and both have been observed as real defects:
-
-- A converter that maps `oneOf` onto a host union type (`typing.Union`, TypeBox `Type.Union`, an untagged serde enum) MUST NOT rely on that type alone: those types have `anyOf` semantics, so exclusivity silently disappears at every nested position. The exclusivity check MUST live where the *nested* check runs, not only in the top-level validator entry point.
-- A root-level combinator has no owning property to hang the check on. Implementations MUST enforce it on the generated native model itself, so that **every** call path — the SDK's own validator, a direct `model_validate()` / `Value.Check()` on the generated model, and the executor's input/output validation step — sees the same result. Enforcing it only in the validator's entry point leaves the pipeline's own validation step bypassing it.
-
-!!! warning "Breaking change for existing modules using `oneOf`"
-    Schemas that relied on short-circuit `oneOf` evaluation — where multiple branches could match the same input — will begin failing validation after this change is applied. Authors MUST audit `oneOf` schemas to ensure branches are mutually exclusive.
-
-=== "Python"
-    ```python
-    from typing import Annotated, Union
-    from pydantic import BaseModel, Field, model_validator
-
-    class CircleShape(BaseModel):
-        kind: str = "circle"
-        radius: float
-
-    class RectShape(BaseModel):
-        kind: str = "rect"
-        width: float
-        height: float
-
-    # Pydantic discriminated union — evaluated exhaustively at model_validate time
-    Shape = Annotated[
-        Union[CircleShape, RectShape],
-        Field(discriminator="kind"),
-    ]
-
-    class DrawCommand(BaseModel):
-        shape: Shape
-
-    # anyOf: succeeds if any branch matches
-    result = DrawCommand.model_validate({"shape": {"kind": "circle", "radius": 5.0}})
-
-    # oneOf: Pydantic discriminated union enforces mutual exclusivity by key
-    # For non-discriminated oneOf, use a custom model_validator to assert exactly one branch matched
-    from pydantic import model_validator as mv
-
-    def _try_validate(model, data):
-        try:
-            model.model_validate(data)
-            return True
-        except Exception:
-            return False
-
-    class StrictOneOf(BaseModel):
-        value: Union[CircleShape, RectShape]
-
-        @mv(mode="before")
-        @classmethod
-        def enforce_one_of(cls, data: dict) -> dict:
-            matched = sum(
-                _try_validate(m, data.get("value", {}))
-                for m in (CircleShape, RectShape)
-            )
-            if matched != 1:
-                raise ValueError(f"oneOf: expected exactly 1 match, got {matched}")
-            return data
-    ```
-
-!!! info "Pydantic discriminated unions"
-    When a `discriminator` field is available, prefer `Field(discriminator=...)` — Pydantic validates only the correct branch and raises clearly if the discriminator value is missing or unrecognized. For schemas without a discriminator, implement the exhaustive check shown above.
-
-=== "TypeScript"
-    ```typescript
-    import { Type, Static, TUnion } from "@sinclair/typebox";
-    import { Value } from "@sinclair/typebox/value";
-
-    const CircleShape = Type.Object({ kind: Type.Literal("circle"), radius: Type.Number() });
-    const RectShape = Type.Object({ kind: Type.Literal("rect"), width: Type.Number(), height: Type.Number() });
-
-    // anyOf: Value.Check returns true if any branch matches
-    const AnyOfShape = Type.Union([CircleShape, RectShape]);
-    const anyOfResult = Value.Check(AnyOfShape, { kind: "circle", radius: 5.0 }); // true
-
-    // oneOf: evaluate all branches and assert exactly one matches
-    function validateOneOf<T>(schemas: TUnion["anyOf"], data: unknown): T {
-        const matches = schemas.filter((s) => Value.Check(s, data));
-        if (matches.length !== 1) {
-            throw new Error(`oneOf: expected exactly 1 match, got ${matches.length}`);
-        }
-        return data as T;
-    }
-
-    const oneOfResult = validateOneOf([CircleShape, RectShape], { kind: "rect", width: 10, height: 20 });
-    ```
-
-=== "Rust"
-    ```rust
-    use jsonschema::{JSONSchema, Draft};
-    use serde_json::{json, Value};
-
-    fn validate_any_of(branches: &[Value], data: &Value) -> bool {
-        branches.iter().any(|branch| {
-            let compiled = JSONSchema::options()
-                .with_draft(Draft::Draft202012)
-                .compile(branch)
-                .expect("invalid branch schema");
-            compiled.is_valid(data)
-        })
-    }
-
-    fn validate_one_of(branches: &[Value], data: &Value) -> Result<(), String> {
-        let matched: usize = branches
-            .iter()
-            .filter(|branch| {
-                let compiled = JSONSchema::options()
-                    .with_draft(Draft::Draft202012)
-                    .compile(branch)
-                    .expect("invalid branch schema");
-                compiled.is_valid(data)
-            })
-            .count();
-        match matched {
-            1 => Ok(()),
-            n => Err(format!("oneOf: expected exactly 1 match, got {n}")),
-        }
-    }
+    use apcore::to_strict_schema;
+    use serde_json::json;
 
     fn main() {
-        let circle_schema = json!({
+        let schema = json!({
             "type": "object",
-            "properties": { "kind": { "const": "circle" }, "radius": { "type": "number" } },
-            "required": ["kind", "radius"]
+            "properties": {
+                "to": { "type": "string", "x-examples": ["user@example.com"] },
+                "cc": { "type": "array", "items": { "type": "string" }, "default": [] }
+            },
+            "required": ["to"]
         });
-        let rect_schema = json!({
-            "type": "object",
-            "properties": { "kind": { "const": "rect" }, "width": { "type": "number" }, "height": { "type": "number" } },
-            "required": ["kind", "width", "height"]
-        });
-        let branches = vec![circle_schema, rect_schema];
-        let data = json!({ "kind": "circle", "radius": 5.0 });
-
-        assert!(validate_any_of(&branches, &data));
-        assert!(validate_one_of(&branches, &data).is_ok());
+        let strict = to_strict_schema(&schema);
+        assert_eq!(strict["additionalProperties"], json!(false));
+        assert_eq!(strict["required"], json!(["cc", "to"]));
     }
     ```
 
----
+## Data flow
 
-### 2. Recursive Schema Support
+1. `SchemaLoader.load(module_id)` reads `<schema.root>/<module/id/path>.schema.yaml` into a `SchemaDefinition`.
+2. `RefResolver` walks the definition, inlining `$ref` targets (self-references stay lazy) and rejecting `$ref` → `$ref` cycles.
+3. The resolved schema is converted to the SDK's runtime representation (Pydantic model / TypeBox schema / compiled `jsonschema` validator).
+4. The result is cached by content hash and handed to the executor for validation or to the exporter.
 
-**Problem:** Schemas that reference themselves (e.g., tree nodes, nested comment threads) cause infinite loops in the current `$ref` resolver because it eagerly inlines every `$ref` it encounters, including self-references, until stack overflow.
+## Validation semantics
 
-**Normative requirements:**
+### Union keywords
 
-Implementations MUST support self-referencing schemas via lazy resolution. When a `$ref` resolves to the schema's own `$id`, to the document root (`#`, `#/`), or to any location already on the resolution path that was reached by descending through a schema body, implementations MUST preserve the `$ref` node rather than inlining the schema body again. Implementations MUST NOT eagerly inline a `$ref` that would re-enter the currently-resolving schema, and MUST NOT raise `SCHEMA_CIRCULAR_REF` for it — that code is reserved for a `$ref` → `$ref` chain that never reaches a schema body (PROTOCOL_SPEC §4.15, "Self-reference vs. circular reference").
+All branches of `anyOf` / `oneOf` are evaluated:
 
-The lazy reference MUST survive the whole module-loading path, not just the resolver: the schema-to-native conversion (`generate_model()` / `jsonSchemaToTypeBox()` / the validator's compiled schema) MUST bind a preserved `$ref` at validation time, resolving it against the document root. A conversion that silently widens an unresolved `$ref` to "accept anything" does not satisfy this requirement, because the recursive positions of the contract then assert nothing.
+- `anyOf` accepts the input when at least one branch matches; otherwise `SCHEMA_UNION_NO_MATCH`.
+- `oneOf` accepts the input when exactly one branch matches; zero matches is `SCHEMA_UNION_NO_MATCH`, more than one is `SCHEMA_UNION_AMBIGUOUS`.
 
-All three forms below are self-references and MUST behave identically:
+These rules apply wherever the keyword appears — at the root, inside `properties`, `items`, `$defs`, or another combinator's branch — and on every validation path, including the executor's input and output validation steps. A host union type (`typing.Union`, TypeBox `Type.Union`) has `anyOf` semantics, so the SDKs enforce `oneOf` exclusivity themselves rather than relying on it. Authors must keep `oneOf` branches mutually exclusive.
+
+### Recursive schema support {#2-recursive-schema-support}
+
+A schema may refer to itself. When a `$ref` points to the schema's own `$id`, to the document root (`#`, `#/`), or to a location already on the resolution path that was reached through a schema body, the `$ref` is preserved rather than inlined again, and it does **not** raise `SCHEMA_CIRCULAR_REF` — that code is reserved for a `$ref` → `$ref` chain that never reaches a schema body (PROTOCOL_SPEC §4.15).
+
+The preserved reference is bound lazily against the document root at validation time, so recursive positions are validated, not widened to "accept anything". These three forms are all self-references and behave identically:
 
 | Form | Meaning |
 |------|---------|
@@ -506,7 +217,7 @@ All three forms below are self-references and MUST behave identically:
 | `{"$ref": "<root $id>"}` | the document, named by its own identifier |
 | `{"$ref": "#/$defs/Node"}` re-entered from inside `$defs/Node` | a recursive `$defs` entry |
 
-The canonical recursive schema example used across all SDK conformance tests is:
+The recursive schema used across the conformance fixtures:
 
 ```json
 {
@@ -523,600 +234,200 @@ The canonical recursive schema example used across all SDK conformance tests is:
 }
 ```
 
-=== "Python"
-    ```python
-    from __future__ import annotations
-    from typing import Optional
-    from pydantic import BaseModel
+### Constraint keywords
 
-    class TreeNode(BaseModel):
-        value: str
-        children: Optional[list[TreeNode]] = None
+All three SDKs enforce the numeric and string constraints (`minimum`, `maximum`, `exclusiveMinimum`, `minLength`, `maxLength`, `pattern`), the array and object keywords (`minItems`, `maxItems`, `uniqueItems`, `prefixItems`, `minProperties`, `additionalProperties`), `const` / `enum`, and the composition keywords (`allOf`, `anyOf`, `oneOf`, `not`). Cross-SDK keyword behaviour is pinned by `schema_hardening_constraints.json` and `schema_keyword_parity.json` in `conformance/fixtures/`.
 
-    # model_rebuild() resolves the forward reference introduced by `from __future__ import annotations`
-    TreeNode.model_rebuild()
+### `format` is an annotation
 
-    root = TreeNode(
-        value="root",
-        children=[
-            TreeNode(value="child1", children=[TreeNode(value="grandchild")]),
-            TreeNode(value="child2"),
-        ],
-    )
-    assert root.children[0].children[0].value == "grandchild"
-    ```
+Under JSON Schema 2020-12's default format-annotation vocabulary, a value that does not satisfy its declared `format` does **not** fail validation. A field declared `format: date-time` accepts any string. See [TYPE_MAPPING §11](../spec/type-mapping.md#111-format-keyword), which is normative for this keyword:
 
-!!! info "Why `model_rebuild()` is required"
-    Pydantic defers resolution of forward references until `model_rebuild()` is called. Without it, the `TreeNode` type annotation inside `list[TreeNode]` is an unresolved string at class-creation time, and validation will fail with a `PydanticUserError`.
+- Implementations recognise the formats listed in TYPE_MAPPING §11.1 and emit a warning when a value does not conform (SHOULD).
+- The value is accepted regardless; a format check never produces `SCHEMA_VALIDATION_ERROR`.
+- An unrecognised `format` passes silently.
 
-=== "TypeScript"
-    ```typescript
-    import { Type, Static } from "@sinclair/typebox";
-    import { Value } from "@sinclair/typebox/value";
+To make a format binding, express it as an assertion: `pattern` for a syntactic shape, `enum` for a closed set.
 
-    // TypeBox Recursive() wraps the schema in a self-referential $ref
-    const TreeNode = Type.Recursive((self) =>
-        Type.Object({
-            value: Type.String(),
-            children: Type.Optional(Type.Array(self)),
-        }),
-        { $id: "TreeNode" }
-    );
+### Content-hash cache
 
-    type TreeNode = Static<typeof TreeNode>;
+Resolved schemas are cached in two levels: module ID → content hash, and content hash → compiled schema. The hash is the lowercase SHA-256 of the canonical JSON form of the resolved schema (object keys sorted), so two schemas with the same content — even under different module IDs or with different key order — share one compiled object. See [Contract: content_hash](#contract-content_hash).
 
-    const root: TreeNode = {
-        value: "root",
-        children: [
-            { value: "child1", children: [{ value: "grandchild" }] },
-            { value: "child2" },
-        ],
-    };
-
-    const valid = Value.Check(TreeNode, root);
-    console.assert(valid === true);
-    ```
-
-=== "Rust"
-    ```rust
-    use serde::{Deserialize, Serialize};
-
-    #[derive(Debug, Serialize, Deserialize)]
-    struct TreeNode {
-        value: String,
-        // Box<T> breaks the infinite-size cycle; Option makes the field optional
-        #[serde(skip_serializing_if = "Option::is_none")]
-        children: Option<Vec<Box<TreeNode>>>,
-    }
-
-    fn main() {
-        let root = TreeNode {
-            value: "root".into(),
-            children: Some(vec![
-                Box::new(TreeNode {
-                    value: "child1".into(),
-                    children: Some(vec![Box::new(TreeNode {
-                        value: "grandchild".into(),
-                        children: None,
-                    })]),
-                }),
-                Box::new(TreeNode { value: "child2".into(), children: None }),
-            ]),
-        };
-
-        let json = serde_json::to_string(&root).unwrap();
-        let parsed: TreeNode = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed.children.as_ref().unwrap()[0].value, "child1");
-    }
-    ```
-
----
-
-### 3. Rust Validator Enhancement
-
-**Problem:** The Rust validator performs only basic type checking. It does not enforce composition keywords (`allOf`, `anyOf`, `oneOf`, `not`) or numerical and string constraints (`minimum`, `maximum`, `minLength`, `maxLength`, `pattern`). This creates a cross-language behavioral gap where inputs rejected by Python/TypeScript validators are accepted by the Rust validator.
-
-**Normative requirements:**
-
-The Rust validator MUST support all constraint types that the Python and TypeScript validators support. The Rust validator MUST reject data that violates `minimum`, `maximum`, `minLength`, `maxLength`, or `pattern` constraints.
-
-**Recommended approach:** Replace the hand-written validator with the `jsonschema` crate (formerly `jsonschema-rs`), which supports JSON Schema Draft 2020-12 natively.
-
-**Alternative:** Incrementally extend the existing hand-written logic. The table below compares both approaches:
-
-| Dimension | `jsonschema` crate | Incremental hand-written |
-|---|---|---|
-| Implementation cost | Low — swap validation call site | High — reimplement each keyword |
-| Draft 2020-12 coverage | Complete | Partial (only what is written) |
-| Maintenance burden | Low — upstream tracks spec changes | High — every new keyword requires a PR |
-| Performance | Comparable; crate is optimized | Potentially faster for simple schemas |
-| `allOf`/`anyOf`/`oneOf`/`not` | Supported out of the box | Must be hand-written |
-| Numerical/string constraints | Supported out of the box | Must be hand-written |
-
-!!! info "Recommended migration path"
-    Add `jsonschema = "0.22"` (or latest) to `Cargo.toml` and route all `SchemaValidator::validate` calls through `JSONSchema::compile` + `compiled.validate(data)`. The existing hand-written type-check logic can be removed once the crate is wired in and all conformance fixtures pass.
+## Usage
 
 === "Python"
     ```python
-    from pydantic import BaseModel, Field, ValidationError
+    from apcore import Config
+    from apcore.schema import ExportProfile, SchemaExporter, SchemaLoader, SchemaValidator
 
-    class RangedValue(BaseModel):
-        count: int = Field(ge=1, le=100)
-        label: str = Field(min_length=1, max_length=50, pattern=r"^[a-z_]+$")
+    # The loader reads schema.root / schema.strategy from the Config;
+    # load() takes a MODULE ID, not a file path.
+    loader = SchemaLoader(Config.load("apcore.yaml"))
+    schema_def = loader.load("executor.email.send_email")
 
-    try:
-        RangedValue(count=200, label="INVALID LABEL!")
-    except ValidationError as exc:
-        print(exc)
-        # count: Input should be less than or equal to 100
-        # label: String should match pattern '^[a-z_]+'
+    # resolve() returns (input, output) ResolvedSchema pairs carrying the Pydantic model.
+    input_schema, _output_schema = loader.resolve(schema_def)
+
+    validator = SchemaValidator()
+    result = validator.validate({"to": "alice@example.com", "subject": "Hello"}, input_schema.model)
+    if not result.valid:
+        print(f"Validation failed ({result.error_code}): {result.errors}")
+
+    exporter = SchemaExporter()
+    mcp_tool = exporter.export(schema_def, ExportProfile.MCP)
+    print(mcp_tool)  # {"name": "...", "description": "...", "inputSchema": {...}, ...}
     ```
-
 === "TypeScript"
     ```typescript
-    import { Type } from "@sinclair/typebox";
-    import { Value } from "@sinclair/typebox/value";
+    import { Config, ExportProfile, SchemaExporter, SchemaLoader, SchemaValidator } from "apcore-js";
 
-    const RangedValue = Type.Object({
-        count: Type.Integer({ minimum: 1, maximum: 100 }),
-        label: Type.String({ minLength: 1, maxLength: 50, pattern: "^[a-z_]+$" }),
-    });
+    // The loader reads schema.root / schema.strategy from the Config;
+    // load() takes a MODULE ID and is synchronous.
+    const loader = new SchemaLoader(Config.load("apcore.yaml"));
+    const schemaDef = loader.load("executor.email.send_email");
 
-    const errors = [...Value.Errors(RangedValue, { count: 200, label: "INVALID LABEL!" })];
-    console.log(errors);
-    // [ { path: '/count', message: 'Expected integer to be less than or equal to 100' }, ... ]
+    // resolve() returns [input, output] ResolvedSchema pairs carrying the TypeBox schema.
+    const [inputSchema] = loader.resolve(schemaDef);
+
+    const validator = new SchemaValidator();
+    const result = validator.validate({ to: "alice@example.com", subject: "Hello" }, inputSchema.schema);
+    if (!result.valid) {
+      console.error(`Validation failed (${result.errorCode}):`, result.errors);
+    }
+
+    const exporter = new SchemaExporter();
+    const openaiTool = exporter.export(schemaDef, ExportProfile.OPENAI);
+    console.log(openaiTool);
     ```
-
 === "Rust"
     ```rust
-    use jsonschema::{JSONSchema, Draft};
+    use apcore::errors::ModuleError;
+    use apcore::schema::{ExportProfile, SchemaExporter, SchemaLoader, SchemaValidator};
+    use apcore::Config;
     use serde_json::json;
 
-    fn main() {
-        let schema = json!({
-            "$schema": "https://json-schema.org/draft/2020-12/schema",
-            "type": "object",
-            "properties": {
-                "count": { "type": "integer", "minimum": 1, "maximum": 100 },
-                "label": { "type": "string", "minLength": 1, "maxLength": 50, "pattern": "^[a-z_]+$" }
-            },
-            "required": ["count", "label"]
-        });
+    fn main() -> Result<(), ModuleError> {
+        // with_config() reads schema.root / schema.strategy; load() takes a MODULE ID.
+        let config = Config::from_defaults();
+        let mut loader = SchemaLoader::with_config(&config, None);
+        let schema_def = loader.load("executor.email.send_email")?;
 
-        let compiled = JSONSchema::options()
-            .with_draft(Draft::Draft202012)
-            .compile(&schema)
-            .expect("invalid schema");
-
-        let data = json!({ "count": 200, "label": "INVALID LABEL!" });
-        let result = compiled.validate(&data);
-
-        if let Err(errors) = result {
-            for error in errors {
-                eprintln!("Validation error: {} at {}", error, error.instance_path);
-            }
+        // validate(value, schema) returns a ValidationResult; it does not raise.
+        let validator = SchemaValidator::new();
+        let result = validator.validate(
+            &json!({ "to": "alice@example.com", "subject": "Hello" }),
+            &schema_def.input_schema,
+        );
+        if !result.valid {
+            eprintln!("Validation failed: {:?}", result.errors);
         }
+
+        // export() takes the schema Value, a profile, and optional ExportOptions.
+        let exporter = SchemaExporter::new();
+        let anthropic_tool = exporter.export(&schema_def.input_schema, ExportProfile::Anthropic, None)?;
+        println!("{anthropic_tool}");
+        Ok(())
     }
     ```
 
----
+## Dependencies
 
-### 4. Semantic Format Mapping
+- The **Executor** validates inputs at pipeline step 7 (`input_validation`) and outputs at step 9 (`output_validation`) using the Schema System.
+- The **Registry** uses it to load module schemas during discovery and to build `ModuleDescriptor`s.
 
-**`format` is an annotation, not an assertion.** Under the default format-annotation vocabulary of JSON Schema 2020-12 §7.2.1, a value that does not satisfy its declared `format` **MUST NOT** fail validation. A field declared `format: date-time` therefore accepts any string, including one that is not a valid ISO 8601 timestamp. This is the specified behaviour, not a gap — see [TYPE_MAPPING §11](../spec/type-mapping.md#111-format-keyword), which is normative for this keyword.
+??? info "Python SDK reference"
+    Not a protocol requirement — the source layout of `apcore-python`'s schema package.
 
-**Normative requirements:**
+    | File | Purpose |
+    |------|---------|
+    | `schema/loader.py` | `SchemaLoader`: YAML loading, strategies, Pydantic model generation, content-hash cache |
+    | `schema/ref_resolver.py` | `RefResolver`: `$ref` resolution, self-reference vs. circular classification |
+    | `schema/validator.py` | `SchemaValidator`: result-object validation and the raising `validate_input` / `validate_output` |
+    | `schema/hardening.py` | `content_hash`, exhaustive union validation, `format` warnings |
+    | `schema/exporter.py` | `SchemaExporter`: MCP / OpenAI / Anthropic / generic export |
+    | `schema/strict.py` | `to_strict_schema` (Algorithm A23) |
+    | `schema/openai_strict.py` | OpenAI strict-mode compatibility detection |
+    | `schema/annotations.py` | Merging YAML and code annotations, examples and metadata |
+    | `schema/types.py` | `SchemaDefinition`, `ResolvedSchema`, `SchemaValidationResult`, enums |
 
-- Implementations **SHOULD** recognise the formats listed in TYPE_MAPPING §11.1 and **SHOULD** emit a warning when a value does not conform.
-- Implementations **MUST** accept the value regardless. The check **MUST NOT** produce `SCHEMA_VALIDATION_ERROR`.
-- A `format` the implementation does not recognise is collected as an annotation and **MUST** pass silently — a contract is free to declare `format: "path"` or any other vocabulary term without becoming uncallable.
+    Runtime dependencies: `pydantic` (model generation), `pyyaml` (YAML parsing), `jsonschema` (exhaustive union validation).
 
-!!! tip "Making a format binding"
-    `format` alone never rejects. To make a format constraint enforceable, express it as an assertion the vocabulary already carries: `pattern` for a syntactic shape, or `enum` for a closed set.
+## Testing strategy
 
-**Aspirational native-type mapping:**
+- **Loader** — YAML parsing, the three strategies, cache reuse.
+- **RefResolver** — local, cross-file and nested references; a `$ref` re-entered through `properties` / `items` survives as a lazy reference; a `$ref` → `$ref` cycle raises `SCHEMA_CIRCULAR_REF`; chains reaching `schema.max_ref_depth` raise `SCHEMA_MAX_DEPTH_EXCEEDED`.
+- **Validator** — every supported type and keyword, both union error codes, `format` warnings that do not fail validation.
+- **Exporter** — each profile's output and its handling of `x-*` fields; strict-mode conversion output.
+- **Model generation** — constraints (required, types, patterns, enums) are enforced and `x-sensitive` reaches redaction.
 
-The table below is **reference metadata, not a record of current behaviour**: no SDK performs this mapping today — apcore-python's `generate_model()` annotates a `format: date-time` field as `str`, not `datetime`. It records the native type each language *would* use if a future revision made the mapping normative. It is mirrored by the `format_mappings` block in `conformance/fixtures/schema_hardening_formats.json`, which test runners **MUST** ignore.
+Cross-language fixtures in `conformance/fixtures/`: `schema_validation.json`, `schema_keyword_parity.json`, `schema_hardening_union.json`, `schema_hardening_recursive.json`, `schema_hardening_constraints.json`, `schema_hardening_formats.json`, `schema_hardening_cache.json`, `schema_content_hash.json`, `schema_strict_conversion.json`, `schema_export_envelope.json`.
 
-| JSON Schema `format` | Python | TypeScript | Rust |
+## Contract: SchemaValidator.validate
+
+### Inputs
+- `data` (dict/object/Value, required) — the data to validate
+- `schema` (required) — the runtime schema: a Pydantic model class (Python), a TypeBox `TSchema` (TypeScript), a JSON Schema `Value` (Rust)
+
+### Errors
+- None — `validate` does not raise; failure is reported in the returned result object. For the raising form use `validate_input` / `validate_output` (all SDKs) or `validate_or_error` (Rust), which raise `SchemaValidationError` (`SCHEMA_VALIDATION_ERROR`, or a `SCHEMA_UNION_*` code).
+
+### Returns
+- Success: `SchemaValidationResult { valid: true, errors: [] }` (Python, TypeScript) / `ValidationResult { valid: true, errors: [] }` (Rust)
+- Failure: the same shape with `valid: false`, an `errors` array of §4.14 detail objects (`path`, `message`, `constraint`, `expected`, `actual`), and an error code (`error_code` / `errorCode`) in Python and TypeScript.
+
+### Properties
+- async: false
+- thread_safe: true
+- pure: true
+- idempotent: true
+
+## Contract: RefResolver — `$ref` resolution
+
+### SDK surfaces
+
+| SDK | Construction | Whole-document resolution | Single reference |
 |---|---|---|---|
-| `date-time` | `datetime.datetime` | `Date` | `chrono::DateTime<Utc>` |
-| `date` | `datetime.date` | `string` (ISO 8601 date) | `chrono::NaiveDate` |
-| `time` | `datetime.time` | `string` (ISO 8601 time) | `chrono::NaiveTime` |
-| `email` | `pydantic.EmailStr` | `string` | `String` |
-| `uri` | `pydantic.AnyUrl` | `URL` | `url::Url` |
-| `uuid` | `uuid.UUID` | `string` | `uuid::Uuid` |
-| `ipv4` | `IPv4Address` | `string` | `std::net::Ipv4Addr` |
-| `ipv6` | `IPv6Address` | `string` | `std::net::Ipv6Addr` |
+| Python | `RefResolver(schemas_dir, max_depth=32)` | `resolve(schema, current_file=None)` | `resolve_ref(ref_string, current_file, ...)` |
+| TypeScript | `new RefResolver(schemasDir, maxDepth = 32)` | `resolve(schema, currentFile?)` | `resolveRef(refString, currentFile, ...)` |
+| Rust | `RefResolver::new()` / `RefResolver::with_max_depth(n)`, then `.with_schemas_dir(dir)` / `.with_current_file(file)` | `resolve(&schema)` | — |
 
-=== "Python"
-    ```python
-    from datetime import datetime
-    from ipaddress import IPv4Address, IPv6Address
-    from uuid import UUID
-    from pydantic import BaseModel, AnyUrl, EmailStr
-
-    class EventRecord(BaseModel):
-        event_id: UUID
-        occurred_at: datetime       # format: date-time
-        source_ip: IPv4Address      # format: ipv4
-        callback_url: AnyUrl        # format: uri
-        contact: EmailStr           # format: email
-
-    record = EventRecord(
-        event_id="550e8400-e29b-41d4-a716-446655440000",
-        occurred_at="2024-01-15T09:30:00Z",
-        source_ip="192.168.1.1",
-        callback_url="https://example.com/hook",
-        contact="user@example.com",
-    )
-    print(record.occurred_at)  # 2024-01-15 09:30:00+00:00 (datetime object)
-    ```
-
-=== "TypeScript"
-    ```typescript
-    import { Type } from "@sinclair/typebox";
-    import { Value } from "@sinclair/typebox/value";
-
-    const EventRecord = Type.Object({
-        event_id: Type.String({ format: "uuid" }),
-        occurred_at: Type.String({ format: "date-time" }),
-        source_ip: Type.String({ format: "ipv4" }),
-        callback_url: Type.String({ format: "uri" }),
-        contact: Type.String({ format: "email" }),
-    });
-
-    // TypeBox format validation requires the `@sinclair/typebox/format` registry
-    import { Format } from "@sinclair/typebox/format";
-    Format.Set("date-time", (v) => !isNaN(new Date(v).getTime()));
-    Format.Set("uuid", (v) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v));
-
-    const valid = Value.Check(EventRecord, {
-        event_id: "550e8400-e29b-41d4-a716-446655440000",
-        occurred_at: "2024-01-15T09:30:00Z",
-        source_ip: "192.168.1.1",
-        callback_url: "https://example.com/hook",
-        contact: "user@example.com",
-    });
-    console.assert(valid === true);
-    ```
-
-=== "Rust"
-    ```rust
-    use chrono::{DateTime, Utc};
-    use serde::{Deserialize, Serialize};
-    use std::net::Ipv4Addr;
-    use url::Url;
-    use uuid::Uuid;
-
-    #[derive(Debug, Serialize, Deserialize)]
-    struct EventRecord {
-        event_id: Uuid,
-        occurred_at: DateTime<Utc>,
-        source_ip: Ipv4Addr,
-        callback_url: Url,
-        contact: String, // email validated separately via regex or lettre
-    }
-
-    fn main() {
-        let json = r#"{
-            "event_id": "550e8400-e29b-41d4-a716-446655440000",
-            "occurred_at": "2024-01-15T09:30:00Z",
-            "source_ip": "192.168.1.1",
-            "callback_url": "https://example.com/hook",
-            "contact": "user@example.com"
-        }"#;
-
-        let record: EventRecord = serde_json::from_str(json).unwrap();
-        println!("{}", record.occurred_at); // 2024-01-15 09:30:00 UTC
-    }
-    ```
-
----
-
-### 5. Global Schema Cache by Content Hash
-
-**Problem:** The current schema cache is keyed by `(path, strategy)`. This means the same schema content loaded from two different file paths is cached twice and occupies duplicate memory. It also means that when schema file content changes without a path change (e.g., in-place edits during development), the stale cached model continues to be returned.
-
-**Design:** Replace the single-level path cache with a two-level content-addressable cache:
-
-1. **Path index** (`path, strategy` → `sha256_hex`): maps a load request to the content hash of the schema it resolved to.
-2. **Content cache** (`sha256_hex` → `model`): stores the compiled model, keyed by the SHA-256 of the canonical JSON serialization of the resolved schema dict.
-
-The canonical JSON form is defined as: `json.dumps(schema, sort_keys=True, separators=(',', ':'))` (Python), `JSON.stringify(sortedKeys(schema))` (TypeScript), `serde_json::to_string` with sorted keys (Rust).
-
-**Normative requirements:**
-
-Implementations MUST deduplicate identical schema content. When two schema paths resolve to the same content hash, implementations MUST return the same cached model object. Implementations MUST NOT generate two separate model objects for schemas that are byte-for-byte identical after canonical JSON serialization.
-
-=== "Python"
-    ```python
-    import hashlib
-    import json
-    from typing import Any
-
-    _path_index: dict[tuple[str, str], str] = {}    # (path, strategy) -> sha256_hex
-    _content_cache: dict[str, Any] = {}             # sha256_hex -> compiled model
-
-    def _content_hash(schema: dict) -> str:
-        canonical = json.dumps(schema, sort_keys=True, separators=(",", ":"))
-        return hashlib.sha256(canonical.encode()).hexdigest()
-
-    def load_with_content_cache(path: str, strategy: str, resolve_fn, compile_fn):
-        cache_key = (path, strategy)
-        if cache_key in _path_index:
-            return _content_cache[_path_index[cache_key]]
-
-        raw_schema = resolve_fn(path, strategy)
-        digest = _content_hash(raw_schema)
-
-        if digest not in _content_cache:
-            _content_cache[digest] = compile_fn(raw_schema)
-
-        _path_index[cache_key] = digest
-        return _content_cache[digest]
-    ```
-
-=== "TypeScript"
-    ```typescript
-    import { createHash } from "crypto";
-
-    const pathIndex = new Map<string, string>();     // `${path}:${strategy}` -> sha256hex
-    const contentCache = new Map<string, unknown>(); // sha256hex -> compiled model
-
-    function sortedKeysStringify(obj: unknown): string {
-        if (obj === null || typeof obj !== "object") return JSON.stringify(obj);
-        if (Array.isArray(obj)) return `[${obj.map(sortedKeysStringify).join(",")}]`;
-        const sorted = Object.keys(obj as object).sort();
-        const pairs = sorted.map((k) => `${JSON.stringify(k)}:${sortedKeysStringify((obj as Record<string, unknown>)[k])}`);
-        return `{${pairs.join(",")}}`;
-    }
-
-    function contentHash(schema: unknown): string {
-        return createHash("sha256").update(sortedKeysStringify(schema)).digest("hex");
-    }
-
-    function loadWithContentCache(
-        path: string,
-        strategy: string,
-        resolveFn: (p: string, s: string) => unknown,
-        compileFn: (schema: unknown) => unknown,
-    ): unknown {
-        const pathKey = `${path}:${strategy}`;
-        if (pathIndex.has(pathKey)) {
-            return contentCache.get(pathIndex.get(pathKey)!)!;
-        }
-        const rawSchema = resolveFn(path, strategy);
-        const digest = contentHash(rawSchema);
-        if (!contentCache.has(digest)) {
-            contentCache.set(digest, compileFn(rawSchema));
-        }
-        pathIndex.set(pathKey, digest);
-        return contentCache.get(digest)!;
-    }
-    ```
-
-=== "Rust"
-    ```rust
-    use sha2::{Digest, Sha256};
-    use serde_json::Value;
-    use std::collections::HashMap;
-
-    struct SchemaCache {
-        path_index: HashMap<(String, String), String>,   // (path, strategy) -> sha256_hex
-        content_cache: HashMap<String, Value>,           // sha256_hex -> compiled schema/model
-    }
-
-    impl SchemaCache {
-        fn new() -> Self {
-            Self {
-                path_index: HashMap::new(),
-                content_cache: HashMap::new(),
-            }
-        }
-
-        fn content_hash(schema: &Value) -> String {
-            // serde_json serializes object keys in insertion order;
-            // sort them for a stable canonical form
-            let canonical = sort_keys_serialize(schema);
-            let mut hasher = Sha256::new();
-            hasher.update(canonical.as_bytes());
-            format!("{:x}", hasher.finalize())
-        }
-
-        fn load(
-            &mut self,
-            path: &str,
-            strategy: &str,
-            resolve: impl Fn(&str, &str) -> Value,
-            compile: impl Fn(Value) -> Value,
-        ) -> &Value {
-            let path_key = (path.to_string(), strategy.to_string());
-            if let Some(digest) = self.path_index.get(&path_key) {
-                return self.content_cache.get(digest).unwrap();
-            }
-            let raw_schema = resolve(path, strategy);
-            let digest = Self::content_hash(&raw_schema);
-            if !self.content_cache.contains_key(&digest) {
-                self.content_cache.insert(digest.clone(), compile(raw_schema));
-            }
-            self.path_index.insert(path_key, digest.clone());
-            self.content_cache.get(&digest).unwrap()
-        }
-    }
-
-    fn sort_keys_serialize(value: &Value) -> String {
-        match value {
-            Value::Object(map) => {
-                let mut keys: Vec<&String> = map.keys().collect();
-                keys.sort();
-                let pairs: Vec<String> = keys
-                    .iter()
-                    .map(|k| format!("\"{}\":{}", k, sort_keys_serialize(&map[*k])))
-                    .collect();
-                format!("{{{}}}", pairs.join(","))
-            }
-            _ => value.to_string(),
-        }
-    }
-    ```
-
----
-
-### Conformance Fixtures
-
-Cross-language behavioral verification for the hardening requirements above is shipped across five fixtures in `conformance/fixtures/`:
-
-- `schema_hardening_union.json` — `anyOf`/`oneOf` branch evaluation
-- `schema_hardening_recursive.json` — `$ref` cycles up to `max_depth`
-- `schema_hardening_constraints.json` — numeric and string constraint paths
-- `schema_hardening_formats.json` — `format` keyword annotation semantics
-- `schema_hardening_cache.json` — `content_hash` canonical serialization
-
-The case excerpts below illustrate the canonical shape; refer to the JSON files for the full case lists.
-
-**`union_type_all_branches_evaluated`** — validates that `anyOf` accepts a matching branch and that `oneOf` rejects inputs where multiple branches match:
-
-```json
-{
-  "id": "union_type_all_branches_evaluated",
-  "description": "anyOf accepts first-branch match; oneOf rejects multi-branch match",
-  "schema": {
-    "oneOf": [
-      { "type": "object", "properties": { "kind": { "const": "a" } }, "required": ["kind"] },
-      { "type": "object", "properties": { "kind": { "const": "b" } }, "required": ["kind"] }
-    ]
-  },
-  "test_cases": [
-    { "id": "one_of_single_match", "input": { "kind": "a" }, "expected": true },
-    { "id": "one_of_no_match", "input": { "kind": "c" }, "expected": false },
-    { "id": "any_of_first_branch", "input": { "kind": "a" }, "schema_keyword": "anyOf", "expected": true },
-    { "id": "any_of_second_branch", "input": { "kind": "b" }, "schema_keyword": "anyOf", "expected": true }
-  ]
-}
-```
-
-**`recursive_schema_tree_node`** — validates tree node recursion up to depth 5:
-
-```json
-{
-  "id": "recursive_schema_tree_node",
-  "description": "Self-referencing TreeNode schema validates nested structures up to depth 5",
-  "schema": {
-    "$id": "TreeNode",
-    "type": "object",
-    "properties": {
-      "value": { "type": "string" },
-      "children": { "type": "array", "items": { "$ref": "TreeNode" } }
-    },
-    "required": ["value"]
-  },
-  "test_cases": [
-    { "id": "depth_1", "input": { "value": "root" }, "expected": true },
-    { "id": "depth_2", "input": { "value": "root", "children": [{ "value": "child" }] }, "expected": true },
-    { "id": "depth_5", "input": { "value": "a", "children": [{ "value": "b", "children": [{ "value": "c", "children": [{ "value": "d", "children": [{ "value": "e" }] }] }] }] }, "expected": true },
-    { "id": "missing_value", "input": { "children": [] }, "expected": false }
-  ]
-}
-```
-
-**`rust_validator_constraints`** — validates `minimum`, `maximum`, `minLength`, `maxLength`, and `pattern` enforcement:
-
-```json
-{
-  "id": "rust_validator_constraints",
-  "description": "Numeric and string constraints enforced by all three SDK validators",
-  "schema": {
-    "type": "object",
-    "properties": {
-      "count": { "type": "integer", "minimum": 1, "maximum": 100 },
-      "label": { "type": "string", "minLength": 1, "maxLength": 50, "pattern": "^[a-z_]+$" }
-    },
-    "required": ["count", "label"]
-  },
-  "test_cases": [
-    { "id": "valid_input", "input": { "count": 50, "label": "hello_world" }, "expected": true },
-    { "id": "count_below_minimum", "input": { "count": 0, "label": "hello" }, "expected": false },
-    { "id": "count_above_maximum", "input": { "count": 101, "label": "hello" }, "expected": false },
-    { "id": "label_too_short", "input": { "count": 5, "label": "" }, "expected": false },
-    { "id": "label_too_long", "input": { "count": 5, "label": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }, "expected": false },
-    { "id": "label_pattern_mismatch", "input": { "count": 5, "label": "UPPER_CASE" }, "expected": false }
-  ]
-}
-```
-
----
-
-## Contract: Schema.validate_union
-
-> ⚠️ **NOT IMPLEMENTED under this name in any SDK.** The *capability* exists — union
-> keywords are handled throughout (`anyOf` 128 refs, `oneOf` 118, `any_of` 4,
-> `one_of` 19) — but as schema keywords inside the general validator, not as a named
-> method. The closest named entry point is apcore-typescript's `validateAnyOf(`;
-> apcore-python and apcore-rust expose only the general `validate` / `validate_input`.
->
-> Decide whether union validation is a public entry point (implement + rename) or an
-> internal branch of `Schema.validate` (fold this block into that contract).
+`SchemaLoader` builds its resolver from `schema.root` and `schema.max_ref_depth`; most callers never construct one directly.
 
 ### Inputs
-- `data` (dict/object/Value, required) — data to validate against the union schema
-- `schema` (dict/object/Value, required) — JSON Schema Draft 2020-12 schema object containing `anyOf` or `oneOf`
-- `keyword` (`"anyOf"` | `"oneOf"`, required) — which union keyword governs validation
+- `schema` (object/map/`Value`, required) — the schema document; every `$ref` in it is resolved in one traversal. The input is not mutated.
+- `current_file` / `currentFile` (path, optional) — the file the document was loaded from; relative references resolve against it and local `#/…` references resolve against its root first.
+- `schemas_dir` / `schemasDir` / `with_schemas_dir` — root for relative-file and `apcore://` references.
+- `max_depth` / `maxDepth` (integer, default `32`) — reference-depth cap.
 
 ### Errors
-- `SchemaValidationError(code=SCHEMA_UNION_NO_MATCH)` — no branch matched (for `anyOf`) or zero branches matched (for `oneOf`)
-- `SchemaValidationError(code=SCHEMA_UNION_AMBIGUOUS)` — more than one branch matched a `oneOf` schema
+- `SchemaCircularRefError` (`SCHEMA_CIRCULAR_REF`) — a `$ref` → `$ref` cycle. A self-reference is not an error.
+- `SchemaNotFoundError` (`SCHEMA_NOT_FOUND`) — a referenced schema or pointer cannot be resolved.
+- `SchemaMaxDepthExceededError` (`SCHEMA_MAX_DEPTH_EXCEEDED`) — the reference depth exceeded `max_depth`.
+- `SchemaParseError` (`SCHEMA_PARSE_ERROR`) — a referenced file is not valid YAML/JSON.
 
 ### Returns
-- On success: void/None/() — validation passed; raises on failure
+- A copy of the schema with every `$ref` inlined, except self-references, which remain lazy `$ref` nodes.
 
 ### Properties
 - async: false
 - thread_safe: true
-- pure: true
+- pure: true (reads referenced files; caches them)
 - idempotent: true
 
-## Contract: Schema.validate_recursive
+## Contract: content_hash
 
-> ⚠️ **NOT IMPLEMENTED under this name in any SDK.** Recursive/`$ref` resolution is
-> real and heavily used (`$ref` 145 refs, `RefResolver` 36, `ref_resolver` 6), but it
-> lives in a **separate `RefResolver` type**, not as a method on `Schema`. No SDK
-> exposes `validate_recursive`.
->
-> Decide whether this contract belongs on `RefResolver` (move + rename) or describes
-> an internal path of `Schema.validate` (fold it in).
+`content_hash` (Python `apcore.schema.hardening`, Rust `apcore::schema`) / `contentHash` (TypeScript; `contentHashAsync` in the browser build).
 
 ### Inputs
-- `data` (dict/object/Value, required) — potentially deeply-nested data to validate
-- `schema` (dict/object/Value, required) — JSON Schema Draft 2020-12 schema that may contain a self-referencing `$ref`
-- `max_depth` (int/number/usize, optional, default=32) — maximum recursion depth before raising a depth-limit error
+- `schema` (dict/object/Value, required) — a resolved JSON Schema
 
 ### Errors
-- `SchemaValidationError(code=SCHEMA_VALIDATION_ERROR)` — data does not conform to schema at any nesting level
-- `SchemaMaxDepthExceededError(code=SCHEMA_MAX_DEPTH_EXCEEDED)` — recursion depth exceeded `max_depth`
+- None.
 
 ### Returns
-- On success: void/None/() — validation passed at all nesting levels
+- `str` / `string` / `String` — the lowercase hexadecimal SHA-256 (64 characters) of the canonical JSON serialization of `schema` (object keys sorted, no insignificant whitespace). The three SDKs produce byte-identical hashes; `conformance/fixtures/schema_content_hash.json` pins the canonical form for floats, non-ASCII text and large integers.
 
 ### Properties
-- async: false
-- thread_safe: true
-- pure: true
-- idempotent: true
-
-## Contract: Schema.content_hash
-
-### Inputs
-- `schema` (dict/object/Value, required) — resolved JSON Schema dict (all `$ref` entries already inlined)
-
-### Errors
-- None — this operation MUST NOT raise; serialization failures MUST surface as panics in development and be caught as internal errors in production
-
-### Returns
-- On success: `str`/`string`/`String` — lowercase hexadecimal SHA-256 digest of the canonical JSON serialization of `schema` (64 characters)
-
-### Properties
-- async: false
+- async: false (`contentHashAsync` is async)
 - thread_safe: true
 - pure: true
 - idempotent: true

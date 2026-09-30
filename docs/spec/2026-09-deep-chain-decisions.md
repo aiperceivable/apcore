@@ -1,13 +1,35 @@
 ---
-description: "Maintainer decision log for the forty-eight cross-language divergences (D-74 – D-121) settled in spec v1.49.0, v1.50.0 and v1.51.0, found by the 2026-09-14 deep-chain audit of apcore-python, apcore-typescript and apcore-rust. Five of the second wave are security defects."
-title: Deep-chain alignment decisions (D-74 – D-121)
+description: "Historical record of the deep-chain audit decisions D-74–D-128 (plus O-1), settled in spec v1.49.0–v1.59.0 and implemented in apcore-python, apcore-typescript and apcore-rust."
+title: Deep-chain alignment decisions (D-74–D-128)
 date: 2026-09-15
-status: resolved — 18/18 in v1.49.0 (wave 1), 16/16 in v1.50.0 (wave 2), 14/14 in v1.51.0 (wave 3, implementation deferred)
+status: resolved — D-74–D-128 and O-1 settled in spec v1.49.0–v1.59.0; all implemented in the three SDKs
 audience: maintainers + spec reviewers
-source: apcore-skills:audit --scope core (2026-09-14), dimensions D10 (contract parity) and D11 (deep-chain parity)
+source: apcore-skills:audit --scope core (2026-09-14), dimensions D10 (contract parity) and D11 (deep-chain parity), plus the reviews of its output
 ---
 
-# Deep-chain alignment — D-74 – D-91
+# Deep-chain alignment decisions (D-74 – D-128)
+
+!!! info "Historical decision record"
+    Current behaviour is defined by [protocol-spec.md](./protocol-spec.md); decision status is tracked in [decision-register.md](./decision-register.md).
+
+The 2026-09-14 deep-chain audit and the reviews of its output produced these decisions in
+six waves plus a set adjudicated after the fact:
+
+| Wave | Decisions | Spec version |
+|---|---|---|
+| 1 | D-74 – D-91 | v1.49.0 (D-89 amended at v1.59.0) |
+| 2 | D-92 – D-107 | v1.50.0 |
+| 3 | D-108 – D-121 | v1.51.0 |
+| 4 | D-122 – D-123 | v1.52.0 |
+| 5 | D-124 | v1.53.0 |
+| 6 | D-125 – D-126 | v1.54.0, v1.55.0 |
+| Adjudicated after the fact | O-1 (resolved as D-127), D-128 | v1.56.0, v1.57.0 |
+
+All of them are implemented in all three SDKs. The status-quo paragraphs record what each SDK
+did when the decision was taken, not what it does now. Decision template per item:
+**Status quo** / **Decision** / **Authority**.
+
+## Wave 1 — D-74 – D-91
 
 These eighteen items came out of a call-graph diff across the three core SDKs, not
 a signature diff. That distinction is the whole story of this batch: every one of
@@ -18,11 +40,9 @@ result is that **none of the three was the outlier every time**. Python was alon
 on four, TypeScript alone on five, Rust alone on seven, and on two the three
 agreed with each other while the spec text was wrong.
 
-Decision template per item: **Status quo** / **Decision** / **Authority**.
-
 ---
 
-## D-74 — `Config.get("")` is not an error
+### D-74 — `Config.get("")` is not an error
 
 **Status quo.** The `Config.get` Inputs row said an empty key "is rejected with
 `ValueError`/`ConfigInvalidError`". The same block's `### Errors` row said "No
@@ -39,7 +59,7 @@ have failed on all three.
 
 ---
 
-## D-75 — `Executor.call` must enforce the module-ID length bound at entry
+### D-75 — `Executor.call` must enforce the module-ID length bound at entry
 
 **Status quo.** `core-executor.md` "Contract: Executor.call" says: "Empty /
 over-length / malformed IDs MUST be rejected before the pipeline context is
@@ -56,7 +76,7 @@ would remove a stated bound for no gain.
 
 ---
 
-## D-76 — `ContextFactory.create_context(request)`
+### D-76 — `ContextFactory.create_context(request)`
 
 **Status quo.** The Contract declared `(identity, caller_id, data)`. apcore-python
 (`context.py:406`) and apcore-typescript (`context.ts:447`) take a single opaque
@@ -77,7 +97,7 @@ had that work done for it and has nothing left to do.
 
 ---
 
-## D-77 — `Registry.describe` returns a string; a structured override falls through
+### D-77 — `Registry.describe` returns a string; a structured override falls through
 
 **Status quo.** §12.2 declared `describe(module_id) → ModuleDescription`. All
 three SDKs return a string (`-> str`, `: string`, `-> Result<String, _>`), so the
@@ -97,7 +117,7 @@ structured accessor, so `describe` returning a structure would duplicate it; and
 
 ---
 
-## D-78 — `ExtensionManager.apply` must not drain the store
+### D-78 — `ExtensionManager.apply` must not drain the store
 
 **Status quo.** No Postconditions section existed. Rust consumed its registrations
 (`take_single`, `std::mem::take`); Python and TypeScript read through
@@ -114,7 +134,7 @@ look.
 
 ---
 
-## D-79 — a stalled topological sort is not a cycle
+### D-79 — a stalled topological sort is not a cycle
 
 **Status quo.** When Kahn's algorithm terminates with nodes remaining, there are
 two causes. Python searched for a back edge and raised `MODULE_LOAD_ERROR` naming
@@ -131,7 +151,7 @@ the author looking for something that is not there.
 
 ---
 
-## D-80 — the registry event set is closed, and `file_changed` is in it
+### D-80 — the registry event set is closed, and `file_changed` is in it
 
 **Status quo.** All three emit exactly `register` and `unregister`. Python and
 TypeScript validate `on()` against exactly those two; Rust accepts any name and
@@ -152,7 +172,7 @@ emit what it refuses to let you hear.
 
 ---
 
-## D-81 — `TaskStoreError` must reach the caller
+### D-81 — `TaskStoreError` must reach the caller
 
 **Status quo.** The spec declares `TaskStoreError(code=TASK_STORE_UNAVAILABLE)` on
 every `TaskStore` method. apcore-rust's manager discards all of them
@@ -193,7 +213,7 @@ suites as the oracle: a clause LIVE in one SDK and DISABLED in another.
 
 ---
 
-## D-82 — `list_tasks` insertion order is normative
+### D-82 — `list_tasks` insertion order is normative
 
 **Status quo.** The spec said "insertion order (Python dict / JavaScript Map)",
 which read as an implementation note. Rust's `InMemoryTaskStore` sorts by
@@ -207,7 +227,7 @@ map lacks it MUST carry a monotonic counter; sorting on `task_id` does not satis
 
 ---
 
-## D-83 — the published `guard_call_chain` signature is normative
+### D-83 — the published `guard_call_chain` signature is normative
 
 **Status quo.** The spec's Rust tab publishes
 `guard_call_chain(module_id, call_chain, max_call_depth, max_module_repeat)`. The
@@ -225,7 +245,7 @@ byte-for-byte identical across all three — only the door was missing.
 
 ---
 
-## D-84 — a non-positive call-chain limit raises a typed error
+### D-84 — a non-positive call-chain limit raises a typed error
 
 **Status quo.** Python raised builtin `ValueError`, TypeScript a bare `Error`,
 Rust `ModuleError(GENERAL_INVALID_INPUT)`. Neither of the first two is catchable
@@ -241,7 +261,7 @@ only one carrying a registry code.
 
 ---
 
-## D-85 — malformed version constraints must be reportable
+### D-85 — malformed version constraints must be reportable
 
 **Status quo.** Rust's `check_single_constraint` had no operand validation:
 `"latest"` matched no operator prefix, fell to `("=", "latest")`, parsed to
@@ -259,7 +279,7 @@ exist but MUST fail closed and warn.
 
 ---
 
-## D-86 — `Registry.register` validation order
+### D-86 — `Registry.register` validation order
 
 **Status quo.** The Side Effects list named neither the structure check nor the
 custom validator. Python ran validator → streaming; TypeScript ran duplicate →
@@ -275,7 +295,7 @@ because the author must fix the module either way.
 
 ---
 
-## D-87 — the ACL audit-block surface is a language idiom
+### D-87 — the ACL audit-block surface is a language idiom
 
 **Status quo.** Python and TypeScript accept the `audit:` block as an optional
 constructor parameter. Rust's constructors are fixed-arity, so the field was
@@ -291,7 +311,7 @@ idiomatic and forcing uniformity would make one language worse.
 
 ---
 
-## D-88 — index-keyed warning dedupe must be cleared on index shift
+### D-88 — index-keyed warning dedupe must be cleared on index shift
 
 **Status quo.** The §6.5 "conditions present but no context" warning is deduped
 per rule index. `add_rule` inserts at index 0, shifting every rule. TypeScript
@@ -308,12 +328,15 @@ just added.
 
 ---
 
-## D-89 — deprecation warning cadence
+### D-89 — deprecation warning cadence
 
 **Status quo.** Python logged on every `get_definition`; TypeScript once per
 `(module_id, version)` per registry; Rust did not derive `sunset_date` at all.
 
 **Decision.** At most once per `(module_id, version)` per registry instance.
+*Amended at v1.59.0 (see "Adjudicated at v1.59.0" below): the warning fires on the read
+(`get_definition`), and the dedupe key is `(module_id, version, x-deprecation block)`, never
+cleared on `unregister`.*
 
 **Authority.** TypeScript. `get_definition` is a read that hosts call in loops, so
 per-read warning is spam proportional to traffic — which is how operators learn to
@@ -368,7 +391,7 @@ whichever suite was written last. They are asserted in all three now.
 
 ---
 
-## D-90 — `reset()` must not substitute the cancellation handle
+### D-90 — `reset()` must not substitute the cancellation handle
 
 **Status quo.** Python and Rust reset their flag in place. TypeScript installed a
 fresh `AbortController`, so a consumer holding the previous `signal` was
@@ -385,7 +408,7 @@ substituting the handle fails open and cannot cancel it at all.
 
 ---
 
-## D-91 — a removal method a host cannot call does not satisfy the contract
+### D-91 — a removal method a host cannot call does not satisfy the contract
 
 **Status quo.** Rust's `ExtensionManager::unregister(&mut self, point_name,
 extension: &ExtensionKind)` identifies its target by identity — but the manager
@@ -404,7 +427,7 @@ call.
 
 ---
 
-# Wave 2 — D-92 – D-107
+## Wave 2 — D-92 – D-107
 
 Wave 1 came from a partial deep-chain pass: the orchestrator hit a rate limit
 after three modules. Re-running it across all twenty-two logical modules roughly
@@ -419,7 +442,7 @@ different sources of truth — apcore-rust satisfies it by putting
 `annotations()` at the default. A case that cannot discriminate between two
 implementations is not testing the thing that differs.
 
-## Security defects
+### Security defects
 
 **D-93 — the contextual-audit redaction list is a superset, and bare substrings
 are the point of it.** apcore-typescript enumerated compounds (`api_key`,
@@ -441,6 +464,9 @@ failure — it was simply on the branch that does not yield importable files.
 **Authority:** apcore-typescript + apcore-rust, which both check before the
 split. *Fixed, with a companion test proving in-root aliasing still works so the
 fix cannot be over-corrected into a blanket refusal.*
+*Extended by D-127 (v1.56.0): containment is checked on the canonical real path against the
+canonical root, and file identity, module ID and visited-directory tracking are keyed on that
+path.*
 
 **D-95 — a configuration dot-path addresses data, never the host object graph.**
 apcore-typescript's `setNested` guarded its descent with `part in current`.
@@ -480,7 +506,9 @@ strictly needed costs a prompt; skipping one that was needed is a bypass. The
 gate now fires on the union, mirroring §6.9, where the requirement is already the
 union of the annotation, the ACL rule and `gate_destructive`. It costs
 apcore-python and apcore-typescript nothing, since their descriptors are derived
-from the module. **Authority:** §7.4 for D-96's module half, apcore-python +
+from the module. *(Superseded in part by D-125, v1.54.0: that last claim is false —
+both SDKs merge `*_meta.yaml` / binding / `metadata=` declarations into the descriptor, and
+neither gate read them. The union binds every SDK and every governance reader.)* **Authority:** §7.4 for D-96's module half, apcore-python +
 apcore-typescript for D-97, fail-closed reasoning for the union. *Both fixed.*
 
 **D-98 — `$ref` sibling keys are preserved.** apcore-rust's `$ref` branch read
@@ -492,7 +520,7 @@ SDKs and written to logs in plaintext by the third. **Authority:** apcore-python
 on the self-reference path. *Fixed; the end-to-end test printed the leak verbatim
 before the fix.*
 
-## The `global_deadline` group (D-99 – D-102)
+### The `global_deadline` group (D-99 – D-102)
 
 Three SDKs kept one value on three clocks, in two places, with two lifetimes —
 and every one of the four rules was already implied by existing text without
@@ -521,7 +549,7 @@ being stated where an implementer would look.
   inverted the MUST exactly where it applies, and every cross-process sub-tree
   ran unbounded. **Authority:** apcore-rust + apcore-typescript.
 
-## The remaining adjudications
+### The remaining adjudications
 
 **D-92 — `TaskStoreError` must exist before it can be raised.** Declared on eight
 surfaces in `async-tasks.md`; defined in **no** SDK. A declared error type no
@@ -554,6 +582,10 @@ in the wild, and the two lookups cannot collide. A side effect:
 `SchemaDefinition.definitions`, collected by two SDKs and read by nothing,
 becomes live; it was dead precisely because the refs that would use it could not
 resolve.
+*Scoped by D-124 (v1.53.0): the node fallback applies only while resolution is inside the
+document the schema node belongs to; a local pointer reached through an external reference,
+naming a definition that external document lacks, raises `SCHEMA_NOT_FOUND`. Both bases and
+their order are unchanged.*
 
 **D-105 — the executor's ACL step MUST take the async path.** §6.1.3 defines what
 each entry point resolves and never said which one the pipeline calls.
@@ -613,7 +645,7 @@ has to change.
 
 ---
 
-# Wave 3 — D-108 – D-121
+## Wave 3 — D-108 – D-121
 
 Waves 1 and 2 corrected **defects**: behaviour that contradicted an existing
 normative statement, or that leaked, bypassed or crashed. This wave is
@@ -640,7 +672,7 @@ have buried any defect in it.
 > paragraphs below are kept as written: they record what each SDK did at the
 > time the decision was taken, not what it does now.
 
-## D-108 — an unknown extension point is an error; an empty one is not
+### D-108 — an unknown extension point is an error; an empty one is not
 
 **Status quo.** `get` / `get_all` / `unregister` raised `KeyError` on
 apcore-python, threw `Error` on apcore-typescript, and returned
@@ -654,7 +686,7 @@ raise for a registered point that currently holds nothing.
 EMPTY case. The distinction matters because the silent reading turns a typo into
 a wiring bug that first appears at `apply()`, far from the call that caused it.
 
-## D-109 — only the healthy/degraded boundary is configurable
+### D-109 — only the healthy/degraded boundary is configurable
 
 **Status quo.** apcore-python and apcore-typescript computed the degraded/error
 boundary as `healthy_threshold * 10`; apcore-rust fixed it at `0.10`, which is
@@ -668,7 +700,7 @@ consequence is recorded in the contract because it surprises: with
 stricter ERROR boundary is asking for a second knob that deliberately does not
 exist.
 
-## D-110 — `project_name` defaults to `"apcore"`
+### D-110 — `project_name` defaults to `"apcore"`
 
 **Status quo.** apcore-python and apcore-typescript returned `""` from
 `manifest.full`; apcore-rust returned `"apcore"`. But `health.summary` already
@@ -681,7 +713,7 @@ have required changing two system modules per SDK and left `health.summary`
 disagreeing with `manifest.full`; choosing `"apcore"` changes one and removes an
 existing contradiction.
 
-## D-111 — a bulk reload audits per module, with a correlation id
+### D-111 — a bulk reload audits per module, with a correlation id
 
 **Status quo.** apcore-python and apcore-rust wrote one aggregate entry whose
 `target_module_id` was the glob; apcore-typescript wrote one per module.
@@ -694,7 +726,7 @@ filters by a concrete id and therefore cannot find an entry keyed on
 `executor.*`. The correlation id is the maintainer's addition: per-module entries
 alone lose the fact that they were one deploy.
 
-## D-112 — a failed reload restores the previous module
+### D-112 — a failed reload restores the previous module
 
 **Status quo.** apcore-typescript re-registered the original on failure;
 apcore-python and apcore-rust left it unregistered, and the contract endorsed
@@ -713,7 +745,7 @@ no primitive for.
 **Authority.** Maintainer policy. This is a control-plane judgement — a failed
 hot-fix making a working module *disappear* — not a consistency question.
 
-## D-113 — storage-backend namespaces, and the omitted-argument default
+### D-113 — storage-backend namespaces, and the omitted-argument default
 
 **Status quo.** §1.1 made the `StorageBackend` argument a MUST and never named
 the namespaces. Of nine collector/SDK combinations, four wrote anything; the two
@@ -730,7 +762,7 @@ anything), apcore-typescript on the default. The migration constraint is the
 maintainer's: a namespace rename is invisible until someone queries old data and
 finds nothing.
 
-## D-114 — `remove()` clears the duplicate-identity entry
+### D-114 — `remove()` clears the duplicate-identity entry
 
 **Status quo.** apcore-typescript cleared it; apcore-python and apcore-rust did
 not, so `use` / `remove` / `use` warned about a duplicate naming a registration
@@ -740,7 +772,7 @@ that no longer exists.
 registration so a duplicate can be traced to it; a stale entry corrupts that
 record in both directions.
 
-## D-115 — a malformed annotation value is tolerated and dropped
+### D-115 — a malformed annotation value is tolerated and dropped
 
 **Status quo.** For `{"extra": "oops"}`: apcore-python coerced to `{}`,
 apcore-typescript object-spread the string and fabricated `{"0":"o", …}`,
@@ -781,7 +813,7 @@ Recording this rather than quietly amending the table: a decision whose status
 quo was never run is exactly what D-125 and D-126 corrected elsewhere, and the
 correction is only useful if it is visible.
 
-## D-116 — circuit-breaker events carry the declared subscriber type
+### D-116 — circuit-breaker events carry the declared subscriber type
 
 **Status quo.** apcore-python and apcore-typescript reported the wrapped
 subscriber's class name; apcore-rust split `subscriber_id` on the first hyphen,
@@ -794,7 +826,7 @@ existing default; no second default is invented for this surface.
 **Authority.** None of the three — the value the same SDK already puts in its own
 DLQ payload, which is what a consumer routing on `subscriber_type` receives.
 
-## D-117 — registered-namespace defaults do not answer for a legacy document
+### D-117 — registered-namespace defaults do not answer for a legacy document
 
 **Status quo.** apcore-rust consulted them in both modes; apcore-python and
 apcore-typescript in namespace mode only.
@@ -803,7 +835,7 @@ apcore-typescript in namespace mode only.
 that a legacy document has no namespaces — so a declaration ABOUT a namespace has
 nothing to say about one.
 
-## D-118 — an empty `roles` list is omitted from the audit snapshot
+### D-118 — an empty `roles` list is omitted from the audit snapshot
 
 **Status quo.** apcore-typescript always emitted `roles: []`; the peers omitted
 the key.
@@ -811,7 +843,7 @@ the key.
 **Decision / Authority.** 2-of-3, and the spec names only `id`, `type` and
 optionally `display_name`.
 
-## D-119 — `system.*` modules declare `open_world: false` explicitly
+### D-119 — `system.*` modules declare `open_world: false` explicitly
 
 **Status quo.** apcore-typescript set it; apcore-python and apcore-rust left it
 at the language default, which is `true`.
@@ -823,7 +855,7 @@ an external system — with the explicitness requirement added because relying o
 default that means the opposite of the intended value is how the divergence
 arose.
 
-## D-120 — error timestamps are `Z` with millisecond precision
+### D-120 — error timestamps are `Z` with millisecond precision
 
 **Status quo.** `+00:00` microseconds (Python), `Z` milliseconds (TypeScript),
 `+00:00` nanoseconds (Rust).
@@ -836,7 +868,7 @@ three precisions behind one `Z` — the same divergence, now harder to see. The 
 location matters for the same reason: one SDK's `to_rfc3339()` sits in
 `health.rs`, and correcting it there would leave the producer untouched.
 
-## D-121 — `reload_dependents` is deprecated for removal
+### D-121 — `reload_dependents` is deprecated for removal
 
 **Status quo.** Declared in all three SDKs' input schemas and read by none. A
 spec MUST ("also reload modules that depend on matched modules") that no
@@ -855,7 +887,7 @@ becomes a **validation error** after removal, since every input schema sets
 
 ---
 
-# Wave 4 — D-122 – D-123
+## Wave 4 — D-122 – D-123
 
 These two did not come from the audit. They came from **reviewing the audit's
 own output** — reading the 12,747 changed lines the first three waves produced,
@@ -873,7 +905,7 @@ point that honoured it.
 Unlike Wave 3, **both are implemented here**, because both are narrow enough to
 review alongside the change that exposed them.
 
-## D-122 — `shutdown()` attempts every cancellation before it reports
+### D-122 — `shutdown()` attempts every cancellation before it reports
 
 **Status quo.** All three SDKs cancel active tasks during `shutdown()`. On a
 cancellation failure apcore-python and apcore-rust stop at the first error;
@@ -903,7 +935,7 @@ in-flight tasks to complete and takes no timeout parameter in any of the three
 SDKs. A caller who needs a bound must already impose one from outside, and that
 bound covers the cancellation loop exactly as it covers the wait.
 
-## D-123 — a hot-reloaded module MUST NOT become visible before its `on_load()` has run
+### D-123 — a hot-reloaded module MUST NOT become visible before its `on_load()` has run
 
 **Status quo.** [`Contract: Registry.register`](../features/registry-system.md#contract-registryregister)
 Side Effects step 8 already requires a module to run `on_load()` before it
@@ -940,7 +972,7 @@ the consumer's own `register()` call — so it has no publish path to constrain.
 
 ---
 
-# Wave 5 — D-124
+## Wave 5 — D-124
 
 Wave 4 came from reading the audit's output. This one came from the **maintainer
 reading it** — a review of the four branches that returned three concrete misses
@@ -958,7 +990,7 @@ about. The union now lives in one function
 rather than on the resolver, because in both cases the defect was that the rule
 had one home and several readers.
 
-## D-124 — the node fallback is scoped to its own document
+### D-124 — the node fallback is scoped to its own document
 
 **Status quo.** All three SDKs. apcore-rust held `node_fallback` on the
 `RefResolver`, apcore-python returned `self._file_cache[_INLINE_SENTINEL]` from
@@ -998,9 +1030,12 @@ and not disabled.
 
 ---
 
-# Wave 6 — D-125
+## Wave 6 — D-125 – D-126
 
-## D-125 — D-96 binds every SDK and every governance reader
+Both came from one sweep: checking every sentence in the specification that licensed
+inaction by making a claim about another SDK.
+
+### D-125 — D-96 binds every SDK and every governance reader
 
 **Status quo.** D-96 closed with this sentence:
 
@@ -1061,11 +1096,36 @@ recorded, without checking, that the other two needed nothing. A claim about
 another implementation is a claim to verify, not to reason out — and the
 verification here took one script per SDK.
 
+### D-126 — a `version_hint` an implementation does not resolve by MUST NOT be silent
+
+**Status quo.** The spec's v1.10.0 history row recorded that "all three SDKs accept [a
+version hint], only apcore-python resolves by it". The second half was right; the first was
+not. apcore-rust's `Registry::get(&self, name)` takes no version hint, so a Rust caller cannot
+pass one. apcore-typescript accepted the argument and discarded it — the parameter name
+appeared exactly once in the source, in the signature. Found by verifying the spec's claims
+about other SDKs, the same sweep that produced D-125.
+
+**Decision.** An implementation that accepts a `version_hint` it does not resolve by **MUST**
+make that visible to the caller. Compile-time refusal (apcore-rust) satisfies this; so does a
+deprecation warning. Resolution itself stays OPTIONAL. apcore-typescript deprecates its hint
+for removal at 2.0 rather than removing it now, following **D-121** — removal would be a
+compile error for every caller that passes one, and the warning carries the same information
+without breaking the build — and warns at D-89's cadence, once per module ID per registry
+instance, because `get` is a read hosts call in loops.
+
+**Authority.** §9.1.3's "declared surface reaches no mechanism", applied to a method
+parameter: a caller writing `get(id, "1.0.0")` believes it has pinned a version and has not.
+Resolution stays optional because §5.4 multi-version coexistence is optional, and making it
+normative would require what two of three implementations do not provide — which the v1.10.0
+row was right to avoid. The v1.10.0 row is left as written; the corrected statement is the
+current one in [`registry-system.md`](../features/registry-system.md#contract-registryregister).
+Spec v1.55.0.
+
 ---
 
-# Adjudicated after the fact
+## Adjudicated after the fact
 
-## O-1 — RESOLVED as D-127 (spec v1.56.0)
+### O-1 — RESOLVED as D-127 (spec v1.56.0)
 
 **`extensions.follow_symlinks: true` does not reach the file branch in two SDKs**
 
@@ -1148,7 +1208,7 @@ check cannot stop a party who can replace the link between the scan and the load
 Whether a file-handle or directory-descriptor level defence is warranted depends
 on whether the extensions root is attacker-writable, which is a threat-model
 question rather than a discovery-semantics one, and is assessed in
-[Discovery TOCTOU](./2026-09-discovery-toctou-assessment.md).
+[Security Considerations — Discovery TOCTOU](./security-considerations.md#28-discovery-toctou-ot9).
 
 **Two further defects surfaced while implementing it**, both in apcore-typescript
 and both of the same shape — a path compared against a root that was normalised
@@ -1172,7 +1232,7 @@ fix — the lazy `ensureNodeModules` accessor is used instead.
 
 ---
 
-## D-128 — `unregister` removes by identity, not equality
+### D-128 — `unregister` removes by identity, not equality
 
 **Found while pinning D-91.** D-91 asked whether a removal path is *reachable*;
 answering it meant writing the call from outside the manager in all three SDKs,

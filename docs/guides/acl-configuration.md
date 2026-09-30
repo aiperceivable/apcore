@@ -1,5 +1,5 @@
 ---
-description: "How to write apcore ACL rules in YAML: callers, targets, allow/deny effects, wildcard ID patterns, and default-deny configuration, shared identically across all SDKs."
+description: "How to write and wire apcore ACL files: callers, targets, allow/deny effects, conditions, approval, audit, default-deny, and how to test the rules."
 ---
 
 # ACL Configuration Guide
@@ -7,122 +7,188 @@ description: "How to write apcore ACL rules in YAML: callers, targets, allow/den
 > Configure access control rules between modules.
 
 !!! note "Cross-language applicability"
-    The ACL configuration format (YAML) is identical across all SDKs and is shown as bare YAML blocks. SDK code examples are shown side-by-side for Python, TypeScript, and Rust. See the [ACL System feature spec](../features/acl-system.md) for the full API reference.
+    The ACL file format (YAML) is identical in every SDK. SDK code is shown side by side for Python, TypeScript and Rust. Evaluation semantics — pattern matching, conditions, unevaluable conditions, audit records — are defined in the [ACL System feature spec](../features/acl-system.md) and [PROTOCOL_SPEC §6](../spec/protocol-spec.md#6-acl-specification); this guide shows how to use them.
 
 ## 1. Overview
 
-ACL (Access Control List) is used to control invocation permissions between modules, preventing unauthorized module calls.
-
-**Core Concepts:**
+The ACL (Access Control List) decides whether one module may call another. It runs as pipeline step 4, after module lookup and before the approval gate.
 
 | Concept | Description |
 |---------|-------------|
-| **Callers** | List of caller module ID patterns |
-| **Targets** | List of target module ID patterns |
-| **Effect** | Allow or deny |
-| **Wildcards** | `*` matches any characters, `executor.*` matches all modules starting with `executor.` |
+| **Callers** | Caller module ID patterns (`caller_id`); `@external` matches top-level calls |
+| **Targets** | Target module ID patterns (`target_id`) |
+| **Effect** | `allow` or `deny` |
+| **Conditions** | Optional extra requirements on identity, call depth or argument keys |
+| **Approval** | Optional `approval: required` — the call is allowed but must be signed off first |
+| **Default effect** | What happens when no rule matches — always `deny` in these examples |
+| **Audit** | The file's `audit:` block records every decision |
 
 ---
 
 ## 2. Quick Start
 
-### 2.1 Create Configuration File
+### 2.1 Create the ACL file
 
 ```yaml
 # acl/global_acl.yaml
+version: "1.0"
+default_effect: deny
+
+audit:
+  enabled: true
+  include_denied: true
+  log_level: info
+
 rules:
-  # Allow orchestrator.* to call executor.*
+  - callers: ["@external"]
+    targets: ["api.*"]
+    effect: allow
+    description: "Top-level callers enter through the API layer"
+
+  - callers: ["api.*"]
+    targets: ["orchestrator.*"]
+    effect: allow
+
   - callers: ["orchestrator.*"]
     targets: ["executor.*"]
     effect: allow
 
-  # Allow all calls by default
   - callers: ["*"]
-    targets: ["*"]
+    targets: ["common.*"]
     effect: allow
+    description: "Shared utilities"
 ```
 
-### 2.2 Load and Use
+Every call not allowed by a rule is denied by `default_effect: deny`.
+
+### 2.2 Wire it through `apcore.yaml` (recommended)
+
+Point `acl.root` at the directory that holds the file. When `APCore` is built with a `Config`, it loads `<acl.root>/global_acl.yaml` and attaches it:
+
+```yaml
+# apcore.yaml
+version: "1.0.0"
+project:
+  name: my-app
+acl:
+  root: ./acl   # the default; relative to apcore.yaml
+```
 
 === "Python"
 
     ```python
-    from apcore import Registry, Executor
-    from apcore.acl import ACL
+    from apcore import APCore, Config
 
-    registry = Registry(extensions_dir="./extensions")
-    registry.discover()
-
-    # Load ACL from YAML
-    acl = ACL.load("./acl/global_acl.yaml")
-
-    # Create Executor with ACL wired in
-    executor = Executor(registry=registry, acl=acl)
-
-    # Permissions are automatically checked on invocation
-    result = executor.call(
-        module_id="executor.email.send_email",
-        inputs={"to": "alice@example.com", "subject": "Hello", "body": "Hi"},
-        context=None,  # caller_id defaults to @external
-    )
+    client = APCore(config=Config.load("apcore.yaml"))
     ```
 
 === "TypeScript"
 
     ```typescript
-    import { Registry, Executor } from 'apcore-js';
-    import { ACL } from 'apcore-js';
+    import { APCore, Config } from 'apcore-js';
 
-    const registry = new Registry({ extensionsDir: './extensions' });
-    await registry.discover();
-
-    // Load ACL from YAML
-    const acl = ACL.load('./acl/global_acl.yaml');
-
-    // Create Executor with ACL wired in
-    const executor = new Executor({ registry, acl });
-
-    // Permissions are automatically checked on invocation
-    const result = await executor.call(
-      'executor.email.send_email',
-      { to: 'alice@example.com', subject: 'Hello', body: 'Hi' },
-      null, // caller_id defaults to @external
-    );
+    const client = new APCore({ config: Config.load('apcore.yaml') });
     ```
 
 === "Rust"
 
     ```rust
-    use apcore::acl::ACL;
-    use apcore::config::Config;
-    use apcore::executor::Executor;
-    use apcore::registry::Registry;
-    use serde_json::json;
+    use apcore::{APCore, ModuleError};
+
+    fn build_client() -> Result<APCore, ModuleError> {
+        APCore::from_path("apcore.yaml")
+    }
+    ```
+
+If the file does not exist, **no ACL is attached and no call is checked** — the SDK does not invent a deny-all ACL. `default_effect` and `audit:` belong in the ACL file; the `acl.default_effect` and `acl.audit.*` keys in `apcore.yaml` have no effect. Discovery is skipped when you pass your own `Executor` to `APCore`.
+
+### 2.3 Wire it in code
+
+Load the file yourself when you need a custom audit destination or build the `Executor` yourself. `audit_logger` receives every decision; when you pass one, drop the `audit:` block from the file (the SDK warns that its settings no longer apply).
+
+=== "Python"
+
+    ```python
+    import logging
+
+    from apcore import APCore
+    from apcore.acl import ACL, AuditEntry
+
+    audit_log = logging.getLogger("acl.audit")
+
+
+    def log_decision(entry: AuditEntry) -> None:
+        audit_log.info(
+            "ACL %s: %s -> %s (%s, rule=%s)",
+            entry.decision, entry.caller_id, entry.target_id, entry.reason, entry.matched_rule,
+        )
+
+
+    client = APCore()
+    client.executor.set_acl(ACL.load("./acl/global_acl.yaml", audit_logger=log_decision))
+    ```
+
+=== "TypeScript"
+
+    ```typescript
+    import { ACL, APCore } from 'apcore-js';
+    import type { AuditEntry } from 'apcore-js';
+
+    const logDecision = (entry: AuditEntry): void => {
+      console.info(
+        `ACL ${entry.decision}: ${entry.callerId} -> ${entry.targetId} (${entry.reason}, rule=${entry.matchedRule})`,
+      );
+    };
+
+    const client = new APCore();
+    client.executor.setAcl(ACL.load('./acl/global_acl.yaml', logDecision));
+    ```
+
+=== "Rust"
+
+    ```rust
+    use apcore::{APCore, AuditEntry, Config, Executor, ModuleError, Registry, ACL};
     use std::sync::Arc;
 
-    # async fn run() -> Result<(), Box<dyn std::error::Error>> {
-    let registry = Arc::new(Registry::new());
-    // discover() takes a Discoverer; see registry docs for FsDiscoverer setup
-    let config = Arc::new(Config::default());
+    fn build_client() -> Result<APCore, ModuleError> {
+        let mut acl = ACL::load("./acl/global_acl.yaml")?;
+        acl.set_audit_logger(|entry: &AuditEntry| {
+            println!(
+                "ACL {}: {} -> {} ({}, rule={:?})",
+                entry.decision, entry.caller_id, entry.target_id, entry.reason, entry.matched_rule
+            );
+        });
 
-    // Load ACL from YAML
-    let acl = ACL::load("./acl/global_acl.yaml")?;
+        // APCore::executor() is read-only, so attach the ACL before handing the Executor over.
+        let mut executor = Executor::new(Arc::new(Registry::new()), Arc::new(Config::default()));
+        executor.set_acl(acl);
+        Ok(APCore::with_options(None, Some(executor), None, None))
+    }
+    ```
 
-    // Create Executor with ACL wired in
-    let mut executor = Executor::new(registry, config);
-    executor.set_acl(acl);
+### 2.4 Check that the ACL is enforced
 
-    // Permissions are automatically checked on invocation
-    let inputs = json!({
-        "to": "alice@example.com",
-        "subject": "Hello",
-        "body": "Hi"
-    });
-    let result = executor
-        .call("executor.email.send_email", inputs, None, None)
-        .await?;
-    # Ok(())
-    # }
+An attached ACL is only consulted by strategies that contain the `acl_check` step. The `standard` strategy (the default) has it; the `internal`, `testing` and `minimal` strategies do not, so an ACL attached there is never evaluated. `governance_state()` reports both facts:
+
+=== "Python"
+
+    ```python
+    state = client.executor.governance_state()
+    assert state.acl_configured and state.builtin_acl_gate_wired
+    ```
+
+=== "TypeScript"
+
+    ```typescript
+    const state = client.executor.governanceState();
+    console.assert(state.aclConfigured && state.builtinAclGateWired);
+    ```
+
+=== "Rust"
+
+    ```rust
+    let state = client.executor().governance_state();
+    assert!(state.acl_configured && state.builtin_acl_gate_wired);
     ```
 
 ---
@@ -133,84 +199,101 @@ rules:
 
 ```yaml
 # acl/global_acl.yaml
-version: "1.0"  # Optional
+version: "1.0"          # optional
+default_effect: deny    # optional; deny when omitted
 
-# Default behavior (optional, defaults to deny)
-default_effect: deny
+audit:                  # optional; declaring it turns on the SDK's audit log
+  enabled: true
+  include_denied: true
+  log_level: info       # trace | debug | info | warn | error
 
-# Rules list
-rules:
+rules:                  # required; evaluated top to bottom, first match wins
   - callers: ["<pattern>"]
     targets: ["<pattern>"]
-    effect: allow | deny
+    effect: allow            # allow | deny
     description: "Optional rule description"
 ```
+
+The file is validated against [`schemas/acl-config.schema.json`](https://github.com/aiperceivable/apcore/blob/main/schemas/acl-config.schema.json). An invalid file — including an unknown rule key or an `effect` other than `allow`/`deny` — fails to load with `ACL_RULE_ERROR`.
 
 ### 3.2 Rule Fields
 
 | Field | Required | Description |
 |------|------|------|
-| `callers` | Yes | List of caller module ID patterns |
-| `targets` | Yes | List of target module ID patterns |
+| `callers` | Yes | Caller module ID patterns (see section 4) |
+| `targets` | Yes | Target module ID patterns |
 | `effect` | Yes | `allow` or `deny` |
-| `description` | No | Rule description |
+| `description` | No | Human-readable purpose; recorded in audit entries as the matched rule |
+| `conditions` | No | Extra requirements the call must meet for the rule to match (section 3.3) |
+| `approval` | No | `required` or `not_required` (default). `required` lets the call through the ACL but sends it to the approval gate; only valid with `effect: allow` |
+
+### 3.3 Conditions
+
+All keys in a `conditions` object must hold for the rule to match.
+
+| Key | Matches when |
+|-----|-------------|
+| `roles` | The caller's `Identity` has at least one of the listed roles |
+| `identity_types` | The caller's identity type is one of the listed values |
+| `max_call_depth` | The call chain is no deeper than this value |
+| `arguments` | The call's argument **keys** satisfy `has_key`, `has_all_keys` or `has_none_of` |
+| `$or` | Any of the listed condition objects holds |
+| `$not` | The wrapped condition object does not hold |
+
+```yaml
+# acl/global_acl.yaml
+version: "1.0"
+default_effect: deny
+
+audit:
+  enabled: true
+  include_denied: true
+  log_level: info
+
+rules:
+  - callers: ["agent.*"]
+    targets: ["billing.refund"]
+    effect: allow
+    approval: required
+    conditions:
+      $or:
+        - roles: ["finance"]
+        - identity_types: ["service"]
+      $not:
+        arguments:
+          has_key: ["override_limit"]
+    description: "Finance agents and services may refund, with sign-off, but never with override_limit"
+```
+
+Custom condition keys can be registered in code (section 8.2). A condition that cannot be evaluated — no handler registered, or the handler fails — never grants access: an `allow` rule carrying it does not match, and a `deny` rule carrying it takes effect. See [features/acl-system.md § Conditional Rules](../features/acl-system.md#conditional-rules) for the full semantics.
+
+### 3.4 Audit
+
+The `audit:` block is the only place audit logging is configured.
+
+- **Declared with `enabled: true`** — the SDK logs one `apcore.acl.audit` record per decision at `log_level`. `include_denied: false` drops denied decisions from that log.
+- **Not declared** — no audit output unless you pass a callback (section 2.3).
+- **A callback** receives every decision, allow and deny, regardless of the block.
+
+Keep auditing on in production: the records are the durable trail of every access decision that security review and incident response depend on.
 
 ---
 
 ## 4. Pattern Matching
 
-### 4.1 Exact Match
+`*` matches any run of characters, including dots, and is the only wildcard. Every other character — `?` included — is literal. Matching is case-sensitive.
 
-```yaml
-rules:
-  # Only allow specific module to call specific module
-  - callers: ["orchestrator.user.register"]
-    targets: ["executor.email.send_email"]
-    effect: allow
-```
+| Pattern | Matches | Does not match |
+|---------|---------|----------------|
+| `executor.email.send_email` | exactly that ID | `executor.email.send_template` |
+| `executor.*` | `executor.email.send_email`, `executor.db.insert` | `executor` |
+| `executor.email.*` | `executor.email.send_email` | `executor.sms.send` |
+| `*.read` | `executor.user.read`, `billing.read` | `executor.user.read_all` |
+| `*` | every ID | — |
+| `@external` (callers only) | top-level calls with no `caller_id` | calls from a module |
+| `@system` (callers only) | calls whose identity type is `system` | — |
 
-### 4.2 Prefix Wildcards
-
-```yaml
-rules:
-  # Allow all modules under orchestrator to call all modules under executor
-  - callers: ["orchestrator.*"]
-    targets: ["executor.*"]
-    effect: allow
-
-  # Allow calling all modules under common
-  - callers: ["*"]
-    targets: ["common.*"]
-    effect: allow
-```
-
-### 4.3 Multi-level Wildcards
-
-```yaml
-rules:
-  # Match any depth
-  - callers: ["api.*"]
-    targets: ["executor.email.*"]
-    effect: allow
-
-  # api.handler.user_api → executor.email.send_email ✓
-  # api.v2.handler.user_api → executor.email.send_template ✓
-```
-
-### 4.4 Special Callers
-
-```yaml
-rules:
-  # Top-level calls (no caller_id)
-  - callers: ["@external"]
-    targets: ["api.*"]
-    effect: allow
-
-  # System internal calls
-  - callers: ["@system"]
-    targets: ["internal.*"]
-    effect: allow
-```
+`callers` and `targets` lists may also start with the `$or` / `$not` operators; see [features/acl-system.md § Pattern Matching](../features/acl-system.md#pattern-matching).
 
 ---
 
@@ -219,48 +302,55 @@ rules:
 ### 5.1 Layered Architecture
 
 ```yaml
-# Typical three-tier architecture ACL
+# acl/global_acl.yaml
+version: "1.0"
+default_effect: deny
+
+audit:
+  enabled: true
+  include_denied: true
+  log_level: info
+
 rules:
-  # API layer can call Orchestrator layer
+  - callers: ["@external"]
+    targets: ["api.*"]
+    effect: allow
+
   - callers: ["api.*"]
     targets: ["orchestrator.*"]
     effect: allow
 
-  # Orchestrator layer can call Executor layer
   - callers: ["orchestrator.*"]
     targets: ["executor.*"]
     effect: allow
 
-  # All layers can call Common
   - callers: ["*"]
     targets: ["common.*"]
     effect: allow
 
-  # Prohibit cross-layer calls
+  # Already denied by default_effect; stated explicitly so the audit
+  # entry names the reason.
   - callers: ["api.*"]
     targets: ["executor.*"]
     effect: deny
     description: "API cannot call Executor directly"
-
-  # Default deny
-  - callers: ["*"]
-    targets: ["*"]
-    effect: deny
 ```
 
-### 5.2 Whitelist Mode
+### 5.2 Allowlist of Specific Calls
 
 ```yaml
+# acl/global_acl.yaml
+version: "1.0"
 default_effect: deny
 
-rules:
-  # Only allow specific call relationships
-  - callers: ["orchestrator.user.register"]
-    targets: ["executor.email.send_email"]
-    effect: allow
+audit:
+  enabled: true
+  include_denied: true
+  log_level: info
 
+rules:
   - callers: ["orchestrator.user.register"]
-    targets: ["executor.database.insert"]
+    targets: ["executor.email.send_email", "executor.database.insert"]
     effect: allow
 
   - callers: ["orchestrator.order.create"]
@@ -268,43 +358,62 @@ rules:
     effect: allow
 ```
 
-### 5.3 Blacklist Mode
+### 5.3 Carve-outs Inside a Broad Allow
+
+First match wins, so an exception goes **above** the broader rule it narrows.
 
 ```yaml
+# acl/global_acl.yaml
+version: "1.0"
 default_effect: deny
 
+audit:
+  enabled: true
+  include_denied: true
+  log_level: info
+
 rules:
-  # Deny calling sensitive modules
-  - callers: ["*"]
-    targets: ["internal.admin.*"]
-    effect: deny
+  # 1. The one module allowed into the key vault.
+  - callers: ["admin.security_audit"]
+    targets: ["vault.keys.*"]
+    effect: allow
 
+  # 2. Nobody else, even callers the next rule would allow.
   - callers: ["*"]
-    targets: ["internal.security.*"]
+    targets: ["vault.keys.*"]
     effect: deny
+    description: "Key vault modules are closed to everything but the audit job"
 
-  # Only admin modules can call
+  # 3. The broad rule.
   - callers: ["admin.*"]
-    targets: ["internal.admin.*"]
+    targets: ["vault.*"]
     effect: allow
 ```
 
-### 5.4 Environment Isolation
+### 5.4 Development-Only Rules
+
+Keep permissive rules in a separate ACL file that only development configs point at (`acl.root: ./acl-dev`), never in the production file.
 
 ```yaml
-# Development environment allows more permissive calls
+# acl-dev/global_acl.yaml — development only
+version: "1.0"
+default_effect: deny
+
+audit:
+  enabled: true
+  include_denied: true
+  log_level: debug
+
 rules:
-  # Development tools
   - callers: ["dev.*"]
     targets: ["*"]
     effect: allow
-    description: "Development environment: allow dev modules to call any module"
+    description: "Development tools may call any module"
 
-  # Mock modules
   - callers: ["*"]
     targets: ["mock.*"]
     effect: allow
-    description: "Allow calling mock modules"
+    description: "Mock modules are callable by anyone in development"
 ```
 
 ---
@@ -313,60 +422,51 @@ rules:
 
 ### 6.1 Matching Order
 
-Rules are evaluated using **first-match-wins in definition order** per PROTOCOL_SPEC. Rules are checked in the order they appear in the YAML file, and the **first matching rule** determines the outcome. If no rule matches, the `default_effect` applies:
+Rules are checked in file order and the **first rule whose caller and target patterns (and conditions) match** decides. If none matches, `default_effect` decides.
 
 ```yaml
+# acl/global_acl.yaml
+version: "1.0"
+default_effect: deny
+
+audit:
+  enabled: true
+  include_denied: true
+  log_level: info
+
 rules:
-  # Rule 1: Exact match (checked first)
+  # Rule 1: exact match
   - callers: ["orchestrator.user.register"]
     targets: ["executor.email.send_email"]
     effect: allow
 
-  # Rule 2: Wildcard match (checked second)
+  # Rule 2: wildcard
   - callers: ["orchestrator.*"]
     targets: ["executor.email.*"]
     effect: deny
-
-  # Rule 3: Default rule (checked last)
-  - callers: ["*"]
-    targets: ["*"]
-    effect: allow
 ```
 
-```
+```text
 Call: orchestrator.user.register → executor.email.send_email
-Match: Rule 1 (allow — first rule to match)
+Match: Rule 1 → allow
 
 Call: orchestrator.order.create → executor.email.send_email
-Match: Rule 2 (deny — first rule to match)
+Match: Rule 2 → deny
 
 Call: api.handler.test → common.util.format
-Match: Rule 3 (allow — first rule to match)
+Match: none → default_effect → deny
 ```
 
 ### 6.2 Best Practices
 
-```yaml
-rules:
-  # 1. Define exceptions first (exact match)
-  - callers: ["orchestrator.admin.audit"]
-    targets: ["internal.security.log"]
-    effect: allow
+- Keep `default_effect: deny` and grant only what is needed.
+- Put exceptions (exact IDs, narrow patterns) above the broad rules they carve out of.
+- Give every `deny` rule and every non-obvious `allow` rule a `description`; it appears in audit entries.
+- Test the file (section 10.2) whenever it changes.
 
-  # 2. Then define general rules
-  - callers: ["*"]
-    targets: ["internal.*"]
-    effect: deny
+### 6.3 Matching Walkthrough
 
-  # 3. Finally define default rule
-  - callers: ["*"]
-    targets: ["*"]
-    effect: allow
-```
-
-### 6.3 Matching Algorithm Visualization
-
-```
+```text
 Check: caller="api.handler.user" target="executor.email.send"
 
 Rule 1: callers=["admin.*"] targets=["*"]
@@ -383,26 +483,15 @@ Result: allow
 
 ### 6.4 Edge Cases
 
-| Scenario | Result | Description |
-|------|------|------|
-| No ACL file | Use `default_effect` | Defaults to deny |
-| Empty ACL file (no rules) | Use `default_effect` | All calls handled by default policy |
-| caller_id is null | Treated as `@external` | External/top-level call |
-| Module calls itself | Normal ACL check | No special handling |
-| Wildcard `*.*.*` | Equivalent to `*` | Matches all |
-
-### 6.5 Performance Impact
-
-| Number of Rules | Expected Latency | Recommendation |
-|--------|---------|------|
-| < 50 | < 0.1ms | No optimization needed |
-| 50-500 | 0.1-1ms | Consider rule ordering optimization |
-| > 500 | > 1ms | Consider using prefix tree indexing |
-
-**Performance Optimization Recommendations:**
-- Put frequently matched rules at the beginning of the list
-- Use exact matches instead of wildcards (exact matching is faster)
-- Cache ACL check results in production (for same caller+target combinations)
+| Scenario | Result |
+|------|------|
+| No ACL file under `acl.root` (or no ACL attached in code) | No ACL check at all — the ACL step lets every call through |
+| ACL file with an empty `rules` list | Every call gets `default_effect` |
+| `caller_id` is null (top-level call) | Matched as `@external` |
+| Module calls itself | Checked like any other call; the call-chain guard limits recursion separately |
+| Rule has `conditions` but the call has no context | The rule does not match (a warning is logged) |
+| A condition cannot be evaluated | An `allow` rule does not grant; a `deny` rule takes effect |
+| Rule matches with `approval: required` | The ACL allows the call and the approval gate must then sign it off |
 
 ---
 
@@ -410,20 +499,17 @@ Result: allow
 
 ### 7.1 Check Timing
 
-ACL is checked at the following times:
-
-```
-executor.call(module_id, inputs, context)
+```text
+client.call(module_id, inputs, context)
     │
-    ├─ 1. Get caller_id
-    │      └─ From context.caller_id
-    │      └─ If None, treated as @external
+    ├─ 1–3. Context creation, call-chain guard, module lookup
     │
-    ├─ 2. ACL check
-    │      └─ acl.check(caller_id, target_id)
-    │      └─ If denied, throw ACLDeniedError
+    ├─ 4. ACL check
+    │      └─ caller_id = context.caller_id (null → @external)
+    │      └─ acl.check(caller_id, target_id, context)
+    │      └─ denied → ACLDeniedError (ACL_DENIED)
     │
-    └─ 3. Continue execution...
+    └─ 5. Approval gate, then middleware, validation, execution…
 ```
 
 ### 7.2 Error Handling
@@ -434,16 +520,9 @@ executor.call(module_id, inputs, context)
     from apcore.errors import ACLDeniedError
 
     try:
-        result = executor.call(
-            module_id="internal.secret",
-            inputs={"key": "value"},
-            context=context,
-        )
+        client.call("vault.read_secret", {"key": "value"})
     except ACLDeniedError as e:
-        print("Access denied!")
-        print(f"Caller: {e.caller_id}")
-        print(f"Target: {e.target_id}")
-        print(f"Code:   {e.code}")
+        print(f"Access denied: {e.caller_id} -> {e.target_id} ({e.code})")
     ```
 
 === "TypeScript"
@@ -452,116 +531,52 @@ executor.call(module_id, inputs, context)
     import { ACLDeniedError } from 'apcore-js';
 
     try {
-      const result = await executor.call(
-        'internal.secret',
-        { key: 'value' },
-        context,
-      );
+      await client.call('vault.read_secret', { key: 'value' });
     } catch (e) {
-      if (e instanceof ACLDeniedError) {
-        console.log('Access denied!');
-        console.log(`Caller: ${e.callerId}`);
-        console.log(`Target: ${e.targetId}`);
-        console.log(`Code:   ${e.code}`);
-      } else {
-        throw e;
-      }
+      if (!(e instanceof ACLDeniedError)) throw e;
+      console.log(`Access denied: ${e.callerId} -> ${e.targetId} (${e.code})`);
     }
     ```
 
 === "Rust"
 
     ```rust
-    use apcore::errors::{ErrorCode, ModuleError};
+    use apcore::ErrorCode;
     use serde_json::json;
 
-    # async fn run(executor: &apcore::executor::Executor) -> Result<(), ModuleError> {
-    match executor
-        .call("internal.secret", json!({"key": "value"}), None, None)
-        .await
-    {
-        Ok(result) => { /* use result */ }
+    match client.call("vault.read_secret", json!({"key": "value"}), None, None).await {
+        Ok(result) => println!("{result}"),
         Err(e) if e.code == ErrorCode::ACLDenied => {
-            println!("Access denied!");
-            // caller_id / target_id are surfaced via ModuleError.details
-            if let Some(caller) = e.details.get("caller_id") {
-                println!("Caller: {caller}");
-            }
-            if let Some(target) = e.details.get("target_id") {
-                println!("Target: {target}");
-            }
+            // caller_id / target_id travel in the error's details.
+            println!("Access denied: {:?} -> {:?}", e.details.get("caller_id"), e.details.get("target_id"));
         }
         Err(e) => return Err(e),
     }
-    # Ok(())
-    # }
     ```
 
-### 7.3 Debug Mode
+### 7.3 Debug Logging
 
-For deeper visibility, install an `audit_logger` that receives a structured `AuditEntry` for every ACL decision (matched rule index, decision, identity, trace ID, handler errors). Audit logging MUST stay enabled in production: it is the canonical record of every allow/deny outcome.
+Python and TypeScript ACLs have a `debug` flag that logs each rule evaluation inside `check()` — useful while writing rules, too noisy for production:
 
 === "Python"
 
     ```python
-    import logging
-    from apcore.acl import ACL, AuditEntry
+    from apcore.acl import ACL
 
-    def log_audit(entry: AuditEntry) -> None:
-        logging.info(
-            "ACL %s: %s -> %s rule=%s reason=%s",
-            entry.decision,
-            entry.caller_id,
-            entry.target_id,
-            entry.matched_rule,
-            entry.reason,
-        )
-
-    loaded = ACL.load("./acl/global_acl.yaml")
-    acl = ACL(loaded.rules, loaded.default_effect, audit_logger=log_audit)
-    acl.debug = True  # enables verbose check() debug logging
+    acl = ACL.load("./acl/global_acl.yaml")
+    acl.debug = True
     ```
 
 === "TypeScript"
 
     ```typescript
-    import { ACL, AuditEntry } from 'apcore-js';
+    import { ACL } from 'apcore-js';
 
-    const auditLogger = (entry: AuditEntry): void => {
-      console.info(
-        `ACL ${entry.decision}: ${entry.callerId} -> ${entry.targetId} ` +
-          `rule=${entry.matchedRule} reason=${entry.reason}`,
-      );
-    };
-
-    const rules = ACL.load('./acl/global_acl.yaml').rules ?? [];
-    const acl = new ACL(rules, 'deny', auditLogger);
-    acl.debug = true; // enables verbose check() debug logging
+    const acl = ACL.load('./acl/global_acl.yaml');
+    acl.debug = true;
     ```
 
-=== "Rust"
-
-    ```rust
-    use apcore::acl::ACL;
-
-    # fn run() -> Result<(), apcore::errors::ModuleError> {
-    let mut acl = ACL::load("./acl/global_acl.yaml")?;
-    acl.set_audit_logger(|entry| {
-        tracing::info!(
-            decision = %entry.decision,
-            caller   = %entry.caller_id,
-            target   = %entry.target_id,
-            rule     = ?entry.matched_rule,
-            reason   = %entry.reason,
-            "ACL check"
-        );
-    });
-    # Ok(())
-    # }
-    ```
-
-!!! warning "Always keep an audit logger in production"
-    Audit entries are the only durable trail of access decisions — security review and incident response depend on them. Do not strip the audit block from your wiring just because checks are passing.
+For a record of decisions rather than evaluation steps, use the audit block or an audit callback (section 3.4).
 
 ---
 
@@ -576,7 +591,7 @@ For deeper visibility, install an `audit_logger` that receives a structured `Aud
 
     acl = ACL.load("./acl/global_acl.yaml")
 
-    # Add rule (inserted at position 0 — highest priority)
+    # Insert at position 0 — highest priority.
     acl.add_rule(ACLRule(
         callers=["temp.module"],
         targets=["executor.*"],
@@ -584,13 +599,10 @@ For deeper visibility, install an `audit_logger` that receives a structured `Aud
         description="Temporary debug rule",
     ))
 
-    # Remove the matching rule
-    removed = acl.remove_rule(
-        callers=["temp.module"],
-        targets=["executor.*"],
-    )
+    # Remove the first rule with these callers and targets.
+    removed = acl.remove_rule(callers=["temp.module"], targets=["executor.*"])
 
-    # Reload from the original YAML (re-reads file from disk)
+    # Re-read the file from disk.
     acl.reload()
     ```
 
@@ -601,7 +613,7 @@ For deeper visibility, install an `audit_logger` that receives a structured `Aud
 
     const acl = ACL.load('./acl/global_acl.yaml');
 
-    // Add rule (inserted at position 0 — highest priority)
+    // Insert at position 0 — highest priority.
     acl.addRule({
       callers: ['temp.module'],
       targets: ['executor.*'],
@@ -609,48 +621,41 @@ For deeper visibility, install an `audit_logger` that receives a structured `Aud
       description: 'Temporary debug rule',
     });
 
-    // Remove the matching rule
-    const removed: boolean = acl.removeRule(
-      ['temp.module'],
-      ['executor.*'],
-    );
+    // Remove the first rule with these callers and targets.
+    const removed: boolean = acl.removeRule(['temp.module'], ['executor.*']);
 
-    // Reload from the original YAML (re-reads file from disk)
+    // Re-read the file from disk.
     acl.reload();
     ```
 
 === "Rust"
 
     ```rust
-    use apcore::acl::{ACL, ACLRule};
+    use apcore::{ACLRule, ModuleError, ACL};
 
-    # fn run() -> Result<(), apcore::errors::ModuleError> {
-    let mut acl = ACL::load("./acl/global_acl.yaml")?;
+    fn adjust_rules() -> Result<(), ModuleError> {
+        let mut acl = ACL::load("./acl/global_acl.yaml")?;
 
-    // Add rule (inserted at position 0 — highest priority)
-    acl.add_rule(ACLRule {
-        callers: vec!["temp.module".to_string()],
-        targets: vec!["executor.*".to_string()],
-        effect: "allow".to_string(),
-        description: Some("Temporary debug rule".to_string()),
-        conditions: None,
-    });
+        // ACLRule is #[non_exhaustive]: build it with new() and set optional fields.
+        let mut rule = ACLRule::new(vec!["temp.module".to_string()], vec!["executor.*".to_string()], "allow");
+        rule.description = Some("Temporary debug rule".to_string());
+        acl.add_rule(rule); // inserted at position 0 — highest priority
 
-    // Remove the matching rule
-    let removed: bool = acl.remove_rule(
-        &["temp.module".to_string()],
-        &["executor.*".to_string()],
-    );
+        // Remove the first rule with these callers and targets.
+        let removed: bool = acl.remove_rule(&["temp.module".to_string()], &["executor.*".to_string()]);
+        println!("removed: {removed}");
 
-    // Reload from the original YAML (re-reads file from disk)
-    acl.reload()?;
-    # Ok(())
-    # }
+        // Re-read the file from disk.
+        acl.reload()?;
+        Ok(())
+    }
     ```
 
-### 8.2 Dynamic Check Based on Context
+An ACL attached to an executor is shared: changes made through the object you attached apply to later calls.
 
-For dynamic decisions (time windows, identity attributes, external lookups) prefer **registering a custom condition handler** over subclassing `ACL`. Custom handlers are first-class in every SDK and can be referenced from YAML rules. The example below adds a `time_window` condition that gates `maintenance.*` modules to a nightly window.
+### 8.2 Custom Conditions
+
+For decisions that depend on time, identity attributes or external lookups, register a condition handler and reference its key from `conditions`. This one limits `maintenance.*` modules to a nightly window.
 
 === "Python"
 
@@ -661,25 +666,18 @@ For dynamic decisions (time windows, identity attributes, external lookups) pref
     from apcore.acl import ACL
     from apcore.context import Context
 
+
     class TimeWindowHandler:
-        """Allow only when current hour is within [start, end]."""
+        """Satisfied when the current hour is within [start_hour, end_hour]."""
 
         def evaluate(self, value: Any, context: Context) -> bool:
             if not isinstance(value, dict):
                 return False
-            start = int(value.get("start_hour", 0))
-            end = int(value.get("end_hour", 23))
             hour = datetime.now().hour
-            return start <= hour <= end
+            return int(value.get("start_hour", 0)) <= hour <= int(value.get("end_hour", 23))
+
 
     ACL.register_condition("time_window", TimeWindowHandler())
-
-    # YAML can now reference the new condition:
-    #   - callers: ["*"]
-    #     targets: ["maintenance.*"]
-    #     effect: allow
-    #     conditions:
-    #       time_window: { start_hour: 2, end_hour: 6 }
     ```
 
 === "TypeScript"
@@ -687,61 +685,68 @@ For dynamic decisions (time windows, identity attributes, external lookups) pref
     ```typescript
     import { ACL, Context } from 'apcore-js';
 
-    // Structural shape matches the package's internal ACLConditionHandler.
     class TimeWindowHandler {
       evaluate(value: unknown, _context: Context): boolean {
         if (typeof value !== 'object' || value === null) return false;
-        const v = value as { start_hour?: number; end_hour?: number };
-        const start = v.start_hour ?? 0;
-        const end = v.end_hour ?? 23;
+        const { start_hour = 0, end_hour = 23 } = value as { start_hour?: number; end_hour?: number };
         const hour = new Date().getHours();
-        return hour >= start && hour <= end;
+        return hour >= start_hour && hour <= end_hour;
       }
     }
 
     ACL.registerCondition('time_window', new TimeWindowHandler());
-
-    // YAML can now reference the new condition:
-    //   - callers: ["*"]
-    //     targets: ["maintenance.*"]
-    //     effect: allow
-    //     conditions:
-    //       time_window: { start_hour: 2, end_hour: 6 }
     ```
 
 === "Rust"
 
     ```rust
-    use apcore::acl::ACL;
-    use apcore::acl_handlers::ACLConditionHandler;
-    use apcore::context::Context;
+    // Cargo.toml: apcore, async-trait, chrono, serde_json
+    use apcore::{ACLConditionHandler, Context, ACL};
     use async_trait::async_trait;
     use chrono::{Local, Timelike};
     use serde_json::Value;
     use std::sync::Arc;
 
-    pub struct TimeWindowHandler;
+    struct TimeWindowHandler;
 
     #[async_trait]
     impl ACLConditionHandler for TimeWindowHandler {
         async fn evaluate(&self, value: &Value, _ctx: &Context<Value>) -> bool {
             let Some(obj) = value.as_object() else { return false };
-            let start = obj.get("start_hour").and_then(|v| v.as_u64()).unwrap_or(0);
-            let end = obj.get("end_hour").and_then(|v| v.as_u64()).unwrap_or(23);
-            let hour = Local::now().hour() as u64;
-            hour >= start && hour <= end
+            let start = obj.get("start_hour").and_then(Value::as_u64).unwrap_or(0);
+            let end = obj.get("end_hour").and_then(Value::as_u64).unwrap_or(23);
+            let hour = u64::from(Local::now().hour());
+            (start..=end).contains(&hour)
         }
     }
 
-    ACL::register_condition("time_window", Arc::new(TimeWindowHandler));
-
-    // YAML can now reference the new condition:
-    //   - callers: ["*"]
-    //     targets: ["maintenance.*"]
-    //     effect: allow
-    //     conditions:
-    //       time_window: { start_hour: 2, end_hour: 6 }
+    fn register_conditions() {
+        ACL::register_condition("time_window", Arc::new(TimeWindowHandler));
+    }
     ```
+
+Reference the key from the ACL file:
+
+```yaml
+# acl/global_acl.yaml
+version: "1.0"
+default_effect: deny
+
+audit:
+  enabled: true
+  include_denied: true
+  log_level: info
+
+rules:
+  - callers: ["scheduler.*"]
+    targets: ["maintenance.*"]
+    effect: allow
+    conditions:
+      time_window: { start_hour: 2, end_hour: 6 }
+    description: "Maintenance jobs run only between 02:00 and 06:59"
+```
+
+Register handlers before the first call. Loading a file that references an unregistered key only warns; until the handler exists, the condition is unevaluable and the `allow` rule never grants.
 
 ---
 
@@ -754,29 +759,25 @@ For dynamic decisions (time windows, identity attributes, external lookups) pref
 version: "1.0"
 default_effect: deny
 
+audit:
+  enabled: true
+  include_denied: true
+  log_level: info
+
 rules:
-  # Gateway entry
   - callers: ["@external"]
     targets: ["gateway.*"]
     effect: allow
-    description: "External can only access Gateway"
+    description: "External callers can only reach the gateway"
 
-  # Gateway → Service
   - callers: ["gateway.*"]
     targets: ["service.*"]
     effect: allow
 
-  # Service → Repository
   - callers: ["service.*"]
-    targets: ["repository.*"]
+    targets: ["repository.*", "external.*"]
     effect: allow
 
-  # Service → External API
-  - callers: ["service.*"]
-    targets: ["external.*"]
-    effect: allow
-
-  # Common utilities
   - callers: ["*"]
     targets: ["common.*"]
     effect: allow
@@ -785,8 +786,14 @@ rules:
 ### 9.2 Multi-tenant Architecture
 
 ```yaml
+# acl/global_acl.yaml
 version: "1.0"
 default_effect: deny
+
+audit:
+  enabled: true
+  include_denied: true
+  log_level: info
 
 rules:
   # Tenant isolation
@@ -803,42 +810,45 @@ rules:
     targets: ["shared.*"]
     effect: allow
 
-  # Admin console (can cross tenants)
+  # Admin console crosses tenants, only for admin identities
   - callers: ["admin.*"]
-    targets: ["*"]
+    targets: ["tenant.*", "shared.*"]
     effect: allow
+    conditions:
+      roles: ["admin"]
 ```
 
 ### 9.3 Security-Sensitive System
 
 ```yaml
+# acl/global_acl.yaml
 version: "1.0"
 default_effect: deny
 
+audit:
+  enabled: true
+  include_denied: true
+  log_level: info
+
 rules:
-  # Public API
   - callers: ["@external"]
     targets: ["public.*"]
     effect: allow
 
-  # Require authentication to access
   - callers: ["auth.verified.*"]
     targets: ["protected.*"]
     effect: allow
 
-  # Sensitive operations require additional permissions
   - callers: ["auth.admin.*"]
     targets: ["sensitive.*"]
     effect: allow
+    approval: required
+    description: "Sensitive operations need an admin caller and a sign-off"
 
-  # Audit log (write-only, no read)
+  # Audit trail: anyone may write, only compliance may read.
   - callers: ["*"]
     targets: ["audit.write"]
     effect: allow
-
-  - callers: ["*"]
-    targets: ["audit.read"]
-    effect: deny
 
   - callers: ["compliance.*"]
     targets: ["audit.read"]
@@ -847,14 +857,17 @@ rules:
 
 ### 9.4 AI Agent Tool Governance
 
-This is the canonical scenario for scoping **which tools an AI agent may invoke**, by the agent's identity roles and the depth of its call chain. Unlike the layered/microservice patterns above (which key off plain caller strings), agent governance leans on the `Identity` (`type` / `roles`) and `max_call_depth` conditions — exactly the features that make ACL valuable for per-agent control.
-
-The reference artifact ships in the repo at [`examples/acl/agent-tool-governance.yaml`](https://github.com/aiperceivable/apcore/blob/main/examples/acl/agent-tool-governance.yaml) — vendor it directly. It is locked as a cross-language contract by the conformance fixture `conformance/fixtures/acl_agent_scoping.json`, so every SDK and framework integration produces identical decisions.
+Scoping **which tools an AI agent may invoke**, by the agent's identity roles and the depth of its call chain. The rules are the reference policy in [`examples/acl/agent-tool-governance.yaml`](https://github.com/aiperceivable/apcore/blob/main/examples/acl/agent-tool-governance.yaml), which the conformance fixture `conformance/fixtures/acl_agent_scoping.json` pins so every SDK makes the same decisions. Add the `audit:` block when you vendor it:
 
 ```yaml
-# examples/acl/agent-tool-governance.yaml
+# acl/global_acl.yaml — rules from examples/acl/agent-tool-governance.yaml
 version: "1.0"
 default_effect: deny
+
+audit:
+  enabled: true
+  include_denied: true
+  log_level: info
 
 rules:
   # 1. External / unauthenticated entry points (no caller_id) — read-only.
@@ -889,14 +902,11 @@ rules:
 | `agent.*` | `reader` | `executor.*.read`, `executor.*.query` | `max_call_depth: 3` |
 | `agent.*` | `data_admin` | `data.export`, `executor.*.delete` | none |
 
-How the conditions drive scoping:
+- **`roles`** matches if the context `Identity` holds any listed role. A `reader` agent cannot reach `data.export`; a `data_admin` agent cannot reach `executor.*.query`. An agent holding both roles satisfies either rule.
+- **`max_call_depth`** stops runaway tool chains: a `reader` agent may read or query only while its call chain is at most 3 deep (depth 3 allowed, depth 4 denied). The `data_admin` rule has no cap because exports and deletes are deliberate, audited operations.
+- **`@external`** gets the smallest surface — the `read` verb only.
 
-- **`roles`** matches by set intersection: the rule fires only when the context `Identity` carries the required role. A `reader` agent cannot reach `data.export`; a `data_admin` agent cannot reach `executor.*.query` (its rule's targets don't include `query`). Roles are additive — an agent holding both `reader` and `data_admin` satisfies either rule.
-- **`max_call_depth`** fuses runaway tool chains: a `reader` agent may issue reads/queries only while its call chain length does not exceed `3` (the comparison is inclusive — depth `3` is allowed, depth `4` is denied). The `data_admin` rule intentionally omits a cap because exports/deletes are deliberate, audited operations rather than exploratory chains.
-- **`@external`** matches calls with no `caller_id` (top-level / unauthenticated entry points) and is restricted to the smallest surface — the `read` verb only.
-
-!!! note "Framework glue stays in the integration"
-    Mapping an incoming request's auth into an `Identity` with the right `roles` (e.g. a Django request, a FastAPI dependency) lives in the respective integration repo (`django-apcore`, `fastapi-apcore`, …). apcore ships only the language-agnostic policy (this YAML + the conformance fixture).
+Mapping a request's authentication onto an `Identity` with the right `roles` happens in your web layer; see [Integrating Existing Projects](./integrating-existing-projects.md).
 
 ---
 
@@ -904,116 +914,183 @@ How the conditions drive scoping:
 
 ### 10.1 Common Issues
 
-**Issue 1: All calls are denied**
+**Issue 1: A call you expected to work is denied**
+
+No rule allows it, so `default_effect: deny` decides:
 
 ```yaml
-# Error: No default allow rule
+# acl/global_acl.yaml — before: only orchestrator → executor is allowed
+version: "1.0"
+default_effect: deny
+
+audit:
+  enabled: true
+  include_denied: true
+  log_level: info
+
 rules:
   - callers: ["orchestrator.*"]
     targets: ["executor.*"]
     effect: allow
-  # Missing default rule, all other calls will be denied
+```
 
-# Fix: Add default rule
+Add a rule for exactly the call that should work — not a catch-all:
+
+```yaml
+# acl/global_acl.yaml — after
+version: "1.0"
+default_effect: deny
+
+audit:
+  enabled: true
+  include_denied: true
+  log_level: info
+
 rules:
   - callers: ["orchestrator.*"]
     targets: ["executor.*"]
     effect: allow
-  - callers: ["*"]
-    targets: ["*"]
-    effect: allow  # Or set default_effect: allow
+
+  - callers: ["api.reports.*"]
+    targets: ["common.format.*"]
+    effect: allow
+    description: "Report endpoints use the shared formatters"
 ```
 
-**Issue 2: Rule not taking effect**
+The denied audit entry (`reason: default_effect`) names the exact `caller_id` / `target_id` pair to allow.
+
+**Issue 2: A `deny` rule never takes effect**
+
+A broader `allow` above it matches first:
 
 ```yaml
-# Error: Rule order problem
-rules:
-  - callers: ["*"]
-    targets: ["*"]
-    effect: allow  # This will match first
-  - callers: ["api.*"]
-    targets: ["internal.*"]
-    effect: deny   # Will never be matched
+# acl/global_acl.yaml — wrong order
+version: "1.0"
+default_effect: deny
 
-# Fix: Adjust order
+audit:
+  enabled: true
+  include_denied: true
+  log_level: info
+
 rules:
   - callers: ["api.*"]
-    targets: ["internal.*"]
-    effect: deny   # Match specific rule first
-  - callers: ["*"]
-    targets: ["*"]
+    targets: ["vault.*"]
+    effect: allow        # matches first
+  - callers: ["api.public.*"]
+    targets: ["vault.*"]
+    effect: deny         # never reached
+```
+
+Move the narrower rule up:
+
+```yaml
+# acl/global_acl.yaml — fixed
+version: "1.0"
+default_effect: deny
+
+audit:
+  enabled: true
+  include_denied: true
+  log_level: info
+
+rules:
+  - callers: ["api.public.*"]
+    targets: ["vault.*"]
+    effect: deny
+  - callers: ["api.*"]
+    targets: ["vault.*"]
     effect: allow
 ```
+
+**Issue 3: The rules have no effect at all**
+
+Nothing is being checked. Either no ACL is attached — the file is not at `<acl.root>/global_acl.yaml`, or you passed your own `Executor` to `APCore` — or the running strategy has no `acl_check` step. `governance_state()` tells you which (section 2.4).
+
+**Issue 4: `default_effect` or audit settings in `apcore.yaml` are ignored**
+
+`acl.default_effect` and `acl.audit.*` in `apcore.yaml` do nothing. Set both in the ACL file.
 
 ### 10.2 Testing ACL
+
+Test the file you ship, with the decisions you expect. This checks the §9.1 file:
 
 === "Python"
 
     ```python
+    import pytest
+
     from apcore.acl import ACL
 
-    acl = ACL.load("./acl/global_acl.yaml")
+    ACL_FILE = "./acl/global_acl.yaml"
 
-    test_cases = [
-        ("orchestrator.user.register", "executor.email.send_email", True),
-        ("api.handler.test", "internal.secret", False),
-        ("admin.panel", "internal.secret", True),
-    ]
 
-    for caller, target, expected in test_cases:
-        result = acl.check(caller, target)
-        status = "OK" if result == expected else "FAIL"
-        print(f"[{status}] {caller} -> {target}: {result}")
+    @pytest.mark.parametrize(
+        ("caller_id", "target_id", "expected"),
+        [
+            (None, "gateway.orders.create", True),        # None = @external
+            (None, "service.orders.create", False),
+            ("gateway.orders.create", "service.orders.create", True),
+            ("service.orders.create", "repository.orders.insert", True),
+            ("gateway.orders.create", "repository.orders.insert", False),
+            ("repository.orders.insert", "common.util.format", True),
+        ],
+    )
+    def test_acl_decision(caller_id: str | None, target_id: str, expected: bool) -> None:
+        assert ACL.load(ACL_FILE).check(caller_id, target_id) is expected
     ```
 
 === "TypeScript"
 
     ```typescript
+    import { describe, expect, it } from 'vitest';
     import { ACL } from 'apcore-js';
 
     const acl = ACL.load('./acl/global_acl.yaml');
 
-    const testCases: Array<[string, string, boolean]> = [
-      ['orchestrator.user.register', 'executor.email.send_email', true],
-      ['api.handler.test', 'internal.secret', false],
-      ['admin.panel', 'internal.secret', true],
-    ];
-
-    for (const [caller, target, expected] of testCases) {
-      const result = acl.check(caller, target);
-      const status = result === expected ? 'OK' : 'FAIL';
-      console.log(`[${status}] ${caller} -> ${target}: ${result}`);
-    }
+    describe('ACL decisions', () => {
+      it.each([
+        [null, 'gateway.orders.create', true], // null = @external
+        [null, 'service.orders.create', false],
+        ['gateway.orders.create', 'service.orders.create', true],
+        ['service.orders.create', 'repository.orders.insert', true],
+        ['gateway.orders.create', 'repository.orders.insert', false],
+        ['repository.orders.insert', 'common.util.format', true],
+      ] as const)('%s -> %s is %s', (callerId, targetId, expected) => {
+        expect(acl.check(callerId, targetId)).toBe(expected);
+      });
+    });
     ```
 
 === "Rust"
 
     ```rust
-    use apcore::acl::ACL;
+    use apcore::ACL;
 
-    # fn run() -> Result<(), apcore::errors::ModuleError> {
-    let acl = ACL::load("./acl/global_acl.yaml")?;
-
-    let test_cases: &[(&str, &str, bool)] = &[
-        ("orchestrator.user.register", "executor.email.send_email", true),
-        ("api.handler.test", "internal.secret", false),
-        ("admin.panel", "internal.secret", true),
-    ];
-
-    for (caller, target, expected) in test_cases {
-        let result = acl.check(Some(caller), target, None);
-        let status = if result == *expected { "OK" } else { "FAIL" };
-        println!("[{status}] {caller} -> {target}: {result}");
+    #[test]
+    fn acl_decisions() {
+        let acl = ACL::load("./acl/global_acl.yaml").expect("ACL file loads");
+        let cases: &[(Option<&str>, &str, bool)] = &[
+            (None, "gateway.orders.create", true), // None = @external
+            (None, "service.orders.create", false),
+            (Some("gateway.orders.create"), "service.orders.create", true),
+            (Some("service.orders.create"), "repository.orders.insert", true),
+            (Some("gateway.orders.create"), "repository.orders.insert", false),
+            (Some("repository.orders.insert"), "common.util.format", true),
+        ];
+        for &(caller_id, target_id, expected) in cases {
+            assert_eq!(acl.check(caller_id, target_id, None), expected, "{caller_id:?} -> {target_id}");
+        }
     }
-    # Ok(())
-    # }
     ```
+
+Rules with `conditions` need a `Context` carrying the identity and call chain the condition reads; pass it as the third argument to `check()`.
 
 ---
 
 ## Next Steps
 
-- [Core Executor](../features/core-executor.md) - Learn how ACL integrates with Executor
-- [Middleware Guide](./middleware.md) - Extend ACL functionality with middleware
-- [Architecture](../architecture.md) - System overall architecture
+- [ACL System](../features/acl-system.md) — evaluation semantics, audit records, API contracts
+- [Core Executor](../features/core-executor.md) — where the ACL step sits in the pipeline
+- [Cookbook — Approval-Gated Modules](./cookbook-approval-flow.md) — handling `approval: required`
+- [Architecture](../architecture.md) — overall system architecture

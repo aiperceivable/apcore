@@ -1,5 +1,5 @@
 {
-  "description": "UsageExporter push interface (#45 §3, D-55). All 3 SDKs MUST ship a UsageExporter Protocol/interface/trait, NoopUsageExporter (default, drops summaries), and PeriodicUsageExporter (bundled timer wrapper, default interval_seconds=3600). PeriodicUsageExporter.start() spawns a background task that polls UsageCollector.summary() at the configured interval and calls exporter.export(summary). PeriodicUsageExporter.stop() halts the loop and awaits exporter.shutdown(). stop() MUST be idempotent. See docs/features/observability.md#usageexporter-push-style.",
+  "description": "UsageExporter push interface (#45 §3, D-55). All 3 SDKs MUST ship a UsageExporter Protocol/interface/trait, NoopUsageExporter (default, drops summaries), and PeriodicUsageExporter (bundled timer wrapper, default interval_seconds=3600). PeriodicUsageExporter.start() spawns a background task that polls UsageCollector.summary() at the configured interval and calls exporter.export(summary). PeriodicUsageExporter.stop() halts the loop and awaits exporter.shutdown(). stop() MUST be idempotent. See docs/features/metrics-and-usage.md#usageexporter-push-style.",
   "test_cases": [
     {
       "id": "noop_usage_exporter_drops_summary",

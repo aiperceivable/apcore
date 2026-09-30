@@ -10,173 +10,146 @@ description: "APCore facade over Registry, Executor, Config: zero- or full-confi
 
 ## Overview
 
-The APCore class is the recommended high-level entry point for the apcore framework. It provides a single unified interface that manages the Registry, Executor, Config, and optional subsystems (system modules, events, metrics) so that users do not need to wire these components together manually. The client supports zero-config initialization for quick prototyping and full-config initialization for production deployments with system modules, observability, and event handling.
+`APCore` is the recommended entry point for application code. It owns a Registry and an Executor, optionally a Config, and — when configuration asks for them — the system modules, the event bus and config-driven tracing, so callers do not wire these components together by hand. It supports zero-config construction for prototypes and tests, and config-driven construction for production.
 
 ## Requirements
 
 ### Unified Facade
-- Provide a single `APCore` class that wraps Registry, Executor, and optionally Config and MetricsCollector.
-- Accept configuration via a `Config` object (`config`). Use `Config.load()` to load from a file path. In Rust, `APCore::from_path()` is kept as a convenience shortcut.
-- If no Registry or Executor is provided, the client **MUST** create them automatically with sensible defaults.
-- If a Config is provided (via either parameter) with `sys_modules.enabled: true`, the client **MUST** auto-register system modules and configure associated middleware (metrics, observability).
+- Provide a single `APCore` class that wraps a Registry and an Executor, and optionally a Config and a MetricsCollector.
+- Accept configuration as a `Config` object (`Config.load(path)` loads one from a file). Rust additionally offers `APCore::from_path(path)`.
+- If no Registry or Executor is supplied, the client **MUST** create them. When an Executor is supplied, its Registry is used and a separately supplied `registry` is ignored.
+- If a Config with `sys_modules.enabled: true` is supplied, the client **MUST** register the system modules and their middleware (see [Construction with a Config](#construction-with-a-config)).
 
 ### Module Lifecycle
-- Support decorator-based module registration (`client.module()`), direct registration (`client.register()`), and auto-discovery (`client.discover()`).
+- Support function registration (`client.module()`), direct registration (`client.register()`), and discovery (`client.discover()`).
 - Support module listing with optional tag and prefix filtering.
 - Support module description generation (`client.describe()`) for AI/LLM tool discovery.
-- There is no cross-language `start()` / `stop()` lifecycle contract (decision **D-09**, 2026-05-02 alignment review): the client needs no startup or shutdown phase beyond construction. Python **MAY** additionally provide `close()` as a Python-only convenience that releases the cached synchronous event loop inside the Executor; it is idempotent, raises no error under normal operation, and the same `APCore` instance remains usable afterward — a synchronous `call()` lazily allocates a fresh loop on next use. TypeScript and Rust have no equivalent because neither caches a loop of that kind.
+- There is no `start()` / `stop()` lifecycle: the client needs no phase beyond construction (D-09). Python additionally provides `close()`, which releases the Executor's cached synchronous event loop; it is idempotent and the client stays usable afterwards.
 
 ### Execution
-- Provide synchronous (`call()`), asynchronous (`call_async()`), and streaming (`stream()`) execution methods that delegate to the underlying Executor.
-- Provide a non-destructive preflight validation method (`validate()`) that runs pipeline steps 1–6 plus optional module-level preflight (7 checks total) without executing the module.
+- Provide synchronous (`call()`, Python only), asynchronous (`call_async()` / `call()`), and streaming (`stream()`) execution that delegates to the Executor.
+- Provide a non-destructive preflight, `validate()`, that runs pipeline Steps 1–5 and 7 — no middleware, no module execution — plus the module's optional `preflight()` hook ([PROTOCOL_SPEC §12.8](../spec/protocol-spec.md#128-executorvalidate-cross-language-implementation-guide)).
 
 ### Middleware
-- Support chainable middleware registration: `use()`, `use_before()`, `use_after()`.
-- Support middleware removal by identity.
+- Support middleware registration: `use()` (Rust: `use_middleware()`), `use_before()`, `use_after()`.
+- Support removal of exactly one registration (by identity in Python/TypeScript, by handle in Rust).
 
 ### Event System
-- When system modules with events are enabled, expose `on()` / `off()` methods for subscribing to framework events.
-- The `events` property **MUST** expose the underlying `EventEmitter` (or return `None`/`null` if events are not configured).
+- When system-module events are enabled, expose `on()` / `off()` for subscribing to framework events.
+- The `events` property **MUST** expose the underlying `EventEmitter`, or `None`/`null` when events are not configured.
 
 ### Module Control
-- When system modules are enabled, expose `disable()` / `enable()` methods for runtime module toggling.
-- These methods **MUST** delegate to `system.control.toggle_feature` internally.
+- When system modules are enabled, expose `disable()` / `enable()` for runtime module toggling.
+- These methods **MUST** delegate to the `system.control.toggle_feature` module, so they run through the full pipeline (ACL, approval, middleware, events).
 
 ### Global Singleton
-- The Python SDK **SHOULD** provide module-level functions (e.g., `apcore.call()`, `apcore.module()`) backed by a default singleton client. This is a Python-only convenience layer.
-- TypeScript and Rust do **not** provide a global singleton — explicit instances only.
+- Python provides module-level functions (`apcore.call()`, `apcore.module()`, …) backed by a default client. TypeScript and Rust have no global singleton — explicit instances only.
 
 ## Technical Design
 
 ### Initialization Modes
 
-| Mode | Config Required | System Modules | Use Case |
-|------|----------------|---------------|----------|
-| Zero-config | No | No | Quick prototyping, tests |
-| With config object | Yes (`config=`) | If `sys_modules.enabled` | Production |
-| With defaults | Yes (`from_defaults()`) | If configured | No YAML file needed |
-| Pre-built components | No | Via provided executor | Advanced / custom setups |
+| Mode | How | System modules |
+|------|-----|----------------|
+| Zero-config | `APCore()` / `new APCore()` / `APCore::new()` | No |
+| With a Config | `APCore(config=Config.load(...))` / `new APCore({ config })` / `APCore::with_config(config)` or `APCore::from_path(path)` | If `sys_modules.enabled` |
+| Pre-built components | Pass `registry` and/or `executor` (Rust: `with_components`, `with_options`) | If the Config enables them |
 
-### Auto-Registration Behavior
+### Construction with a Config
 
-When a Config with `sys_modules.enabled: true` is provided:
+When a Config is supplied and the client built the Executor itself:
 
-1. **System modules** are registered: `system.health.*`, `system.manifest.*`, `system.usage.*`, `system.control.*`.
-2. **MetricsCollector** is created (if not provided) and `MetricsMiddleware` is added to the executor.
-3. **Event handling** is configured if `sys_modules.events.enabled: true`:
-   - `EventEmitter` is created.
-   - `PlatformNotifyMiddleware` is added for health monitoring.
-   - Subscribers are instantiated from config (webhook, a2a, custom types).
-4. Internal `_sys_modules_context` tracks references needed by system module implementations.
+1. **ACL discovery** — the ACL file at `acl.root` is loaded and attached. A missing file attaches **no** ACL; it does not synthesize a default-deny one (D-64).
+2. **Tracing** — when `observability.tracing.enabled: true`, a `TracingMiddleware` built from `observability.tracing.*` is installed ([§10.1.1](../spec/protocol-spec.md#1011-tracing-from-configuration-observabilitytracing)).
+
+Both steps are skipped for a caller-supplied Executor, whose wiring is respected as-is. Python and TypeScript also accept a `policy` (`ExecutionPolicy`) that is applied only to an Executor the client builds.
+
+Then, when `sys_modules.enabled: true`:
+
+1. The read-only system modules are registered: `system.health.*`, `system.manifest.*`, `system.usage.*`.
+2. `ErrorHistoryMiddleware` and `UsageMiddleware` are added. The supplied `metrics_collector` is handed to the system modules (Python creates one when none is supplied).
+3. When `sys_modules.events.enabled: true`:
+    - an `EventEmitter` is created and exposed as `client.events`;
+    - `PlatformNotifyMiddleware` is added (threshold events from `sys_modules.events.thresholds.*`);
+    - subscribers are instantiated from `sys_modules.events.subscribers` (see [Event System](./event-system.md));
+    - the `system.control.*` modules are registered unless `sys_modules.control.enabled: false`. `disable()` / `enable()` depend on them.
+
+System-module registration failures are logged and do not fail construction.
 
 ### Method Summary
 
-| Category | Method | Returns | Description |
-|----------|--------|---------|-------------|
-| **Registration** | `module(id, ...)` | Decorator / FunctionModule | Register function as module |
-| | `register(module_id, module)` | None | Direct module registration |
-| | `discover()` | int | Auto-discover and register modules |
-| **Execution** | `call(module_id, inputs?, context?)` | dict | Synchronous call |
-| | `call_async(module_id, inputs?, context?, version_hint?)` | dict | Asynchronous call (Python only; TypeScript `callAsync` is an alias for `call`, Rust `call` is already async) |
-| | `stream(module_id, inputs?, context?)` | AsyncIterator | Streaming output |
-| | `validate(module_id, inputs?, context?)` | PreflightResult | Non-destructive preflight |
-| **Inspection** | `list_modules(tags?, prefix?)` | list[str] | List module IDs (sorted) |
-| | `describe(module_id)` | str | Markdown description for AI |
-| **Middleware** | `use(middleware)` | self | Add class-based middleware (Rust: `use_middleware()` — `use` is a reserved keyword) |
-| | `use_before(callback)` | self | Add before-middleware |
-| | `use_after(callback)` | self | Add after-middleware |
-| | `remove(middleware)` | bool | Remove by identity |
-| **Events** | `on(event_type, handler)` | EventSubscriber | Subscribe to events |
-| | `off(subscriber)` | None | Unsubscribe |
-| **Control** | `disable(module_id, reason?)` | dict | Disable module at runtime |
-| | `enable(module_id, reason?)` | dict | Re-enable module |
-| **Properties** | `registry` | Registry | Underlying registry |
-| | `executor` | Executor | Underlying executor |
-| | `events` | EventEmitter \| None | Event emitter (if configured) |
+| Category | Method | Returns | Notes |
+|----------|--------|---------|-------|
+| **Registration** | `module(...)` | decorator (Python) / `FunctionModule` (TS) / `&mut Self` (Rust) | Register a function as a module |
+| | `register(module_id, module)` | None | Direct registration |
+| | `discover()` | int | Discover and register modules from `extensions.*` roots |
+| **Execution** | `call(module_id, inputs?, context?, version_hint?)` | output | Python: synchronous. TypeScript/Rust: async |
+| | `call_async(...)` | output | Python coroutine; TypeScript `callAsync` is an alias of `call`; Rust has none (`call` is async) |
+| | `stream(module_id, inputs?, context?, version_hint?)` | async iterator / `Stream` | Chunked output |
+| | `validate(module_id, inputs?, context?)` | `PreflightResult` | Non-destructive preflight |
+| **Inspection** | `list_modules(tags?, prefix?)` | sorted list of IDs | |
+| | `describe(module_id)` | Markdown string | For AI/LLM tool discovery |
+| **Middleware** | `use(middleware)` | self | Rust: `use_middleware()` (`use` is a keyword) |
+| | `use_before(callback)` | self | See [Contract: APCore.use_before](#contract-apcoreuse_before) |
+| | `use_after(callback)` | self | See [Contract: APCore.use_after](#contract-apcoreuse_after) |
+| | `remove(middleware)` | bool | Rust: `remove_handle(handle)` |
+| **Events** | `on(event_type, handler)` | subscriber handle | Exact event-type match |
+| | `off(subscriber)` | None | |
+| **Control** | `disable(module_id, reason?)` / `enable(module_id, reason?)` | dict | Via `system.control.toggle_feature` |
+| **Properties** | `registry`, `executor`, `events` | | Rust: accessor methods |
 
-!!! note "Rust keyword conflict: `use` → `use_middleware`"
-    In Rust, `use` is a reserved keyword. The method that Python and TypeScript expose as `.use(middleware)` is named **`.use_middleware(middleware)`** in the Rust SDK. All other method names are identical across languages. This is the only renamed method in the APCore client API.
+!!! note "Sync/async"
+    Python `call()`, `validate()`, `disable()` and `enable()` are synchronous; use `call_async()` / `stream()` inside `async def` code. In TypeScript and Rust these methods return a `Promise` / `Future` and **MUST** be awaited.
 
-    ```rust
-    // Rust — use use_middleware() where Python/TS use .use()
-    client.use_middleware(Box::new(logging_middleware));
-    client.use_before(|ctx| { ... });
-    client.use_after(|ctx| { ... });
-    ```
+### Callback Subscribers
 
-!!! note "Sync/async divergence"
-    Python `call()` is synchronous and blocks until the module returns. TypeScript and Rust `call()` return a `Promise`/`Future` and **MUST** be awaited. Python provides a separate `call_async()` for async contexts (e.g., inside `async def` functions or running under an event loop).
-
-### Internal Callback Subscriber
-
-The `on()` method creates a lightweight internal subscriber that filters events by type and delegates to the user's handler:
-
-```python
-class _CallbackSubscriber:
-    def __init__(self, event_type: str, handler: Callable) -> None:
-        self._event_type = event_type
-        self._handler = handler
-        self._is_async = asyncio.iscoroutinefunction(handler)
-
-    async def on_event(self, event: ApCoreEvent) -> None:
-        if event.event_type != self._event_type:
-            return
-        if self._is_async:
-            await self._handler(event)
-        else:
-            self._handler(event)
-```
-
-This allows users to subscribe with both sync and async callbacks without implementing the full `EventSubscriber` protocol.
+`on()` wraps the handler in a lightweight subscriber that delivers an event only when its `event_type` **equals** the requested type — there is no glob matching. To receive several types, call `on()` once per type; to match a pattern, subscribe an `EventSubscriber` with an `event_pattern` directly on `client.events` (see [Event System](./event-system.md#subscribing)). Python and TypeScript accept sync or async handlers; Rust takes a `Fn(&ApCoreEvent)` closure.
 
 ### Error Behavior
 
 | Condition | Error |
 |-----------|-------|
-| Config file not found or invalid (via `Config.load()`) | `ValueError` (Python), `ConfigNotFoundError` (TypeScript), `Err(ModuleError)` with `ConfigNotFound` or `ConfigInvalid` (Rust) |
-| `on()`, `off()` without events enabled | `RuntimeError` |
-| `disable()`, `enable()` without sys_modules | `RuntimeError` |
+| Config file missing (`Config.load`) | `ConfigNotFoundError` (`CONFIG_NOT_FOUND`); Rust: `ModuleError` with `ErrorCode::ConfigNotFound` |
+| Config file invalid (`Config.load`) | `ConfigError` (`CONFIG_INVALID`); Rust: `ErrorCode::ConfigInvalid` |
+| `on()` / `off()` without events enabled | `SysModulesDisabledError` (`SYS_MODULES_DISABLED`); Rust: `ErrorCode::SysModulesDisabled` |
+| `disable()` / `enable()` without system modules | `SysModulesDisabledError` (`SYS_MODULES_DISABLED`); Rust: `ErrorCode::SysModulesDisabled` |
 
 ### Language-Specific Adaptations
 
-The APCore interface follows each language's idioms while maintaining functional equivalence.
-
 **TypeScript:**
 
-| Spec method | TypeScript name | Notes |
-|-------------|-----------------|-------|
-| `call_async()` | `callAsync()` | camelCase |
-| `use_before()` | `useBefore()` | camelCase |
-| `use_after()` | `useAfter()` | camelCase |
-| `list_modules()` | `listModules()` | camelCase |
-| Constructor | `new APCore({ config })` | Options object pattern |
+| Spec method | TypeScript | Notes |
+|-------------|------------|-------|
+| `call_async()` | `callAsync()` | Alias of `call()` |
+| `use_before()` / `use_after()` | `useBefore()` / `useAfter()` | camelCase |
+| `list_modules(tags, prefix)` | `listModules({ tags, prefix })` | Options object |
+| Constructor | `new APCore({ registry, executor, config, metricsCollector, policy, toggleState })` | Options object |
 
 **Rust:**
 
-| Spec method | Rust name | Notes |
-|-------------|-----------|-------|
-| `use()` | `use_middleware()` | `use` is a reserved keyword |
-| `use_before()` | `use_before()` | Accepts `Box<dyn BeforeMiddleware>`, returns `Result<&mut Self, ModuleError>` |
-| `use_after()` | `use_after()` | Accepts `Box<dyn AfterMiddleware>`, returns `Result<&mut Self, ModuleError>` |
-| `on()` | `on()` | Returns `Result<String, ModuleError>` — a subscriber ID instead of an `EventSubscriber` object, wrapped in `Result` because the disabled-events error below is common to all three SDKs |
-| `off()` | `off()` | Accepts `&str` (subscriber ID) instead of an `EventSubscriber` object; returns `Result<bool, ModuleError>`, where the `bool` reports whether a matching subscriber was found. Python/TypeScript return void; the extra bit distinguishes "no such subscriber" from "events are off", which the error covers. |
-| `stream()` | `stream()` | Returns `Stream<Item = Result<Value, ModuleError>>` (true incremental streaming) |
-| `disable()` | `disable()` | Returns `Result<Value, ModuleError>`; `reason` is `Option<&str>` |
-| `enable()` | `enable()` | Returns `Result<Value, ModuleError>`; `reason` is `Option<&str>` |
-| Constructor | `APCore::new()`, `APCore::with_config(config)`, `APCore::from_path(path)` | Three construction forms |
-| `module()` | `module()` | Rust has no decorators, so this is a direct-registration convenience rather than an attribute macro: it builds a `FunctionModule` from an explicit metadata list — `module_id`, `description`, `input_schema`, `output_schema`, `documentation`, `tags`, `version`, `metadata`, `examples`, `display`, `handler` — and registers it in one call, mirroring the Python/TypeScript `module()` helper. `impl Module` + `register()` remains the route for a module type that needs more than a handler closure. |
-| `policy` constructor input | N/A | Python (`APCore(policy=...)`) and TypeScript (`new APCore({ policy })`) accept an `ExecutionPolicy` at construction; Rust does not. Build the `Executor` with the policy attached and pass it via `APCore::with_options(None, Some(executor), …)` — the same route both other SDKs document for a caller-supplied executor, where their own `policy` argument is likewise not applied. |
-| `events` property | `events()` method | Accessor methods instead of properties |
-| `registry` property | `registry()` method | Accessor methods instead of properties |
-| `executor` property | `executor()` method | Accessor methods instead of properties |
+| Spec method | Rust | Notes |
+|-------------|------|-------|
+| `use()` | `use_middleware(Box<dyn Middleware>)` | Returns `Result<&Self, ModuleError>`; `use_middleware_handle()` returns a `MiddlewareHandle` instead |
+| `use_before()` | `use_before(Box<dyn BeforeMiddleware>)` | Takes a `BeforeMiddleware` trait object, not a closure; returns `Result<&Self, ModuleError>` |
+| `use_after()` | `use_after(Box<dyn AfterMiddleware>)` | Same shape as `use_before` |
+| `remove()` | `remove_handle(MiddlewareHandle) -> bool` | See [Contract: APCore.remove](#contract-apcoreremove) |
+| `on()` | `on(&mut self, event_type, impl Fn(&ApCoreEvent))` | Returns `Result<String, ModuleError>` — a subscriber ID. `on_subscriber()` takes a `Box<dyn EventSubscriber>` |
+| `off()` | `off(&mut self, &str) -> Result<bool, ModuleError>` | `bool` reports whether the ID was found; `off_by_type()` removes every handler for a type |
+| `stream()` | `stream()` | Returns `Pin<Box<dyn Stream<Item = Result<Value, ModuleError>>>>` — poll it with `StreamExt::next` |
+| `validate()` | `validate()` | Returns `Result<PreflightResult, ModuleError>` |
+| `disable()` / `enable()` | `async fn disable(&self, &str, Option<&str>)` | Returns `Result<Value, ModuleError>` |
+| `module()` | `module(module_id, description, input_schema, output_schema, documentation, tags, version, metadata, examples, display, handler)` | Builds a `FunctionModule` from explicit metadata and a handler closure; `impl Module` + `register()` covers anything more |
+| `policy` constructor input | not accepted | Attach the policy to an `Executor` and pass it via `APCore::with_options(None, Some(executor), …)` |
+| `events` / `registry` / `executor` | `events()` / `registry()` / `executor()` | Accessor methods |
+| Constructors | `new()`, `with_config(config)`, `from_path(path)?`, `with_components(registry, config)`, `with_options(registry, executor, config, metrics_collector)` | `from_path` is the only fallible one |
 
-**Rust-only methods** (not in the cross-language spec):
+**Rust-only methods:**
 
 | Method | Purpose |
 |--------|---------|
-| `with_components(registry, config)` | Build client from a pre-configured Registry |
-| `with_options(registry, executor, config, metrics_collector)` | Full constructor with all optional parameters |
-| `reload()` | Reload `Config` from its source file on disk. Does **not** re-discover modules — call `discover()` separately for that. |
+| `with_components(registry, config)` | Build a client around a pre-configured Registry |
+| `with_options(registry, executor, config, metrics_collector)` | Full constructor with every optional component |
+| `reload()` | Re-read the `Config` from its source file. Does **not** re-discover modules — call `discover()` for that |
 
 ## Usage
 
@@ -197,6 +170,7 @@ The APCore interface follows each language's idioms while maintaining functional
     ```
 === "TypeScript"
     ```typescript
+    import { Type } from "@sinclair/typebox";
     import { APCore } from "apcore-js";
 
     const client = new APCore();
@@ -204,9 +178,9 @@ The APCore interface follows each language's idioms while maintaining functional
     client.module({
         id: "math.add",
         description: "Add two numbers",
-        inputSchema: { type: "object", properties: { a: { type: "number" }, b: { type: "number" } } },
-        outputSchema: { type: "object", properties: { sum: { type: "number" } } },
-        execute: ({ a, b }: { a: number; b: number }) => ({ sum: a + b }),
+        inputSchema: Type.Object({ a: Type.Number(), b: Type.Number() }),
+        outputSchema: Type.Object({ sum: Type.Number() }),
+        execute: (inputs) => ({ sum: (inputs.a as number) + (inputs.b as number) }),
     });
 
     const result = await client.call("math.add", { a: 10, b: 5 });
@@ -214,10 +188,10 @@ The APCore interface follows each language's idioms while maintaining functional
     ```
 === "Rust"
     ```rust
-    use apcore::APCore;
-    use apcore::module::Module;
     use apcore::context::Context;
     use apcore::errors::ModuleError;
+    use apcore::module::Module;
+    use apcore::APCore;
     use async_trait::async_trait;
     use serde_json::{json, Value};
 
@@ -239,51 +213,71 @@ The APCore interface follows each language's idioms while maintaining functional
         }
     }
 
-    let mut client = APCore::new();
-    client.register("math.add", Box::new(AddModule)).unwrap();
-    let result = client.call("math.add", json!({"a": 10, "b": 5}), None, None).await?;
+    #[tokio::main]
+    async fn main() -> Result<(), ModuleError> {
+        let client = APCore::new();
+        client.register("math.add", Box::new(AddModule))?;
+        let result = client.call("math.add", json!({"a": 10, "b": 5}), None, None).await?;
+        println!("{result}"); // {"sum":15}
+        Ok(())
+    }
     ```
 
 ### Production Setup
+
+Assumes an `apcore.yaml` with `sys_modules.enabled: true` and `sys_modules.events.enabled: true`.
 
 === "Python"
     ```python
     from apcore import APCore
     from apcore.config import Config
 
-    config = Config.load("apcore.yaml")
-    client = APCore(config=config)
+    client = APCore(config=Config.load("apcore.yaml"))
 
-    # System modules, metrics, and events are auto-configured
-    sub = client.on("apcore.health.error_threshold_exceeded", lambda e: alert(e.data))
+    # System modules, the event bus and configured tracing are wired at construction.
+    sub = client.on(
+        "apcore.health.error_threshold_exceeded",
+        lambda event: print(f"alert: {event.module_id} {event.data}"),
+    )
 
-    # Runtime control
+    # Runtime control (synchronous in Python)
     client.disable("risky.module", reason="Investigating issue")
+    client.off(sub)
     ```
 === "TypeScript"
     ```typescript
     import { APCore, Config } from "apcore-js";
 
-    const config = Config.load('apcore.yaml');
-    const client = new APCore({ config });
+    const client = new APCore({ config: Config.load("apcore.yaml") });
 
-    // System modules, metrics, and events are auto-configured
-    const sub = client.on("apcore.health.error_threshold_exceeded", (e) => alert(e.data));
+    // System modules, the event bus and configured tracing are wired at construction.
+    const sub = client.on("apcore.health.error_threshold_exceeded", (event) => {
+        console.log(`alert: ${event.moduleId}`, event.data);
+    });
 
     // Runtime control
     await client.disable("risky.module", "Investigating issue");
+    client.off(sub);
     ```
 === "Rust"
     ```rust
+    use apcore::errors::ModuleError;
     use apcore::APCore;
 
-    let client = APCore::from_path("apcore.yaml")?;
+    #[tokio::main]
+    async fn main() -> Result<(), ModuleError> {
+        let mut client = APCore::from_path("apcore.yaml")?;
 
-    // System modules, metrics, and events are auto-configured
-    let sub = client.on("apcore.health.error_threshold_exceeded", Box::new(AlertSubscriber));
+        // System modules, the event bus and configured tracing are wired at construction.
+        let sub = client.on("apcore.health.error_threshold_exceeded", |event| {
+            println!("alert: {:?} {}", event.module_id, event.data);
+        })?;
 
-    // Runtime control
-    client.disable("risky.module", Some("Investigating issue"))?;
+        // Runtime control
+        client.disable("risky.module", Some("Investigating issue")).await?;
+        client.off(&sub)?;
+        Ok(())
+    }
     ```
 
 ## Dependencies
@@ -293,12 +287,10 @@ The APCore interface follows each language's idioms while maintaining functional
 - **Config Bus** — Configuration loading and system module setup.
 - **Event System** — Event emission and subscription (optional).
 - **System Modules** — Health, manifest, usage, and control modules (optional).
-- **Observability** — MetricsCollector and MetricsMiddleware (optional).
+- **Observability** — [Tracing from configuration](./observability.md#tracing-from-configuration), [metrics and usage](./metrics-and-usage.md) (optional).
 
 ??? info "Python SDK reference"
-    The following table is **not a protocol requirement** — it documents the Python SDK's source layout for implementers/users of `apcore-python`.
-
-    **Source files:**
+    Not a protocol requirement — the Python SDK's source layout for users of `apcore-python`.
 
     | File | Purpose |
     |------|---------|
@@ -307,494 +299,425 @@ The APCore interface follows each language's idioms while maintaining functional
 
 ## Testing Strategy
 
-- **Zero-config tests** verify that `APCore()` creates a functional Registry and Executor without any arguments.
-- **Config object tests** verify that passing a `Config` object (loaded via `Config.load()`) applies the config file correctly.
-- **Config-based tests** verify that system modules are auto-registered when config provides `sys_modules.enabled: true`.
-- **Decorator tests** verify that `client.module()` registers functions as modules and they are callable.
-- **Execution tests** verify that `call()`, `call_async()`, `stream()`, and `validate()` delegate correctly to the underlying Executor.
-- **Middleware tests** verify chainable `use()`, `use_before()`, `use_after()`, and `remove()`.
-- **Event tests** verify that `on()` / `off()` work correctly and raise `RuntimeError` when events are not configured.
-- **Control tests** verify that `disable()` / `enable()` delegate to system.control.toggle_feature and raise `RuntimeError` when sys_modules are not enabled.
+- **Zero-config tests** verify that `APCore()` creates a working Registry and Executor.
+- **Config tests** verify that a `Config` applies ACL discovery, configured tracing, and — with `sys_modules.enabled` — registers the system modules.
+- **Registration tests** verify that `client.module()` / `register()` make modules callable, and that a supplied Executor's Registry is the one the client writes to.
+- **Execution tests** verify that `call()`, `call_async()`, `stream()` and `validate()` delegate to the Executor.
+- **Middleware tests** verify `use()`, `use_before()`, `use_after()` and removal.
+- **Event tests** verify `on()` / `off()` and the `SYS_MODULES_DISABLED` error when events are off.
+- **Control tests** verify that `disable()` / `enable()` route through `system.control.toggle_feature` and raise `SYS_MODULES_DISABLED` without system modules.
 
 ## Contract: APCore.call
 
 ### Inputs
-- `module_id` (str/string/&str, required) — target module ID; validated against `MODULE_ID_PATTERN`; reject empty or malformed with `InvalidInputError(code=INVALID_MODULE_ID)`
-- `inputs` (dict/object/Value, required) — validated against the module's `input_schema`
+- `module_id` (str/string/&str, required) — target module ID; validated against `MODULE_ID_PATTERN` and the length limit before the pipeline starts
+- `inputs` (dict/object/Value, optional) — validated against the module's `input_schema`; absent is treated as `{}`
 - `context` (Context, optional) — execution context; created fresh when absent
-- `version_hint` (str/string/&str, optional) — preferred version constraint; falls back to latest on TS/Rust pending implementation
+- `version_hint` (str/string/&str, optional) — preferred version constraint. Python resolves it in module lookup; TypeScript and Rust accept it and resolve the latest registered version
 
 ### Errors
-- `InvalidInputError(code=INVALID_MODULE_ID)` — `module_id` is empty or malformed
+- `InvalidInputError(code=INVALID_MODULE_ID)` — `module_id` is empty, malformed or over-length
 - `ModuleNotFoundError(code=MODULE_NOT_FOUND)` — no module registered under `module_id`
 - `SchemaValidationError(code=SCHEMA_VALIDATION_ERROR)` — `inputs` fails the module's `input_schema`
-- Any error raised by the module's `execute` handler propagates unchanged
+- Pipeline errors (`ACL_DENIED`, `APPROVAL_*`, `CALL_DEPTH_EXCEEDED`, `MODULE_TIMEOUT`, …) and errors raised by the module propagate as their typed error — see [Contract: Executor.call](./core-executor.md#contract-executorcall)
 
 ### Returns
-- On success: `dict`/`Record<string, unknown>`/`serde_json::Value` — the module's validated output
+- On success: `dict`/`Record<string, unknown>`/`serde_json::Value` — the module's validated output (after-middleware applied)
 
 ### Properties
-- async: sync surface (`call`) + async surface (`call_async`) in Python; async-only in TypeScript and Rust
-- thread_safe: true (Executor holds an internal lock on shared state)
-- pure: false (side-effects: span created, metrics emitted, middleware hooks invoked)
+- async: synchronous in Python (`call_async` is the coroutine form); async in TypeScript and Rust
+- thread_safe: true
+- pure: false (spans, metrics, middleware hooks, events)
 - idempotent: false (module `execute` is not guaranteed idempotent)
 
 ## Contract: APCore.call_async
 
 ### Inputs
-- `module_id` (str/string, required) — target module ID; validated against `MODULE_ID_PATTERN`; reject empty or malformed with `InvalidInputError(code=INVALID_MODULE_ID)`
-- `inputs` (dict/object, optional) — validated against the module's `input_schema`; absent is treated as `{}`
-- `context` (Context, optional) — execution context; created fresh when absent
-- `version_hint` (str/string, optional) — preferred version constraint
+- Identical to `APCore.call`.
 
 ### Errors
-- Identical to `APCore.call` — this surface adds no error of its own:
-- `InvalidInputError(code=INVALID_MODULE_ID)` — `module_id` is empty or malformed
-- `ModuleNotFoundError(code=MODULE_NOT_FOUND)` — no module registered under `module_id`
-- `SchemaValidationError(code=SCHEMA_VALIDATION_ERROR)` — `inputs` fails the module's `input_schema`
-- Any error raised by the module's `execute` handler propagates unchanged
+- Identical to `APCore.call`; this surface adds none of its own.
 
 ### Returns
-- On success: `dict`/`Record<string, unknown>` — the module's validated output, identical to `APCore.call`
+- On success: the module's validated output, identical to `APCore.call`.
 
 ### Properties
-- async: true — this is the async surface by definition
-- thread_safe: true (delegates to the Executor, which holds an internal lock on shared state)
-- pure: false (side-effects: span created, metrics emitted, middleware hooks invoked)
-- idempotent: false (module `execute` is not guaranteed idempotent)
+- async: true
+- thread_safe: true
+- pure: false
+- idempotent: false
 
-> **Per-language availability.** This method exists to serve languages whose
-> `call()` is synchronous. Python's `call()` blocks, so `call_async()` is a
-> genuinely distinct coroutine surface. TypeScript's `callAsync()` is an
-> explicit **alias** for `call()` — both delegate to the same
-> `executor.call(...)` and return the same `Promise`. Rust has **no**
-> `call_async` at all, because `APCore::call` is already `pub async fn`.
-> Implementations **MUST NOT** give `call_async` behaviour that differs from
-> `call` beyond the synchronous/asynchronous calling convention.
+Python `call_async()` is a coroutine distinct from the blocking `call()`. TypeScript `callAsync()` is an alias of `call()`. Rust has no `call_async` because `APCore::call` is already `async`. Implementations **MUST NOT** give `call_async` behaviour that differs from `call` beyond the calling convention.
 
 ## Contract: APCore.on
 
 ### Inputs
-- `event_type` (str/string, required) — canonical event type string (e.g. `"apcore.registry.module_registered"`); MUST be a non-empty string; filtered by exact equality match inside the subscriber
-- `handler` (callable/Function, required) — sync or async callback receiving an `ApCoreEvent`; MUST NOT be null/None; Python accepts both sync and async callables (detected via `asyncio.iscoroutinefunction`); TypeScript accepts `(event: ApCoreEvent) => void | Promise<void>`
+- `event_type` (str/string/&str, required) — canonical event type (e.g. `"apcore.registry.module_registered"`). Matched by **exact equality**; a glob such as `"apcore.registry.*"` is compared literally and matches no framework event.
+- `handler` (callable/function/closure, required) — receives each matching `ApCoreEvent`. Python and TypeScript accept sync or async handlers; Rust takes `impl Fn(&ApCoreEvent) + Send + Sync + 'static`.
 
 ### Errors
-- `RuntimeError` (Python) / `Error` (TypeScript) — raised immediately if `sys_modules.events` is not enabled (i.e., the `events` property returns `None`/`null`); message: `"Events are not enabled. Set sys_modules.enabled=true and sys_modules.events.enabled=true in config."`
+- `SysModulesDisabledError(code=SYS_MODULES_DISABLED)` — events are not enabled (`events` is `None`/`null`). Rust: `ModuleError` with `ErrorCode::SysModulesDisabled`.
 
 ### Returns
-- On success: `EventSubscriber` — the created subscriber object; pass to `off()` to cancel the subscription
+- Python/TypeScript: the created `EventSubscriber` — pass it to `off()`.
+- Rust: `Result<String, ModuleError>` — the subscriber ID.
 
 ### Properties
-- async: false (synchronous in both Python and TypeScript)
-- thread_safe: true (Python `EventEmitter.subscribe` holds an internal lock before appending)
-- pure: false (registers handler into the emitter's internal subscriber list)
-- idempotent: false (registering the same handler twice creates two independent subscriptions that each fire)
+- async: false
+- thread_safe: true
+- pure: false (adds a subscriber to the emitter)
+- idempotent: false (registering the same handler twice creates two subscriptions)
 
 ## Contract: APCore.off
 
 ### Inputs
-- `subscriber` (EventSubscriber, required) — the handle returned by a prior call to `on()`; MUST NOT be null/None
+- `subscriber` — the value `on()` returned (Rust: the subscriber ID `&str`)
 
 ### Errors
-- `RuntimeError` (Python) / `Error` (TypeScript) — raised immediately if `sys_modules.events` is not enabled (same guard as `on()`); message identical to `on()` error
+- `SysModulesDisabledError(code=SYS_MODULES_DISABLED)` — events are not enabled (same guard as `on()`).
 
 ### Returns
-- On success: void/None — no return value
+- Python/TypeScript: None/void. Rust: `Result<bool, ModuleError>` — `true` when a subscriber with that ID was removed.
 
 ### Properties
-- async: false (synchronous in both Python and TypeScript)
-- thread_safe: true (Python `EventEmitter.unsubscribe` holds an internal lock before removing)
-- pure: false (mutates the emitter's internal subscriber list)
-- idempotent: true (unsubscribing a subscriber that is not present is a no-op; Python implementation uses `list.remove` under a guard that tolerates absence)
+- async: false
+- thread_safe: true
+- pure: false (removes a subscriber from the emitter)
+- idempotent: true (removing an absent subscriber is a no-op)
 
 ## Contract: APCore.stream
 
 ### Inputs
-- `module_id` (str/string, required) — target module ID; validated via `_validate_module_id`; MUST be a non-empty string matching the module ID pattern
-- `inputs` (dict/object, optional) — input arguments for the module; `None`/`null` is treated as `{}`
-- `context` (Context, optional) — execution context; auto-created when absent
-- `version_hint` (str/string, optional) — preferred version constraint; falls back to latest
+- `module_id` (str/string/&str, required) — validated as for `call()`
+- `inputs` (dict/object/Value, optional) — `None`/`null` is treated as `{}`
+- `context` (Context, optional) — created when absent
+- `version_hint` (str/string/&str, optional)
 
 ### Errors
-- `InvalidInputError(code=INVALID_MODULE_ID)` — `module_id` is empty or malformed (raised before pipeline starts)
-- `ModuleNotFoundError(code=MODULE_NOT_FOUND)` — no module registered under `module_id`
-- `SchemaValidationError(code=SCHEMA_VALIDATION_ERROR)` — `inputs` fails the module's `input_schema`
-- `ExecutionCancelledError` — propagated unchanged if the execution context is cancelled mid-stream
-- Any error raised by the module's `execute`/`stream` handler: in Python, a recovery dict chunk is yielded and the generator returns cleanly; retry signals during streaming are ignored and the original error is re-raised
+- `InvalidInputError(code=INVALID_MODULE_ID)`, `ModuleNotFoundError`, `SchemaValidationError` — as for `call()`, raised before the first chunk
+- `ExecutionCancelledError` — propagated if the context's cancel token fires mid-stream
+- Errors raised by the module's `stream()` run the `on_error` chain; a recovery value is yielded as the last chunk (a `RetrySignal` is not honoured mid-stream)
+- Output validation of the accumulated result runs after the last chunk. Chunks already delivered cannot be recalled, so a failure there is logged and published as `apcore.stream.post_validation_failed` instead of being raised (cancellation is still raised). See [Streaming](./streaming.md).
 
 ### Returns
-- On success: async generator / `AsyncGenerator` / `AsyncIterator` that yields `dict`/`Record<string, unknown>` chunks
-- If the module does not implement a `stream()` method, the pipeline falls back to a single `execute()` call and yields its output as one chunk
+- On success: an async iterator (Python async generator, TypeScript `AsyncGenerator`, Rust `Stream`) yielding output chunks. A module without `stream()` yields its `execute()` output as a single chunk.
 
 ### Properties
-- async: true (Python: `async def stream()` coroutine / async generator; TypeScript: `async *stream()` async generator)
-- thread_safe: true (delegates to Executor which holds internal locks)
-- pure: false (side-effects: span created, metrics emitted, middleware hooks invoked)
-- idempotent: false (module execution is not guaranteed idempotent)
+- async: true
+- thread_safe: true
+- pure: false
+- idempotent: false
 
 ## Contract: APCore.validate
 
 ### Inputs
-- `module_id` (str/string, required) — target module ID; MUST be a non-empty string matching the module ID pattern
-- `inputs` (dict/object, optional) — input data to validate against the module's `input_schema`; `None`/`null` is treated as `{}`
-- `context` (Context, optional) — execution context used for ACL and call-chain checks; auto-created when absent
+- `module_id` (str/string/&str, required)
+- `inputs` (dict/object/Value, optional) — `None`/`null` is treated as `{}`
+- `context` (Context, optional) — used for call-chain and ACL checks; created when absent
 
 ### Errors
-- No errors are raised — **including** for an empty or malformed `module_id`. Every failure, that one included, is captured in the returned `PreflightResult`.
-
-!!! note "This contract previously declared an `InvalidInputError` for malformed IDs; no SDK raises one"
-    The earlier text carried both "no errors are raised for validation failures" and
-    "`InvalidInputError(code=INVALID_MODULE_ID)` — raised if `module_id` is empty or
-    malformed (before pipeline begins)". The second was wrong, and contradicted this
-    contract's own Returns section, which lists `module_id` as the **first** of the
-    preflight checks — a check that can only report a result if the malformed case
-    reaches it rather than raising past it.
-
-    The implementations are unanimous: apcore-python's `Executor._validate_async`
-    catches the `InvalidInputError` its `_validate_module_id` raises and returns
-    `PreflightResult(valid=False, checks=[PreflightCheckResult(check="module_id",
-    passed=False, error=...)])`. That is the point of a preflight surface — a caller
-    asking "would this call work?" gets one answer shape for every reason it would not,
-    and does not have to wrap the question in a try/except to learn that the ID was
-    malformed.
-
-    Note the deliberate contrast with [Contract: Executor.call](./core-executor.md#contract-executorcall),
-    where the same malformed ID **does** raise `InvalidInputError(code=INVALID_MODULE_ID)`
-    at the entry guard. `call()` executes and must refuse; `validate()` reports and must
-    not.
+- None. Every failure — an empty or malformed `module_id` included — is reported in the returned `PreflightResult`. (`call()` raises `INVALID_MODULE_ID` for the same input; `validate()` reports it.) Rust returns `Result<PreflightResult, ModuleError>`, whose `Err` arm is not used for check failures.
 
 ### Returns
-- On success: `PreflightResult` — an object with:
-  - `valid: bool` — `True` only if all checks passed
-  - `checks: list[PreflightCheckResult]` — per-step results covering: `module_id`, `executor_binding`, `module_lookup`, `call_chain`, `acl`, `approval`, `schema`, `module_preflight` (8 checks), plus an optional `module_preview` check appended only when the target module implements a preview hook (all three SDKs emit this set)
-  - `requires_approval: bool` — `True` if the module carries a `requires_approval` annotation (informational only; not enforced by validate)
-  - `errors: list[dict]` — convenience property; aggregates `error` fields from failed checks
+- `PreflightResult` with:
+  - `valid: bool` — `true` only when every check passed
+  - `checks: list[PreflightCheckResult]` — one entry per check that ran. `module_id` comes first; a failure there, or an `executor_binding` conflict, ends the preflight. The pipeline runs Steps 1–5 and 7 in dry-run mode and each step that ran contributes a check (`context`, `call_chain`, `module_lookup`, `acl`, `schema`, …). `module_preflight` and `module_preview` are appended when the module provides those hooks and the `acl` check did not fail ([§12.8.5.1](../spec/protocol-spec.md#12851-module-level-preflight-check-7)).
+  - `requires_approval: bool` — the governance-effective approval requirement the Step 5 gate would enforce; reported, never enforced (no `ApprovalHandler` is invoked)
+  - `errors` — the failed checks' `error` values
 
 ### Properties
-- async: sync in Python (delegates to async impl via sync-in-thread model); async in TypeScript (`Promise<PreflightResult>`)
+- async: synchronous in Python; async in TypeScript and Rust
 - thread_safe: true
-- pure: false (pipeline dry-run creates a span and invokes middleware up to the execute step)
-- idempotent: true (no state mutation; repeated calls with the same arguments return equivalent results)
+- pure: false (runs module-authored `preflight()` / `preview()` hooks)
+- idempotent: true (no state mutation)
 
 ## Contract: APCore.disable
 
 ### Inputs
-- `module_id` (str/string, required) — ID of the module to disable; passed directly to `system.control.toggle_feature`
-- `reason` (str/string, optional) — audit reason string; defaults to `"Disabled via APCore client"`
+- `module_id` (str/string/&str, required) — module to disable; passed to `system.control.toggle_feature`
+- `reason` (str/string, optional) — audit reason; defaults to `"Disabled via APCore client"` (Rust: `Option<&str>`)
 
 ### Errors
-- `RuntimeError` (Python) / `Error` (TypeScript) / `Err(ModuleError(code=SYS_MODULES_DISABLED))` (Rust) — raised immediately if `sys_modules` are not enabled. Python message: `"disable() requires sys_modules to be enabled. Pass a Config with sys_modules.enabled=true to APCore()."` TypeScript message: `"Cannot call disable(): sys_modules must be enabled in config."` Rust message: `"disable() requires sys_modules to be enabled. Pass a Config with sys_modules.enabled=true to APCore::new()."`
-- Any error raised by `system.control.toggle_feature` (e.g., `ModuleNotFoundError` if `module_id` is not registered) propagates unchanged
+- `SysModulesDisabledError(code=SYS_MODULES_DISABLED)` — system modules are not enabled. Rust: `ErrorCode::SysModulesDisabled`.
+- Errors from `system.control.toggle_feature` propagate unchanged — for example `MODULE_NOT_FOUND` for an unregistered `module_id`, or for `toggle_feature` itself when events or `sys_modules.control.enabled` are off.
 
 ### Returns
-- On success: `dict`/`Record<string, unknown>` — result from `system.control.toggle_feature`, containing at minimum: `success` (bool), `module_id` (str), `enabled` (bool, `false` on success)
+- The `toggle_feature` result: at least `success`, `module_id`, `enabled` (`false`).
 
 ### Properties
-- async: sync in Python (delegates via sync-in-thread model); async in TypeScript (`Promise<Record<string, unknown>>`)
-- thread_safe: true (delegates to Executor)
-- pure: false (mutates the runtime disabled-modules registry)
-- idempotent: true (disabling an already-disabled module SHOULD succeed without error)
+- async: synchronous in Python; async in TypeScript and Rust
+- thread_safe: true
+- pure: false (mutates this client's toggle state; emits `apcore.module.toggled`)
+- idempotent: true
 
 ## Contract: APCore.enable
 
 ### Inputs
-- `module_id` (str/string, required) — ID of the module to re-enable; passed directly to `system.control.toggle_feature`
-- `reason` (str/string, optional) — audit reason string; defaults to `"Enabled via APCore client"`
+- `module_id` (str/string/&str, required)
+- `reason` (str/string, optional) — defaults to `"Enabled via APCore client"`
 
 ### Errors
-- `RuntimeError` (Python) / `Error` (TypeScript) / `Err(ModuleError(code=SYS_MODULES_DISABLED))` (Rust) — raised immediately if `sys_modules` are not enabled. Python message: `"enable() requires sys_modules to be enabled. Pass a Config with sys_modules.enabled=true to APCore()."` TypeScript message: `"Cannot call enable(): sys_modules must be enabled in config."` Rust message: `"enable() requires sys_modules to be enabled. Pass a Config with sys_modules.enabled=true to APCore::new()."`
-- Any error raised by `system.control.toggle_feature` propagates unchanged
+- As for `APCore.disable`.
 
 ### Returns
-- On success: `dict`/`Record<string, unknown>` — result from `system.control.toggle_feature`, containing at minimum: `success` (bool), `module_id` (str), `enabled` (bool, `true` on success)
+- The `toggle_feature` result: at least `success`, `module_id`, `enabled` (`true`).
 
 ### Properties
-- async: sync in Python (delegates via sync-in-thread model); async in TypeScript (`Promise<Record<string, unknown>>`)
-- thread_safe: true (delegates to Executor)
-- pure: false (mutates the runtime disabled-modules registry)
-- idempotent: true (enabling an already-enabled module SHOULD succeed without error)
+- async: synchronous in Python; async in TypeScript and Rust
+- thread_safe: true
+- pure: false
+- idempotent: true
 
 ## Contract: APCore.__init__
 
 ### Inputs
-- `registry` (Registry, optional) — pre-built Registry instance; a new `Registry()` is created when absent
-- `executor` (Executor, optional) — pre-built Executor instance; a new `Executor(registry=..., config=...)` is created when absent
-- `config` (Config, optional) — framework configuration object; use `Config.load(path)` to load from a YAML file; when absent the client runs in zero-config mode with no system modules
-- `metrics_collector` (MetricsCollector, optional) — observability collector; auto-created when `config.sys_modules.enabled=true` and none is provided; ignored in zero-config mode
+- `registry` (Registry, optional) — ignored when `executor` is supplied; a Registry built from `config` otherwise
+- `executor` (Executor, optional) — used as-is; config-driven ACL discovery and tracing are skipped for it
+- `config` (Config, optional) — when absent the client runs zero-config, with no system modules
+- `metrics_collector` (MetricsCollector, optional) — handed to the system modules
+- `policy` (ExecutionPolicy, optional; Python and TypeScript) — applied to an Executor the client builds
 
 ### Errors
-- No errors are raised by `__init__` itself; if `sys_modules` registration fails, the error is caught, logged at WARNING level, and the client continues with an empty `_sys_modules_context` (system-module methods will raise `RuntimeError` on use)
+- None from construction itself. ACL discovery and system-module registration failures are logged and the client continues without that component.
 
 ### Returns
-- On success: a fully initialized `APCore` instance
+- A fully initialized `APCore` instance.
 
 ### Properties
-- async: false (synchronous in all languages)
-- thread_safe: false (do not share a partially-constructed instance across threads; all concurrent usage must start after construction is complete)
-- pure: false (creates Registry/Executor, optionally registers system modules, adds middleware)
+- async: false
+- thread_safe: false (do not share a partially constructed instance)
+- pure: false (builds components, registers system modules, installs middleware)
 - idempotent: false
 
 ## Contract: APCore.module
 
 ### Inputs
-- `id` (str/string, optional) — module ID to register the function under; MUST match `MODULE_ID_PATTERN` when provided; when absent the registry derives an ID from the decorated function's name
-- `description` (str/string, optional) — short human-readable description of the module
-- `documentation` (str/string, optional) — extended Markdown documentation
-- `annotations` (dict/object, optional) — key-value annotations for routing or platform metadata (e.g. `requires_approval`)
-- `tags` (list[str]/string[], optional) — tag strings for filtering via `list_modules(tags=...)`
-- `version` (str/string, optional) — semver version string; defaults to `"1.0.0"`
-- `metadata` (dict/object, optional) — additional metadata stored alongside the module descriptor
-- `display` (dict/object, optional) — display hints (name, icon, color) for UIs
-- `examples` (list/array, optional) — input/output examples for documentation and AI tool discovery
+- `id` (str/string, optional in Python) — module ID; derived from the function when absent
+- `description`, `documentation`, `annotations`, `tags`, `version` (default `"1.0.0"`), `metadata`, `display`, `examples` — descriptor fields
+- TypeScript additionally requires `inputSchema`, `outputSchema` (TypeBox) and `execute`; Rust takes explicit schemas and a handler closure
 
 ### Errors
-- `InvalidInputError(code=INVALID_MODULE_ID)` — `id` is provided but empty, malformed, exceeds `MAX_MODULE_ID_LENGTH`, or contains a reserved first-segment word
-- `InvalidInputError(code=DUPLICATE_MODULE_ID)` — `id` is already registered (duplicate registration)
+- `InvalidInputError(code=INVALID_MODULE_ID)` — `id` is malformed, over-length or uses a reserved first segment
+- `DUPLICATE_MODULE_ID` — `id` is already registered (`InvalidInputError` in Python, `DuplicateModuleIdError` in TypeScript, `ErrorCode::DuplicateModuleId` in Rust)
 
 ### Returns
-- On success: the decorated function, unchanged (the function is registered as a `FunctionModule` as a side effect; the original callable is returned so it remains directly callable in Python)
+- Python: the decorated function, unchanged. TypeScript: the registered `FunctionModule`. Rust: `Result<&mut Self, ModuleError>`.
 
 ### Properties
-- async: false (synchronous decorator in Python and TypeScript)
-- thread_safe: true (delegates to `Registry.register` which holds an internal RLock)
-- pure: false (registers the function into the client's Registry as a side effect)
-- idempotent: false (applying the decorator twice registers two entries and raises `InvalidInputError` on the second)
+- async: false
+- thread_safe: true
+- pure: false (registers a module)
+- idempotent: false (a second registration under the same ID fails)
 
 ## Contract: APCore.register
 
 ### Inputs
-- `module_id` (str/string/&str, required) — unique ID to register the module under; MUST be a non-empty string matching `MODULE_ID_PATTERN`, ≤192 characters, with no reserved first-segment word
-- `module_obj` (any Module instance, required) — the module object to register; MUST NOT be null/None; raw-dict `input_schema`/`output_schema` are wrapped in a `_DictSchemaAdapter` automatically
+- `module_id` (str/string/&str, required) — must match `MODULE_ID_PATTERN`, be at most 192 characters, and not use a reserved first segment
+- `module` (Module instance, required)
 
 ### Errors
-- `InvalidInputError(code=INVALID_MODULE_ID)` — `module_id` is empty, malformed, exceeds the length limit, contains a reserved word, or is already registered under that ID
-- `RuntimeError` — if the module's `on_load()` hook raises (the partial registration is rolled back before propagating)
+- `InvalidInputError(code=INVALID_MODULE_ID)` — malformed, over-length or reserved `module_id`
+- `DUPLICATE_MODULE_ID` — `module_id` is already registered (error class as for `APCore.module`)
+- An exception raised by the module's `on_load()` propagates after the partial registration is rolled back
 
 ### Returns
-- On success: void/None/() — no return value
+- None/void/`Result<(), ModuleError>`
 
 ### Properties
-- async: false (synchronous in all languages)
-- thread_safe: true (Registry holds an internal RLock around the write)
-- pure: false (mutates the registry's module map, triggers `register` event callbacks)
-- idempotent: false (registering the same `module_id` twice raises `InvalidInputError` on the second call)
+- async: false
+- thread_safe: true
+- pure: false (mutates the registry, fires `register` callbacks)
+- idempotent: false
 
 ## Contract: APCore.discover
 
 ### Inputs
-- No parameters — discovery roots come from `extensions.root` in the config provided at construction time (defaults to the framework default root when no config is given)
+- None — roots come from the client's Config (`extensions.root` / `extensions.roots`, `extensions.max_depth`, `id_map.overrides`), or the default root when no Config was given.
 
 ### Errors
-- `CircularDependencyError` — if circular inter-module dependencies are detected in the discovered set
-- `ConfigNotFoundError` — if a configured extension root directory does not exist on disk
-- File-level errors (import failures, validation failures, `on_load()` failures) are logged at WARNING/ERROR level and silently skipped; they do NOT propagate to the caller
+- `CircularDependencyError` — circular inter-module dependencies in the discovered set
+- `ConfigNotFoundError(code=CONFIG_NOT_FOUND)` — a configured extension root does not exist
+- Per-file failures (import, validation, `on_load()`) are logged and skipped
 
 ### Returns
-- On success: `int` — count of modules successfully registered in this discovery pass (0 if no modules are found or all fail validation)
+- The number of modules registered by this pass.
 
 ### Properties
-- async: **false in Python** (synchronous file-system scan and import, on the calling thread); **async in TypeScript and Rust**. Neither is a gap: TypeScript's discovery resolves each module's entry point via ESM dynamic `import()`, which has no synchronous form in Node — a discovery root containing an ESM module file structurally cannot be scanned without an `await` somewhere. Rust's `Registry::discover` takes a `discoverer: &dyn Discoverer` and awaits `discoverer.discover(...)` — the trait itself is `async`, not merely reserved for a hypothetical future implementation, mirroring TypeScript's `CustomDiscoverer` interface (which likewise may return a `Promise`) and Python's own `ApprovalHandler` pattern of an async, pluggable extension point. The cross-language contract is the **outcome**, not the calling convention: all three return the same `int`/`number`/`usize` count of newly-registered modules, raise the same categories of error (`CircularDependencyError`, `ConfigNotFoundError`), and silently skip-and-log the same per-file failures — a caller adapting to each language's native async idiom sees identical registry state afterward.
-- thread_safe: true (each `Registry.register` call inside discovery holds the registry's RLock)
-- pure: false (imports Python files, instantiates module classes, and mutates the registry)
-- idempotent: false (calling `discover()` twice on a directory that has not changed will attempt to re-register already-registered modules, raising `InvalidInputError` for duplicates; callers should guard with `list_modules()` or unregister first)
+- async: synchronous in Python; async in TypeScript (ESM entry points are loaded with dynamic `import()`) and Rust (`Result<usize, ModuleError>`; `Ok(0)` when no discoverer is configured). The outcome — count, errors, skipped files — is the same in all three.
+- thread_safe: true
+- pure: false (loads code, mutates the registry)
+- idempotent: false (re-discovering already-registered modules reports duplicates)
 
 ## Contract: APCore.list_modules
 
 ### Inputs
-- `tags` (list[str]/string[], optional) — when provided, only modules possessing ALL listed tags (via module attribute or merged metadata) are included; `None`/`null` means no tag filtering
-- `prefix` (str/string, optional) — when provided, only modules whose ID starts with this string are included; `None`/`null` means no prefix filtering
+- `tags` (list of strings, optional) — only modules carrying **all** listed tags
+- `prefix` (string, optional) — only IDs starting with this prefix
 
 ### Errors
-- No errors raised under normal operation
+- None
 
 ### Returns
-- On success: `list[str]`/`string[]` — alphabetically sorted list of matching module IDs; empty list when no modules match
+- Alphabetically sorted list of matching module IDs.
 
 ### Properties
-- async: false (synchronous in all languages)
-- thread_safe: true (Registry takes a snapshot under its RLock before filtering)
-- pure: true (read-only; no state mutation)
+- async: false
+- thread_safe: true
+- pure: true
 - idempotent: true
 
 ## Contract: APCore.describe
 
 ### Inputs
-- `module_id` (str/string/&str, required) — ID of the module to describe; MUST be a non-empty string
+- `module_id` (str/string/&str, required)
 
 ### Errors
-- `ModuleNotFoundError` — raised if no module is registered under `module_id`
+- `ModuleNotFoundError(code=MODULE_NOT_FOUND)` — no module registered under `module_id`
 
 ### Returns
-- On success: `str`/`string` — Markdown-formatted description string; if the module defines a `describe()` method, its return value is used verbatim; otherwise the registry auto-generates a description from the module's `ModuleDescriptor` (title, description, tags, parameter list, documentation)
+- A Markdown description: the module's own `describe()` output when it defines one, otherwise generated from its descriptor.
 
 ### Properties
-- async: false (synchronous in all languages)
-- thread_safe: true (reads from the Registry under its RLock)
-- pure: true (read-only; no state mutation)
+- async: false
+- thread_safe: true
+- pure: true
 - idempotent: true
 
 ## Contract: APCore.use / APCore.use_middleware
 
 ### Inputs
-- `middleware` (Middleware instance, required) — a class-based middleware object implementing the `Middleware` protocol; MUST NOT be null/None; `priority` attribute (int, 0–1000) controls insertion order — higher priority runs first; equal priorities preserve registration order
+- `middleware` (Middleware instance, required) — its `priority` (0–1000, default 100) orders the chain; higher runs first, equal priorities keep registration order. See [Middleware System](./middleware-system.md).
 
 ### Errors
-- `ValueError` (Python) / `RangeError` (TypeScript) / `Err(ModuleError)` with `GENERAL_INVALID_INPUT` (Rust) — if `middleware.priority` exceeds 1000. Each SDK uses its idiomatic invalid-argument signal for this caller-side misconfiguration (A-D-017); the rejection itself is enforced in all three.
+- Priority above 1000: `ValueError` (Python), `RangeError` (TypeScript), `ModuleError` with `GENERAL_INVALID_INPUT` (Rust)
 
 ### Returns
-- On success: `self`/`APCore` — returns the client instance for method chaining (e.g. `client.use(a).use(b).use(c)`)
+- `self` for chaining (Rust: `Result<&Self, ModuleError>`).
 
 ### Properties
-- async: false (synchronous in all languages)
-- thread_safe: true (MiddlewareManager holds an internal lock during insertion)
-- pure: false (mutates the executor's middleware chain)
-- idempotent: false (adding the same middleware instance twice inserts it twice, running it twice per execution)
-
-!!! note "Rust keyword conflict"
-    In Rust, this method is named `use_middleware()` because `use` is a reserved keyword. Python and TypeScript expose it as `.use()`.
+- async: false
+- thread_safe: true
+- pure: false (mutates the middleware chain)
+- idempotent: false (registering the same instance twice runs it twice; duplicate registration warns but succeeds)
 
 ## Contract: APCore.use_before
 
 ### Inputs
-- `callback` (callable/Function, required) — a sync or async function invoked before module execution; signature: `(context: Context) -> None` (Python) / `(ctx: Context) => void | Promise<void>` (TypeScript); MUST NOT be null/None; the callback is wrapped in a `BeforeMiddleware` adapter with default priority 0
+- Python/TypeScript: `callback(module_id, inputs, context)` — returns replacement inputs or `None`/`null`. It is wrapped in a `BeforeMiddleware` with priority 100.
+- Rust: `Box<dyn BeforeMiddleware>` — a trait object implementing `name()` and `async fn before(&self, module_id, inputs: Value, ctx) -> Result<Option<Value>, ModuleError>`.
 
 ### Errors
-- `ValueError` (Python) / `RangeError` (TypeScript) / `Err(ModuleError)` with `GENERAL_INVALID_INPUT` (Rust) — if the wrapped `BeforeMiddleware`'s priority exceeds 1000. `use_before` delegates to the same `MiddlewareManager.add()` as `APCore.use` and is subject to the same rejection (A-D-017); this contract previously said "No errors raised during registration", which the delegation contradicts.
-- Errors raised inside `callback` at execution time propagate through the middleware chain
+- As for `APCore.use` — registration goes through the same manager.
+- Errors raised by the callback at execution time abort the call and run the `on_error` chain.
 
 ### Returns
-- On success: `self`/`APCore` — returns the client instance for method chaining
+- `self` for chaining (Rust: `Result<&Self, ModuleError>`).
 
 ### Properties
-- async: false (the registration call is synchronous; the callback itself may be sync or async)
-- thread_safe: true (delegates to MiddlewareManager which holds an internal lock)
-- pure: false (mutates the executor's middleware chain by inserting a wrapped `BeforeMiddleware`)
-- idempotent: false (registering the same callback twice inserts two independent `BeforeMiddleware` wrappers)
+- async: false (the callback itself may be async in Python)
+- thread_safe: true
+- pure: false
+- idempotent: false
 
 ## Contract: APCore.use_after
 
 ### Inputs
-- `callback` (callable/Function, required) — a sync or async function invoked after module execution; signature: `(context: Context) -> None` (Python) / `(ctx: Context) => void | Promise<void>` (TypeScript); MUST NOT be null/None; the callback is wrapped in an `AfterMiddleware` adapter with default priority 0
+- Python/TypeScript: `callback(module_id, inputs, output, context)` — returns replacement output or `None`/`null`. Wrapped in an `AfterMiddleware` with priority 100.
+- Rust: `Box<dyn AfterMiddleware>` — `name()` and `async fn after(&self, module_id, inputs: Value, output: Value, ctx) -> Result<Option<Value>, ModuleError>`.
 
 ### Errors
-- `ValueError` (Python) / `RangeError` (TypeScript) / `Err(ModuleError)` with `GENERAL_INVALID_INPUT` (Rust) — if the wrapped `AfterMiddleware`'s priority exceeds 1000. `use_after` delegates to the same `MiddlewareManager.add()` as `APCore.use` and is subject to the same rejection (A-D-017); this contract previously said "No errors raised during registration", which the delegation contradicts.
-- Errors raised inside `callback` at execution time propagate through the middleware chain
+- As for `APCore.use_before`.
 
 ### Returns
-- On success: `self`/`APCore` — returns the client instance for method chaining
+- `self` for chaining (Rust: `Result<&Self, ModuleError>`).
 
 ### Properties
-- async: false (the registration call is synchronous; the callback itself may be sync or async)
-- thread_safe: true (delegates to MiddlewareManager which holds an internal lock)
-- pure: false (mutates the executor's middleware chain by inserting a wrapped `AfterMiddleware`)
-- idempotent: false (registering the same callback twice inserts two independent `AfterMiddleware` wrappers)
+- async: false
+- thread_safe: true
+- pure: false
+- idempotent: false
 
 ## Contract: APCore.remove
 
 ### Inputs
-- `middleware` (Middleware instance, required) — the exact middleware object to remove; identity comparison (`is`) is used, not equality (`==`); pass the same object reference returned or stored when originally calling `use()`, `use_before()`, or `use_after()`
+- Python/TypeScript: `middleware` — the object passed to `use()`; compared by identity (`is` / `===`).
+- Rust: a `MiddlewareHandle` obtained from `use_middleware_handle()`, passed to `remove_handle()`. `use_middleware` consumes the `Box`, so the handle is the identity the caller keeps.
 
-!!! info "Rust removes by handle, for a reason that is not about trait objects (spec v1.21.0)"
-
-    Identity removal needs the caller to still hold the thing it registered.
-    apcore-python and apcore-typescript do: `use()` borrows the object and the
-    caller keeps its reference. Rust's `use_middleware` **consumes** the `Box`,
-    so by the time a caller wants to remove one it has no pointer left to
-    compare against — the obstacle is ownership, not comparison. (`Arc::ptr_eq`
-    has ignored vtable metadata since Rust 1.76, below the crate's MSRV, so a
-    doc comment claiming trait objects cannot be compared by identity was
-    wrong, and wrong in the direction that made the gap look unfixable.)
-
-    So `use_middleware` returns a `MiddlewareHandle`, and `remove_handle(handle)`
-    removes exactly that registration. That is the identity this contract
-    requires, in the form the language allows, and it mirrors
-    `EventEmitter::subscribe` → `unsubscribe_handle`, which exists for the same
-    reason on the event bus.
-
-    `APCore::remove(name)` and `remove_middleware(&dyn Middleware)` remain, and
-    both resolve by `name()` — they remove the FIRST match in pipeline order.
-    That is not equivalent to identity removal: duplicate registration only
-    warns and always succeeds, so two instances answering one name is a
-    reachable state, and the name-based forms then drop whichever comes first
-    rather than the one the caller meant.
-
-    An SDK that cannot take the middleware object back **MUST** provide a token
-    issued at registration that removes exactly one registration, and **MUST
-    NOT** present a name-based removal as satisfying this contract.
+An SDK that cannot take the middleware object back **MUST** issue a token at registration that removes exactly one registration, and **MUST NOT** present name-based removal as satisfying this contract. Rust's `remove(name)` / `remove_middleware(&dyn Middleware)` match by `name()` and drop the first match in pipeline order.
 
 ### Errors
-- No errors raised under normal operation
+- None
 
 ### Returns
-- On success: `bool` — `True` if the middleware was found by identity and removed; `False` if no matching instance was present in the chain
-
-### Properties
-- async: false (synchronous in all languages)
-- thread_safe: true (MiddlewareManager holds an internal lock during removal)
-- pure: false (mutates the executor's middleware chain)
-- idempotent: true (calling `remove()` on a middleware not in the chain returns `False` without error; calling it again after a successful removal also returns `False` safely)
-
-## Contract: APCore.with_components
-
-**SDK Scope:** Rust only (see the "Rust-only methods" table above, under [Language-Specific Adaptations](#language-specific-adaptations)).
-
-### Inputs
-- `registry` (`Registry`, required) — pre-configured Registry to build the client around
-- `config` (`Config`, required) — framework configuration
-
-### Errors
-- No errors raised by `with_components` itself — it is a thin wrapper delegating to `with_options(Some(registry), None, Some(config), None)`, which does not return a `Result`. ACL-discovery and system-module-registration failures follow `with_options`'s error behavior below (caught and logged, not propagated).
-
-### Returns
-- On success: a fully initialized `APCore` instance built around the given `registry`, with a new `Executor` constructed over it and the given `config`
+- `true` when the registration was found and removed; `false` otherwise.
 
 ### Properties
 - async: false
-- thread_safe: false — do not share a partially-constructed instance across threads
-- pure: false — constructs an Executor and, when `config`'s `sys_modules.enabled` is true, registers system modules and discovers/attaches an ACL as side effects
-- idempotent: false
+- thread_safe: true
+- pure: false
+- idempotent: true
 
-## Contract: APCore.with_options
+## Contract: APCore.with_components
 
-**SDK Scope:** Rust only. Python and TypeScript accept the same four options (`registry`, `executor`, `config`, `metricsCollector`) but only at `APCore.__init__` — see [Contract: APCore.__init__](#contract-apcoreinit) — not as a separately named constructor.
+**SDK scope:** Rust only.
 
 ### Inputs
-- `registry` (`Option<Registry>`, positional 1) — pre-built Registry. Ignored when `executor` is also provided (the executor's own registry is used instead); otherwise a fresh default `Registry` is created when absent.
-- `executor` (`Option<Executor>`, positional 2) — pre-built Executor. When provided, its existing ACL wiring and event-emitter wiring are respected as-is, and the config-driven ACL discovery and event-emitter attachment described below are both skipped for it.
-- `config` (`Option<Config>`, positional 3) — framework configuration; a default `Config` is used when absent
-- `metrics_collector` (`Option<MetricsCollector>`, positional 4) — observability collector; consulted only if system modules end up enabled (`config`'s `sys_modules.enabled = true`)
+- `registry` (`Registry`, required)
+- `config` (`Config`, required)
 
 ### Errors
-- No errors raised by `with_options` itself (it does not return a `Result`). ACL discovery failures and system-module registration failures are caught internally, logged at ERROR level, and the client continues without that component — mirroring the lenient default documented under [Contract: APCore.\_\_init\_\_](#contract-apcoreinit).
+- None — it delegates to `with_options(Some(registry), None, Some(config), None)`.
 
 ### Returns
-- On success: a fully initialized `APCore` instance
+- A client built around `registry`, with a new Executor over it.
 
 ### Properties
 - async: false
 - thread_safe: false
-- pure: false — constructs a Registry/Executor when not supplied, optionally discovers and attaches an ACL, and optionally registers system modules
+- pure: false (as `with_options`)
+- idempotent: false
+
+## Contract: APCore.with_options
+
+**SDK scope:** Rust only. Python and TypeScript accept the same options on the constructor.
+
+### Inputs
+- `registry` (`Option<Registry>`) — ignored when `executor` is given
+- `executor` (`Option<Executor>`) — used as-is; config-driven ACL discovery, tracing and event-emitter wiring are skipped for it
+- `config` (`Option<Config>`) — `Config::default()` when absent
+- `metrics_collector` (`Option<MetricsCollector>`) — used when system modules are enabled
+
+### Errors
+- None — ACL-discovery, tracing and system-module failures are logged and the component is left out.
+
+### Returns
+- A fully initialized `APCore`.
+
+### Properties
+- async: false
+- thread_safe: false
+- pure: false
 - idempotent: false
 
 ## Contract: APCore.reload
 
-**SDK Scope:** Rust only — Python and TypeScript expose config reload only on the `Config` object itself (`config.reload()`), not on the client facade.
+**SDK scope:** Rust only — Python and TypeScript reload through `Config` itself.
 
 ### Inputs
-- No inputs
+- None
 
 ### Errors
-- `ModuleError(code=RELOAD_FAILED)` — the client's `Config` was not loaded from a file (e.g., built via defaults, or via `with_options`/`with_components` with no file-backed `config`), so there is no stored path to re-read
-- `ModuleError(code=MODULE_RELOAD_CONFLICT)` — the config's internal generation counter changed during the reload (concurrent mutation detected)
-- Any error `Config::load` would raise on the same file (parse or validation failure) propagates unchanged
+- `ModuleError(code=RELOAD_FAILED)` — the Config was not loaded from a file
+- `ModuleError(code=MODULE_RELOAD_CONFLICT)` — the Config changed concurrently during the reload
+- Any error `Config::load` raises for the file
 
 ### Returns
-- On success: `Result<(), ModuleError>` — `Ok(())`
+- `Result<(), ModuleError>`
 
 ### Properties
 - async: false
-- thread_safe: false — takes `&mut self`; not safe to call concurrently with other config access on the same instance
-- pure: false — replaces the client's in-memory `Config` with a freshly re-read and re-validated copy (mounted namespaces are preserved and replayed on top of the reloaded file)
-- idempotent: true when the underlying file is unchanged between calls
+- thread_safe: false (takes `&mut self`)
+- pure: false (replaces the in-memory Config; mounted namespaces are replayed)
+- idempotent: true while the file is unchanged
 
-**Does not re-discover modules.** `reload()` only refreshes `Config`; it does not re-run module discovery. Call `APCore.discover()` afterward for that.
+`reload()` does not re-discover modules; call `discover()` afterwards for that.

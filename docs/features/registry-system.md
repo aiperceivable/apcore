@@ -1,5 +1,5 @@
 ---
-description: "Module Registry with an 8-step discovery pipeline: directory scan, entry-point resolution, YAML metadata merge, dependency topo-sort, validation, schema load, ID-map override, register."
+description: "Module Registry: filesystem discovery (scan, ID map, metadata, entry-point class, validation, dependency order, register), manual registration, queries, events, hot reload, and describe/get_definition contracts."
 ---
 
 # Module Registry and Discovery System
@@ -10,96 +10,78 @@ description: "Module Registry with an 8-step discovery pipeline: directory scan,
 
 ## Overview
 
-The Module Registry and Discovery System is the central hub for discovering, registering, and querying modules within apcore. It implements an 8-step discovery pipeline that automatically finds modules from extension directories, resolves entry points from installed packages, loads metadata from YAML, validates module integrity, and registers them for use by the executor. The registry provides thread-safe access to all registered modules and supports lifecycle hooks, event callbacks, and flexible querying by tags, prefixes, and IDs.
+The Registry is where modules live. It discovers modules from extension directories, accepts modules registered in code, and answers lookups and queries for the executor and for discovery surfaces (manifests, tool exports). It runs lifecycle hooks, emits registration events, and in development can watch the extension directories and reload changed modules.
 
 ## Requirements
 
-- Automatically discover modules from configured extension directories by scanning the filesystem for module definitions and their associated metadata.
-- Support manual module registration for programmatically defined modules that do not reside on disk.
-- Resolve entry points via standard package plugin discovery, enabling third-party packages to contribute modules without filesystem scanning.
-- Load and merge module metadata from YAML files, combining filesystem metadata with code-defined metadata into a unified representation.
-- Perform topological sorting of module dependencies with cycle detection, ensuring modules are loaded in the correct order.
-- Validate discovered modules before registration, rejecting modules that do not meet structural or interface requirements.
-- Support ID map overrides that allow remapping module identifiers, enabling aliasing and version-based routing.
-- Provide lifecycle hooks (`on_load`, `on_unload`) for modules that need to perform setup or teardown when entering or leaving the registry.
-- Emit events (`register`, `unregister`) via a callback system so that other components can react to registry changes.
-- Offer flexible query capabilities: filter modules by tag, prefix, or arbitrary predicates, and generate `ModuleDescriptor` objects for external consumption.
-- Guarantee thread safety on all read and write paths using reentrant locks.
+- Discover modules from the configured extension directories (`extensions.root` / `extensions.roots`).
+- Accept modules registered in code (`register()`).
+- Merge companion metadata files (`<module>_meta.yaml`) with code-defined metadata.
+- Order registration by declared dependencies, rejecting cycles.
+- Validate modules before registering them.
+- Apply ID-map overrides (`id_map.overrides`) that remap canonical IDs.
+- Run lifecycle hooks (`on_load`, `on_unload`) and keep a module invisible until its `on_load` has succeeded.
+- Emit `register` / `unregister` events.
+- Filter queries by tag, prefix and visibility; produce `ModuleDescriptor`s for external consumers.
+- Be safe to read concurrently; single-threaded runtimes (JavaScript) need no lock.
 
-## Technical Design
+## Discovery pipeline
 
-### 8-Step Discovery Pipeline
+`discover()` turns files under the extension roots into registered modules. The steps, in the order the SDKs run them:
 
-The registry's `discover()` method processes modules through the following pipeline:
+1. **Scan** — walk each extension root (see [Scanner](#contract-scannerscan_extensions)) and derive a canonical ID from each file path (Algorithm A01). Files that would land in the `ephemeral.*` namespace are rejected.
+2. **ID map** — apply `id_map.overrides` (or an ID-map file given to the registry), replacing derived IDs.
+3. **Metadata** — load each module's companion `<stem>_meta.yaml` and merge it with code-defined metadata; the YAML wins on conflicting keys.
+4. **Entry point** — load the file and pick the module inside it: the single class/export that implements the module interface, or the one named by the metadata's `entry_point`. A file with several candidates and no `entry_point` is not loaded (for several modules per file, see [Multi-Module Discovery](./multi-module-discovery.md)).
+5. **Validate** — check each module's structure, or run the custom validator instead if one is installed. Invalid modules are skipped (Python logs a warning; TypeScript drops them silently).
+6. **Dependency order** — topologically sort by declared `dependencies`; a cycle raises `CIRCULAR_DEPENDENCY`, a missing required dependency `DEPENDENCY_NOT_FOUND`.
+7. **Conflict check** — check the ID grammar and conflicts with already-registered modules; a clashing module is skipped with a warning. (TypeScript runs this check before step 6.)
+8. **Register** — register each module in dependency order through the same path as `register()`: `on_load`, then publish, then the `register` event.
 
-1. **Extension Directory Scanning** -- The `Scanner` component walks configured extension root directories, identifying module candidates by locating module source files and their companion YAML metadata.
+Discovery loads no schema files and resolves no package-level plugins — modules come only from the extension roots (and from a custom discoverer, see [Extension System](./extension-system.md#custom-discoverer)).
 
-2. **Entry Point Resolution** -- The `EntryPoint` component resolves registered entry points from installed packages, enabling third-party packages to contribute modules to the registry without any filesystem scanning.
+| SDK | Entry point | Returns |
+|---|---|---|
+| Python | `registry.discover(path_filter=None)` (sync) | number of modules registered |
+| TypeScript | `await registry.discover()` | number of modules registered |
+| Rust | `registry.discover_internal().await` after `set_discoverer(...)` + `set_extension_roots(...)`; filesystem discovery uses `DefaultDiscoverer` (configured with `DefaultDiscoverer::from_config(&config)` and a `ModuleFactory` that builds each module) | `Result<usize, ModuleError>` |
 
-3. **Metadata Loading and Merging** -- The `Metadata` component loads YAML metadata files for each discovered module and merges them with any code-defined metadata (such as decorators or class attributes). The merge follows a "YAML overrides code" strategy for conflicting keys.
+Rust has no runtime reflection, so its `DefaultDiscoverer` finds the files and derives the IDs, and a `ModuleFactory` you supply turns each into a module instance.
 
-4. **Dependency Analysis** -- The `Dependencies` component builds a dependency graph from module metadata and performs a topological sort. Cycles are detected and reported as errors, preventing registration of mutually dependent modules that cannot be loaded in any valid order.
+### Key components
 
-5. **Module Validation** -- The `Validation` component checks each module against structural and interface requirements: required exports, handler signatures, schema presence, and metadata completeness. Invalid modules are rejected with descriptive error messages.
+- **Registry** — the module store, the discovery pipeline, registration and queries.
+- **Schema export** — builds `ModuleDescriptor`s and exported schemas for external consumers (LLM tool registries, manifests).
 
-6. **Schema Loading** -- For each validated module, the associated input/output schemas are loaded via the Schema System. This step ensures that schemas are parseable and that all `$ref` references resolve before the module is registered.
+### Thread safety
 
-7. **ID Map Override Application** -- If an ID map is configured, module identifiers are remapped according to the map. This allows operators to alias modules (e.g., `summarize` -> `summarize-v2`) or redirect calls without changing calling code.
+Python guards the store with a re-entrant lock; Rust with interior `RwLock`s (every registry method takes `&self`). Event callbacks and `on_load` run **outside** the lock, so they may call back into the registry. JavaScript is single-threaded and needs no lock.
 
-8. **Registration and Event Emission** -- The module is added to the registry's internal store, its `on_load` lifecycle hook is called (if defined), and a `register` event is emitted to all registered callbacks.
+| Operation | Concurrency |
+|-----------|-------------|
+| `get()`, `has()`, `list()` | safe |
+| `iter()` | snapshot iteration |
+| `register()`, `unregister()` | synchronized writes |
+| `discover()` | call once at startup; not concurrently with itself |
 
-### Key Components
+### Reserved namespaces
 
-- **Registry** -- The central registry class. Manages the module store, coordinates the discovery pipeline, handles manual registration, and provides query methods. All public methods take a reentrant lock before reading or writing the module store.
+| Namespace | Registration rule |
+|-----------|-------------------|
+| `system.*` | only via `register_internal()` (built-in system modules) |
+| `internal.*`, `core.*` | only via `register_internal()` |
+| `apcore.*`, `plugin.*`, `schema.*`, `acl.*` | reserved, no current use |
+| `ephemeral.*` | only via `register()`; never discovered from disk |
 
-- **SchemaExport** -- Utility component that generates `ModuleDescriptor` objects from registered modules. A `ModuleDescriptor` includes the module's metadata, input/output schemas (in multiple export formats), and capability declarations. This is used by external systems (e.g., LLM tool registries) to understand available modules.
+The first seven are the SDKs' `RESERVED_WORDS` (PROTOCOL_SPEC §2.5): a module ID whose first segment is one of them is rejected by `register()` and by discovery. `ephemeral.*` is enforced separately, because its rule is about which path may create it. Ephemeral modules are for agent-synthesized tools and on-the-fly composition (§2.5, §4.4).
 
-The pipeline-specific components (`Scanner`, `Metadata`, `Dependencies`, `EntryPoint`, `Validation`) are described in the 8-Step Discovery Pipeline above.
+### Queries
 
-### Thread Safety
-
-All public methods on the Registry acquire a reentrant lock before accessing the internal module store. This ensures safe concurrent access from multiple threads, including during discovery (which may be triggered from a background thread) and query (which may be called from request-handling threads). The reentrant nature of the lock allows lifecycle hooks and event callbacks to safely call back into the registry (e.g., to query other modules during `on_load`). Single-threaded language runtimes (e.g., JavaScript) MAY treat the lock as a no-op.
-
-### Reserved Namespaces
-
-The following module ID prefixes are reserved for framework use and specific runtime behaviors. Standard discovery paths and manual `register()` calls MUST respect these reservations.
-
-| Namespace | Purpose | Registration Rule |
-|-----------|---------|-------------------|
-| `system.*` | Built-in introspection & control | Only via `register_internal()` |
-| `internal.*` | Framework-private modules | Only via `register_internal()` |
-| `core.*` | Core protocol primitives | Only via `register_internal()` |
-| `apcore.*` | Protocol-defined extensions | Reserved — no current use |
-| `plugin.*` | Reserved for a future plugin surface | Reserved — no current use |
-| `schema.*` | Reserved for schema-namespace modules | Reserved — no current use |
-| `acl.*` | Reserved for ACL-namespace modules | Reserved — no current use |
-| `ephemeral.*` | Runtime-synthesized modules | Only via `register()`; MUST NOT be discovered from disk |
-
-This table lists all eight prefixes PROTOCOL_SPEC §2.5 reserves; it previously
-listed five, omitting `plugin.*`, `schema.*` and `acl.*`, and described
-`apcore.*` as `register_internal()`-only where §2.5 records it as reserved with
-no current use. The three SDKs enforce the first seven as `RESERVED_WORDS`;
-`ephemeral.*` is enforced separately by prefix, because its rule is about which
-registration path may create it rather than about forbidding the name.
-
-Modules in the `ephemeral.*` namespace are permitted to bypass filesystem validation and are intended for agent-synthesized tools or on-the-fly composition. See [RFC: Ephemeral Modules](../spec/rfc-ephemeral-modules.md).
-
-### Event System
-
-The registry supports registering callback functions for two event types:
-
-- **register** -- Fired after a module is successfully added to the registry. Callbacks receive the module's ID and the module instance (`(module_id, module)`).
-- **unregister** -- Fired after a module is successfully removed from the registry. Callbacks receive the module's ID and the module instance (`(module_id, module)`).
-
-Callbacks are invoked synchronously within the registry lock, ensuring consistent state visibility.
-
-### Query Capabilities
-
-The registry provides several query methods:
-
-- `get(module_id)` -- Direct lookup by ID.
-- `list(tags=None, prefix=None, visibility=None)` -- Returns all registered modules, optionally filtered by tags, ID prefix, and/or visibility. When `tags` is provided, only modules whose metadata includes the specified tag(s) are returned. When `prefix` is provided, only modules whose IDs start with the given prefix are returned. When `visibility` is provided (a subset of `["public", "hidden"]`, per D-24), only modules with a matching discoverable status are returned. All filters can be combined. (Python/TypeScript also accept a deprecated `include_hidden`/`includeHidden` boolean superseded by `visibility`.)
-- `get_definition(module_id)` -- Returns a `ModuleDescriptor` for the specified module, including exported schemas.
+- `get(module_id)` — direct lookup.
+- `list(tags=None, prefix=None, visibility=None)` — sorted module IDs. `tags` requires every listed tag; `prefix` is a plain string prefix; `visibility` is a subset of `["public", "hidden"]` and defaults to `["public"]`, where a module is hidden when its `discoverable` annotation is `false`. Filters combine.
+- `has(module_id)`, `count`, `module_ids`, `iter()` — existence, size, and iteration.
+- `get_definition(module_id)` — the `ModuleDescriptor`, including schemas.
+- `describe(module_id)` — a human-readable description string.
 
 ## Contract: Registry.register
 
@@ -107,235 +89,195 @@ Normative behavioral contract. All SDK implementations MUST satisfy these guaran
 
 ### Inputs
 
-- `module_id`: string, required. Must pass module-ID validation (see Schema System). Empty, malformed, or reserved IDs MUST be rejected before any mutation of the registry.
+- `module_id`: string, required. Must pass module-ID validation (pattern, length, reserved words). Invalid IDs MUST be rejected before any mutation of the registry.
 - `module`: Module instance, required. Must implement the module protocol (`description`, `input_schema`, `output_schema`, `execute`).
-- `metadata`: mapping, optional. When an implementation accepts it, a `dependencies` entry — a list of `{module_id, version?, optional?}` objects — reaches the registered module's descriptor as a **parsed** field, so `get_definition(module_id).dependencies` returns what the caller declared in the SDK's dependency type.
+- `version`: string, optional. See [Multi-version registration](#multi-version-registration).
+- `metadata`: mapping, optional. A `dependencies` entry — a list of `{module_id, version?, optional?}` — reaches the registered descriptor as a **parsed** field, so `get_definition(module_id).dependencies` returns what the caller declared (§12.2).
 
-!!! info "Normative as of spec v1.10.0"
-
-    [PROTOCOL_SPEC](../spec/protocol-spec.md#122-core-component-interface-contracts) §12.2 `Interface: Registry` states `register(module_id, module, version?, metadata?)` and requires that a `dependencies` entry in `metadata` reach the module descriptor. Until v1.10.0 §12.2 declared only `discover`, `get`, `list` and `describe` — `register` was outside the normative interface entirely, so nothing above the SDKs required this.
-
-    That gap is why each of the three lost it at least once and each was fixed independently (apcore-python `ad2998d`, apcore-typescript#35, apcore-rust#35). The loss is quiet by construction: discovery-time dependency sorting reads its own parse and keeps working, so `resolve_dependencies` looks healthy, while the post-registration accessor returns nothing and a dependency-ordered reload degrades to the sort's seed order — usually alphabetical, therefore plausible, therefore not reported.
-
-    The ordered side effects, the in-flight reservation and the visibility rule stay on this page; §12.2 carries the signature and the data-survival requirement. Governance: [apcore#90](https://github.com/aiperceivable/apcore/issues/90).
-
-    **Correction (spec v1.18.0).** The v1.10.0 version-history row closed with "No SDK behaviour change: all three already satisfy the requirement." That was true of the DATA surviving and false of the accessor this section names. Only apcore-rust carried a parsed `dependencies` field on the descriptor: apcore-python surfaced the unparsed list nested under `descriptor.metadata`, and apcore-typescript surfaced it on neither — `system.manifest.*` consequently reported `dependencies: []` for every module that declared them, while apcore-python reported the real list over the same wire contract.
-
-    §12.2's rationale was wrong in its specifics too. It read "Reload ordering reads that accessor", which holds only for apcore-rust; apcore-python and apcore-typescript order reloads from `get_module_metadata()`. That is the sole reason the missing field never surfaced as a bug — and it left a trap, because refactoring either reload path onto the more natural-looking `get_definition()` would have silently degraded ordering to alphabetical. Both SDKs now carry the parsed field, and §12.2 states the invariant that actually holds rather than a mechanism that does not.
-
-!!! info "Multi-version registration (optional, Phase B)"
-    SDKs MAY accept additional `version` and `metadata` parameters to support [§5.4 Multi-version Coexistence](../spec/protocol-spec.md#54-multi-version-coexistence). When supported, the same `module_id` MAY be registered with multiple distinct versions, and `Registry.get(module_id, version_hint=...)` resolves via semantic-version range matching.
-
-    Accepting the parameters and resolving by version are separate things, and the
-    three SDKs sit at three different points (D-126). **apcore-python** accepts
-    `version_hint` and resolves by it. **apcore-rust**'s `get(&self, name)` takes no
-    hint at all, so a caller cannot pass one — the compiler refuses, which is the
-    honest end of this spectrum. **apcore-typescript** accepts the argument and
-    discards it; since its `register` refuses a second registration of the same
-    `module_id`, only one version can ever be present, so the hint is **inert**
-    rather than wrong. It is deprecated for removal at 2.0 and warns once per
-    module ID when a caller passes one — a declared surface that reaches no
-    mechanism is the shape §9.1.3 forbids for configuration keys, and a caller
-    writing `get(id, "1.0.0")` believes it has pinned a version and has not.
-
-    **SDK status (Phase B)**:
-
-    - **apcore-python** — accepts and resolves. `register(module_id, module, version=None, metadata=None)`, backed by an internal `VersionedStore`; `get(module_id, version_hint=...)` performs semantic-version range matching.
-    - **apcore-typescript** — accepts, does not resolve. `register(moduleId, module, version?, metadata?, options?)` takes the full signature; `version` and `metadata` are merged into the module's metadata and readable back through `getDefinition()` and `list({tags})`. `get(moduleId, versionHint?)` and `getDefinition(moduleId, versionHint?)` accept the hint for signature parity and ignore it. A duplicate `module_id` is rejected by A03 conflict detection with `DUPLICATE_MODULE_ID`; it does **not** replace the prior registration.
-    - **apcore-rust** — accepts, does not resolve. `register_versioned(name, module, version: Option<&str>, metadata: Option<HashMap<..>>)` is the spec-shaped four-argument form and honours `metadata["dependencies"]`. Two other forms exist: `register(name, module, descriptor: Option<ModuleDescriptor>)` takes a code-side `ModuleDescriptor` directly, and `register_module(name, module)` is the two-argument convenience form. `get` / `get_definition` take no version hint.
-
-    Implementations that omit multi-version support MUST behave as single-version registries. Cross-language portable code SHOULD NOT rely on `version` resolution until all SDKs implement it; `metadata.dependencies` is safe today and normative per the `metadata` input above.
+| SDK | Signature |
+|---|---|
+| Python | `register(module_id, module, version=None, metadata=None, *, context=None) -> None` |
+| TypeScript | `register(moduleId, module, version?, metadata?, options?) -> Promise<void>` |
+| Rust | `register(name, module, descriptor)`, `register_module(name, module)`, `register_versioned(name, module, version, metadata)` → `Result<(), ModuleError>` |
 
 ### Preconditions
 
-- The registry's internal lock MUST be acquired before the duplicate-ID check.
-- `module.on_load()` MUST NOT be invoked until the registry has confirmed the module is uniquely registered.
-- The module MUST NOT become visible to discovery APIs (`get`, `list`, `get_definition`) until `module.on_load()` has completed successfully. See [Registration Ordering Invariants](#registration-ordering-invariants-issue-65).
+- The registry's lock MUST be held for the duplicate-ID check.
+- `module.on_load()` MUST NOT run until the registry has confirmed the ID is free.
+- The module MUST NOT become visible (`get`, `list`, `get_definition`) until `on_load()` has completed successfully. See [Registration ordering invariants](#registration-ordering-invariants).
 
 ### Side Effects (ordered)
 
-1. Acquire registry lock.
-2. Validate `module_id` (pattern **and** length — see `Contract: Executor.call`).
+1. Acquire the registry lock.
+2. Validate `module_id` (pattern and length — see `Contract: Executor.call`).
 3. Validate module structure, including the `streaming` annotation / `stream()` consistency check.
-4. Run the host-supplied custom validator, if one is installed via `set_validator`.
-5. Check for duplicate `module_id` against both the visible store **and** the in-flight loading set; reject with `InvalidInputError(code=DUPLICATE_MODULE_ID)` if already registered (unless overwrite semantics are explicitly opted in).
-6. Reserve `module_id` in an in-flight loading set so concurrent registrations for the same ID are rejected with `DUPLICATE_MODULE_ID`.
-7. Release the registry lock.
-8. Invoke `module.on_load()` if defined, **outside** the registry lock but **before** the module becomes visible. If it raises:
-   - Remove `module_id` from the in-flight loading set.
-   - Emit `apcore.registry.module_load_failed` carrying `{module_id, callback_name, error_type, error_message}`.
-   - Re-raise the original exception.
-9. Atomically publish the module into the visible discovery store (briefly re-acquiring the registry lock) and remove `module_id` from the in-flight loading set. After this step the module is observable via `get`, `list`, and `get_definition`.
-10. Emit a `register` event to subscribers.
+4. Run the custom validator, if one is installed via `set_validator`.
+5. Check for a duplicate `module_id` against both the visible store **and** the in-flight loading set; reject with `DUPLICATE_MODULE_ID`.
+6. Reserve `module_id` in the in-flight loading set, so concurrent registrations of the same ID are rejected with `DUPLICATE_MODULE_ID`.
+7. Release the lock.
+8. Invoke `module.on_load()` if defined — **outside** the lock but **before** the module becomes visible. If it raises: remove `module_id` from the in-flight set, emit `apcore.registry.module_load_failed` with `{module_id, callback_name, error_type, error_message}`, and re-raise.
+9. Publish the module into the visible store (briefly re-acquiring the lock) and remove it from the in-flight set. It is now observable via `get`, `list` and `get_definition`.
+10. Emit the `register` event.
 
-> **D-86 (v1.49.0) — steps 2-5 are ordered, and were not.** This list previously
-> collapsed them into "validate `module_id` and module structure" followed by the
-> duplicate check, naming neither the structure check nor the custom validator,
-> and the three SDKs drifted into three orders. The same call — a module that is
-> simultaneously malformed, rejected by the validator, and a duplicate — reported
-> `DUPLICATE_MODULE_ID`, `GENERAL_INVALID_INPUT` and `MODULE_LOAD_ERROR`
-> respectively. The order above is intrinsic-then-extrinsic: what is wrong with
-> the module itself is reported before what is wrong about *where it is being
-> put*, because the author must fix the module either way, whereas a duplicate ID
-> may simply mean they picked the wrong name. A side effect worth stating: a
-> stateful custom validator IS invoked for a registration that later fails the
-> duplicate check.
+Steps 2–5 are ordered intrinsic-then-extrinsic: what is wrong with the module itself is reported before what is wrong with where it is being put (D-86). A stateful custom validator is therefore invoked even for a registration that then fails the duplicate check.
 
 ### Errors
 
-- `InvalidInputError(code=INVALID_MODULE_ID)` -- `module_id` fails validation.
-- `InvalidInputError(code=DUPLICATE_MODULE_ID)` -- `module_id` is already registered, or a concurrent registration is currently loading the same ID.
+- `INVALID_MODULE_ID` (`InvalidInputError`) — `module_id` fails validation.
+- `DUPLICATE_MODULE_ID` (`InvalidInputError` in Python, `DuplicateModuleIdError` in TypeScript, `ErrorCode::DuplicateModuleId` in Rust) — the ID is already registered or currently loading.
+- `STREAMING_INTERFACE_MISMATCH` — the module declares `streaming` but its `stream()` does not satisfy the streaming interface.
+- A custom-validator rejection — `GENERAL_INVALID_INPUT` (Python, TypeScript) / `MODULE_LOAD_ERROR` (Rust).
+- Whatever `on_load()` raised, unchanged.
 
 ### Returns
 
-- On success: `None` (Python), `Promise<void>` (TypeScript), `Ok(())` (Rust).
-- On failure: raises (Python/TypeScript) / returns `Err` (Rust).
+- `None` (Python), `Promise<void>` (TypeScript), `Ok(())` (Rust).
 
-!!! info "Why TypeScript returns a promise (spec v1.20.0)"
-
-    `on_load` is **synchronous** in apcore-python and apcore-rust — the Rust
-    trait signature enforces it — so `register` completes the whole registration
-    before returning. apcore-typescript additionally accepts an **async**
-    `onLoad`, and returns a promise that resolves once it has run. Registration
-    is still synchronous for everything else: ID validation, the duplicate check
-    and every other error throw synchronously, and a module with no `onLoad` or
-    a synchronous one is visible before the promise resolves.
-
-    The two shapes are not interchangeable for a module author. A module written
-    with `async def on_load` and registered through apcore-python used to be
-    published and callable with none of its initialisation having run — the
-    coroutine was created, never awaited, and discarded, leaving only a
-    `RuntimeWarning` at the next garbage collection. As of apcore-python 0.28.0
-    that is refused with `MODULE_LOAD_ERROR` and the module is not published,
-    which is the same outcome any other failing `on_load` gets.
-
-    An SDK whose `register` awaits an async load hook **MUST** keep the module
-    invisible until it completes, and **MUST NOT** publish a module whose load
-    hook it cannot run.
+`on_load` is synchronous in Python and Rust. TypeScript also accepts an async `onLoad`; its `register` returns a promise that resolves once the hook has run, and the module stays invisible until then. Everything else — ID validation, the duplicate check — throws synchronously. Python refuses an `async def on_load` with `MODULE_LOAD_ERROR` rather than publishing a module whose initialisation never ran.
 
 ### Properties
 
-- `async`: `false` — with the TypeScript exception above: the operation is
-  synchronous, and the promise exists only to await an async `onLoad`.
-- `thread_safe`: `true` -- reentrant lock held during mutation. Single-threaded language runtimes (e.g., JavaScript) MAY treat the lock as a no-op.
-- `pure`: `false` -- mutates the internal store; may trigger external `on_load` side effects.
-- `idempotent`: `false` -- duplicate registration is an error, not a no-op.
+- `async`: `false` — except that TypeScript returns a promise to await an async `onLoad`.
+- `thread_safe`: `true`.
+- `pure`: `false` — mutates the store; runs `on_load`.
+- `idempotent`: `false` — a duplicate registration is an error.
+
+### Multi-version registration
+
+§5.4 allows the same `module_id` to be registered with several versions and resolved with a version hint. Only Python implements it:
+
+- **Python** — `register(module_id, module, version=...)` keeps each version; `get(module_id, version_hint=...)` resolves by semantic-version range, and a malformed hint raises `VERSION_CONSTRAINT_INVALID`.
+- **TypeScript** — `version` is stored in the module's metadata; a second registration of the same ID is rejected with `DUPLICATE_MODULE_ID`. `get(moduleId, versionHint)` ignores the hint and warns once per module ID that it is deprecated (D-126).
+- **Rust** — `register_versioned` stores the version, but a second version of an existing ID is rejected with `DUPLICATE_MODULE_ID`; `get` takes no hint.
+
+Portable code should register one version per ID. `metadata.dependencies` works in all three.
 
 ## Contract: Scanner.scan_extensions
 
 !!! info "Internal component"
-    `Scanner` is an internal pipeline component — no SDK exposes it as a public class. This contract documents the behavior that `Registry.discover()` delegates to step 1 of the discovery pipeline; it is normative for SDK implementors, not for module authors.
-
-Normative contract for the filesystem scanner used by step 1 of the discovery pipeline.
+    Scanning is step 1 of `discover()`. The function is public in Python (`apcore.registry.scanner.scan_extensions`) and Rust (`apcore::registry::scanner::scan_extensions`) and internal in TypeScript. The contract is normative for SDK implementers, not for module authors.
 
 ### Inputs
 
-- `root`: string path, required. Directory to scan for module candidates.
-- `max_depth`: integer, optional (default `8`). Maximum directory depth.
-- `follow_symlinks`: boolean, optional (default `false`).
-- `extensions`: list of strings, optional (default language-specific — `[".py"]` for Python, `[".ts", ".js"]` for TypeScript, `[".rs"]` for Rust). File extensions accepted as candidate modules.
+- `root`: path, required — the directory to scan.
+- `max_depth`: integer — maximum directory depth (from `extensions.max_depth`, default `8`).
+- `follow_symlinks`: boolean — from `extensions.follow_symlinks`, default `false`. A symlink whose target escapes the root is skipped with a warning.
+- `ignore_patterns`: list of patterns — from `extensions.ignore_patterns`, matched with Algorithm A25 against each entry's name.
+- `extensions` (Rust only): `Option<&[&str]>` — file extensions to accept (default `[".rs"]`; `DefaultDiscoverer::with_extensions` overrides it).
 
-> **Cross-language signature note (D10-014).** The Rust SDK exposes
-> `extensions` as an explicit `Option<&[&str]>` parameter
-> (`apcore-rust/src/registry/scanner.rs:26`), while Python and TypeScript
-> infer it from the language convention. The fourth parameter is therefore
-> language-idiomatic — Rust callers may override the default extension
-> set; Python/TypeScript callers do not.
+| SDK | Signature |
+|---|---|
+| Python | `scan_extensions(root, max_depth=8, follow_symlinks=False, ignore_patterns=None) -> list[DiscoveredModule]` |
+| TypeScript | `scanExtensions(root, maxDepth = 8, followSymlinks = false, ignorePatterns = [])` |
+| Rust | `scan_extensions(root, max_depth, follow_symlinks, extensions, ignore_patterns) -> Result<Vec<DiscoveredFile>, ModuleError>` |
+
+### File selection
+
+| SDK | Accepted files | Always skipped |
+|---|---|---|
+| Python | `.py` | entries starting with `.` or `_`; `__pycache__/`, `node_modules/`; `*.pyc` |
+| TypeScript | `.ts`, `.js` | entries starting with `.` or `_`; `node_modules/`, `__pycache__/`; `*.d.ts`, `*.test.ts`/`.js`, `*.spec.ts`/`.js` |
+| Rust | `.rs` (configurable) | entries starting with `.` or `_`; `__pycache__/`, `node_modules/`, `target/`, `.git/`; `*.pyc`, `*.pyo` |
+
+Two files under one root that map to the same ID: the first one found is kept and the other is skipped with a warning; IDs that differ only in case produce a warning.
 
 ### Errors
 
-- `ConfigNotFoundError(code=CONFIG_NOT_FOUND)` -- `root` does not exist or is not readable.
+- `CONFIG_NOT_FOUND` — `root` does not exist or is not a directory.
 
 ### Returns
 
-- On success: ordered sequence of file-path records, in stable filesystem-traversal order. Python and TypeScript return `DiscoveredModule` (path + derived module ID); Rust returns `DiscoveredFile` (path only — the module-ID derivation step is performed downstream by `derive_module_ids`). The structural payload is equivalent — only the type name differs (D10-014).
-- On failure: raises / returns `Err`.
+- An ordered list of discovered files with their derived canonical IDs (`DiscoveredModule` in Python/TypeScript; `DiscoveredFile` in Rust).
 
 ### Properties
 
 - `async`: `false`.
-- `thread_safe`: `true` -- no shared mutable state.
-- `pure`: `false` -- reads the filesystem.
+- `thread_safe`: `true`.
+- `pure`: `false` — reads the filesystem.
 
 ## Usage
 
 === "Python"
     ```python
-    from apcore.registry import Registry
-    from apcore.executor import Executor
+    from pydantic import BaseModel
 
-    # Create registry and register a module manually
-    registry = Registry()
+    from apcore import Context, Executor, Registry
+
+
+    class AddInput(BaseModel):
+        a: int
+        b: int
+
+
+    class AddOutput(BaseModel):
+        sum: int
+
 
     class AddModule:
         description = "Add two integers"
-        input_schema = {"type": "object", "properties": {"a": {"type": "integer"}, "b": {"type": "integer"}}}
-        output_schema = {"type": "object", "properties": {"sum": {"type": "integer"}}}
+        input_schema = AddInput
+        output_schema = AddOutput
+        tags = ["math"]
 
-        async def execute(self, inputs, ctx):
+        def execute(self, inputs: dict, context: Context) -> dict:
             return {"sum": inputs["a"] + inputs["b"]}
 
-    registry.register("math.add", AddModule())
 
-    # Query the registry
-    module_ids = registry.list()                         # ["math.add"]
-    filtered = registry.list(tags=["math"])              # filter by tag
-    mod = registry.get("math.add")                       # retrieve module
-    descriptor = registry.get_definition("math.add")     # ModuleDescriptor with schemas
+    registry = Registry(extensions_dir="./extensions")
 
-    # Auto-discover modules from extension directories
-    # (extension dirs are configured via Registry constructor or Config)
-    discovered_count = registry.discover()
 
-    # Subscribe to register/unregister events
-    def on_register(module_id, metadata):
+    def on_register(module_id: str, module: object) -> None:
         print(f"Registered: {module_id}")
 
-    registry.on("register", on_register)
 
-    # Wire into executor
-    executor = Executor(registry=registry)
+    registry.on("register", on_register)
+    registry.register("math.add", AddModule())
+
+    module_ids = registry.list()                      # ["math.add"]
+    filtered = registry.list(tags=["math"])           # ["math.add"]
+    mod = registry.get("math.add")                    # the AddModule instance
+    descriptor = registry.get_definition("math.add")  # ModuleDescriptor
+
+    discovered = registry.discover()                  # modules found under ./extensions
+
+    executor = Executor(registry)
+    print(executor.call("math.add", {"a": 1, "b": 2}))  # {'sum': 3}
     ```
 === "TypeScript"
     ```typescript
-    import { Registry } from "apcore-js";
-    import { Executor } from "apcore-js";
+    import { Type } from "@sinclair/typebox";
+    import { Executor, Registry } from "apcore-js";
 
-    // Create registry and register a module manually
-    const registry = new Registry();
+    const registry = new Registry({ extensionsDir: "./extensions" });
+
+    registry.on("register", (moduleId) => {
+      console.log(`Registered: ${moduleId}`);
+    });
 
     await registry.register("math.add", {
-        description: "Add two integers",
-        inputSchema: { type: "object", properties: { a: { type: "number" }, b: { type: "number" } } },
-        outputSchema: { type: "object", properties: { sum: { type: "number" } } },
-        execute: ({ a, b }: { a: number; b: number }) => ({ sum: a + b }),
+      description: "Add two integers",
+      inputSchema: Type.Object({ a: Type.Integer(), b: Type.Integer() }),
+      outputSchema: Type.Object({ sum: Type.Integer() }),
+      tags: ["math"],
+      execute: (inputs: Record<string, unknown>) => ({ sum: (inputs.a as number) + (inputs.b as number) }),
     });
 
-    // Query the registry
-    const moduleIds = registry.list();                        // ["math.add"]
-    const filtered = registry.list({ tags: ["math"] });       // filter by tag
-    const mod = registry.get("math.add");                     // retrieve module
-    const descriptor = registry.getDefinition("math.add");    // ModuleDescriptor with schemas
+    const moduleIds = registry.list();                     // ["math.add"]
+    const filtered = registry.list({ tags: ["math"] });    // ["math.add"]
+    const mod = registry.get("math.add");
+    const descriptor = registry.getDefinition("math.add");
 
-    // Auto-discover modules from extension directories
-    // (extension dirs are configured via Registry constructor options)
-    const discoveredCount = await registry.discover();
+    const discovered = await registry.discover();         // modules found under ./extensions
 
-    // Subscribe to register/unregister events
-    registry.on("register", (moduleId, metadata) => {
-        console.log(`Registered: ${moduleId}`);
-    });
-
-    // Wire into executor
     const executor = new Executor({ registry });
+    console.log(await executor.call("math.add", { a: 1, b: 2 })); // { sum: 3 }
     ```
 === "Rust"
     ```rust
+    use std::sync::Arc;
+
     use apcore::registry::Registry;
-    use apcore::executor::Executor;
-    use apcore::module::Module;
-    use apcore::context::Context;
-    use apcore::errors::ModuleError;
+    use apcore::{Config, Context, Executor, Module, ModuleError};
     use async_trait::async_trait;
     use serde_json::{json, Value};
 
@@ -345,92 +287,66 @@ Normative contract for the filesystem scanner used by step 1 of the discovery pi
     impl Module for AddModule {
         fn description(&self) -> &str { "Add two integers" }
         fn input_schema(&self) -> Value {
-            json!({"type": "object", "properties": {"a": {"type": "integer"}, "b": {"type": "integer"}}})
+            json!({ "type": "object", "properties": { "a": { "type": "integer" }, "b": { "type": "integer" } }, "required": ["a", "b"] })
         }
         fn output_schema(&self) -> Value {
-            json!({"type": "object", "properties": {"sum": {"type": "integer"}}})
+            json!({ "type": "object", "properties": { "sum": { "type": "integer" } } })
         }
+        fn tags(&self) -> Vec<String> { vec!["math".into()] }
         async fn execute(&self, inputs: Value, _ctx: &Context<Value>) -> Result<Value, ModuleError> {
             let sum = inputs["a"].as_i64().unwrap_or(0) + inputs["b"].as_i64().unwrap_or(0);
-            Ok(json!({"sum": sum}))
+            Ok(json!({ "sum": sum }))
         }
     }
 
-    let mut registry = Registry::new();
-    // 2-arg form for parity with Python/TS; equivalent to `register("math.add", Box::new(AddModule), None)`
-    registry.register_module("math.add", Box::new(AddModule))?;
+    #[tokio::main]
+    async fn main() -> Result<(), ModuleError> {
+        let registry = Registry::new();
 
-    // Query the registry
-    let module_ids = registry.module_ids();           // vec!["math.add"]
-    let has_mod = registry.has("math.add");           // true
-    let count = registry.count();                     // 1
+        // on() returns a handle for off().
+        let handle = registry.on(
+            "register",
+            Box::new(|module_id: &str, _module: &dyn Module| println!("Registered: {module_id}")),
+        )?;
+        registry.register_module("math.add", Box::new(AddModule))?;
 
-    // Auto-discover modules from extension directories
-    // (configure extension roots via `registry.set_extension_roots(...)` or `Registry::with_options`)
-    let discoverer = apcore::registry::DefaultDiscoverer::new();
-    let discovered_count = registry.discover(&discoverer).await?;
+        let module_ids = registry.list(None, None, None);        // ["math.add"]
+        let filtered = registry.list(Some(&["math"][..]), None, None);
+        let found = registry.has("math.add");                    // true
+        let descriptor = registry.get_definition("math.add")?;   // Option<ModuleDescriptor>
+        registry.off(handle);
 
-    // Wire into executor
-    let executor = Executor::from_registry(registry);
+        let executor = Executor::from_registry(Arc::new(registry), Config::from_defaults());
+        let out = executor.call("math.add", json!({ "a": 1, "b": 2 }), None, None).await?;
+        println!("{out} {module_ids:?} {filtered:?} {found} {}", descriptor.is_some());
+        Ok(())
+    }
     ```
 
-### Thread Safety Specifications
+### Error conditions
 
-| Operation | Thread Safe | Notes |
-|-----------|-------------|-------|
-| `get()` | MUST be safe | Read-only query |
-| `has()` | MUST be safe | Read-only query |
-| `list()` | MUST be safe | Read-only query |
-| `iter()` | SHOULD be safe | Snapshot iteration |
-| `discover()` | MUST NOT be concurrent | Called once at startup |
-| `register()` | SHOULD be safe | Synchronized write |
-| `unregister()` | SHOULD be safe | Synchronized write |
+| Condition | Error code | Behaviour |
+|-----------|------------|-----------|
+| Extension root does not exist | `CONFIG_NOT_FOUND` | `discover()` fails |
+| Module file fails to import / has no module class | `MODULE_LOAD_ERROR` | logged; the file is skipped |
+| Module fails structural or custom validation | — | logged; the module is skipped |
+| Discovered ID already registered | — | logged; the module is skipped |
+| Explicit `register()` of a registered ID | `DUPLICATE_MODULE_ID` | raised |
+| ID-map file invalid | `CONFIG_INVALID` | raised |
+| Dependency cycle | `CIRCULAR_DEPENDENCY` | raised |
+| `ephemeral.*` file on disk | `INVALID_MODULE_ID` | raised |
 
-### Error Condition Table
+## Hot reload (development mode)
 
-| Condition | Error Code | Description |
-|-----------|------------|-------------|
-| `extensions_dir` does not exist | `CONFIG_NOT_FOUND` | Extensions directory MUST exist |
-| Module file syntax error | `MODULE_LOAD_ERROR` | Log warning and skip |
-| Module interface incomplete | `MODULE_LOAD_ERROR` | Missing required attributes |
-| Module ID conflict | `MODULE_LOAD_ERROR` | Same ID registered twice |
-| ID Map file format error | `CONFIG_INVALID` | ID Map YAML parsing failed |
-| Circular dependency | `CIRCULAR_DEPENDENCY` | Cycle detected between modules |
+`watch()` watches the extension roots for file changes; `unwatch()` stops it. It is for development — production registries should not watch. What happens on a change is language-defined (D11-005):
 
-### Hot Reload (Development Mode)
+- **Python** (`watch()` needs the `watchdog` package): re-imports the changed file, calls `on_suspend()` and `on_unload()` on the old instance, `on_load()` on the new one — restoring the old instance if that fails — publishes it, then calls `on_resume(state)`. A deleted file unregisters its module.
+- **TypeScript**: unregisters the module and emits `file_changed` with `{ filePath }`; it does not re-import (ES module specifiers cannot be reloaded portably), so the application re-runs discovery itself.
+- **Rust**: re-runs `discover_internal()`. New files are registered; modules that are already registered are not replaced.
 
-> **D-123 (v1.52.0) — a hot-reloaded module MUST NOT become visible before its
-> `on_load()` has run.**
->
-> The publish path of a watch-driven reload is bound by the same precondition as
-> any other registration: the new instance **MUST** execute `on_load()` before it
-> becomes observable via `get` / `list` / `get_definition`
-> ([`Contract: Registry.register`](#contract-registryregister) Side Effects, step
-> 8). Recovery when that load fails is governed by
-> [**D-112**](./system-modules.md#system-module-output-and-audit-conventions)
-> rules 2–4 — restore the previous instance and re-run *its* `on_load`; if that
-> restoring load also fails the module MAY remain unavailable; on a bulk path
-> restoration is per module — and is deliberately **not restated here**, so the
-> two entry points cannot drift apart.
->
-> **This constrains publication, not mechanism.** D11-005 leaves the reload
-> *mechanism* language-defined — re-registering in place, re-running discovery,
-> or notifying only are all permitted — and this rule does not narrow that. It
-> says that whichever mechanism an implementation picks, it may not publish a
-> module whose load hook has not run. A module that is visible but never
-> initialised is harder to diagnose than one that is absent, which is the same
-> reasoning D-112 rule 2 records.
->
-> The rule exists because step 8 is scoped to `Registry.register`, and a
-> watch-driven reload is a different entry point — so an implementation that
-> writes the internal maps directly, as apcore-python's `_handle_file_change`
-> does, violates no stated rule today. Of the three SDKs only apcore-python is
-> affected: apcore-rust re-runs discovery, which invokes `on_load`, and
-> apcore-typescript's `watch()` unregisters and emits `file_changed` without
-> re-registering at all, so it has no publish path to constrain.
+Whatever the mechanism, a reloaded module MUST NOT become visible before its `on_load()` has run — the same rule as [`register`](#contract-registryregister) step 8 — and recovery from a failed load follows the reload rules of [System Modules](./system-modules.md#reload-failure-semantics) (D-123).
 
-
-Hot reload watches the extension directory for file changes and re-runs discovery. It is intended for development; production registries SHOULD NOT enable file watching.
+Code that relies on `on_suspend` / `on_resume` firing on file change is portable only on Python. Cross-language hosts should subscribe to `register` / `unregister` (and `file_changed` on TypeScript) and move state explicitly; `system.control.reload_module` calls the suspend/resume hooks in every SDK.
 
 ```python
 from apcore import Registry
@@ -438,366 +354,232 @@ from apcore import Registry
 registry = Registry(extensions_dir="./extensions")
 registry.discover()
 
-# The event set is closed — see "Registry events" below. `change` / `add` /
-# `remove` are NOT events; this example used to call them and every SDK
-# rejects them with InvalidInputError (D-80).
-registry.on("register",   lambda module_id, module: print(f"Module registered: {module_id}"))
+registry.on("register", lambda module_id, module: print(f"Module registered: {module_id}"))
 registry.on("unregister", lambda module_id, module: print(f"Module removed: {module_id}"))
 registry.watch()
 
-# Stop watching
+# ... later
 registry.unwatch()
 ```
 
-> Available in apcore-python v0.5.1+ (requires the optional `watchdog` dependency) and apcore-typescript v0.3.0+.
+## Registration ordering invariants
 
-!!! warning "Hot-reload behaviour is language-defined (D11-005)"
-    The post-state of a `watch()`-triggered file change is **not normatively specified** across SDKs:
+These invariants apply to **every** path that registers a module — `register()`, `register_internal()` (used by system modules), discovery, and hot reload. There are no per-path exceptions: an `on_load` that needs to enumerate sibling modules belongs in a post-discovery hook.
 
-    - **apcore-python** re-imports the changed module file, calls `on_suspend()` on the old instance, calls `on_unload()`, then calls `on_resume(suspended_state)` on the new instance.
-    - **apcore-typescript** unregisters the module and emits the `'file_changed'` event; consumers must trigger re-discovery themselves. (ES module specifiers are immutable in Node, so programmatic re-import is not portable.)
-    - **apcore-rust** triggers `discover_internal()` to re-run the configured `Discoverer`; `on_suspend` / `on_resume` are **not** invoked.
+### Visibility
 
-    Code that relies on `on_suspend` / `on_resume` lifecycle hooks firing on file change is **portable only on Python**. Cross-language integration tests SHOULD subscribe to the `'file_changed'` / `'change'` event and orchestrate state migration explicitly. The hooks themselves remain a `MAY`-level optional Module API for explicit caller-driven suspend/resume flows (see [Module Interface §Lifecycle Hooks](./module-interface.md#lifecycle-hooks)).
-
-## Registration Ordering Invariants (Issue #65)
-
-Earlier versions of the apcore-python implementation intentionally ran `on_load` callbacks **outside** the registry lock and **after** the module had been inserted into the visible discovery store. The rationale recorded in the source was "running callbacks under the RLock would make lock scenarios complex." The side effect is a small but reliably-reproducible window in which a module is observable via `get` / `list` but its `on_load`-installed state (warmed pools, primed caches, wired dependencies) is incomplete.
-
-!!! warning "Discovered during apcore-a2a upgrade"
-    Adapter code publishes synthetic modules into the registry during application start. Under parallel registration, downstream components doing `registry.get(\"executor.email.send_email\")` were occasionally receiving a `Module` reference whose `on_load` callback was still mid-flight. The defensive fix in adapter code was to busy-wait — fragile, and not portable to TS/Rust. The invariant below closes this window at the protocol level.
-
-This section defines the canonical visibility/initialization ordering. All SDKs MUST conform.
-
-!!! warning "Applies to every registration path"
-    The invariants below apply uniformly to **every** path that registers a module — the public `register()` API, internal helpers (e.g., `register_internal` used by sys-modules), and discovery-driven paths (`discover()`, `register_discovered`, hot-reload, etc.). SDKs MUST NOT create per-path exceptions; if a discover-time `on_load` callback needs to enumerate sibling modules, the callback MUST be re-shaped as a post-discover hook rather than as grounds for an early-visibility carveout.
-
-### Strong-Guarantee Visibility (Normative)
-
-- **MUST** — A module MUST NOT appear in `registry.list()`, `registry.get()`, `registry.get_definition()`, or any other discovery API until **all** `on_load` callbacks registered for that module have completed successfully.
-- **MUST** — If any `on_load` callback raises, the module MUST NOT become visible. The registration call MUST surface the original exception unchanged (no wrapping).
+- **MUST** — A module MUST NOT appear in `list()`, `get()`, `get_definition()` or any other discovery API until all of its `on_load` callbacks have completed successfully.
+- **MUST** — If an `on_load` callback raises, the module MUST NOT become visible, and the registration call MUST surface the original exception unchanged.
 - **MUST** — On callback failure the registry MUST emit `apcore.registry.module_load_failed` carrying:
 
   | Field | Type | Meaning |
   |-------|------|---------|
   | `module_id` | string | The module ID under which registration was attempted. |
-  | `callback_name` | string | Identifier of the failing callback (e.g., `module.on_load`, or a third-party hook name). |
+  | `callback_name` | string | Identifier of the failing callback (e.g. `on_load`). |
   | `error_type` | string | The exception class name. |
   | `error_message` | string | The exception message. |
   | `timestamp` | string (ISO 8601 UTC) | Time of failure. |
 
-- The registry MUST NOT roll back side effects performed inside `on_load` (network connections opened, files written, etc.). Cleanup of partial state is the callback's responsibility. The DLQ-style event above gives subscribers a hook to react.
+- The registry does not roll back side effects performed inside `on_load` (connections opened, files written); cleaning up partial state is the callback's job, and the event above gives subscribers a hook.
 
-### Per-Module Init Locks (Informative)
+### Deferred publish (informative)
 
-SDKs SHOULD implement the strong-guarantee invariant via a **deferred-publish** pattern that avoids the lock-ordering problem the original apcore-python implementation cited:
+The invariant is implemented by publishing late rather than by holding the global lock through `on_load`:
 
-1. Acquire the registry lock briefly to reserve `module_id` in an in-flight loading set (rejecting concurrent registrations of the same ID with `DUPLICATE_MODULE_ID`).
-2. Release the registry lock.
-3. Run `on_load` callbacks while holding a **per-module** initialization lock (not the global registry lock). This avoids serializing all module registrations through one mutex.
-4. On success, briefly re-acquire the registry lock and atomically publish into the visible discovery map.
-5. On failure, re-acquire the registry lock long enough to remove `module_id` from the in-flight set, then emit `apcore.registry.module_load_failed` and re-raise.
+1. Briefly take the registry lock to reserve `module_id` in an in-flight set (concurrent registrations of the same ID get `DUPLICATE_MODULE_ID`).
+2. Release the lock.
+3. Run `on_load` under a per-module lock, so unrelated registrations are not serialized behind it.
+4. On success, briefly re-take the registry lock and publish.
+5. On failure, re-take the lock to drop the in-flight entry, emit `apcore.registry.module_load_failed`, and re-raise.
 
-This is consistent with the updated [Side Effects ordering](#side-effects-ordered) under [Contract: Registry.register](#contract-registryregister).
+### Concurrency across modules
 
-### Concurrency Across Distinct Modules (Permissive)
+- **MAY** — `on_load` callbacks for **different** modules may run concurrently; the invariant is per module.
+- **SHOULD** — SDKs should document that a slow `on_load` blocks only callers waiting on that module, not registration of others.
 
-- **MAY** — Callbacks for **different** modules MAY run concurrently. The strong-guarantee invariant is **per-module**, not global. SDKs are free to register modules in parallel and run their `on_load` hooks concurrently; visibility serialization happens at publish time.
-- **SHOULD** — When `on_load` performs expensive work (network connection warmup, JIT compilation, large memory allocations), SDKs SHOULD document the per-module locking behavior so operators know that long-running callbacks block only callers waiting on **that specific** module via `get`/`list` (they do not block registration of unrelated modules).
-
-### Out of Scope
-
-- `on_unload` ordering during deregistration is **not** covered here; it follows the existing reverse-order semantics applied during module unregistration (see [Module Interface §Lifecycle Hooks](./module-interface.md#lifecycle-hooks)) and the language-specific hot-reload behavior described in [Hot Reload (Development Mode)](#hot-reload-development-mode).
-- Re-registration of an already-loaded module ID (hot-swap) follows the existing language-defined semantics; the strong-guarantee invariant applies to the **new** instance's `on_load` independently.
+`on_unload` ordering on unregistration is outside these invariants; see [Module Interface § Lifecycle Hooks](./module-interface.md#lifecycle-hooks).
 
 ## Dependencies
 
-- **Schema System** -- The registry uses the Schema System (step 6 of the discovery pipeline) to load and validate module schemas.
-- **Executor** -- The executor depends on the registry for module lookup (step 3 of the execution pipeline).
+- **Executor** — looks modules up at pipeline step 3 (`module_lookup`).
+- **Config** — `extensions.*`, `id_map.overrides`.
 
 ??? info "Python SDK reference"
-    The following tables are **not protocol requirements** — they document the Python SDK's source layout and runtime dependencies for implementers/users of `apcore-python`.
+    Not a protocol requirement — the `apcore-python` registry package.
 
-    **Source files:**
+    | File | Purpose |
+    |------|---------|
+    | `registry/registry.py` | `Registry`: discovery pipeline, registration, queries, events, hot reload |
+    | `registry/scanner.py` | Extension-root scanning |
+    | `registry/metadata.py` | `_meta.yaml` loading and merging; ID-map loading |
+    | `registry/dependencies.py` | Topological sort with cycle detection |
+    | `registry/entry_point.py` | Importing a discovered file and picking its module class |
+    | `registry/schema_export.py` | `ModuleDescriptor` generation and schema export |
+    | `registry/validation.py` | Structural module validation |
+    | `registry/conflicts.py` | ID conflict detection |
+    | `registry/multi_class.py` | [Multi-module discovery](./multi-module-discovery.md) |
+    | `registry/types.py` | `ModuleDescriptor` and related types |
 
-    | File | Lines | Purpose |
-    |------|-------|---------|
-    | `registry/registry.py` | 410 | Central registry with discovery pipeline and query methods |
-    | `registry/scanner.py` | 156 | Multi-root extension directory scanning |
-    | `registry/metadata.py` | 123 | YAML metadata loading and merging |
-    | `registry/dependencies.py` | 112 | Topological sort with cycle detection |
-    | `registry/entry_point.py` | 91 | Pluggy-based entry point resolution |
-    | `registry/schema_export.py` | 189 | ModuleDescriptor generation and schema export |
-    | `registry/validation.py` | 46 | Module structural validation |
-    | `registry/types.py` | 51 | Shared type definitions (ModuleDescriptor, etc.) |
+    Runtime dependencies: `pyyaml` (metadata and ID-map files); `watchdog` (optional, for `watch()`).
 
-    **Runtime dependencies:**
+## Testing strategy
 
-    - `pluggy>=1.0` -- Entry point discovery and plugin resolution.
-    - `pyyaml>=6.0` -- YAML metadata file parsing.
-
-## Testing Strategy
-
-- **Discovery pipeline tests** exercise the full 8-step pipeline with fixture extension directories containing valid modules, invalid modules, modules with dependencies, and modules with cycles. Tests verify correct ordering, rejection of invalid modules, and proper event emission.
-- **Scanner tests** verify multi-root scanning, file pattern matching, exclusion rules, and graceful handling of unreadable directories or broken symlinks.
-- **Metadata tests** cover YAML loading, code-defined fallback, merge conflict resolution, and validation of malformed metadata files.
-- **Dependency tests** verify topological sort correctness for various DAG shapes (linear chains, diamonds, wide graphs) and confirm that cycles are detected and reported with full paths.
-- **EntryPoint tests** verify entry point resolution, instantiation, and extraction of module definitions from plugin packages.
-- **Thread safety tests** run concurrent registration, unregistration, and query operations to verify that the reentrant lock prevents data corruption and deadlocks.
-- **Event system tests** verify that register/unregister callbacks are invoked with correct arguments and that callback exceptions do not break the registry.
-- **ID map override tests** confirm that module IDs are correctly remapped and that queries use the overridden IDs.
-- Test naming follows the `test_<unit>_<behavior>` convention.
+- **Discovery** — fixture extension roots with valid modules, invalid modules, dependencies and cycles; ordering, rejection and events.
+- **Scanner** — multi-root scanning, skip rules, `ignore_patterns`, depth limit, unreadable directories, symlinks escaping the root.
+- **Metadata** — `_meta.yaml` loading, merge precedence, malformed files.
+- **Dependencies** — linear chains, diamonds, wide graphs, cycles reported with their path.
+- **Thread safety** — concurrent register / unregister / query.
+- **Events** — callbacks receive the right arguments; a failing callback does not break the registry; unknown event names are rejected.
+- **ID map** — remapped IDs are used by queries.
 
 ## Contract: Registry.get
 
-Normative behavioral contract. All SDK implementations MUST satisfy these guarantees.
-
 ### Inputs
 
-- `module_id` (str/string/&str, required) — the canonical module ID to look up.
-- `version_hint` (str/string/&str, optional, default `None`/`null`) — if provided, the registry MUST resolve to the best matching version using semantic-version range matching. If omitted, the latest registered version MUST be returned.
+- `module_id` (required) — the canonical module ID.
+- `version_hint` (optional, Python only) — see [Multi-version registration](#multi-version-registration).
 
-### Preconditions
-
-- `module_id` MUST NOT be an empty string. An empty `module_id` MUST be rejected before any lock is acquired.
+| SDK | Signature |
+|---|---|
+| Python | `get(module_id, version_hint=None) -> Any \| None` |
+| TypeScript | `get(moduleId, versionHint?) -> unknown \| null` (hint ignored, deprecated) |
+| Rust | `get(&self, name) -> Result<Option<Arc<dyn Module>>, ModuleError>` |
 
 ### Errors
 
-- `ModuleNotFoundError(module_id="")` — raised/thrown if `module_id` is an empty string. Implementations MUST NOT accept empty IDs silently.
-- No error is raised for a well-formed `module_id` that is simply not registered — `get` returns `None`/`null` in that case.
+- `MODULE_NOT_FOUND` (`ModuleNotFoundError`) — `module_id` is the empty string. Empty IDs are never accepted silently.
+- No error for a well-formed ID that is not registered — `get` returns `None` / `null` / `Ok(None)`.
 
 ### Returns
 
-- On success (found): the registered module instance (type varies by SDK).
-- On success (not found): `None` (Python), `null` (TypeScript), `None` (Rust `Option`).
-
-!!! note "Version resolution"
-    In Python, `version_hint` routes through the `VersionedStore`; if no versioned entry exists, it falls back to the primary `_modules` map. TypeScript accepts but does NOT route `versionHint` on `get()` — the parameter `get(moduleId, _versionHint?)` exists in the signature for source-compat with Python's `version_hint`, but the TS runtime always returns the single registered instance regardless of the hint. Rust mirrors the TS shape via `Option<&str>`. Cross-language portable code SHOULD register a single version per ID until [Phase B multi-version](#contract-registryregister) is implemented in all SDKs.
-
-### Properties
-
-- async: false
-- thread_safe: true (Python acquires the reentrant lock; TypeScript is single-threaded)
-- pure: false (acquires lock; reads shared state)
-- idempotent: true (read-only; repeated calls with the same args return the same result if the registry has not changed)
-
-## Contract: Registry.list
-
-Normative behavioral contract. All SDK implementations MUST satisfy these guarantees.
-
-### Inputs
-
-- `tags` (list[str]/string[]/Vec<String>, optional) — if provided, only modules whose tag set is a superset of all supplied tags are included. Tag matching MUST be all-or-nothing (every supplied tag must be present). An empty `tags` list MUST be treated the same as `None`/`null` (no tag filter).
-- `prefix` (str/string/&str, optional) — if provided, only modules whose `module_id` starts with this prefix are included. Prefix matching is exact string prefix (`startsWith`), not a glob or regex.
-
-### Errors
-
-- None. Invalid or unknown tags and prefixes that match nothing return an empty list without error.
-
-### Returns
-
-- On success: lexicographically sorted list of unique module ID strings. The sort order MUST be consistent across calls when the registry has not changed.
-
-!!! note "Tag source"
-    Tags are sourced from both the module object's own `tags` attribute and from merged YAML metadata. Both sources are unioned before the filter is applied.
-
-### Properties
-
-- async: false
-- thread_safe: true (Python takes a snapshot under the lock before filtering; TypeScript iterates `_modules` without a lock due to single-threaded runtime)
-- pure: false (reads shared mutable state)
-- idempotent: true
-
-## Contract: Registry.get_definition
-
-Normative behavioral contract. All SDK implementations MUST satisfy these guarantees.
-
-### Inputs
-
-- `module_id` (str/string/&str, required) — the canonical module ID to describe.
-- `version_hint` (str/string/&str, optional, default `None`/`null`) — passed through to `get()` for version-aware lookup (Python only; TypeScript omits this parameter).
-
-### Errors
-
-- Any error that `get(module_id)` raises is propagated (e.g., `ModuleNotFoundError` on an empty string).
-- No error is raised for a well-formed `module_id` that is simply not registered — returns `None`/`null`.
-
-### Returns
-
-- On success (found): a `ModuleDescriptor` record with the following fields:
-
-| Field | Type | Notes |
-|-------|------|-------|
-| `module_id` | string | Canonical module ID |
-| `name` | string \| null | Human-readable name, or null if not set |
-| `description` | string | Plain text, ≤ 200 chars; empty string if absent |
-| `documentation` | string \| null | Markdown, ≤ 5000 chars; null if absent |
-| `input_schema` | object | JSON Schema object; `{}` if absent |
-| `output_schema` | object | JSON Schema object; `{}` if absent |
-| `version` | string | Semantic version; defaults to `"1.0.0"` if not set |
-| `tags` | string[] | List of tag strings; empty list if absent |
-| `annotations` | object \| null | `ModuleAnnotations` or null |
-| `examples` | object[] | `ModuleExample[]`; empty list if absent |
-| `metadata` | object | Arbitrary extension metadata; `{}` if absent |
-| `sunset_date` | string \| null | ISO 8601 date or null |
-| `dependencies` | object[] | Parsed `{module_id, version?, optional?}` records; `[]` if none declared. Structural data the framework consumes for load/reload ordering — NOT part of `metadata`, which this table defines as arbitrary extension data |
-
-- On success (not found): `None` (Python), `null` (TypeScript).
-
-!!! note "Schema coercion"
-    Python calls `model_rebuild()` on Pydantic schema classes before exporting to ensure forward-references are resolved. The TypeScript implementation reads `inputSchema`/`outputSchema` directly from the module object without additional coercion.
-
-!!! note "Versioned metadata merge"
-    In Python, if versioned metadata exists for the resolved version, it is merged on top of the base metadata before constructing the `ModuleDescriptor`. TypeScript reads `_moduleMeta` as-is without version-layer merging.
+- The registered module instance, or `None` / `null` / `Ok(None)`. A module whose `on_load` is still running is not returned.
 
 ### Properties
 
 - async: false
 - thread_safe: true
-- pure: false (may invoke Pydantic `model_rebuild()` as a side effect in Python)
-- idempotent: true (for the same registry state, returns the same descriptor)
+- pure: false (reads shared state under the lock)
+- idempotent: true
 
-## Version constraint validation
-
-> **Added in spec v1.49.0** (D-85).
-
-A version constraint operand **MUST** begin with a digit. `"latest"`, `"v1.0.0"`
-and `""` are malformed, not permissive.
-
-An implementation **MUST NOT** resolve a malformed constraint to a comparison.
-apcore-rust parsed the operand with a leading-numeric-prefix reader that yielded
-`(0, 0, 0)` for any non-numeric string, then compared major versions only — so
-`version: "latest"` reported *satisfied* for every `0.x.y` module and the
-constraint was never enforced, while `"v1.0.0"` reported a *mismatch* against an
-actual `1.0.0`. Both directions are wrong from one missing guard.
-
-Implementations **MUST** expose a fallible form that reports the malformed
-constraint as `VersionConstraintError(code=VERSION_CONSTRAINT_INVALID)`, so a
-caller can tell "this constraint is nonsense" apart from "this version does not
-satisfy it". A non-fallible convenience form MAY exist alongside it; when one
-does, it **MUST** fail closed (treat the constraint as unsatisfied) and **MUST**
-log a warning, and the fallible form is the canonical cross-language path.
-
-
-## Registry events
-
-> **Added in spec v1.49.0** (D-80). The event set was never stated, so the three
-> SDKs disagreed about which names exist and one shipped an event nobody could
-> subscribe to.
-
-The registry event set is **closed**:
-
-| Event | Emitted when | Emitted by |
-|---|---|---|
-| `register` | a module becomes visible in the registry | all implementations |
-| `unregister` | a module is removed from the registry | all implementations |
-| `file_changed` | a watched module file changed and the implementation is NOT re-registering it itself (notify-only hot reload) | implementations whose `watch()` is notify-only |
-
-**Requirements.**
-
-1. `on` / `off` **MUST** reject an event name outside this set with
-   `InvalidInputError(code=GENERAL_INVALID_INPUT)`. Accepting an unknown name and
-   returning a valid-looking handle turns a typo into a permanently silent
-   subscription — the callback simply never fires, and nothing says so.
-2. An implementation **MUST** accept, in `on`, every event name it can itself
-   emit. Emitting an event that the same implementation's `on` refuses is a dead
-   notification path: apcore-typescript's `watch()` emitted `file_changed` while
-   its `on` allowed only `register` / `unregister`, so the callback list was
-   always empty and every hot-reload notification was discarded.
-3. `file_changed` is **conditional**, not optional-by-preference: an
-   implementation whose `watch()` re-registers the module itself (re-running
-   discovery, as apcore-rust does, or re-registering in place, as apcore-python
-   does) already emits `unregister`/`register` and **MUST NOT** additionally emit
-   `file_changed` for the same change. One file change produces one story.
-
-Callback signature is `(module_id, module)` for `register` / `unregister`. For
-`file_changed` the second argument is the change payload (`{file_path}`), since
-no module instance is available — the point of the event is that the
-implementation did not construct one.
-
-
-## Contract: Registry.describe
-
-> **Added in spec v1.49.0** (D-77). `describe` was declared in
-> [PROTOCOL_SPEC §12.2](../spec/protocol-spec.md#122-core-component-interface-contracts)
-> but carried no Contract block, and the three SDKs consequently returned three
-> different things for the same module. See the note below.
+## Contract: Registry.list
 
 ### Inputs
-- `module_id` (str/string/&str, required) — the canonical module ID to describe.
+
+- `tags` (optional) — only modules carrying **every** listed tag; an empty list means no tag filter. Tags come from both the module's own `tags` and its merged metadata.
+- `prefix` (optional) — plain string prefix on `module_id` (not a glob).
+- `visibility` (optional) — subset of `["public", "hidden"]`, default `["public"]`.
 
 ### Errors
-- `ModuleNotFoundError(code=MODULE_NOT_FOUND)` — no module registered under `module_id`.
+
+- None. Filters that match nothing return an empty list.
 
 ### Returns
-- On success: a **human-readable description string**. This is the rendering for a
-  human or an LLM reader; the machine-readable accessor is
-  [`get_definition`](#contract-registryget_definition), which returns the structured
-  `ModuleDescriptor`. `describe` **MUST NOT** return a structured object.
+
+- A lexicographically sorted list of unique module IDs.
+
+### Properties
+
+- async: false
+- thread_safe: true (Python snapshots under the lock)
+- pure: false (reads shared state)
+- idempotent: true
+
+## Contract: Registry.get_definition
+
+### Inputs
+
+- `module_id` (required).
+- `version_hint` (optional, Python only; TypeScript accepts and ignores it).
+
+### Errors
+
+- Whatever `get(module_id)` raises (e.g. `MODULE_NOT_FOUND` for an empty ID).
+- No error for an unregistered ID — returns `None` / `null` / `Ok(None)`.
+
+### Returns
+
+A `ModuleDescriptor`:
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `module_id` | string | Canonical module ID |
+| `name` | string \| null | Human-readable name |
+| `description` | string | Plain text, ≤ 200 chars; empty string if absent |
+| `documentation` | string \| null | Markdown, ≤ 5000 chars |
+| `input_schema` | object | JSON Schema; `{}` if absent |
+| `output_schema` | object | JSON Schema; `{}` if absent |
+| `version` | string | Semantic version; default `"1.0.0"` |
+| `tags` | string[] | Empty list if absent |
+| `annotations` | object \| null | `ModuleAnnotations` |
+| `examples` | object[] | `ModuleExample[]` |
+| `metadata` | object | Free-form extension metadata |
+| `sunset_date` | string \| null | ISO 8601 date, from `metadata["x-deprecation"].sunset_date` |
+| `dependencies` | object[] | Parsed `{module_id, version?, optional?}` records; `[]` if none |
+
+Rust's `ModuleDescriptor` also carries `display` and a runtime-only `enabled` flag.
 
 ### Deprecation warning cadence
 
-`get_definition` derives `sunset_date` from `metadata["x-deprecation"].sunset_date`
-and emits a deprecation warning. Because `get_definition` is a **read** and hosts
-call it in loops, the warning **MUST** be emitted at most once per
-`(module_id, version)` per registry instance (**D-89, v1.49.0**). Emitting it on
-every read turns an advisory into log spam proportional to traffic, which is how
-operators learn to filter it out.
+When a module carries `metadata["x-deprecation"]`, `get_definition` emits a deprecation warning (D-89):
 
-> **D-89 (v1.59.0) — the READ is the emission point, and the dedupe key includes
-> the notice.** v1.49.0 bounded the cadence and left the scope open; pinning it
-> measured two divergences the text did not settle, and the three SDKs had filled
-> the silence three ways, all green.
->
-> **1. Where it fires.** The warning **MUST** be emitted from `get_definition`.
-> An implementation **MUST NOT** emit it from `register` instead: registration
-> runs at startup, frequently before the host has installed a log subscriber
-> (`discover()` at import time is the ordinary case), so a registration-time
-> warning is lost with no later chance to re-emit — the dedupe entry has already
-> been written. apcore-rust emitted at registration and its reads never warned at
-> all, so a host that registered a deprecated module after configuring logging
-> was told, and one that registered before configuring it never was.
->
-> The trade is stated rather than hidden: a module that is registered and whose
-> definition is never read is **not** warned about. That is the accepted cost of
-> the rule, and it is the smaller one — a deprecation nobody reads is a
-> deprecation nobody is using through this registry.
->
-> **2. What an unregister + re-register does.** The dedupe key **MUST** be
-> `(module_id, version, x-deprecation block)` — the block by deep value equality,
-> not by identity. A re-registration carrying the **same** notice **MUST NOT**
-> warn again; one carrying a **changed or newly added** notice **MUST**. An
-> implementation **MUST NOT** clear the dedupe state on `unregister`: `watch()`
-> re-runs discovery as an unregister + re-register, so forgetting on unregister
-> re-warns for every deprecated module on every hot reload — the
-> traffic-proportional spam this decision exists to prevent, arriving through the
-> door the original wording did not close. apcore-python forgot on unregister and
-> re-warned; apcore-typescript and apcore-rust stayed silent and therefore
-> swallowed a genuinely new notice on a re-registered module. Keying on the block
-> is what gives both halves at once.
->
-> Implementations compare blocks by canonical value (sorted keys, no incidental
-> whitespace). The key itself is internal and unobservable; what is normative is
-> that **equal notices dedupe and unequal notices do not**.
+- The warning is emitted from `get_definition` (the read), never from `register` — registration often happens before the host has installed a log handler, and a warning lost there could not be re-emitted.
+- It is emitted at most once per registry instance for each `(module_id, version, x-deprecation block)`, with blocks compared by value. Re-registering with the same notice does not warn again; a changed or new notice does.
+- The dedupe state is **not** cleared on `unregister`, so hot reload does not re-warn.
+
+A module that is registered but whose definition is never read is not warned about.
+
+### Properties
+
+- async: false
+- thread_safe: true
+- pure: false (Python may call Pydantic `model_rebuild()` while exporting)
+- idempotent: true
+
+## Version constraint validation
+
+A version constraint operand **MUST** begin with a digit; `"latest"`, `"v1.0.0"` and `""` are malformed, and an implementation **MUST NOT** resolve a malformed constraint to a comparison (D-85).
+
+Each SDK exposes a fallible form that reports it as `VERSION_CONSTRAINT_INVALID` — `VersionConstraintError` in Python and TypeScript, the `try_*` functions (`try_matches_version_hint`, `try_select_best_version`) in Rust — so a caller can tell "this constraint is nonsense" from "this version does not satisfy it". A non-fallible convenience form, where one exists, fails closed (treats the constraint as unsatisfied) and logs a warning.
+
+## Registry events
+
+The event set is **closed** (D-80):
+
+| Event | Emitted when | Callback arguments |
+|---|---|---|
+| `register` | a module becomes visible | `(module_id, module)` |
+| `unregister` | a module is removed | `(module_id, module)` |
+| `file_changed` | a watched file changed and the registry does not re-register it itself (TypeScript's notify-only `watch()`) | `(moduleId, { filePath })` |
+
+1. `on` / `off` **MUST** reject an event name outside this set with `InvalidInputError(code=GENERAL_INVALID_INPUT)`, so a typo does not become a silently dead subscription.
+2. An implementation **MUST** accept in `on` every event name it can itself emit — which is why TypeScript accepts `file_changed` and Python and Rust (whose `watch()` re-registers or re-discovers) do not.
+3. An implementation whose `watch()` re-registers the module emits `unregister` / `register` and **MUST NOT** also emit `file_changed` for the same change.
+
+| SDK | Subscribe | Unsubscribe |
+|---|---|---|
+| Python | `on(event, callback) -> None` | `off(event, callback) -> bool` |
+| TypeScript | `on(event, callback): void` | `off(event, callback): boolean` |
+| Rust | `on(&self, event, Box<callback>) -> Result<u64, ModuleError>` | `off(&self, handle) -> bool` |
+
+## Contract: Registry.describe
+
+### Inputs
+- `module_id` (required) — the canonical module ID.
+
+### Errors
+- `MODULE_NOT_FOUND` — no module registered under `module_id`.
+
+### Returns
+- A **human-readable description string** (Rust: `Result<String, ModuleError>`). The machine-readable accessor is [`get_definition`](#contract-registryget_definition); `describe` **MUST NOT** return a structured object (D-77).
 
 ### Module-supplied override
 
-A module MAY implement its own `describe()` ([§5.6](./module-interface.md), optional
-method). That method's declared return is an **introspection mapping**
-(`{description, input_schema, output_schema, annotations}`), not a string — so the
-registry **MUST NOT** pass it through as the description.
+A module MAY implement its own `describe()` ([Module Interface](./module-interface.md#optional-methods)). That method's declared return is an introspection mapping, not a string, so the registry **MUST NOT** pass a structured return through as the description:
 
-Implementations **MUST** apply this rule:
+1. If the module implements `describe()` **and** it returns a string, return that string verbatim.
+2. Otherwise (no `describe()`, a null return, a structured return, or one that cannot be resolved synchronously) fall back to the generated description.
 
-1. If the module implements `describe()` **and** its return is a string, return that
-   string verbatim — this is the author's deliberate override.
-2. Otherwise (no `describe()`, a `null`/`None` return, a structured return, or a
-   return the implementation cannot resolve synchronously) fall through to the
-   generated description envelope.
-
-An implementation **MUST NOT** stringify a structured return (`str(dict)` yields a
-language-specific repr, not a description), and **MUST NOT** return the structured
-value through an interface it declares as returning a string.
+An implementation **MUST NOT** stringify a structured return.
 
 ### Properties
 - async: false

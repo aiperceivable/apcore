@@ -1,20 +1,23 @@
 ---
-description: "Maintainer decision log of open cross-language alignment issues from the 2026-05 apcore-skills:sync run covering 20 modules, tracking spec/SDK discrepancies awaiting resolution."
-title: Cross-language alignment decision log (2026-05)
+description: "Historical record of the 2026-05 cross-language alignment decisions (D-01–D-65) from the apcore-skills:sync run over 20 modules. All are resolved except D-65, a proposed RFC."
+title: Cross-language alignment decisions (D-01–D-65, 2026-05)
 date: 2026-05-02
-status: active — 52 resolved, 7 open (see "Resolution status")
+status: resolved — 58 of 59 entries closed (D-06 and D-62 by later decisions); D-65 remains a proposed RFC
 audience: maintainers + spec reviewers
 source: /apcore-skills:sync findings (2026-05-02 run, 20/20 modules covered)
 ---
 
-# Cross-language alignment — open decisions
+# Cross-language alignment decisions (D-01 – D-65)
 
-This document lists every cross-language inconsistency that the May 2026 sync run surfaced as **spec ambiguity** rather than implementation bug. Each item is something that needs a maintainer decision before code can be aligned across Python, TypeScript, and Rust SDKs.
+!!! info "Historical decision record"
+    Current behaviour is defined by [protocol-spec.md](./protocol-spec.md); decision status is tracked in [decision-register.md](./decision-register.md).
+
+This document records every cross-language inconsistency that the May 2026 sync run surfaced as **spec ambiguity** rather than implementation bug. Each item needed a maintainer decision before code could be aligned across the Python, TypeScript, and Rust SDKs. The status-quo paragraphs describe the SDKs as they were when the item was raised; [Resolution status](#resolution-status) gives each item's outcome.
 
 Items already fixed (28 commits across 3 SDKs) are not in this log — see `CHANGELOG.md` of each SDK and the sync report.
 
 Decision template per item:
-- **Status quo**: what each SDK does today
+- **Status quo**: what each SDK did at the time
 - **Options**: A / B (sometimes C)
 - **Recommendation**: maintainer's first-pass call (subject to review)
 - **Owner**: who needs to sign off
@@ -22,8 +25,11 @@ Decision template per item:
 
 ---
 
-### Decision-ID renumber (2026-05-26)
+## Decision-ID renumber (2026-05-26)
+
 Entries formerly numbered **D-17–D-22** in this log were renumbered to **D-58–D-63** to resolve a duplicate-assignment collision: the v0.22.0 executor/async hardening decisions independently took D-17–D-22 (recorded in `CHANGELOG.md`, `docs/features/core-executor.md`, `docs/features/async-tasks.md`, and the SDK repos), and those hardening decisions retain D-17–D-22. Mapping: D-17→D-59 (`caller_id_for_unknown`), D-18→D-60 (ACL priority field), D-19→D-58 (stream chunk shape), D-20→D-61 (`compute_delay` rounding), D-21→D-62 (ExtensionManager `apply()` idempotency), D-22→D-63 (ExtensionManager get/get_all/unregister API).
+
+D-23 and D-24 were not renumbered and still share their numbers with two 0.22.0 decisions recorded only in `CHANGELOG.md` (`get_status` / `list_tasks` return copies; the six-parameter `Context.create()`). The [decision register](./decision-register.md) lists both meanings of every colliding ID.
 
 ---
 
@@ -86,6 +92,8 @@ Entries formerly numbered **D-17–D-22** in this log were renumbered to **D-58�
 
 ## D-04 — Audit-entry & error wire format: snake_case vs camelCase (TS outlier)
 
+**Outcome:** resolved as Option A for everything that crosses a process boundary. apcore-typescript's `ModuleError.toJSON()` emits snake_case keys (`trace_id`, `ai_guidance`, `user_fixable`, and snake-cased `details`), matching Python and Rust (sync finding A-D-008), and ACL audit entries delivered on `apcore.acl.audit` use their snake_case wire names (D-66). In-process TypeScript properties keep camelCase names, as Option A allowed. The deferral notes below record the state on 2026-05-02.
+
 **Status quo**
 - Python: `to_dict()` emits `trace_id`, `ai_guidance`, `user_fixable`; details keys are snake_case
 - TS: `toJSON()` emits `traceId`, `aiGuidance`, `userFixable`; details keys are camelCase; AuditEntry interface uses camelCase keys
@@ -135,6 +143,8 @@ Blocking factor: needs a dev session with full test-suite re-validation, not an 
 ---
 
 ## D-06 — `multi_class_enabled` config plumbing
+
+**Outcome:** superseded by **D-107** (spec v1.50.0), which re-affirmed per-class markers as the only multi-class opt-in and withdrew the file-level toggles that remained in apcore-typescript and apcore-rust.
 
 **Status quo**
 - Spec: there's a global config key `extensions.multi_class_discovery` (boolean)
@@ -393,6 +403,8 @@ Python sets RETRYING during backoff; TS+Rust set it back to PENDING.
 
 ## D-61 — `compute_delay` rounding for fractional values
 
+**Outcome:** decided — keep current behaviour. The `u64` truncation is documented in `docs/features/async-tasks.md` (RetryConfig); the proposed rustdoc note on `RetryConfig::compute_delay_ms` was not added, and apcore-rust carries only an inline code comment.
+
 **Status quo**
 - Python returns `float` ms
 - TS returns `number` ms
@@ -408,6 +420,8 @@ For backoff_multiplier=2.5 and retry_delay_ms=1000, attempt=2: Python/TS return 
 
 ## D-62 — `apply()` idempotency for ExtensionManager
 
+**Outcome:** superseded by **D-78** (spec v1.49.0): `apply` retains the store. apcore-rust's `ExtensionKind` now holds `Arc<dyn …>` handles and `apply` clones them instead of draining.
+
 **Status quo**
 - Python+TS: `apply()` preserves registered extensions; second call re-stacks
 - Rust: `apply()` drains extensions; second call is a no-op (CRITICAL EXT-001)
@@ -422,6 +436,8 @@ For backoff_multiplier=2.5 and retry_delay_ms=1000, attempt=2: Python/TS return 
 ---
 
 ## D-63 — `ExtensionManager.get/get_all/unregister` API
+
+**Outcome:** resolved. apcore-rust's `ExtensionManager` exposes `get`, `get_all` and `unregister`; their contracts were later settled by D-91 (a reachable removal path), D-108 (unknown point name is an error) and D-128 (removal by identity).
 
 **Status quo**
 - Python+TS: present
@@ -444,6 +460,8 @@ For backoff_multiplier=2.5 and retry_delay_ms=1000, attempt=2: Python/TS return 
 ---
 
 ## D-24 — `update_config` constraint registry & rollback
+
+**Outcome:** resolved as Option A. apcore-typescript (`sys-modules/control.ts`, `_validatePostSet`) and apcore-rust (`sys_modules/control.rs`, `Config::validate_key_constraint`) check the registered constraint after the set and roll back to the old value on failure, as apcore-python does.
 
 **Status quo**
 - Python: full _CONSTRAINTS table with rollback on validation failure
@@ -794,42 +812,29 @@ the same fixture file.
 
 ## Resolution status
 
-> **Authoritative current state** (updated 2026-05-05 after iter-9 doc-only follow-through round). Per-round narratives are preserved below in chronological addenda.
+> **Final state**, verified against apcore-python, apcore-typescript and apcore-rust 0.31.0. The per-round narratives are preserved below in chronological addenda.
 
-- **Resolved** (52 items, no further action):
-  - D-01, D-02, D-03, D-05, D-06 (doc-side; TS arg drop tracked separately — see Open below), D-07, D-08, D-09, D-10, D-11, D-12, D-13, D-14, D-15, D-16, D-59, D-60, D-58, D-23, D-25, D-26, D-27, D-28, D-29, D-30, D-31, D-32, D-33, D-34, D-35, D-36, D-37, D-38, D-39, D-40, D-41, D-42, D-43, D-44, D-45, D-46, D-47, D-48, D-49, D-50, D-51, D-52, D-53, D-54, D-55, D-56, D-57
+- **Resolved** (56 items):
+  - D-01, D-02, D-03, D-04, D-05, D-07, D-08, D-09, D-10, D-11, D-12, D-13, D-14, D-15, D-16, D-23, D-24, D-25, D-26, D-27, D-28, D-29, D-30, D-31, D-32, D-33, D-34, D-35, D-36, D-37, D-38, D-39, D-40, D-41, D-42, D-43, D-44, D-45, D-46, D-47, D-48, D-49, D-50, D-51, D-52, D-53, D-54, D-55, D-56, D-57, D-58, D-59, D-60, D-61, D-63, D-64
   - Notes on follow-through chains:
     - **D-08** closed via **D-49** (TS + Rust renamed to canonical `compute_delay_ms`).
     - **D-11** closed via **D-42** (Python `start_reaper` aliases + ms units).
     - **D-32** closed via **D-56** (TS `_filterIdConflicts` extracted).
   - **Doc-only follow-throughs landed in iter-9 (2026-05-05)**: D-01, D-07, D-09, D-16, D-59, D-60, D-26 — see addendum below.
-  - **D-03 resolved 2026-09-05** (during a cross-repo consistency audit, not the original iter rounds): `caller_id` and `action` added to `ApprovalRequest` in all 3 SDKs, populated at each SDK's existing `BuiltinApprovalGate` construction site. **The "target v0.21.0" note above was stale** — that version number had already shipped (2026-05-06, unrelated content) by the time this landed; all three SDKs landed it under their current in-progress version instead (apcore-python and apcore-typescript both already past v0.21.0 independently; apcore-rust likewise). `docs/spec/protocol-spec.md` §7.3.1's own schema was also out of sync with this decision — it never listed either field — corrected the same day as spec v1.32.0. Conformance: `conformance/fixtures/approval_request_fields.json`.
+  - **D-03 resolved 2026-09-05** (during a cross-repo consistency audit, not the original iter rounds): `caller_id` and `action` added to `ApprovalRequest` in all 3 SDKs, populated at each SDK's existing `BuiltinApprovalGate` construction site. The entry's "target v0.21.0" was stale by then — that version had already shipped with unrelated content — so all three SDKs landed it under their in-progress version instead. `docs/spec/protocol-spec.md` §7.3.1's schema, which never listed either field, was corrected the same day as spec v1.32.0. Conformance: `conformance/fixtures/approval_request_fields.json`.
+  - **Closed after the 2026-05 rounds** (each entry carries an **Outcome** line):
+    - **D-04** — the error wire form is snake_case in all three SDKs (TypeScript `ModuleError.toJSON()`, sync finding A-D-008).
+    - **D-24** — TypeScript and Rust `update_config` validate the registered constraint and roll back on failure.
+    - **D-61** — decided as "keep current behaviour"; the truncation is documented in `docs/features/async-tasks.md`.
+    - **D-63** — apcore-rust `ExtensionManager` exposes `get` / `get_all` / `unregister`.
+    - **D-64** — `ACL.discover(config)` shipped in all three SDKs in release 0.25.0.
 
-- **Open — multi-SDK code fix** (2 items):
-  - **D-24** — `update_config` constraints registry + rollback in TS + Rust (Python already aligned). (target v0.21.0)
-  - **D-64** — activate `acl.root` config-driven ACL discovery + unify default to `'./acl'` across all 3 SDKs. Tracking [#74](https://github.com/aiperceivable/apcore/issues/74).
+- **Superseded** (2 items):
+  - **D-06** — by **D-107** (spec v1.50.0): per-class markers are the only multi-class opt-in in every SDK.
+  - **D-62** — by **D-78** (spec v1.49.0): `ExtensionManager.apply` retains the store.
 
-- **Open — RFC (design-first)** (1 item):
-  - **D-65** — `include:` cross-file config composition. Design ratification required before code; see [RFC — `include:` Configuration Composition](./rfc-config-include.md). Tracking [#75](https://github.com/aiperceivable/apcore/issues/75).
-
-- **Open — single-SDK code fix** (2 items, deferred):
-  - **D-04** — TS snake_case wire-format rename. Deferred per the entry's notes; needs a dedicated codemod PR (jscodeshift / sed) covering ~50 error subclasses + AuditEntry + ~30 test files. Estimated 1–2 hours focused work.
-  - **D-61** — Rust `RetryConfig::compute_delay_ms` doc-comment note about `u64` truncation. Local change in apcore-rust source only; does not require a spec edit.
-
-- **Open — single-SDK code fix** (D-06 follow-through):
-  - **D-06 (TS arg drop)** — `apcore-typescript` `Registry.discoverMultiClass(filePath, classes, extensionsRoot, multiClassEnabled)` should drop the `multiClassEnabled` argument; the per-class `@multiClass()` decorator becomes the only opt-in path. Tracked cross-repo. The doc-side cleanup (removing the unimplemented global `extensions.multi_class_discovery` config key from `docs/features/multi-module-discovery.md`) landed in iter-10 (2026-05-05).
-
-- **Open — Epic / RFC** (2 items paired):
-  - **D-62** + **D-63** — ExtensionManager `Arc` migration. Multi-API breaking change cascading through Executor / Registry. Track as RFC + epic; target v0.22.0.
-
-## Recommended sequence
-
-1. ✅ ~~Apply doc-only fixes as a single PR~~ — **completed in iter-9** (D-01, D-07, D-09, D-16, D-59, D-60, D-26).
-2. **D-06** spec cleanup — small follow-up PR; can ship with the next doc-cleanup round.
-3. ✅ ~~D-03~~ — **resolved 2026-09-05**, landed in all 3 SDKs' current in-progress version rather than the stale v0.21.0 target. **D-24** remains open, targeting v0.21.0 on its own.
-4. **D-04** — schedule a dedicated TS codemod PR session (1–2 hrs focused).
-5. **D-61** — apcore-rust local doc comment (out of scope for this repo).
-6. **D-62** / **D-63** — RFC + epic, target v0.22.0.
+- **Open** (1 item):
+  - **D-65** — `include:` cross-file config composition. The [RFC](./rfc-config-include.md) remains Proposed; nothing is implemented.
 
 ---
 
@@ -847,7 +852,7 @@ Status updates landed since the original 2026-05-02 sync:
 - **D-27** — resolved. Rust `UsageCollector` now computes trend from samples (replacing the hardcoded `"stable"`), accepts an optional `timestamp` on `record()`, and supports `period` filtering on `get_summary()`.
 - **D-28** — resolved. Rust `ContextLogger` output schema aligned with Python+TS: lowercase `level`, nested `extra` key wrapper, `module_id` field name (was `module`), `inputs` field in middleware extras (was `input`).
 
-The remaining open items (D-04 TS snake_case rename, D-62/D-63 ExtensionManager Arc migration, D-32 TS pipeline-stage refactor) retain the recommendations and ownership noted in the original entries.
+The items still open on 2026-05-03 (D-04 TS snake_case rename, D-62/D-63 ExtensionManager Arc migration, D-32 TS pipeline-stage refactor) have all since closed — see [Resolution status](#resolution-status).
 
 ### Resolution status — iter-8 addendum (D-47..D-53)
 
@@ -875,7 +880,7 @@ All three SDKs ship a `StorageBackend` trait/interface/protocol (4 methods: `sav
 
 apcore SDKs do **not** ship Redis, Postgres, or S3 backends — those are explicitly out-of-tree. Users implement `StorageBackend` against their preferred client library.
 
-**Status**: **resolved**. See [`docs/features/observability.md` § Pluggable storage backends](../features/observability.md#pluggable-storage-backends) and `conformance/fixtures/storage_backend.json`.
+**Status**: **resolved**. See [`docs/features/metrics-and-usage.md` § Pluggable storage backends](../features/metrics-and-usage.md#pluggable-storage-backends) and `conformance/fixtures/storage_backend.json`.
 
 ---
 
@@ -1060,7 +1065,7 @@ TypeScript SDK adds `OverridesStore` interface, `FileOverridesStore` (YAML-backe
 **Status**: **resolved**. See `protocol-spec.md` §4.6 ("Routing & Verification Hints" YAML block + table rows) and `CHANGELOG.md` `[Unreleased]` block.
 
 **Cross-refs**:
-- Stage 1 of the apcore frontier-alignment plan (`/Users/tercelyi/.claude/plans/apcore-toolkit-cli-harmonic-starlight.md`).
+- Stage 1 of the apcore frontier-alignment plan.
 - Literature: RouteLLM (ICLR 2025); xRouter (arXiv 2510.08439); Cost-Aware Model Orchestration (Smirnova, arXiv 2512.01099); Budget-Aware Tool-Use (arXiv 2511.17006); ToolMaker (ACL 2025, arXiv 2502.11705) — see `docs/spec/rfc-ephemeral-modules.md` and `docs/spec/rfc-preview-method.md` for adjacent RFCs.
 
 ---
@@ -1097,7 +1102,7 @@ After all four SDK pilot PRs merged (`apcore-rust#25`, `apcore-python#26`, `apco
 
 Both RFC documents (`docs/spec/rfc-preview-method.md`, `docs/spec/rfc-ephemeral-modules.md`) updated their Status header from `Draft / RFC` to `Accepted` with target version `v0.21.0` and explicit cross-references to the normative protocol-spec.md sections. The RFCs are retained as design rationale + cross-SDK schema-encoding reference (`pydantic` / `serde-flatten` / TypeBox `Type.Unsafe`) — implementations should consult protocol-spec.md for the canonical contract.
 
-`CHANGELOG.md` v0.21.0 block records the version bump.
+`CHANGELOG.md` v0.21.0 block records the version bump. (Both RFC files were later removed; their normative content lives in protocol-spec.md §2.5, §4.4, §5.6 and §12.8.)
 
 **SDK rollout status (cross-repo follow-up tracked separately):**
 - `apcore-python`: ships full Stage 2 + Stage 3 surface (PR #26, post iter-11).
@@ -1168,13 +1173,15 @@ apcore-typescript PR #29 author noted this in JSDoc; follow-up to upgrade the Ty
 
 - **D-06 (doc-side)** — resolved. `docs/features/multi-module-discovery.md` "Enabling Multi-Class Mode" section rewritten to drop the **Global opt-in (configuration)** paragraph that referenced the unimplemented `extensions.multi_class_discovery` config key. Per-class markers (`@multi_class` / `@multiClass()` / `#[multi_class]`) are now documented as the only opt-in path, with an inline backward-reference note pointing readers to this decision-log entry.
 
-  The TS-side follow-through (`apcore-typescript` `Registry.discoverMultiClass` dropping the `multiClassEnabled` argument) remains open and is tracked in the cross-repo issue list above. protocol-spec.md does not reference the global toggle and required no edit.
+  The TS-side follow-through (`apcore-typescript` `Registry.discoverMultiClass` dropping the `multiClassEnabled` argument) was still open at this point; it was finally settled by D-107 (spec v1.50.0). protocol-spec.md did not reference the global toggle and required no edit.
 
   Direct commit to `main` (no PR) per maintainer authorization; doc-only, no SDK behavior change, no normative spec change.
 
 ---
 
 ## D-64 — `acl.root` dead key: activate config-driven ACL discovery + unify default
+
+**Outcome:** implemented as Option A in release 0.25.0. `ACL.discover(config)` exists in all three SDKs and is wired by the `APCore` bootstrap; a missing `acl.root` path attaches no ACL; `acl.root` defaults to `./acl` everywhere. The base a relative `acl.root` resolves against is recorded in protocol-spec §9.2.2.
 
 **Tracking issue**: [#74](https://github.com/aiperceivable/apcore/issues/74). Related: [#75](https://github.com/aiperceivable/apcore/issues/75) (`include:` config composition — separate, ACL-independent).
 
@@ -1202,7 +1209,7 @@ Two problems: (1) `acl.root` is a dead key — the "point config at an ACL dir" 
 **Recommendation**: **A**.
 
 Rationale:
-- Config-driven discovery is the documented design intent; activating it across all 3 SDKs is the consistent fix. Doing it in one SDK only would manufacture a new cross-language divergence (cf. [[project_sdk_behavioral_findings]]).
+- Config-driven discovery is the documented design intent; activating it across all 3 SDKs is the consistent fix. Doing it in one SDK only would manufacture a new cross-language divergence.
 - **Critical non-breaking invariant**: a missing `acl.root` path MUST attach **no** ACL — NOT an empty `default_effect: deny` ACL. Attaching default-deny when no file exists would deny every inter-module call in every project that has no ACL today (a silent, severe breaking change). `default_effect: deny` only takes effect once an ACL file is actually present.
 - Unifying on `'./acl'` (Option B's "required everywhere" is breaking for Py/TS) keeps existing configs working and removes Rust's outlier hard-require.
 - Inline `acl.rules` stays unsupported by design; complex ACL structure belongs in its own file via `ACL.load(path)`.
@@ -1213,11 +1220,13 @@ Rationale:
 - Unify `acl.root` default to `'./acl'` in all 3 SDKs; Rust no longer rejects a config that omits `acl.root`.
 - Conformance fixture covering: present-dir loads + enforces, missing-dir no-op (no enforcement), unified default value.
 - Update demo + `acl-system.md` to show the config-driven path (`acl.root: ./acl` in `apcore.yaml`).
-- Cross-SDK rollout per the [[feedback_apcore_cross_sdk_pr_pattern]] pattern (spec/fixture in apcore, 3 parallel SDK PRs, no-push boundary).
+- Cross-SDK rollout: spec and fixture in apcore first, then three parallel SDK changes.
 
 ---
 
 ## D-65 — `include:` cross-file configuration composition
+
+**Outcome:** still open. The [RFC](./rfc-config-include.md) remains Proposed; no SDK implements `include:` and the canonical config schema does not declare it.
 
 **Tracking issue**: [#75](https://github.com/aiperceivable/apcore/issues/75). Full design: [RFC — `include:` Configuration Composition](./rfc-config-include.md). Independent of D-64 (#74).
 
@@ -1242,8 +1251,8 @@ Rationale:
 - Local-wins precedence matches developer intuition ("include bases, then tweak locally"; cf. CSS `@import`, shell `source`-then-override).
 - The YAGNI exclusions keep the v1 surface small and the cross-language algorithm trivially portable (see the RFC's three-SDK sketch).
 
-**Open questions** (carried in the RFC): fragment-relative path values vs. root-relative (v1 = root-relative); `CONFIG_INCLUDE_CYCLE` registration against the canonical error-code prefix set; whether a max-depth policy limit is needed beyond cycle detection (v1 = no).
+**Open questions** (carried in the RFC): fragment-relative path values vs. root-relative (v1 = root-relative; since settled by spec v1.35.0 §9.2.2, which gives a `Config` one resolution base); `CONFIG_INCLUDE_CYCLE` registration against the canonical error-code prefix set; whether a max-depth policy limit is needed beyond cycle detection (v1 = no).
 
 **Action**
 
-- Ratify the RFC (maintainer review). On acceptance: register `CONFIG_INCLUDE_CYCLE`; add `conformance/fixtures/config_include.json` per the RFC's conformance plan; implement the expansion phase in all 3 SDKs via the [[feedback_apcore_cross_sdk_pr_pattern]] pattern; document `include:` in `DECLARATIVE_CONFIG_SPEC.md`.
+- Ratify the RFC (maintainer review). On acceptance: register `CONFIG_INCLUDE_CYCLE`; add `conformance/fixtures/config_include.json` per the RFC's conformance plan; implement the expansion phase in all 3 SDKs; document `include:` in `DECLARATIVE_CONFIG_SPEC.md`.

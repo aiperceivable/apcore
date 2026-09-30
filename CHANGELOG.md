@@ -7,12 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.31.0] - 2026-09-14
+## [Unreleased]
+
+> Ships `PROTOCOL_SPEC` **v1.60.0** — an editorial release: no behaviour change.
+
+### Changed — documentation
+
+- **Documentation describes the current product only.** Implementation history, audit narrative and version-tagged notes were removed from the specification body, feature pages and guides; the reasoning stays in this changelog and the decision records, indexed by the new [`docs/spec/decision-register.md`](./docs/spec/decision-register.md). The specification's revision history is condensed to one line per version.
+- **One source per topic.** `DECLARATIVE_CONFIG_SPEC.md` and the implemented `preview()` / ephemeral-module RFCs are merged into `protocol-spec.md`; the execution-pipeline design document becomes the feature page `features/execution-pipeline.md`; the discovery TOCTOU assessment moves into `security-considerations.md`; the observability page is split into tracing, metrics & usage, error history and redaction; the superseded v0.17 design document, `site-map.md`, the v0.18 migration guide and completed `planning/` entries are removed.
+- **Examples and config shown as working now work.** Examples were checked against SDK 0.31.0 (constructors, arity, async); inert, deprecated or nonexistent configuration keys were removed from examples; the pipeline order (`middleware_before` before `input_validation`), the ACL file's `audit:` block and the approval-gate trigger are stated consistently.
+- **README is a landing page**; versions are stated only on the documentation home; the documentation site URL is `https://apcore.aiperceivable.com/`.
+
+---
+
+## [0.31.0] - 2026-09-22
 
 > Ships `PROTOCOL_SPEC` **v1.37.0 → v1.59.0**. Two joined audit cycles: a configuration-surface audit
 > (#118, v1.37.0–v1.48.0) found 29 of 61 declared config keys reaching no consumer in any SDK, and a
 > deep-chain call-graph audit (v1.48.0–v1.59.0) settled 54 further cross-language divergences
-> (D-74–D-127), including **five security defects** (D-93–D-98) and two later corrections to the
+> (D-74–D-128), including **five security defects** (D-93–D-98) and two later corrections to the
 > audit's own output (D-124, D-125 — see Security). Full reasoning is in
 > [`docs/spec/2026-09-deep-chain-decisions.md`](./docs/spec/2026-09-deep-chain-decisions.md) and
 > [`docs/spec/2026-09-config-surface-decisions.md`](./docs/spec/2026-09-config-surface-decisions.md).
@@ -27,6 +40,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Two independent approval bypasses that compose** (D-96, D-97) — the gate decided from the registry descriptor while the request it built read the live module, so a module could run ungated on one source and gated-looking on the other. Corrected to the UNION of both sources, not a swap.
 - **Prototype pollution through a configuration dot-path** (D-95) — `__proto__` was a valid path segment, reachable via `APCORE_____PROTO_____POLLUTED` with no module call, ACL decision or approval involved.
 - **Symlink escape from the extensions root** (D-94) — confinement was checked before symlink resolution, so a symlinked file outside the root was discovered, imported and executed.
+- **A symlink was recorded twice, under its link path and its real path** (D-127) — discovery now records each module once, under its real path.
 - **Credentials published verbatim on the event bus** (D-93) — one SDK's redaction list used compound words where the peers use bare `key`/`auth`/`session`, so `signing_key`/`auth_header`/`session_id` matched nothing.
 - **`x-sensitive` dropped beside a `$ref` during schema resolution** (D-98) — redaction reads `x-sensitive` off the resolved schema, so a sensitive field behind a `$ref` leaked in one SDK.
 
@@ -35,6 +49,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **The deprecation warning fires from `get_definition`, never `register`; its dedupe key includes the notice** (D-89, v1.59.0) — one SDK's registration-time warning was unrecoverable if nothing was listening yet; the dedupe key now includes the `x-deprecation` block so a changed notice re-warns and an unchanged one does not survive `unregister`.
 - **`shutdown()` attempts every task cancellation before it reports** (D-122) — stopping at the first failure left every remaining task uncancelled, holding a `max_tasks` slot indefinitely.
 - **A hot-reloaded module MUST NOT become visible before its `on_load()` has run** (D-123).
+- **A `version_hint` an implementation does not resolve by MUST NOT be silently ignored** (D-126).
+- **`ExtensionManager.unregister` removes by identity, not equality** (D-128).
 - **`global_deadline` is epoch seconds, lives in the field (not a `data` key), belongs to the call tree, and is recomputed unconditionally on a deserialized Context** (D-99–D-102) — three SDKs had three clocks; a spec-shaped caller value silently disabled the budget entirely on one of them.
 - **A null `identity` stays null** — no synthetic `@external` principal (D-103).
 - **A local `#/…` reference resolves against the file root with a fallback to the schema node**, so both layouts load (D-104) — previously no schema file with a local `$ref` loaded in all three SDKs.
@@ -49,7 +65,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`ContextFactory.create_context` takes the runtime request**, not a pre-extracted identity (D-76).
 - **`TaskStoreError` must reach the caller** on every store-touching method (D-81).
 - Also normative at v1.49.0: `list_tasks` insertion order (D-82); the published `guard_call_chain(chain, ...)` signature (D-83); a non-positive call-chain limit raises typed `GENERAL_INVALID_INPUT` (D-84); malformed version constraints must be reportable, not silently `(0,0,0)` (D-85); `Registry.register` validates intrinsic-then-extrinsic (D-86); ACL audit-block reachability (D-87); index-keyed warning dedupe clears on any rule mutation (D-88); `reset()` must not substitute the cancellation handle (D-90); a removal method a host cannot call does not satisfy the contract (D-91).
-- **Fourteen config/policy decisions settled where the spec was silent and each SDK answered reasonably** (D-108–D-121; ten landed same-cycle, four documented for later): unknown extension point is an error, empty is not (D-108); only the healthy/degraded boundary is configurable (D-109); `project_name` defaults to `"apcore"` (D-110); bulk reload audits per module with a shared correlation id (D-111); a failed reload restores the previous module, best-effort (D-112); storage-backend namespaces are named, default in-memory (D-113); `remove()` clears the middleware duplicate-identity entry (D-114); a malformed annotation value is tolerated and dropped (D-115); circuit events carry the declared subscriber type (D-116); namespace defaults don't apply to legacy documents (D-117); an empty `roles` list is omitted from the audit identity snapshot (D-118); every `system.*` module declares `open_world: false` explicitly (D-119); error timestamps are UTC `Z` with millisecond precision (D-120); `reload_dependents` deprecated for v2.0, replaced by `path_filter` (D-121).
+- **Fourteen config/policy decisions settled where the spec was silent and each SDK answered reasonably** (D-108–D-121; all fourteen implemented in all three SDKs): unknown extension point is an error, empty is not (D-108); only the healthy/degraded boundary is configurable (D-109); `project_name` defaults to `"apcore"` (D-110); bulk reload audits per module with a shared correlation id (D-111); a failed reload restores the previous module, best-effort (D-112); storage-backend namespaces are named, default in-memory (D-113); `remove()` clears the middleware duplicate-identity entry (D-114); a malformed annotation value is tolerated and dropped (D-115); circuit events carry the declared subscriber type (D-116); namespace defaults don't apply to legacy documents (D-117); an empty `roles` list is omitted from the audit identity snapshot (D-118); every `system.*` module declares `open_world: false` explicitly (D-119); error timestamps are UTC `Z` with millisecond precision (D-120); `reload_dependents` deprecated for v2.0, replaced by `path_filter` (D-121).
 - **§9.1.3 (new): a declared config key MUST reach its mechanism from a `Config`**, with precedence API argument > `Config` > declared default (D-73 and family) — found four times independently (`acl.default_effect`, `acl.audit.*`, `id_map.overrides`, `pipeline.*`).
 - **`_config.allow_unknown`, `extensions.roots` namespaces, and `id_map.overrides` are wired** (D-69, D-70, D-71) — all three were declared and reached no consumer, or reached only half their own contract.
 - **ACL auditing gets one delivery contract** (D-66) — a failing audit callback no longer turns an allowed call into an error in any SDK; the ACL file's `audit:` block is the surviving declaration home, emits `apcore.acl.audit` with all thirteen §6.3.1 fields.
@@ -69,7 +85,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`acl.default_effect` in `apcore.yaml`** — reaches nothing; the ACL file's own `default_effect` is authoritative. Removed at v2.0.
 - **`logging.level`/`logging.format`**, no replacement (D-67).
 - **`reload_dependents`** — declared by all three SDKs, implemented by none; use an explicit `path_filter`. Removed at v2.0 (D-121).
-- **Ten declared config keys plus an ACL-file `audit:` block reach no consumer in any SDK** — `observability.tracing.*`(3), `observability.metrics.*`(2), `logging.*`(2), `acl.audit.*`(3). No behaviour change; each now warns once per load. Removed no earlier than v2.0.
+- **Eight declared config keys reach no consumer and are on a removal window** — `acl.audit.*` (3, migrate to the ACL file's `audit:` block), `acl.default_effect` in `apcore.yaml` (migrate to the ACL file's `default_effect`), `logging.*` (2, no replacement) and `observability.metrics.*` (2). Declaring one warns once per configuration load. Removed no earlier than v2.0. (`observability.tracing.*`, deprecated earlier in this cycle, was wired instead — D-68.)
 
 ### Fixed — conformance guards
 
@@ -1007,7 +1023,7 @@ These are spec-consistency clarifications surfaced by a cross-language sync audi
 
 ## [0.18.0] - 2026-04-15
 
-> **Breaking changes in this release.** See [`MIGRATION-v0.18.md`](./MIGRATION-v0.18.md) for the consolidated migration guide covering all four repositories.
+> **Breaking changes in this release.** The migration notes are the entries below.
 
 ### Added
 
@@ -1020,7 +1036,6 @@ These are spec-consistency clarifications surfaced by a cross-language sync audi
 - **PROTOCOL_SPEC §4.4.1 — Annotations Extension Field (`extra`) Wire Format** — New normative section defining the canonical on-the-wire shape of `ModuleAnnotations.extra`. Producers MUST serialize as a nested `{"extra": {...}}` object and MUST NOT flatten extension keys to the annotations root. Consumers MUST accept the nested form; legacy top-level overflow keys MAY be tolerated for one MINOR cycle. When both forms appear in the same input, the nested value wins.
 - **`extra` field in `Annotations` schema** — `schemas/module-meta.schema.json` now declares `extra` as an object with `additionalProperties: true`. The outer `Annotations` object retains `additionalProperties: false`, so unknown root-level keys are no longer silently accepted at the schema layer.
 - **`conformance/fixtures/annotations_extra_round_trip.json`** — 8 cross-language test cases locking the wire format: canonical nested round-trip, empty extra, namespaced keys, Unicode and nested object values, legacy flattened deserialization tolerance, nested-wins precedence, forbidden-root-keys negative case, and dotted-keys-are-not-paths.
-- **`MIGRATION-v0.18.md`** — Consolidated migration guide covering all four breaking changes shipped in this release (annotations wire format, apcore-rust Config restructure, apcore-python event alias removal, misc cleanup).
 - **8 new feature specification docs.** The following features were implemented in both `apcore-python` and `apcore-typescript` SDKs but had no corresponding feature spec in the protocol repo:
   - `docs/features/error-system.md` — Structured error hierarchy (30+ error types), error codes, AI guidance fields (`retryable`, `ai_guidance`, `user_fixable`, `suggestion`), `ErrorCodeRegistry` for custom module error codes.
   - `docs/features/extension-system.md` — `ExtensionManager` with 6 built-in extension points (`discoverer`, `middleware`, `acl`, `span_exporter`, `module_validator`, `approval_handler`), plugin wiring via `apply()`.
@@ -1045,7 +1060,7 @@ These are spec-consistency clarifications surfaced by a cross-language sync audi
 - **`docs/guides/creating-modules.md` — Rust examples added.** Two tabbed code sections (module definition and module usage) only had Python and TypeScript examples. Added Rust tabs with complete, importable examples using `apcore::{Module, Context, Registry, Executor}`.
 - **Cross-language `extra` serialization divergence** — Audit revealed that `apcore-rust` ≤ 0.17.1 used `#[serde(flatten)]` and emitted extension keys at the annotations root, while `apcore-python` and `apcore-typescript` emitted nested `extra` objects. A binding round-tripped through Rust would silently lose the `extra` payload (the nested object collapsed into `extra["extra"]`). All three SDKs are now aligned on the nested form per §4.4.1.
 - **Python/TypeScript precedence inversion** — Both SDKs previously merged top-level overflow over explicit nested `extra` (`{**explicit, **overflow}`), making nested values losable. Per §4.4.1 rule 7, nested now wins. Behavior change is observable only when the same key appears in both forms in the same input — a pathological case that no conformant producer emits.
-- **`apcore-rust Config` no longer silently ignored spec-conformant YAML.** The struct previously declared executor and observability fields at the root of `Config` instead of nested under `executor` and `observability` namespaces, contradicting PROTOCOL_SPEC §9.1 and the Python/TypeScript SDKs. Loading a YAML file that used the canonical nested form would cause typed fields to remain at default values while the user data ended up in an unused `settings` HashMap entry. **v0.18.0 restructures `apcore-rust Config` to a nested form**, drops the legacy short field names, and rejects v0.17.x-style YAML with a hard error pointing at `MIGRATION-v0.18.md`. See `apcore-rust/CHANGELOG.md` for the full type-by-type rename table.
+- **`apcore-rust Config` no longer silently ignored spec-conformant YAML.** The struct previously declared executor and observability fields at the root of `Config` instead of nested under `executor` and `observability` namespaces, contradicting PROTOCOL_SPEC §9.1 and the Python/TypeScript SDKs. Loading a YAML file that used the canonical nested form would cause typed fields to remain at default values while the user data ended up in an unused `settings` HashMap entry. **v0.18.0 restructures `apcore-rust Config` to a nested form**, drops the legacy short field names, and rejects v0.17.x-style YAML with a hard error. See `apcore-rust/CHANGELOG.md` for the full type-by-type rename table.
 - **`docs/spec/design-context-annotations-acl.md` no longer contradicts shipped spec.** The historical design document still claimed "ModuleAnnotations is frozen with 11 fields" and recommended `#[serde(flatten)]` for the Rust extra field. A superseded banner now points readers at PROTOCOL_SPEC §4.4.1 for current normative behavior; the original text is preserved for historical context.
 - **`mkdocs.yml` Home nav** now points at `README.md` (which exists) instead of `index.md` (which never did), eliminating a noisy mkdocs build warning.
 - **PROTOCOL_SPEC §2.1 — Algorithm A01 step 6 and the directory_to_id YAML format block** still said `max_length: 128` after the §2.7 bump to 192. Both updated to 192. Internal contradiction with the §2.7 EBNF constraint and the version history changelog entry resolved.

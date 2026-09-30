@@ -45,11 +45,13 @@ When documenting a feature, provide examples for all three languages using tabs:
 ## When adding a new page
 1. Create the file in the correct subdirectory
 2. Add to `mkdocs.yml` nav section in the right position
-3. Add to `README.md` Documentation Index if the page is user-facing
-4. Verify build: `mkdocs build` with no warnings
+3. Add to the section index page (`features/index.md`, `guides/index.md` or `spec/index.md`); README links only to section indexes
+4. Verify build: `mkdocs build --strict` with no warnings (anchor validation is on)
 
 ## Content rules
 - `description` field (≤ 200 chars, plain text) is always required in module examples
 - `documentation` field (≤ 5000 chars, Markdown allowed) is optional but recommended
 - Code examples must be complete and runnable — never truncate
 - Do not add user-facing content to `planning/` directory
+- Describe current behaviour only; history belongs in CHANGELOG.md and the decision records (cite `(D-xx)` at most)
+- Plain-text blocks (ASCII diagrams, output) use ```text, never a bare fence

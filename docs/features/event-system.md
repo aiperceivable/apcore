@@ -1,33 +1,27 @@
 ---
-description: "Global EventEmitter bus for framework lifecycle events: thread-safe subscribers, non-blocking thread-pool dispatch, ApCoreEvent envelope, EventSubscriber protocol, built-in Webhook/A2A."
+description: "EventEmitter bus for framework lifecycle events: ApCoreEvent envelope, EventSubscriber protocol, exact and pattern subscriptions, built-in subscribers, per-subscriber retry, dead-letter events."
 ---
 
 # Event System
 
 <!-- preamble-tier-doc -->
-> **Type:** Implementation guide. **Normative spec:** [PROTOCOL_SPEC](../spec/protocol-spec.md) §10 Observability Specification.
+> **Type:** Implementation guide. **Normative spec:** [PROTOCOL_SPEC §9.16](../spec/protocol-spec.md#916-event-type-naming-convention-and-canonical-definitions) Event Type Naming Convention and Canonical Definitions.
 
 
 ## Overview
 
-The event system provides a global event bus for framework-level lifecycle events. It enables real-time monitoring, alerting, and integration with external platforms through a subscriber-based architecture. Events are dispatched asynchronously via a thread pool, ensuring that event handling never blocks module execution.
+The event system is a bus for framework lifecycle events — module registration, health thresholds, runtime control, governance decisions, delivery failures. Subscribers receive events asynchronously: `emit()` never blocks module execution and never raises into the emitting code. Each subscriber gets its own retry policy, and an event that cannot be delivered produces a dead-letter event instead of disappearing.
+
+With `sys_modules.enabled` and `sys_modules.events.enabled`, `APCore` creates the emitter, wires the framework's emitters to it, and exposes it as `client.events` ([APCore Unified Client](./apcore-client.md#construction-with-a-config)).
 
 ## Requirements
 
-### Core Event Bus
-- Provide an `EventEmitter` class with thread-safe subscriber management and non-blocking event dispatch.
-- Define an `ApCoreEvent` frozen dataclass as the standard event envelope.
-- Define an `EventSubscriber` runtime-checkable protocol with a single `async on_event()` method.
-- Errors in one subscriber **MUST NOT** propagate to other subscribers or block the emitter.
-
-### Built-in Subscribers
-- `WebhookSubscriber` — HTTP POST delivery with configurable retry (5xx and connection errors only).
-- `A2ASubscriber` — Agent-to-Agent protocol bridge with bearer/dict auth support.
-- Both require an HTTP client dependency provided by the SDK (e.g., `aiohttp` in the Python SDK, available via the `events` optional install group).
-
-### Extensibility
-- Subscriber type registry with factory pattern for config-driven instantiation.
-- Custom subscribers can be created by implementing the `EventSubscriber` protocol.
+- Provide an `EventEmitter` with thread-safe subscriber management and non-blocking dispatch.
+- Define `ApCoreEvent` as the immutable event envelope.
+- Define the `EventSubscriber` protocol: an async `on_event()` plus optional `event_pattern`, `subscriber_id`, `subscriber_type`, `retry` and `on_failure` members.
+- Errors in one subscriber **MUST NOT** propagate to other subscribers or to the emitter's caller.
+- Retry failed deliveries per subscriber and emit `apcore.event.delivery_failed` when retries are exhausted.
+- Provide built-in `webhook`, `a2a`, `file`, `stdout` and `filter` subscribers, and a registry of subscriber factories for config-driven instantiation.
 
 ## Technical Design
 
@@ -42,9 +36,9 @@ The event system provides a global event bus for framework-level lifecycle event
 
     @dataclass(frozen=True)
     class ApCoreEvent:
-        event_type: str               # Event identifier
+        event_type: str               # e.g. "apcore.module.toggled"
         module_id: str | None         # Associated module (None for global events)
-        timestamp: str                # ISO 8601 UTC timestamp
+        timestamp: str                # ISO 8601 UTC
         severity: str                 # "info" | "warn" | "error" | "fatal"
         data: dict[str, Any]          # Event-specific payload
     ```
@@ -52,14 +46,15 @@ The event system provides a global event bus for framework-level lifecycle event
 === "TypeScript"
 
     ```typescript
-    // From apcore-js/events
     export interface ApCoreEvent {
-        readonly eventType: string;            // Event identifier
-        readonly moduleId: string | null;      // Associated module (null for global events)
-        readonly timestamp: string;            // ISO 8601 UTC timestamp
-        readonly severity: string;             // "info" | "warn" | "error" | "fatal"
-        readonly data: Record<string, unknown>; // Event-specific payload
+        readonly eventType: string;
+        readonly moduleId: string | null;       // null for global events
+        readonly timestamp: string;             // ISO 8601 UTC
+        readonly severity: string;              // "info" | "warn" | "error" | "fatal"
+        readonly data: Record<string, unknown>;
     }
+
+    // Build one with createEvent(eventType, moduleId, severity, data) — it stamps the timestamp.
     ```
 
 === "Rust"
@@ -70,17 +65,20 @@ The event system provides a global event bus for framework-level lifecycle event
     #[derive(Debug, Clone, Serialize, Deserialize)]
     pub struct ApCoreEvent {
         pub event_type: String,
-        pub timestamp: String,                  // ISO 8601 UTC timestamp
+        pub timestamp: String,                  // ISO 8601 UTC
         pub data: serde_json::Value,
         #[serde(skip_serializing_if = "Option::is_none")]
         pub module_id: Option<String>,
         pub severity: String,                   // "info" | "warn" | "error" | "fatal"
     }
+
+    // Construct with ApCoreEvent::new(event_type, data) (severity "info", no module)
+    // or ApCoreEvent::with_module(event_type, data, module_id, severity).
     ```
 
-Immutable by design (Python uses `frozen=True`; TypeScript uses `readonly`; Rust passes events as `&ApCoreEvent` references) — prevents accidental mutation after emission.
+Events are immutable once emitted (Python `frozen=True`, TypeScript `readonly`, Rust subscribers receive `&ApCoreEvent`). On the wire (webhook, A2A, file) an event is a JSON object with the snake_case keys `event_type`, `module_id`, `timestamp`, `severity`, `data`.
 
-### EventSubscriber Protocol
+### EventSubscriber
 
 === "Python"
 
@@ -93,32 +91,49 @@ Immutable by design (Python uses `frozen=True`; TypeScript uses `readonly`; Rust
     @runtime_checkable
     class EventSubscriber(Protocol):
         async def on_event(self, event: ApCoreEvent) -> None: ...
+
+    # Optional attributes read by the emitter:
+    #   event_pattern: str              (default "*")
+    #   subscriber_id: str              (generated as "<type>-<n>" when absent)
+    #   subscriber_type: str            (default derived from the class name)
+    #   retry: EventRetryConfig | dict  (default policy below)
+    #   async on_failure(event, error, attempt_count)
     ```
 
 === "TypeScript"
 
     ```typescript
-    import type { ApCoreEvent } from "apcore-js";
+    import type { ApCoreEvent, EventRetryConfig } from "apcore-js";
 
     export interface EventSubscriber {
         onEvent(event: ApCoreEvent): void | Promise<void>;
+        readonly subscriberId?: string;
+        readonly subscriberType?: string;
+        readonly eventPattern?: string;          // default "*"
+        readonly retry?: EventRetryConfig;
+        onFailure?(event: ApCoreEvent, error: Error, attemptCount: number): void | Promise<void>;
     }
     ```
 
 === "Rust"
 
     ```rust
-    use async_trait::async_trait;
     use apcore::errors::ModuleError;
-    use apcore::events::ApCoreEvent;
+    use apcore::events::{ApCoreEvent, EventRetryConfig};
+    use async_trait::async_trait;
 
     #[async_trait]
     pub trait EventSubscriber: Send + Sync + std::fmt::Debug {
         fn subscriber_id(&self) -> &str { "default" }
         fn event_pattern(&self) -> &str { "*" }
+        fn subscriber_type(&self) -> &str { "subscriber" }
+        fn retry(&self) -> EventRetryConfig { EventRetryConfig::default() }
+        async fn on_failure(&self, _event: &ApCoreEvent, _error: &ModuleError, _attempt_count: u32) {}
         async fn on_event(&self, event: &ApCoreEvent) -> Result<(), ModuleError>;
     }
     ```
+
+Python's `EventEmitter.subscribe()` raises `TypeError` when `on_event` is not a coroutine function. In Rust, give every subscriber a distinct `subscriber_id()`: the default `"default"` makes subscribers indistinguishable to `unsubscribe_by_id`.
 
 ### EventEmitter
 
@@ -133,7 +148,8 @@ Immutable by design (Python uses `frozen=True`; TypeScript uses `readonly`; Rust
         def subscribe(self, subscriber: EventSubscriber) -> None: ...
         def unsubscribe(self, subscriber: EventSubscriber) -> None: ...
         def emit(self, event: ApCoreEvent) -> None: ...
-        def flush(self, timeout: float = 5.0) -> None: ...
+        def flush(self, timeout: float = 5.0) -> None: ...     # seconds
+        def shutdown(self, timeout: float = 5.0) -> None: ...  # seconds
     ```
 
 === "TypeScript"
@@ -141,145 +157,209 @@ Immutable by design (Python uses `frozen=True`; TypeScript uses `readonly`; Rust
     ```typescript
     import type { ApCoreEvent, EventSubscriber } from "apcore-js";
 
-    export class EventEmitter {
-        constructor(maxPending?: number);
+    export declare class EventEmitter {
+        constructor(maxPending?: number);                // default 1000
         subscribe(subscriber: EventSubscriber): void;
         unsubscribe(subscriber: EventSubscriber): void;
         emit(event: ApCoreEvent): void;
-        // timeoutMs in ms (default 5000); pass 0 to wait indefinitely.
-        flush(timeoutMs?: number): Promise<void>;
+        flush(timeoutMs?: number): Promise<void>;        // default 5000; 0 waits indefinitely
+        shutdown(timeoutMs?: number): Promise<void>;
     }
     ```
 
 === "Rust"
 
+    | Method | Signature |
+    |--------|-----------|
+    | `new` | `EventEmitter::new() -> EventEmitter` |
+    | `subscribe` | `fn subscribe(&self, Box<dyn EventSubscriber>) -> SubscriberHandle` |
+    | `unsubscribe_handle` | `fn unsubscribe_handle(&self, SubscriberHandle) -> bool` |
+    | `unsubscribe` / `unsubscribe_by_id` | `fn unsubscribe(&self, &dyn EventSubscriber) -> bool` / `fn unsubscribe_by_id(&self, &str) -> bool` — match by `subscriber_id()` |
+    | `emit` | `async fn emit(&self, &ApCoreEvent)` — spawns the deliveries and returns |
+    | `emit_spawn` | `fn emit_spawn(&self, ApCoreEvent)` — the same, from synchronous code |
+    | `flush` | `async fn flush(&self, timeout_ms: u64) -> Result<(), ModuleError>` (`0` waits indefinitely); `flush_default()` uses 5000 ms |
+    | `shutdown` | `async fn shutdown(&self, timeout_ms: u64) -> Result<(), ModuleError>` |
+
+**Dispatch model:**
+
+- `emit()` snapshots the subscribers and returns; delivery runs in the background (a thread pool driving a private event loop in Python, pending promises in TypeScript, spawned tasks in Rust). Subscribing or unsubscribing during delivery is safe.
+- Each matching subscriber is delivered to independently, with its own retry loop, so a slow or failing subscriber does not delay the others.
+- `flush()` waits for pending deliveries up to its timeout and returns without error when the timeout elapses. The unit is per-SDK and named by the parameter: Python takes seconds, TypeScript and Rust milliseconds. Pass a positive value — `0` returns immediately in Python and waits indefinitely in TypeScript and Rust.
+- After `shutdown()`, `emit()` drops events silently and `flush()` returns immediately.
+
+### Subscribing
+
+`client.on(event_type, handler)` delivers an event only when its type **equals** `event_type`. There is no glob matching: `client.on("apcore.registry.*", …)` subscribes to the literal type `apcore.registry.*` and receives nothing. To receive several types, subscribe once per type:
+
+=== "Python"
+    ```python
+    from apcore import APCore
+    from apcore.config import Config
+
+    client = APCore(config=Config.load("apcore.yaml"))  # sys_modules.events.enabled: true
+
+    def on_registry_event(event) -> None:
+        print(f"registry: {event.event_type} {event.module_id}")
+
+    subs = [
+        client.on(event_type, on_registry_event)
+        for event_type in ("apcore.registry.module_registered", "apcore.registry.module_unregistered")
+    ]
+    ```
+=== "TypeScript"
+    ```typescript
+    import { APCore, Config, type ApCoreEvent } from "apcore-js";
+
+    const client = new APCore({ config: Config.load("apcore.yaml") }); // sys_modules.events.enabled: true
+
+    const onRegistryEvent = (event: ApCoreEvent): void => {
+        console.log(`registry: ${event.eventType} ${event.moduleId}`);
+    };
+
+    const subs = ["apcore.registry.module_registered", "apcore.registry.module_unregistered"].map(
+        (eventType) => client.on(eventType, onRegistryEvent),
+    );
+    ```
+=== "Rust"
+    ```rust
+    use apcore::errors::ModuleError;
+    use apcore::APCore;
+
+    fn main() -> Result<(), ModuleError> {
+        let mut client = APCore::from_path("apcore.yaml")?; // sys_modules.events.enabled: true
+
+        let mut ids = Vec::new();
+        for event_type in ["apcore.registry.module_registered", "apcore.registry.module_unregistered"] {
+            ids.push(client.on(event_type, |event| {
+                println!("registry: {} {:?}", event.event_type, event.module_id);
+            })?);
+        }
+        Ok(())
+    }
+    ```
+
+**Pattern subscriptions** use a subscriber's `event_pattern`, subscribed directly on the emitter. Patterns are matched with algorithm **A25** ([§9.16.3](../spec/protocol-spec.md#9163-event-pattern-matching)) against the event type, case-sensitively: `*` matches any run of characters, `?` exactly one, and every other character is literal. A pattern is never rejected — one that matches nothing delivers nothing.
+
+=== "Python"
+    ```python
+    from apcore import APCore
+    from apcore.config import Config
+    from apcore.events import ApCoreEvent
+
+    client = APCore(config=Config.load("apcore.yaml"))
+
+    class RegistryWatcher:
+        event_pattern = "apcore.registry.*"
+        subscriber_id = "registry-watcher"
+
+        async def on_event(self, event: ApCoreEvent) -> None:
+            print(f"registry: {event.event_type} {event.module_id}")
+
+    if client.events is not None:
+        client.events.subscribe(RegistryWatcher())
+    ```
+=== "TypeScript"
+    ```typescript
+    import { APCore, Config, type EventSubscriber } from "apcore-js";
+
+    const client = new APCore({ config: Config.load("apcore.yaml") });
+
+    const registryWatcher: EventSubscriber = {
+        subscriberId: "registry-watcher",
+        eventPattern: "apcore.registry.*",
+        onEvent: (event) => {
+            console.log(`registry: ${event.eventType} ${event.moduleId}`);
+        },
+    };
+
+    client.events?.subscribe(registryWatcher);
+    ```
+=== "Rust"
     ```rust
     use apcore::errors::ModuleError;
     use apcore::events::{ApCoreEvent, EventSubscriber};
+    use apcore::APCore;
+    use async_trait::async_trait;
 
-    pub struct EventEmitter { /* ... */ }
+    #[derive(Debug)]
+    struct RegistryWatcher;
 
-    impl EventEmitter {
-        pub fn new() -> Self;
-        pub fn subscribe(&mut self, subscriber: Box<dyn EventSubscriber>);
-        pub fn unsubscribe(&mut self, subscriber: &dyn EventSubscriber) -> bool;
-        pub fn unsubscribe_by_id(&mut self, subscriber_id: &str) -> bool;
-        pub async fn emit(&self, event: &ApCoreEvent);
-        pub fn emit_spawn(&self, event: ApCoreEvent);
-        pub fn flush(&self, timeout_ms: u64) -> Result<(), ModuleError>;
-        pub async fn shutdown(&mut self, timeout_ms: u64) -> Result<(), ModuleError>;
+    #[async_trait]
+    impl EventSubscriber for RegistryWatcher {
+        fn subscriber_id(&self) -> &str { "registry-watcher" }
+        fn event_pattern(&self) -> &str { "apcore.registry.*" }
+
+        async fn on_event(&self, event: &ApCoreEvent) -> Result<(), ModuleError> {
+            println!("registry: {} {:?}", event.event_type, event.module_id);
+            Ok(())
+        }
+    }
+
+    fn main() -> Result<(), ModuleError> {
+        let client = APCore::from_path("apcore.yaml")?;
+        if let Some(events) = client.events() {
+            let _handle = events.subscribe(Box::new(RegistryWatcher));
+        }
+        Ok(())
     }
     ```
 
-**Dispatch model:**
-- `emit()` returns immediately. Delivery is handled asynchronously by a bounded background worker pool (e.g., a thread pool in Python with a persistent async event loop).
-- Each `emit()` takes a snapshot of current subscribers, so subscribe/unsubscribe during delivery is safe.
-- Failed deliveries are logged but never re-raised.
-- `flush()` blocks until all pending deliveries complete (useful in tests and graceful shutdown).
+A subscriber whose pattern is `"*"` receives every event **except** `apcore.event.delivery_failed`, which is delivered only to subscribers with a non-wildcard pattern that matches it — so a failing catch-all subscriber cannot recurse on reports about itself.
 
-### WebhookSubscriber
+### Built-in Subscribers
+
+| Type | Delivers to | Config fields (besides `id`, `retry`) |
+|------|-------------|---------------------------------------|
+| `webhook` | HTTP POST of the event JSON | `url`, `headers`, `timeout_ms` (default 5000); `retry_count` (retries after the first attempt, i.e. `max_attempts = retry_count + 1`; ignored when `retry` is present) |
+| `a2a` | HTTP POST of `{"skillId": …, "event": {…}}` | `platform_url`, `auth` (string → `Authorization: Bearer <auth>`, map → merged into headers), `skill_id` (default `"apevo.event_receiver"`), `timeout_ms` |
+| `file` | Appends to a local file | `path`, `append` (default `true`), `format` (`json` default / `text`), `rotate_bytes` |
+| `stdout` | Standard output | `format` (`text` default / `json`), `level_filter` |
+| `filter` | Another subscriber, for matching events only | `delegate_type`, `delegate_config`, `include_events`, `exclude_events` |
+
+- **HTTP delivery (`webhook`, `a2a`).** Sends `Content-Type: application/json`. 2xx is success. 5xx, connection errors and timeouts raise inside the subscriber, so the emitter's retry policy applies. 4xx is logged as a permanent failure and is not retried. Python needs the `events` extra (`pip install apcore[events]`, which provides `aiohttp`) — without it every delivery fails with `ImportError` and takes the retry/dead-letter path; Rust needs the `events` cargo feature.
+- **`filter`.** When `include_events` is present it is decisive: an event is forwarded if it matches any entry and discarded otherwise, and `exclude_events` is not consulted. Otherwise an event matching any `exclude_events` entry is discarded. Both lists use A25. Because a pattern that fails to match means the event is *delivered*, `exclude_events` fails open — keep its patterns simple and test them.
+- **`id`.** Every subscriber has a stable `subscriber_id`; when the config omits `id`, the SDK generates `"<type>-<n>"`. It appears in dead-letter and circuit events.
+
+Constructors of the two HTTP subscribers:
 
 === "Python"
 
     ```python
-    from apcore.events import WebhookSubscriber
+    from apcore.events import A2ASubscriber, EventRetryConfig, WebhookSubscriber
 
+    webhook = WebhookSubscriber(
+        "https://example.com/hook",
+        headers={"X-Source": "apcore"},
+        timeout_ms=5000,
+        id="audit-hook",
+        retry=EventRetryConfig(max_attempts=5),
+        event_pattern="apcore.*",
+    )
 
-    class WebhookSubscriber:
-        def __init__(
-            self,
-            url: str,
-            headers: dict[str, str] | None = None,
-            timeout_ms: int = 5000,
-            *,
-            id: str | None = None,
-            retry: EventRetryConfig | None = None,
-            event_pattern: str = "*",
-        ) -> None: ...
+    a2a = A2ASubscriber(
+        "https://agent.example.com",
+        auth="bearer-token-123",
+        timeout_ms=5000,
+        skill_id="myapp.event_receiver",
+        id="agent-bridge",
+    )
     ```
 
 === "TypeScript"
 
     ```typescript
-    import { WebhookSubscriber } from "apcore-js";
+    import { A2ASubscriber, WebhookSubscriber } from "apcore-js";
 
-    // Constructor signature
-    new WebhookSubscriber(
-        url: string,
-        headers?: Record<string, string>,
-        // number, or an options object { timeoutMs?, retry?, id? }
-        timeoutMsOrOpts?: number | { timeoutMs?: number; retry?: RetryConfig; id?: string },
-        id?: string,
+    const webhook = new WebhookSubscriber(
+        "https://example.com/hook",
+        { "X-Source": "apcore" },
+        { timeoutMs: 5000, id: "audit-hook", retry: { maxAttempts: 5 } },
     );
-    ```
 
-=== "Rust"
-
-    ```rust
-    use apcore::events::WebhookSubscriber;
-    use std::collections::HashMap;
-
-    pub struct WebhookSubscriber {
-        pub id: String,
-        pub url: String,
-        pub event_pattern: String,
-        pub headers: HashMap<String, String>,
-        pub retry_count: u32,   // default 3
-        pub timeout_ms: u64,    // default 5000
-    }
-
-    impl WebhookSubscriber {
-        pub fn new(
-            id: impl Into<String>,
-            url: impl Into<String>,
-            event_pattern: impl Into<String>,
-        ) -> Self;
-    }
-    ```
-
-**Delivery:**
-- Sends `POST` with `Content-Type: application/json` body containing the serialized event as a JSON object.
-- Custom headers are merged with the content-type header.
-
-**Retry strategy:**
-
-| Response | Action |
-|----------|--------|
-| 2xx | Success, stop |
-| 4xx | No retry (client error) |
-| 5xx | Retry up to `retry_count` times |
-| Connection error / timeout | Retry like 5xx |
-
-### A2ASubscriber
-
-=== "Python"
-
-    ```python
-    from apcore.events import A2ASubscriber
-
-
-    class A2ASubscriber:
-        def __init__(
-            self,
-            platform_url: str,
-            auth: str | dict[str, str] | None = None,
-            skill_id: str = "apevo.event_receiver",
-            timeout_ms: int = 5000,
-        ) -> None: ...
-    ```
-
-=== "TypeScript"
-
-    ```typescript
-    import { A2ASubscriber } from "apcore-js";
-
-    // Constructor signature — `auth` may be a Bearer token string or a
-    // record of headers to merge into the request.
-    new A2ASubscriber(
-        platformUrl: string,
-        auth?: string | Record<string, string>,
-        skillId?: string,      // default "apevo.event_receiver"
-        timeoutMs?: number,    // default 5000
+    const a2a = new A2ASubscriber(
+        "https://agent.example.com",
+        "bearer-token-123",
+        { timeoutMs: 5000, id: "agent-bridge", skillId: "myapp.event_receiver" },
     );
     ```
 
@@ -287,218 +367,106 @@ Immutable by design (Python uses `frozen=True`; TypeScript uses `readonly`; Rust
 
     ```rust
     use apcore::events::subscribers::{A2AAuth, A2ASubscriber};
-    use std::collections::HashMap;
+    use apcore::events::{EventRetryConfig, WebhookSubscriber};
 
-    pub enum A2AAuth {
-        Bearer(String),                   // → Authorization: Bearer <token>
-        Headers(HashMap<String, String>), // → merged into request headers
-    }
+    fn main() {
+        let mut webhook = WebhookSubscriber::new("audit-hook", "https://example.com/hook", "apcore.*")
+            .with_retry(EventRetryConfig { max_attempts: 5, ..Default::default() });
+        webhook.headers.insert("X-Source".to_string(), "apcore".to_string());
 
-    pub struct A2ASubscriber {
-        pub id: String,
-        pub platform_url: String,
-        pub auth: Option<A2AAuth>,
-        pub skill_id: String,
-        pub event_pattern: String,
-        pub timeout_ms: u64,              // default 5000
-    }
-
-    impl A2ASubscriber {
-        pub fn new(
-            id: impl Into<String>,
-            platform_url: impl Into<String>,
-            event_pattern: impl Into<String>,
-        ) -> Self;
+        let mut a2a = A2ASubscriber::new("agent-bridge", "https://agent.example.com", "*")
+            .with_skill_id("myapp.event_receiver");
+        a2a.auth = Some(A2AAuth::Bearer("bearer-token-123".to_string()));
     }
     ```
 
-**Authentication:**
+### Subscriber Factories
 
-| `auth` value | Behavior |
-|-------------|----------|
-| `str` | Added as `Authorization: Bearer {auth}` |
-| `dict` | Keys merged into request headers |
-| `None` | No auth header |
-
-**Payload format:**
-```json
-{
-  "skillId": "apevo.event_receiver",
-  "event": {
-    "event_type": "...",
-    "module_id": "...",
-    "timestamp": "...",
-    "severity": "...",
-    "data": { }
-  }
-}
-```
-
-**Delivery:** Retries on 5xx, connection errors, and timeouts according to the unified `retry` policy. Errors are logged and a dead-letter event is emitted on exhaustion. (See [§Event Delivery Semantics](#event-delivery-semantics-issue-61)).
-
-### Subscriber Type Registry
-
-Extensible factory system for config-driven subscriber instantiation:
+Config-driven subscribers are built by factories keyed by `type`. The five built-in types are registered automatically; add your own with `register_subscriber_type` — the factory is called once per configured entry and receives that entry's config object:
 
 === "Python"
-
     ```python
-    from apcore.events import EventSubscriber
+    from apcore.events import ApCoreEvent
     from apcore.sys_modules.registration import register_subscriber_type
 
 
-    # Register a custom subscriber type
-    def my_factory(config: dict) -> EventSubscriber:
-        return MyCustomSubscriber(**config)
+    class SlackSubscriber:
+        subscriber_type = "slack"
 
-    register_subscriber_type("my_type", my_factory)
-    ```
+        def __init__(self, webhook_url: str, channel: str = "#general") -> None:
+            self.webhook_url = webhook_url
+            self.channel = channel
 
-=== "TypeScript"
+        async def on_event(self, event: ApCoreEvent) -> None:
+            print(f"post {event.event_type} to {self.channel}")
 
-    ```typescript
-    import { registerSubscriberType } from "apcore-js";
-    import type { EventSubscriber } from "apcore-js";
 
-    // Register a custom subscriber type
-    registerSubscriberType("my_type", (config): EventSubscriber => {
-        return new MyCustomSubscriber(config);
-    });
-    ```
-
-=== "Rust"
-
-    ```rust
-    use apcore::events::{register_subscriber_type, EventSubscriber};
-
-    // Factory closure receives a config Value, returns a boxed EventSubscriber
     register_subscriber_type(
-        "my_type",
-        |config| Box::new(MyCustomSubscriber::from_config(config)),
-    );
-    ```
-
-**Built-in types:**
-
-| Type | Factory Config |
-|------|---------------|
-| `webhook` | `url`, `headers`, `retry_count`, `timeout_ms` |
-| `a2a` | `platform_url`, `auth`, `timeout_ms` |
-
-**API:**
-- `register_subscriber_type(type_name, factory)` — Add a custom type.
-- `unregister_subscriber_type(type_name)` — Remove a type.
-- `reset_subscriber_registry()` — Reset to built-in types only.
-
-## Event Naming Convention
-
-Framework-emitted events **MUST** use the form `apcore.<subsystem>.<event>` where:
-
-- `<subsystem>` is one of: `registry`, `health`, `config`, `module`, `modules`, `task`, `acl`, `approval`, `subscriber` (extensible — additional subsystem names may be reserved by future spec revisions).
-- `<event>` is a `snake_case` past-tense verb describing the state transition (e.g., `module_registered`, `error_threshold_exceeded`, `recovered`, `updated`).
-
-**Examples:**
-
-- `apcore.registry.module_registered`
-- `apcore.registry.module_unregistered`
-- `apcore.health.error_threshold_exceeded`
-- `apcore.health.latency_threshold_exceeded`
-- `apcore.health.recovered`
-- `apcore.config.updated`
-
-Subscribers **MAY** filter by glob patterns: `apcore.registry.*`, `apcore.health.*`, `apcore.*`.
-
-Patterns are matched with algorithm **A25** (`match_glob`, [PROTOCOL_SPEC §9.2.3](../spec/protocol-spec.md)) against the event type, case-sensitively. `*` matches zero or more characters and `?` matches exactly one; **every other character is a literal**, `[`, `]`, `{`, `}` and `\` included. A pattern is never rejected — one matching nothing simply delivers nothing.
-
-### Glob subscription example
-
-=== "Python"
-    ```python
-    from apcore import APCore
-    from apcore.config import Config
-
-    config = Config.load("apcore.yaml")
-    client = APCore(config=config)
-
-    # Subscribe to every registry event (module_registered + module_unregistered)
-    client.on("apcore.registry.*", lambda e: print(f"registry: {e.event_type} {e.data}"))
-
-    # Subscribe to every health event
-    client.on("apcore.health.*", lambda e: print(f"health: {e.event_type}"))
+        "slack",
+        lambda config: SlackSubscriber(config["webhook_url"], config.get("channel", "#general")),
+    )
     ```
 === "TypeScript"
     ```typescript
-    import { APCore, Config } from "apcore-js";
+    import { registerSubscriberType, type ApCoreEvent, type EventSubscriber } from "apcore-js";
 
-    const config = Config.load("apcore.yaml");
-    const client = new APCore({ config });
+    class SlackSubscriber implements EventSubscriber {
+        readonly subscriberType = "slack";
 
-    // Subscribe to every registry event
-    client.on("apcore.registry.*", (event) =>
-        console.log(`registry: ${event.eventType}`, event.data),
-    );
+        constructor(
+            private readonly webhookUrl: string,
+            private readonly channel: string,
+        ) {}
 
-    // Subscribe to every health event
-    client.on("apcore.health.*", (event) =>
-        console.log(`health: ${event.eventType}`),
+        async onEvent(event: ApCoreEvent): Promise<void> {
+            console.log(`post ${event.eventType} to ${this.channel} via ${this.webhookUrl}`);
+        }
+    }
+
+    registerSubscriberType("slack", (config) =>
+        new SlackSubscriber(String(config.webhook_url), String(config.channel ?? "#general")),
     );
     ```
 === "Rust"
     ```rust
-    use apcore::APCore;
+    use apcore::errors::ModuleError;
+    use apcore::events::{register_subscriber_type, ApCoreEvent, EventSubscriber};
+    use async_trait::async_trait;
+    use serde_json::Value;
 
-    let client = APCore::from_path("apcore.yaml")?;
+    #[derive(Debug)]
+    struct SlackSubscriber {
+        webhook_url: String,
+        channel: String,
+    }
 
-    // Subscribe to every registry event
-    client.on("apcore.registry.*", Box::new(RegistryLogger));
+    #[async_trait]
+    impl EventSubscriber for SlackSubscriber {
+        fn subscriber_type(&self) -> &str { "slack" }
 
-    // Subscribe to every health event
-    client.on("apcore.health.*", Box::new(HealthLogger));
+        async fn on_event(&self, event: &ApCoreEvent) -> Result<(), ModuleError> {
+            println!("post {} to {} via {}", event.event_type, self.channel, self.webhook_url);
+            Ok(())
+        }
+    }
+
+    fn main() {
+        register_subscriber_type(
+            "slack",
+            Box::new(|config: &Value| {
+                let subscriber = SlackSubscriber {
+                    webhook_url: config["webhook_url"].as_str().unwrap_or_default().to_string(),
+                    channel: config["channel"].as_str().unwrap_or("#general").to_string(),
+                };
+                Ok(Box::new(subscriber) as Box<dyn EventSubscriber>)
+            }),
+        );
+    }
     ```
 
-### Deprecation: legacy event names
+The registry also offers `unregister_subscriber_type(type_name)`, `reset_subscriber_registry()` (back to the built-ins) and a function that builds one subscriber from a config object (`create_subscriber_from_config` / `createSubscriberFromConfig` / `create_subscriber`). Python additionally re-exports the registration function as `apcore.events.register_subscriber_factory`.
 
-Some early SDK builds emitted unprefixed names (`module_registered`, `module_unregistered`) and `apcore.error.threshold_exceeded` / `apcore.latency.threshold_exceeded` (with `error` / `latency` as the subsystem segment). These names do not conform to the `apcore.<subsystem>.<event>` convention above.
-
-**Normative rule:** Implementations **MUST** emit the canonical form. Through the v0.21.x cycle, implementations also dual-emitted the legacy name with `data.deprecated: true` so existing subscribers kept receiving events. **As of v0.22.0 dual-emission has ended and the legacy names are removed — implementations MUST emit only the canonical names** (see [protocol-spec.md §9.16](../spec/protocol-spec.md)).
-
-| Legacy name | Canonical name | Removed in |
-|-------------|----------------|----------------|
-| `module_registered` | `apcore.registry.module_registered` | v0.22.0 |
-| `module_unregistered` | `apcore.registry.module_unregistered` | v0.22.0 |
-| `apcore.error.threshold_exceeded` | `apcore.health.error_threshold_exceeded` | v0.22.0 |
-| `apcore.latency.threshold_exceeded` | `apcore.health.latency_threshold_exceeded` | v0.22.0 |
-
-> **Historical note (§9.16):** v0.18.0 removed an earlier set of legacy aliases. The dual-emit cycle described above is a separate canonicalization pass tracked under issue #36 / D-34.
-
-## Event Types
-
-Events emitted by the framework (canonical names):
-
-| Event Type | Severity | Source | Payload (`data`) |
-|------------|----------|--------|-------------------|
-| `apcore.registry.module_registered` | info | Registry bridge | `module_id` |
-| `apcore.registry.module_unregistered` | info | Registry bridge | `module_id` |
-| `apcore.config.updated` | info | `system.control.update_config` | `key`, `old_value`, `new_value` |
-| `apcore.module.reloaded` | info | `system.control.reload_module` | `module_id`, `previous_version`, `new_version` |
-| `apcore.module.toggled` | info | `system.control.toggle_feature` | `module_id`, `enabled` |
-| `apcore.health.recovered` | info | `PlatformNotifyMiddleware` | `module_id`, recovery details |
-| `apcore.health.error_threshold_exceeded` | error | `PlatformNotifyMiddleware` | `module_id`, `error_rate`, `threshold` |
-| `apcore.health.latency_threshold_exceeded` | warn | `PlatformNotifyMiddleware` | `module_id`, `p99_latency_ms`, `threshold` |
-| `apcore.approval.decision` | info / warn | Approval Gate (§7) | `module_id`, `status`, `approved_by`, `reason`, `approval_id`, `trace_id` |
-| `apcore.policy.override` | info | Approval Gate (§7) | `module_id`, `pattern`, `requires_approval`, `destructive`, `needs_approval`, `reason`, `trace_id` |
-| `apcore.acl.denied` | warn | ACL Check (§6) | `module_id`, `caller_id`, `reason`, `trace_id` |
-| `apcore.stream.post_validation_failed` | error | Executor (streaming Phase 3) | `error_type`, `message`, `trace_id` |
-| `apcore.registry.module_load_failed` | error | Registry | `module_id`, `callback_name`, `error_type`, `error_message` |
-| `apcore.circuit.opened` | warn | `CircuitBreakerMiddleware` | `module_id`, `caller_id`, `error_rate` |
-| `apcore.circuit.closed` | info | `CircuitBreakerMiddleware` | `module_id`, `caller_id`, `error_rate` |
-| `apcore.subscriber.circuit_opened` | warn | Event delivery (per-subscriber breaker) | `subscriber_id`, `subscriber_type`, `consecutive_failures` |
-| `apcore.subscriber.circuit_closed` | info | Event delivery (per-subscriber breaker) | `subscriber_id`, `subscriber_type` |
-| `apcore.event.delivery_failed` | error | Event bus (dead-letter path) | `event_type`, `reason`, `subscriber_id` |
-
-The three **governance events** (`apcore.approval.decision`, `apcore.policy.override`, `apcore.acl.denied`) make the ACL → policy → approval chain observable. They are emitted only when an event emitter is configured, are best-effort side channels, and are suppressed on a skipped gate / dry-run preflight. See [protocol-spec.md §7.9](../spec/protocol-spec.md#79-execution-policy-v190-76) and [§9.16.2](../spec/protocol-spec.md).
-
-## Configuration
+### Configuration
 
 ```yaml
 sys_modules:
@@ -506,805 +474,180 @@ sys_modules:
   events:
     enabled: true
     thresholds:
-      error_rate: 0.1              # 10% error rate triggers alert
-      latency_p99_ms: 5000.0       # 5s p99 triggers alert
+      error_rate: 0.1              # apcore.health.error_threshold_exceeded at >= 10%
+      latency_p99_ms: 5000.0       # apcore.health.latency_threshold_exceeded at p99 >= 5 s
     subscribers:
       - type: "webhook"
+        id: "platform-hook"
         url: "https://platform.example.com/events"
         headers:
-          Authorization: "Bearer token"
-          X-Custom: "value"
-        retry_count: 3
+          Authorization: "Bearer ${PLATFORM_TOKEN}"
         timeout_ms: 5000
-      - type: "a2a"
-        platform_url: "https://agent.example.com"
-        auth: "bearer-token-123"
-        timeout_ms: 5000
-```
-
-## Integration
-
-### Via APCore Client (Recommended)
-
-=== "Python"
-    ```python
-    from apcore import APCore
-    from apcore.config import Config
-
-    config = Config.load("apcore.yaml")
-    client = APCore(config=config)
-
-    # Subscribe with simple callback
-    sub = client.on("apcore.health.error_threshold_exceeded", lambda e: print(f"Alert: {e.data}"))
-
-    # Async handler
-    async def notify_admin(event):
-        await send_notification(event.data)
-
-    sub2 = client.on("apcore.module.toggled", notify_admin)
-
-    # Unsubscribe
-    client.off(sub)
-
-    # Direct emitter access
-    if client.events:
-        client.events.subscribe(my_custom_subscriber)
-    ```
-=== "TypeScript"
-    ```typescript
-    import { APCore, Config } from "apcore-js";
-
-    const config = Config.load('apcore.yaml');
-    const client = new APCore({ config });
-
-    // Subscribe with simple callback
-    const sub = client.on("apcore.health.error_threshold_exceeded", (event) => console.log(event.data));
-
-    // Another subscription
-    const sub2 = client.on("apcore.module.toggled", (event) => console.log(event.data));
-
-    // Unsubscribe
-    client.off(sub);
-
-    // Direct emitter access
-    if (client.events) {
-        client.events.subscribe(myCustomSubscriber);
-    }
-    ```
-=== "Rust"
-    ```rust
-    use apcore::APCore;
-
-    let client = APCore::from_path("apcore.yaml")?;
-
-    // Subscribe with simple callback
-    let sub = client.on("apcore.health.error_threshold_exceeded", Box::new(AlertSubscriber));
-
-    // Another subscription
-    let sub2 = client.on("apcore.module.toggled", Box::new(MySubscriber));
-
-    // Unsubscribe
-    client.off(&sub);
-
-    // Direct emitter access
-    if let Some(events) = client.events() {
-        events.subscribe(my_custom_subscriber);
-    }
-    ```
-
-### Via Direct EventEmitter
-
-=== "Python"
-    ```python
-    from apcore.events import EventEmitter, ApCoreEvent, WebhookSubscriber
-
-    emitter = EventEmitter(max_workers=4)
-    emitter.subscribe(WebhookSubscriber(url="https://example.com/hook"))
-
-    emitter.emit(ApCoreEvent(
-        event_type="custom.event",
-        module_id="my.module",
-        timestamp="2026-03-08T12:00:00Z",
-        severity="info",
-        data={"key": "value"},
-    ))
-
-    # Wait for delivery in tests
-    emitter.flush(timeout=5.0)
-    ```
-=== "TypeScript"
-    ```typescript
-    import { EventEmitter, createEvent, WebhookSubscriber } from "apcore-js";
-
-    // maxPending is positional (default 1000).
-    const emitter = new EventEmitter(1000);
-    emitter.subscribe(new WebhookSubscriber("https://example.com/hook"));
-
-    // ApCoreEvent is an interface, not a class — build it with createEvent(),
-    // which stamps `timestamp` for you.
-    emitter.emit(createEvent("custom.event", "my.module", "info", { key: "value" }));
-
-    // Wait for delivery in tests (milliseconds; 0 waits indefinitely)
-    await emitter.flush(5000);
-    ```
-=== "Rust"
-    ```rust
-    use apcore::events::{EventEmitter, ApCoreEvent, WebhookSubscriber};
-
-    let emitter = EventEmitter::new(4);
-    emitter.subscribe(Box::new(WebhookSubscriber::new("https://example.com/hook")));
-
-    emitter.emit(ApCoreEvent {
-        event_type: "custom.event".to_string(),
-        module_id: "my.module".to_string(),
-        timestamp: "2026-03-08T12:00:00Z".to_string(),
-        severity: "info".to_string(),
-        data: serde_json::json!({"key": "value"}),
-    });
-
-    // Wait for delivery in tests
-    emitter.flush(std::time::Duration::from_secs(5));
-    ```
-
-## Dependencies
-
-- `apcore.middleware.Middleware` — Base class for `PlatformNotifyMiddleware`.
-- `apcore.observability.metrics.MetricsCollector` — Used by `PlatformNotifyMiddleware` for threshold checks.
-
-??? info "Python SDK reference"
-    The following tables are **not protocol requirements** — they document the Python SDK's source layout and runtime dependencies for implementers/users of `apcore-python`.
-
-    **Source files:**
-
-    | File | Purpose |
-    |------|---------|
-    | `src/apcore/events/emitter.py` | `EventEmitter`, `ApCoreEvent`, `EventSubscriber` |
-    | `src/apcore/events/subscribers.py` | `WebhookSubscriber`, `A2ASubscriber` |
-    | `src/apcore/sys_modules/registration.py` | Subscriber factory registry, `register_sys_modules()` integration |
-    | `src/apcore/middleware/platform_notify.py` | `PlatformNotifyMiddleware` (threshold-based event emission) |
-    | `src/apcore/client.py` | `APCore.on()`, `APCore.off()`, `_CallbackSubscriber` |
-
-    **External dependencies:**
-
-    - `aiohttp` (optional) — Required for `WebhookSubscriber` and `A2ASubscriber`. Install with `pip install apcore[events]`.
-    - `threading` (stdlib) — Lock for subscriber list and pending futures.
-    - `concurrent.futures` (stdlib) — `ThreadPoolExecutor` for async dispatch.
-
-## Testing Strategy
-
-- **EventEmitter**: Subscribe/emit/unsubscribe lifecycle, concurrent emit safety, subscriber error isolation, flush blocking behavior.
-- **WebhookSubscriber**: 2xx/4xx/5xx response handling, retry count enforcement, timeout behavior, header merging.
-- **A2ASubscriber**: Auth modes (string/dict/None), payload format, error logging.
-- **Subscriber registry**: Custom type registration, factory invocation from config, reset to defaults.
-- **PlatformNotifyMiddleware**: Threshold crossing detection, hysteresis (recovery at 50% of threshold), event emission verification.
-
-## Contract: EventEmitter.emit
-
-### Inputs
-- `event_type` (str/string/&str, required) — event type identifier. Callers **MUST** provide a non-empty `event_type`; an empty value yields an event that no exact-match subscriber can ever receive. This is a **caller precondition, not a validated rejection**: consistent with the *Errors* and *Properties* sections below, `emit()` is fire-and-forget and does **not** inspect or reject `event_type`, so passing an empty string is a caller bug — never an `emit()` error. (Same "SDKs are mutually consistent; the spec text was the outlier" reconciliation as the `subscribe` amendment D10-016 below.)
-- `payload` (dict/object/Value, optional) — event payload; passed as-is to subscribers
-
-### Returns
-- On success: void/None/()
-
-### Overflow (normative)
-- An event accepted by `emit()` **MUST** eventually be either delivered to each matching subscriber or routed through the dead-letter path (`apcore.event.delivery_failed`). It **MUST NOT** be silently discarded.
-- An implementation **MAY** bound its pending-delivery buffer for memory safety (e.g. the TypeScript `EventEmitter(maxPending)` constructor option). On overflow it **MUST** handle the excess delivery by **either** (a) applying backpressure until capacity frees, **or** (b) failing the affected delivery through the dead-letter path with `reason: "pending_overflow"`. A log-only / `console.warn` drop that bypasses the dead-letter path is non-conformant.
-- This rule does **not** apply to the per-subscriber circuit breaker: once a subscriber's circuit is `OPEN`, its events are silently discarded by design (see *Subscriber circuit breaker*). Overflow concerns the emitter's own pending buffer, not an open subscriber circuit.
-
-### Errors
-- No errors raised to the caller. emit is fire-and-forget; subscriber errors are caught and logged internally, and pending-buffer overflow is handled out-of-band per the Overflow rules above — neither is ever propagated to the `emit()` caller.
-
-### Properties
-- async: false in Python and TypeScript (synchronous fire-and-forget dispatch — TypeScript pushes async subscriber promises into an internal pending list and returns synchronously); async in Rust (the Rust async runtime model requires `pub async fn emit`, but observable semantics still match Python/TS fire-and-forget — subscriber errors are caught and logged internally, never propagated to the caller). All three SDKs deliver the same observable contract: emit returns immediately, never raises, and never blocks the caller on subscriber execution.
-- thread_safe: true
-- pure: false (invokes subscriber callbacks)
-- idempotent: false
-
-## Contract: EventEmitter.subscribe
-
-> **Spec amendment (D10-016).** Earlier drafts described a handler-pattern
-> shape `subscribe(event_type, handler)` returning a subscription handle.
-> No SDK implements that. All three implementations adopt the
-> subscriber-pattern: callers construct a typed `EventSubscriber`
-> (carrying its own `event_pattern`, `subscriber_id`, and `on_event`
-> callback) and pass that single object to `subscribe`. The SDKs are
-> mutually consistent; the spec text was the outlier.
-
-### Inputs
-- `subscriber` (`EventSubscriber` instance, required) — subscriber object owning its own `event_pattern`, `subscriber_id`, and `on_event` callback. Construct via the SDK's typed subscriber classes (e.g. `RecordingSubscriber`, `WebhookSubscriber`, `A2ASubscriber`) or implement the `EventSubscriber` protocol/trait directly.
-
-### Errors
-- No errors raised by the cross-language contract. **Language-idiom exception (D10-002):** the Python SDK MAY raise `TypeError` at subscribe time if the subscriber's `on_event` is not a coroutine function. This is a dynamic-language precondition guard — the runtime equivalent of the compile-time type constraint that TypeScript (the `EventSubscriber` interface) and Rust (`Box<dyn EventSubscriber>`) enforce statically. A correctly-typed `EventSubscriber` never triggers it, so the guard is not an observable cross-SDK divergence.
-
-### Returns
-- On success: void/None/() — the SDKs do not return a separate handle. Removal uses `unsubscribe` / `unsubscribe_by_id` keyed on the subscriber object's identity (`apcore-python/src/apcore/events/emitter.py:55`, `apcore-typescript/src/events/emitter.ts:75`, `apcore-rust/src/events/emitter.rs:79`).
-
-### Properties
-- async: false
-- thread_safe: true
-- idempotent: false (each call creates a new subscription)
-
-## Contract: WebhookSubscriber.deliver
-
-### Inputs
-- `event` (ApCoreEvent, required) — event to deliver via HTTP POST
-
-### Errors
-- `DeliveryError(code=WEBHOOK_DELIVERY_FAILED)` — HTTP delivery failed after retry exhaustion
-
-### Returns
-- On success: void/None/()
-
-### Properties
-- async: true
-- thread_safe: true
-- pure: false (outbound HTTP)
-
----
-
-## Event Management Hardening (Issue #36)
-
-### Cross-Language SubscriberFactory Parity
-
-The `register_subscriber_type` API MUST be available in all three SDKs. Implementations MUST provide `register_subscriber_type(type_name, factory)` as a public function. The factory MUST be called once per subscriber entry in the configuration and MUST receive the subscriber's config sub-object.
-
-=== "Python"
-    ```python
-    from apcore.sys_modules.registration import register_subscriber_type
-
-    # Factory receives a config dict, returns an EventSubscriber instance
-    def slack_factory(config: dict) -> EventSubscriber:
-        return SlackSubscriber(
-            webhook_url=config["webhook_url"],
-            channel=config.get("channel", "#general"),
-        )
-
-    register_subscriber_type("slack", slack_factory)
-    ```
-=== "TypeScript"
-    ```typescript
-    import { registerSubscriberType } from "apcore-js";
-
-    // Factory function receives a config object, returns an EventSubscriber
-    registerSubscriberType("slack", (config) => new SlackSubscriber(config));
-    ```
-=== "Rust"
-    ```rust
-    use apcore::events::register_subscriber_type;
-
-    // Rust uses a closure or a struct that implements the SubscriberFactory trait
-    register_subscriber_type("slack", |config| Box::new(SlackSubscriber::from_config(config)));
-    ```
-
-Once registered, the `"slack"` type can be referenced by name in configuration:
-
-```yaml
-subscribers:
-  - type: "slack"
-    webhook_url: "https://hooks.slack.com/services/..."
-    channel: "#alerts"
-```
-
-### Built-in Subscriber Types
-
-Implementations MUST provide `file`, `stdout`, and `filter` as built-in subscriber types in addition to the existing `webhook` and `a2a` types. No registration call is required for built-in types.
-
-**Updated built-in type table:**
-
-| Type | Factory Config | Description |
-|------|---------------|-------------|
-| `webhook` | `id` (optional), `url`, `headers`, `retry_count`, `timeout_ms`, `retry` | HTTP POST delivery with configurable retry. |
-| `a2a` | `id` (optional), `platform_url`, `skill_id` (default `"apevo.event_receiver"`), `auth`, `timeout_ms`, `retry` | Agent-to-Agent protocol bridge with bearer/dict auth. |
-| `file` | `id` (optional), `path`, `append` (bool, default `true`), `format` (`json`/`text`), `rotate_bytes`, `retry` | Writes events to a local file. |
-| `stdout` | `id` (optional), `format` (`json`/`text`, default `text`), `level_filter`, `retry` | Writes events to stdout/stderr. |
-| `filter` | `id` (optional), `delegate_type`, `delegate_config`, `include_events` (list), `exclude_events` (list), `retry` | Wraps another subscriber with event-name filtering. |
-
-The `id` field (string, optional; SDK-generates a stable identifier when omitted) and the `retry` block (see [§Event Delivery Semantics](#event-delivery-semantics-issue-61)) apply uniformly to every subscriber type. The `skill_id` field on `a2a` was promoted from a hardcoded constant to a normative config field by issue #61.
-
-**Normative rules for `filter`:** A `filter` subscriber MUST forward matching events to its delegate and MUST silently discard non-matching events. Matching is evaluated against `include_events` first (if present); if the event name matches any pattern in `include_events`, it is forwarded. Events matching any pattern in `exclude_events` are discarded even when `include_events` is absent. Both lists are matched with algorithm **A25** ([PROTOCOL_SPEC §9.16.3](../spec/protocol-spec.md)).
-
-!!! warning "`exclude_events` fails open, so the matcher has to be the same everywhere"
-    A pattern that fails to match means the event **is delivered**. An implementation that
-    understands fewer metacharacters than the operator wrote therefore does not narrow the
-    filter — it opens it. A subscriber configured to exclude `secret.?vent` excluded it
-    under a full-`fnmatch` implementation and **received** it under a `*`-only one, with
-    nothing to indicate the pattern had not been understood (#117). `include_events` fails
-    the safe way round under the identical divergence, which is why it went unnoticed.
-
-**YAML configuration examples:**
-
-```yaml
-subscribers:
-  - type: "stdout"
-    format: "json"
-    level_filter: "error"   # only emit error-level events
-
-  - type: "file"
-    path: "/var/log/apcore/events.jsonl"
-    format: "json"
-    rotate_bytes: 10485760  # 10 MB
-
-  - type: "filter"
-    delegate_type: "webhook"
-    delegate_config:
-      url: "https://pagerduty.example.com/hook"
-    include_events:
-      - "apcore.health.*"
-      - "apcore.health.error_threshold_exceeded"
-```
-
-### Configuration-driven subscribers
-
-The five built-in factories (`webhook`, `a2a`, `file`, `stdout`, `filter`) plus any types added through `register_subscriber_type` can be instantiated declaratively from `apcore.yaml`. Implementations **MUST** invoke each registered factory exactly once per matching subscriber entry, passing the entry's config sub-object (with `type` removed).
-
-**Factory registration API (cross-language):**
-
-=== "Python"
-    ```python
-    from apcore.sys_modules.registration import register_subscriber_type
-
-    def slack_factory(config: dict) -> "EventSubscriber":
-        return SlackSubscriber(webhook_url=config["webhook_url"])
-
-    register_subscriber_type("slack", slack_factory)
-    ```
-=== "TypeScript"
-    ```typescript
-    import { registerSubscriberType } from "apcore-js";
-
-    registerSubscriberType("slack", (config) => new SlackSubscriber(config));
-    ```
-=== "Rust"
-    ```rust
-    use apcore::events::register_subscriber_type;
-
-    register_subscriber_type(
-        "slack",
-        |config| Box::new(SlackSubscriber::from_config(config)),
-    );
-    ```
-
-**YAML example loading three subscribers:**
-
-```yaml
-sys_modules:
-  enabled: true
-  events:
-    enabled: true
-    subscribers:
-      - type: "stdout"            # Built-in: pretty-print to stderr/stdout
-        format: "json"
-        level_filter: "info"
-
-      - type: "file"              # Built-in: append to a local JSONL log
+        retry:
+          max_attempts: 5
+          initial_backoff_ms: 250
+
+      - type: "file"
         path: "/var/log/apcore/events.jsonl"
         format: "json"
-        rotate_bytes: 10485760
+        rotate_bytes: 10485760     # 10 MB
 
-      - type: "filter"            # Built-in: wrap a webhook with event filter
-        delegate_type: "webhook"
+      - type: "filter"
+        id: "health-pager"
+        delegate_type: "a2a"
         delegate_config:
-          url: "https://platform.example.com/events"
-          headers:
-            Authorization: "Bearer ${PLATFORM_TOKEN}"
+          platform_url: "https://agent.example.com"
+          auth: "bearer-token-123"
+          skill_id: "myapp.event_receiver"
         include_events:
           - "apcore.health.*"
-          - "apcore.registry.*"
+
+      - type: "slack"              # a type added with register_subscriber_type
+        webhook_url: "https://hooks.slack.com/services/..."
+        channel: "#alerts"
 ```
 
-### Circuit-Breaker Resilience
-
-Each subscriber instance is independently wrapped by a circuit-breaker that prevents a degraded downstream system from blocking or starving the event bus.
-
-**State machine:**
-
-```
-CLOSED → (consecutive_failures >= open_threshold) → OPEN
-OPEN → (recovery_window_ms elapsed since last_failure_at) → HALF_OPEN
-HALF_OPEN → (delivery success) → CLOSED
-HALF_OPEN → (delivery failure) → OPEN
-```
-
-**Normative rules:**
-
-- Implementations MUST wrap each subscriber's `deliver()` call in a timeout enforcer. If delivery exceeds `timeout_ms` (default: `5000`), the call MUST be abandoned and counted as a failure.
-- Implementations MUST track per-subscriber health: a `consecutive_failures` counter and a `last_failure_at` timestamp.
-- When `consecutive_failures` reaches `open_threshold` (default: `5`), the circuit MUST transition to `OPEN` state. In `OPEN` state, `deliver()` MUST NOT be called — events are silently discarded.
-- After `recovery_window_ms` (default: `60000`) elapses since `last_failure_at`, the circuit MUST transition to `HALF_OPEN` state and attempt one delivery. If the delivery succeeds, the circuit transitions to `CLOSED`. If it fails, the circuit returns to `OPEN`.
-- Implementations MUST emit an `apcore.subscriber.circuit_opened` event when transitioning to `OPEN`, and `apcore.subscriber.circuit_closed` when transitioning back to `CLOSED`.
-- Implementations SHOULD log at `WARN` level when a subscriber's circuit opens.
-
-**YAML configuration:**
-
-```yaml
-subscribers:
-  - type: "webhook"
-    url: "https://example.com/hook"
-    circuit_breaker:
-      timeout_ms: 3000
-      open_threshold: 3
-      recovery_window_ms: 30000
-```
-
-**Circuit-breaker events (additions to the Event Types table):**
-
-| Event Type | Severity | Source | Payload (`data`) |
-|------------|----------|--------|-------------------|
-| `apcore.subscriber.circuit_opened` | warn | EventEmitter circuit breaker | `subscriber_type`, `consecutive_failures` |
-| `apcore.subscriber.circuit_closed` | info | EventEmitter circuit breaker | `subscriber_type`, `recovery_attempt` |
-
-## Contract: CircuitBreakerWrapper._on_failure
-
-> **Internal contract.** This method is private in every SDK — apcore-python
-> `_on_failure` (`events/circuit_breaker.py:159`), apcore-typescript `_onFailure`
-> (`events/circuit-breaker.ts:142`), apcore-rust `on_failure`
-> (`events/circuit_breaker.rs:232`, not `pub`). It is specified because all three
-> must agree on its behaviour, not because callers invoke it.
->
-> The heading previously read `SubscriberCircuitBreaker.on_failure`. No SDK has ever
-> defined a `SubscriberCircuitBreaker` type; the class is `CircuitBreakerWrapper` in
-> all three. The body of this block was corrected twice against the real methods
-> while the heading was left behind, which made every consistency check report this
-> contract as unimplemented in 3/3 SDKs.
-
-### Inputs
-- `error` (Exception/Error/&str, required) — the delivery error that just occurred
-
-The breaker instance is per-subscriber, so it already knows which subscriber it
-guards; no `subscriber_id` is passed. This section previously declared one as a
-required input, which no SDK accepts.
-
-### Errors
-- None (circuit breaker MUST NOT raise; it records state internally)
-
-### Returns
-- On success: the lifecycle `ApCoreEvent` to emit when the call changed the
-  circuit's state (`apcore.subscriber.circuit_opened` /
-  `apcore.subscriber.circuit_closed`), or the language's empty value when the
-  state did not change: `ApCoreEvent | None` (Python), `ApCoreEvent | null`
-  (TypeScript), `Option<ApCoreEvent>` (Rust).
-
-  This section previously declared `CircuitState` — the new state — as the
-  return. No SDK returns it: apcore-python `_on_failure` (circuit_breaker.py:125),
-  apcore-typescript `_onFailure` (circuit-breaker.ts:107) and apcore-rust
-  `on_failure` (circuit_breaker.rs) all return the optional lifecycle event, and
-  callers read state through the breaker's own accessor. The current state is
-  still observable — it is simply not this method's return value.
-
-### Properties
-- async: false
-- thread_safe: true (state MUST be protected by a lock/mutex/RwLock)
-- pure: false (mutates circuit state)
-- idempotent: false
-
-## Contract: EventEmitter.unsubscribe
-
-Normative behavioral contract. All SDK implementations MUST satisfy these guarantees.
-
-### Inputs
-
-- `subscriber` (EventSubscriber/EventSubscriber/&dyn EventSubscriber, required) — the subscriber instance to remove; MUST be the same object reference that was passed to `subscribe`.
-
-!!! note "Rust removes by handle, because ownership makes the reference rule unreachable"
-    apcore-python (`list.remove`) and apcore-typescript (`indexOf`) honour the
-    reference rule directly: the caller keeps its reference because those
-    runtimes pass objects by reference. apcore-rust's `subscribe` takes a
-    `Box<dyn EventSubscriber>` and therefore consumes it, so the caller has no
-    reference left to pass back — the rule as written cannot be satisfied.
-
-    `EventEmitter::subscribe` returns a `SubscriberHandle`, and
-    `unsubscribe_handle(handle)` removes exactly that subscription. The
-    `unsubscribe(&dyn EventSubscriber)` form is retained and approximates
-    identity by `subscriber_id()`, whose trait default is the literal
-    `"default"` — so two subscribers that do not override it are
-    indistinguishable and the first is removed. That case now warns rather than
-    removing the wrong one silently. Callers needing precise removal use the
-    handle, or assign each subscriber a unique id.
-
-    This is the same shape as `APCore.remove` in
-    [apcore-client.md](apcore-client.md): a by-instance contract that Rust's
-    ownership model cannot express, resolved with a stable identifier rather
-    than by pretending the reference survives.
-
-### Errors
-
-- None. If `subscriber` is not currently registered, the call is a no-op. Implementations MUST NOT raise or panic on an unregistered subscriber.
-
-### Returns
-
-- On success: void/None/()
-
-### Properties
-
-- async: false
-- thread_safe: true (registry lock MUST be held during the removal)
-- pure: false (mutates the subscriber list)
-- idempotent: true (repeated calls with the same subscriber are safe no-ops)
-
-!!! note "Python SDK behavior"
-    `EventEmitter.unsubscribe(subscriber)` removes the first occurrence of `subscriber` from the internal list using object identity. Subsequent identical calls succeed silently because the `ValueError` from `list.remove()` is swallowed.
-
-## Contract: EventEmitter.flush
-
-Normative behavioral contract. All SDK implementations MUST satisfy these guarantees.
-
-### Inputs
-
-- `timeout` (optional, default 5 seconds) — maximum time to wait for all in-flight deliveries to complete. MUST be a positive finite number.
-
-!!! warning "The unit is per-SDK and is carried by the parameter name"
-    apcore-python takes **seconds** (`flush(timeout: float = 5.0)`);
-    apcore-typescript and apcore-rust take **milliseconds**
-    (`flush(timeoutMs = 5000)`, `flush(timeout_ms: u64)`). Each SDK is internally
-    consistent — `shutdown` uses the same unit as `flush` in all three — and the
-    millisecond forms name the unit in the parameter itself, so `flush(5)` cannot
-    be misread as five seconds there.
-
-    This section previously declared seconds outright, which made two of the three
-    implementations non-conformant on a point no conformance fixture covers and no
-    caller can trip over, given the parameter names. The unit is therefore recorded
-    rather than mandated. **Portable code should not pass a bare number across
-    SDKs**; read the parameter name.
-
-    `0` is likewise per-SDK and is NOT a portable sentinel: apcore-python returns
-    immediately (`future.result(timeout=0)` raises `TimeoutError`, which the
-    swallow-all handler turns into an instant return), while apcore-typescript and
-    apcore-rust treat it as wait-indefinitely. Callers MUST pass a positive value.
-
-### Errors
-
-- None raised to the caller. Any subscriber errors that surface during the flush window are silently discarded (they were already logged at delivery time). If the timeout elapses before all pending deliveries complete, `flush` returns without error — it does not guarantee all deliveries finished.
-
-### Returns
-
-- On success: void/None/()
-
-### Properties
-
-- async: false (blocks the calling thread until deliveries complete or timeout expires)
-- thread_safe: true
-- pure: false (waits on futures held in shared state)
-- idempotent: true (safe to call multiple times; extra calls on an already-empty pending set return immediately)
-
-!!! note "Python SDK behavior"
-    `flush(timeout)` iterates the snapshot of pending `Future` objects, calling `future.result(timeout=timeout)` on each, catching all exceptions. Completed futures are removed from `_pending_futures` at the end of the call. The per-future timeout is the full `timeout` value, not divided across futures; in the worst case the total wall-clock wait is `len(pending_futures) × timeout`.
-
-!!! warning "Post-shutdown behavior"
-    After `EventEmitter.shutdown()` is called, `emit()` drops all events silently. `flush()` called after shutdown will return immediately with no pending work.
-
-## Contract: A2ASubscriber.deliver
-
-Normative behavioral contract. All SDK implementations MUST satisfy these guarantees.
-
-### Inputs
-
-- `event` (ApCoreEvent, required) — event to deliver to the A2A platform endpoint.
-
-### Errors
-
-- `ImportError` — raised synchronously before any network I/O if the `aiohttp` optional dependency is not installed. Message: `"aiohttp is required for A2ASubscriber. Install with: pip install apcore[events]"`.
-- No other errors are raised to the caller. All HTTP and network failures are caught, logged at `ERROR` level, and silently swallowed. The circuit breaker (if active) records the failure.
-
-### Returns
-
-- On success: void/None/()
-
-### Properties
-
-- async: true (MUST be awaited; uses an async HTTP client internally)
-- thread_safe: true (no mutable shared state between concurrent calls)
-- pure: false (outbound HTTP POST to the platform URL)
-- retry: yes — retries on 5xx, connection errors, and timeouts according to the unified `retry` policy. On retry exhaustion it emits `apcore.event.delivery_failed` and does not raise.
-
-### Payload Format
-
-The HTTP POST body is a JSON object with two keys:
-
-```json
-{
-  "skillId": "apevo.event_receiver",
-  "event": { "<serialized ApCoreEvent fields>" }
-}
-```
-
-The `Content-Type` header is always `application/json`. If `auth` is a plain string it is sent as `Authorization: Bearer <auth>`. If `auth` is a dict its key-value pairs are merged directly into the headers.
-
-### Behavior on 4xx / 5xx Responses
-
-Both `WebhookSubscriber` and `A2ASubscriber` apply the [generic delivery retry policy](#per-subscriber-retry-policy-normative) defined below. The HTTP-status policy is the same for both: 4xx responses are client errors and MUST NOT be retried; 5xx responses, connection errors, and timeouts MUST be retried according to the subscriber's `retry` config. On retry exhaustion the SDK MUST emit [`apcore.event.delivery_failed`](#dead-letter-event-on-permanent-failure-normative); it MUST NOT raise into the emitter.
-
-### Comparison with WebhookSubscriber.deliver
-
-| Property | WebhookSubscriber | A2ASubscriber |
-|----------|-------------------|---------------|
-| Retry on 5xx | Yes (per [`retry` config](#per-subscriber-retry-policy-normative); default `max_attempts: 3`) | Yes (per [`retry` config](#per-subscriber-retry-policy-normative); default `max_attempts: 3`) |
-| Retry on 4xx | No | No |
-| On exhaustion | Emit [`apcore.event.delivery_failed`](#dead-letter-event-on-permanent-failure-normative) | Emit [`apcore.event.delivery_failed`](#dead-letter-event-on-permanent-failure-normative) |
-| Auth mechanism | Custom headers only | Bearer string or header dict |
-| Payload format | Serialized `ApCoreEvent` fields | `{skillId, event: <fields>}` wrapper |
-| Raises on HTTP error | No | No |
-| Raises on missing dep | `ImportError` | `ImportError` |
-
-## Event Delivery Semantics (Issue #61)
-
-Earlier sections specify how individual subscriber types (notably [`WebhookSubscriber`](#webhooksubscriber)) handle delivery failure. The rules in this section extend those guarantees to **every** subscriber type — built-in (`webhook`, `a2a`, `file`, `stdout`, `filter`) and any third-party subscriber registered via [`register_subscriber_type`](#cross-language-subscriberfactory-parity).
-
-The motivating defect: in-process delivery to non-`webhook` subscribers has historically been *fire-and-forget*. A transient exception causes the event to be logged once and discarded. There is no retry, no dead-letter signal, and the emitter has no observability handle on the failure. In production this silently drops audit records, monitoring alerts, and cross-service notifications.
-
-!!! warning "Discovered during apcore-a2a upgrade"
-    `A2ASubscriber` previously hardcoded `skillId="apevo.event_receiver"`. When the receiving agent was restarting or unreachable, the event was lost with no fallback. The `skill_id` configuration field defined below resolves that specific case, and the generic delivery contract resolves the broader class.
-
-### Per-Subscriber Retry Policy (Normative)
-
-Every subscriber type — built-in **and** user-registered — **MUST** accept a `retry` config block. SDKs **MUST** honor the same field names, defaults, and backoff formula across languages.
+## Event Naming Convention
+
+Event types use dot-namespaced names; the prefix identifies the owner ([§9.16.1](../spec/protocol-spec.md#9161-naming-convention)). The `apcore.*` prefix is reserved for the core framework — ecosystem packages use their own (`apcore-mcp.*`, `apcore-a2a.*`, …) and applications any other prefix (`billing.invoice_generated`).
+
+Framework events have the form `apcore.<subsystem>.<event>`:
+
+- `<subsystem>` is the emitting subsystem: `registry`, `module`, `config`, `health`, `approval`, `policy`, `acl`, `stream`, `circuit`, `subscriber`, `event`.
+- `<event>` is a `snake_case` description of the state transition (`module_registered`, `error_threshold_exceeded`, `updated`).
+
+### Deprecation: legacy event names
+
+Implementations emit only the canonical names. These earlier names are not emitted; subscribe to the canonical name instead:
+
+| Legacy name | Canonical name |
+|-------------|----------------|
+| `module_registered` | `apcore.registry.module_registered` |
+| `module_unregistered` | `apcore.registry.module_unregistered` |
+| `apcore.error.threshold_exceeded` | `apcore.health.error_threshold_exceeded` |
+| `apcore.latency.threshold_exceeded` | `apcore.health.latency_threshold_exceeded` |
+| `module_health_changed` | `apcore.module.toggled` / `apcore.health.recovered` |
+| `config_changed` | `apcore.config.updated` / `apcore.module.reloaded` |
+
+## Event Types
+
+Events the framework emits. The envelope's `module_id` carries the associated module; the table lists the keys of `data`.
+
+| Event Type | Severity | Emitted by | `data` keys |
+|------------|----------|------------|-------------|
+| `apcore.registry.module_registered` | info | Registry bridge (event-enabled system modules) | — (module on the envelope) |
+| `apcore.registry.module_unregistered` | info | Registry bridge | — (module on the envelope) |
+| `apcore.registry.module_load_failed` | error | Registry | `module_id`, `callback_name`, `error_type`, `error_message` |
+| `apcore.module.toggled` | info | `system.control.toggle_feature` | `module_id`, `enabled`, `caller_id`, `identity` (when present) |
+| `apcore.module.reloaded` | info | `system.control.reload_module` | `module_id`, `previous_version`, `new_version`, `caller_id`, `identity` (when present) |
+| `apcore.config.updated` | info | `system.control.update_config` | `key`, `old_value`, `new_value` (sensitive keys redacted), `caller_id`, `identity` (when present) |
+| `apcore.health.error_threshold_exceeded` | error | `PlatformNotifyMiddleware` | `error_rate`, `threshold` |
+| `apcore.health.latency_threshold_exceeded` | warn | `PlatformNotifyMiddleware` | `p99_latency_ms`, `threshold` |
+| `apcore.health.recovered` | info | `PlatformNotifyMiddleware` (error rate back below half the threshold) | `status`, `error_rate` |
+| `apcore.approval.decision` | info (approved/pending) / warn (rejected/timeout) | Approval gate (§7) | `module_id`, `status`, `approved_by`, `reason`, `approval_id`, `trace_id` |
+| `apcore.policy.override` | info | Approval gate, when an `ExecutionPolicy` rule applies (§7.9) | `module_id`, `pattern`, `requires_approval`, `destructive`, `needs_approval`, `reason`, `trace_id` |
+| `apcore.acl.denied` | warn | ACL check (§6) | `module_id`, `caller_id`, `reason`, `trace_id` |
+| `apcore.acl.audit` | the ACL file's `audit.log_level` (default info) | ACL check — the default audit sink (§6.3.2) | the `AuditEntry` fields (§6.3.1) |
+| `apcore.stream.post_validation_failed` | error | Executor (after a stream's last chunk) | `error_type`, `message`, `trace_id` |
+| `apcore.circuit.opened` | warn | `CircuitBreakerMiddleware` | `module_id`, `caller_id`, `error_rate` |
+| `apcore.circuit.closed` | info | `CircuitBreakerMiddleware` | `module_id`, `caller_id`, `error_rate` |
+| `apcore.subscriber.circuit_opened` | warn | `CircuitBreakerWrapper` | `subscriber_type`, `consecutive_failures` |
+| `apcore.subscriber.circuit_closed` | info | `CircuitBreakerWrapper` | `subscriber_type`, `recovery_attempt` |
+| `apcore.event.delivery_failed` | error | Event bus (dead-letter path) | see [Dead-Letter Event](#dead-letter-event-apcoreeventdelivery_failed) |
+
+- **Governance events** (`apcore.approval.decision`, `apcore.policy.override`, `apcore.acl.denied`) make the ACL → policy → approval chain observable. They are emitted only when an emitter is attached to the Executor, never influence the call's outcome, are not emitted for a gate that did not engage, and `apcore.acl.denied` is not emitted during a `validate()` preflight. See [§7.9](../spec/protocol-spec.md#79-execution-policy-v190-76).
+- The `apcore.subscriber.*` payloads above are what all three SDKs emit; §9.16.2 also lists `subscriber_id`, which no SDK currently includes.
+- apcore-rust additionally emits `apcore.config.reloaded` when `system.control.reload_module` re-reads the configuration from disk.
+
+## Delivery Semantics
+
+### Per-Subscriber Retry Policy
+
+Every subscriber — built-in or custom — has a `retry` policy; the field names, defaults and backoff formula are the same in all SDKs:
 
 | Field | Type | Default | Meaning |
 |-------|------|---------|---------|
-| `max_attempts` | int ≥ 1 | `3` | Total attempts, including the first. `1` disables retry. |
-| `initial_backoff_ms` | int ≥ 0 | `100` | Delay before attempt 1 (the first retry). |
-| `max_backoff_ms` | int ≥ `initial_backoff_ms` | `30000` | Upper bound on per-attempt delay. |
-| `backoff_multiplier` | float ≥ 1.0 | `2.0` | Multiplicative growth factor. |
+| `max_attempts` | int ≥ 1 | `3` | Total attempts including the first. `1` disables retry. |
+| `initial_backoff_ms` | int ≥ 0 | `100` | Delay before the first retry. |
+| `max_backoff_ms` | int ≥ `initial_backoff_ms` | `30000` | Upper bound on a single delay. |
+| `backoff_multiplier` | float ≥ 1.0 | `2.0` | Growth factor per retry. |
 
-**Backoff formula** (`attempt` is zero-based; `attempt = 0` is the first retry after the initial try):
-
-```
+```text
 delay_ms(attempt) = min(max_backoff_ms, initial_backoff_ms * backoff_multiplier ** attempt)
+    attempt is zero-based: attempt = 0 is the first retry after the initial try
+
+Defaults:  try → (100 ms) → retry 1 → (200 ms) → retry 2 → dead-letter event
 ```
 
-Worked example with defaults (`max_attempts=3`, `initial_backoff_ms=100`, `max_backoff_ms=30000`, `backoff_multiplier=2.0`):
+Set it in configuration with a `retry:` block on the subscriber entry, or in code on the subscriber (`retry = EventRetryConfig(...)` or a plain mapping in Python, `retry: { maxAttempts, … }` in TypeScript, `fn retry(&self) -> EventRetryConfig` in Rust). The webhook's `retry_count` shorthand is described under [Built-in Subscribers](#built-in-subscribers).
 
-| Step | Action | Delay before action |
-|------|--------|---------------------|
-| Initial try | `subscriber.on_event(event)` | 0 ms |
-| Retry 1 (`attempt=0`) | re-delivery | 100 ms |
-| Retry 2 (`attempt=1`) | re-delivery | 200 ms |
-| (give up — `max_attempts=3` reached) | emit DLQ event | — |
+### Dead-Letter Event (`apcore.event.delivery_failed`)
 
-**Interaction with the legacy `webhook.retry_count` field.** The pre-existing `retry_count` config on `webhook` (see [WebhookSubscriber](#webhooksubscriber)) is an alias for `retry.max_attempts`. If both are present in a single `webhook` config block, **`retry.max_attempts` wins** and the SDK **SHOULD** emit a `WARNING` log naming the subscriber and the conflicting fields. The 4xx-no-retry / 5xx-retry policy still governs *which* webhook responses trigger a retry — the `retry` block governs *how many* and *how long*.
-
-**YAML example** showing the policy on multiple subscriber types:
-
-```yaml
-subscribers:
-  - type: "a2a"
-    platform_url: "https://platform.example.com"
-    skill_id: "myapp.event_receiver"
-    auth: "Bearer XXXX"
-    retry:
-      max_attempts: 5
-      initial_backoff_ms: 250
-      max_backoff_ms: 10000
-      backoff_multiplier: 2.0
-
-  - type: "file"
-    path: "/var/log/apcore/events.jsonl"
-    retry:
-      max_attempts: 2      # one retry on transient I/O error
-      initial_backoff_ms: 50
-
-  - type: "stdout"
-    retry:
-      max_attempts: 1      # no retry; stdout is local
-```
-
-> **D-116 (v1.51.0) — the circuit-breaker events carry the DECLARED subscriber
-> type.** `apcore.subscriber.circuit_opened` / `circuit_closed` **MUST** report
-> the same `subscriber_type` the dead-letter path already reports — the declared
-> kind (`webhook`, `a2a`, `file`, …), not a class name and not a guess. A
-> subscriber that declares no type takes whatever default the DLQ path already
-> uses; implementations **MUST NOT** invent a second default for this surface.
->
-> apcore-python and apcore-typescript reported the wrapped subscriber's class
-> name and apcore-rust split its `subscriber_id` on the first hyphen — so an id
-> of `health-alert` became the type `health`, and one with no hyphen became the
-> whole id. All three disagreed with the value the same SDK puts in its own DLQ
-> payload, which is the one a consumer routing on `subscriber_type` already
-> receives.
-
-## Dead-Letter Event on Permanent Failure (Normative)
-
-When the configured retries are exhausted, the SDK **MUST** emit a built-in event named `apcore.event.delivery_failed`. The payload schema **MUST** be:
+When a subscriber's attempts are exhausted, the emitter emits `apcore.event.delivery_failed` (severity `error`, no `module_id`) with this `data`:
 
 ```json
 {
   "subscriber_type": "a2a",
-  "subscriber_id": "remote-monitor-1",
+  "subscriber_id": "agent-bridge",
   "original_event": {
     "name": "apcore.health.error_threshold_exceeded",
-    "payload": { "service": "billing", "error_rate": 0.42 },
-    "metadata": { "emitted_at": "2026-05-19T10:14:22.301Z" }
+    "payload": { "error_rate": 0.42, "threshold": 0.1 },
+    "metadata": {
+      "module_id": "billing.charge",
+      "timestamp": "2026-05-19T10:14:22.301Z"
+    }
   },
   "error": {
-    "type": "ConnectionError",
-    "message": "Failed to connect to https://platform.example.com after 5 attempts"
+    "type": "RuntimeError",
+    "message": "A2A delivery to https://agent.example.com failed with status 503"
   },
-  "attempt_count": 5,
+  "attempt_count": 3,
   "timestamp": "2026-05-19T10:14:28.812Z"
 }
 ```
 
-Normative rules:
+- `subscriber_type` is the subscriber's declared type (`webhook`, `a2a`, …); the circuit events report the same value (D-116).
+- The dead-letter event is delivered once, without retry, and only to subscribers whose non-wildcard `event_pattern` matches it. A dead-letter subscriber that fails is logged and discarded — there is no second-order dead letter.
+- It is emitted through the same emitter as the original event, so any subscriber can opt in by name — for example a `filter` around a `file` subscriber with `include_events: ["apcore.event.delivery_failed"]`.
+- TypeScript's emitter bounds its pending deliveries (`maxPending`, default 1000); a delivery that overflows the buffer is failed through this path with an extra `"reason": "pending_overflow"` field rather than dropped.
 
-- The DLQ event itself **MUST NOT** be retried, regardless of subscriber configuration. If a subscriber registered for `apcore.event.delivery_failed` itself raises, the SDK logs at `ERROR` level and discards. This prevents an unbounded loop when the DLQ destination is also broken.
-- The DLQ event **MUST** be emitted via the same `EventEmitter` as the original event, so any subscriber (including persistent storage, on-call paging, etc.) can opt in by name.
-- `subscriber_id` is taken from an optional `id` field in the subscriber's configuration (newly added — see table below). If the config omits `id`, the SDK MUST generate a stable identifier for that subscriber instance (e.g., `"{type}-{N}"` where `N` is the registration order). The same `subscriber_id` MUST be used across all DLQ events emitted by that subscriber instance.
+### `on_failure` Callback
 
-The optional `id` field is added to every subscriber type's config schema:
-
-| Field | Type | Default | Meaning |
-|-------|------|---------|---------|
-| `id` | string | SDK-generated | Stable identifier surfaced in `apcore.event.delivery_failed` and other observability hooks. Recommended for production deployments so operators can correlate DLQ events with config entries. |
-
-**Example — persistent DLQ via a dedicated subscriber:**
-
-The example below routes only `apcore.event.delivery_failed` to a file by composing a `filter` around a delegate `file` subscriber. Note that the **delegate's config is inline** under `delegate_config`; the outer `filter` is the only top-level subscriber, so no other events leak to disk.
-
-```yaml
-subscribers:
-  - type: "filter"
-    id: "dlq-recorder"
-    delegate_type: "file"
-    delegate_config:
-      path: "/var/log/apcore/dlq.jsonl"
-      format: "json"
-      rotate_bytes: 10485760
-    include_events:
-      - "apcore.event.delivery_failed"
-```
-
-### `on_failure` Callback (SHOULD)
-
-As an ergonomic alternative to subscribing to `apcore.event.delivery_failed`, SDKs **SHOULD** extend the [`EventSubscriber` Protocol](#eventsubscriber-protocol) with an optional `on_failure(event, error, attempt_count)` method. When present, it **MUST** be invoked exactly once per permanent delivery failure, with the same information that populates the DLQ event payload. The retry policy is carried on the subscriber instance itself (as a `retry` attribute / getter / method) so the subscriber remains the single argument to the canonical `EventEmitter.subscribe(subscriber)` call.
+A subscriber may also define `on_failure(event, error, attempt_count)`. It is invoked once per exhausted delivery, after the dead-letter event, with the same information. An exception it raises is logged. It is independent of any dead-letter subscriber — both fire.
 
 === "Python"
     ```python
-    from apcore.events import ApCoreEvent, EventEmitter, EventSubscriber
+    from apcore.events import ApCoreEvent, EventEmitter
+
 
     class HealthAlertSubscriber:
-        """Implements EventSubscriber and the optional on_failure / retry hooks."""
-
         event_pattern = "apcore.health.*"
         retry = {"max_attempts": 5, "initial_backoff_ms": 250}
 
         async def on_event(self, event: ApCoreEvent) -> None:
-            await deliver_to_external_system(event)
+            print(f"forwarding {event.event_type}")
 
-        async def on_failure(
-            self,
-            event: ApCoreEvent,
-            error: Exception,
-            attempt_count: int,
-        ) -> None:
-            await pager.alert(
-                f"Permanent delivery failure: {event.event_type} "
-                f"after {attempt_count} attempts: {error}"
-            )
+        async def on_failure(self, event: ApCoreEvent, error: Exception, attempt_count: int) -> None:
+            print(f"gave up on {event.event_type} after {attempt_count} attempts: {error}")
+
 
     emitter = EventEmitter()
     emitter.subscribe(HealthAlertSubscriber())
     ```
 === "TypeScript"
     ```typescript
-    import { ApCoreEvent, EventEmitter, EventSubscriber } from "apcore-js";
+    import { EventEmitter, type ApCoreEvent, type EventSubscriber } from "apcore-js";
 
     class HealthAlertSubscriber implements EventSubscriber {
         readonly eventPattern = "apcore.health.*";
         readonly retry = { maxAttempts: 5, initialBackoffMs: 250 };
 
         async onEvent(event: ApCoreEvent): Promise<void> {
-            await deliverToExternalSystem(event);
+            console.log(`forwarding ${event.eventType}`);
         }
 
-        async onFailure(
-            event: ApCoreEvent,
-            error: Error,
-            attemptCount: number,
-        ): Promise<void> {
-            await pager.alert(
-                `Permanent delivery failure: ${event.eventType} ` +
-                `after ${attemptCount} attempts: ${error.message}`
-            );
+        async onFailure(event: ApCoreEvent, error: Error, attemptCount: number): Promise<void> {
+            console.log(`gave up on ${event.eventType} after ${attemptCount} attempts: ${error.message}`);
         }
     }
 
@@ -1312,7 +655,6 @@ As an ergonomic alternative to subscribing to `apcore.event.delivery_failed`, SD
     emitter.subscribe(new HealthAlertSubscriber());
     ```
 === "Rust"
-    <!-- apcore-example: fragment -->
     ```rust
     use apcore::errors::ModuleError;
     use apcore::events::{ApCoreEvent, EventEmitter, EventRetryConfig, EventSubscriber};
@@ -1326,62 +668,192 @@ As an ergonomic alternative to subscribing to `apcore.event.delivery_failed`, SD
         fn subscriber_id(&self) -> &str { "health-alert" }
         fn event_pattern(&self) -> &str { "apcore.health.*" }
 
-        // `EventRetryConfig` is NOT `#[non_exhaustive]`, so struct-update syntax
-        // is available here. It is the exception among apcore-rust config types —
-        // see spec/api-surface-conventions.md §9.1.
         fn retry(&self) -> EventRetryConfig {
             EventRetryConfig { max_attempts: 5, initial_backoff_ms: 250, ..Default::default() }
         }
 
         async fn on_event(&self, event: &ApCoreEvent) -> Result<(), ModuleError> {
-            deliver_to_external_system(event).await
+            println!("forwarding {}", event.event_type);
+            Ok(())
         }
 
-        async fn on_failure(
-            &self,
-            event: &ApCoreEvent,
-            error: &ModuleError,
-            attempt_count: u32,
-        ) {
-            pager::alert(&format!(
-                "Permanent delivery failure: {} after {} attempts: {}",
-                event.event_type, attempt_count, error,
-            ));
+        async fn on_failure(&self, event: &ApCoreEvent, error: &ModuleError, attempt_count: u32) {
+            println!("gave up on {} after {attempt_count} attempts: {error}", event.event_type);
         }
     }
 
-    let mut emitter = EventEmitter::new();
-    emitter.subscribe(Box::new(HealthAlertSubscriber));
+    fn main() {
+        let emitter = EventEmitter::new();
+        let _handle = emitter.subscribe(Box::new(HealthAlertSubscriber));
+    }
     ```
 
-The `retry` config and the `on_failure` method are **additive optional members** on the existing `EventSubscriber` Protocol. SDKs **MUST NOT** introduce a parallel `subscribe(pattern, callback, options)` signature — the canonical `subscribe(subscriber)` form remains the single registration entry point.
+### Subscriber Circuit Breaker
 
-If both an `on_failure` method on the subscriber and a separate subscriber registered for `apcore.event.delivery_failed` are configured, **both MUST fire** — they are independent observability channels.
+`CircuitBreakerWrapper` wraps a subscriber so that a degraded destination cannot keep consuming delivery work:
 
-### `a2a` Subscriber: Configurable `skill_id` (Normative)
-
-The `a2a` subscriber configuration **MUST** accept an optional `skill_id` field. The default value remains `"apevo.event_receiver"` for backward compatibility.
-
-| Field | Type | Default | Meaning |
-|-------|------|---------|---------|
-| `skill_id` | string | `"apevo.event_receiver"` | The receiving agent's skill ID. The outgoing payload's `skillId` field is set from this. |
-
-When configured, the JSON payload (see [Payload Format](#payload-format)) carries the configured value:
-
-```json
-{
-  "skillId": "myapp.event_receiver",
-  "event": { "<serialized ApCoreEvent fields>" }
-}
+```text
+CLOSED    → (consecutive_failures >= open_threshold) → OPEN
+OPEN      → (recovery_window_ms elapsed since the last failure) → HALF_OPEN
+HALF_OPEN → (delivery succeeds) → CLOSED
+HALF_OPEN → (delivery fails)    → OPEN
 ```
 
-This unblocks deployments where the receiving agent registers under an application-specific skill ID rather than the framework default. The hardcoded value is no longer normative — only the default is.
+- Defaults: `timeout_ms` 5000 (a delivery running longer counts as a failure), `open_threshold` 5, `recovery_window_ms` 60 000.
+- While `OPEN`, the wrapped subscriber is not called and its events are discarded.
+- Transitions emit `apcore.subscriber.circuit_opened` (with a WARN log) and `apcore.subscriber.circuit_closed`.
 
-### Implementation Notes (Informative)
+Python wraps every subscriber created from `sys_modules.events.subscribers` in a `CircuitBreakerWrapper`, tuned by an optional per-entry `circuit_breaker:` block (`timeout_ms`, `open_threshold`, `recovery_window_ms`). TypeScript and Rust export `CircuitBreakerWrapper` for explicit use and do not wrap configured subscribers automatically.
 
-The following notes are guidance for SDK implementers and are **not normative**:
+## Dependencies
 
-- **Per-subscriber retry isolation.** SDKs should run each subscriber's delivery + retry loop in its own task / coroutine / future so that one slow or hanging subscriber does not delay delivery to others. A bounded worker pool with per-subscriber concurrency limits is one viable pattern.
-- **Jitter.** SDKs MAY add small random jitter (`±10%`) to the computed backoff delay to avoid thundering-herd retries against a recovering downstream. If applied, the resulting delay MUST still fall within `[0, max_backoff_ms]`.
-- **Cancellation.** If the host process is shutting down, in-flight retry timers SHOULD be cancelled and the corresponding events SHOULD emit DLQ events with `error.type = "ShutdownInterrupted"` so persistent DLQ subscribers can record them before exit.
-- **Memory bound.** The DLQ event mechanism is in-process and best-effort. Deployments that need durable failure records should subscribe a persistent storage subscriber (file, S3, database) to `apcore.event.delivery_failed`.
+- `Middleware` — base of `PlatformNotifyMiddleware`, which emits the `apcore.health.*` events.
+- `MetricsCollector` — read by `PlatformNotifyMiddleware` for its threshold checks.
+
+??? info "Python SDK reference"
+    Not a protocol requirement — the Python SDK's source layout for users of `apcore-python`.
+
+    | File | Purpose |
+    |------|---------|
+    | `src/apcore/events/emitter.py` | `EventEmitter`, `ApCoreEvent`, `EventSubscriber`, retry and dead-letter delivery |
+    | `src/apcore/events/subscribers.py` | `WebhookSubscriber`, `A2ASubscriber`, `FileSubscriber`, `StdoutSubscriber`, `FilterSubscriber` |
+    | `src/apcore/events/circuit_breaker.py` | `CircuitBreakerWrapper` |
+    | `src/apcore/events/retry.py` | `EventRetryConfig` |
+    | `src/apcore/sys_modules/registration.py` | Subscriber factory registry, config-driven subscribers |
+    | `src/apcore/middleware/platform_notify.py` | `PlatformNotifyMiddleware` |
+    | `src/apcore/client.py` | `APCore.on()`, `APCore.off()` |
+
+    `aiohttp` (optional, `pip install apcore[events]`) is required for the HTTP subscribers.
+
+## Testing Strategy
+
+- **EventEmitter**: subscribe/emit/unsubscribe, snapshot isolation, subscriber error isolation, `flush` and `shutdown`.
+- **Matching**: exact matching for `client.on()`, A25 patterns for `event_pattern`, dead-letter delivery only to non-wildcard subscribers.
+- **Retry and dead letter**: attempt counts and delays, dead-letter payload shape, `on_failure` invocation.
+- **HTTP subscribers**: 2xx/4xx/5xx handling, timeouts, header merging, A2A auth modes and payload.
+- **Factories**: custom type registration, config instantiation, reset.
+- **PlatformNotifyMiddleware**: threshold crossing, recovery at half the threshold.
+
+## Contract: EventEmitter.emit
+
+### Inputs
+- `event` (`ApCoreEvent`, required) — the event to deliver; Rust takes `&ApCoreEvent` (`emit_spawn` takes it by value). The caller SHOULD supply a non-empty `event_type`; `emit()` does not validate it.
+
+### Returns
+- Nothing.
+
+### Overflow
+- An event accepted by `emit()` **MUST** eventually be delivered to each matching subscriber or routed through the dead-letter path; it **MUST NOT** be silently discarded.
+- An implementation **MAY** bound its pending-delivery buffer. On overflow it **MUST** either apply backpressure or fail the delivery through the dead-letter path with `reason: "pending_overflow"` (TypeScript does the latter).
+- Events for a subscriber whose circuit is `OPEN` are discarded by design; that is not overflow.
+
+### Errors
+- None raised to the caller. Subscriber errors are retried, then reported through the dead-letter path and `on_failure`.
+
+### Properties
+- async: synchronous in Python and TypeScript; `async fn` in Rust, whose body spawns the deliveries and does not wait on subscribers. In all three, `emit()` returns without waiting for subscribers and never raises.
+- thread_safe: true
+- pure: false
+- idempotent: false
+
+## Contract: EventEmitter.subscribe
+
+### Inputs
+- `subscriber` (`EventSubscriber`, required) — an object carrying its own `on_event` and optional members (`event_pattern`, `subscriber_id`, `retry`, …). There is no `subscribe(event_type, handler)` form on the emitter; `APCore.on()` provides the callback convenience (D10-016).
+
+### Errors
+- None in the cross-language contract. Python raises `TypeError` when `on_event` is not a coroutine function — the runtime equivalent of the static check TypeScript and Rust perform (D10-002).
+
+### Returns
+- Python/TypeScript: nothing — remove the subscription by passing the same object to `unsubscribe`. Rust: a `SubscriberHandle` for `unsubscribe_handle`.
+
+### Properties
+- async: false
+- thread_safe: true
+- idempotent: false (each call adds a subscription)
+
+## Contract: EventEmitter.unsubscribe
+
+### Inputs
+- `subscriber` — the object passed to `subscribe` (Python and TypeScript compare by identity). Rust's `subscribe` consumes the `Box`, so Rust removes by `SubscriberHandle` (`unsubscribe_handle`) or by `subscriber_id` (`unsubscribe_by_id`; `unsubscribe(&dyn EventSubscriber)` also matches by ID and warns when several subscribers share it).
+
+### Errors
+- None. Removing an absent subscriber is a no-op.
+
+### Returns
+- Python/TypeScript: nothing. Rust: `bool` — whether a subscription was removed.
+
+### Properties
+- async: false
+- thread_safe: true
+- pure: false
+- idempotent: true
+
+## Contract: EventEmitter.flush
+
+### Inputs
+- `timeout` — maximum wait for in-flight deliveries: Python `timeout` in **seconds** (default 5.0), TypeScript `timeoutMs` and Rust `timeout_ms` in **milliseconds** (default 5000; Rust `flush_default()`). Pass a positive value; `0` is not portable.
+
+### Errors
+- None raised to the caller. If the timeout elapses, `flush` returns and the remaining deliveries continue in the background. Python applies the timeout per pending batch, so the worst-case wait is longer than `timeout`.
+
+### Returns
+- Nothing (Rust `Result<(), ModuleError>`, always `Ok`).
+
+### Properties
+- async: blocking in Python; `async` in TypeScript and Rust
+- thread_safe: true
+- pure: false
+- idempotent: true
+
+## Contract: WebhookSubscriber.on_event
+
+### Inputs
+- `event` (`ApCoreEvent`, required) — POSTed as JSON to the configured URL with the configured headers.
+
+### Errors
+- Raises (Rust: returns `Err`) on 5xx responses, connection errors and timeouts, so the emitter retries per the subscriber's `retry` policy and emits `apcore.event.delivery_failed` when attempts are exhausted. Nothing reaches the code that called `emit()`.
+- A 4xx response is logged as a permanent failure and not retried.
+
+### Returns
+- Nothing on 2xx.
+
+### Properties
+- async: true
+- thread_safe: true
+- pure: false (outbound HTTP)
+
+## Contract: A2ASubscriber.on_event
+
+### Inputs
+- `event` (`ApCoreEvent`, required) — sent as `{"skillId": <skill_id>, "event": {<event fields>}}` to `platform_url`. A string `auth` becomes `Authorization: Bearer <auth>`; a map is merged into the headers.
+
+### Errors
+- As for `WebhookSubscriber.on_event`: 5xx, connection errors and timeouts go through the retry policy and the dead-letter path; 4xx is logged and not retried.
+
+### Returns
+- Nothing on 2xx.
+
+### Properties
+- async: true
+- thread_safe: true
+- pure: false (outbound HTTP)
+
+## Contract: CircuitBreakerWrapper._on_failure
+
+Internal in every SDK (Python `_on_failure`, TypeScript `_onFailure`, Rust private `on_failure`); specified because all three must behave the same.
+
+### Inputs
+- `error` (Exception / Error / `&str`, required) — the delivery error that just occurred. The wrapper is per-subscriber, so no subscriber ID is passed.
+
+### Errors
+- None — it records state and never raises.
+
+### Returns
+- The lifecycle event to emit when the call changed the circuit's state (`apcore.subscriber.circuit_opened`), or the language's empty value when it did not: `ApCoreEvent | None` (Python), `ApCoreEvent | null` (TypeScript), `Option<ApCoreEvent>` (Rust). The current state is read through the wrapper's own accessor.
+
+### Properties
+- async: false
+- thread_safe: true (state is lock-protected)
+- pure: false (mutates circuit state)
+- idempotent: false

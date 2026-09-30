@@ -1,30 +1,34 @@
 ---
-description: "Maintainer decisions left open by the 2026-09 configuration-surface audit (apcore#118): eight declared config surfaces that no SDK reaches, each needing a keep-or-withdraw call before v2.0."
-title: Configuration surface — open decisions (2026-09)
+description: "Historical record of the eight configuration-surface decisions (D-66–D-73) from the 2026-09 apcore#118 audit: each declared key that reached nothing was wired or withdrawn."
+title: Configuration surface decisions (D-66–D-73, 2026-09)
 date: 2026-09-10
-status: open — 8 items, 0 decided
+status: resolved — 8/8 decided and implemented (spec v1.43.0–v1.48.0)
 audience: maintainers + spec reviewers
-source: apcore#118 configuration-key audit (2026-09-09 – 2026-09-10, all 65 declared keys examined)
+source: apcore#118 configuration-key audit (2026-09-09 – 2026-09-10; all 65 keys then declared, 67 after D-68)
 ---
 
-# Configuration surface — open decisions
+# Configuration surface decisions (D-66 – D-73)
 
-`conformance/config_key_consumers.json` now records a status for **every one of the 65
-declared configuration keys**, and `unaudited` is zero. The audit that produced it
-(apcore#118) closed the question *"is this key read?"* for all of them. It did not close a
-second question, which only became answerable once the first was: **for each surface that
-nothing reads, is it wired up or withdrawn?**
+!!! info "Historical decision record"
+    Current behaviour is defined by [protocol-spec.md](./protocol-spec.md); decision status is tracked in [decision-register.md](./decision-register.md).
 
-This file holds the eight that need a maintainer's call. They are collected here rather
+`conformance/config_key_consumers.json` records a status for **every declared configuration
+key** — 65 when this audit ran, 67 once D-68 declared `observability.tracing.strategy` and
+`.otlp_endpoint` — and `unaudited` is zero. The audit that produced it (apcore#118) closed the
+question *"is this key read?"* for all of them. It did not close a second question, which only
+became answerable once the first was: **for each surface that nothing reads, is it wired up or
+withdrawn?**
+
+This file records the eight that needed a maintainer's call. They were collected here rather
 than left as comments on #118 because a decision needs a shape a comment thread does not
 give it — the status quo per SDK, the options, a recommendation, an owner, and the concrete
-action once decided — and because there are eight of them, which is too many for eight
+action once decided — and because there were eight of them, which is too many for eight
 issues and too many to keep in one comment.
 
 Tracking issue for all eight: [#118](https://github.com/aiperceivable/apcore/issues/118).
 
-**Nothing here is decided.** Each entry carries a first-pass recommendation, which is an
-argument to be accepted or rejected, not a fait accompli.
+Each entry records the first-pass recommendation as it was put to the maintainer, followed by
+the resolution. **All eight are resolved** — see [Resolution status](#resolution-status).
 
 ## Why these are one family
 
@@ -44,7 +48,7 @@ rejects a `live` probe that never puts its own key into a `Config`.
 The remaining two (`_config.allow_unknown`, `extensions.roots`) are ordinary gaps: one that
 no SDK implements, one that only apcore-rust does.
 
-Deadline for every item: **v2.0**, since each ends in either wiring (any 1.x, additive) or
+The deadline for every item was **v2.0**, since each ends in either wiring (any 1.x, additive) or
 removal (§13.2's two-minor floor, so v2.0 at the earliest).
 
 ---
@@ -66,9 +70,7 @@ Both now warn at load (§9.2.4.1 puts the ACL-file notice in the **loader**, the
 
 **And there is nothing to wire either of them TO.** Raised in review and verified: ACL auditing has no delivery contract at all. `ACL(audit_logger=…)` takes a programmatic callback defaulting to `None`, and that is the whole surface — there is **no default sink**, no statement of what happens when delivery fails, and no defined semantics for either `include_denied` (does it filter what is *delivered*, or what is *recorded*?) or `log_level` (a level against which logger, applied where?). So "keep the ACL file's block" currently means keeping a key that configures an unspecified mechanism.
 
-**Decision needed**
-
-Two things, in order. **First**, what ACL audit delivery *is*: sink, failure behaviour, and the meaning of the two modifiers. **Second**, which of the two homes configures it, so that the deprecation notice can name a migration target — a notice that says "this is going away" without saying "use that instead" is half a notice, and it is what an operator writing ACL configuration gets today.
+**Decision:** A — the ACL file's `audit:` block survives and `acl.audit.*` goes at v2.0, with the delivery contract written first (spec v1.45.0, §6.3.2). The question put to the maintainer had two parts, in order. **First**, what ACL audit delivery *is*: sink, failure behaviour, and the meaning of the two modifiers. **Second**, which of the two homes configures it, so that the deprecation notice can name a migration target — a notice that says "this is going away" without saying "use that instead" is half a notice, and it is what an operator writing ACL configuration gets today.
 
 The order matters and is not cosmetic: choosing a home for a contract that does not exist decides where to put a key whose meaning is still open, which is how both homes came to be declared in the first place.
 
@@ -84,7 +86,7 @@ The asymmetry is not aesthetic. Under B the surviving key still has to be *wired
 
 **Owner**: maintainer (GOVERNANCE.md § Decision Making — `MAINTAINERS.md` lists one, so one approval suffices).
 
-**Action once decided**
+**Planned action**
 
 1. **Define the delivery contract first** — a normative section covering the default sink (or the explicit statement that there is none and a callback is required), what an implementation does when delivery fails, what `include_denied` filters, and what `log_level` is a level *of*. Without this, steps 2–4 wire a key to nothing.
 2. Record the surviving home in §9.2.4's table and in §9.2.4.1.
@@ -140,9 +142,7 @@ acceptance tests that could only be written by reaching into private state.
 
 What has not been recorded anywhere: **apcore has no logging configuration surface at all.** `ContextLogger`'s level and format are constructor arguments, and **no construction site in any SDK accepts a `Config`** — verified by search across all three. So v2.0 does not take two key spellings away from an operator; it takes away the ability to control logging from configuration, which they do not have today either.
 
-**Decision needed**
-
-Whether apcore offers configuration-driven logging control at all.
+**Decision:** B — `logging.level` / `logging.format` are withdrawn at v2.0 and the specification says logging configuration is host-owned (spec v1.48.0). The question was whether apcore offers configuration-driven logging control at all.
 
 **Options**
 
@@ -155,7 +155,7 @@ apcore emits structured records; the host owns the sink, the level policy and th
 
 **Owner**: maintainer.
 
-**Action once decided**
+**Planned action**
 
 - If A: `ContextLogger.from_config` in three SDKs, wired at client construction, plus a probe in `check_config_key_consumers.py` and a conformance case.
 - If B: a short normative note (§10.x) stating that logging configuration is host-owned; remove both keys at v2.0; keep the deprecation notice pointing at that note.
@@ -220,7 +220,7 @@ Two more of the same shape came out with it: `observability.tracing.otlp_endpoin
 
 apcore-python, by execution:
 
-```
+```text
 Config.from_defaults() → namespace("observability")["tracing"]
   = {"enabled": false, "sampling_rate": 1.0}      # the registration declares FIVE leaves
 
@@ -293,9 +293,7 @@ Two separate readings come out of that, and only the first is this decision's su
 
 apcore-python's `config.py:843` and apcore-typescript's `config.ts:1537` each carry a comment explaining why the field plays no part in the §9.14 strict walk — correct, since §9.6.3 scopes it to *namespaces* and §9.14 to *framework keys* — but no other path reads it either, in any of the three.
 
-**Decision needed**
-
-Whether "drop unknown namespaces" is a capability apcore offers.
+**Decision:** A — implemented (spec v1.46.0, §9.6.3 requirements 1–4). The question was whether "drop unknown namespaces" is a capability apcore offers.
 
 **Options**
 
@@ -312,7 +310,7 @@ Against A: it is the one option that makes a `get()` start returning `null` wher
 
 **Owner**: maintainer.
 
-**Action once decided**
+**Planned action**
 
 - If A: implement in three SDKs, add a conformance fixture covering all four matrix rows, promote the key to `live` with a probe.
 - If B: remove the row from §9.6.3, open a deprecation window for the key per §13.4.
@@ -353,9 +351,7 @@ value return null. The release note says so.
 
 A multi-root project therefore works on one SDK of three, silently. This is the #116/#117 shape one layer down: not three dialects of one value, but one value honoured by one implementation.
 
-**Decision needed**
-
-Whether multi-root extension discovery is part of the protocol.
+**Decision:** A — implemented in all three SDKs, with the convergence target corrected (spec v1.46.0). The question was whether multi-root extension discovery is part of the protocol.
 
 **Options**
 
@@ -369,7 +365,7 @@ The scanner in every SDK already supports multiple roots internally — apcore-p
 
 **Owner**: maintainer.
 
-**Action once decided**
+**Planned action**
 
 - If A: implement in two SDKs, add a `multi_root_discovery` fixture, promote to `live`.
 - If B: deprecation window per §13.4, remove Rust's reader at v2.0.
@@ -421,9 +417,7 @@ Corrected in review: an earlier draft of this entry named only Python and Rust, 
 
 What none of them has is the **config path**: the map arrives only through the `Registry(id_map_path=…)` / `idMapPath` constructor argument. Measured: with `id_map.overrides` pointing at a valid map that renames `executor/orig/mod.py`, discovery still registers `executor.orig.mod`.
 
-**Decision needed**
-
-Whether the config key is wired to the mechanism it names, or removed.
+**Decision:** A — wired at registry construction (spec v1.46.0). The question was whether the config key is wired to the mechanism it names, or removed.
 
 **Options**
 
@@ -436,7 +430,7 @@ It is wiring, not implementation, in all three: the resolution site for `extensi
 
 **Owner**: maintainer.
 
-**Action once decided**
+**Planned action**
 
 - If A: read the key at registry construction in all three SDKs, add a fixture, promote to `live`.
 - If B: deprecation window per §13.4.
@@ -478,9 +472,7 @@ pipeline:
 
 ...leaves all eleven steps in place, `acl_check` included.
 
-**Decision needed**
-
-Whether a `pipeline:` block in `apcore.yaml` does anything.
+**Decision:** A — wired at executor construction (spec v1.43.0, §5.16 requirements 6–7). The question was whether a `pipeline:` block in `apcore.yaml` does anything.
 
 **Options**
 
@@ -497,7 +489,7 @@ Against A: wiring it means a `pipeline:` block starts changing execution in a pr
 
 **Owner**: maintainer.
 
-**Action once decided**
+**Planned action**
 
 - If A: wire at client construction in three SDKs, add a conformance fixture (a removed step, a configured field, an inserted step), promote all three keys to `live`.
 - If B: deprecation window per §13.4 for all three, and a note in `DECLARATIVE_CONFIG_SPEC` §4 that the section is not read from `apcore.yaml`.
@@ -530,9 +522,7 @@ Four separate entries above (D-66's `acl.audit`, D-71's `id_map.overrides`, D-72
 
 It also has an auditing consequence, learned the hard way: **a probe that exercises the mechanism through the API door reports the key as working.** `acl.default_effect` was recorded `live` in the guard built to find keys nothing reads, for exactly that reason.
 
-**Decision needed**
-
-Whether the specification states a rule.
+**Decision:** A — stated as §9.1.3 (spec v1.47.0). The question was whether the specification states a rule.
 
 **Options**
 
@@ -553,7 +543,7 @@ The guard catches this class today, but only *after* a key ships and only for ke
 
 **Owner**: maintainer.
 
-**Action once decided**
+**Planned action**
 
 - If A: add the requirement to §9.1 with a version bump, including both clauses above; cite it from `config_key_consumers.json`'s status definitions; and audit the four known instances against it as the rule's first application.
 
@@ -609,5 +599,3 @@ Executor, `id_map_from_config`'s explicit argument, `acl_audit_delivery`'s callb
 **All eight decisions resolved.** Surface at close: **50 live / 1 partial / 16 inert / 0 unaudited**, from 29 inert and 31 unaudited
 when #118 opened. Every remaining inert key is a written decision — eight on a removal window,
 eight naming no mechanism at all (see D-73's resolution for why that distinction matters).
-
-**Suggested sequence.** D-72 first: it is the most direct route from an inert key to a security or audit control that does not run. Then D-68's additive half (`observability.tracing.strategy`), because adding must precede removing and the v2.0 removals are already scheduled. Then D-66, so the deprecation notices can name a migration target while the window is still open. D-69, D-70 and D-71 are independent and small. D-73 last, since it is best written once the four instances have been resolved and their shape is settled.

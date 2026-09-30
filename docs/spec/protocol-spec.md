@@ -1,15 +1,14 @@
 ---
-description: "The canonical, normative apcore protocol specification (RFC 2119, v1.59.0): module, schema, naming, ACL, approval, error, config, and observability requirements for all conforming SDKs."
+description: "The canonical, normative apcore protocol specification (RFC 2119, v1.60.0): module, schema, naming, ACL, approval, error, config, and observability requirements for all conforming SDKs."
 ---
 
 # apcore — AI-Perceivable Core Standard Specification
 
-> **Canonical Specification** - This document is the authoritative specification for the apcore protocol
+> **Canonical specification.** This document is the single normative source for the apcore protocol. Where any other document disagrees with it, this document wins.
 
-> Version: 1.59.0
-> Status: Draft Specification (RFC 2119 Conformant)
-> Stability: Specification content is stable, pending reference implementation verification
-> Last Updated: 2026-09-16
+> Version: 1.60.0
+> Status: Active — the 1.x line adds requirements compatibly; breaking changes are reserved for 2.0
+> Last Updated: 2026-09-30
 
 ---
 
@@ -21,23 +20,9 @@ description: "The canonical, normative apcore protocol specification (RFC 2119, 
 - [4. Schema Specification](#4-schema-specification)
 - [5. Module Specification](#5-module-specification)
 - [6. ACL Specification](#6-acl-specification)
-  - [6.1.1 Unevaluable Conditions](#611-unevaluable-conditions-v1220-100)
-  - [6.6 System Module Permissions](#66-system-module-permissions)
-  - [6.8 ACL Introspection](#68-acl-introspection-v1230-101)
 - [7. Approval System](#7-approval-system)
 - [8. Error Handling Specification](#8-error-handling-specification)
 - [9. Configuration Specification](#9-configuration-specification)
-  - [9.4 Config Bus Architecture](#94-config-bus-architecture)
-  - [9.5 Namespace Registration](#95-namespace-registration)
-  - [9.6 Unified Configuration File](#96-unified-configuration-file)
-  - [9.7 Mount Mechanism](#97-mount-mechanism)
-  - [9.8 Environment Variable Override (Namespace Mode)](#98-environment-variable-override-namespace-mode)
-  - [9.9 Namespace-Aware Access API](#99-namespace-aware-access-api)
-  - [9.10 Validation Algorithm (Namespace-Aware A12-NS)](#910-validation-algorithm-namespace-aware-a12-ns)
-  - [9.11 Hot-Reload (Namespace Mode)](#911-hot-reload-namespace-mode)
-  - [9.12 Cross-Language Implementation Requirements](#912-cross-language-implementation-requirements)
-  - [9.13 Ecosystem Integration Patterns](#913-ecosystem-integration-patterns)
-  - [9.14 Config Discovery (Optional)](#914-config-discovery-optional)
 - [10. Observability Specification](#10-observability-specification)
 - [11. Extension Mechanism](#11-extension-mechanism)
 - [12. SDK Implementation Guide](#12-sdk-implementation-guide)
@@ -77,14 +62,14 @@ apcore (AI-Perceivable Core) is a **governed, protocol-neutral runtime and modul
 - **Protocol neutrality**: Modules can be exposed through code, MCP, A2A, CLI, HTTP, and future adapters
 - **Agent readability**: Enforced schemas make capability contracts machine-readable and independently validatable
 - **Developer Experience**: Directory as ID, zero configuration, automatic discovery
-- **Cross-language**: Specification supports implementation in any programming language, Python as reference implementation
+- **Cross-language**: Specification supports implementation in any programming language; the maintained implementations are the Python, TypeScript and Rust SDKs, checked against the shared conformance fixtures
 - **Extensibility**: ACL, middleware, observability
 
 ### 1.4 Relationship with MCP/A2A
 
 apcore is a **module construction specification**, MCP/A2A is a **communication protocol**. They are complementary:
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────┐
 │              apcore — AI-Perceivable Core                    │
 │                                                             │
@@ -164,7 +149,7 @@ Implementations **MUST** follow these naming rules:
 
 Implementations **MUST** convert directory paths to Canonical IDs according to the following algorithm:
 
-```
+```text
 Algorithm: directory_to_canonical_id(file_path, extensions_root)
 
 Input:
@@ -234,7 +219,7 @@ When multi-class discovery is enabled for a file:
 `snake_case` conversion: replace non-alphanumeric characters with `_`, lowercase all, collapse consecutive `_` to one, strip leading/trailing `_`.
 
 Examples:
-```
+```text
 class Addition   → "addition"
 class MathOps    → "math_ops"
 class HTTPSender → "http_sender"
@@ -244,7 +229,7 @@ class HTTPSender → "http_sender"
 
 All module IDs **MUST** conform to the following regular expression:
 
-```
+```text
 ^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$
 ```
 
@@ -265,7 +250,7 @@ All SDK implementations **MUST** validate module IDs against this pattern during
 
 **ID Map** module handles cross-language ID conversion, supporting automatic recognition and manual configuration. Implementations **MUST** support canonical conversion from various language native formats to Canonical ID.
 
-```
+```text
 Algorithm: normalize_to_canonical_id(local_id, language)
 
 Input:
@@ -423,13 +408,74 @@ reserved_words:
 | `internal.*` | Reserved for SDK-private modules; not intended for user code | Implementation-defined |
 | `core.*` | Reserved for future spec promotion of metadata extension keys | Reserved — no current use |
 | `apcore.*`, `plugin.*`, `schema.*`, `acl.*` | Reserved for framework subsystem extensions | Reserved — no current use |
-| `ephemeral.*` | Programmatically-generated runtime modules (Agent-synthesized tools, on-the-fly composition) | Standard `Registry.register()` only; framework-internal `register_internal()` MUST reject `ephemeral.*` IDs. See `./rfc-ephemeral-modules.md` for the full namespace contract. |
+| `ephemeral.*` | Programmatically-generated runtime modules (Agent-synthesized tools, on-the-fly composition) | Standard `Registry.register()` only; framework-internal `register_internal()` MUST reject `ephemeral.*` IDs. See §2.5.1 for the full namespace contract. |
+
+#### 2.5.1 The `ephemeral.*` Namespace
+
+The `ephemeral.*` namespace holds modules created programmatically at runtime: agent-synthesized
+tools, on-the-fly compositions of existing modules, and per-session scratch tools. Such a module
+has no filesystem source. Its ID is supplied by the registering caller and is validated against the
+Canonical ID grammar (§2.7) like any other; Algorithm A01 (§2.1) governs discovery only and does
+not constrain `Registry.register()`.
+
+**Membership.** A module ID belongs to the namespace when it equals `ephemeral` or begins with
+`ephemeral.`. An ID whose first segment merely starts with those letters (`ephemerals.tool`) does
+not.
+
+**Registration.**
+
+1. `Registry.register()` is the only registration path for an `ephemeral.*` ID.
+2. `register_internal()`, or its equivalent privileged API, **MUST** reject an `ephemeral.*` ID
+   with an error that directs the caller to `Registry.register()`.
+3. Discovery **MUST NOT** populate the namespace. An `ephemeral.*` ID yielded by filesystem
+   discovery (§3.6) or by a custom discoverer is never registered; filesystem discovery that
+   derives one fails with an error.
+
+Rationale: each reserved namespace maps to exactly one registration path — `system.*` only
+through `register_internal()` (§6.6.1), `ephemeral.*` only through `register()`. That keeps
+framework-provenance and caller-provenance modules distinct in the audit trail, and keeps an
+agent-synthesized module off the privileged path that exists to bypass the reserved-namespace
+check.
+
+**Annotations.**
+
+1. An `ephemeral.*` module **SHOULD** declare `requires_approval: true` (§4.4), so that
+   agent-synthesized code does not run without a human decision.
+2. An `ephemeral.*` module **SHOULD** declare `discoverable: false` (§4.4). It remains callable by
+   exact ID.
+3. When the effective `requires_approval` of an `ephemeral.*` module being registered — the union
+   of its code-level and metadata annotation sources (§7.4) — is not `true`, `Registry.register()`
+   **SHOULD** log a warning. The omission is not an error and does not fail the registration.
+
+**Access control and approval.** A call to an `ephemeral.*` module passes the ACL check (§6) and
+the approval gate (§7) exactly as a call to any other module does; the namespace carries no
+exemption from either.
+
+**Audit events.** Each registration and each unregistration of an `ephemeral.*` module **MUST**
+produce exactly one `apcore.registry.module_registered` or `apcore.registry.module_unregistered`
+event (§9.16.2) — never the plain registry event plus a second contextual one. The event's
+`module_id` is the ephemeral ID, and its payload carries:
+
+| Key | Value |
+|---|---|
+| `caller_id` | `context.caller_id` of the registering call; `"@external"` when it is absent, null or empty |
+| `identity` | A snapshot of `context.identity` with credential-bearing attributes redacted or omitted; `null` when the context carries no identity |
+| `namespace_class` | `"ephemeral"` |
+
+Registrations outside the namespace carry the payload §9.16.2 defines.
+
+**Lifecycle.** An `ephemeral.*` module remains registered until `Registry.unregister()` removes it;
+the framework does not expire it.
+
+**Isolation.** Sandboxing the code an `ephemeral.*` module executes is the host's responsibility.
+This specification governs the module's registration, access control, approval and audit, not its
+execution environment.
 
 ### 2.6 ID Conflict Detection
 
 Implementations **MUST** perform conflict detection during module scanning, module registration, and dynamic loading.
 
-```
+```text
 Algorithm: detect_id_conflicts(new_id, existing_ids, reserved_words)
 
 Input:
@@ -457,14 +503,11 @@ Steps:
 Complexity: O(n), where n is the number of registered IDs
 ```
 
-**Step 2 tests the first segment and nothing else, and that is deliberate (v1.26.0, #99).**
+**Step 2 tests the first segment and nothing else.**
 
 A reserved word claims a **namespace**, not a token. §2.5 describes `system.*`, `internal.*` and `apcore.*` as namespaces; §6.6.1 restricts registration of IDs **prefixed** `system.`. Ownership of a prefix is what the reservation is for, and only the first segment can assert it: `foo.system.bar` is not in the `system` namespace and impersonates nothing.
 
-Segments after the first are **unrestricted**, including when they equal a reserved word. This is stated positively so a later reader does not "restore" the per-segment form: the reserved set is `system`, `internal`, `core`, `apcore`, `plugin`, `schema`, `acl`, and a per-segment test makes `executor.schema.validate`, `orchestrator.core.dispatch` and `api.acl.check` illegal — ordinary, well-formed IDs that claim nothing and shadow nothing. Rejecting them buys no security and costs a large part of the natural naming space.
-
-> **Narrowed in v1.26.0.** Through v1.25.0 this step read "For each segment of `new_id`". No SDK implemented it: apcore-python, apcore-typescript and apcore-rust all tested the first segment only, each saying so in a comment beside the check. Three independent implementations reading one algorithm the same way, against its literal text, is evidence about the intent — and the literal text was the outlier. This is a **narrowing**, so nothing that validated before stops validating; IDs that were legal in every implementation but illegal on paper are now legal on paper too. The security property is unaffected: threat T8 is impersonation of `system.*`, which requires the first segment, so first-segment enforcement was always sufficient for it (`security-considerations.md` §2.1).
-
+Segments after the first are **unrestricted**, including when they equal a reserved word: `executor.schema.validate`, `orchestrator.core.dispatch` and `api.acl.check` are legal IDs. They claim no namespace and shadow nothing, so rejecting them would buy no security and cost a large part of the natural naming space. First-segment enforcement is sufficient against threat T8, impersonation of `system.*` ([security-considerations.md §2.1](./security-considerations.md#21-module-id-spoofing-t8)).
 
 ```yaml
 conflict_detection:
@@ -521,7 +564,7 @@ Equivalent regular expression: `^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$`
 
 Implementations **MUST** follow the directory structure below. The nesting depth under `extensions/` directory (not including `extensions/` itself) **MUST NOT** exceed 8 levels.
 
-```
+```text
 {project_root}/
 ├── extensions/                   # Extensions directory (max depth: 8 levels)
 │   ├── api/                      # Level 1 grouping: API layer
@@ -610,18 +653,11 @@ Implementations **MUST** additionally apply `extensions.ignore_patterns`, matche
 segment, case-sensitively. The two lists are a union: a configured pattern adds to the
 built-in rows and cannot remove one.
 
-This was a **MUST with no supplier until v1.42.0**. The key was registered in all three
-configuration key surfaces and read by none of them, so a project that excluded a directory
-from discovery had it scanned and its modules registered anyway — a skip rule that failed
-**open**. It is the same shape as #114's `bindings.dir` and was found by the same audit
-(#118); the dialect could not be assigned earlier because §9.2.3 assigns one only where a
-consumer exists.
-
 ### 3.6 Scanning Algorithm
 
 Implementations **MUST** scan the extensions directory according to the following algorithm:
 
-```
+```text
 Algorithm: scan_extensions(extensions_root, config)
 
 Input:
@@ -661,50 +697,28 @@ Steps:
 Complexity: O(n), where n is the number of filesystem entries
 ```
 
-> **D-127 (v1.56.0) — a symlink is recorded once, under its real path.**
-> `follow_symlinks: true` records the real target inside the root **once**; file
-> identity, module ID and visited-directory tracking are all keyed on the
-> **canonical real path**.
->
-> Measured before the rule was written, with `follow_symlinks: true`:
->
-> | | apcore-python | apcore-typescript | apcore-rust |
-> |---|---|---|---|
-> | symlinked FILE in root | `alias`, `real.target` | `real.target` | `real.target` |
-> | symlinked DIRECTORY in root | `aliasdir.…`, `real.…` | `real.…` | `aliasdir.…`, `real.…` |
->
-> Two failures, in opposite directions. **Duplicate discovery**: one file reached
-> by two paths became two modules with different IDs, which step 4's
-> `detect_id_conflicts` cannot catch because the IDs differ — so an operator
-> laying out extensions with symlinks got duplicate registrations, and the same
-> module executed under two names. **A half-inert key**: `follow_symlinks` never
-> reached the file branch in two SDKs, so it governed directories and did nothing
-> for files — the §9.1.3 shape a declared key must not have.
->
-> Two points the rule pins explicitly, because leaving either open leaves the
-> result unstable:
->
-> 1. **Containment is checked on the resolved real path**, and deduplication uses
->    that same path. A check on the link and a dedupe on the link are two
->    different keys, and only the real path answers "is this the same file".
-> 2. **The module ID is derived from the canonical real path relative to the
->    root**, never from whichever alias the traversal happened to reach first.
->    Deriving it from the alias makes the registered ID depend on directory
->    iteration order, which is not stable across filesystems or platforms.
->
-> Directory symlinks are covered by the same key: an aliased directory whose real
-> path was already visited is skipped, which both prevents the duplicate and
-> terminates a cycle. All three SDKs already terminated on a cycle; none of them
-> keyed identity consistently.
->
-> **Not in scope: TOCTOU.** A single canonical check cannot stop a party who can
-> replace the link between the scan and the load. This rule fixes discovery
-> semantics; whether a stronger file-handle or directory-descriptor level
-> defence is warranted depends on whether the extensions root is attacker-
-> writable, which is a threat-model question and is assessed separately in
-> [Discovery TOCTOU](./2026-09-discovery-toctou-assessment.md) rather than folded
-> in here.
+**A symlink is recorded once, under its real path (D-127).** With `follow_symlinks: true`, the
+real target inside the root is recorded **once**; file identity, module ID and visited-directory
+tracking are all keyed on the **canonical real path**:
 
+1. **Containment is checked on the resolved real path**, and deduplication uses that same path. A
+   check on the link and a dedupe on the link are two different keys, and only the real path
+   answers "is this the same file".
+2. **The module ID is derived from the canonical real path relative to the root**, never from
+   whichever alias the traversal reached first. An alias-derived ID would depend on directory
+   iteration order, which is not stable across filesystems or platforms.
+
+Directory symlinks are covered by the same key: an aliased directory whose real path was already
+visited is skipped, which both prevents the duplicate and terminates a cycle.
+
+Rationale: keyed on the link path, one file reached by two paths becomes two modules with
+different IDs — a duplicate registration that step 4's `detect_id_conflicts` cannot catch because
+the IDs differ.
+
+**Not in scope: TOCTOU.** A single canonical check cannot stop a party who can replace the link
+between the scan and the load. Whether a file-handle or directory-descriptor level defence is
+warranted depends on whether the extensions root is attacker-writable; that threat-model question
+is assessed in [Security Considerations §2.8](./security-considerations.md#28-discovery-toctou-ot9).
 
 ---
 
@@ -894,7 +908,7 @@ annotations:
     discoverable:
       type: boolean
       default: true
-      description: "Whether the module appears in enumeration surfaces (Registry.list(), Registry.find(), manifest export, MCP tools/list). false hides the module from discovery while keeping it callable by ID — caller must already know the module ID. Default true preserves backward compatibility. ephemeral.* modules SHOULD set discoverable: false."
+      description: "Whether the module appears in enumeration surfaces (Registry.list(), manifest export, MCP tools/list). false hides the module from discovery while keeping it callable by ID — caller must already know the module ID. ephemeral.* modules SHOULD set discoverable: false (§2.5.1)."
 
     open_world:
       type: boolean
@@ -950,9 +964,9 @@ annotations:
 | Aligned with MCP | Field design compatible with MCP ToolAnnotations |
 | Extensible | Can add new fields without breaking compatibility |
 
-!!! warning "`requires_approval: false` does not mean no approval will be required (v1.29.0, #110)"
+!!! warning "`requires_approval: false` does not mean no approval will be required"
     The annotation is a **module-level declaration**: it says whether *this module* always
-    needs a human. Since v1.28.0 it is one of several sources, and §6.9 rows 3–5 compose
+    needs a human. It is one of several sources, and §6.9 rows 3–5 compose
     them by union — an ACL rule carrying `approval: required` (§6.1.6), an `ExecutionPolicy`
     override, or `gate_destructive` can each require approval for a **particular call** on a
     module whose annotation says `false`. A client that reads the annotation and stops there
@@ -963,19 +977,19 @@ annotations:
     (§7.9.5), which reports the same verdict the approval gate will enforce. The annotation
     describes the **module**; the preflight describes the **call**.
 
-    Nothing is unsafe about ignoring this — the gate still fails closed and asks the human at
-    execution time. What is lost is the client's ability to say *in advance* that a call will
-    need approval, which is the whole reason the annotation is read before calling.
+    Ignoring this is not unsafe — the gate still fails closed and asks the human at execution
+    time. What is lost is the client's ability to say *in advance* that a call will need
+    approval, which is why the annotation is read before calling.
 
     **Why this is not a `conditional` tri-state.** The module author cannot know the answer:
     it depends on the ACL the *deployment* loads and the policy it configures, none of which
     is visible when the annotation is written. A third value would have to be computed by the
     framework from the loaded governance config rather than declared — which is `validate()`
-    with extra steps, and a breaking change to a field every consumer reads as a boolean.
+    under another name, on a field every consumer reads as a boolean.
 
 **AI usage of Annotations decision examples:**
 
-```
+```text
 readonly=true         → AI can call safely, no confirmation needed
 destructive=true      → AI should warn user before calling
 idempotent=true       → AI can safely retry failed calls
@@ -1002,8 +1016,8 @@ paginated=true        → AI knows to pass pagination params and expect partial 
 **Consumer rules:**
 
 5. Consumers **MUST** accept the canonical nested form `{"extra": {...}}`.
-6. Consumers **MAY** accept top-level overflow keys (i.e. unknown keys at the annotations root) as a backward-compatibility shim for one MINOR cycle following v0.18.0. Such keys **MUST** be normalized into the nested `extra` object on deserialize and re-serialized in nested form.
-7. When a deserialization input contains BOTH a nested `extra.k` and a top-level `k` with the same key, **the nested value MUST win**. (This intentionally inverts the legacy Python/TypeScript "overflow wins" precedence — a one-time correction during the v0.18.0 normalization.)
+6. Consumers **MAY** accept top-level overflow keys (i.e. unknown keys at the annotations root) as a compatibility shim. Such keys **MUST** be normalized into the nested `extra` object on deserialize and re-serialized in nested form.
+7. When a deserialization input contains BOTH a nested `extra.k` and a top-level `k` with the same key, **the nested value MUST win**.
 8. When `extra` is absent or `null`, consumers **MUST** treat it as an empty object.
 
 **Key naming:**
@@ -1018,8 +1032,6 @@ paginated=true        → AI knows to pass pagination params and expect partial 
 13. When a community-adopted `extra` key is promoted to a standard `Annotations` field in a future spec version, that change **MUST** go through one MINOR deprecation cycle in which both forms (the new standard field AND the `extra.<old_key>` entry) are accepted by consumers, before the `extra` form is removed.
 
 **Conformance:** Cross-language behavior is locked by `../../conformance/fixtures/annotations_extra_round_trip.json`.
-
-> **Version note:** Introduced in protocol v0.18.0. SDKs at or below v0.17.1 emitting the flattened form (notably `apcore-rust ≤ 0.17.1`) are non-conformant and **MUST** migrate.
 
 **Example (canonical wire form):**
 
@@ -1036,6 +1048,7 @@ paginated=true        → AI knows to pass pagination params and expect partial 
   "cache_key_fields": null,
   "paginated": false,
   "pagination_style": "cursor",
+  "discoverable": true,
   "extra": {
     "mcp.category": "tools",
     "cli.approval_message": "Are you sure?"
@@ -1248,7 +1261,7 @@ metadata:
 
 ### 4.7 Three-layer Metadata Summary
 
-```
+```text
 ┌───────────────────────────────────────────────────────────┐
 │                  Module Metadata Three-layer Design        │
 ├───────────────────────────────────────────────────────────┤
@@ -1287,7 +1300,7 @@ apcore adopts the **Progressive Disclosure** design pattern, referencing the [Cl
 
 **Core Philosophy:**
 
-```
+```text
 AI Module Discovery Flow:
 ├─ Phase 1: Module Discovery
 │   └─ Read all modules' description (≤200 chars)
@@ -1501,7 +1514,7 @@ For existing long descriptions (>200 chars):
 
 #### 4.8.6 AI Usage Flow Example
 
-```
+```text
 User request: "Send a welcome email to new user"
 
 Step 1: Module Discovery (read all descriptions)
@@ -1574,7 +1587,7 @@ Each language SDK **MUST** provide a native schema implementation that supports 
 
 Implementations **MUST** support `$ref` references and **MUST** resolve according to the following algorithm. Implementations **MUST** reject circular references — a `$ref` → `$ref` chain that never reaches a schema body — and **MUST** preserve self-references as lazy `$ref` nodes rather than inlining or rejecting them. §4.15 defines the distinction; it is the sole authority on which re-entry is which.
 
-```
+```text
 Algorithm: resolve_ref(ref_string, current_file, schemas_dir, visited_refs,
                        depth, from_ref_chain)
 
@@ -1586,7 +1599,7 @@ Input:
                    caller with the aliases of the document being resolved
                    ("#", "#/", and the document's own $id), so a reference
                    naming that document is lazy from the FIRST encounter
-   depth         — Number of $ref hops taken so far (starts at 0)
+  depth          — Number of $ref hops taken so far (starts at 0)
   from_ref_chain — True when this call was reached because the previous node
                    was itself a bare $ref, i.e. no schema body was traversed
                    between the two. False on any structural descent
@@ -1614,12 +1627,12 @@ Steps:
      a. If starts with "#" → file_part = current_file, json_pointer = ref_string[1:]
         Resolve the pointer against the FILE ROOT first; if it does not resolve
         there, fall back to the schema node being resolved (the `input_schema` /
-        `output_schema` document itself). See D-104 below — BOTH layouts are
-        addressable, and an implementation MUST support both. The fallback is
-        available ONLY while resolution is still inside the document the schema
-        node belongs to; once a reference has been followed into another
-        document, a local pointer that does not resolve in THAT document MUST
-        throw SCHEMA_NOT_FOUND (D-124).
+        `output_schema` document itself). BOTH layouts are addressable, and an
+        implementation MUST support both (D-104). The fallback is available ONLY
+        while resolution is still inside the document the schema node belongs to;
+        once a reference has been followed into another document, a local
+        pointer that does not resolve in THAT document MUST throw
+        SCHEMA_NOT_FOUND (D-124).
      b. If contains "#" → Split by "#" into file_part and json_pointer
      c. If starts with "apcore://" → Convert to file path under schemas_dir
      d. Otherwise → file_part is path relative to current_file directory
@@ -1631,51 +1644,20 @@ Steps:
      descent, call resolve_ref(...) with depth + 1 and from_ref_chain = False
   9. Return resolved
 
-> **D-104 (v1.50.0) — the base document for a local `#/…` reference.** This step
-> said only "file_part = current_file", and the three SDKs read it two ways, so
-> **no schema file containing a local `$ref` loaded in all three**. apcore-rust
-> resolved against the whole file, which is what step 4a says and what §4.11's
-> own example requires — that example puts `definitions:` beside `input_schema`
-> as a top-level key of the schema FILE, and it is loadable on Rust alone.
-> apcore-python and apcore-typescript resolved against the schema node, so
-> `#/$defs/User` nested inside `input_schema` worked there and the spec's own
-> example did not. Each rejected what the other accepted.
->
-> Both layouts are now normative, file root first. The fallback rather than a
-> hard break, because Layout B is what two of three SDKs accept today and is
-> therefore presumably in the wild; the two lookups cannot collide, since a
-> pointer either resolves at the file root or it does not. A consequence worth
-> stating: `SchemaDefinition.definitions`, collected from the file's top level
-> by apcore-python and apcore-typescript and until now read by nothing, becomes
-> live — it was dead precisely because the refs that would have used it could
-> not resolve.
-
-> **D-124 (v1.53.0) — the node fallback is scoped to its own document.** D-104
-> settled WHICH two bases a local pointer tries. It did not say how far the
-> second one travels, and all three SDKs answered "everywhere": the fallback was
-> held on the resolver and consulted for every local pointer, including ones
-> resolved after following a reference into another file. So a `#/$defs/X`
-> written inside an EXTERNAL schema, naming a definition that document does not
-> have, fell back to the CALLING module's schema node and bound to whatever
-> happened to share the name.
->
-> Three consequences, in increasing order of cost. An invalid reference reports
-> success where it owes `SCHEMA_NOT_FOUND`. The resolved schema then validates
-> against a contract the external author never wrote — accepting or rejecting
-> inputs on a definition that is not the one referenced. And §10.6 reads
-> `x-sensitive` off the **resolved** schema, so a field the external document
-> marks sensitive can be silently replaced by a local definition that does not,
-> and the value is then logged in plaintext. That is the same class of leak as
-> dropping `$ref` sibling keys (SCH-001), reached by a different route.
->
-> A document falls back only to its own node. This does not narrow D-104: a
-> local pointer inside an external document still resolves normally **in that
-> document**, and Layout B is unaffected, because the schema node and the
-> document it belongs to are the same document at the origin.
-
 Complexity: O(d), where d is reference depth (bounded by schema.max_ref_depth,
 default 32)
 ```
+
+**The base document for a local `#/…` pointer (D-104, D-124).** Two layouts are addressable: a
+`definitions:` / `$defs:` block at the top level of the schema **file**, beside `input_schema` (as
+in the example below), and a `$defs` block nested inside the schema node itself. The file root is
+tried first. The two lookups cannot collide, since a pointer either resolves at the file root or
+it does not. The node fallback is scoped to the document the schema node belongs to: a local
+pointer inside an external document resolves in that document or raises `SCHEMA_NOT_FOUND`, and
+never falls back to the calling module's schema node. Rationale: a cross-document fallback binds a
+reference to a definition its author never wrote, and because §10.6 reads `x-sensitive` from the
+**resolved** schema, it can replace a field marked sensitive with one that is not, so the value is
+logged in plaintext.
 
 **Depth is consumed by `$ref` hops only.** Steps 7 and 8 both increment `depth`
 because both follow a reference; ordinary structural descent into `properties`
@@ -1829,10 +1811,10 @@ Implementations **MUST** handle Schema edge cases according to the following tab
 | `format` names a term the implementation does not recognise | Collect as an annotation and pass silently | **MUST** |
 
 **`format` is an annotation, and [type-mapping §11.1](./type-mapping.md#111-format-keyword) is its
-sole authority.** The two rows above restate its consequence for edge-case handling so that a
-reader arriving at this table is not left to infer that an unsatisfied `format` behaves like an
-unsatisfied `pattern`. §11.1 carries the recognised-format list, the warning requirement, and the
-rule that a binding is expressed with `pattern` or `enum` rather than with `format`.
+sole authority.** The two rows above restate its consequence for edge-case handling: an
+unsatisfied `format` does not behave like an unsatisfied `pattern`. §11.1 carries the
+recognised-format list, the warning requirement, and the rule that a binding is expressed with
+`pattern` or `enum` rather than with `format`.
 
 #### Self-reference vs. circular reference
 
@@ -1908,11 +1890,11 @@ OpenAI and Anthropic's `strict: true` mode requires JSON Schema to satisfy addit
 | No `x-*` extension fields | All `x-*` fields **MUST** be stripped |
 | No `default` values | `default` fields **MUST** be removed |
 
-**Object detection.** `properties` alone identifies an object schema; a missing `type` keyword does not make the node any less of one. A node **MUST** be hardened when it carries `properties` **and** either has no `type` keyword at all, or has a `type` declaring `"object"` in the string form (`"object"`) or the array form (`["object", "null"]`). `properties` sitting beside a **non-object** `type` is inert (TYPE_MAPPING §17.1 R2) and **MUST NOT** be hardened. Leaving a type-less `{"properties": {…}}` node unhardened produces a schema OpenAI structured outputs rejects under `strict: true`, which is the whole reason this conversion exists.
+**Object detection.** `properties` alone identifies an object schema; a missing `type` keyword does not make the node any less of one. A node **MUST** be hardened when it carries `properties` **and** either has no `type` keyword at all, or has a `type` declaring `"object"` in the string form (`"object"`) or the array form (`["object", "null"]`). `properties` sitting beside a **non-object** `type` is inert (TYPE_MAPPING §17.1 R2) and **MUST NOT** be hardened. Rationale: a type-less `{"properties": {…}}` node left unhardened produces a schema that OpenAI structured outputs rejects under `strict: true`.
 
 **`to_strict_schema()` Conversion Rules:**
 
-```
+```text
 Input: apcore_schema (standard JSON Schema + x-* extensions)
 Output: strict_schema (Strict Mode compatible JSON Schema)
 
@@ -1933,7 +1915,7 @@ Rules:
      `definitions` / `$defs` entry
 ```
 
-The normative statement of these rules is ALGORITHMS A23; `conformance/fixtures/schema_strict_conversion.json` pins the exact output all three SDKs must emit.
+The normative statement of these rules is ALGORITHMS A23; `conformance/fixtures/schema_strict_conversion.json` pins the exact output every implementation must emit.
 
 **Example — Before/After Conversion:**
 
@@ -2024,7 +2006,7 @@ apcore defines standard export Profiles for adapter developers to follow. Profil
 
 Each module consists of the following parts:
 
-```
+```text
 extensions/{layer}/{type}/{module_name}.{ext}      # Module implementation
 extensions/{layer}/{type}/{module_name}_meta.yaml  # Module metadata (optional)
 schemas/{canonical_id}.schema.yaml              # Schema definition
@@ -2034,7 +2016,7 @@ schemas/{canonical_id}.schema.yaml              # Schema definition
 
 Implementations **MUST** resolve module entry points according to the following algorithm:
 
-```
+```text
 Algorithm: resolve_entry_point(meta_yaml, file_path, language)
 
 Input:
@@ -2058,6 +2040,10 @@ Steps:
      f. If no match found → Throw NO_MODULE_CLASS error
   3. Return entry_point
 ```
+
+**The `entry_point` field.** The value has the form `"<file_stem>:<ClassName>"`; `schemas/module-meta.schema.json` constrains it to `^[a-z][a-z0-9_]*:[A-Z][a-zA-Z0-9]*$`. The class is looked up by the name after the `:` in the module file being loaded. When an implementation that loads module files at runtime finds no class of that name in the file, the load **MUST** fail with `MODULE_LOAD_ERROR`, naming the class and the file.
+
+An implementation for a language that cannot load a module file at runtime (Rust) resolves only the entry-point *name* — from `entry_point`, or by converting the file stem from snake_case to PascalCase (step 2b) — and obtains the module instance from an application-supplied factory keyed by that name. A discovered file for which the factory supplies no module is skipped.
 
 ```yaml
 # extensions/executor/validator/db_params_meta.yaml
@@ -2140,7 +2126,7 @@ resources:
 
 Implementations **MUST** use topological sorting to resolve dependency order and **MUST** detect circular dependencies.
 
-```
+```text
 Algorithm: resolve_dependencies(modules)
 
 Input:
@@ -2230,39 +2216,13 @@ multi_version:
       alias: "executor.validator.db_params@2"
 ```
 
-> **D-126 (v1.55.0) — the v1.10.0 row is wrong about `version`.** It recorded
-> "all three SDKs accept it, only apcore-python resolves by it". The second half
-> is right; the first is not. apcore-rust's `Registry::get(&self, name)` takes no
-> version hint, so a Rust caller cannot pass one. apcore-typescript accepts the
-> argument and discards it — the parameter name appeared exactly once in the
-> source, in the signature.
->
-> The historical row is left as written, as D-96's was: it records what was
-> decided then. What is corrected is the **current** statement in
-> [`registry-system.md`](../features/registry-system.md#contract-registryregister),
-> and the inert parameter itself.
->
-> An implementation that accepts a `version_hint` it does not resolve by
-> **MUST** make that visible to the caller. Silence is the failure: a caller
-> writing `get(id, "1.0.0")` believes it has pinned a version and has not, which
-> is §9.1.3's "declared surface reaches no mechanism" applied to a method
-> parameter. Compile-time refusal (apcore-rust) satisfies this; so does a
-> deprecation warning. Resolution itself stays OPTIONAL — §5.4 multi-version
-> coexistence is optional, and making resolution normative would put a
-> requirement into the spec that two of three implementations do not provide,
-> which is what the v1.10.0 row was right to avoid.
->
-> apcore-typescript deprecates its hint for removal at 2.0 rather than removing
-> it now, following **D-121**: removal is a compile error for every caller that
-> passes one, and the warning carries the same information without breaking the
-> build. The cadence is D-89's — once per module ID per registry instance,
-> because `get` is a read hosts call in loops.
+**Version hints (D-126).** Resolving a registry lookup by version is **OPTIONAL**, as multi-version coexistence is. An implementation that accepts a `version_hint` it does not resolve by **MUST** make that visible to the caller. Refusing the argument at compile time satisfies this; so does a deprecation warning, emitted once per module ID per registry instance because `get` is called in loops (D-89). Deprecating an unresolved hint, rather than removing it, keeps existing callers compiling while telling them the same thing (D-121).
 
+Rationale: a caller writing `get(id, "1.0.0")` believes it has pinned a version. A hint that is silently discarded is a declared surface that reaches no mechanism (§9.1.3).
 
 ### 5.5 Module Isolation (Optional)
 
 ```yaml
-# [Implementation Phase: Phase 2]
 module_isolation:
   # Isolation levels
   levels:
@@ -2325,7 +2285,7 @@ class SendEmailModule:
 
 **Module Interface Contract (language-agnostic pseudocode):**
 
-```
+```text
 Interface: Module
 
   Required implementations:
@@ -2473,6 +2433,14 @@ module_interface:
       input: "state: dict — state returned by on_suspend() of the previous instance"
 ```
 
+**`preview()` contract.** `preview()` lets a module report what a call would change before it is made. It complements `preflight()`, which reports warnings; neither replaces the other.
+
+1. `preview()` is optional. A module that does not implement it, or whose `preview()` returns null (prediction unavailable, e.g. the target record does not exist), contributes no changes, and `PreflightResult.predicted_changes` stays empty.
+2. `preview()` **MUST NOT** have side effects.
+3. `Executor.validate()` invokes `preview(inputs, context)` after `preflight()`, and only when the `acl` check did not fail (§12.8.5.1). In Python and TypeScript `preview()` may be synchronous or asynchronous.
+4. The `changes` of the returned `PreviewResult` become `PreflightResult.predicted_changes`, in the order the module returned them. `PreviewResult` and `Change` are defined in §12.8.
+5. If `preview()` raises (throws, rejects, or panics), `validate()` **MUST NOT** fail: the failure is reported as a warning on a `module_preview` check result with `passed: true`, and `predicted_changes` stays empty — the same semantics as `preflight()`.
+
 ### 5.7 Context Parameter Specification
 
 Each module invocation passes a `context` parameter containing runtime context information. In cross-process scenarios, Context **MUST** support serialization for transport.
@@ -2597,7 +2565,7 @@ context_serialization:
 
 Async module state transitions **MUST** follow this state machine:
 
-```
+```text
                     ┌──────────────────────────────────────────┐
                     │                                          │
                     ▼                                          │
@@ -2826,7 +2794,7 @@ Implementations **MUST** provide `module()` mechanism to wrap existing callables
 
 Both forms share the same parameter set (language-agnostic pseudocode):
 
-```
+```text
 module(callable?, options?) → Module
 
 options:
@@ -2845,7 +2813,7 @@ options:
 
 Implementations **MUST** auto-generate JSON Schema from function signatures according to the following algorithm:
 
-```
+```text
 Algorithm: generate_schema_from_function(callable)
 
 Input:
@@ -2896,7 +2864,7 @@ Complexity: O(n), where n is number of parameters
 
 When `module()` doesn't specify `id` parameter, **MUST** auto-generate from function full path:
 
-```
+```text
 Rule: generate_module_id(callable)
 
 Steps:
@@ -3029,6 +2997,7 @@ Binding files **MUST** be in YAML format, containing a `bindings` array:
 
 ```yaml
 # bindings/email.binding.yaml
+spec_version: "1.0"
 bindings:
   - module_id: "email.send"
     target: "myapp.services.email:send_email"
@@ -3060,27 +3029,51 @@ bindings:
     auto_schema: true  # Auto-generate Schema from type annotations
 ```
 
+**Top-level Keys** (`schemas/binding.schema.json`):
+
+| Key | Type | Required | Description |
+|------|------|------|------|
+| `spec_version` | string | **MAY** | Binding-file format version. `"1.0"` is the only version defined. |
+| `bindings` | array | **MUST** | Binding entries |
+
+When `spec_version` is absent, implementations treat the file as `"1.0"` and log a warning. Any other value is logged as a warning and loading proceeds.
+
+A binding file that cannot be read or parsed, whose top level is not a mapping, that has no `bindings` key or whose `bindings` value is not a list, or that contains an entry without `module_id` or `target`, **MUST** fail with `BINDING_FILE_INVALID`.
+
 **Binding Item Field Definitions:**
 
 | Field | Type | Required | Description |
 |------|------|------|------|
 | `module_id` | string | **MUST** | Module Canonical ID |
-| `target` | string | **MUST** | Target callable (format: `module.path:callable_name`) |
+| `target` | string | **MUST** | Target callable (format: `module.path:callable_name` or `module.path:ClassName.method_name`, §5.12.3) |
 | `description` | string | **SHOULD** | Module description |
-| `input_schema` | object | Conditional | Input Schema (choose one with `auto_schema`) |
-| `output_schema` | object | Conditional | Output Schema (choose one with `auto_schema`) |
-| `auto_schema` | boolean | Conditional | Auto-generate Schema from type annotations (choose one with explicit Schema) |
-| `schema_ref` | string | **MAY** | Reference external Schema file path |
-| `annotations` | object | **MAY** | Behavior annotations |
+| `documentation` | string | **MAY** | Extended documentation (§4.8.3) |
+| `input_schema` | object | Conditional | Input Schema (explicit mode, together with `output_schema`) |
+| `output_schema` | object | Conditional | Output Schema (explicit mode, together with `input_schema`) |
+| `auto_schema` | boolean \| string | Conditional | Infer Schema from the target (§5.12.5) |
+| `schema_ref` | string | **MAY** | External Schema file, relative to the binding file's directory (§5.12.4) |
+| `annotations` | object | **MAY** | Behavior annotations (§4.4) |
 | `tags` | array | **MAY** | Tags |
-| `version` | string | **MAY** | Version |
+| `version` | string | **MAY** | Version (default `"1.0.0"`) |
 | `metadata` | object | **MAY** | Extension metadata |
+| `display` | object | **MAY** | Surface-facing presentation overlay (§5.13) |
+
+Implementations **MUST** carry every field of an entry's `annotations` — the full §4.4 set, including `extra` (§4.4.1) — onto the registered module. Length and format limits on `description`, `documentation`, `tags` and `version` are opt-in (§9.1.2).
+
+**Schema Source.** Each entry takes its schemas from exactly one source:
+
+1. **Explicit** — `input_schema` and `output_schema`. An entry that sets one without the other **MUST** fail with `BINDING_FILE_INVALID`.
+2. **External file** — `schema_ref` (§5.12.4).
+3. **Auto** — `auto_schema` (§5.12.5).
+4. **Implicit auto** — none of the fields above; the schemas are inferred from the target as in auto mode (§5.12.5).
+
+An entry that sets fields of more than one of sources 1–3 **MUST** fail with `BINDING_SCHEMA_MODE_CONFLICT`.
 
 #### 5.12.3 Target Resolution Algorithm
 
 Implementations **MUST** resolve `target` field according to the following algorithm:
 
-```
+```text
 Algorithm: resolve_target(target_string)
 
 Input:
@@ -3112,6 +3105,14 @@ Steps:
 Complexity: O(1) (not counting module loading time)
 ```
 
+In step 3 the class is instantiated with no arguments, and `method_name` is looked up on that instance.
+
+`module_path` is resolved by the host language's own module resolution (Python `importlib`, ECMAScript dynamic `import()`). It is never resolved relative to the binding file's directory, and an implementation **MUST NOT** join it against that directory. A binding file declares capabilities the host already has; resolving code relative to the file would make the reachable code depend on where the file sits. Making the target importable — an installed package, a module on the import path, a specifier the bundler resolves — is the binding author's responsibility.
+
+An implementation whose module loader accepts filesystem paths or URLs **MUST** reject a `module_path` that contains `..` or is a `file:` URL, with `BINDING_INVALID_TARGET`. An implementation **MAY** restrict targets to an allowlist of trusted package prefixes; a target outside the allowlist fails with `BINDING_INVALID_TARGET` before anything is imported.
+
+An implementation for a language without runtime import (Rust) treats `target` as an opaque key into a map of handlers the application supplies at registration; the binding file itself is the same in every language. A binding whose `target` has no handler in that map **MUST** fail with `BINDING_MODULE_NOT_FOUND`.
+
 #### 5.12.4 Schema Reference Support
 
 Binding items **may** reference external Schema files via `schema_ref`, avoiding inlining complete Schema in binding file:
@@ -3123,11 +3124,25 @@ bindings:
     schema_ref: "../schemas/email.send.schema.yaml"
 ```
 
+`schema_ref` is resolved relative to the directory of the binding file that contains it — unlike `target`, it names data, not code. The referenced file is YAML with top-level `input_schema` and `output_schema` keys; a key it omits yields an empty schema object. A referenced file that does not exist or does not parse **MUST** fail with `BINDING_FILE_INVALID`.
+
 #### 5.12.5 `auto_schema` Mode
 
 When `auto_schema: true`, implementations **MUST** reuse the `generate_schema_from_function` algorithm from §5.11.4 to auto-generate Schema from target callable's type annotations.
 
-If target callable lacks sufficient type information, **MUST** throw `BINDING_SCHEMA_INFERENCE_FAILED` error. (`BINDING_SCHEMA_MISSING` is the deprecated 0.19.0 alias, retained only for decoding older serialized payloads.)
+If target callable lacks sufficient type information, **MUST** throw `BINDING_SCHEMA_INFERENCE_FAILED` error. `BINDING_SCHEMA_MISSING` is a deprecated alias of this code, retained only for decoding serialized payloads.
+
+`auto_schema` takes these values:
+
+| Value | Meaning |
+|------|------|
+| `true`, `"true"`, `"permissive"` | Permissive: the inferred schemas reflect the target's types as they are. |
+| `"strict"` | As permissive; in addition the implementation **MUST** check each inferred schema against OpenAI/Anthropic structured-output strict mode (the keyword set pinned by `conformance/fixtures/openai_strict_compat.json`) and fail an incompatible one with `BINDING_STRICT_SCHEMA_INCOMPATIBLE`. |
+| `false` | Disables inference. With no other schema source the entry **MUST** fail with `BINDING_SCHEMA_INFERENCE_FAILED`. |
+
+Any other value **MUST** fail with `BINDING_FILE_INVALID`.
+
+An entry in implicit auto mode (§5.12.2) is inferred as under `auto_schema: true`. Whether an implicit-mode entry whose target yields no schema fails with `BINDING_SCHEMA_INFERENCE_FAILED` or receives a permissive object schema is implementation-defined.
 
 #### 5.12.6 Discovery Mechanism
 
@@ -3140,6 +3155,8 @@ bindings:
   pattern: "*.binding.yaml"  # File matching pattern (default)
 ```
 
+The `bindings` section has exactly these two keys (`schemas/apcore-config.schema.json` `$defs/BindingsConfig`, `additionalProperties: false`).
+
 **The subject of this requirement is the binding loader, and its trigger is an invocation that does not name a directory.** Discovery is a *user-invoked* operation, not a lifecycle event.
 
 1. When a binding loader (`load_binding_dir` / `loadBindingDir` / the equivalent public entry point) is invoked **without an explicit directory argument**, it **MUST** resolve the scan directory from `bindings.dir` following §9.2's precedence — environment variable (`APCORE_BINDINGS_DIR`) > configuration file > default `"./bindings"` — and it **MUST** match candidate files in that directory against `bindings.pattern`, resolved through the same precedence chain with the default `"*.binding.yaml"`. The match is **A25** (§9.2.3), applied to each entry's **filename** — not its path, and not recursively into subdirectories.
@@ -3149,57 +3166,9 @@ bindings:
 5. When the resolved directory does not exist, the loader **MUST** fail, raising the implementation's binding-file error and naming the resolved directory in the message. It **MUST NOT** return an empty result. This holds whether the directory came from an explicit argument, from `bindings.dir`, or from the `"./bindings"` default.
 6. A pattern is never rejected. Every string is a valid A25 pattern (§9.2.3 requirement 2), so a loader **MUST NOT** raise on `bindings.pattern` for syntactic reasons; a pattern matching no file yields no modules, which is not an error in itself.
 
-!!! note "Why clause 1 names A25 rather than saying \"glob\" (v1.37.0, #116)"
-    Through v1.36.0 this clause, §9.1.1 and `schemas/defaults.schema.json` all typed
-    `bindings.pattern` as a **glob**, and exactly one implementation delivered one — the
-    one whose standard library provides `Path.glob` for free. The other two wrote suffix
-    matches specialised for the default value: one stripped a **leading** `*` and compared
-    with `ends_with`, the other removed the **first** `*` wherever it sat and compared with
-    `endsWith`. All three agree on `"*.binding.yaml"`, and on `"*.bind.yaml"` — the only
-    non-default value the conformance corpus contained — because leading-star-plus-literal-
-    suffix is the one family on which a glob, a prefix strip and a first-star removal
-    coincide. They pairwise disagree on everything else, with no ordering between them:
-    `"data*.yaml"` matched one file under a glob and none under either suffix match, and
-    `"a*b.yaml"` matched `zab.yaml` under first-star removal — a file a glob cannot match
-    at all, since the pattern is anchored at the start. Naming the algorithm, rather than
-    the syntax, is what closes this: two matchers can both claim "glob" and still disagree.
+Rationale for clause 1: two matchers can both claim "glob" and still disagree on every pattern other than a leading `*` followed by a literal suffix, so the clause names the algorithm (A25), not the syntax.
 
-!!! note "Why a missing binding directory raises, when a missing `acl.root` does not"
-    §6's `ACL.discover` states the opposite invariant for `acl.root`: a missing path
-    attaches **nothing** and **MUST NOT** synthesize an empty default-deny ACL (D-64).
-    The two are not in tension, because the trigger differs. ACL discovery is
-    **automatic** — it runs for every client whether or not the operator has an ACL, so
-    a missing directory is the ordinary case and must be silent. Binding loading is
-    **user-invoked** (clause 3): an application that calls the loader has asserted that
-    it expects bindings, so a directory that is not there is a mistake, and returning
-    zero modules silently reproduces exactly the "configuration key that quietly does
-    nothing" defect this section was rewritten to remove. All three SDKs already raise
-    here, each with tests pinning it; this clause records that agreement rather than
-    changing any implementation.
-
-!!! note "Why this requirement was restated in v1.35.0"
-    Through v1.34.0 this section read "If `bindings.dir` is configured, implementations
-    **MUST** scan files matching `pattern` in that directory" — a **MUST with no subject
-    and no trigger**. It never said *who* scans or *when*, and no SDK satisfied it:
-    `bindings.dir` is registered in all three key surfaces (`apcore-python config.py`,
-    `apcore-typescript config-key-surface.ts`, `apcore-rust config.rs`) and read by no
-    code path, while `BindingLoader` is exported public API in all three and called from
-    no internal one. That is a design, not an oversight. The two readings the old wording
-    permitted were "the framework scans at startup" (which nobody implements and which
-    clause 3 now forbids) and "a loader honours the key when invoked" (which clause 1 now
-    states, and which is a requirement that can be satisfied and tested). Naming the
-    subject does not weaken the MUST — it makes it enforceable for the first time.
-    TypeScript's pre-existing raw `process.env.APCORE_BINDINGS_DIR` read implemented the
-    *environment tier alone* of this key's precedence chain; clause 2 folds it into §9.2's
-    mechanism without breaking those users. Tracking issue #114.
-
-!!! note "`bindings.files` was withdrawn"
-    An explicit `files:` list was previously declared here as a **MUST**. No SDK
-    implements it, `schemas/apcore-config.schema.json`'s `BindingsConfig` is
-    `additionalProperties: false` over `{dir, pattern}` so the key is
-    schema-invalid, and `conformance/fixtures/config_key_governance.json` allows
-    only those two. It was a requirement nothing satisfied and nothing could
-    express — withdrawn rather than left as an unmet MUST.
+Rationale for clause 5: a missing `acl.root` attaches nothing and **MUST NOT** synthesize an empty default-deny ACL (D-64), because ACL discovery is automatic and runs for every client, so a missing directory is the ordinary case. Binding loading is user-invoked (clause 3): an application that calls the loader expects bindings, so a missing directory is a mistake it has to be told about, not an empty result.
 
 #### 5.12.7 Validation Rules
 
@@ -3216,10 +3185,13 @@ Implementations **MUST** perform the following validations when loading binding 
 | Error Code | Description | Trigger Condition |
 |--------|------|---------|
 | `BINDING_INVALID_TARGET` | target format invalid | target doesn't conform to `module.path:callable_name` format |
-| `BINDING_MODULE_NOT_FOUND` | Module path can't be imported | import module_path fails |
+| `BINDING_MODULE_NOT_FOUND` | Module path can't be imported | import module_path fails; without runtime import, no handler supplied for `target` (§5.12.3) |
 | `BINDING_CALLABLE_NOT_FOUND` | Can't find target callable | Can't find specified function/method in module |
 | `BINDING_NOT_CALLABLE` | Target not callable | Resolved object is not callable |
-| `BINDING_SCHEMA_INFERENCE_FAILED` | Schema inference failed | No explicit Schema and auto_schema can't generate (deprecated alias: `BINDING_SCHEMA_MISSING`) |
+| `BINDING_SCHEMA_INFERENCE_FAILED` | Schema inference failed | No explicit Schema and auto_schema can't generate, or `auto_schema: false` with no other schema source (deprecated alias: `BINDING_SCHEMA_MISSING`) |
+| `BINDING_SCHEMA_MODE_CONFLICT` | Conflicting schema sources | An entry sets fields of more than one schema source (§5.12.2) |
+| `BINDING_STRICT_SCHEMA_INCOMPATIBLE` | Inferred schema not strict-compatible | `auto_schema: "strict"` and an inferred schema fails the strict-mode check (§5.12.5) |
+| `BINDING_FILE_INVALID` | Binding file invalid | File unreadable or malformed; `bindings` missing or not a list; entry without `module_id` / `target`; only one of `input_schema` / `output_schema`; invalid `auto_schema` value; `schema_ref` file missing or malformed; resolved binding directory missing (§5.12.6) |
 
 ### 5.13 Display Overlay (Surface-Facing Presentation)
 
@@ -3328,7 +3300,7 @@ bindings:
 
 Implementations **MUST** resolve display fields using the following priority chain (highest to lowest):
 
-```
+```text
 Algorithm: resolve_display(module_id, surface, binding_map, scanned_module)
 
 For alias:
@@ -3376,13 +3348,12 @@ If a surface-specific alias violates a **MUST** constraint, implementations **MU
 
 #### 5.13.7 Scanner `suggested_alias` Field
 
-Framework scanners (e.g., `OpenAPIScanner`, NestJS decorator scanner) **MAY** produce a `suggested_alias` in `ScannedModule.metadata` as a hint for the display resolver. This replaces the previous `simplify_ids` approach of directly modifying `module_id`.
+Framework scanners (e.g., `OpenAPIScanner`, NestJS decorator scanner) **MAY** produce a `suggested_alias` in `ScannedModule.metadata` as a hint for the display resolver. A simplified name goes into `suggested_alias` while `module_id` stays canonical (§5.13.8, §5.13.11):
 
-```
+```text
 Scanner behavior when simplify_ids=True:
-  BEFORE (deprecated): module_id = simplified_name
-  AFTER  (preferred): module_id = canonical_name
-                      metadata.suggested_alias = simplified_name
+  module_id                = canonical_name
+  metadata.suggested_alias = simplified_name
 ```
 
 This ensures the canonical `module_id` is always stable and predictable, while the simplified name is available as a fallback alias when no explicit `display.alias` is configured.
@@ -3391,13 +3362,13 @@ This ensures the canonical `module_id` is always stable and predictable, while t
 
 The display overlay system is structured as three layers. Each layer has a clear responsibility and **MUST NOT** leak concerns to adjacent layers.
 
-**Integration with the existing registry flow:**
+**Integration with the registry flow:**
 
-```
+```text
 Scanner
   │ ScannedModule[]
   ▼
-DisplayResolver (apcore-toolkit)          ← NEW: runs BEFORE RegistryWriter
+DisplayResolver (apcore-toolkit)          ← runs BEFORE RegistryWriter
   │ ResolvedModule[]
   ├──→ RegistryWriter
   │       │ registers FunctionModule into Registry
@@ -3416,7 +3387,7 @@ DisplayResolver (apcore-toolkit)          ← NEW: runs BEFORE RegistryWriter
 
 **Layer responsibilities:**
 
-```
+```text
 ┌─────────────────────────────────────────────────────────┐
 │  Layer 1: Scanner (framework-specific)                  │
 │  fastapi-apcore / nestjs-apcore / axum-apcore / ...    │
@@ -3467,7 +3438,7 @@ DisplayResolver (apcore-toolkit)          ← NEW: runs BEFORE RegistryWriter
 
 Implementations **MUST** define a `ResolvedModule` type (or equivalent) that carries both the canonical module data and resolved display fields:
 
-```
+```text
 ResolvedModule:
   # Canonical fields (from ScannedModule, unchanged)
   module_id: string                           # Canonical ID, used for registry key
@@ -3508,13 +3479,13 @@ Fields with a resolve chain fallback to scanner data are **always non-null** aft
 | Component | Repo | Responsibility |
 |-----------|------|---------------|
 | `DisplayResolver` | `apcore-toolkit-{lang}` | Parse binding.yaml display section; apply resolve priority chain (§5.13.5); produce `ResolvedModule[]`; validate aliases (§5.13.6) |
-| `RegistryWriter` update | `apcore-toolkit-{lang}` | Accept `ResolvedModule[]`; store `display.*` in `FunctionModule.metadata["display"]` |
-| `YAMLWriter` update | `apcore-toolkit-{lang}` | Run `DisplayResolver` before writing `.binding.yaml`; embed resolved display fields |
-| `Scanner` update | `fastapi-apcore`, `nestjs-apcore`, `axum-apcore`, etc. | Deprecate `simplify_ids`; emit `metadata.suggested_alias` instead of modifying `module_id` |
+| `RegistryWriter` | `apcore-toolkit-{lang}` | Accept `ResolvedModule[]`; store `display.*` in `FunctionModule.metadata["display"]` |
+| `YAMLWriter` | `apcore-toolkit-{lang}` | Run `DisplayResolver` before writing `.binding.yaml`; embed resolved display fields |
+| Framework scanners | `fastapi-apcore`, `nestjs-apcore`, `axum-apcore`, etc. | Emit `metadata.suggested_alias` rather than modifying `module_id`; `simplify_ids` is deprecated (§5.13.11) |
 | CLI surface | `apcore-cli-{lang}` | Read `descriptor.metadata["display"].cli.alias` for command name; `display.cli.description` for help text; `display.cli.guidance` for describe output |
 | MCP surface | `apcore-mcp-{lang}` | Read `display.mcp.alias` for tool name; `display.mcp.description`; inject `display.mcp.guidance` into tool description context |
 | A2A surface | `apcore-a2a-{lang}` | Read `display.a2a.alias` for skill name; `display.a2a.description`; `display.a2a.guidance` for agent card |
-| apcore core | `apcore-{lang}` | **No changes required.** Registry, Executor, FunctionModule unchanged. `metadata` field already supports arbitrary keys. |
+| apcore core | `apcore-{lang}` | None specific to display: Registry, Executor and FunctionModule carry the resolved fields in `metadata`, which accepts arbitrary keys. |
 
 **`apcore-toolkit` implementation checklist (per language):**
 
@@ -3525,8 +3496,8 @@ Fields with a resolve chain fallback to scanner data are **always non-null** aft
    c. For each `ScannedModule`, apply resolve priority chain (§5.13.5)
    d. `alias`, `description`, `tags` always non-null; `documentation`, `guidance` may be null
    e. Validate surface aliases per §5.13.6; MUST error on MCP >64 chars, SHOULD warn on CLI pattern violation
-3. Update `RegistryWriter` to accept `ResolvedModule[]` and store `display` in `metadata["display"]`
-4. Update `YAMLWriter` to embed resolved display fields in output binding files
+3. `RegistryWriter` accepts `ResolvedModule[]` and stores `display` in `metadata["display"]`
+4. `YAMLWriter` embeds resolved display fields in output binding files
 
 **Surface checklist (CLI / MCP / A2A, per language):**
 
@@ -3534,7 +3505,7 @@ Fields with a resolve chain fallback to scanner data are **always non-null** aft
 - Fall back to `descriptor.module_id` / `descriptor.description` if `metadata["display"]` is absent (backward compatibility with modules registered without DisplayResolver)
 - **Never call DisplayResolver at surface time** — display resolution is a one-time operation at registration
 
-**Conformance tests** — **PENDING**, no such fixture exists. `display_resolve.json` is not in `../../conformance/fixtures/`, and no other fixture covers display resolution. The table below is the required coverage, not a description of coverage that exists:
+**Conformance tests** — `display_resolve.json` in the apcore-toolkit conformance suite (`apcore-toolkit/conformance/fixtures/`) covers:
 
 | Test ID | Scenario |
 |---------|----------|
@@ -3553,23 +3524,13 @@ Fields with a resolve chain fallback to scanner data are **always non-null** aft
 | 013 | MCP alias >64 chars → MUST error |
 | 014 | CLI alias with spaces → SHOULD warn, fallback |
 
-**Per-language implementation locations:**
-
-| Language | DisplayResolver | ResolvedModule type |
-|----------|----------------|---------------------|
-| Python | `apcore_toolkit/display/resolver.py` | `apcore_toolkit/display/types.py` |
-| TypeScript | `src/display/resolver.ts` | `src/display/types.ts` |
-| Rust | `src/display/resolver.rs` | `src/display/types.rs` |
-| Go (future) | `display/resolver.go` | `display/types.go` |
-| Java (future) | `display/DisplayResolver.java` | `display/ResolvedModule.java` |
-
 #### 5.13.11 Migration from `simplify_ids`
 
 The `simplify_ids` parameter on framework scanners is **DEPRECATED** in favor of the display overlay system. Migration path:
 
-| Before (deprecated) | After (preferred) |
+| Deprecated | Preferred |
 |---------------------|-------------------|
-| `OpenAPIScanner(simplify_ids=True)` modifies `module_id` | `OpenAPIScanner()` produces canonical ID + `metadata.suggested_alias` |
+| `OpenAPIScanner(simplify_ids=True)` | `OpenAPIScanner()` produces canonical ID + `metadata.suggested_alias` |
 | `create_cli(simplify_ids=True)` | `create_cli()` + binding.yaml `display.cli.alias` |
 | `create_mcp_server(simplify_ids=True)` | `create_mcp_server()` + binding.yaml `display.mcp.alias` |
 
@@ -3585,13 +3546,13 @@ Convention Module Discovery is an **optional** capability. Implementations that 
 
 #### 5.14.2 Motivation
 
-Adding a custom command to an apcore-based CLI today requires learning the `@module` decorator API or writing YAML binding files. For users who just want to add a simple deploy script or utility command, this is unnecessary friction. Convention Module Discovery lets users drop a plain function file into a designated directory and have it auto-discovered as a module — with schema inference from type annotations and description extraction from docstrings.
+Without it, adding a custom command to an apcore-based CLI requires learning the `@module` decorator API or writing YAML binding files. For users who just want to add a simple deploy script or utility command, this is unnecessary friction. Convention Module Discovery lets users drop a plain function file into a designated directory and have it auto-discovered as a module — with schema inference from type annotations and description extraction from docstrings.
 
 #### 5.14.3 Commands Directory Convention
 
 Implementations that support Convention Module Discovery **MUST** scan a designated directory (default: `commands/`) for source files containing plain functions.
 
-```
+```text
 commands/                    ← convention directory
   deploy.py                  ← one file = one or more modules
   backup.py
@@ -3616,7 +3577,7 @@ Implementations **MUST** apply the following rules when scanning a convention so
 
 The module ID for a convention-discovered function is generated as:
 
-```
+```text
 module_id = "{prefix}.{function_name}"
 ```
 
@@ -3725,18 +3686,7 @@ Implementations **MUST** handle module edge cases according to the following tab
 | Indirect circular dependency (A → B → C → A) | Throw `CIRCULAR_DEPENDENCY` | **MUST** |
 | Load order cannot be completed but **no cycle exists** (e.g. a batch member depends on a module that is registered but not part of this batch, so its in-degree never reaches zero) | Throw `MODULE_LOAD_ERROR` naming the blocked modules — **MUST NOT** report `CIRCULAR_DEPENDENCY` | **MUST** |
 
-> **D-79 (v1.49.0) — a stalled topological sort is not a cycle.** A Kahn-style
-> sort that terminates with nodes remaining has two distinct causes, and only one
-> of them is a cycle. apcore-python discriminated them (it searched for a back
-> edge and fell back to `MODULE_LOAD_ERROR` when it found none); apcore-typescript
-> and apcore-rust both reported `CIRCULAR_DEPENDENCY` unconditionally and
-> synthesised a `cycle_path` from the leftover node set — for the non-cycle case
-> that is a one-element "cycle", describing a loop that does not exist. The row
-> above makes the distinction normative because the two causes need opposite
-> fixes: a real cycle means the author must break a dependency edge, while a
-> stall means a dependency is simply missing from the batch, and telling the
-> author to break a non-existent loop sends them looking for something that is
-> not there. An implementation **MUST NOT** emit a fabricated `cycle_path`.
+**A stalled topological sort is not a cycle (D-79).** A Kahn-style sort that ends with nodes remaining has two causes: a dependency cycle, or a dependency missing from the batch. They need opposite fixes — a cycle means breaking a dependency edge, a stall means supplying the missing dependency — so the two rows above report them with different codes. An implementation **MUST NOT** emit a fabricated `cycle_path`.
 
 #### 5.15.3 Module Lifecycle Edges
 
@@ -3767,33 +3717,88 @@ Implementations **MUST** enforce the following control flow invariants on the ex
 
 5. **Step-level middleware ordering.** Implementations **SHOULD** support middleware scoped to individual pipeline steps. When both global middleware and step-level middleware are registered, global middleware **MUST** execute before step-level middleware in the before-phase, and after step-level middleware in the after-phase.
 
-6. **A configured `pipeline:` section **MUST** be applied.** When the loaded configuration
-   carries a `pipeline` section (`remove` / `configure` / `steps`, `DECLARATIVE_CONFIG_SPEC`
-   §4) and the caller supplied no explicit strategy, implementations **MUST** build the
-   execution strategy from it. An implementation **MUST NOT** accept the section, validate
-   it, and then execute the default pipeline.
+6. **A configured `pipeline:` section MUST be applied.** When the loaded configuration
+   carries a `pipeline` section (`remove` / `configure` / `steps`, §5.16.1) and the caller
+   supplied no explicit strategy, implementations **MUST** build the execution strategy from
+   it. An implementation **MUST NOT** accept the section, validate it, and then execute the
+   default pipeline.
 
-   This is stated because all three did exactly that. The builder existed in each SDK —
-   `remove`, then `configure` against a closed field set, then `steps`, with its own error
-   code — and its first parameter was a dict the caller supplied. Nothing extracted the
-   section from a loaded `Config`, so `pipeline: remove: [acl_check]` in `apcore.yaml` left
-   all eleven steps in place. **The asymmetry is why this is a MUST and not a SHOULD:**
-   failing to *remove* a step is fail-safe, but failing to *insert* one is not. An operator
-   who declares a custom step for audit logging, rate limiting or an authorization gate got a
-   client that silently never ran it, and the pipeline they read in configuration was not the
-   pipeline that executed.
+   Rationale: failing to *remove* a configured step is fail-safe, but failing to *insert* one
+   is not — a declared audit, rate-limiting or authorization step would silently never run,
+   and the pipeline read in configuration would not be the pipeline that executes.
 
-7. **Removing a security step **MUST** warn.** When applying `remove`, an implementation
+7. **Removing a security step MUST warn.** When applying `remove`, an implementation
    **MUST** emit a diagnostic naming each removed step that belongs to the security set —
    `acl_check` and `approval_gate` — once per configuration load, following §9.2.2's cadence.
-
-   The reason is the transition, not the steady state. Requirement 6 makes a previously
-   ignored section take effect, so a configuration that has been carrying
-   `remove: [acl_check]` while ACL was enforced anyway starts having ACL genuinely removed.
-   That is the operator getting what they asked for, and it is also the one direction in
-   which honouring configuration can withdraw a protection that was in place a moment before.
-   The diagnostic is a load-time notice, not a refusal: the configuration is valid, the
+   Removing either step withdraws a protection rather than a convenience, so the operator is
+   told. The diagnostic is a load-time notice, not a refusal: the configuration is valid, the
    operator wrote it deliberately, and an implementation **MUST NOT** reject it.
+
+#### 5.16.1 Declarative Pipeline Configuration (`pipeline:`)
+
+The `pipeline` section of `apcore.yaml` (`schemas/apcore-config.schema.json` `$defs/PipelineConfig`) customizes the standard strategy (`context_creation` … `return_result`, [execution-pipeline.md](../features/execution-pipeline.md)). It has three keys, all optional, and implementations **MUST** apply them to the standard strategy in this order:
+
+1. `remove` — names of steps to take out of the strategy.
+2. `configure` — a map from step name to field overrides for a step already in the strategy.
+3. `steps` — custom step entries to insert.
+
+```yaml
+pipeline:
+  remove: [approval_gate]
+  configure:
+    call_chain_guard:
+      timeout_ms: 2000
+  steps:
+    - name: rate_limit
+      type: rate_limit              # key into the step-type registry
+      after: acl_check              # or: before: <step name>
+      match_modules: ["api.*"]
+      config:
+        max_per_minute: 100         # constructor arguments for the step factory
+    - name: custom_audit
+      handler: "my_app.steps:CustomAuditStep"   # dynamic import, where supported
+      before: return_result
+```
+
+**`remove`.** A name that identifies no step in the strategy **MUST** fail the load with `PIPELINE_CONFIGURATION_ERROR`. A step the strategy marks non-removable cannot be removed (`STEP_NOT_REMOVABLE`). Removing `acl_check` or `approval_gate` is valid and warns (requirement 7).
+
+**`configure`.** Each key is a step name; each value overrides fields of that step, which keeps its position (requirement 3). The configurable field set is closed — exactly `match_modules`, `ignore_errors`, `pure` and `timeout_ms` (`$defs/ConfigurableStepFields`) — and it applies to any step present, built-in steps included. Implementations **MUST** fail the load with `PIPELINE_CONFIGURATION_ERROR`, naming every offending key, when an entry carries any other key or names a step not present in the strategy.
+
+The other step-entry fields are structural (`name`, `type`, `handler`, `after`, `before`) or constructor arguments (`config`), and none of them means anything for a step that already exists. A step's `requires` / `provides` capability contract is declared by its implementation and is not configurable: configuration able to rewrite it would disable the `PIPELINE_DEPENDENCY_ERROR` check ([execution-pipeline.md § ExecutionStrategy](../features/execution-pipeline.md#executionstrategy)).
+
+The canonical spelling of every field is snake_case, as in the schema. An implementation **MAY** additionally accept its idiomatic spelling (for example camelCase) at its programmatic API boundary, but **MUST** accept the canonical spelling; a configuration file carries the canonical spelling only.
+
+**`steps`.** Each entry is a `$defs/PipelineStep` object:
+
+| Field | Type | Description |
+|------|------|------|
+| `name` | string | Step name; replaces the name the step factory gives the step. Required by the schema. |
+| `type` | string | Key into the step-type registry (`register_step_type` / `registerStepType`). |
+| `handler` | string | `"module.path:Name"` reference resolved by dynamic import. |
+| `config` | object | Constructor arguments for the step factory. Default `{}`. |
+| `match_modules` | array of string | Module-ID patterns (algorithm A08, §6.2) restricting the step to matching modules. |
+| `ignore_errors` | boolean | Log step errors instead of aborting the pipeline (requirement 1). Default `false`. |
+| `pure` | boolean | Marks the step side-effect-free. Default `false`. |
+| `timeout_ms` | integer | Per-step timeout in milliseconds; `0` means none. Default `0`. |
+| `after` | string | Insert immediately after the named step. |
+| `before` | string | Insert immediately before the named step. |
+
+1. An entry carrying a key outside these ten **MUST** fail the load with `PIPELINE_CONFIGURATION_ERROR` before that step is constructed.
+2. `type` is resolved first, against the step-type registry. When `type` is absent or names no registered type, `handler` is resolved by the host language's dynamic import and `config` is passed to what it names. An entry that resolves through neither fails the load. An implementation that cannot load code at runtime **MUST** reject every entry carrying `handler` with `PIPELINE_HANDLER_NOT_SUPPORTED`. `$defs/PipelineStep` admits exactly one of `type` and `handler`.
+3. The entry's `name`, `match_modules`, `ignore_errors`, `pure` and `timeout_ms` apply to the constructed step.
+4. An entry **MUST** name its anchor through `after` or `before`; an entry with neither, or whose anchor names no step in the strategy, **MUST** fail the load with `PIPELINE_CONFIGURATION_ERROR`. `$defs/PipelineStep` admits exactly one of the two; an entry carrying both is anchored by `after`.
+5. Entries are inserted in declaration order, after `remove` and `configure` have been applied. Each anchor is resolved against the strategy as it stands when its entry is inserted, so an entry may anchor on a step inserted by an earlier entry and cannot anchor on a removed one. A step whose `name` is already in the strategy fails the load with `STEP_NAME_DUPLICATE`.
+
+The optional `validation.pipeline.*` limits bound the step names and timeouts the section declares (§9.1.2).
+
+**Errors:**
+
+| Error Code | Trigger Condition |
+|--------|---------|
+| `PIPELINE_CONFIGURATION_ERROR` | `remove` or `configure` names a step not in the strategy; a `configure` key outside the four configurable fields; a `steps` key outside the ten; an entry with no anchor; an anchor naming no step |
+| `PIPELINE_HANDLER_NOT_SUPPORTED` | `handler` in an implementation that cannot load code at runtime |
+| `STEP_NOT_REMOVABLE` | `remove` names a step the strategy marks non-removable |
+| `STEP_NAME_DUPLICATE` | An inserted step's name is already in the strategy |
 
 ---
 
@@ -3866,6 +3871,7 @@ audit:
 | `callers` | **MUST** | `list[string]` | Caller patterns, at least one (OR logic: any match is sufficient). Arity is closed — §6.2.1. |
 | `targets` | **MUST** | `list[string]` | Target patterns, at least one (OR logic: any match is sufficient). Arity is closed — §6.2.1. |
 | `effect` | **MUST** | `"allow" \| "deny"` | Access decision |
+| `approval` | **MAY** | `"required" \| "not_required"` | Whether a call this rule allows must be put to a human; absent means `not_required` (§6.1.6) |
 | `description` | **SHOULD** | `string` | Human-readable rule description |
 | `conditions` | **MAY** | `object` | Additional conditions (all must pass, AND logic) |
 
@@ -3876,16 +3882,15 @@ audit:
 | `identity_types` | `list[string]` | Identity type must be in list |
 | `roles` | `list[string]` | At least one role must overlap |
 | `max_call_depth` | `integer` | Call chain length must not exceed threshold |
+| `arguments` | `object` | Predicates over the call's argument **keys** (§6.1.7) |
 | `$or` | `list[object]` | Compound: passes if **any** sub-condition object passes (each sub-object's keys are AND-ed internally). Sub-objects **MAY** contain further compound operators. |
 | `$not` | `object` | Compound: passes if the wrapped condition object **fails**. An empty object **MUST** evaluate to false (fail-closed). |
 
 **Compound operators and async sub-conditions.** Implementations **MUST** evaluate `$or` / `$not` sub-conditions using the same evaluator mode (sync or async) as the enclosing call. An async-only sub-condition under a sync evaluator **MUST** be treated as **unevaluable** per §6.1.1 — *not* as unsatisfied — and **SHOULD** emit a warning. Handlers **SHOULD** therefore be registered for both sync and async paths.
 
-> **Changed in v1.22.0.** This clause previously read "**MUST** fail closed", which was ambiguous once §6.1.1 distinguished the two outcomes: on an `allow` rule, not-matching *is* failing closed, but on a `deny` rule it is failing **open**. §6.1.1 now names the direction explicitly for each `effect`.
-
 The table above lists the conditions every implementation provides. It is **not** a closed set: implementations **MUST** expose a registration API (`register_condition` / `registerCondition` and their async counterparts) so a deployment can add its own condition keys. A key outside the table is therefore not invalid by construction — it is valid exactly when a handler has been registered for it, which is a runtime property, not a document property.
 
-#### 6.1.1 Unevaluable conditions (v1.22.0, #100)
+#### 6.1.1 Unevaluable conditions {#611-unevaluable-conditions-v1220-100}
 
 A condition that **is false** and a condition that **cannot be evaluated** are different outcomes and **MUST NOT** be represented the same way.
 
@@ -3896,7 +3901,7 @@ A condition that **is false** and a condition that **cannot be evaluated** are d
 
 1. the condition key has **no registered handler** resolvable on the evaluation path in use (§6.1.3);
 2. the handler **raised, threw, or panicked**;
-3. the handler was **asynchronous and could not be resolved** on the synchronous `check()` path (§ sync handler resolution);
+3. the handler was **asynchronous and could not be resolved** on the synchronous `check()` path (§6.1.3);
 4. the condition's **value is malformed for its key** — `$or` whose value is not a list, an **element of `$or` that is not a condition object**, `$not` whose value is not an object, or any value a handler cannot interpret as an instance of what that key means;
 5. **`conditions` itself is not a mapping.**
 
@@ -3904,11 +3909,10 @@ A condition that **is false** and a condition that **cannot be evaluated** are d
     A handler handed `$or: "not-a-list"` can return false, run to completion, and look
     from the outside exactly like a handler that answered "no". It has not answered
     the author's question — there is no question to answer, because the rule is
-    malformed. Recording that as UNSATISFIED puts a `deny` rule carrying
-    `$or: "typo"` right back into the inert state this section exists to end, and it
-    does so through a door §6.1.1 v1.22.0 left open by enumerating exactly three
-    situations. The same holds for a `conditions` value that is not a mapping, which
-    a YAML load rejects but direct construction and runtime rule insertion do not.
+    malformed. Recording that as UNSATISFIED would leave a `deny` rule carrying
+    `$or: "typo"` silently inert. The same holds for a `conditions` value that is not a
+    mapping, which a YAML load rejects but direct construction and runtime rule
+    insertion do not.
 
 Treating an unevaluable condition as a plain non-match is unsafe, and unsafe asymmetrically. A rule's `effect` decides which direction "does not match" points:
 
@@ -3922,8 +3926,8 @@ Stated normatively:
 1. When a rule's conditions are unevaluable, the implementation **MUST** resolve the rule toward refusing access: a `deny` rule **MUST** match and deny; an `allow` rule **MUST NOT** match and **MUST NOT** grant.
 2. The implementation **MUST** record the failure in the audit entry: `handler_error` (§6.3.1) **MUST** be non-null and **MUST** name the offending condition's **path** (§6.1.4) and the reason. When more than one condition in a single `check()` is unevaluable, `handler_error` **MUST** report every one it determined, ordered **lexicographically by condition path** and separated by `"; "`. Ordering by path rather than by evaluation order is required because the two are not the same across languages — `serde_json`'s map is ordered while Python `dict` and JavaScript objects preserve insertion order — and by path rather than by key because a key may occur more than once at different points in a nested `$or` / `$not` tree, which leaves ordering by key undefined. Which failures are guaranteed to be *determined* is §6.1.4's subject.
 3. The implementation **MUST** emit a warning naming the condition path, the rule's index, and the rule's `effect`. The `effect` is required in the message because a misconfigured `deny` rule is the consequential case.
-4. An unevaluable condition **MUST NOT** raise out of `check()`. §6.3's return contract is unchanged: `check()` returns a boolean.
-5. **An unevaluable `allow` rule's approval requirement is pending, not discarded (v1.29.0, #109).** Rule 1's "MUST NOT grant" means the rule steps aside, which was a complete instruction while a rule carried one axis. Since §6.1.6 a rule carries two, and the second one **MUST NOT** be lost when the first resolves to unevaluable:
+4. An unevaluable condition **MUST NOT** raise out of `check()`. §6.3's return contract holds: `check()` returns a boolean.
+5. **An unevaluable `allow` rule's approval requirement is pending, not discarded.** Rule 1's "MUST NOT grant" means the rule steps aside from the authorization decision. A rule carries a second, independent axis — its approval requirement (§6.1.6) — and that axis **MUST NOT** be lost when the first resolves to unevaluable:
 
     - **Record and continue.** When an `allow` rule carrying `approval: required` is unevaluable, the implementation **MUST** record a **pending approval requirement** and continue scanning. The rule itself still **MUST NOT** grant, per rule 1.
     - **Compose on grant.** When authorization is subsequently granted — by a later `allow` rule **or** by `default_effect: allow` — the reported requirement **MUST** be the disjunction of the pending requirement and the granting rule's own. `matched_rule_index` names the rule that decided **access**, which is the granting rule and not the unevaluable one that raised the requirement: the same call therefore reports a different index depending on whether the projection was available, and that is correct rather than an inconsistency to reconcile. A pending requirement carried through `default_effect` yields `approval_required: true` with `matched_rule_index: null`, which is a legal combination.
@@ -3931,29 +3935,24 @@ Stated normatively:
     - **Scope is required, and the existing classification already supplies it.** A rule whose `callers` / `targets` patterns do not match this call raises no pending requirement: a rule written about one caller **MUST NOT** attach a human to calls it was never written about. This needs no pattern test at the point the requirement is raised, and an implementation **MUST NOT** add one — §6.1.4 rule 4 already resolves a well-formed non-matching rule to UNSATISFIED without consulting its conditions, so it never reaches this rule at all, while §6.1.4.1 resolves a malformed-pattern rule to UNEVALUABLE *before* any pattern is read, so it does. Re-reading a malformed pattern field here is precisely the fail-open §6.1.4.1 exists to prevent.
     - **Unknowable scope counts as scope.** A rule that is unevaluable because its own `callers` / `targets` field is **malformed** (§6.1.4.1) **MUST** raise the pending requirement. Its scope cannot be read, so it cannot be shown not to apply here. This is the one point at which a requirement attaches without a demonstrated pattern match, and it is consistent in severity with what the same malformed rule already does under `deny`, where an unreadable scope denies every call.
 
-    The audit entry is unchanged: `handler_error` still records the unevaluable condition per rule 2, and a pending requirement neither suppresses nor substitutes for it. Rule 3's warning **MUST** additionally name the requirement as pending when one is raised: the message required before this section — "the `allow` rule does not match and MUST NOT grant" — reads as "this rule had no further effect", which is the exact misreading rule 5 corrects, and it was being emitted on the very call the next rule then granted.
+    A pending requirement does not alter the audit record of the failure: `handler_error` still records the unevaluable condition per rule 2, and a pending requirement neither suppresses nor substitutes for it. Rule 3's warning **MUST** additionally name the requirement as pending when one is raised. A warning that says only "the `allow` rule does not match and MUST NOT grant" reads as "this rule had no further effect", which is wrong on a call that a later rule then grants with the requirement attached.
 
 !!! danger "Why the requirement outlives the rule that carried it"
-    The shape §6.1.7 was written for is a narrow approval rule ahead of a broad allow —
-    `git push --force` needs a human, `git push` does not. Under rules 1–4 alone, an
-    unevaluable narrow rule steps aside and the broad rule grants, carrying no
-    requirement of its own: the result is `allow` with `approval_required: false` on
-    exactly the call the operator gated. The requirement is not overridden, argued with,
-    or logged away — it silently ceases to exist, and `matched_rule_index` points at a
-    rule that never mentioned approval. `default_effect: allow` reaches the same end with
-    no second rule at all.
+    The shape §6.1.7 is written for is a narrow approval rule ahead of a broad allow —
+    `git push --force` needs a human, `git push` does not. If an unevaluable narrow rule
+    merely stepped aside, the broad rule would grant with no requirement of its own:
+    `allow` with `approval_required: false` on exactly the call the operator gated, and a
+    `matched_rule_index` pointing at a rule that never mentioned approval.
+    `default_effect: allow` would reach the same end with no second rule at all. §6.9
+    rule 4 applies the same principle one layer out: a policy may **add** a requirement
+    and **MUST NOT** remove one the ACL set.
 
-    §6.9 rule 4 already fixes this direction one layer out: a policy may **add** a
-    requirement and **MUST NOT** remove one the ACL set. Rule 5 applies the same principle
-    within rule scanning, where the requirement originated.
+    Requiring a human, rather than denying outright, is the right resolution: the
+    condition that could not be evaluated is the one that decides whether *this* call is
+    the dangerous one, so refusing would turn every ordinary `git push` into a hard
+    failure — the over-refusal §6.1.7 exists to eliminate.
 
-    Requiring a human is the right resolution rather than denying outright. The condition
-    that could not be evaluated is the one that decides whether *this* call is the
-    dangerous one, so refusing would turn every ordinary `git push` into a hard failure —
-    the over-refusal §6.1.7 exists to eliminate. "Ask" is the answer that is wrong in
-    neither direction.
-
-**Propagation through AND and the compound operators.** A `conditions` object combines its keys with AND, and `$or` / `$not` nest further objects, so the three outcomes need composition rules. They are three-valued (Kleene) logic, and they are normative — without them the same rule set resolves differently in different SDKs:
+**Propagation through AND and the compound operators.** A `conditions` object combines its keys with AND, and `$or` / `$not` nest further objects, so the three outcomes need composition rules. They are three-valued (Kleene) logic, and they are normative — without them the same rule set resolves differently in different implementations:
 
 | Combination | Result |
 |---|---|
@@ -3975,32 +3974,36 @@ Short-circuiting applies to **handler execution only**, never to the precheck: �
 
 What remains order-dependent is narrow and stated deliberately. `{"roles": ["admin"], "flaky": true}`, where `flaky` is registered but its handler throws, evaluated for a caller with no `admin` role: the precheck passes both keys, and an implementation that reaches `roles` first short-circuits AND on UNSATISFIED and never runs `flaky`. It therefore reports no `handler_error`, while an implementation that reaches `flaky` first reports one. Both are conformant — the **decision** is identical, and only an execution-origin diagnostic differs. An implementation that prefers fully deterministic diagnostics **MAY** evaluate every child; §6.1.4's guarantee covers configuration faults either way.
 
-!!! danger "Why a misspelled key used to be invisible"
-    Before v1.22.0 an unevaluable condition made the rule *not match*, so `deny` rules were the ones that failed open: a single misspelled key — `role:` for `roles:` — turned a rule its author believed was blocking into decoration, and the call fell through to the next rule or to `default_effect`. §7.9.4(4) has required since v1.9.0 that a typo cannot silently disable an execution policy. This section extends the same guarantee to ACL rules.
+!!! danger "Why an unevaluable condition cannot simply be a non-match"
+    If an unevaluable condition only made the rule not match, `deny` rules would be the
+    ones that fail open: a single misspelled key — `role:` for `roles:` — would turn a rule
+    its author believed was blocking into decoration, and the call would fall through to
+    the next rule or to `default_effect`. §7.9.4(4) requires that a typo cannot silently
+    disable an execution policy; this section extends the same guarantee to ACL rules.
 
-#### 6.1.2 Load-time validation of condition keys (v1.22.0, #100)
+#### 6.1.2 Load-time validation of condition keys {#612-load-time-validation-of-condition-keys-v1220-100}
 
-Condition handlers are registered at **runtime** into a process-wide registry, and an ACL can legitimately be loaded before a deployment registers its custom handlers — configuration-driven discovery (§6.1 `acl.root`) commonly runs during framework bootstrap, ahead of application code. Load-time validation therefore **MUST NOT** be fatal:
+Condition handlers are registered at **runtime** into a process-wide registry, and an ACL can legitimately be loaded before a deployment registers its custom handlers — configuration-driven discovery (`acl.root`, §9.1.1) commonly runs during framework bootstrap, ahead of application code. Load-time validation therefore **MUST NOT** be fatal:
 
 1. Loading or constructing an ACL **MUST NOT** fail because a rule references a condition key that has no registered handler at that moment.
 2. Loading or constructing an ACL **MUST** emit a warning for each such key, naming the rule index, the key, and the rule's `effect`.
 3. Implementations **MUST** provide an explicit validation entry point — named `validate_rules` (`validateRules`), **not** `validate_conditions`, because it reports structural faults in `callers` and `targets` as well (§6.1.4.1), returning findings of a type named `RuleValidationFinding` in every SDK — that reports every rule failing §6.1.4's precheck, so a deployment can assert on the result once registration is complete. It **MUST NOT** mutate the ACL, and **MUST** report, per finding, at least: rule index, fault **path** (§6.1.4), the offending key where one exists, rule `effect`, and the two resolvability flags of §6.1.3. Findings **MUST** be ordered by rule index, then lexicographically by path — by path and not by key, because a nested `$or` may carry the same key at several positions and ordering by key alone is then undefined.
 4. Every ACL entry point that accepts rules is covered — file loading, direct construction, and runtime rule insertion alike. An implementation **MUST NOT** validate only the file-loading path.
 
-#### 6.1.3 Sync and async handler registries (v1.22.0, #100)
+#### 6.1.3 Sync and async handler registries {#613-sync-and-async-handler-registries-v1220-100}
 
 "Registered" is not one property. Implementations keep **two** condition-handler registries, and `async_check()` consults the async registry first and then falls back to the sync one, while `check()` consults only the sync registry. The asymmetry is therefore one-directional:
 
 | Registered as | `check()` (sync) | `async_check()` |
 |---|---|---|
-| sync only — the built-in `identity_types`, `roles`, `max_call_depth` | resolves | resolves (falls back) |
+| sync only — the built-in `identity_types`, `roles`, `max_call_depth`, `arguments` | resolves | resolves (falls back) |
 | both — the built-in `$or`, `$not` | resolves | resolves |
 | **async only** | **does not resolve → UNEVALUABLE (§6.1.1)** | resolves |
 | neither | UNEVALUABLE | UNEVALUABLE |
 
-An async-only key is thus a live rule on one path and an unevaluable condition on the other. Three consequences are normative:
+An async-only key is thus a live rule on one path and an unevaluable condition on the other. Four consequences are normative:
 
-1. §6.1.2's validator **MUST** report `sync_resolvable` and `async_resolvable` as separate flags per finding, and **MUST NOT** collapse them into a single boolean. Without this, the same ACL validates differently depending on which registry an SDK happened to consult, and an operator cannot tell an unregistered key from a key that is merely unusable on the path their application calls.
+1. §6.1.2's validator **MUST** report `sync_resolvable` and `async_resolvable` as separate flags per finding, and **MUST NOT** collapse them into a single boolean. Without this, the same ACL validates differently depending on which registry an implementation consults, and an operator cannot tell an unregistered key from a key that is merely unusable on the path their application calls.
 2. Both flags mean **resolvable on that evaluation path**, not "present in that registry". `async_resolvable` is therefore the union of the two registries, because `async_check()` falls back to the sync one — a key registered only synchronously is `async_resolvable`. They are named `*_resolvable` rather than `*_registered` for exactly this reason: `async_registered` would read as a lookup in the async registry and be false for every built-in leaf handler, which resolves on both paths.
 3. For a fault that has **no condition key** — a malformed pattern field, a non-mapping `conditions`, a malformed `$or` **element** — both flags **MUST** be `false` and the finding's key field **MUST** be null. A malformed operator **value** is the other case and is *not* keyless: `$or: "nope"` is a fault attached to the `$or` key, so the finding **MUST** carry `$or` as its key, at path `$or`, with both flags still `false`. The flags describe the fault, not the key's registration — `$or` is always registered, and reporting it resolvable would say the malformed rule is fine. The flags answer "can this fault be resolved by evaluating on that path", and a structural fault resolves on neither. They **MUST NOT** be read as "is the key registered", which would report a malformed `$or` value as resolvable on both paths because `$or` itself has a handler.
 4. A finding **MUST** be emitted whenever `sync_resolvable` is false, including when `async_resolvable` is true — an application calling `check()` has a condition it cannot evaluate. A caller that only ever uses `async_check()` may choose to ignore such a finding; that choice belongs to the caller, not to the validator.
@@ -4009,27 +4012,9 @@ A key that resolves on both paths is not a finding.
 
 This is diagnostics, not enforcement. The guarantee that a broken `deny` rule cannot silently pass traffic is §6.1.1's, and holds whether or not anyone calls the validator.
 
-> **D-105 (v1.50.0) — the executor's ACL step MUST take the async path.** The
-> table above defines what each entry point resolves; it never said which one
-> the pipeline's `acl_check` step calls, and the three SDKs split. apcore-python
-> and apcore-typescript prefer the async accessor when the ACL exposes one
-> (apcore-typescript's `_decide` records the reason in a comment); apcore-rust
-> called the synchronous `check_access` from inside an already-`async` step.
->
-> The consequence is not a latency difference. A condition registered through
-> `register_async_condition` is, on the sync path, "async only" — the first row
-> of the table — so it resolves to **UNEVALUABLE**, and §6.1.1 then applies:
-> an `allow` rule carrying it stops granting and the caller is denied, while a
-> `deny` rule carrying it denies unconditionally rather than when the handler
-> says so. Both directions are wrong, and the async condition registry is
-> unreachable from the only path that enforces, making a documented extension
-> point dead in production while its unit tests pass.
->
-> An implementation whose ACL exposes an async evaluation entry point **MUST**
-> use it from the executor's ACL step, falling back to the synchronous one only
-> when no async entry point exists.
+**The executor's ACL step MUST take the async path (D-105).** An implementation whose ACL exposes an async evaluation entry point **MUST** use it from the executor's ACL step (`acl_check`), falling back to the synchronous one only when no async entry point exists. On the sync path a condition registered through `register_async_condition` is *async only* — the third row of the table above — and resolves to UNEVALUABLE, so an `allow` rule carrying it would stop granting and a `deny` rule carrying it would deny unconditionally rather than when the handler says so. Both directions are wrong, and the async condition registry would be unreachable from the only path that enforces.
 
-#### 6.1.4 Structural and registry precheck (v1.25.0, #100)
+#### 6.1.4 Structural and registry precheck {#614-structural-and-registry-precheck-v1250-100}
 
 Two requirements pull against each other unless the work is split. §6.1.1 rule 2 wants `handler_error` to be deterministic across implementations; the composition rules permit short-circuiting, which makes *evaluation order* — and therefore which failures are even reached — implementation-defined. And §6.5 keeps "conditions present, no context supplied" a non-match, which would let a misspelled key on a context-less call escape §6.1.1 entirely.
 
@@ -4046,10 +4031,10 @@ The precheck is **context-independent** and **MUST NOT** invoke any handler. It 
 
 **Ordering, normatively:**
 
-1. The precheck **MUST** run before §6.5's "conditions present but no context provided" check. A rule that fails the precheck is unevaluable **whether or not** the call supplied a context: a misspelled key is misconfigured regardless of who is calling, and this is what closes the bypass where `conditions: {mispelled: true}` on a `deny` rule passed traffic simply because the caller carried no identity.
-2. A rule that **passes** the precheck and then finds no context still takes §6.5's path and does not match. A registered, context-dependent condition — `roles`, `identity_types`, `max_call_depth` — **MUST NOT** be treated as unevaluable merely because this call carried no context. It is answerable in principle; this caller just did not supply the input. §6.5's design is unchanged.
+1. The precheck **MUST** run before §6.5's "conditions present but no context provided" check. A rule that fails the precheck is unevaluable **whether or not** the call supplied a context: a misspelled key is misconfigured regardless of who is calling. Otherwise `conditions: {mispelled: true}` on a `deny` rule would pass traffic whenever the caller carried no identity.
+2. A rule that **passes** the precheck and then finds no context still takes §6.5's path and does not match. A registered, context-dependent condition — `roles`, `identity_types`, `max_call_depth` — **MUST NOT** be treated as unevaluable merely because this call carried no context. It is answerable in principle; this caller just did not supply the input. §6.5 governs this case.
 3. The precheck **MUST NOT** short-circuit. It has no decisive outcome to short-circuit on, and its completeness is what makes §6.1.1 rule 2 achievable.
-4. **The precheck decides whether a rule can be evaluated. It **MUST NOT** enlarge the set of calls a rule applies to.** A rule that a *well-formed* pattern field definitively excludes from this call does not participate in the decision, and its faults elsewhere **MUST NOT** affect it. In order:
+4. **The precheck decides whether a rule can be evaluated; it MUST NOT enlarge the set of calls a rule applies to.** A rule that a *well-formed* pattern field definitively excludes from this call does not participate in the decision, and its faults elsewhere **MUST NOT** affect it. In order:
 
     a. Precheck the **structure** of `callers` and `targets` (§6.1.4.1).
     b. If a pattern field is **malformed**, the rule's scope is unknowable, so the rule **MUST** be unevaluable and resolve per §6.1.1's effect table.
@@ -4058,7 +4043,7 @@ The precheck is **context-independent** and **MUST NOT** invoke any handler. It 
 
 5. **A precheck fault gates the rule; it does not enter the composition table.** §6.1.1's table says an outright "yes" wins an `$or` even when a sibling is unevaluable. That governs conditions the implementation actually **evaluated**. A fault the precheck found is different in kind: the rule is not well-formed enough to evaluate, so it is UNEVALUABLE as a whole and no sibling can rescue it.
 
-    `{"$or": [{"mispelled": true}, {"roles": ["dev"]}]}` for a caller who **has** `dev` is the discriminating case: the composition table alone would make the `$or` SATISFIED, and gating makes the rule unevaluable. Gating is correct, and it is what the principle demands — otherwise a typo is silent for exactly as long as some sibling keeps matching, which is the failure mode §6.1.1 exists to end, reappearing one nesting level down. Gating is also **required** for consistency with rule 1: a precheck fault must resolve a context-less call, where no condition is ever evaluated and the table has nothing to operate on.
+    `{"$or": [{"mispelled": true}, {"roles": ["dev"]}]}` for a caller who **has** `dev` is the discriminating case: the composition table alone would make the `$or` SATISFIED, and gating makes the rule unevaluable. Gating is what the principle demands — otherwise a typo is silent for exactly as long as some sibling keeps matching. Gating is also **required** for consistency with rule 1: a precheck fault must resolve a context-less call, where no condition is ever evaluated and the table has nothing to operate on.
 
     The split is precheck versus execution, not structural versus everything. A **registered** handler that throws is execution-origin, so the table does apply: `{"$or": [{throwing_key: true}, {"roles": ["dev"]}]}` for a `dev` caller is SATISFIED, and an `allow` rule carrying it grants. Both directions are pinned by `../../conformance/fixtures/acl_handler_error.json`.
 
@@ -4079,15 +4064,15 @@ The precheck is **context-independent** and **MUST NOT** invoke any handler. It 
 
 Paths nest, so a key inside `$not` inside the second `$or` branch is `$or[1].$not.k`. A fault that is not attached to a key — a malformed `$or` element, a non-mapping `conditions`, a malformed pattern field — is reported at the position of the malformed value itself and **MUST NOT** be skipped: skipping is how a whole `$or` branch disappears without anyone being told. Implementations **MUST** use this form; it is what `handler_error` orders by and what §6.1.2's validator reports.
 
-##### 6.1.4.1 Malformed `callers` / `targets` (v1.25.0, #106)
+##### 6.1.4.1 Malformed `callers` / `targets` {#6141-malformed-callers-targets-v1250-106}
 
 `callers` and `targets` are **lists of patterns**, and both the element type and the **arity** are constrained (§6.2.1). A value that is not a list of strings, or a list whose shape is outside §6.2.1's closure, is a malformed rule, and the precheck **MUST** classify it as unevaluable — resolving per §6.1.1's effect table, so an `allow` rule does not grant and a `deny` rule takes effect. It **MUST NOT** raise out of `check()`, and it **MUST NOT** be treated as a pattern set.
 
-The failure this closes is not hypothetical and it fails **open**. A bare string is iterable in several host languages, so `callers: "admin.*"` written where `callers: ["admin.*"]` was meant iterates the string **character by character**; the `*` character is a valid pattern that matches everything, so an `allow` rule carrying that typo grants access to **every caller**. Measured in apcore-python: `callers: "admin.*"` and `callers: "*"` both returned `true` for an unrelated caller under `default_effect: deny`. Whether a given typo is dangerous depends only on whether the mistyped string happens to contain a `*` — `"api.gateway"` returns false by luck, not by design.
+Rationale: the failure is a fail-**open**. A bare string is iterable in several host languages, so `callers: "admin.*"` written where `callers: ["admin.*"]` was meant would iterate the string **character by character**; the `*` character is a valid pattern that matches everything, so an `allow` rule carrying that typo would grant access to **every caller**.
 
-`ACL.load` already rejects a non-list `callers`/`targets`, so a YAML file cannot reach this. Direct construction and runtime rule insertion can, which is the same door §6.1.1 case 5 exists for. An implementation whose type system makes the value unrepresentable (apcore-rust's `Vec<String>`) satisfies this clause by construction and needs no runtime check.
+`ACL.load` rejects a non-list `callers` / `targets`, so a YAML file cannot reach the type fault; direct construction and runtime rule insertion can, which is the same route §6.1.1 case 5 exists for. An implementation whose type system makes the value unrepresentable (for example a `Vec<String>` field) satisfies this half by construction and needs no runtime check.
 
-The **shape** half is not disposed of the same way. `ACL.load` deliberately permits an empty `callers` / `targets` — only omission is rejected — so a YAML file reaches it, and a `Vec<String>` constrains the element type while placing no constraint on length or on element content, so no implementation is exempt by construction. §6.2.1 therefore closes every entry point against it, and what remains for this precheck is the value assigned onto a rule *after* it has already been accepted by one of those entry points — installed inside a live `ACL` (via `load`, direct construction, or `add_rule`) and mutated afterward through whatever accessor a caller already holds a reference to. That is the one route no door runs again to intercept. A rule mutated *before* it is ever offered to a door — including a rule handed to `ACL`'s own constructor as part of a list of already-built rule objects — is still being offered to a door for the first time, and **MUST** be rejected there like any other malformed rule reaching that door (§6.1.6 rule 3); construction cannot exempt a rule from the check every other rule in the same list gets merely because the rule object predates the `ACL` it is being handed to.
+The **shape** half is different: no type system exempts an implementation from it, because a list type constrains the element type but not length or element content. §6.2.1 closes every entry point against a malformed shape, so what remains for this precheck is a value assigned onto a rule *after* it has already been accepted by an entry point — installed inside a live `ACL` (via `load`, direct construction, or `add_rule`) and mutated afterward through an accessor the caller already holds a reference to. That is the one route no entry point runs again to intercept. A rule mutated *before* it is ever offered to an entry point — including a rule handed to `ACL`'s own constructor as part of a list of already-built rule objects — is still being offered to an entry point for the first time, and **MUST** be rejected there like any other malformed rule reaching that entry point (§6.1.6 rule 3); construction cannot exempt a rule from the check every other rule in the same list gets merely because the rule object predates the `ACL` it is being handed to.
 
 **Special patterns:**
 
@@ -4097,58 +4082,36 @@ The **shape** half is not disposed of the same way. `ACL.load` deliberately perm
 | `@system` | Matches calls where identity type is `system` |
 | `*` | Wildcard, matches all module IDs |
 
-#### 6.1.5 The rule key set is closed (v1.27.0, #107)
+#### 6.1.5 The rule key set is closed {#615-the-rule-key-set-is-closed-v1270-107}
 
-`callers`, `targets`, `effect`, `approval`, `description` and `conditions` are the **complete** set of keys an ACL rule may carry (`approval` joined the set in v1.28.0, §6.1.6). Loading a rule with any other key **MUST** fail with `ACLRuleError`, naming the rule index and the offending key.
+`callers`, `targets`, `effect`, `approval`, `description` and `conditions` are the **complete** set of keys an ACL rule may carry (`approval` is defined in §6.1.6). Loading a rule with any other key **MUST** fail with `ACLRuleError`, naming the rule index and the offending key.
 
-This is the same principle §6.1.2 applies to condition keys, in the other half of the rule, and it can be stricter: an unknown **condition** key cannot fail the load, because `register_condition` writes to a runtime registry that discovery may legitimately precede. A rule **key** has no such excuse — the set is fixed by this section and by `schemas/acl-config.schema.json`, which already declares `additionalProperties: false` on a rule. Nothing was enforcing it, because no implementation validates an ACL file against the schema at load time.
+This is the same principle §6.1.2 applies to condition keys, in the other half of the rule, and it can be stricter: an unknown **condition** key cannot fail the load, because `register_condition` writes to a runtime registry that discovery may legitimately precede. A rule **key** has no such excuse — the set is fixed by this section and by `schemas/acl-config.schema.json`, which declares `additionalProperties: false` on a rule.
 
 !!! danger "A dropped key widens an `allow` rule, silently"
-    Through v1.26.0 an unrecognised key was discarded and the rule applied
-    unnarrowed. On a `deny` rule that is over-broad and therefore safe. On an
-    `allow` rule it is a **privilege escalation**: an operator who writes a key
-    intending to restrict a rule gets a rule with no restriction and no warning.
-    This is the §6.1.1 defect class — a silent fail-open produced by a key
-    nothing evaluates — on the pattern side rather than the condition side.
+    If an unrecognised key were discarded, the rule would apply unnarrowed. On a `deny`
+    rule that is over-broad and therefore safe. On an `allow` rule it is a **privilege
+    escalation**: an operator who writes a key intending to restrict a rule gets a rule
+    with no restriction and no warning. This is the §6.1.1 defect class — a silent
+    fail-open produced by a key nothing evaluates — on the pattern side rather than the
+    condition side.
 
-**The `effect` value set is closed too, at every entry point (v1.30.0, #111).** `effect` accepts `"allow"` and `"deny"` and nothing else — §6.1's field table already says **MUST** and `schemas/acl-config.schema.json` already declares the enum. A rule carrying any other value **MUST** be rejected with `ACLRuleError` naming the offending value, and the rule index wherever the entry point has one — a rule under construction has no position yet, and an implementation **MUST NOT** invent one; it names the value alone. It **MUST** be rejected at **every** entry point that accepts a rule — file loading, direct construction, and runtime insertion — on §6.1.6 rule 3's reasoning, which applies here unchanged. `default_effect` is closed on the same terms, at every door that accepts one; its rejection names the offending value, there being no rule index to name. §6.2.1 closes a third door on the same reasoning in v1.31.0: a pattern array's **shape**. The three instances are one pattern — an unknown rule **key** dropped in silence (#107), a legal key's **value** dropped in silence (#111), and a legal value's **shape** read as a scope decision (#112) — and in all three the constraint was already declared in `schemas/acl-config.schema.json` and enforced by no entry point, because no implementation validates an ACL file against the schema at load time.
+**The `effect` value set is closed too, at every entry point.** `effect` accepts `"allow"` and `"deny"` and nothing else — §6.1's field table says **MUST** and `schemas/acl-config.schema.json` declares the enum. A rule carrying any other value **MUST** be rejected with `ACLRuleError` naming the offending value, and the rule index wherever the entry point has one — a rule under construction has no position yet, and an implementation **MUST NOT** invent one; it names the value alone. It **MUST** be rejected at **every** entry point that accepts a rule — file loading, direct construction, and runtime insertion — on §6.1.6 rule 3's reasoning, which applies here unchanged. `default_effect` is closed on the same terms, at every entry point that accepts one; its rejection names the offending value, there being no rule index to name. §6.2.1 closes a pattern array's **shape** on the same terms.
 
-An implementation **MUST NOT** resolve an unrecognised `effect` to a decision, nor pass it through as one. **Closing the doors is the mechanism**; once every entry point rejects, no evaluation-time branch for an unrecognised value is reachable through any API this specification defines, and the decision read becomes total over the closed set rather than a fallback with a default arm. A value that arrives by some route outside those doors — assigning the field on an already-constructed rule, which no constructor can intercept — is outside what this section can require: an implementation **MAY** guard it and **MUST NOT** silently normalise it. Reading an unrecognised value as `deny` is a fallback that looks safe and is not: under `default_effect: allow` a rule the operator wrote to permit becomes a rule that **denies everything it matches**, flipping the decision for those calls with no error and no warning, and the reading is only ever *accidentally* right on a `deny` rule — correct until someone revisits which way the fallback points. This is §6.1.5's own defect class one level down: there the key was unknown and dropped, here the key is legal and its value is dropped, and the silence is identical.
+An implementation **MUST NOT** resolve an unrecognised `effect` to a decision, nor pass it through as one. **Closing the entry points is the mechanism**: once every entry point rejects, no evaluation-time branch for an unrecognised value is reachable through any API this specification defines, and the decision read becomes total over the closed set rather than a fallback with a default arm. A value that arrives by some route outside those entry points — assigning the field on an already-constructed rule, which no constructor can intercept — is outside what this section can require: an implementation **MAY** guard it and **MUST NOT** silently normalise it.
 
-!!! danger "One guarded door is not a closed set"
-    Before v1.30.0 the check existed in every implementation and simply was not
-    reached from every door. apcore-python and apcore-typescript rejected an
-    out-of-enum `effect` from `ACL.load()` and accepted it through direct
-    construction and `add_rule()`. apcore-rust rejected it at `load` and at
-    construction and accepted it at `add_rule()`, whose validation covered
-    §6.1.6's `deny` + `approval` combination and nothing else. **All three had a
-    hole; they merely had different ones** — which is why the closure is stated
-    per entry point rather than per implementation. Every one of them meanwhile
-    validated `default_effect`, the same two values one field up, at every door
-    it reaches. §6.1.6 rule 3 wrote the rule for this shape and it was never
-    applied to the field it is named after.
+Rationale: reading an unrecognised value as `deny` is a fallback that looks safe and is not — under `default_effect: allow` a rule the operator wrote to permit becomes a rule that **denies everything it matches**, with no error and no warning, and the reading is only ever *accidentally* right on a `deny` rule. Passing the value through is worse: `effect: "Allow"` would surface as a verdict string no consumer parses, in `AccessDecision.access` and in the audit entry's `decision`, and the same literal comparison that decides whether the rule carries an approval requirement would silently drop the `approval: required` attached to it.
 
-    The damage is not confined to a fallback that reads the value as `deny`. In
-    apcore-rust the unrecognised string was never inspected again: it was copied
-    into `AccessDecision.access` and into the audit entry's `decision`, so
-    `effect: "Allow"` produced `access: "Allow"` — a verdict string no consumer
-    parses, which downstream readers comparing against `"allow"` resolve as a
-    refusal while the audit trail records a value that is neither. The same
-    literal comparison decided whether the rule carried an approval requirement,
-    so a mis-cased `allow` rule silently dropped the `approval: required` an
-    operator had attached to it — §6.1.1 rule 5's defect class, re-entered
-    through a typo in a different field.
+**Reserved names.** `id`, `actions` and `priority` are reserved for future specification versions and are evaluated by no implementation. They are **rejected at load like any other unknown key**, and an implementation **SHOULD** name them as reserved in the error rather than merely unknown, because an operator who wrote `actions: ["describe"]` intended a restriction and deserves to be told the key does not exist yet rather than that they mistyped something. The schema does not declare them among a rule's properties, so `additionalProperties: false` catches them.
 
-**Reserved names.** `id`, `actions` and `priority` were reserved here for future specification versions and are evaluated by no implementation. They are **rejected at load like any other unknown key**, and an implementation **SHOULD** name them as reserved in the error rather than merely unknown, because an operator who wrote `actions: ["describe"]` intended a restriction and deserves to be told the key does not exist yet rather than that they mistyped something. They are removed from the schema's property list in the same change: leaving them declared meant `additionalProperties: false` could never catch them, which is precisely how `actions` came to grant `execute` on a rule that said `describe`.
-
-#### 6.1.6 Authorization and approval are two results, not one (v1.28.0, #108)
+#### 6.1.6 Authorization and approval are two results, not one {#616-authorization-and-approval-are-two-results-not-one-v1280-108}
 
 An ACL rule answers **two** independent questions, and folding them into one enumeration makes a meaningless state representable while forcing a real one to be spelled badly.
 
 - **Authorization** — may this caller reach this target at all? `allow` / `deny`.
 - **Approval requirement** — must *this particular call* be put to a human before it runs? `true` / `false`.
 
-"Denied **and** needs approval" is not a state that means anything, and "allowed **but** ask first" is not a third kind of denial. A rule therefore carries `effect` as it always has, plus an orthogonal optional field:
+"Denied **and** needs approval" is not a state that means anything, and "allowed **but** ask first" is not a third kind of denial. A rule therefore carries `effect` plus an orthogonal optional field:
 
 ```yaml
 rules:
@@ -4160,16 +4123,16 @@ rules:
       arguments: { has_key: ["force"] }
 ```
 
-1. `approval` is optional; its absence means `not_required`, so every rule written before this section keeps its meaning exactly. **`not_required` is the absence of a requirement, never the suppression of one (v1.29.0, #109).** Writing it explicitly on a rule asserts that *this* rule asks for no human; it does not cancel a requirement another rule raised, including a pending one under §6.1.1 rule 5. There is no way to spell "and cancel anything else" on a rule, deliberately — §6.9 rule 4 refuses that power to a module-scoped policy, and a rule further down the same file is not a better place to grant it.
-2. `approval: required` on a `deny` rule **MUST** be rejected at load with `ACLRuleError`. The combination has no meaning, and silently ignoring one half of a governance rule is the failure mode §6.1.5 was written to end.
-3. The combination **MUST** be rejected at **every** entry point that accepts a rule — file loading, direct construction, and runtime insertion. `add_rule` returns nothing by its own contract in all three SDKs, which is not an exemption: an implementation **MUST** either provide a fallible variant beside it or fail loudly, in whatever way that language already signals an unconstructable value. A `deny` rule never reaches the approval gate, so a requirement attached to one can only ever mislead the operator who wrote it, and accepting it through one door while rejecting it at two is worse than either.
-4. Adding this field was only safe once §6.1.5 closed the rule key set (v1.27.0). An SDK that still dropped unknown keys would read a `deny`-with-`approval` rule as a bare rule and act on half of what the operator wrote.
+1. `approval` is optional; its absence means `not_required`. **`not_required` is the absence of a requirement, never the suppression of one.** Writing it explicitly on a rule asserts that *this* rule asks for no human; it does not cancel a requirement another rule raised, including a pending one under §6.1.1 rule 5. There is no way to spell "and cancel anything else" on a rule, deliberately — §6.9 rule 4 refuses that power to a module-scoped policy, and a rule further down the same file is not a better place to grant it.
+2. `approval: required` on a `deny` rule **MUST** be rejected at load with `ACLRuleError`. The combination has no meaning, and silently ignoring one half of a governance rule is the failure mode §6.1.5 exists to prevent.
+3. The combination **MUST** be rejected at **every** entry point that accepts a rule — file loading, direct construction, and runtime insertion. An `add_rule` that returns nothing by its own contract is not exempt: an implementation **MUST** either provide a fallible variant beside it or fail loudly, in whatever way that language already signals an unconstructable value. A `deny` rule never reaches the approval gate, so a requirement attached to one can only ever mislead the operator who wrote it, and accepting it through one entry point while rejecting it at the others is worse than either.
+4. The field depends on the closed rule key set (§6.1.5). An implementation that dropped unknown keys would read a `deny`-with-`approval` rule as a bare rule and act on half of what the operator wrote.
 
-**Why this cannot be expressed with the tools that already exist.** The ACL can refuse on arguments today. `ApprovalHandler` can wave a call through on arguments. Neither can *ask* on arguments, and asking is the entire purpose of the approval gate — a refusal is not a question. Every decision point that can read a call's arguments is unable to escalate it to a human, and the one point that decides whether to ask a human (§7.9's policy resolution) is forbidden by rule 2 of §7.9.6 from consulting them.
+**Why this cannot be expressed with the other mechanisms.** Without this field, the ACL can refuse on arguments and `ApprovalHandler` can wave a call through on arguments, but neither can *ask* on arguments, and asking is the entire purpose of the approval gate — a refusal is not a question. Every other decision point that can read a call's arguments is unable to escalate it to a human, and the one point that decides whether to ask a human (§7.9's policy resolution) is forbidden by rule 2 of §7.9.6 from consulting them.
 
-#### 6.1.7 The `arguments` condition (v1.28.0, #108)
+#### 6.1.7 The `arguments` condition {#617-the-arguments-condition-v1280-108}
 
-One **built-in** condition key, added to the language §6.1 already defines rather than beside it:
+One **built-in** condition key, part of the condition language §6.1 defines rather than beside it:
 
 | Predicate | Passes when |
 |---|---|
@@ -4185,22 +4148,22 @@ One **built-in** condition key, added to the language §6.1 already defines rath
 
 Value-level predicates (`equals`, `matches`, ordering comparisons) are deliberately **not** specified. If they are added later they **MUST** carry a precondition that the module declares an `input_schema`, or resolve as unevaluable under §6.1.1.
 
-**It is built-in and requires no registration.** `register_condition` writes runtime code into a process-wide registry; a deployment-registered argument handler would be exactly the unauditable host code §7.9.6 rule 2 exists to keep out of a governance verdict. A fixed vocabulary keeps the decision reproducible from the ACL document. This says the condition needs no registration, not that `register_condition` is forbidden from replacing it: that call can already replace `roles`, which is equally consequential, and special-casing one built-in would be arbitrary. A deployment that replaces a built-in condition owns the consequence, as it always has. Being built-in also means §6.1.4's precheck covers it for free: `argument:` written for `arguments:` is an unregistered condition key, so the rule is unevaluable rather than silently inert.
+**It is built-in and requires no registration.** `register_condition` writes runtime code into a process-wide registry; a deployment-registered argument handler would be exactly the unauditable host code §7.9.6 rule 2 exists to keep out of a governance verdict. A fixed vocabulary keeps the decision reproducible from the ACL document. This says the condition needs no registration, not that `register_condition` is forbidden from replacing it: that call can already replace `roles`, which is equally consequential, and special-casing one built-in would be arbitrary. A deployment that replaces a built-in condition owns the consequence. Being built-in also means §6.1.4's precheck covers it: `argument:` written for `arguments:` is an unregistered condition key, so the rule is unevaluable rather than silently inert.
 
-#### 6.1.8 The governance projection (v1.28.0, #108)
+#### 6.1.8 The governance projection {#618-the-governance-projection-v1280-108}
 
 The `arguments` condition reads a **governance projection** of the call's arguments, not the arguments themselves and not `redacted_inputs`.
 
-1. Implementations **MUST** compute the projection during module lookup (Step 3) and make it available to the ACL check (Step 4). The ordering is normative here rather than an implementation detail that happens to hold.
+1. Implementations **MUST** compute the projection during module lookup (Step 3) and make it available to the ACL check (Step 4). The ordering is normative.
 2. The projection **MUST** carry the argument **key set**, and **MAY** carry each key's JSON type. It **MUST NOT** carry any argument value. A projection that structurally cannot hold a value cannot leak one, whatever a future predicate does with it.
 3. The projection **MUST** be computed by the framework and **MUST NOT** be accepted from caller-supplied input. Where an implementation carries it on a context object that is also deserialized from the wire, the field **MUST** be transient — excluded from serialization and ignored on deserialization. A caller that could supply its own projection could satisfy `has_none_of` for a call whose arguments say otherwise, which turns the condition into a caller-controlled switch.
 4. How the projection reaches the condition is **idiomatic** and unconstrained: carrying it on the execution context and passing it as an argument to the check are both conforming, as long as rules 1–3 hold. What is fixed is that the condition sees it and that a caller cannot forge it.
 5. Implementations **MUST NOT** substitute `redacted_inputs`. Its documented contract is safe *logging*; it is a raw copy when the module has no input schema; and one field serving both "safe to log" and "input to a security decision" will eventually break one of them in a change made for the other.
 
-**Well-formedness and availability (v1.28.0, #108).** Four cases, all resolving to UNEVALUABLE under §6.1.1's principle rather than to a boolean. The direction matters: every one of them is a shape where "false" would be safe on a `deny` rule and **fail open on an `allow` rule**, which is the defect class §6.1.1 exists to close.
+**Well-formedness and availability.** Four cases, all resolving to UNEVALUABLE under §6.1.1's principle rather than to a boolean. The direction matters: every one of them is a shape where "false" would be safe on a `deny` rule and **fail open on an `allow` rule**, which is the defect class §6.1.1 exists to close.
 
 1. **No projection available.** `check()` is public API and a caller that is not the Executor may invoke it without one. The condition is UNEVALUABLE. It **MUST NOT** be evaluated against an empty stand-in: `has_none_of` over an empty key set is *satisfied*, so an `allow` rule would grant for a call whose arguments were never seen.
-2. **`arguments: {}`** — an empty predicate object. UNEVALUABLE, not vacuously satisfied, for the same reason §6.1's table already gives for an empty `$not`.
+2. **`arguments: {}`** — an empty predicate object. UNEVALUABLE, not vacuously satisfied, for the same reason §6.1's table gives for an empty `$not`.
 3. **An unrecognised predicate name** inside `arguments` (`has_keys` for `has_all_keys`). UNEVALUABLE. The predicate vocabulary is closed exactly as the rule key set is (§6.1.5), and for the same reason: a name nothing evaluates would otherwise be dropped and leave the rule wider than written.
 4. **A malformed predicate value** — not a list of strings. UNEVALUABLE, per §6.1.1 case 4.
 
@@ -4208,22 +4171,22 @@ Empty predicate *arrays* are well-formed and carry ordinary set semantics: `has_
 
 **§6.1.4's precheck covers the predicate structure**, not only the `arguments` key's registry status. Cases 2–4 are decidable without a context and without running a handler, so they are precheck faults and `validate_rules()` **MUST** report them — which is what makes a malformed predicate visible at deploy time rather than at the first call that trips it.
 
-**The condition path of an `arguments` fault descends to the offending predicate.** §6.1.4 already descends into structure — a fault beneath `$or` is reported at `$or[1].k`, not at `$or` — and the reason carries over unchanged: `arguments: { has_key: ["a"], has_keys: ["b"] }` has one bad predicate among good ones, and a finding that says only `arguments` does not say which.
+**The condition path of an `arguments` fault descends to the offending predicate.** §6.1.4 descends into structure — a fault beneath `$or` is reported at `$or[1].k`, not at `$or` — and the reason carries over unchanged: `arguments: { has_key: ["a"], has_keys: ["b"] }` has one bad predicate among good ones, and a finding that says only `arguments` does not say which.
 
 1. A fault attributable to one predicate — an unrecognised name (case 3) or a malformed value (case 4) — **MUST** be reported at `arguments.<predicate>`, using the name **as written**: `arguments.has_keys` for the misspelling, so the finding names the string the author typed and can be searched for.
 2. A fault with no predicate to name — a non-mapping `arguments` value, or the empty object of case 2 — **MUST** be reported at `arguments`. These two are terminal: a value that is not a mapping of predicates has no predicates to walk.
-3. **Every** faulty predicate in one `arguments` block **MUST** be reported, one finding each, and the walk **MUST NOT** stop at the first. §6.1.4 already requires the precheck to walk the whole rule structure so that a fault is "always found and always reported"; a block is part of that structure. Reporting only the first also makes the *choice* of which one to report observable, and there is no reading of §6.1.4 under which "the first" is a pure function of the rule: `{ has_key: "force", zzz: [...] }` has both a malformed value and an unrecognised name, and an implementation that checks names before values reports a different path from one that walks predicate by predicate. Reporting both removes the question rather than answering it.
+3. **Every** faulty predicate in one `arguments` block **MUST** be reported, one finding each, and the walk **MUST NOT** stop at the first. §6.1.4 requires the precheck to walk the whole rule structure so that a fault is always found and always reported, and a block is part of that structure. Reporting only the first would also make the *choice* of which one to report observable, and "the first" is not a pure function of the rule: `{ has_key: "force", zzz: [...] }` has both a malformed value and an unrecognised name, and an implementation that checks names before values would report a different path from one that walks predicate by predicate. Reporting both removes the question rather than answering it.
 4. Both forms compose under `$or` / `$not` exactly as any other path does: `$or[1].arguments.has_keys`.
 
 This is a path rule, not a message rule. Findings order by path (§6.1.4), which orders a block's own findings by predicate name.
 
-**`_approval_token` is excluded from the projection.** It is framework-owned protocol machinery, not caller input — §7.9.6 rule 5 already strips it before policy resolution for the same reason. Including it would make a Phase B resume present a different argument shape to governance than the original call, so `has_none_of` would decide differently on the two halves of one logical call.
+**`_approval_token` is excluded from the projection.** It is framework-owned protocol machinery, not caller input — §7.9.6 rule 5 strips it before policy resolution for the same reason. Including it would make a Phase B resume present a different argument shape to governance than the original call, so `has_none_of` would decide differently on the two halves of one logical call.
 
 ### 6.2 Rule Matching
 
 Implementations **MUST** perform pattern matching according to the following algorithm:
 
-```
+```text
 Algorithm: match_pattern(pattern, module_id)
 
 Input:
@@ -4281,11 +4244,11 @@ The `callers` and `targets` pattern arrays **MAY** use the compound operators `$
 | `["$or", p1, p2, ...]` | at least 1 | **MUST** match the module ID if any of `p1, p2, …` matches. Observably equivalent to a flat list (which is also OR-ed) but documents intent explicitly. |
 | `["$not", p]` | exactly 1 | **MUST** match the module ID if `p` does **not** match. |
 
-**A pattern array is FLAT. The operators do not nest and there is no precedence
-(v1.31.0, #112).** An operand is always a plain pattern string, never a nested array and
-never another operator. There is exactly one operator position — index 0 — and everything
-after it is an operand. `$or` and `$not` therefore have **two different grammars** in this
-specification, and only one of them nests:
+**A pattern array is FLAT. The operators do not nest and there is no precedence.** An
+operand is always a plain pattern string, never a nested array and never another operator.
+There is exactly one operator position — index 0 — and everything after it is an operand.
+`$or` and `$not` therefore have **two different grammars** in this specification, and only
+one of them nests:
 
 | | in `conditions` (§6.1.1) | in a pattern array (this section) |
 |---|---|---|
@@ -4296,12 +4259,8 @@ specification, and only one of them nests:
 A reserved token at any index other than 0 is therefore **not** a nested operator and
 **not** a usable pattern: `["$or", "$not", "a"]` is not "or-of-not", and
 `["a", "$not", "b"]` is not "a, but not b". Both are rejected — see the closure below.
-Through v1.30.0 this section instead required such a token to be *"treated as a literal
-pattern string"* while also requiring that a literal module ID equal to `"$or"` or `"$not"`
-**MUST NOT** be matched, which is a pattern the specification guarantees can never match
-anything: dead weight in a security policy, and the two clauses together were honoured by no
-implementation. Rejecting the token outside index 0 replaces both with one structural rule
-and makes the reserved-token guarantee hold by construction.
+Rejecting the token outside index 0 is what makes the reserved-token guarantee hold by
+construction: no pattern array can carry `"$or"` or `"$not"` as a literal pattern.
 
 **Not every intent is expressible in one pattern array, and that is deliberate.**
 `NOT (a OR b)` has no single-array form: `$not` takes exactly one operand and the array's
@@ -4348,21 +4307,17 @@ targets: []                                   # no operands — matches nothing,
 targets: ["$or"]                              # OR over nothing
 targets: ["$not"]                             # negation of nothing
 targets: [""]                                 # the empty pattern matches no legal module ID
-targets: ["$not", "a", "b"]                   # $not takes EXACTLY one operand.
-                                              #   Before v1.31.0 this silently meant ["$not", "a"],
-                                              #   so an `allow` rule GRANTED "b" — write two rules.
+targets: ["$not", "a", "b"]                   # $not takes EXACTLY one operand — write two rules
 
 # ---- rejected: a reserved token outside index 0 (there is no nesting) ----
-targets: ["$or", "$not", "a"]                 # NOT "or-of-not". Before v1.31.0 the "$not" was a
-                                              #   literal pattern and the array matched "a" and a
-                                              #   module literally named "$not".
+targets: ["$or", "$not", "a"]                 # NOT "or-of-not"
 targets: ["api.*", "$not", "cli.*"]           # NOT "api.* but not cli.*". No such form exists.
 
 # ---- legal, but reported by validate_rules() as matching nothing (§6.2.1 tier 2) ----
 targets: ["$not", "*"]                        # "not everything" is well-formed and matches nothing
 ```
 
-**Arity is part of the form, and the set of arities is closed (v1.31.0, #112).** A pattern
+**Arity is part of the form, and the set of arities is closed.** A pattern
 array **MUST** carry at least one operand and every element **MUST** be a non-empty string:
 `callers` and `targets` **MUST NOT** be empty, no element **MUST** be the empty string,
 `$or` at index 0 **MUST** be followed by at least one pattern, `$not` at index 0 **MUST**
@@ -4372,58 +4327,41 @@ with `ACLRuleError`, naming the field (`callers` / `targets`) and the rule index
 the entry point has one — a rule under construction has no position yet, and an
 implementation **MUST NOT** invent one (§6.1.5). It **MUST** be rejected at **every** entry
 point that accepts a rule — file loading, direct construction, and runtime insertion — on
-§6.1.6 rule 3's reasoning, which applies here unchanged. **Closing the doors is the
-mechanism**, exactly as it is for the `effect` value set: `schemas/acl-config.schema.json`
-has always declared `minItems: 1` on both fields and §6.1's field table has always required
-a list of patterns, and nothing enforced either, because no implementation validates an ACL
-file against the schema at load time.
+§6.1.6 rule 3's reasoning, which applies here unchanged. **Closing the entry points is the
+mechanism**, exactly as it is for the `effect` value set. `schemas/acl-config.schema.json`
+declares the same closure (`$defs/PatternArray`).
 
 !!! danger "A pattern array with no operands is not a narrow rule; it is no rule"
-    Through v1.30.0 all three implementations returned `false` from the matcher for `[]`,
-    `["$or"]` and `["$not"]`, reading an arity fault as a scope decision. The rule was
-    then inert: with one rule in the ACL, the decision tracked `default_effect` exactly
-    across all twelve combinations of the three shapes, both effects and both defaults,
-    and `validate_rules()` reported nothing in any of them. On an `allow` rule that is
+    Read as a scope decision, `[]`, `["$or"]` and `["$not"]` match nothing, so the rule is
+    inert and the decision tracks `default_effect` exactly. On an `allow` rule that is
     merely useless. On a `deny` rule under `default_effect: allow` it is a **fail-open**:
     the call the operator wrote the rule to block is permitted, by a rule that loaded
-    without error and a validator that called it clean.
+    without error. A YAML file reaches this shape — `ACL.load` rejects an **omitted**
+    `callers` / `targets` as a missing field, and it is this closure that rejects an
+    **empty** one.
 
-    Reached from a YAML file, not only from direct construction. `ACL.load` rejects an
-    **omitted** `callers` / `targets` and permits an **empty** one; combined with the
-    matcher, `targets: []` under `effect: deny` produced a rule that loads clean and does
-    nothing.
+    No single non-match can be called fail-closed: which direction "does not match" points
+    is decided by the rule's `effect` (§6.1.1).
 
-    This section's previous form called `["$not"]` "fail-closed". That is true of an
-    `allow` rule and false of a `deny` one, and the label predates §6.1.1 (v1.22.0)
-    naming the asymmetry: which direction "does not match" points is decided by the
-    rule's `effect`, so no single non-match can be called fail-closed. The **MUST** it
-    carried — "MUST evaluate to false" — is replaced rather than reinterpreted.
+**`$not` takes exactly one operand.** The only other available reading — consult `p1` and
+ignore the rest — makes the form silently **wider than written**:
+`targets: ["$not", "secrets.a", "secrets.b"]` on an `allow` rule would read as "anything
+but `secrets.a`", and `secrets.b` — the second target the operator excluded — would be
+**granted**. A future version **MAY** define the multi-operand form as
+`NOT (p1 OR p2 …)`, which is the reading an operator writing it already has; rejecting it
+now is what keeps that option open, because nothing can come to depend on another reading
+in the meantime.
 
-**`$not` takes exactly one operand.** Through v1.30.0 this section made
-`["$not", p1, p2, …]` *implementation-defined*: SDKs **MUST** consult `p1` and **MAY**
-ignore subsequent patterns, with authors told they **SHOULD NOT** rely on the form. All
-three implementations consult `p1` and drop the rest, so the form is consistent across
-implementations and consistently **wider than written**. `targets: ["$not", "secrets.a",
-"secrets.b"]` on an `allow` rule reads as "anything but `secrets.a`", and `secrets.b` — the
-second target the operator excluded — is **granted**; measured in apcore-python at 0.28.
-An under-specified form whose only observable behaviour is a silent privilege escalation is
-not a form, and `SHOULD NOT rely on this` is not a guard: nothing reported it and nothing
-rejected it. A future version **MAY** define the multi-operand form as `NOT (p1 OR p2 …)`,
-which is the reading an operator writing it already has; rejecting it now is what keeps
-that option open, because nothing can come to depend on the present reading in the
-meantime.
+**A well-formed array that can still match nothing is reported, not rejected.** Closing the
+arities above does not exhaust the shapes that make a rule inert, and an implementation
+**MUST NOT** read the closure as though it did. A pattern array that is well-formed under
+every rule above and that **matches no legal module ID for any input** is a rule that
+protects nothing, and `validate_rules()` (§6.1.2) **MUST** report it — with the same finding
+shape as a structural fault: path `callers` / `targets`, a **null** key, and both
+resolvability flags `false`. It **MUST NOT** be rejected and **MUST NOT** change any access
+decision.
 
-**A well-formed array that can still match nothing is reported, not rejected (v1.31.0,
-#112).** Closing the arities above does not exhaust the shapes that make a rule inert, and
-an implementation **MUST NOT** read the closure as though it did. A pattern array that is
-well-formed under every rule above and that **matches no legal module ID for any input** is
-a rule that protects nothing, and `validate_rules()` (§6.1.2) **MUST** report it — with the
-same finding shape as a structural fault: path `callers` / `targets`, a **null** key, and
-both resolvability flags `false`. It **MUST NOT** be rejected and **MUST NOT** change any
-access decision.
-
-The criterion is normative and the list is a **minimum**, not a closed set — the mistake
-§6.1.1 corrected in v1.25.0 was enumerating where it should have stated a principle. Every
+The criterion is normative and the list is a **minimum**, not a closed set. Every
 implementation **MUST** detect at least:
 
 - `["$not", p]` where `p` matches every module ID — `*`, `**`, or any pattern consisting
@@ -4443,19 +4381,21 @@ An implementation **MAY** report further shapes it can prove match nothing. Dive
 this finding set between implementations is **acceptable and expected**, and is the reason
 this is a validator finding rather than a rejection: §6.1.4's determinism guarantee binds
 precheck-origin diagnostics because they feed `handler_error` and the decision, and tier-2
-findings feed neither. A rejection whose predicate differed between SDKs would mean the same
-ACL file loads in one language and fails in another, which is the cross-language split
-§6.1.5 exists to prevent. §6.1.3's sentence governs: *this is diagnostics, not enforcement.*
+findings feed neither. A rejection whose predicate differed between implementations would
+mean the same ACL file loads in one language and fails in another, which is the
+cross-language split §6.1.5 exists to prevent. §6.1.3's sentence governs: *this is
+diagnostics, not enforcement.*
 
-**The backstop, for the route no door covers.** A value that arrives outside the entry
-points — assigning `callers` or `targets` on a rule that has *already been accepted through
-a door*: installed inside a live `ACL` and mutated afterward through an accessor the caller
-already holds a reference to — is outside what a rejection reaches, because no door runs
-again once that point is past. This is narrower than "any rule object currently holding a
-bad value": a rule mutated before it is *first* offered to a door — `ACL`'s own constructor
-included, since it accepts a list of rule objects exactly as `add_rule` accepts one — **MUST**
-still be rejected there like any other malformed rule reaching that door. Only a rule already
-past every door is left to this backstop. Unlike an unrecognised `effect`, which once the doors are closed is
+**The backstop, for the route no entry point covers.** A value that arrives outside the
+entry points — assigning `callers` or `targets` on a rule that has *already been accepted
+through an entry point*: installed inside a live `ACL` and mutated afterward through an
+accessor the caller already holds a reference to — is outside what a rejection reaches,
+because no entry point runs again once that point is past. This is narrower than "any rule
+object currently holding a bad value": a rule mutated before it is *first* offered to an
+entry point — `ACL`'s own constructor included, since it accepts a list of rule objects
+exactly as `add_rule` accepts one — **MUST** still be rejected there like any other
+malformed rule reaching that entry point. Only a rule already past every entry point is left
+to this backstop. Unlike an unrecognised `effect`, which once the entry points are closed is
 never read again, a mutated pattern array **is** read: the matcher consults it on the next
 `check()`. A pattern array that reaches evaluation violating any clause of the closure above
 is therefore a **precheck fault** under §6.1.4.1, on the same terms as a malformed type:
@@ -4469,24 +4409,19 @@ tier. In particular §6.1.1 rule 5's "unknowable scope counts as scope" applies 
 a rule carrying `approval: required` whose pattern field is malformed **MUST** raise the
 pending requirement. `targets: []` is legible as an empty scope in a way `targets: 3` is
 not, and an implementation **MUST NOT** act on that difference — deciding per fault kind
-whether a field is "readable enough" is the per-implementation judgement call that
-produced three different answers in #100, and the direction it would resolve is toward
-asking a human less often.
+whether a field is "readable enough" is a per-implementation judgement call, and the
+direction it would resolve is toward asking a human less often.
 
-**Two points of order, so three implementations cannot answer them three ways (v1.31.0, #112).**
+**Two points of order.**
 
-1. **`add_rule` re-validates the rule it is handed.** A rule offered to runtime insertion **MUST** be validated at that moment, whatever its history — including a rule that was well-formed when constructed and has since had `callers` or `targets` assigned. An implementation **MUST NOT** rely on the rule type's own construction-time check to cover this door. §6.1.5's v1.30.0 text leaves mutation-then-use to a **MAY** for `effect`, which is sound there because a closed `effect` is never read again; a pattern array **is** read, by the matcher, on the next `check()`. Measured while implementing this: two of three implementations re-validated and one did not, and §8's fixture cannot express the difference, because `entry_points` deliberately carries no per-door expectation.
-2. **Validation order is `effect` -> `approval` -> `callers` / `targets`, and rule index dominates all three.** A rule that is bad on more than one axis **MUST** be refused for the first axis it fails, and a rule set with more than one bad rule **MUST** be refused for the **lowest-indexed** bad rule — an implementation **MUST NOT** sweep one axis across every rule before looking at the next axis. **"Axis" here means every per-rule check the door performs, not only the three named above.** A loader has others that the other doors cannot have — the rule key set (§6.1.5), a missing `callers` / `targets`, the value types — and each is an axis for this purpose. Measured: one implementation's loader swept the rule-key closure across the whole file before any rule's `effect` was read, so a file carrying `effect: "Allow"` on rule 0 and an unknown key on rule 1 was refused for **rule 1**. Both halves are required for the same reason: so one file produces one error, whichever door it arrives through and whichever implementation reads it.
+1. **`add_rule` re-validates the rule it is handed.** A rule offered to runtime insertion **MUST** be validated at that moment, whatever its history — including a rule that was well-formed when constructed and has since had `callers` or `targets` assigned. An implementation **MUST NOT** rely on the rule type's own construction-time check to cover this entry point. §6.1.5 leaves mutation-then-use of `effect` to a **MAY**, which is sound there because a closed `effect` is never read again; a pattern array **is** read, by the matcher, on the next `check()`.
+2. **Validation order is `effect` → `approval` → `callers` / `targets`, and rule index dominates all three.** A rule that is bad on more than one axis **MUST** be refused for the first axis it fails, and a rule set with more than one bad rule **MUST** be refused for the **lowest-indexed** bad rule — an implementation **MUST NOT** sweep one axis across every rule before looking at the next axis. **"Axis" here means every per-rule check the entry point performs, not only the three named above.** A loader has others that the other entry points cannot have — the rule key set (§6.1.5), a missing `callers` / `targets`, the value types — and each is an axis for this purpose: a file carrying `effect: "Allow"` on rule 0 and an unknown key on rule 1 is refused for rule 0. Both halves are required for the same reason: so one file produces one error, whichever entry point it arrives through and whichever implementation reads it.
 
-    The pattern fields are **one axis**, covering §6.1.4.1's type fault and this section's shape closure together, and `callers` precedes `targets` throughout. Within the axis the type fault comes first — a value must be a list of strings before its arity means anything — **wherever both can surface**, which is a loader (it rejects both) and the precheck (it reports both). A door that accepts an already-built rule object rejects the shape fault and leaves the type fault to §6.1.4.1's precheck; that asymmetry is deliberate and unchanged, and is why this sentence is scoped rather than absolute.
+    The pattern fields are **one axis**, covering §6.1.4.1's type fault and this section's shape closure together, and `callers` precedes `targets` throughout. Within the axis the type fault comes first — a value must be a list of strings before its arity means anything — **wherever both can surface**, which is a loader (it rejects both) and the precheck (it reports both). An entry point that accepts an already-built rule object rejects the shape fault and leaves the type fault to §6.1.4.1's precheck; that asymmetry is deliberate, and is why this sentence is scoped rather than absolute.
 
-    This ordering is stated here for the first time. §6.1.6 rule 2 *implies* that `effect` is read before `approval`, since judging "`deny` plus `approval: required`" requires knowing the effect, but it states no order and an implementer reading §6.1.6 alone will not find one.
+    **`default_effect` is judged before any rule.** It is not a rule and has no index, so the ordering above does not reach it — yet a file wrong in both `default_effect` and a rule is precisely the "one file, one error" case this paragraph exists for, and would otherwise name the rule at one entry point and `default_effect` at another. It **MUST** be validated first, at every entry point that accepts one — **first meaning ahead of the file-level checks on the `rules` collection itself**, not merely ahead of the individual rules. A document that is both missing `rules` and carrying an unrecognised `default_effect` is refused for the `default_effect`. That boundary is stated because it is the one place "first" is genuinely ambiguous; a doubly malformed document is refused either way, and only the message differs, which is exactly what this paragraph makes deterministic.
 
-    **`default_effect` is judged before any rule.** It is not a rule and has no index, so the ordering above does not reach it — yet a file wrong in both `default_effect` and a rule is precisely the "one file, one error" case this paragraph exists for, and would otherwise name the rule at one door and `default_effect` at another. It **MUST** be validated first, at every door that accepts one — **first meaning ahead of the file-level checks on the `rules` collection itself**, not merely ahead of the individual rules. A document that is both missing `rules` and carrying an unrecognised `default_effect` is refused for the `default_effect`. That boundary is stated because it is the one place "first" is genuinely ambiguous, and a doubly malformed document is refused either way — only the message differs, which is exactly what this paragraph exists to make deterministic.
-
-    Measured while implementing this, on rules that differ only in which axis is bad: `{callers: [], targets: [], effect: "Allow"}` was refused for its `effect` in one implementation and for its patterns in another; a third ran `effect` -> patterns -> `approval`; and within one implementation `ACL.load` reported the lower-indexed rule's pattern fault while direct construction reported a higher-indexed rule's `effect` fault, because one validated rule by rule and the other swept axis by axis. Every one of those was conformant before this paragraph.
-
-**Reporting order is unchanged, and is not the same question.** `validate_rules()` (§6.1.2 rule 3) still orders findings by rule index, then **lexicographically by path**, so a pattern fault **interleaves** with condition faults - `$or[0].k` before `callers` before `roles` before `targets` - rather than being grouped ahead of them. Point 2 above governs which single refusal a *rejecting* entry point raises; it does not regroup what a *reporting* validator returns.
+**Reporting order is a separate question.** `validate_rules()` (§6.1.2 rule 3) orders findings by rule index, then **lexicographically by path**, so a pattern fault **interleaves** with condition faults — `$or[0].k` before `callers` before `roles` before `targets` — rather than being grouped ahead of them. Point 2 above governs which single refusal a *rejecting* entry point raises; it does not regroup what a *reporting* validator returns.
 
 **At most one finding per field, and the closure wins.** A field that fails the closure above is reported for that failure and **MUST NOT** also be reported as never-matching: the never-matching criterion presumes a well-formed array, so evaluating it against a malformed one is meaningless. Without this, implementations agree on every decision and disagree on finding *counts*.
 
@@ -4506,8 +4441,8 @@ specification defines (A25, §9.2.3) — and got a rule that is silently inert.
 3. The pattern's **meaning is unchanged**: `?` stays a literal and the rule keeps matching
    nothing. This clause adds a diagnostic and changes no decision — deliberately, because
    the alternative (promoting `?` to a wildcard in A08) would widen `allow` rules that are
-   inert in every deployed policy today, which is the one direction a change to an
-   authorization matcher must not take without an operator's consent.
+   otherwise inert, and a change to an authorization matcher does not widen access without
+   an operator's consent.
 
 This is the same shape as §6.1.2's unregistered-condition-key rule: a policy statement
 that cannot do what its author intended is a deploy-time finding, never a silent one, and
@@ -4521,7 +4456,7 @@ Implementations **MUST** evaluate ACL rules using a **first-match-wins** strateg
 - **Wire Format (JSON)**: All data transfer structures (e.g., Audit Logs, Context sync) **MUST** use `snake_case` (e.g., `caller_id`, `target_id`).
 - **SDK Surface**: Implementations **SHOULD** use idiomatic naming (e.g., `callerId` in TypeScript, `caller_id` in Python).
 
-```
+```text
 Algorithm: evaluate_acl(caller, target, rules, default_effect, context)
 
 Input:
@@ -4580,7 +4515,7 @@ Every `check()` **MUST** emit exactly one audit entry through the configured aud
 | `call_depth` | `integer \| null` | Length of `context.call_chain`, when present |
 | `trace_id` | `string \| null` | Trace ID from the context, when present |
 | `handler_error` | `string \| null` | Non-null **if and only if** a condition was unevaluable (§6.1.1). **MUST** name the condition key and the reason. |
-| `approval_required` | `boolean` | Whether the matched rule required this call to be put to a human (§6.1.6). `false` when no rule matched or the matched rule required none. **Added** beside `decision` rather than widening it — `decision` is a string downstream consumers parse, and a third value would break every existing parser. |
+| `approval_required` | `boolean` | Whether the matched rule required this call to be put to a human (§6.1.6). `false` when no rule matched or the matched rule required none. Carried beside `decision` rather than as a third `decision` value, because `decision` is a string downstream consumers parse (§6.9 row 7). |
 
 `handler_error` is what makes §6.1.1's two outcomes distinguishable after the fact: a rule that did not match because a handler said "no" leaves it null; a rule that did not match — or that denied — because no answer was obtainable leaves it set. An implementation **MUST NOT** set it for an ordinary `UNSATISFIED` condition.
 
@@ -4591,17 +4526,14 @@ Two scoping notes, because the "if and only if" above binds to *conditions*, not
 
 #### 6.3.2 Audit Delivery (`audit:` in the ACL file)
 
-§6.3.1 specifies the **record**. This section specifies **delivery**, which until
-v1.45.0 had no contract at all: `ACL(audit_logger=…)` was the whole surface, there was
-no default sink, no statement of what happens when delivery fails, and no semantics for
-the `audit:` block's three settings — which were declared in **two** places
-(`schemas/acl-config.schema.json` and `acl.audit.*` in `apcore.yaml`) and read in
-neither (#118, decision D-66).
+§6.3.1 specifies the **record**. This section specifies **delivery**: which sink receives
+the record, what the ACL file's `audit:` block configures, and what happens when delivery
+fails (D-66).
 
-**The ACL file's `audit:` block is the one configuration home.** `acl.audit.*` stays
+**The ACL file's `audit:` block is the one configuration home.** `acl.audit.*` is
 deprecated under §9.2.4 and is removed at v2.0; its notice names this block as the
 migration target. Auditing is configured beside the rules it audits, and the ACL loader
-is already the only code that parses the document the block lives in.
+is the only code that parses the document the block lives in.
 
 **Requirements:**
 
@@ -4625,22 +4557,20 @@ is already the only code that parses the document the block lives in.
    field that does not apply, not only the most visible one.
 
 2. **Declaration activates the default sink, not the default value.** `enabled`
-   defaults to `true`, so a merged-view reading would switch a log record per ACL check
-   on for every ACL file in existence — a behaviour change measured in volume, on
-   projects that asked for nothing. The default sink is active **only when the document
-   declares an `audit:` block**, exactly as §9.2.4's notice is driven by the declared
-   document and never by the merged view. An ACL file with no `audit:` block **MUST**
-   behave as it does today: no audit output unless a callback is supplied.
+   defaults to `true`, so a merged-view reading would switch on a log record per ACL
+   check for every ACL file, on projects that asked for none. The default sink is active
+   **only when the document declares an `audit:` block**, exactly as §9.2.4's notice is
+   driven by the declared document and never by the merged view. An ACL file with no
+   `audit:` block **MUST** produce no audit output unless a callback is supplied.
 
    The default sink emits one record per decision, through the implementation's own
    logging facility, at `log_level`, under the stable event name **`apcore.acl.audit`**
-   (§10.3's table). The record **MUST** carry all thirteen §6.3.1 fields as
+   (§9.16.2's table). The record **MUST** carry all thirteen §6.3.1 fields as
    **structured data under their `snake_case` wire names**, not as an interpolated
-   message string. Without that, three implementations produce three different
-   "structured records" from one specification — a Python `logging` call, a TypeScript
-   `console` line and a Rust `tracing` event — and nothing downstream can consume all
-   three. How the host renders the structured record is the host's business; which
-   fields exist under which names is not.
+   message string. Without that, each language's logging facility produces a different
+   "structured record" from one specification, and nothing downstream can consume all of
+   them. How the host renders the structured record is the host's business; which fields
+   exist under which names is not.
 
 3. **Delivery MUST NOT change the access decision.** For every **recoverable** delivery
    failure, an implementation **MUST** return the `AccessDecision` it computed. A fatal
@@ -4648,11 +4578,8 @@ is already the only code that parses the document the block lives in.
    `Fn(&AuditEntry)` with no error channel, so only an unwinding panic can be contained
    and a build with `panic = "abort"` cannot be.
 
-   This is the one behaviour change in this section, and it is a fix rather than a
-   feature. Measured before v1.45.0: a raising `audit_logger` propagated out of
-   `check()` and turned an **allowed** call into an error, in all three SDKs. Auditing
-   is a side channel and **MUST NOT** hold a veto over access, which §10.3 has always
-   required of the governance events beside it.
+   Auditing is a side channel and **MUST NOT** hold a veto over access, as is already
+   required of the governance events beside it (§9.16.2).
 
 4. **The callback MUST be synchronous.** An `async` callback returns a coroutine or an
    unawaited `Promise`, so its failure surfaces after the decision has already been
@@ -4676,22 +4603,21 @@ is already the only code that parses the document the block lives in.
 7. **Reload refreshes the block and preserves the callback.** `reload()` re-reads the
    ACL file and **MUST** apply the new `audit:` configuration to the default sink. It
    **MUST NOT** replace or remove a programmatic callback, which was never read from the
-   file. Before v1.45.0 `reload()` refreshed only the rules and the default effect, so a
-   changed `audit:` block was the one part of the document a reload did not pick up.
+   file.
 
 8. **The block is validated, and nothing else about the file becomes stricter.** The
    `audit:` subtree **MUST** be validated against `$defs/AuditConfig` in
    `schemas/acl-config.schema.json` — types and unknown keys inside the block — and a
    violation is a load-time `CONFIG_INVALID`. Every **other** unrecognised root key in
-   an ACL file **MUST** keep being ignored exactly as before. This section wires one
-   block; it is not unknown-key closure for ACL files, for the same reason §9.2.4.1's
-   notice was scoped to `audit` alone.
+   an ACL file **MUST** keep being ignored. This section wires one block; it is not
+   unknown-key closure for ACL files, for the same reason §9.2.4.1's notice is scoped to
+   `audit` alone.
 
 ### 6.4 Pattern Specificity Scoring
 
 When further distinguishing rules within same priority is needed, implementations **SHOULD** calculate pattern specificity score:
 
-```
+```text
 Algorithm: calculate_specificity(pattern)
 
 Input:
@@ -4775,7 +4701,7 @@ Adapters **SHOULD NOT** invent their own classification mechanisms (such as rese
 
 System module access is governed by three independent layers. Each layer operates regardless of the others — and each is **inactive by absence**: a layer that was never configured does not fail closed, it does not run. Nothing in this section is a default-deny. That is deliberate, and stating it is the point of §6.6.3.1.
 
-```
+```text
 Layer 1: Activation (Config) — two stages, not one
   sys_modules.enabled = false (default)
     → 0 modules registered. Nothing to call, nothing to list.
@@ -4816,7 +4742,7 @@ Adapters and UI layers **SHOULD NOT** introduce additional independent permissio
 
 Layers 2 and 3 are pipeline **steps** — `acl_check` and `approval_gate` (§12.3). An `ExecutionStrategy` that does not contain the step does not run the layer, **even when the ACL object or the `ApprovalHandler` is attached to the executor**.
 
-This is not a hypothetical about exotic custom strategies. Three of the four presets this specification defines remove one or both:
+Three of the four presets this specification defines remove one or both:
 
 | Preset | `acl_check` | `approval_gate` |
 |---|---|---|
@@ -4841,15 +4767,13 @@ This "backend-driven visibility" approach ensures the UI always matches the actu
 
 #### 6.6.5 Governance State Query
 
-> **Added in v1.15.0.** Governance: [apcore#97](https://github.com/aiperceivable/apcore/issues/97).
-
 §6.6.3.2 establishes that *configured* and *enforced* are independent. This section defines the read-only accessor that lets a consumer observe both without guessing, and without each adapter re-deriving it from whatever the executor happens to expose.
 
 Implementations **MUST** expose a public, read-only accessor returning the governance state of an executor.
 
 **Canonical signature (pseudocode):**
 
-```
+```text
 executor.governance_state()
 → GovernanceState    # a value object of booleans; MUST NOT expose the ACL or handler itself
 ```
@@ -4874,7 +4798,7 @@ Eight observations, each a plain fact about the executor's current state, plus o
 
 `unprotected_control_surface` **MUST** be computed exactly as:
 
-```
+```text
 unprotected_control_surface =
       control_modules_registered
    && !(acl_configured && builtin_acl_gate_wired)
@@ -4894,26 +4818,24 @@ The read modules are reported separately for the reason given in §6.6.3: six re
 
 ###### 6.6.5.1.1 Why the two gates are not symmetric
 
-> **Corrected in v1.16.0.** The formula published in v1.15.0 omitted `all_control_modules_require_approval` and was unsound for that reason. See §14.
-
 The ACL gate and the approval gate look parallel and are not:
 
 - **`acl_check` is unconditional.** When the step is present and an ACL is attached, *every* call through the pipeline is evaluated against the rules. "Configured and wired" therefore does mean "this gate stands in front of `system.control.*`".
 - **`approval_gate` is per-module conditional.** The step resolves whether *this module* needs approval — from `annotations.requires_approval`, or from an `ExecutionPolicy` that forces it — and when it does not, the step returns immediately. The handler is never consulted and `strict` never fires.
 
-So a wired approval gate with a handler attached, or with `strict = true`, gates nothing at all for a control module that does not declare `requires_approval`. And §6.7 cross-cutting requirement 3 states that requirement as a **SHOULD**, not a MUST, while §6.6.5.1 already notes that control modules can reach the registry through internal or manual registration. A conformant deployment with ungated `system.control.*` modules is therefore ordinary, not exotic.
+So a wired approval gate with a handler attached, or with `strict = true`, gates nothing at all for a control module that does not declare `requires_approval`. And §6.7 cross-cutting requirement 3 states that requirement as a **SHOULD**, not a MUST, while §6.6.5.1 notes that control modules can reach the registry through internal or manual registration. A conformant deployment with ungated `system.control.*` modules is therefore ordinary, not exotic.
 
-Treating "wired + (handler | strict)" as sufficient made the flag report a gate that is not there — a false `false` — which is the one direction §6.6.5.2 forbids.
+Treating "wired + (handler | strict)" as sufficient would make the flag report a gate that is not there — a false `false` — which is the direction §6.6.5.2 forbids.
 
-**What this observation deliberately does not cover.** An `ExecutionPolicy` may force approval on a module that does not declare it (a policy rule, or `gate_destructive`). Resolving that per module would require the accessor to evaluate policy, which emits audit events in the running implementations and would break the pure-read requirement of §6.6.5.3. `all_control_modules_require_approval` therefore reads the annotation only, and a policy-forced gate is invisible here — failing in the conservative direction: the flag reports `true` (no recognised gate) where a policy may in fact gate. That is the same "invisible by construction" caveat the flag already carries for custom middleware and upstream gateways, and it is stated for the same reason.
+**What this observation deliberately does not cover.** An `ExecutionPolicy` may force approval on a module that does not declare it (a policy rule, or `gate_destructive`). Resolving that per module would require the accessor to evaluate policy, which emits audit events and would break the pure-read requirement of §6.6.5.3. `all_control_modules_require_approval` therefore reads the annotation only, and a policy-forced gate is invisible here — failing in the conservative direction: the flag reports `true` (no recognised gate) where a policy may in fact gate. That is the same "invisible by construction" caveat the flag already carries for custom middleware and upstream gateways, and it is stated for the same reason.
 
 ##### 6.6.5.2 Gate detection MUST be by type, not by name
 
-`StrategyInfo` (design-execution-pipeline §2.6) carries `name`, `step_count`, `step_names` and `description` — names only. A custom step named `acl_check` that never consults an ACL satisfies a name test.
+`StrategyInfo` (see [Execution Pipeline](../features/execution-pipeline.md)) carries `name`, `step_count`, `step_names` and `description` — names only. A custom step named `acl_check` that never consults an ACL satisfies a name test.
 
-The `*_gate_wired` fields **MUST** therefore be determined by the step's type or an explicit capability marker, matching the test the executor already performs when it wires a gate: attaching an ACL locates the step by *both* its name and its built-in type before injecting, and warns when no such step exists.
+The `*_gate_wired` fields **MUST** therefore be determined by the step's type or an explicit capability marker, matching the test the executor performs when it wires a gate: attaching an ACL locates the step by *both* its name and its built-in type before injecting, and warns when no such step exists.
 
-The direction of failure is the reason this is a MUST. A name test on a look-alike step produces `builtin_acl_gate_wired = true`, hence `unprotected_control_surface = false` — the accessor reporting a gate that is not there. That is the one direction this flag must never fail in; a false `true` on the derived flag is merely conservative.
+The direction of failure is the reason this is a MUST. A name test on a look-alike step produces `builtin_acl_gate_wired = true`, hence `unprotected_control_surface = false` — the accessor reporting a gate that is not there. A false `true` on the derived flag is merely conservative; a false `false` is not.
 
 This is also why the accessor belongs on `Executor`, where the step objects are reachable, and **MUST NOT** be derived by adapters from `describe_pipeline()` or `list_strategies()` output. Extending `StrategyInfo` with a capability marker is a conforming alternative implementation, but it is a public-API change and is not required here.
 
@@ -4921,12 +4843,12 @@ This is also why the accessor belongs on `Executor`, where the step objects are 
 
 1. **Pure read.** `governance_state()` **MUST NOT** enforce, warn, throw, or mutate any executor state. What to do about an unprotected control surface belongs to the caller — a serve-time adapter may warn or refuse, a test may assert, a health endpoint may report. Putting the reaction inside the accessor makes it unavoidable and untestable.
 2. **Booleans only.** The returned value **MUST NOT** contain the ACL object, the `ApprovalHandler`, the `ExecutionPolicy`, or any rule content. An SDK that already exposes those (for example as public struct fields) **MAY** keep doing so; this accessor answers a different question and does not replace them.
-3. **No default changes.** Adding this accessor changes no behaviour. In particular the two invariants of §6.6.3.1 stand: a missing `acl/` path still attaches nothing, and a missing `ApprovalHandler` still warns and continues under a non-strict policy.
+3. **No default changes.** The accessor changes no behaviour. In particular the two invariants of §6.6.3.1 stand: a missing `acl/` path still attaches nothing, and a missing `ApprovalHandler` still warns and continues under a non-strict policy.
 4. **Live, not cached.** The returned value **MUST** reflect the executor's state at the moment of the call. Swapping the strategy, attaching an ACL, or registering a control module after a previous call **MUST** be visible in the next one.
 
 ##### 6.6.5.4 Conformance
 
-Pinned by `../../conformance/fixtures/governance_state.json`, driven by all three SDKs. Every field, the derived flag included, **MUST** be identical across the three SDKs for every case, and the coverage **MUST** include at minimum:
+Pinned by `../../conformance/fixtures/governance_state.json`. Every field, the derived flag included, **MUST** be identical across implementations for every case, and the coverage **MUST** include at minimum:
 
 - no system modules registered;
 - read modules only;
@@ -4945,7 +4867,7 @@ The last case is the one that decides whether an implementation satisfies §6.6.
 
 ### 6.7 Canonical System Module Catalogue
 
-This section documents the canonical `system.*` module catalogue. Conformant SDKs at the indicated level **MUST** ship modules with these exact Canonical IDs, equivalent semantics, and equivalent input/output schemas (verified by `../../conformance/fixtures/system_modules_hardening.json`). This catalogue is the contract surface. Where this repository ships a canonical schema for a module, **that schema is the source of truth** and the SDK source MUST match it — `system.health.*`, `system.manifest.*`, `system.control.*` and, as of §6.7.1, `system.usage.*` are all covered by files in `../../schemas/`. For anything not yet covered, the SDK reference sources remain the description of record (`apcore-python/src/apcore/sys_modules/`, `apcore-typescript/src/sys_modules/`, `apcore-rust/src/sys_modules/`); §6.7.1 exists because that arrangement let three implementations diverge unnoticed.
+This section documents the canonical `system.*` module catalogue. Conformant SDKs at the indicated level **MUST** ship modules with these exact Canonical IDs, equivalent semantics, and equivalent input/output schemas (verified by `../../conformance/fixtures/system_modules_hardening.json`). This catalogue is the contract surface. Where this repository ships a canonical schema for a module, **that schema is the source of truth** and the SDK source MUST match it; every module in the catalogue is covered by a file in `../../schemas/` (`sys-health-*`, `sys-manifest-*`, `sys-usage-*`, `sys-control-*`).
 
 | Canonical ID | Layer | Read/Write | Required at | Description |
 |---|---|---|---|---|
@@ -4964,17 +4886,15 @@ This section documents the canonical `system.*` module catalogue. Conformant SDK
 1. **Registration MUST use `register_internal()`** (or equivalent privileged API) per §6.6.1 — the public `register()` MUST reject any `module_id` starting with `system.`.
 2. **Read modules** (`system.health.*`, `system.usage.*`, `system.manifest.*`) **MUST NOT** mutate framework state. Calling them with any inputs MUST be safe to repeat.
 3. **Write modules** (`system.control.*`) **MUST** emit audit events through the framework `EventEmitter` and **SHOULD** declare `annotations.requires_approval = true` to surface the Approval Gate (§7) for destructive operations.
-4. **`system.control.reload_module`** input **MUST** accept exactly one of `module_id` (exact match) or `path_filter`; supplying both or neither MUST raise a validation error. `path_filter` is a **glob-dialect pattern matched with A25** (§9.2.3) against each registered module ID. Naming the algorithm here is load-bearing: while this clause said only "glob", the three implementations matched it with `fnmatch`, with A08, and with the `glob` crate respectively, so one control-plane request reloaded two modules, reloaded none, or was refused as a malformed pattern depending on which SDK served it.
+4. **`system.control.reload_module`** input **MUST** accept exactly one of `module_id` (exact match) or `path_filter`; supplying both or neither MUST raise a validation error. `path_filter` is a **glob-dialect pattern matched with A25** (§9.2.3) against each registered module ID. Naming the algorithm is what makes one control-plane request reload the same set of modules in every implementation; "glob" alone names no dialect.
 5. **`system.control.update_config`** **MUST** redact sensitive keys (per §10.6.1 `obs.redaction.sensitive_keys`) in both `old_value` and `new_value` fields of its output and audit event.
 6. **`system.control.toggle_feature`** state **MUST** persist via the configured `OverridesStore` so toggle state survives process restart; without persistence, toggle decisions revert to the registered defaults on reload.
 
-**Conformance note:** SDKs declaring Level 1 conformance (§ ./conformance.md §3) MUST register the 6 read modules. SDKs declaring Level 2 MUST additionally register the 3 control modules. Implementations MAY register additional modules under `system.<vendor>.*` namespaces — these are NOT covered by this canonical catalogue and MUST NOT collide with the names above.
+**Conformance note:** SDKs declaring Level 1 conformance ([Conformance](./conformance.md) §3) MUST register the 6 read modules. SDKs declaring Level 2 MUST additionally register the 3 control modules. Implementations MAY register additional modules under `system.<vendor>.*` namespaces — these are NOT covered by this canonical catalogue and MUST NOT collide with the names above.
 
 #### 6.7.1 Usage Module Output Contract
 
-> **Added in v1.14.0.** Governance: [apcore#96](https://github.com/aiperceivable/apcore/issues/96).
-
-§6.7 requires `system.usage.summary` and `system.usage.module` to ship with "equivalent input/output schemas" and defers the field contract to each SDK's source. That deferral is why three implementations of it diverged in five ways without any of them becoming non-conformant: the catalogue named the modules, and nothing said what their fields mean. This section states the parts an SDK cannot infer, and `../../schemas/sys-usage-summary.schema.json` and `../../schemas/sys-usage-module.schema.json` are the canonical shape.
+§6.7 requires `system.usage.summary` and `system.usage.module` to ship with "equivalent input/output schemas". This section states the parts of that contract an SDK cannot infer, and `../../schemas/sys-usage-summary.schema.json` and `../../schemas/sys-usage-module.schema.json` are the canonical shape.
 
 Two of the requirements below are **value** semantics that no JSON Schema can assert — a wrong `p99_latency_ms` and a full-history `call_count` are both a `number` in the right place. Those are pinned by fixture (§6.7.1.6), not by schema.
 
@@ -4993,7 +4913,7 @@ The leading `[1-9]` is normative: `"0h"` is **MUST**-reject. A zero-width window
 | `system.usage.summary` | `total_calls`, `total_errors`, and every entry of `modules[]` — `call_count`, `error_count`, `avg_latency_ms`, `unique_callers`, `trend` |
 | `system.usage.module` | `call_count`, `error_count`, `avg_latency_ms`, `p99_latency_ms`, `trend`, every entry of `callers[]`, and `hourly_distribution` |
 
-An implementation **MUST NOT** echo `period` in its output while computing any statistic over the full retained history. That failure mode is silent by construction — the response names the window it did not apply — and it is the shape all three SDKs must be checked against rather than assumed clear of.
+An implementation **MUST NOT** echo `period` in its output while computing any statistic over the full retained history. That failure mode is silent by construction — the response names the window it did not apply.
 
 `trend` compares the requested window against the immediately preceding window of equal length (`[now − 2·period, now − period]`), per §6.7.1.5.
 
@@ -5001,7 +4921,7 @@ An implementation **MUST NOT** echo `period` in its output while computing any s
 
 Emitted by `system.usage.module` only.
 
-1. **Key format.** `hour` **MUST** be the UTC hourly bucket key `YYYY-MM-DDTHH` — e.g. `2026-03-08T14`. This is the key `UsageCollector` already produces in all three SDKs; a module layer that reformats it (to `2026-03-08T14:00:00Z`, or to anything else) **MUST NOT** do so. One serialization, one place.
+1. **Key format.** `hour` **MUST** be the UTC hourly bucket key `YYYY-MM-DDTHH` — e.g. `2026-03-08T14`. This is the key `UsageCollector` produces; a module layer that reformats it (to `2026-03-08T14:00:00Z`, or to anything else) **MUST NOT** do so. One serialization, one place.
 2. **Cardinality.** The array **MUST** contain exactly 24 entries, covering the 24 hourly buckets ending at the current hour (`now − 23h .. now`). Gaps **MUST** be zero-filled (`call_count: 0`, `error_count: 0`) rather than omitted, so a consumer can index the array positionally without reconciling missing keys.
 3. **Order.** Entries **MUST** be sorted ascending by `hour`.
 4. **Relationship to `period`.** The 24-entry window is fixed and is **not** widened or narrowed by `period`; only the counts inside each bucket are filtered by it. A `period` shorter than 24h therefore yields leading zero buckets, and a longer one does not add entries. This is stated because it is the one place where "every statistic honours `period`" (§6.7.1.1) would otherwise read as licence to change the array length.
@@ -5010,7 +4930,7 @@ Emitted by `system.usage.module` only.
 
 `p99_latency_ms` **MUST** be the **nearest-rank** 99th percentile of the latency samples in the window, computed as:
 
-```
+```text
 Algorithm: p99(latencies)
 
 Input:  latencies — list of latency samples in ms, in any order
@@ -5052,13 +4972,11 @@ The thresholds are normative so that the same traffic does not read as `rising` 
 
 ##### 6.7.1.6 `output_schema` and conformance
 
-1. Both modules' `output_schema()` **MUST** declare the full field contract — `type`, `properties` and `required` — matching the canonical schemas. A bare `{"type": "object"}` is **MUST**-reject: it satisfies §6.7's "equivalent output schemas" only in the sense that any two such declarations are equivalent to each other, which is precisely the divergence this section closes.
+1. Both modules' `output_schema()` **MUST** declare the full field contract — `type`, `properties` and `required` — matching the canonical schemas. A bare `{"type": "object"}` is **MUST**-reject: it satisfies §6.7's "equivalent output schemas" only in the sense that any two such declarations are equivalent to each other.
 2. Output from every conformant SDK **MUST** validate against `sys-usage-summary.schema.json` / `sys-usage-module.schema.json`. Both declare `additionalProperties: false`: a field one SDK emits and the others do not is a parity gap, and failing loudly is the intended behaviour.
-3. **Schemas cannot assert §6.7.1.1 or §6.7.1.3.** A full-history `call_count` and an off-by-one `p99_latency_ms` are both well-typed values in the right field. Those two, and only those two, are pinned by `../../conformance/fixtures/usage_contract.json` with fixed inputs and expected outputs, driven by all three SDKs.
+3. **Schemas cannot assert §6.7.1.1 or §6.7.1.3.** A full-history `call_count` and an off-by-one `p99_latency_ms` are both well-typed values in the right field. Those two, and only those two, are pinned by `../../conformance/fixtures/usage_contract.json` with fixed inputs and expected outputs.
 
-### 6.8 ACL Introspection (v1.23.0, #101)
-
-> Placed at §6.8 rather than beside §6.1 because §6.2–§6.7 anchors are linked from outside this repository and **MUST NOT** be renumbered.
+### 6.8 ACL Introspection {#68-acl-introspection-v1230-101}
 
 An ACL enforces two things: an ordered rule list and a `default_effect`. Both are decisions an operator made, and both **MUST** be readable back from the loaded object.
 
@@ -5071,37 +4989,38 @@ An ACL enforces two things: an ordered rule list and a `default_effect`. Both ar
 2. Both **MUST** be pure reads: they **MUST NOT** emit an audit event and **MUST NOT** mutate state.
 3. Both **MUST** return without leaving the caller holding a lock. An accessor **MAY** acquire the ACL's lock internally, take its copy, and release it before returning — that is the intended implementation, not a violation. What is forbidden is handing the caller a guard, a borrow, or any value whose validity depends on a lock the caller must later release; a caller **MUST** be able to invoke either accessor from inside an audit logger or a condition handler without deadlocking.
 4. `rules` **MUST NOT** hand out a reference through which the caller can mutate the ACL's own list. Return an immutable view or a copy, taken under the same snapshot discipline `check()` uses (§6.3) — which is rule 3's brief internal acquisition, not a held lock.
-4. After `reload()`, both accessors **MUST** reflect the reloaded file. They read the live object, never a cached parse.
+5. After `reload()`, both accessors **MUST** reflect the reloaded file. They read the live object, never a cached parse.
 
-**Why this is normative rather than left to each SDK.** Without it, tooling that reports or audits the enforced policy — an admin surface, a preflight report, a linter for the rules §6.1.2 flags — must re-read and re-parse the ACL file to recover a value the loaded object already holds. That second copy can drift from the object across `reload()`, and where the field is `private` or non-`pub`, re-parsing is not merely wasteful but the only option available.
-#### 6.8.1 `AccessDecision` — the structured result (v1.28.0, #108)
+**Rationale.** Tooling that reports or audits the enforced policy — an admin surface, a preflight report, a linter for the rules §6.1.2 flags — would otherwise have to re-read and re-parse the ACL file to recover a value the loaded object already holds. That second copy can drift from the object across `reload()`, and where the field is `private` or non-`pub`, re-parsing is not merely wasteful but the only option available.
+
+#### 6.8.1 `AccessDecision` — the structured result {#681-accessdecision-the-structured-result-v1280-108}
 
 `check()` returns a boolean, which can carry authorization but not the second axis of §6.1.6. Implementations **MUST** provide a structured accessor alongside it, sync and async:
 
 | Member | Meaning |
 |---|---|
-| `access` | `allow` / `deny` — unchanged semantics from today's boolean |
+| `access` | `allow` / `deny` — the authorization decision alone (§6.3) |
 | `approval_required` | whether **this call** must be put to a human before it runs |
-| `matched_rule_index` | existing diagnostic, unchanged |
-| `reason` | existing diagnostic, unchanged |
+| `matched_rule_index` | index of the rule that decided access, as in §6.3.1 |
+| `reason` | which branch of §6.3 produced the decision, as in §6.3.1 |
 
-The noun is fixed across SDKs; the shape is idiomatic per [API Surface & Naming Conventions §4](./api-surface-conventions.md). The existing boolean entry points are **kept**.
+The noun is fixed across SDKs; the shape is idiomatic per [API Surface & Naming Conventions §4](./api-surface-conventions.md). The boolean entry points remain alongside it.
 
-**The legacy boolean MUST fail closed on an approval requirement.** A decision resolving to `allow` with `approval_required: true` **MUST** make `check()` return `false`. This is a property of the **decision**, not of the matched rule: since v1.29.0 the requirement may be a pending one raised by an unevaluable rule that did not itself match, or carried through `default_effect: allow` (§6.1.1 rule 5), and the boolean **MUST** fail closed on those identically.
+**The boolean MUST fail closed on an approval requirement.** A decision resolving to `allow` with `approval_required: true` **MUST** make `check()` return `false`. This is a property of the **decision**, not of the matched rule: the requirement may be a pending one raised by an unevaluable rule that did not itself match, or carried through `default_effect: allow` (§6.1.1 rule 5), and the boolean **MUST** fail closed on those identically.
 
-`check()` is public API consumed by callers that are not the Executor — tooling, preflight helpers, third-party integrations — and such a caller can only read a boolean as "let it through / do not". Returning `true` would let it execute a call the ACL said needed a human. Returning `false` is wrong in the benign direction: the caller sees a refusal where the truth was "ask first". The Executor uses the structured API and is unaffected, and a legacy caller only meets this at all once an operator has authored a rule carrying `approval`.
+`check()` is public API consumed by callers that are not the Executor — tooling, preflight helpers, third-party integrations — and such a caller can only read a boolean as "let it through / do not". Returning `true` would let it execute a call the ACL said needed a human. Returning `false` is wrong in the benign direction: the caller sees a refusal where the truth was "ask first". The Executor uses the structured API and is unaffected, and a boolean caller meets this only when an operator has authored a rule carrying `approval`.
 
-### 6.9 Governance precedence (v1.28.0, #108)
+### 6.9 Governance precedence {#69-governance-precedence-v1280-108}
 
-Approval requirements now have more than one source. The composition is normative, not per-SDK.
+Approval requirements have more than one source. The composition is normative, not per-SDK.
 
 | # | Interaction | Rule |
 |---|---|---|
-| 1 | Rule matching | Unchanged, first match wins. The matched rule determines `access`; **when `access` is `allow`**, the approval requirement is that rule's own **union any pending requirement** raised by an unevaluable `allow` rule (§6.1.1 rule 5), which may therefore originate in a rule that did not match. When `access` is `deny` the requirement is `false` — a denial clears a pending requirement rather than composing with it (§6.1.1 rule 5), because "denied and needs approval" is the state §6.1.6 rule 2 already rejects |
-| 2 | `default_effect` | Unchanged — `allow` / `deny` only. There is no default approval *source*, but `default_effect: allow` **MUST** carry a pending requirement (§6.1.1 rule 5) through to the result. Absent one, no match means `false`. An **empty rule list** reaches the default effect too and can never carry a requirement, since only a rule can raise one |
+| 1 | Rule matching | First match wins. The matched rule determines `access`; **when `access` is `allow`**, the approval requirement is that rule's own **union any pending requirement** raised by an unevaluable `allow` rule (§6.1.1 rule 5), which may therefore originate in a rule that did not match. When `access` is `deny` the requirement is `false` — a denial clears a pending requirement rather than composing with it (§6.1.1 rule 5), because "denied and needs approval" is the state §6.1.6 rule 2 already rejects |
+| 2 | `default_effect` | `allow` / `deny` only. There is no default approval *source*, but `default_effect: allow` **MUST** carry a pending requirement (§6.1.1 rule 5) through to the result. Absent one, no match means `false`. An **empty rule list** reaches the default effect too and can never carry a requirement, since only a rule can raise one |
 | 3 | ACL requirement **+** module `annotations.requires_approval` | **Union.** Either source may require a human; neither may cancel the other |
 | 4 | ACL requirement **+** `ExecutionPolicy` override | **A policy may add a requirement and MUST NOT remove one the ACL set.** A policy `requires_approval: false` overrides the module's *annotation*, never the ACL's decision |
-| 5 | `gate_destructive` (§7.9.2) | Unchanged; contributes to the union of #3 |
+| 5 | `gate_destructive` (§7.9.2) | Contributes to the union of #3 |
 | 6 | Preflight (§7.9.5) | `validate()` **MUST** report the union of #3–#5 for the given call site |
 | 7 | Audit (§6.3.1) | `decision` stays `"allow"` / `"deny"`; the requirement is a **separate field** |
 
@@ -5118,7 +5037,7 @@ Approval requirements now have more than one source. The composition is normativ
 
 The Approval System provides **runtime enforcement** of the `requires_approval` annotation. While annotations are generally hints for AI/LLM clients, `requires_approval` is unique: when an `ApprovalHandler` is configured, the Executor **blocks execution** of modules marked `requires_approval=true` until explicit approval is granted.
 
-This mechanism is the bridge between annotation-level metadata and runtime governance — making apcore the only framework that **enforces** Human-in-the-Loop approval rather than merely hinting at it.
+This mechanism is the bridge between annotation-level metadata and runtime governance: Human-in-the-Loop approval is **enforced** by the Executor, not merely hinted at.
 
 **Relationship to ACL:**
 
@@ -5135,7 +5054,7 @@ A caller_id may pass ACL (they have the role to call `deploy.prod`) but still re
 
 Implementations **MUST** define an `ApprovalHandler` protocol (or interface) with the following contract:
 
-```
+```text
 Interface: ApprovalHandler
   /**
    * Request approval for a module execution.
@@ -5196,7 +5115,7 @@ ApprovalRequest:
       description: "Module's tags"
 ```
 
-**`caller_id` and `action` (decision D-03, 2026-05-02 alignment review).** Every SDK's `ApprovalRequest` carried `module_id, arguments, context, annotations, description, tags` and neither field, though `docs/features/approval-system.md`'s Contract block already stated both as required — this schema was the one place in the ecosystem that had not caught up. Both are populated by the same construction site that already exists (`BuiltinApprovalGate`, one call per SDK): `caller_id = context.caller_id` and `action = module_id`. Additive on an already-`#[non_exhaustive]` type in apcore-rust; additive with a default in apcore-python and apcore-typescript, so no existing construction call breaks. Conformance: `conformance/fixtures/approval_request_fields.json`.
+**`caller_id` and `action` (D-03).** Both are populated by the approval gate that constructs the request: `caller_id = context.caller_id` and `action = module_id`. Conformance: `../../conformance/fixtures/approval_request_fields.json`.
 
 #### 7.3.2 ApprovalResult
 
@@ -5229,76 +5148,9 @@ ApprovalResult:
 
 ### 7.4 Executor Integration (Step 5)
 
-> **D-96 (v1.50.0) — the gate fires on the UNION of its governance sources.**
-> Step 2 binds `module.annotations`, and an implementation **MUST** consult it:
-> apcore-rust decided gate firing from the registry **descriptor** instead, so a
-> module whose own `annotations()` declared `requires_approval: true` ran
-> **ungated** whenever the descriptor omitted it — while the `ApprovalRequest`
-> handed to the handler read the live module, so a single call could be gated by
-> one source and described by the other.
->
-> The correction is a union, **not** a swap. An implementation that additionally
-> accepts a caller-supplied `ModuleDescriptor` — apcore-rust's `Registry::register`
-> documents descriptors "loaded from a config file or discovered from an external
-> source" — **MUST** fire the gate when *either* the live module or the descriptor
-> declares the requirement. Reading only the descriptor ignores what the module
-> declares; reading only the module ignores what an operator declared in
-> configuration. Both are fail-OPEN, and on this surface the failure direction is
-> the whole point: requiring approval that was not strictly needed costs a prompt,
-> skipping approval that was needed is a bypass.
->
-> This mirrors §6.9's existing architecture, where the requirement is already the
-> union of the module annotation, the ACL rule and `gate_destructive`, and where a
-> policy may only ADD.
->
-> **Every SDK has a second governance source, and every reader is bound by this
-> rule.** D-96 as first written claimed the union was "unobservable in
-> implementations whose descriptors are derived from the module"; that was
-> asserted rather than checked, and D-125 corrects it. No SDK derives its
-> descriptor purely from the module: apcore-python and apcore-typescript fold a
-> `*_meta.yaml` / `*.binding.yaml` / `metadata` declaration into it (§4.13), and
-> apcore-rust accepts one supplied by the caller. The rule therefore binds
-> **every** reader of `requires_approval` / `destructive` for a registered
-> module, not the gate alone:
->
-> | Reader | Requirement |
-> |---|---|
-> | Approval gate (Step 5) | Fires on the union. |
-> | `Executor.validate` preflight (§7.9.5) | Reports the union, so it cannot disagree with the gate. |
-> | Governance-posture accessor (§6.6.5) | Reads the union; a module gated by the pipeline MUST NOT be reported as ungated. |
-> | `system.manifest.*` annotations | Publishes the union — an agent decides whether to call from this. |
->
-> An implementation **MUST NOT** resolve this union with its metadata-merge
-> precedence (§4.13's YAML > code), which is correct for a descriptor and wrong
-> for a gate: the merge lets the weaker declaration win in *both* directions.
-
-> **D-125 (v1.54.0) — D-96 binds every SDK and every governance reader.** D-96's
-> closing remark — that the union is unobservable where descriptors are "derived
-> from the module" — was written without being checked, and it is false. Both
-> peers merge a metadata document into the descriptor with YAML > code
-> precedence (§4.13), which is a second place an operator can declare
-> governance, and neither gate read it. Reproduced in both: a module registered
-> with `metadata.annotations.requires_approval: true` produced a descriptor
-> reporting `true`, a `system.manifest.*` entry reporting `true`, a preflight
-> reporting **false**, and **no gate** — the module executed with an approval
-> handler configured and the handler was never consulted.
->
-> That is the bypass D-96 describes, in the two SDKs D-96 named as unaffected,
-> and it is fail-OPEN. The rule is unchanged; its scope is corrected. The union
-> is over the live module instance and the registry's declared annotations, and
-> it is `OR` on `requires_approval` and `destructive` only — every other
-> annotation describes behaviour rather than governance and stays
-> instance-sourced.
->
-> Two consequences worth stating. A metadata `requires_approval: false` no
-> longer cancels a module that declares `true` in code — under the merge's
-> precedence it did, at every descriptor reader. And the manifest now publishes
-> the enforced value: advertising a governance flag the gate does not honour is
-> worse than advertising none, because it is a specific claim an agent acts on.
-
 The Approval Gate is Step 5 in the Executor's pipeline, between ACL Enforcement and Middleware Before Chain:
 
-```
+```text
 Executor Pipeline:
   Step  1: Context Creation
   Step  2: Call Chain Guard
@@ -5323,7 +5175,7 @@ Executor Pipeline:
 
 **Step 5 Algorithm:**
 
-```
+```text
 Algorithm: approval_gate(module, arguments, context, approval_handler)
 
 Input:
@@ -5336,8 +5188,9 @@ Behavior:
   1. IF approval_handler is null → SKIP (no enforcement)
   2. LET annotations = module.annotations
   3. IF annotations is null OR annotations.requires_approval is false → SKIP
-     (but see D-96: the gate fires on the UNION of every governance source
-      the implementation has, not on this one alone)
+     (the requirement is the UNION of every governance source — see
+      "The gate fires on the union of its governance sources" below —
+      not this one alone)
   4. IF arguments contains "_approval_token":
        a. LET token = arguments.pop("_approval_token")
        b. LET result = approval_handler.check_approval(token)
@@ -5351,16 +5204,31 @@ Behavior:
        "pending"  → THROW ApprovalPendingError(result)
 ```
 
-**The ACL's approval requirement reaches Step 5 (v1.28.0, #108).** §6.1.6 lets a rule require approval for a specific call, so Step 4 now produces two results and Step 5 **MUST** consult both:
+**The gate fires on the union of its governance sources (D-96, D-125).** Step 2 of the algorithm binds `module.annotations`, and an implementation **MUST** consult it. An implementation whose registry also holds **declared** annotations for the module — a `ModuleDescriptor` supplied by the caller at registration, or a descriptor into which a metadata document (`*_meta.yaml`, `*.binding.yaml`, a `metadata` argument) is merged (§4.13) — **MUST** fire the gate when *either* the live module instance or the declared annotations declare the requirement. The union is `OR` on `requires_approval` and `destructive` only; every other annotation describes behaviour rather than governance and stays instance-sourced.
+
+The union binds **every** reader of `requires_approval` / `destructive` for a registered module, not the gate alone:
+
+| Reader | Requirement |
+|---|---|
+| Approval gate (Step 5) | Fires on the union. |
+| `Executor.validate` preflight (§7.9.5) | Reports the union, so it cannot disagree with the gate. |
+| Governance-posture accessor (§6.6.5) | Reads the union; a module gated by the pipeline **MUST NOT** be reported as ungated. |
+| `system.manifest.*` annotations | Publishes the union — an agent decides whether to call from this. |
+
+An implementation **MUST NOT** resolve this union with its metadata-merge precedence (§4.13's YAML > code), which is correct for a descriptor and wrong for a gate: the merge lets the weaker declaration win in *both* directions. Consequently a metadata `requires_approval: false` does not cancel a module that declares `true` in code, and the manifest publishes the value the gate enforces — advertising a governance flag the gate does not honour is worse than advertising none, because it is a specific claim an agent acts on.
+
+Rationale: reading only the declared annotations ignores what the module declares, and reading only the module ignores what an operator declared in configuration. Both are fail-open, and on this surface the failure direction is the whole point: requiring approval that was not strictly needed costs a prompt, skipping approval that was needed is a bypass. This mirrors §6.9, where the requirement is the union of the module annotation, the ACL rule and `gate_destructive`, and where a policy may only add.
+
+**The ACL's approval requirement reaches Step 5.** §6.1.6 lets a rule require approval for a specific call, so Step 4 produces two results and Step 5 **MUST** consult both:
 
 1. The gate fires when the module's `annotations.requires_approval` is true **or** the ACL decision for this call carried `approval_required` **or** `gate_destructive` applies — the union of §6.9 rows 3–5.
 2. An `ExecutionPolicy` override **MUST NOT** clear a requirement the ACL set (§6.9 row 4).
 3. The `ApprovalRequest` handed to the handler **MUST** carry the effective annotations, as §7.9.3 already requires; an ACL-sourced requirement makes `requires_approval` effectively true for that call.
 
-An implementation that reads only the annotation silently ignores every rule carrying `approval` — the rule loads, matches, and does nothing. That is the failure §6.1.1 and §6.1.5 were both written to end, arriving through a third door.
+An implementation that read only the annotation would silently ignore every rule carrying `approval` — the rule would load, match, and do nothing.
 
 **Key behaviors:**
-- When no `ApprovalHandler` is configured, Step 5 is **skipped** for backward compatibility — but per the fail-loud principle (§7.9.4) a module that needs approval **MUST** produce a warning on skip, and an `ExecutionPolicy` with `strict` (§7.9) turns this skip into a fail-closed `ApprovalDeniedError` instead.
+- When no `ApprovalHandler` is configured, Step 5 is **skipped** (inactive by absence, §6.6.3.1) — but per the fail-loud principle (§7.9.4) a module that needs approval **MUST** produce a warning on skip, and an `ExecutionPolicy` with `strict` (§7.9) turns this skip into a fail-closed `ApprovalDeniedError` instead.
 - When an `ExecutionPolicy` (§7.9) is attached, the gate consults it first: the policy may force approval on a module that does not declare `requires_approval`, or (with `gate_destructive`) gate a `destructive` module.
 - The `_approval_token` mechanism (Phase B) allows clients to retry after external approval without re-triggering the approval flow.
 - The `_approval_token` key **MUST** be removed from arguments before passing to subsequent steps.
@@ -5386,7 +5254,7 @@ approval_error_codes:
 
 Error hierarchy addition:
 
-```
+```text
 ModuleError
 ├── ...existing errors...
 ├── ApprovalError              # Base class for all approval errors
@@ -5407,15 +5275,13 @@ Implementations **SHOULD** provide these built-in handlers:
 | `AutoApproveHandler` | Always returns `approved` | Testing and development |
 | `CallbackApprovalHandler` | Delegates to a user-provided callback | Custom approval logic |
 
-#### 7.6.1 The `CallbackApprovalHandler` callback (v1.25.0, #104)
+#### 7.6.1 The `CallbackApprovalHandler` callback {#761-the-callbackapprovalhandler-callback-v1250-104}
 
 The convenience handler exists so a decision can be supplied without implementing the full contract. It **MUST NOT** be weaker than the contract it wraps:
 
-1. The callback **MUST** be asynchronous. §7.2's description of the handler is I/O-shaped — "the handler may block waiting for human input via UI, Slack, etc." — and a convenience wrapper that cannot express that use case is a trap rather than an affordance.
+1. The callback **MUST** be asynchronous. An approval handler is I/O-shaped — it may block waiting for human input (§7.8 Phase A) through a UI, a chat tool or similar — and a convenience wrapper that cannot express that use case is a trap rather than an affordance.
 2. The callback **MUST** be able to express failure in the host language's idiom: a raised exception, a rejected promise, an `Err`. `ApprovalHandler.request_approval` returns a fallible result, and a wrapper that can only return a value forces an author to fabricate a `"rejected"` result for an infrastructure outage — which is indistinguishable in the audit trail from a human saying no.
-3. An SDK **MAY** additionally provide a synchronous convenience constructor for decisions computable in-process, but **MUST NOT** give the synchronous one the name other SDKs give the asynchronous one. A reader who knows the handler in one SDK will assume the name means the same thing in the next; that assumption produced #104.
-
-> **Resolved in v1.25.0.** Through v1.24.0 this section carried a note recording that the callback shape was per-language and the question open. apcore-python (`Callable[[ApprovalRequest], Coroutine[…, ApprovalResult]]`) and apcore-typescript (`(request) => Promise<ApprovalResult>`) already satisfied all three rules. apcore-rust did not: `CallbackApprovalHandler::new` took `impl Fn(&ApprovalRequest) -> ApprovalResult` — synchronous, and unable to fail. It now takes an async, `Result`-returning callback under that name, with the previous form moved to `new_sync` (which also gained a `Result`). **This IS an SDK change** in apcore-rust and a breaking one, taken because the defect was name-driven: an additive `new_async` would have left the same identifier meaning two things across three SDKs.
+3. An SDK **MAY** additionally provide a synchronous convenience constructor for decisions computable in-process, but **MUST NOT** give the synchronous one the name other SDKs give the asynchronous one. A reader who knows the handler in one SDK will assume the name means the same thing in the next.
 
 ### 7.7 Protocol Bridge Handlers
 
@@ -5445,17 +5311,15 @@ These handlers are **not** part of the apcore core specification — they are pr
 - Suitable for long-running approval workflows (Slack, email, dashboard).
 - **Phase B is optional but recommended for production deployments.**
 
-### 7.9 Execution Policy (v1.9.0, #76)
-
-> **Status:** Normative as of v1.9.0. Implemented in all three SDKs at 0.26.0 — apcore-python, apcore-typescript (`ExecutionPolicy`, `PolicyRule`) and apcore-rust (`ExecutionPolicy`, `PolicyDecision`, `PolicyRule`, `Executor::set_policy`).
+### 7.9 Execution Policy {#79-execution-policy-v190-76}
 
 An **Execution Policy** is a declarative, execution-time governance layer that overrides a module's governance annotations (`requires_approval`, `destructive`) **independent of how the module was registered**. It exists because "governed capabilities" is a platform-level promise: an operator must be able to gate already-registered modules without editing their code or re-registering them.
 
 #### 7.9.1 Attach Point and Precedence
 
 1. A policy **MUST** attach at the **Executor** and be consulted by the Approval Gate (Step 5, §7.4).
-2. A policy is a set of **pattern rules**. Each rule matches a module ID using the ACL wildcard semantics (Algorithm A08, §6) and carries optional overrides for `requires_approval` and `destructive` (each `null`/absent = "do not override"). Rule matching consults the module ID and nothing else; the call's arguments reach resolution but never a rule (§7.9.6).
-3. Rule selection **MUST** use ACL specificity scoring (Algorithm A10, §6): the most specific matching rule wins. On a specificity tie, the more **restrictive** rule wins (a rule that forces `requires_approval = true` outranks one that clears it).
+2. A policy is a set of **pattern rules**. Each rule matches a module ID using the ACL wildcard semantics (Algorithm A08, §6.2) and carries optional overrides for `requires_approval` and `destructive` (each `null`/absent = "do not override"). Rule matching consults the module ID and nothing else; the call's arguments reach resolution but never a rule (§7.9.6).
+3. Rule selection **MUST** use ACL specificity scoring (Algorithm A10, §6.4): the most specific matching rule wins. On a specificity tie, the more **restrictive** rule wins (a rule that forces `requires_approval = true` outranks one that clears it).
 4. A matched rule's non-null override **MUST** take precedence over the module's own declared or scanned annotation. This is deliberate: external governance is the platform's word over the module author's.
 5. A policy decision **MUST** be recorded in the audit trail. When a policy changes a module's effective governance, the Executor **MUST** emit `apcore.policy.override` (§9.16.2) when an event emitter is configured.
 
@@ -5481,30 +5345,26 @@ A misconfigured or unreachable governance control **MUST NOT** silently allow. C
 
 #### 7.9.5 Preflight
 
-`Executor.validate()` (§12.2) **MUST** report the **governance-effective** `requires_approval` — the union of §6.9 rows 3–5 for the given call site, which since v1.28.0 includes an ACL rule carrying `approval` (§6.1.6). Reporting only the policy-effective value would tell a caller no approval is needed for a call the gate will stop. That union is by construction the same verdict the gate will enforce, including a `gate_destructive`-driven or rule-forced approval. The `apcore.acl.denied` and governance decision events **MUST NOT** be emitted during a dry-run `validate()`.
+`Executor.validate()` (§12.2) **MUST** report the **governance-effective** `requires_approval` — the union of §6.9 rows 3–5 for the given call site, which includes an ACL rule carrying `approval` (§6.1.6). Reporting only the policy-effective value would tell a caller no approval is needed for a call the gate will stop. That union is by construction the same verdict the gate will enforce, including a `gate_destructive`-driven or rule-forced approval. The `apcore.acl.denied` and governance decision events **MUST NOT** be emitted during a dry-run `validate()`.
 
-#### 7.9.6 Call-site inputs to policy resolution (v1.24.0, #102)
+#### 7.9.6 Call-site inputs to policy resolution {#796-call-site-inputs-to-policy-resolution-v1240-102}
 
-Through v1.23.0 a policy could see only *which* module was being called, never *what it was being called with*: resolution took a module ID and the module's annotations, and a rule carried a module-ID pattern plus the two boolean overrides. Governance keyed on the module alone forces an operator to gate every call to a module in order to gate some of them, which produces audit noise and weakens `requires_approval` from "this needs approval" to "this might".
+Policy resolution receives the **call site** — what the module is being called with — as well as which module is being called. Governance keyed on the module alone forces an operator to gate every call to a module in order to gate some of them, which produces audit noise and weakens `requires_approval` from "this needs approval" to "this might". The pipeline holds the data at the point of the decision — the gate is Step 5, and the invocation's arguments and `Context` are in scope there — so this section makes them an input to resolution without introducing a declarative predicate over them.
 
-The pipeline already holds the missing data at the point of the decision — the gate is Step 5 and the invocation's arguments and `Context` are in scope there — so this section opens the input, without yet introducing a declarative predicate over it.
-
-1. Policy resolution **MUST** receive the call site: the invocation `arguments` and the `Context`, alongside the module ID and annotations it already receives.
+1. Policy resolution **MUST** receive the call site: the invocation `arguments` and the `Context`, alongside the module ID and annotations.
 2. The built-in pattern rules of §7.9.1 **MUST NOT** consult the call site. A rule set's verdict **MUST** be a function of the module ID and the annotations alone, so that it stays statically auditable and reproducible from the policy document.
-3. The call site exists so that an implementation can carry it into the audit trail and the `apcore.policy.override` event (§9.16.2). What an implementation records **MUST** be the call site's *shape* — which keys were present, their types — and **MUST NOT** be argument values, since rule 4 places this before schema validation and an argument may hold anything, including a secret.
-
-    > **Withdrawn in v1.25.0.** This rule previously added "and (b) a **host-supplied** policy implementation can decide on arguments." No SDK can satisfy it: `ExecutionPolicy` is a concrete class in apcore-python and apcore-typescript and a concrete `struct` in apcore-rust, and `set_policy` takes that concrete type in all three — there is no policy interface for a host to implement. The clause promised a capability that does not exist rather than describing one that does. Making `ExecutionPolicy` pluggable is deliberately **not** specified here: no requirement has asked for it, and inventing an extension point ahead of a use for it is how the argument predicate deferred below would arrive by the back door.
+3. The call site exists so that an implementation can carry it into the audit trail and the `apcore.policy.override` event (§9.16.2). What an implementation records **MUST** be the call site's *shape* — which keys were present, their types — and **MUST NOT** be argument values, since rule 4 places this before schema validation and an argument may hold anything, including a secret. This specification defines no policy interface for a host to implement: `ExecutionPolicy` is a concrete type, and making it pluggable is deliberately not specified.
 4. The `arguments` handed to policy resolution have **NOT** been schema-validated: the approval gate is Step 5 and input validation is Step 7 (§12.8). An implementation **MUST** document this, and **MUST NOT** assume the call site is well-formed, present, or of the declared type.
-5. The framework-owned approval token (`_approval_token`, §7.4) **MUST** be stripped from `arguments` **before** policy resolution. §7.4 already requires it to be removed "before passing to subsequent steps", which does not reach this case: policy resolution happens *inside* Step 5, ahead of any subsequent step, so an implementation can satisfy §7.4 literally and still hand the token to the policy. It is a protocol-level key, not caller input; leaving it in place puts a token into the audit trail and the `apcore.policy.override` payload.
+5. The framework-owned approval token (`_approval_token`, §7.4) **MUST** be stripped from `arguments` **before** policy resolution. §7.4's requirement to remove it "before passing to subsequent steps" does not reach this case on its own: policy resolution happens *inside* Step 5, ahead of any subsequent step. It is a protocol-level key, not caller input; leaving it in place puts a token into the audit trail and the `apcore.policy.override` payload.
 6. Adding the call site **MUST NOT** change the verdict any existing policy produces.
-7. What is required is the **capability**, not one API shape. An implementation **MUST** provide an explicit, backward-compatible entry point for call-site-aware resolution, and **MUST** leave the pre-existing entry point's verdicts unchanged. The form is language-idiomatic and deliberately unconstrained: an added method (`resolve_with_call_site`), keyword-only parameters, or an options object are all conforming. Forcing one shape on three languages would violate [API Surface & Naming Conventions §4](./api-surface-conventions.md), which fixes the noun across SDKs and lets the idiom differ. Note that the constraint is real in one direction: because rule 6 forbids the new inputs from changing any verdict, widening a published signature buys nothing and costs every external caller a compile error, so a language without default arguments or overloading **SHOULD** add a method rather than widen.
+7. What is required is the **capability**, not one API shape. An implementation **MUST** provide an explicit, backward-compatible entry point for call-site-aware resolution, and **MUST** leave the pre-existing entry point's verdicts unchanged. The form is language-idiomatic and deliberately unconstrained: an added method (`resolve_with_call_site`), keyword-only parameters, or an options object are all conforming. Forcing one shape on three languages would violate [API Surface & Naming Conventions §4](./api-surface-conventions.md), which fixes the noun across SDKs and lets the idiom differ. The constraint is real in one direction: because rule 6 forbids the new inputs from changing any verdict, widening a published signature buys nothing and costs every external caller a compile error, so a language without default arguments or overloading **SHOULD** add a method rather than widen.
 
 !!! note "A declarative argument predicate on `PolicyRule` is deliberately not specified here"
-    ACL rules already discriminate on caller, target, identity type, roles and call
-    depth (§6.1); policy rules on module ID alone. Adding an argument predicate to
-    only one of the two would grow a second condition language over the same
+    ACL rules discriminate on caller, target, identity type, roles, call depth and
+    argument keys (§6.1, §6.1.7); policy rules on module ID alone. Adding an argument
+    predicate to `PolicyRule` would grow a second condition language over the same
     decision point. If one is specified, it is to be designed jointly with ACL
-    conditions — see #100 and #102.
+    conditions.
 
 ### 7.10 Conformance
 
@@ -5612,13 +5472,10 @@ These fields are the foundation of apcore's **Self-Healing** mechanism, which se
     The MUST in §7.5 and here is *define the following error types*; the status is
     metadata about each type, in the same way `description` is.
 
-    Read as a requirement it would be 47 unimplemented MUSTs: no SDK exposes the
-    mapping, and none is expected to. Stated because a conformance fixture had
-    declared `expected.http_status` that no driver could ever assert, and the
-    ambiguity is what put it there (apcore#94). `499` is an nginx extension and
-    `508` is WebDAV — deliberately practical choices for a gateway author, and
-    another reason this is guidance rather than a contract three SDKs must
-    reproduce.
+    Conformance fixtures therefore do not assert `http_status`. `499` (an nginx
+    extension) and `508` (WebDAV) are practical choices for a gateway author,
+    which is a further reason the mapping is guidance rather than a contract every
+    implementation must reproduce.
 
 ```yaml
 error_codes:
@@ -5715,7 +5572,7 @@ error_codes:
   BINDING_SCHEMA_INFERENCE_FAILED:
     description: "Auto-schema inference failed: callable lacks usable type hints"
     http_status: 500
-    # Deprecated alias (renamed in 0.19.0): BINDING_SCHEMA_MISSING — old serialized payloads remain decodable.
+    # Deprecated alias: BINDING_SCHEMA_MISSING — serialized payloads carrying it remain decodable.
   BINDING_FILE_INVALID:
     description: "Binding file parse error"
     http_status: 500
@@ -5784,7 +5641,7 @@ error_codes:
 
 Implementations **MUST** propagate errors according to the following algorithm:
 
-```
+```text
 Algorithm: propagate_error(error, module_id, context)
 
 Input:
@@ -5868,7 +5725,7 @@ custom_error_codes:
 
   # Framework error code priority
   priority:
-    - "Framework error code prefixes **MUST** be reserved and modules **MUST NOT** use them. The canonical set is the fourteen listed in [features/error-system.md](../features/error-system.md) § Error Code Constants — `ACL_`, `APPROVAL_`, `BINDING_`, `CALL_`, `CIRCULAR_`, `CONFIG_`, `DEPENDENCY_`, `ERROR_CODE_`, `FUNC_`, `GENERAL_`, `MIDDLEWARE_`, `MODULE_`, `SCHEMA_`, `VERSION_` — matching `FRAMEWORK_ERROR_CODE_PREFIXES` in all three SDKs. This line previously named only four, so a module author reading the specification alone would pick `CONFIG_*` or `BINDING_*` and be rejected by every implementation."
+    - "Framework error code prefixes **MUST** be reserved and modules **MUST NOT** use them. The canonical set is the fourteen listed in [features/error-system.md](../features/error-system.md) § Error Code Constants — `ACL_`, `APPROVAL_`, `BINDING_`, `CALL_`, `CIRCULAR_`, `CONFIG_`, `DEPENDENCY_`, `ERROR_CODE_`, `FUNC_`, `GENERAL_`, `MIDDLEWARE_`, `MODULE_`, `SCHEMA_`, `VERSION_` — the set each SDK exports as `FRAMEWORK_ERROR_CODE_PREFIXES`."
     - "Module custom error codes **MUST NOT** conflict with framework error codes"
 
   # Collision detection algorithm
@@ -5954,7 +5811,7 @@ Implementations **MUST NOT** default retry failed module invocations. Retry beha
 
 Implementations **SHOULD** use this table as the default `retryable` value for each error subclass. Callers may override the default on a per-instance basis.
 
-> **Note:** `GENERAL_NOT_IMPLEMENTED` and `DEPENDENCY_NOT_FOUND` are included in the hierarchy above. Both are non-retryable by default.
+> **Note:** `GENERAL_NOT_IMPLEMENTED` and `DEPENDENCY_NOT_FOUND` are defined in §8.2 and appear in the §8.7 hierarchy. Both are non-retryable by default.
 
 Retry middleware (if implemented) **SHOULD**:
 - Only retry errors marked as retryable
@@ -5966,7 +5823,7 @@ Retry middleware (if implemented) **SHOULD**:
 
 All framework errors **MUST** extend from a single `ModuleError` base class using a flat hierarchy. Implementations use a flat hierarchy under `ModuleError` for simplicity.
 
-```
+```text
 ModuleError (base error for all framework errors)
 ├── ConfigError                    # CONFIG_INVALID — Invalid configuration file
 ├── ConfigNotFoundError            # CONFIG_NOT_FOUND — Configuration file not found
@@ -6019,7 +5876,7 @@ apcore-mcp and apcore-a2a each independently implement an `ErrorMapper` that tra
 
 #### 8.8.1 `ErrorFormatter` Protocol
 
-```
+```text
 protocol ErrorFormatter:
     format(error: ModuleError, context: Context) → dict
     # Returns a protocol-specific error representation.
@@ -6034,7 +5891,7 @@ protocol ErrorFormatter:
 from apcore import ErrorFormatterRegistry
 ```
 
-```
+```text
 ErrorFormatterRegistry.register(
     adapter_name: string,        # MUST — unique adapter id (e.g., "mcp", "a2a", "cli")
     formatter:    ErrorFormatter  # MUST — implements ErrorFormatter protocol
@@ -6048,7 +5905,7 @@ ErrorFormatterRegistry.register(
 
 #### 8.8.3 Lookup Algorithm
 
-```
+```text
 Algorithm: format_error(error, adapter_name, context)
 
 Steps:
@@ -6074,9 +5931,9 @@ apcore itself does not ship these formatters. Each adapter package owns its impl
 
 #### 8.8.5 New Error Code
 
-| Error Code | Trigger | New? |
-|------------|---------|------|
-| `ERROR_FORMATTER_DUPLICATE` | `register()` called twice for the same `adapter_name` | New |
+| Error Code | Trigger |
+|------------|---------|
+| `ERROR_FORMATTER_DUPLICATE` | `register()` called twice for the same `adapter_name` |
 
 ---
 
@@ -6090,7 +5947,7 @@ apcore.yaml is the core configuration file of the framework. Implementations **M
 
 The `MUST` markers in the example below therefore mean "this key is normative and its default is fixed", **not** "the file is invalid without it". Only `version` and `project.name` make a file invalid by their absence — `schemas/apcore-config.schema.json` declares exactly those two in its `required` array.
 
-Requiredness is evaluated against the **declared** document, before defaults are merged. An implementation that merges its default table into the parsed document and then checks for required fields can never fail the check — the merge has already supplied every key — which is how a required-field list becomes dead code that looks like validation.
+Requiredness is evaluated against the **declared** document, before defaults are merged. A required-field check run after the default table has been merged can never fail, because the merge has already supplied every key.
 
 **What "declared" means.** The declared document is everything supplied by *someone* — the configuration file, environment-variable overrides (§9.2), runtime `set()`, and `mount()` — and excludes exactly one thing: the framework's own default table. Implementations **MUST** expose this view (`Config.get_declared()` / `getDeclared()` / `Config.declared`) and **MUST** use it for the required-field check.
 
@@ -6098,22 +5955,24 @@ Environment overrides count as declaration. `APCORE_PROJECT_NAME=my-app` against
 
 **apcore.yaml Complete JSON Schema Definition:**
 
+Keys marked *No effect* are declared and accepted but read by no implementation; keys marked *Deprecated* are additionally scheduled for removal (§9.2.4).
+
 ```yaml
 # apcore.yaml — Complete configuration structure and constraints
 
-$schema: "https://apcore.dev/config/v1"
+$schema: "https://apcore.dev/config/v1"   # Editor/validator hint — no effect at runtime
 version: "1.0.0"                    # REQUIRED — no default exists
 
 # Project information
 project:
   name: "my-ai-project"             # REQUIRED — no default exists (pattern: ^[a-z][a-z0-9_-]*$)
-  version: "0.1.0"                   # SHOULD, project version (semver)
+  version: "0.1.0"                   # SHOULD, project version (semver). No effect — read by no implementation
 
 # Extension configuration
 extensions:
   root: "./extensions"               # MUST (default: "./extensions")
   auto_discover: true                # SHOULD, auto-discovery (default: true)
-  lazy_load: true                    # MAY, lazy loading (default: true)
+  lazy_load: true                    # MAY, lazy loading (default: true). No effect — read by no implementation
   follow_symlinks: false             # MUST NOT default true (default: false)
   max_depth: 8                       # SHOULD, max scan depth (default: 8, max: 16)
   ignore_patterns:                   # MAY, additional ignore patterns
@@ -6132,16 +5991,16 @@ schema:
 # ACL configuration
 acl:
   root: "./acl"                      # MUST (default: "./acl")
-  default_effect: "deny"             # MUST (default: deny) — deny|allow
+  default_effect: "deny"             # MUST (default: deny) — deny|allow. Deprecated, no effect — see §9.2.4
   audit:
-    enabled: true                    # SHOULD, audit logging (default: true)
-    log_level: "info"                # MAY, audit log level
-    include_denied: true             # SHOULD, log denied calls
+    enabled: true                    # SHOULD, audit logging (default: true). Deprecated, no effect — see §9.2.4
+    log_level: "info"                # MAY, audit log level. Deprecated, no effect — see §9.2.4
+    include_denied: true             # SHOULD, log denied calls. Deprecated, no effect — see §9.2.4
 
 # Logging configuration
 logging:
-  level: "info"                      # SHOULD (trace|debug|info|warn|error|fatal)
-  format: "json"                     # SHOULD (json|text, default: json)
+  level: "info"                      # SHOULD (trace|debug|info|warn|error|fatal). Deprecated, no effect — see §9.2.4
+  format: "json"                     # SHOULD (json|text, default: json). Deprecated, no effect — see §9.2.4
 
 # Observability configuration
 observability:
@@ -6150,12 +6009,12 @@ observability:
     sampling_rate: 1.0               # MAY (0.0-1.0, default: 1.0)
     exporter: "stdout"               # MAY (stdout|otlp|jaeger)
   metrics:
-    enabled: true                    # MAY (default: false — opt in)
-    exporter: "stdout"               # MAY (stdout|prometheus|otlp)
+    enabled: true                    # MAY (default: false — opt in). Deprecated, no effect — see §9.2.4
+    exporter: "stdout"               # MAY (stdout|prometheus|otlp). Deprecated, no effect — see §9.2.4
 
 # Middleware configuration
 middleware:
-  disabled: []                       # MAY, list of disabled built-in middleware
+  disabled: []                       # MAY, list of disabled built-in middleware. No effect — read by no implementation
 
 # Binding configuration
 bindings:
@@ -6165,7 +6024,7 @@ bindings:
 
 # ID Map configuration
 id_map:
-  auto_detect: true                  # SHOULD (default: true)
+  auto_detect: true                  # SHOULD (default: true). No effect — read by no implementation
   overrides: {}                      # MAY, manual ID mapping overrides
 ```
 
@@ -6180,21 +6039,21 @@ Implementations **MUST** follow these default value conventions:
 | `schema.root` | `"./schemas"` | Valid directory path | Schema root directory |
 | `schema.max_ref_depth` | `32` | `1..100` | `$ref` resolution depth limit |
 | `acl.root` | `"./acl"` | Valid directory path | ACL file root directory |
-| `acl.default_effect` | `"deny"` | `allow`/`deny` | Default behavior when no rule matches |
+| `acl.default_effect` | `"deny"` | `allow`/`deny` | Default behavior when no rule matches. **Deprecated, no effect** — the ACL file's `default_effect` (§6.1) is the one read; see §9.2.4 |
 | `executor.default_timeout` | `30000` (ms) | `0..600000` | Per-module execution timeout (0 means no limit) |
 | `executor.global_timeout` | `60000` (ms) | `0..600000` | Global execution timeout across entire call chain (0 means no limit) |
 | `executor.max_call_depth` | `32` | `1..1000` | Call chain max depth |
 | `executor.max_module_repeat` | `3` | `1..100` | Max occurrences of same module in call chain |
 | `observability.tracing.enabled` | `false` | `true`/`false` | Distributed tracing switch |
 | `observability.tracing.sampling_rate` | `1.0` | `0.0..1.0` | Trace sampling rate — consulted only by the `proportional` and `error_first` strategies |
-| `observability.tracing.strategy` | `"full"` | `full`/`proportional`/`error_first`/`off` | How the sampling decision is made (§10.7). Added in v1.44.0 |
+| `observability.tracing.strategy` | `"full"` | `full`/`proportional`/`error_first`/`off` | How the sampling decision is made (§10.7) |
 | `observability.tracing.exporter` | `"stdout"` | `stdout`/`otlp`/`jaeger` | Tracing exporter (§10.1.1). `jaeger` names no implementation in any SDK and is **deprecated for removal at v2.0** |
 | `observability.tracing.otlp_endpoint` | `null` | URL, or `null` | OTLP collector endpoint (§10.1.1). Read only when `exporter` is `otlp`; setting it with any other exporter is a load-time error |
-| `observability.metrics.enabled` | `false` | `true`/`false` | Metrics collection switch |
-| `observability.metrics.exporter` | `"stdout"` | `stdout`/`prometheus`/`otlp` | Metrics exporter |
+| `observability.metrics.enabled` | `false` | `true`/`false` | Metrics collection switch. **Deprecated, no effect** — see §9.2.4 |
+| `observability.metrics.exporter` | `"stdout"` | `stdout`/`prometheus`/`otlp` | Metrics exporter. **Deprecated, no effect** — see §9.2.4 |
 | `bindings.dir` | `"./bindings"` | Valid directory path | Binding file directory |
 | `bindings.pattern` | `"*.binding.yaml"` | glob-dialect pattern (A25, §9.2.3) | Binding file matching pattern, matched against the filename within `bindings.dir` |
-| `id_map.auto_detect` | `true` | `true`/`false` | Auto ID mapping detection |
+| `id_map.auto_detect` | `true` | `true`/`false` | Auto ID mapping detection. **No effect** — read by no implementation; an ID map, when one is configured, is always applied |
 
 **Note**:
 - Configuration values exceeding ranges **MUST** be rejected in `validate_config()` (algorithm A12)
@@ -6219,6 +6078,32 @@ specification recommends values; it does not enforce them.
 | `validation.pipeline.step_name_max_length` | `null` — no limit | a pipeline step's `name` | 64 |
 | `validation.pipeline.timeout_ms_max` | `null` — no limit | a pipeline step's `timeout_ms` | 300000 |
 
+**Scope.** `validation.*` carries policy on authored content only. Technical limits are
+not `validation.*` keys and are not configurable: the canonical ID grammar and its
+192-character maximum (§2.7), and the surface alias constraints of the display overlay
+(§5.13) — for example the 64-character maximum on `display.mcp.alias` — are fixed by this
+specification and the canonical schemas.
+
+**Example — a project opting in to every recommended limit.** Omitting the `validation:`
+section, or leaving a key at its default, checks nothing.
+
+```yaml
+# apcore.yaml
+validation:
+  binding:
+    description_max_length: 200          # null (default) = no limit
+    documentation_max_length: 5000       # null (default) = no limit
+    tags_pattern: "^[a-z][a-z0-9_]*$"    # null (default) = no constraint
+    version_require_semver: true         # false (default) = no constraint
+  pipeline:
+    step_name_max_length: 64             # null (default) = no limit
+    timeout_ms_max: 300000               # null (default) = no bound
+```
+
+`validation` is a top-level framework section, like `executor` or `bindings`, declared as
+`$defs/ValidationConfig` in `schemas/apcore-config.schema.json`; in namespace mode (§9.6.1)
+it sits inside the `apcore:` section with the rest of the framework keys.
+
 **Requirements:**
 
 1. A key set to `null` (or, for `version_require_semver`, `false`) imposes **no** check.
@@ -6227,8 +6112,8 @@ specification recommends values; it does not enforce them.
 2. A key set to a value **MUST** be enforced, and a violation **MUST** be reported as a
    validation error naming the key, the offending value's length or content, and the
    configured limit. An implementation **MUST NOT** downgrade an operator-configured
-   limit to a warning: the operator asked for a limit, and a limit that only warns is the
-   `regex_patterns` failure of §10.6.1 in another place.
+   limit to a warning: the operator asked for a limit, and a limit that only warns
+   enforces nothing.
 3. **A limit is checked where the value enters the system**, never at call time. A
    constraint on authored content belongs at the moment the content is read, and the key
    namespace says where that is:
@@ -6240,62 +6125,35 @@ specification recommends values; it does not enforce them.
      declared step.
 
    A failing entry **MUST** be rejected with the binding-file or pipeline-configuration
-   error the surrounding section already defines, naming the offending field. These keys
-   add a check, not a new error taxonomy.
+   error the surrounding section already defines (`BINDING_FILE_INVALID` for a binding
+   entry, `PIPELINE_CONFIGURATION_ERROR` for a pipeline step), naming the offending field.
+   These keys add a check, not a new error taxonomy.
 4. Limits count **characters**, not bytes. A description of 200 CJK characters is 200, not
    600.
 5. **`tags_pattern` is a regex-dialect value** (§9.2.3): an unanchored, case-**sensitive**
    search by the host engine, inside the portable subset of §9.2.3 requirement 6c. An
    operator who means "the whole tag" writes `^…$`, exactly as the recommended value does.
    A pattern that does not compile is reported, never skipped (§9.2.3 requirement 6d).
-6. **`version_require_semver` names one grammar, written here so three implementations
-   cannot invent three.** A version satisfies it when it matches
+6. **`version_require_semver` names one grammar.** A version satisfies it when it matches
 
-   ```
+   ```text
    ^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$
    ```
 
    which is the grammar from semver.org, unmodified. `1.0` does **not** satisfy it: the
-   patch component is required. This is stated as a literal rather than as "SemVer"
-   because the lesson of §9.2.3 is that naming a format without pinning it produces one
-   contract per implementation.
+   patch component is required. The grammar is written as a literal because naming a
+   format without pinning it lets each implementation choose its own.
 
-**Why the default is "no limit", and what changed (v1.38.0, #118).**
+**Rationale for the defaults.** A limit that is right for one project's LLM-ranked module
+catalogue is wrong for another's internal tooling, so the recommendations above carry the
+design intent — a `description` an LLM ranks modules by wants to be short — and the operator
+decides whether to enforce it. `tags_pattern` and `version_require_semver` default to off
+because enforcing them by default would reject tags and versions that are otherwise valid,
+such as capitalised or hyphenated tags.
 
-Through v1.37.0 these six keys were **registered in all three SDK key surfaces and read by
-none of them** — declared, schema-documented, environment-overridable, and inert. What
-filled the gap in their absence was a set of numbers no two documents agreed on. For
-`description` alone there were six: §1.6's term table said `≤200 characters` as a
-constraint, §4.8's field table repeated it, `schemas/apcore-config.schema.json` declared a
-configurable default of **500**, `DECLARATIVE_CONFIG_SPEC` §3.2 documented that 500 as
-Normative, `defaults.schema.json` carried no entry at all, and the only implementation of
-anything was a **`logger.warning`** in one SDK at 200 while the other two enforced nothing.
-
-The tie-breaker is that **§4.8's own migration algorithm has always said `warn`, not
-reject** — *"description exceeds 200 chars (not recommended, but will warn) … Keep as-is"*.
-So the specification never actually required rejection at 200, and §1.6's parenthetical
-described a rule that no section operationalised and no implementation had. Correcting it
-is the §115 shape: the specification catching up to what every implementation already did.
-
-The remaining question was which number to make real, and the answer is **none of them**.
-apcore is a library that other projects build on for years. A limit that is right for one
-project's LLM-ranked module catalogue is wrong for another's internal tooling, and a
-framework that picks for both is picking wrong for one. The recommendations above carry
-the design intent — a `description` an LLM ranks by wants to be short — where a hard limit
-would only carry someone else's guess.
-
-**The format keys default to off for a second, harder reason.** `tags_pattern` and
-`version_require_semver` were declared with *restrictive* defaults (`^[a-z][a-z0-9_]*$`
-and `true`) that nothing enforced. Shipping them as declared would not have been
-"implementing a key" — it would have **added a rejection that does not exist today**, to
-every project whose tags are capitalised or hyphenated. Defaulting them off makes this
-change purely additive: **every binding file, module and pipeline that loads before this
-version still loads after it.** An operator opts in.
-
-**Interaction with §4.8.** §4.8's advisory guidance stands and is unchanged: a long
-`description` is still not recommended, and an implementation **MAY** still warn about one
-independently of these keys. What it **MUST NOT** do is reject, unless
-`description_max_length` is configured.
+**Interaction with §4.8.** §4.8's advisory guidance stands: a long `description` is not
+recommended, and an implementation **MAY** warn about one independently of these keys. What
+it **MUST NOT** do is reject, unless `description_max_length` is configured.
 
 #### 9.1.3 A Declared Key MUST Reach Its Mechanism From a `Config`
 
@@ -6303,12 +6161,9 @@ A key declared in the canonical schemas **MUST** reach the mechanism it names fr
 `Config`. A facility reachable **only** through a direct constructor or function
 argument **MUST NOT** carry a key in the canonical schemas.
 
-This is stated because the arrangement it forbids arose **four times independently**
-(#118, decision D-73), in code that was otherwise careful: `acl.default_effect`,
-`acl.audit.*`, `id_map.overrides` and `pipeline.*` each named a mechanism that was fully
-implemented, carefully specified, and reachable only by passing an argument. Nothing in
-this specification forbade it, so nothing caught it — and each instance looked correct
-from inside its own SDK, because the mechanism worked.
+Rationale: a key that only an argument can satisfy is accepted, validated and documented,
+and does nothing when an operator sets it — while the mechanism itself works, so the
+defect is invisible from inside the implementation (D-73).
 
 **Requirements:**
 
@@ -6321,26 +6176,22 @@ from inside its own SDK, because the mechanism worked.
    remain legitimate; what they cannot do is stand in for the key.
 
 2. **Precedence.** An explicit **API argument** wins over **`Config`**, which wins over
-   the **declared default**. Stated here rather than left to each implementation, because
-   the rule gives many keys two doors and "both are wired, which one applies" is the
-   question that produced §9.2.2's project-root divergence one layer up. It is also what
-   keeps this section from being a breaking change: every caller passing the argument
-   keeps its behaviour, and the key becomes the fallback it always looked like.
+   the **declared default**. The order is fixed here so that a key with both doors wired
+   resolves identically in every implementation: a caller passing the argument keeps its
+   behaviour, and the key is the fallback.
 
-3. **A key in the wrong file is the same defect.** `acl.default_effect` reaches its
-   mechanism from the **ACL file** and not from `apcore.yaml`, where it is also declared.
-   That is not an exemption: an operator reading §9.1 writes it in `apcore.yaml` and it
-   does nothing. The remedy is the one §9.2.4.1 applied to `acl.audit` — the declaration
-   in the file that reads it survives, the twin is withdrawn.
+3. **A key in the wrong file is the same defect.** A key declared in `apcore.yaml` whose
+   mechanism reads its value from a different file does nothing when written in
+   `apcore.yaml`. The remedy is to keep the declaration in the file that is read and to
+   withdraw the other: `acl.default_effect` and `acl.audit.*` in `apcore.yaml` are
+   withdrawn in favour of the ACL file's `default_effect` (§6.1) and `audit:` block
+   (§6.3.2, §9.2.4.1) — see §9.2.4.
 
-**How this is enforced.** `conformance/check_config_key_consumers.py` is already
-requirement 1 restated: a key recorded `live` must carry a behavioural probe that puts
-the key **into a `Config`** and observes an effect outside it. A probe that reaches the
-behaviour through the API door proves the behaviour exists, not that the key reaches it —
-which is not hypothetical, because `acl.default_effect` was recorded `live` in the very
-guard built to find keys nothing reads, by a probe that constructed `ACL(default_effect=…)`
-directly. Requirement 2 is pinned per key by the precedence case each wiring fixture
-carries.
+**Conformance.** `conformance/check_config_key_consumers.py` enforces requirement 1: a key
+recorded `live` carries a behavioural probe that puts the key **into a `Config`** and
+observes an effect outside it. A probe that reaches the behaviour through a direct argument
+proves the behaviour exists, not that the key reaches it, and does not count. Requirement 2
+is pinned per key by the precedence case each wiring fixture carries.
 
 ### 9.2 Environment Variable Override
 
@@ -6356,7 +6207,7 @@ Implementations **MUST** support overriding configuration file values through en
 
 **Environment Variable Naming Convention:**
 
-```
+```text
 APCORE_{SECTION}_{KEY}
 
 Rules:
@@ -6393,24 +6244,23 @@ A **path-typed** key is a configuration key whose value is a filesystem path. Th
 4. `bindings.pattern` is **NOT** path-typed. It is a glob-dialect pattern (A25, §9.2.3) matched against filenames *within* `bindings.dir` and is never resolved as a path in its own right. It is *pattern*-valued instead, and §9.2.3 declares that set the same way this section declares this one. `id_map.overrides` keys and values are module IDs, not paths.
 5. **An empty string is not a path.** When a path-typed key resolves to `""` — most commonly because an `APCORE_*` variable is *set but empty*, which §9.2 still treats as an override — implementations **MUST NOT** use it as a directory. The empty value **MUST** be discarded and resolution **MUST** fall through to the next tier, exactly as if the variable had been unset. An implementation **MAY** log a warning naming the key.
 
-    This is stated because §9.2's override rule and shell ergonomics collide. `export APCORE_ACL_ROOT=` and a variable inherited empty from a container spec are both "set" to the tooling, so an unguarded implementation lets an empty string silently *blank out* a directory the configuration file correctly declared, and then resolves that empty path relative to the working directory — which is the working directory itself. The same shape is already recorded for `APCORE_CONFIG_FILE`, where an empty value injected a phantom `config.file` key. Path-typed keys are the population where the failure is silent rather than loud, because "" is a legal relative path to the filesystem API but never the one an operator meant.
+    Rationale: `export APCORE_ACL_ROOT=` and a variable inherited empty from a container spec are both "set", so without this rule an empty string would replace a directory the configuration file declared and then resolve, relative to the working directory, to the working directory itself — a legal path, but never the one an operator meant.
 
 **Why the set is declared rather than inferred.** A consumer that forwards apcore configuration across a process boundary — a CLI spawning a worker, a supervisor building a container environment — has to know which `APCORE_*` variables carry paths, because a relative path that crosses a boundary where the working directory changes silently re-roots. With no declared set, each such consumer maintains its own by hand and drifts from the others; the marker moves that answer to the one place that already defines the key surface.
 
-**What this section does not decide.** It declares *which* keys carry paths. It does **not** define what a *relative* value in one of them is resolved against; that is §9.2.2's subject. Two keys in this table are resolved against different bases by the reference implementations today, which is the defect that motivated declaring the set, not one this section repairs.
+**What this section does not decide.** It declares *which* keys carry paths. It does **not** define what a *relative* value in one of them is resolved against; that is §9.2.2's subject.
 
 #### 9.2.2 Path Resolution Base
 
 !!! warning "Deprecation phase — no v1.x behaviour changes here"
-    This section declares the **target** semantics and opens the migration window. It
-    changes **no** behaviour required of a v1.x implementation: the current semantics are
-    recorded below and remain in force for the whole 1.x line. The target semantics take
-    effect at **v2.0**, which is the earliest §13.2 permits — "keep at least 2 minor
-    versions for deprecation period" (§13.2). Tracking issue #113.
+    This section declares the **target** semantics, which take effect at **v2.0** — the
+    earliest §13.2 permits, since §13.2 requires "at least 2 minor versions for deprecation
+    period". It changes **no** behaviour required of a v1.x implementation: the current
+    semantics are recorded below and remain in force for the whole 1.x line.
 
 **The project root.** Every `Config` **MUST** have exactly **one** project root, determined once, when the configuration is loaded:
 
-```
+```text
 Algorithm: project_root(config)
 
 project_root =
@@ -6440,20 +6290,20 @@ project_root =
 3. `APCORE_ACL_ROOT=./x` set for a project run means "relative to this project", which is the project root — not the operator's working directory at the moment of launch, and not the directory of a configuration file the operator may never have seen.
 4. Resolution **SHOULD** be performed once, at load, rather than at each point of consumption. A `chdir()` between load and consumption otherwise leaves two consumers of one `Config` looking at two different directories.
 
-**Current semantics (v1.x — unchanged by this section).** What implementations do today, stated so that the divergence being repaired is on the record rather than inferred:
+**Current semantics (v1.x).** Through the 1.x line, relative path-typed values resolve as follows:
 
 | Key | Base in effect through v1.x | Where it is specified |
 |---|---|---|
-| `acl.root` | The configuration file's directory when the `Config` knows its source path, else CWD — **including for environment-sourced values, and including the user-level tiers 6-7** | `docs/features/acl-system.md` § *Contract: ACL.discover*, decision D-64 |
+| `acl.root` | The configuration file's directory when the `Config` knows its source path, else CWD — **including for environment-sourced values, and including the user-level tiers 6-7** | [features/acl-system.md](../features/acl-system.md) § *Contract: ACL.discover*, decision D-64 |
 | `schema.root` | Process CWD, unconditionally | Nothing normative; implementation behaviour only |
 | `extensions.root` | Process CWD, unconditionally | Nothing normative; implementation behaviour only |
-| `bindings.dir` | No consumer read the key before v1.35.0 (§5.12.6) | — |
+| `bindings.dir` | Process CWD, unconditionally | Nothing normative; the loader contract is §5.12.6 |
 
-Two sibling keys, identical relative values, identical override syntax, different bases: that is the divergence §9.2.2 exists to repair, and it is why the target rule is stated before any implementation is asked to change.
+Sibling keys with identical relative values and identical override syntax therefore resolve against different bases; the target semantics give every path-typed key of a `Config` the same one.
 
-**The user-level tier is where today's behaviour is actively wrong.** `acl.root` is the one key that already resolves file-relative, and in tiers 6-7 that means a user-level configuration silently supplies an ACL policy — loaded from `~/.config/apcore/acl/` — to every project that user runs, while the project's own `./acl/` is ignored. For a default-deny, explicitly-granted authorization system that is the inverse of the intent, and the same load resolves `extensions.root` against CWD, so one configuration document produces two bases in a single load. The v2.0 rule makes tiers 6-7 resolve against CWD, which is a **bug fix** for this key rather than a regression.
+**The user-level tiers.** Under the current semantics `acl.root` is the one key that resolves file-relative, so in tiers 6-7 a user-level configuration supplies an ACL policy — loaded from `~/.config/apcore/acl/` — to every project that user runs, while the project's own `./acl/` is ignored; the same load resolves `extensions.root` against CWD, so one configuration document produces two bases. For a default-deny, explicitly-granted authorization system that is the inverse of the intent. The target semantics resolve tiers 6-7 against CWD, which corrects this key rather than regressing it.
 
-**Requirements in force now (v1.35.0):**
+**Requirements for v1.x implementations:**
 
 1. Implementations **MUST** expose the project root through a public, readable accessor (`Config.project_root` / `config.projectRoot()` / `Config::project_root()`, or the language's equivalent), computed by the algorithm above. This is additive and carries no resolution behaviour: it lets an application, a CLI, or a conformance driver ask what the base *will* be before anything depends on it.
 2. Implementations **SHOULD** emit a deprecation warning when — and **only** when — **both** hold: the project root differs from the process CWD, **and** at least one path-typed value in the merged configuration is relative. A blanket warning is explicitly **NOT** wanted: it would fire for every project in tiers 2-5, where nothing changes at v2.0, which trains operators to ignore the one warning that matters.
@@ -6466,10 +6316,9 @@ Two sibling keys, identical relative values, identical override syntax, differen
     several configurations, whichever load runs first consumes the warning, so a later
     affected configuration is silent and the operator cannot tell which document
     triggered it. Second, that same global is a test-isolation hazard — one test consumes
-    the warning another test needed, which is how the three SDKs came to disagree here in
-    the first place. De-duplication for log volume is the host logging layer's job, not
-    the SDK's; a reload that re-reads an edited file **SHOULD** re-evaluate and may
-    legitimately warn again.
+    the warning another test needed. De-duplication for log volume is the host logging
+    layer's job, not the SDK's; a reload that re-reads an edited file **SHOULD**
+    re-evaluate and may legitimately warn again.
 3. Implementations **MUST NOT** adopt the target semantics in a 1.x release. The 1.x line keeps the behaviour in the table above; changing it early would be exactly the silent re-rooting this section is written to prevent.
 
 **Migration, by discovery tier:**
@@ -6477,31 +6326,21 @@ Two sibling keys, identical relative values, identical override syntax, differen
 | §9.14 tier | Change at v2.0 |
 |---|---|
 | 2-5 (project-local; most projects) | **None.** `project_root` already equals CWD. |
-| 6-7 (user-level) | `acl.root` moves from the user-level directory to CWD — the bug fix described above. `schema.root`, `extensions.root` and `bindings.dir` are unaffected; they already resolve against CWD. |
+| 6-7 (user-level) | `acl.root` moves from the user-level directory to CWD — the correction described above. `schema.root`, `extensions.root` and `bindings.dir` are unaffected; they already resolve against CWD. |
 | 1 (`$APCORE_CONFIG_FILE` pointing outside CWD) | The one genuine break: `schema.root`, `extensions.root` and `bindings.dir` move from CWD to the config file's directory. This is the population the clause-2 warning is scoped to reach. |
 
-**Interaction with `include:` composition.** Adopting a single project root settles open question #1 of `docs/spec/rfc-config-include.md` — whether a path value declared *inside* an included fragment resolves relative to that fragment's directory or to the root file's. Under §9.2.2 the question does not arise: resolution has one base for the whole `Config`, so a fragment-relative reading would reintroduce exactly the per-value origin tracking clause 1 forbids. That RFC's Status is **Proposed** and it remains unratified; this section constrains the answer it may give, it does not adopt the RFC.
+**Interaction with `include:` composition.** A single project root settles open question #1 of [rfc-config-include.md](./rfc-config-include.md) — whether a path value declared *inside* an included fragment resolves relative to that fragment's directory or to the root file's. Under §9.2.2 the question does not arise: resolution has one base for the whole `Config`, so a fragment-relative reading would reintroduce exactly the per-value origin tracking clause 1 forbids. That RFC's Status is **Proposed**; this section constrains the answer it may give, it does not adopt the RFC.
 
 #### 9.2.3 Pattern-Valued Values
 
 A **pattern-valued** value is a string that is *matched against a name* rather than used
-literally: a filename, a field name, an event type, a module ID. Through v1.36.0 this
-specification typed every one of them with the bare word "glob" or "pattern" and named no
-algorithm at any point of use, so each implementation reached for whichever matcher its
-host language offered — `pathlib.Path.glob`, `fnmatch`, the `glob` crate, `RegExp`, the
-`regex` crate — and inherited that library's dialect. Those dialects disagree with one
-another, so three implementations each picking the obvious local answer produced three
-different contracts for one declared type (#116, #117).
-
-**The counter-example is what makes the cause precise.** `match_modules` (§5.16) is also
-typed only as "glob patterns" in prose, yet all three implementations match it with
-Algorithm **A08** and agree exactly — because its value is a module ID and the code around
-it already had A08 in hand. `path_filter` (§6.7 clause 4) matches module IDs *too*, and
-diverged three ways, because it lives in the system-module code where A08 was not already
-in reach. Same value domain, same libraries available, opposite outcomes. Convergence
-tracked **whether a named algorithm was reachable at the point of use**, not the value's
-domain and not the availability of a library. The remedy is therefore to name an algorithm
-at every point of use and to close the set, exactly as §9.2.1 did for path-typed keys.
+literally: a filename, a field name, an event type, a module ID. Every pattern-valued value
+names the algorithm that matches it. Host-language matchers — `pathlib.Path.glob`,
+`fnmatch`, the `glob` crate, `RegExp`, the `regex` crate — implement dialects that disagree
+with one another, so a value typed only as "glob" or "pattern" would have a different
+contract in each implementation. Naming an algorithm at every point of use, and closing the
+set of pattern-valued values, is what makes the contract portable, exactly as §9.2.1 does
+for path-typed keys.
 
 **Three dialects exist, and no fourth.** Each pattern-valued property in the canonical
 schemas carries an `"x-apcore-pattern"` marker naming its dialect, the same way §9.2.1's
@@ -6531,32 +6370,23 @@ a specification defect, not an implicit exclusion.
 | `extensions.ignore_patterns[]` (§3.5) | glob (**A25**) | the **entry name** — one path segment, never the path | sensitive |
 
 `obs.redaction.sensitive_keys` entries containing neither `*` nor `?` are **not** patterns
-at all; they are substrings, matched by the separate rule in §10.6.1. That hybrid is
-existing behaviour in all three implementations and is specified rather than removed.
+at all; they are substrings, matched by the separate rule in §10.6.1.
 
-**`extensions.ignore_patterns` joined this table in v1.42.0, and why it was outside it until
-then is worth keeping.** v1.37.0 excluded it deliberately: it was registered in all three
-implementations' configuration key surfaces and read by **none** of them, so §3.6's
-`scan_extensions` step 3a ("if entry name matches `ignore_patterns` → skip") was a **MUST
-whose input nothing supplies** — the shape #114 found in `bindings.dir`. Assigning a dialect
-to a key no implementation reads would declare a contract nothing could be measured against,
-which is the practice this section exists to end.
+A value joins this table when an implementation consumes it, and its dialect is assigned in
+the same change. Assigning a dialect to a key that nothing reads would declare a contract
+nothing could be measured against.
 
-The order is the point, and it is the general rule for this table: **a dialect is assigned
-when a consumer exists, not before.** v1.42.0 supplies the consumer in all three SDKs and
-assigns the dialect in the same change, so the row and the behaviour arrive together and the
-fixture can discriminate between them from the first day.
-
-The surface it matches is narrow on purpose. A04 step 3a says *entry name*, so a pattern is
-matched against **one path segment** — `node_modules`, `fixtures.py` — and never against a
-path. `*` therefore cannot cross a directory boundary, because there is no boundary in the
-value being matched. Matching is **case-sensitive**, unlike `sensitive_keys`: these are
-filenames, and a protocol that folded them would make a configuration behave differently on
-a case-insensitive filesystem than on the case-sensitive one it was written against.
+`extensions.ignore_patterns` matches a narrow surface on purpose. A04 step 3a says *entry
+name*, so a pattern is matched against **one path segment** — `node_modules`,
+`fixtures.py` — and never against a path. `*` therefore cannot cross a directory boundary,
+because there is no boundary in the value being matched. Matching is **case-sensitive**,
+unlike `sensitive_keys`: these are filenames, and a protocol that folded them would make a
+configuration behave differently on a case-insensitive filesystem than on the
+case-sensitive one it was written against.
 
 ##### Algorithm A25 — `match_glob`
 
-```
+```text
 Algorithm: match_glob(pattern, value)
 
 Input:
@@ -6608,13 +6438,12 @@ implementations converge only when the *procedure* is fixed: two matchers can bo
 1. Implementations **MUST** match every glob-dialect value in the table above with A25.
    An implementation **MUST NOT** delegate to a host-library matcher whose dialect differs
    from A25 — `fnmatch`, `pathlib.Path.glob`, the `glob` crate and a translated `RegExp`
-   all differ from it and from each other, and each was the source of a divergence this
-   section closes.
+   all differ from it and from each other.
 2. **Every string is a valid pattern.** A25 has no parse phase and no error return. An
    implementation **MUST NOT** reject, warn about, or skip a pattern-valued value on
    syntactic grounds; `a[b`, `{x,y}` and `**` are patterns whose bracket, brace and second
-   star are literals. A matcher that raises on an unbalanced `[` makes one SDK refuse a
-   control-plane request the other two serve.
+   star are literals. Rationale: a matcher that raises on an unbalanced `[` would refuse a
+   control-plane request that a conforming matcher serves.
 3. **Case sensitivity is a property of the surface, not of the algorithm.** A25 itself
    compares characters exactly. A surface marked *insensitive* in the table above
    **MUST** apply the same case fold to **both** the pattern and the value before calling
@@ -6629,18 +6458,13 @@ implementations converge only when the *procedure* is fixed: two matchers can bo
    alphabet that contains either character.
 5. **A25 is not A08, and the two surfaces do not overlap.** A08 (§6.2) matches ACL rule
    patterns and `match_modules` against module IDs; A25 matches everything else in the
-   table. A08 is left unchanged because widening it would change authorization decisions
-   already in force: it treats `?` as a literal, and since a module ID (§2.7) cannot
-   contain `?`, an ACL pattern containing one matches nothing today. Making it a wildcard
-   would turn a dead `allow` rule live, which is the one direction a security change must
-   not take silently. §6.2.2 closes that hole from the other side instead, by requiring
-   the dead pattern to be reported.
+   table. A08 treats `?` as a literal, and since a module ID (§2.7) cannot contain `?`, an
+   ACL pattern containing one matches nothing; §6.2.2 requires such a pattern to be
+   reported. Rationale: making `?` a wildcard in A08 would turn a dead `allow` rule live,
+   widening authorization without any change to the ACL file.
 6. **Regex-dialect values.**
    a. Matching is an **unanchored search**: a value matches when the pattern matches
-      *anywhere* within it. This is what all three implementations do; the canonical
-      schema's earlier description ("fully matches") described no implementation and is
-      corrected in the same change as this section. An operator wanting a whole-value
-      match writes `^…$`.
+      *anywhere* within it. An operator wanting a whole-value match writes `^…$`.
    b. Matching is **case-insensitive**.
    c. **Portable subset.** A pattern **SHOULD** be expressible without lookaround,
       backreferences, or inline flag groups (`(?i)`). Those three are exactly where the
@@ -6651,101 +6475,69 @@ implementations converge only when the *procedure* is fixed: two matchers can bo
    d. **A pattern that does not compile MUST NOT be discarded in silence.** The
       implementation **MUST** emit a diagnostic naming the pattern and the engine's
       error, once per configuration load, and `validate_config()` (A12, §9.3) **MUST**
-      report it as a validation error. Silently skipping is the failure mode this clause
-      exists to forbid: it leaves a redaction rule that an operator wrote, that the
-      configuration schema accepted, and that redacts nothing — indistinguishable from a
-      rule that is working, on the one surface where the consequence is plaintext
-      credentials in a log.
+      report it as a validation error. Rationale: a skipped pattern is indistinguishable
+      from a rule that is working, and on a redaction surface the consequence is
+      plaintext credentials in a log.
 
 ##### What this section does not change
 
-It fixes the *language*, not the *policy*. No default value moves, no key changes its
-meaning, and no surface gains or loses a pattern. Implementations that already matched a
-surface with A25's semantics — TypeScript's `path_filter`, every implementation's
-`match_modules` — are already conformant there.
+This section fixes the matching *language*, not the *policy*. It sets no default value,
+changes no key's meaning, and adds no pattern to any surface; each value's semantics are
+defined by the section its row cites.
 
 #### 9.2.4 Deprecated Configuration Keys
 
-Ten declared configuration keys reached **no consumer in any implementation** (#118). They were
-schema-declared, environment-overridable, accepted under `_config.strict`, documented with
-defaults — and inert. An operator who set one got no error, no warning, and no effect.
+The keys below are declared in the canonical schemas, validated, accepted under
+`_config.strict`, and environment-overridable — and no implementation reads them, so
+setting one has no effect. They are deprecated and will be removed. This table is the
+authoritative list.
 
-This section opens their removal window. **It changes no behaviour**: the keys keep parsing
-and keep validating exactly as they do today. What it adds is the one thing they have never
-had — a way for an operator to find out.
-
-**`acl.default_effect` joined this table in v1.47.0**, as §9.1.3's first application and on the
-same reasoning that settled `acl.audit`: an ACL's default effect is read from the **ACL file**,
-and the `apcore.yaml` twin reaches nothing. Measured — a project declaring
-`acl.default_effect: allow` in `apcore.yaml`, with an ACL file that omits it, gets **deny**. The
-failure is fail-closed, which is why it went unremarked: the key silently withholds an
-`allow` an operator asked for, and can never silently grant one.
-
-**The surviving home for ACL auditing is the ACL file's `audit:` block** (§6.3.2, decision
-D-66). v1.39.0 opened the window on *both* declarations deliberately, so that choosing between
-them would not also be a scheduling problem; v1.45.0 chooses, and the three `acl.audit.*` rows
-above now name their migration target. A notice that says "this is going away" without saying
-"use that instead" is half a notice, and it is what an operator writing ACL configuration got
-until now.
-
-**Three of the original ten left this table in v1.44.0**, when §10.1.1 gave them consumers:
-`observability.tracing.enabled`, `.sampling_rate` and `.exporter`. Their withdrawal is
-**cancelled**, and the deprecation warning for them **MUST NOT** be emitted from v1.44.0
-onward. Cancelling a withdrawal cannot break a configuration — the notice promised removal
-*no earlier than* v2.0, so nothing had to migrate yet — but it is recorded here rather than
-quietly deleted, because an operator who read the v1.39.0 notice and acted on it is owed the
-reason it no longer applies. Why the three had to move together is in §10.1.1.
-
-| Key | Declared | Why it is going |
-|---|---|---|
-| `acl.default_effect` | §9.1.1 | **migrate to the ACL file's `default_effect`** (§9.1.3 requirement 3). The `apcore.yaml` key is read by no implementation; an ACL's default effect comes from the ACL file. Added to this table in v1.47.0 as §9.1.3's first application |
-| `observability.metrics.enabled` | §9.1.1 | nothing reads it; a *different* key happens to create the collector |
-| `observability.metrics.exporter` | §9.1.1 | no metrics-exporter abstraction exists in any SDK, and `MetricsCollector` arrives only as a constructor argument |
-| `logging.level` | §9.1.1 | **withdrawn, no replacement key** (D-67). apcore does not own the host's logging policy — see below |
-| `logging.format` | §9.1.1 | as above |
-| `acl.audit.enabled` | §9.1.1 | **migrate to the ACL file's `audit.enabled`** (§6.3.2). Two homes were declared for one setting and neither was read; v1.45.0 gives the ACL file's block a delivery contract and this one is withdrawn |
-| `acl.audit.include_denied` | §9.1.1 | **migrate to the ACL file's `audit.include_denied`** (§6.3.2). Two homes were declared for one setting and neither was read; v1.45.0 gives the ACL file's block a delivery contract and this one is withdrawn |
-| `acl.audit.log_level` | §9.1.1 | **migrate to the ACL file's `audit.log_level`** (§6.3.2). Two homes were declared for one setting and neither was read; v1.45.0 gives the ACL file's block a delivery contract and this one is withdrawn |
+| Key | Declared | Migrate to | Removed |
+|---|---|---|---|
+| `acl.default_effect` | §9.1.1 | The ACL file's `default_effect` (§6.1). An ACL's default effect comes from the ACL file (§9.1.3 requirement 3) | Not before v2.0 |
+| `acl.audit.enabled` | §9.1 | The ACL file's `audit.enabled` (§6.3.2, §9.2.4.1) | Not before v2.0 |
+| `acl.audit.include_denied` | §9.1 | The ACL file's `audit.include_denied` (§6.3.2, §9.2.4.1) | Not before v2.0 |
+| `acl.audit.log_level` | §9.1 | The ACL file's `audit.log_level` (§6.3.2, §9.2.4.1) | Not before v2.0 |
+| `logging.level` | §9.1 | No replacement key (D-67). apcore does not own the host's logging policy — see below | Not before v2.0 |
+| `logging.format` | §9.1 | No replacement key (D-67) — as above | Not before v2.0 |
+| `observability.metrics.enabled` | §9.1.1 | No replacement key. Metrics come from a `MetricsCollector` supplied to the API | Not before v2.0 |
+| `observability.metrics.exporter` | §9.1.1 | No replacement key. There is no metrics-exporter abstraction; a `MetricsCollector` is supplied as a constructor argument | Not before v2.0 |
 
 **Requirements:**
 
 1. When a **loaded configuration document declares** any key in the table above,
    implementations **MUST** emit a deprecation warning naming every such key present.
-   The table is the whole list: a key that has left it **MUST NOT** warn.
+   The table is the whole list: a key not in it **MUST NOT** produce this warning.
    Emission follows §9.2.2's cadence exactly — **once per configuration load, never once per
-   process** — and for the reason given there: a process-global flag makes emission
-   order-dependent, so a later affected document goes silent and the operator cannot tell
-   which one triggered it.
+   process** — for the reasons given there.
 2. The warning **MUST** be driven by the *declared* document, not the merged view. Every one
    of these keys has a default, so a merged-view check would fire for every configuration
-   ever loaded — the blanket warning §9.2.2 rejects, which trains operators to ignore the one
-   that matters.
-3. Behaviour is **unchanged**. The keys parse, validate, appear in `get()`, and remain
-   accepted under `_config.strict`. Nothing may start rejecting them in the 1.x line.
+   ever loaded — the blanket warning §9.2.2 rejects.
+3. Deprecation does not change behaviour. The keys parse, validate, appear in `get()`, and
+   remain accepted under `_config.strict`. Nothing may start rejecting them in the 1.x line.
 4. Removal is **not before v2.0**, and not before the two-minor window §13.2 requires and
    §13.4 restates for `remove_field`. Until then a configuration that sets them stays valid.
 
-**Why a warning and not a deletion.** All ten are accepted today under
-`_config.strict: true` — measured, not assumed. Deleting a declared key turns a
-currently-valid strict configuration into a rejected one, which is the migration §13.2 exists
-to schedule. A key that has done nothing for its whole life is still a key someone wrote down.
+**Why a warning and not a deletion.** Every key in the table is accepted under
+`_config.strict: true`. Deleting a declared key turns a currently-valid strict configuration
+into a rejected one, which is the migration §13.2 exists to schedule.
 
-**`logging.level` and `logging.format` are withdrawn with no replacement key** (decision D-67),
-and the reason is a boundary rather than an implementation cost. Wiring them would require
-threading the two values through `Context` — the object that every `Context.logger()` call
-builds a logger from, and which in all three SDKs contains no reference to a `Config` at all —
-or introducing a process-global logger configuration. The second breaks something apcore
-currently gets for free: every `Context.logger()` returns a fresh instance, so two `APCore`
-instances in one process are already isolated, and a global would be the thing that ends that.
+**`logging.level` and `logging.format` are withdrawn with no replacement key** (D-67). The
+reason is a boundary rather than an implementation cost: apcore does not own the host's
+logging policy. Wiring the keys would require either threading the two values through
+`Context` — the object every `Context.logger()` call builds a logger from, which carries no
+reference to a `Config` — or a process-global logger configuration. A global would end the
+isolation apcore has between two `APCore` instances in one process, since every
+`Context.logger()` returns a fresh instance.
 
-**What replaces them, stated precisely, because the obvious wording is wrong.** apcore's
-`ContextLogger` **does not route through the host's logging framework**: it writes structured
-lines directly to standard error (`sys.stderr`, `console.error`, and this crate's own writer).
-Telling an operator to "configure it through your language's logging API" would send them
-somewhere that has no effect on apcore's output. The supported path is the API argument:
-construct a `ContextLogger` with the level, format and sink you want and hand it to the
-middleware that emits — `ObsLoggingMiddleware(logger=…)` in all three SDKs, whose precedence
-(`the supplied logger, else a default`) is the §9.1.3 requirement 2 contract already.
+**Controlling apcore's log output.** apcore's `ContextLogger` **does not route through the
+host's logging framework**: it writes structured lines directly to standard error
+(`sys.stderr` in Python, `console.error` in TypeScript, a stderr writer in Rust), so
+configuring the host language's logging API has no effect on apcore's output. The supported
+path is the API argument: construct a `ContextLogger` with the level, format and sink you
+want and hand it to the middleware that emits — `ObsLoggingMiddleware(logger=…)` in every
+SDK, whose precedence (the supplied logger, else a default) is the §9.1.3 requirement 2
+contract.
 
 !!! warning "`Context.logger()` is deprecated, and is not the answer to this"
     The path above covers the middleware. It does **not** cover `Context.logger()`, which
@@ -6753,75 +6545,41 @@ middleware that emits — `ObsLoggingMiddleware(logger=…)` in all three SDKs, 
     Withdrawing `logging.*` makes §9.1.3's rule hold, because the keys stop naming a mechanism
     they cannot reach; it does not hand the host control of *that* path.
 
-    **It is not given one.** `Context.logger()` is deprecated from SDK 0.31.0 and removed at
-    v2.0 (apcore#121). Module code SHOULD log through the host application's own logger, which
-    is the same boundary D-67 draws: level, format, sink, sampling and per-instance policy stay
-    with the host. `ObsLoggingMiddleware` is **not** the migration target — it emits apcore's
-    execution events, a different facility, and moving ad-hoc logging onto it would change
-    record shape and volume.
-
-    Wiring it instead was considered and rejected on cost that is not effort: the logger is
-    built from a `Context`, which carries no `Config` in any SDK, so a configuration route means
-    threading values through `Context`'s pinned six-parameter contract or introducing a
-    process-global logger — and the global is what would end the multi-instance isolation apcore
-    currently gets for free.
+    **It is not given one.** `Context.logger()` is deprecated and is removed at v2.0. Module
+    code SHOULD log through the host application's own logger, which is the same boundary
+    D-67 draws: level, format, sink, sampling and per-instance policy stay with the host.
+    `ObsLoggingMiddleware` is **not** the migration target — it emits apcore's execution
+    events, a different facility, and moving ad-hoc logging onto it would change record shape
+    and volume.
 
 ##### 9.2.4.1 The ACL file's `audit:` block
 
 `schemas/acl-config.schema.json` declares an `audit` block at the root of an **ACL policy
-file**, byte-for-byte equivalent in meaning to `acl.audit.*` above. §6.1's worked example
-shows one spelling and §9.1's shows the other, so the specification has been telling readers
-to write the same setting in two different files.
+file**, with the same meaning as the deprecated `acl.audit.*` keys above. **The ACL file's
+block is the declaration that is read** (§6.3.2, decision D-66). `acl.audit.*` in
+`apcore.yaml` stays in §9.2.4's table with the ACL file's block named as its migration
+target, and is deleted at v2.0.
 
-Deleting the schema block would accomplish nothing, and the reason is worth stating because
-it generalises: **no implementation validates an ACL file against
-`acl-config.schema.json`**, and the three ACL loaders parse into an open container and read
-the fields they want. An `audit:` block in an ACL file is silently ignored today and would go
-on being silently ignored after any schema change.
+Rationale: the ACL loader already parses the document the block lives in, so the setting is
+read where it is written; reading `acl.audit.*` instead would require the `apcore.yaml`
+loader to reach into ACL construction.
 
-So the diagnostic had to live in the loader:
+5. An ACL file carrying a root-level `audit` block **MUST NOT** produce a deprecation
+   warning: the block has a delivery contract and is read (§6.3.2). A key that has a
+   consumer is not announced as going away, for the same reason §9.2.4 requirement 1 says
+   the table is the whole list. The notices that apply to the block are narrower and point
+   the other way — §6.3.2 requirement 6's for `include_denied: false`, and requirement 1's
+   for a block overridden by a callback.
 
-5. **Superseded by §6.3.2 in v1.45.0.** An ACL file carrying a root-level `audit` key
-   produced a deprecation warning when it was loaded, once per load, naming the file. The
-   block was still ignored — the clause added a diagnostic and changed nothing.
-
-   **That warning MUST NOT be emitted from v1.45.0 onward**: the block now has a delivery
-   contract and is read (§6.3.2). A key that has gained a consumer must stop being announced
-   as going away, for the same reason §9.2.4 requirement 1 says the table is the whole list.
-   What replaces it is narrower and points the other way — §6.3.2 requirement 6's notice for
-   `include_denied: false`, and requirement 1's for a block overridden by a callback.
-
-   The scoping note survives the supersession and still binds: §6.3.2 requirement 8 validates
-   the `audit` **subtree** and nothing else, so every other unrecognised root key in an ACL
-   file keeps being ignored exactly as before. This was never unknown-key closure for ACL
-   files.
-
-**The ACL file's block is the home that survives** (§6.3.2, decision D-66). v1.39.0 opened the
-window on both declarations deliberately, so that choosing between them would not also be a
-scheduling problem; v1.45.0 chooses. `acl.audit.*` in `apcore.yaml` stays in §9.2.4's table
-with the ACL file's block named as its migration target, and is deleted at v2.0.
-
-Why this home and not the other: under the alternative the surviving key would still have to
-be **wired**, and wiring it means the `apcore.yaml` loader reaching into ACL construction —
-while here the wiring is local to the ACL loader, which already parses the document the block
-lives in.
-
-!!! note "`sampling_rate` is the clearest case, and the one worth reading"
-    Of the ten it is the only one with a cost consequence, and it shows why "just wire the
-    scalar" was the wrong instinct. `TracingMiddleware` decides sampling from
-    `sampling_strategy`, which defaults to `"full"` and short-circuits before the rate is
-    consulted — and **the configuration surface has no key for the strategy**. Wiring
-    `sampling_rate` alone would produce a key that reads configuration, sets a field, and
-    still samples every span: the same defect, one layer deeper. An operator asking for 10%
-    sampling gets 100% today, and would still get 100% after the "fix". The correct repair is
-    a configuration model designed once, which is why the key is deprecated here rather than
-    connected.
+   §6.3.2 requirement 8 validates the `audit` **subtree** and nothing else. An ACL file is
+   not validated against `acl-config.schema.json` as a whole, so every other unrecognised
+   root key in an ACL file is ignored. This is not unknown-key closure for ACL files.
 
 ### 9.3 Configuration Validation Algorithm
 
 Implementations **MUST** validate configuration at startup:
 
-```
+```text
 Algorithm: validate_config(config)
 
 Input:
@@ -6852,8 +6610,6 @@ Steps:
 ```
 
 ### 9.4 Config Bus Architecture
-
-> **Added in v1.6.0-draft**
 
 The apcore configuration system serves as a **Config Bus** — shared infrastructure that any package in the apcore ecosystem (or external packages) can register with, without being forced to adopt it.
 
@@ -6886,7 +6642,7 @@ All SDK implementations **MUST** expose a namespace registration method on the `
 
 **Canonical signature (pseudocode):**
 
-```
+```text
 Config.register_namespace(
     name:        string,                            # MUST — namespace identifier
     schema:      JSONSchema | path | nil,           # MAY  — validation schema
@@ -7033,7 +6789,7 @@ Config.registerNamespace(NamespaceRegistration.builder()
 
 **Namespace registration is global (class-level), not per-instance.** The registry of namespaces is shared across all `Config` instances within a process. This matches the real-world pattern: a package registers its namespace once at import time, and any `Config` instance can then load, validate, and serve that namespace's data.
 
-```
+```text
 ┌──────────────────────────────────────────────────────────────────────────┐
 │                      Config Bus Lifecycle                                │
 │                                                                          │
@@ -7051,7 +6807,7 @@ Config.registerNamespace(NamespaceRegistration.builder()
 └──────────────────────────────────────────────────────────────────────────┘
 ```
 
-**Config instances are independent.** Each `Config.load()` call returns a new instance with its own data tree and lock (consistent with the existing implementation in §9.1). Multiple Config instances may coexist (e.g., in tests), but they all share the same global namespace registry.
+**Config instances are independent.** Each `Config.load()` call returns a new instance with its own data tree and lock. Multiple Config instances may coexist (e.g., in tests), but they all share the same global namespace registry.
 
 **Late registration** (calling `register_namespace` after one or more `Config.load()` calls) is permitted with these constraints:
 
@@ -7066,7 +6822,7 @@ Config.registerNamespace(NamespaceRegistration.builder()
 
 When `Config.load(path)` is called, implementations **MUST** detect the file mode:
 
-```
+```text
 Algorithm: detect_config_mode(parsed_yaml)
 
 Input:
@@ -7151,13 +6907,11 @@ _config:
 | `false`   | `true`          | `billing: {db: ...}`      | Stored, accessible, WARN logged, not validated |
 | `false`   | `false`         | `billing: {db: ...}`      | Silently ignored, not stored |
 
-**Requirements**, because the table alone was not enough: every implementation
-stored the namespace in the `false` row and none logged in the `true` row, so the
-whole `strict: false` line was inert in all three (#118, decision D-69).
+**Requirements** (D-69):
 
 1. **Namespace mode only.** This field governs *namespaces*, and a legacy
    document has none — its root **is** the `apcore` namespace, so an
-   unrecognised top-level key there is a framework key governed by §9.14's walk
+   unrecognised top-level key there is a framework key governed by §9.10's walk
    under `strict`. `strict`'s clause (b) says it "applies in legacy mode too";
    clause (a), and this field with it, do not. An implementation **MUST NOT**
    drop a top-level key from a legacy document on the strength of
@@ -7165,10 +6919,9 @@ whole `strict: false` line was inert in all three (#118, decision D-69).
 
 2. **`allow_unknown: false` drops.** When `strict` is false and `allow_unknown`
    is false, an unregistered top-level namespace **MUST NOT** be stored:
-   `get()` answers as though the document never carried it. This is the one
-   clause in §9 whose implementation makes a `get()` that returned a value
-   return null, and it fires only for a configuration that explicitly asks for
-   it — the default is `true`.
+   `get()` answers as though the document never carried it. This applies only
+   to a configuration that explicitly sets `allow_unknown: false`; the default
+   is `true`.
 
 3. **`allow_unknown: true` warns.** The namespace is stored and readable, and
    the implementation **MUST** emit one diagnostic per configuration load naming
@@ -7188,15 +6941,14 @@ whole `strict: false` line was inert in all three (#118, decision D-69).
 **Scenario 1 — Pure apcore (legacy, zero migration):**
 
 ```yaml
-# apcore.yaml — unchanged from pre-9.4 era
+# apcore.yaml — legacy mode (no "apcore:" key)
 version: "1.0.0"
 extensions:
   root: ./extensions
 schema:
   root: ./schemas
 acl:
-  root: ./acl
-  default_effect: deny
+  root: ./acl                 # default_effect is set in the ACL file itself (§6.1)
 project:
   name: my-project
 ```
@@ -7213,7 +6965,6 @@ apcore:
     root: ./schemas
   acl:
     root: ./acl
-    default_effect: deny
   project:
     name: my-project
 
@@ -7318,7 +7069,7 @@ The mount mechanism allows attaching external configuration sources to the Confi
 
 **Canonical signature (pseudocode):**
 
-```
+```text
 config.mount(
     namespace:  string,           # MUST — target namespace
     from_file:  path | nil,       # MAY  — load from file
@@ -7418,7 +7169,7 @@ The env variable convention depends on the `env_style` setting of the namespace 
 
 **Nested style** (`env_style = "nested"`, default) — follows the same rules defined in §9.2:
 
-```
+```text
 {ENV_PREFIX}_{SECTION}_{KEY}
 
 Rules:
@@ -7443,7 +7194,7 @@ Examples (namespace "apcore", env_prefix "APCORE" — unchanged from §9.2):
 
 **Flat style** (`env_style = "flat"`) — the suffix after the prefix is lowercased without any separator conversion. Underscores in the suffix are preserved as literal underscores in the config key. This is designed for namespaces whose config keys are flat snake_case identifiers (e.g., `devto_api_key`, `llm_model`) rather than hierarchical paths.
 
-```
+```text
 {ENV_PREFIX}_{KEY}
 
 Rules:
@@ -7463,7 +7214,7 @@ Examples (namespace "myapp", env_prefix "MYAPP", env_style "flat"):
 
 **Auto style** (`env_style = "auto"`) — resolves each env var suffix by matching against the registered `defaults` tree structure. This handles namespaces that mix flat snake_case keys with nested sub-sections, without requiring the user to escape underscores.
 
-```
+```text
 Algorithm: auto_resolve(suffix, defaults_tree, depth, max_depth)
 
   1. Try full suffix (lowercased) as a flat key in the current tree level.
@@ -7495,7 +7246,7 @@ Examples (namespace "reach", env_prefix "REACHFORGE", env_style "auto",
 
 **max_depth** (default: 5) — limits the nesting depth for `"nested"` and `"auto"` styles. After `max_depth` segments are produced, remaining `_` characters are preserved as literal underscores. This prevents excessively deep nesting from long env var names. Ignored for `"flat"` style.
 
-```
+```text
 Examples (max_depth=5):
   A_B_C_D_E=1       → a.b.c.d.e          (5 segments — within limit)
   A_B_C_D_E_F_G=1   → a.b.c.d.e_f_g      (5 segments — F_G kept as literal)
@@ -7504,7 +7255,7 @@ Examples (max_depth=5):
 
 **Type coercion** follows the same rules as §9.2: `"true"`/`"false"` → boolean, numeric strings → int/float, otherwise string.
 
-> **Note — apflow env var compatibility:** The apflow project currently uses a simpler convention where dots become single underscores without the double-underscore escape (e.g., `api.server_url` → `APFLOW_API_SERVER_URL`). This works because apflow's config keys do not contain literal underscores. When migrating to the Config Bus, apflow **SHOULD** adopt the §9.2 convention (`APFLOW_API_SERVER__URL`) for consistency, but implementations **may** accept both forms during a transition period by attempting double-underscore parsing first and falling back to the simpler form.
+> **Note — apflow env var compatibility:** apflow's own convention is a simpler one where dots become single underscores without the double-underscore escape (e.g., `api.server_url` → `APFLOW_API_SERVER_URL`). This works because apflow's config keys do not contain literal underscores. When migrating to the Config Bus, apflow **SHOULD** adopt the §9.2 convention (`APFLOW_API_SERVER__URL`) for consistency, but implementations **may** accept both forms during a transition period by attempting double-underscore parsing first and falling back to the simpler form.
 
 #### 9.8.2 Env Prefix Conflict Prevention
 
@@ -7531,7 +7282,7 @@ This works because the `APCORE_` prefix matcher stops at the first `_` boundary.
 
 However, this convention introduces complexity. Implementations **MUST** use **longest-prefix-match** when dispatching env vars to namespaces:
 
-```
+```text
 Algorithm: dispatch_env_var(env_key, registered_prefixes)
 
 Input:
@@ -7551,7 +7302,7 @@ Steps:
 
 #### 9.8.3 Env Override Application Algorithm
 
-```
+```text
 Algorithm: apply_namespace_env_overrides(config_data, registered_namespaces)
 
 Input:
@@ -7593,7 +7344,7 @@ Steps:
          set config_data[ns_name][config_key] ← coerced
          continue
 
-       # 2c. Prefix-based dispatch (existing logic)
+       # 2c. Prefix-based dispatch (dispatch_env_var, §9.8.2)
        match ← dispatch_env_var(env_key, registered_prefixes)
        If match is nil → skip
        (ns_name, suffix, registration) ← match
@@ -7618,7 +7369,7 @@ Steps:
 
 In namespace mode, `get()` and `set()` use dot-paths where the first segment is the namespace:
 
-```
+```text
 config.get("apcore.executor.default_timeout")   → 30000
 config.get("apflow.api.timeout")                 → 30.0
 config.get("apcore-mcp.transport")               → "streamable-http"
@@ -7627,7 +7378,7 @@ config.get("billing.db.host")                    → "localhost"
 
 In legacy mode, `get()` behaves as before (no namespace prefix):
 
-```
+```text
 config.get("executor.default_timeout")           → 30000
 ```
 
@@ -7637,7 +7388,7 @@ config.get("executor.default_timeout")           → 30000
 
 Because namespace names may contain hyphens (e.g., `apcore-mcp`), implementations **MUST NOT** naively split on the first `.` to extract the namespace. Instead:
 
-```
+```text
 Algorithm: resolve_namespace_path(dot_path, mode, known_namespaces)
 
 Input:
@@ -7674,7 +7425,7 @@ Steps:
 
 Implementations **SHOULD** provide a convenience method to retrieve the entire configuration subtree for a namespace:
 
-```
+```text
 config.namespace("apflow")
 → {"api": {"server_url": "...", "timeout": 30.0}, "governance": {...}}
 ```
@@ -7687,7 +7438,7 @@ Implementations **SHOULD** provide typed access methods appropriate to the langu
 
 **Statically typed languages (Rust, Go, Java, TypeScript):**
 
-```
+```text
 config.bind<T>("apflow")  → T    // Deserialize namespace into typed struct
 ```
 
@@ -7712,7 +7463,7 @@ settings: ApflowSettings = config.bind("apflow", ApflowSettings)
 
 Implementations **SHOULD** expose a method to list registered namespaces:
 
-```
+```text
 Config.registered_namespaces()
 → [
     {name: "apcore",     env_prefix: "APCORE",      has_schema: true},
@@ -7726,15 +7477,13 @@ This is useful for diagnostic tools, CLI introspection, and IDE plugins.
 
 #### 9.9.5 Reserved Namespace Query
 
-> **Added in v1.9.0**
-
 §9.5.1 (rules 3 and 4) defines a set of namespace names that are reserved by the framework and **MUST NOT** be registered by external callers (`apcore` is owned by the framework itself; `_config` is used for Config Bus meta-configuration per §9.6.3).
 
 Implementations **MUST** expose a public, read-only query API returning the set of reserved top-level namespace names.
 
 **Canonical signature (pseudocode):**
 
-```
+```text
 Config.reserved_namespaces()
 → frozen_set<string>   # MUST be immutable from the caller's perspective
 ```
@@ -7821,9 +7570,9 @@ Config.reserved_namespaces()
 
 ### 9.10 Validation Algorithm (Namespace-Aware A12-NS)
 
-The original Algorithm A12 (§9.3) is extended for namespace mode:
+Algorithm A12 (§9.3) is extended for namespace mode:
 
-```
+```text
 Algorithm: validate_config_ns(config_data, mode, registered_namespaces, meta_config)
 
 Input:
@@ -7868,7 +7617,7 @@ Steps:
   5. Return validated config_data
 ```
 
-```
+```text
 Sub-algorithm: reject_unknown_framework_keys(apcore_data, meta_config)
 
 Steps:
@@ -7900,24 +7649,17 @@ Steps:
 
 **Unknown keys inside the `apcore` namespace.** Every framework section in
 `schemas/apcore-config.schema.json` is `additionalProperties: false`. That
-closedness is now enforced — but **only** under `_config.strict: true`.
+closedness is enforced **only** under `_config.strict: true`.
 
-!!! warning "The walk is recursive, and was specified as one level until v1.19.0"
+!!! warning "The walk is recursive"
     `additionalProperties: false` holds at every level of those schemas, not
     just at the section root — `observability.tracing`, `acl.audit`,
     `validation.binding` and `obs.redaction` are each closed in their own right.
-    The sub-algorithm above previously iterated only `apcore_data[section]`'s
-    direct children, which left strict mode blind exactly where a typo is
-    hardest to spot: `observability.tracing.sampling_rat` passed the one-level
-    check (its parent `tracing` is declared) while the canonical schema rejects
-    it, and the misspelled sampling rate silently fell back to its default.
-
-    apcore-typescript already walked the full depth; apcore-python and
-    apcore-rust matched the one-level pseudocode. The pseudocode was the
-    outlier, not the schema — this is the specification catching up to a
-    closedness it already declared, not a new requirement. `strict` still
-    defaults to `false`, so no configuration changes behaviour unless its
-    author opted in.
+    A walk that iterated only `apcore_data[section]`'s direct children would
+    leave strict mode blind exactly where a typo is hardest to spot:
+    `observability.tracing.sampling_rat` would pass (its parent `tracing` is
+    declared) while the canonical schema rejects it, and the misspelled sampling
+    rate would silently fall back to its default.
 
 - **Default (`strict: false`).** An unknown key inside a framework section
   **MUST** be retained and readable through `get()`. Implementations **MUST NOT**
@@ -7941,11 +7683,8 @@ file declare their keys there — `$defs/SysModulesConfig` stops at `enabled` wh
 same set `conformance/generate_config_key_governance.py` reads, which is the
 authoritative list and is pinned by `conformance/fixtures/config_key_governance.json`.
 
-Taking the root file alone would reject `sys_modules.events.enabled` — documented,
-and validated by every SDK's constraint table. This is stated because apcore-python
-and apcore-typescript each arrived at the union independently while implementing
-this rule: two implementations converging on an unwritten convention is how the
-next one diverges.
+Taking the root file alone would reject `sys_modules.events.enabled` — a documented
+key that every SDK's constraint table validates.
 
 !!! note "Why `strict` and not a warning"
     `strict` already means "every top-level key must correspond to a registered
@@ -8015,18 +7754,18 @@ All Config Bus methods **MUST** be thread-safe / concurrency-safe:
 
 #### 9.12.4 Error Types
 
-Implementations **MUST** use the following error codes (extensions to §8). All config errors inherit from the base error type (`ModuleError` in Python, equivalent in other languages) and are non-retryable (`retryable = false`), consistent with the existing `CONFIG_NOT_FOUND` and `CONFIG_INVALID` codes defined in §8.2:
+Implementations **MUST** use the following error codes (extensions to §8). All config errors inherit from the base error type (`ModuleError` in Python, equivalent in other languages) and are non-retryable (`retryable = false`), consistent with `CONFIG_NOT_FOUND` and `CONFIG_INVALID` (§8.2, §8.6):
 
-| Error Code | Trigger | Existing? |
-|------------|---------|-----------|
-| `CONFIG_NOT_FOUND` | Configuration file not found | §8.2 (unchanged) |
-| `CONFIG_INVALID` | Validation failure, extended to include namespace-level schema validation errors and strict-mode unknown namespace errors | §8.2 (extended) |
-| `CONFIG_NAMESPACE_DUPLICATE` | `register_namespace` called twice for the same namespace name | New |
-| `CONFIG_NAMESPACE_RESERVED` | Attempt to register `apcore` or `_config` | New |
-| `CONFIG_ENV_PREFIX_CONFLICT` | Duplicate `env_prefix`, or `env_prefix` matches `^APCORE_[A-Z0-9]` (collides with the `apcore` namespace's `APCORE_` prefix) | New |
-| `CONFIG_MOUNT_ERROR` | Mount source file not found, invalid YAML in mount file, or mount to `_config` | New |
-| `CONFIG_BIND_ERROR` | Typed deserialization failure in `bind()` — missing fields or type mismatch between namespace data and target type | New |
-| `CONFIG_ENV_MAP_CONFLICT` | An env var name in `env_map` is already claimed by another `env_map` (global or namespace) | New |
+| Error Code | Trigger | Defined in |
+|------------|---------|------------|
+| `CONFIG_NOT_FOUND` | Configuration file not found | §8.2 |
+| `CONFIG_INVALID` | Validation failure, including namespace-level schema validation errors and strict-mode unknown namespace errors | §8.2 |
+| `CONFIG_NAMESPACE_DUPLICATE` | `register_namespace` called twice for the same namespace name | This section |
+| `CONFIG_NAMESPACE_RESERVED` | Attempt to register `apcore` or `_config` | This section |
+| `CONFIG_ENV_PREFIX_CONFLICT` | Duplicate `env_prefix`, or `env_prefix` matches `^APCORE_[A-Z0-9]` (collides with the `apcore` namespace's `APCORE_` prefix) | This section |
+| `CONFIG_MOUNT_ERROR` | Mount source file not found, invalid YAML in mount file, or mount to `_config` | This section |
+| `CONFIG_BIND_ERROR` | Typed deserialization failure in `bind()` — missing fields or type mismatch between namespace data and target type | This section |
+| `CONFIG_ENV_MAP_CONFLICT` | An env var name in `env_map` is already claimed by another `env_map` (global or namespace) | This section |
 
 ### 9.13 Ecosystem Integration Patterns
 
@@ -8154,7 +7893,7 @@ Config.registerNamespace({
 
 Implementations **may** support automatic configuration file discovery. When `Config.load()` is called without a path argument, the following search order **SHOULD** be used:
 
-```
+```text
 Algorithm: discover_config_file()
 
 Search order (first match wins):
@@ -8176,13 +7915,13 @@ This is a **MAY**-level feature. Implementations that do not support discovery *
 
 ### 9.15 apcore Built-in Namespace Registrations
 
-The framework pre-registers two namespaces for its own subsystems at startup, before any application `Config.load()` call. This applies the Config Bus pattern (§9.4) to apcore's own internal configuration — the same mechanism apcore exposes to third parties is now used by apcore itself.
+The framework pre-registers two namespaces for its own subsystems at startup, before any application `Config.load()` call. This applies the Config Bus pattern (§9.4) to apcore's own internal configuration — the same mechanism apcore exposes to third parties is used by apcore itself.
 
 Both namespaces promote existing flat keys that already live inside the `apcore` namespace into dedicated, independently-configurable namespaces. The migration is strictly additive: legacy mode files continue to work unchanged.
 
 #### 9.15.1 Bootstrap Order
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────┐
 │                Framework Bootstrap Order                    │
 │                                                             │
@@ -8202,14 +7941,9 @@ Extracts the existing `observability.*` flat keys from the `apcore` namespace in
 
 **The value sets below are not declared here.** `schemas/apcore-config.schema.json` is the
 canonical declaration of every `observability.*` key, its type, its enum and its default, and
-this registration **MUST** agree with it. Until v1.44.0 this section carried its own copy and
-the two disagreed in three ways at once: `tracing.strategy` and `tracing.otlp_endpoint` were
-declared *here and nowhere else*, so `_config.strict` rejected them as unknown keys while this
-section documented their defaults; and both exporter enums named `in_memory`, which the schema
-does not admit and §10.1.1 requirement 2 forbids as a configuration value. Earlier revisions
-also named `schemas/observability.schema.json` as this namespace's schema; **no such file has
-ever existed**, and the reference is removed rather than satisfied — a third declaration of
-one surface is the problem, not the fix.
+this registration **MUST** agree with it. The namespace has no schema file of its own: a
+second declaration of one surface would be free to disagree with the first. `in_memory` is not
+a configurable exporter value (§10.1.1 requirement 2).
 
 ```python
 Config.register_namespace(
@@ -8225,8 +7959,8 @@ Config.register_namespace(
             "otlp_endpoint": None,     # §10.1.1 requirement 3
         },
         "metrics": {
-            "enabled": False,
-            "exporter": "stdout",
+            "enabled": False,          # Deprecated, no effect — see §9.2.4
+            "exporter": "stdout",      # Deprecated, no effect — see §9.2.4
         },
         "logging": {
             "enabled": True,
@@ -8251,7 +7985,7 @@ Config.register_namespace(
 
 **Environment variable examples (`env_prefix = APCORE_OBSERVABILITY`):**
 
-```
+```text
 APCORE_OBSERVABILITY_TRACING_STRATEGY=error_first
 APCORE_OBSERVABILITY_LOGGING_LEVEL=debug
 APCORE_OBSERVABILITY_METRICS_EXPORTER=prometheus
@@ -8267,10 +8001,8 @@ APCORE_OBSERVABILITY_METRICS_EXPORTER=prometheus
 | apcore-cli | `tracing.strategy` |
 | Third-party | `tracing.*` (MAY) — read-only |
 
-`logging.level` and `logging.format` were in this table until v1.48.0, which withdrew them
-(§9.2.4, decision D-67). An adapter reading either got a value no apcore code path acts on:
-the specification was directing the ecosystem at keys that reach nothing, which is how a
-declared-but-inert key acquires downstream readers and becomes expensive to remove.
+`logging.level` and `logging.format` are not listed: both are withdrawn (§9.2.4, D-67), and no
+apcore code path acts on either, so an adapter reading them would read a value with no effect.
 
 #### 9.15.3 `sys_modules` Namespace
 
@@ -8291,8 +8023,8 @@ Config.register_namespace(
         "manifest": {"enabled": True},
         "usage": {
             "enabled": True,
-            "retention_hours": 168,
-            "bucketing_strategy": "hourly",
+            "retention_hours": 168,          # No effect — read by no implementation
+            "bucketing_strategy": "hourly",  # No effect — read by no implementation
         },
         "control":  {"enabled": True},
         "events": {
@@ -8312,18 +8044,15 @@ Config.register_namespace(
     this namespace with `enabled: True` would stand the system modules up in
     every project that never asked for them, and `events.enabled: True` would
     additionally stand up the three `system.control.*` **write** modules —
-    the approval-gated control plane — by default.
+    the approval-gated control plane — by default. The same defaults are
+    declared by `schemas/sys-modules.schema.json` and pinned by
+    `conformance/fixtures/config_defaults.json`.
 
-    Until spec v1.17.0 this block declared both as `True`, contradicting
-    `schemas/sys-modules.schema.json` (which it cites on the line above),
-    §6.6.3 in this same document, `conformance/fixtures/config_defaults.json`,
-    and all three SDKs.
-
-**Migration:** `register_sys_modules()` **MUST** prefer `config.namespace("sys_modules")` in namespace mode, falling back to `config.get("sys_modules.*")` in legacy mode. No breaking change.
+**Migration:** `register_sys_modules()` **MUST** prefer `config.namespace("sys_modules")` in namespace mode, falling back to `config.get("sys_modules.*")` in legacy mode.
 
 **Environment variable examples (`env_prefix = APCORE_SYS`):**
 
-```
+```text
 APCORE_SYS_ENABLED=true
 APCORE_SYS_USAGE_RETENTION__HOURS=336
 APCORE_SYS_EVENTS_ENABLED=false
@@ -8333,12 +8062,7 @@ APCORE_SYS_EVENTS_ENABLED=false
 
 ### 9.16 Event Type Naming Convention and Canonical Definitions
 
-apcore-python currently emits event types as hardcoded strings scattered across multiple files, with two confirmed collisions:
-
-- `"module_health_changed"` used in `control.py` (toggle on/off) and `platform_notify.py` (error rate recovery) with different payloads
-- `"config_changed"` used for both key-value updates and module reload notifications
-
-This section defines the canonical event type names and payload contracts, resolving collisions and establishing the naming convention for the ecosystem.
+This section defines the canonical event type names, their payload contracts, and the naming convention for the ecosystem. Each event type names exactly one event with one payload shape.
 
 #### 9.16.1 Naming Convention
 
@@ -8357,38 +8081,31 @@ The `apcore.*` prefix is reserved. Ecosystem packages **MUST NOT** emit events w
 
 #### 9.16.2 Canonical Core Event Types
 
-The following are the canonical event type names, payload keys, and severity for all events emitted by apcore SDKs. Implementations **MUST** use these names. Two distinct rename cohorts are reflected in the legacy column:
+The following are the canonical event type names, payload keys, and severity for all events emitted by apcore SDKs. Implementations **MUST** use these names, and **MUST NOT** emit the retired names in the second column. Each retired name either named two different events with different payloads (`module_health_changed`, `config_changed`), and is replaced by one canonical name per event, or broke the `apcore.<subsystem>.<event>` convention, where the subsystem segment names the **emitter**: registry events belong to `apcore.registry.*`, not `apcore.module.*`, and the threshold events belong to `apcore.health.*` — the health-monitoring `PlatformNotifyMiddleware` — because `error` and `latency` are categories, not subsystems. [features/event-system.md](../features/event-system.md#deprecation-legacy-event-names) lists each retired name with its replacement.
 
-- **Cohort A (removed in v0.18.0):** the unprefixed short-form names `module_health_changed` and `config_changed` were emitted as transitional aliases up to v0.17.x and were **REMOVED in v0.18.0**.
-- **Cohort B (renamed in v0.22.0, see [event-system.md](../features/event-system.md#deprecation-legacy-event-names)):** four early names that violated the `apcore.<subsystem>.<event>` convention (`module_registered`, `module_unregistered`, `apcore.error.threshold_exceeded`, `apcore.latency.threshold_exceeded` — the latter two used `error`/`latency` as the subsystem segment, which are categories, not subsystems) were **renamed in v0.22.0**. Dual-emission through v0.21.x has ended; implementations **MUST** emit only the canonical names below.
+| Canonical Name | Retired name | Severity | Emitted by | Payload Keys |
+|----------------|--------------|----------|------------|--------------|
+| `apcore.registry.module_registered` | `module_registered`, `apcore.module.registered` | `info` | Registry bridge | `module_id` |
+| `apcore.registry.module_unregistered` | `module_unregistered`, `apcore.module.unregistered` | `info` | Registry bridge | `module_id` |
+| `apcore.module.toggled` | `module_health_changed` (toggle usage) | `info`/`warn` | `system.control.toggle_feature` | `module_id`, `enabled` |
+| `apcore.module.reloaded` | `config_changed` (reload usage) | `info` | `system.control.reload_module` | `module_id`, `previous_version`, `new_version` |
+| `apcore.config.updated` | `config_changed` (key-update usage) | `info` | `system.control.update_config` | `key`, `old_value`, `new_value` |
+| `apcore.health.error_threshold_exceeded` | `apcore.error.threshold_exceeded` | `error` | `PlatformNotifyMiddleware` | `module_id`, `error_rate`, `threshold` |
+| `apcore.health.latency_threshold_exceeded` | `apcore.latency.threshold_exceeded` | `warn` | `PlatformNotifyMiddleware` | `module_id`, `p99_latency_ms`, `threshold` |
+| `apcore.health.recovered` | `module_health_changed` (recovery usage) | `info` | `PlatformNotifyMiddleware` | `module_id`, `error_rate` |
+| `apcore.approval.decision` | — | `info` (approved/pending) / `warn` (rejected/timeout) | Approval Gate (§7) | `module_id`, `status`, `approved_by`, `reason`, `approval_id`, `trace_id` |
+| `apcore.policy.override` | — | `info` | Approval Gate (§7) | `module_id`, `pattern`, `requires_approval`, `destructive`, `needs_approval`, `reason`, `trace_id` |
+| `apcore.acl.denied` | — | `warn` | ACL Check (§6) | `module_id`, `caller_id`, `reason`, `trace_id` |
+| `apcore.acl.audit` | — | `observability`-independent: the ACL file's `audit.log_level`, default `info` | ACL Check (§6) — the **default sink** of §6.3.2 only, never a supplied callback | all thirteen §6.3.1 `AuditEntry` fields, under their `snake_case` wire names |
+| `apcore.stream.post_validation_failed` | — | `error` | Executor (streaming Phase 3) | `error_type`, `message`, `trace_id` |
+| `apcore.registry.module_load_failed` | — | `error` | Registry | `module_id`, `callback_name`, `error_type`, `error_message` |
+| `apcore.circuit.opened` | — | `warn` | `CircuitBreakerMiddleware` | `module_id`, `caller_id`, `error_rate` |
+| `apcore.circuit.closed` | — | `info` | `CircuitBreakerMiddleware` | `module_id`, `caller_id`, `error_rate` |
+| `apcore.subscriber.circuit_opened` | — | `warn` | Event delivery (per-subscriber breaker) | `subscriber_id`, `subscriber_type`, `consecutive_failures` |
+| `apcore.subscriber.circuit_closed` | — | `info` | Event delivery (per-subscriber breaker) | `subscriber_id`, `subscriber_type` |
+| `apcore.event.delivery_failed` | — | `error` | Event bus (dead-letter path) | `subscriber_type`, `subscriber_id`, `original_event`, `error`, `attempt_count`, `timestamp` — the full payload is specified in [features/event-system.md](../features/event-system.md#dead-letter-event-apcoreeventdelivery_failed) § Dead-Letter Event on Permanent Failure, which is authoritative |
 
-| Canonical Name | Alias (legacy) | Severity | Emitted by | Payload Keys |
-|----------------|---------------|----------|------------|--------------|
-| `apcore.registry.module_registered` | `module_registered` (v0.22.0 rename), `apcore.module.registered` (early draft) | `info` | Registry bridge | `module_id` |
-| `apcore.registry.module_unregistered` | `module_unregistered` (v0.22.0 rename), `apcore.module.unregistered` (early draft) | `info` | Registry bridge | `module_id` |
-| `apcore.module.toggled` | *(new — was collision)* | `info`/`warn` | `system.control.toggle_feature` | `module_id`, `enabled` |
-| `apcore.module.reloaded` | `config_changed` (partial, v0.18.0 removal) | `info` | `system.control.reload_module` | `module_id`, `previous_version`, `new_version` |
-| `apcore.config.updated` | `config_changed` (partial, v0.18.0 removal) | `info` | `system.control.update_config` | `key`, `old_value`, `new_value` |
-| `apcore.health.error_threshold_exceeded` | `apcore.error.threshold_exceeded` (v0.22.0 rename) | `error` | `PlatformNotifyMiddleware` | `module_id`, `error_rate`, `threshold` |
-| `apcore.health.latency_threshold_exceeded` | `apcore.latency.threshold_exceeded` (v0.22.0 rename) | `warn` | `PlatformNotifyMiddleware` | `module_id`, `p99_latency_ms`, `threshold` |
-| `apcore.health.recovered` | *(new — was collision)* | `info` | `PlatformNotifyMiddleware` | `module_id`, `error_rate` |
-| `apcore.approval.decision` | *(new — v1.9.0, #77)* | `info` (approved/pending) / `warn` (rejected/timeout) | Approval Gate (§7) | `module_id`, `status`, `approved_by`, `reason`, `approval_id`, `trace_id` |
-| `apcore.policy.override` | *(new — v1.9.0, #77)* | `info` | Approval Gate (§7) | `module_id`, `pattern`, `requires_approval`, `destructive`, `needs_approval`, `reason`, `trace_id` |
-| `apcore.acl.denied` | *(new — v1.9.0, #77)* | `warn` | ACL Check (§6) | `module_id`, `caller_id`, `reason`, `trace_id` |
-| `apcore.acl.audit` | *(new — v1.45.0, #118 D-66)* | `observability`-independent: the ACL file's `audit.log_level`, default `info` | ACL Check (§6) — the **default sink** of §6.3.2 only, never a supplied callback | all thirteen §6.3.1 `AuditEntry` fields, under their `snake_case` wire names |
-| `apcore.stream.post_validation_failed` | *(new — v1.9.0, documents existing emit)* | `error` | Executor (streaming Phase 3) | `error_type`, `message`, `trace_id` |
-| `apcore.registry.module_load_failed` | *(new — v1.9.0, documents existing emit)* | `error` | Registry | `module_id`, `callback_name`, `error_type`, `error_message` |
-| `apcore.circuit.opened` | *(new — v1.9.0, documents existing emit)* | `warn` | `CircuitBreakerMiddleware` | `module_id`, `caller_id`, `error_rate` |
-| `apcore.circuit.closed` | *(new — v1.9.0, documents existing emit)* | `info` | `CircuitBreakerMiddleware` | `module_id`, `caller_id`, `error_rate` |
-| `apcore.subscriber.circuit_opened` | *(new — v1.9.0, documents existing emit)* | `warn` | Event delivery (per-subscriber breaker) | `subscriber_id`, `subscriber_type`, `consecutive_failures` |
-| `apcore.subscriber.circuit_closed` | *(new — v1.9.0, documents existing emit)* | `info` | Event delivery (per-subscriber breaker) | `subscriber_id`, `subscriber_type` |
-| `apcore.event.delivery_failed` | *(new — v1.9.0, documents existing DLQ emit; see §9.16 dead-letter)* | `error` | Event bus (dead-letter path) | `subscriber_type`, `subscriber_id`, `original_event`, `error`, `attempt_count`, `timestamp` — the full payload is specified in [features/event-system.md](../features/event-system.md) § Dead-Letter Queue, which is authoritative |
-
-> **Governance events (v1.9.0, #76/#77).** `apcore.approval.decision`, `apcore.policy.override`, and `apcore.acl.denied` make the governance chain (ACL → policy → approval) observable on the event bus. They are emitted **only** when an event emitter is configured, are best-effort side channels (execution outcome **MUST NOT** depend on their delivery), and follow the skip contract: the approval gate emits `apcore.approval.decision` only when it actually adjudicates (never on a skipped gate), and `apcore.acl.denied` is **NOT** emitted during a dry-run `validate()` preflight. See §7.9 (Execution Policy) for the policy layer that drives `apcore.policy.override`.
->
-> **Collision resolution (v0.18.0):** `"module_health_changed"` was retired. Its two usages are replaced by `apcore.module.toggled` (enable/disable) and `apcore.health.recovered` (error rate recovery). `"config_changed"` was retired and split into `apcore.module.reloaded` and `apcore.config.updated`. These two legacy names were emitted as transitional aliases up to v0.17.x and were **REMOVED in v0.18.0**; implementations **MUST NOT** emit them.
->
-> **Subsystem-segment correction (v0.22.0):** the registry events moved from `apcore.module.*` to `apcore.registry.*` (subsystem is the emitting module, not the affected entity), and the threshold events moved from `apcore.error.*` / `apcore.latency.*` to `apcore.health.*` (`error` and `latency` are categories, not subsystems; the emitting subsystem is the health-monitoring `PlatformNotifyMiddleware`). See [event-system.md §Legacy Aliases](../features/event-system.md#deprecation-legacy-event-names) for the full rename table.
+> **Governance events.** `apcore.approval.decision`, `apcore.policy.override`, and `apcore.acl.denied` make the governance chain (ACL → policy → approval) observable on the event bus. They are emitted **only** when an event emitter is configured, are best-effort side channels (execution outcome **MUST NOT** depend on their delivery), and follow the skip contract: the approval gate emits `apcore.approval.decision` only when it actually adjudicates (never on a skipped gate), and `apcore.acl.denied` is **NOT** emitted during a dry-run `validate()` preflight. See §7.9 (Execution Policy) for the policy layer that drives `apcore.policy.override`.
 
 #### 9.16.3 Event Pattern Matching
 
@@ -8402,29 +8119,15 @@ case fold would change no decision and is not applied.
 2. `include_events`, when present, is an allow-list and is **decisive**: the event is
    forwarded when **any** entry matches and discarded otherwise, and `exclude_events` is
    not consulted. `exclude_events` applies only when `include_events` is absent, and then
-   an event matching **any** entry is discarded. This records the behaviour all three
-   implementations already share; it is stated because the precedence between the two
-   lists had never been written down, and an unstated precedence is what the rest of this
-   section is about.
+   an event matching **any** entry is discarded.
 3. **`exclude_events` is why the algorithm has to be named here.** A pattern that fails to
    match means the event is *delivered*, so a matcher that understands fewer
-   metacharacters than the operator wrote does not narrow the filter — it **opens** it. A
-   subscriber configured to exclude `secret.?vent` excluded it under a full-`fnmatch`
-   implementation and **received it** under a `*`-only one, with nothing to indicate the
-   pattern had not been understood. `include_events` fails the safe way round under the
-   same divergence, which is precisely why it was not noticed.
+   metacharacters than the operator wrote does not narrow the filter — it **opens** it: a
+   subscriber excluding `secret.?vent` would receive that event from a matcher that
+   supports only `*`, with nothing to indicate the pattern had not been understood.
+   `include_events` fails the safe way round, withholding events instead.
 4. A pattern is never rejected and never warned about on syntactic grounds (§9.2.3
    requirement 2).
-
-!!! note "Why this was three different matchers (v1.37.0, #117)"
-    Until v1.36.0 no section stated the matcher for these keys, and the three
-    implementations supported three different metacharacter sets: full `fnmatch`
-    (`*`, `?`, `[…]`, `[!…]`), `*` and `?` with `[` escaped to a literal, and `*` alone.
-    The narrowest implementation's own doc comment named the mechanism exactly — it
-    described its support as *"the subset of `fnmatch` behaviour the spec fixtures and YAML
-    examples actually exercise"*. That is an accurate account of what happens whenever a
-    specification is silent: **the corpus becomes the contract, and the corpus
-    under-specifies**, because every fixture value here was `"*"` or a literal event name.
 
 ---
 
@@ -8462,31 +8165,24 @@ tracing:
 
 #### 10.1.1 Tracing from Configuration (`observability.tracing.*`)
 
-The five `observability.tracing.*` keys are one unit, and this section exists because
-treating them as five independent keys is what kept all five inert. Wiring `sampling_rate`
-alone produces a key that reads configuration, sets a field and still samples every span,
-because the strategy short-circuits ahead of the rate. Wiring the strategy as well produces
-two keys that configure a middleware **nothing installs**. Installing the middleware requires
-an exporter, and an exporter is an object rather than a name. Each key is unreachable until
-the one before it exists, so v1.39.0 recorded three of them as inert and opened a removal
-window; this section closes the chain instead.
+The five `observability.tracing.*` keys (`enabled`, `strategy`, `sampling_rate`, `exporter`,
+`otlp_endpoint`) are one unit, because they depend on one another: `sampling_rate` is
+consulted only under a strategy that uses it; the strategy and rate configure a tracing
+middleware, which has an effect only once it is installed; and installing it requires an
+exporter, which is an object rather than a name. Rationale: a key in this chain that is
+honoured without the others reads configuration and changes nothing an operator can observe.
 
-**Two of the five were never missing — they were declared in the wrong place.** §9.15.2's
-`observability` namespace registration has always declared `strategy` (default `"full"`, with
-the four values below) and `otlp_endpoint` (default `null`), and all three SDKs carry that
-registration verbatim. Neither key was in `schemas/apcore-config.schema.json`, so
-`_config.strict` **rejected** them as unknown while §9.15.2 documented their defaults. That is
-one configuration surface declared in two places that disagree, and the more complete
-declaration is the one that was discarded. §9.15.2 no longer carries its own copy: the schema
-is canonical and the namespace section references it.
+The keys are declared — types, enums and defaults — in `schemas/apcore-config.schema.json`,
+which is canonical; §9.15.2's `observability` namespace registration references that
+declaration and does not carry its own.
 
 **Requirements:**
 
 1. **Installation.** When the loaded configuration declares
    `observability.tracing.enabled: true`, implementations **MUST** install a tracing
    middleware built from `observability.tracing.*` at client construction. When the key is
-   absent or `false` — the default — implementations **MUST** install nothing. This is the
-   whole of the behaviour change: a project that does not ask for tracing is untouched.
+   absent or `false` — the default — implementations **MUST** install nothing: a project that
+   does not ask for tracing is untouched.
 
 2. **The exporter is selected by name.** `observability.tracing.exporter` **MUST** select the
    exporter the middleware is built with:
@@ -8498,29 +8194,27 @@ is canonical and the namespace section references it.
    | `jaeger` | none — see requirement 4 | — |
 
    The enum is closed and this table is the whole of it. An implementation's in-memory or test
-   span exporter **MUST NOT** be reachable by name from configuration: a caller who selects one
-   this way has no standardised way to reach the spans it holds, so it would take effect and
-   produce nothing an operator can see — the failure this section exists to remove.
+   span exporter **MUST NOT** be reachable by name from configuration. Rationale: a caller who
+   selects one this way has no standardised way to reach the spans it holds, so it would take
+   effect and produce nothing an operator can see.
 
 3. **`otlp_endpoint` reaches the exporter, or the configuration is rejected.** When the
    effective exporter is `otlp`, `observability.tracing.otlp_endpoint` **MUST** be passed to
    it; when it is `null`, the implementation's default endpoint applies. When
    `otlp_endpoint` is set to a non-null value and the effective exporter is **not** `otlp`,
    implementations **MUST** reject the configuration at load with a
-   `CONFIG_INVALID` error naming both keys. Accepting it would leave an operator with an
-   endpoint they wrote down and nothing reading it, which is the shape of every defect #118
-   found.
+   `CONFIG_INVALID` error naming both keys. Rationale: accepting it would leave an operator
+   with an endpoint they wrote down and nothing reading it.
 
 4. **A named exporter that this implementation cannot build installs nothing, and says so.**
    When `exporter` names something the implementation cannot construct, it **MUST** emit a
    diagnostic naming the value and what to use instead, **MUST NOT** install a tracing
-   middleware, and **MUST NOT** substitute a different exporter. Tracing is then off, which is
-   exactly the observable behaviour before v1.44.0 — so no configuration that works today
-   stops working, and the operator learns why nothing is being exported. Two cases exist:
+   middleware, and **MUST NOT** substitute a different exporter. Tracing is then off, and the
+   operator learns why nothing is being exported. Two cases exist:
 
-   - `jaeger` names no implementation in any SDK. It stays in the enum for the 1.x line and is
-     removed at v2.0 under §13.4's window, because narrowing an enum rejects a configuration
-     that is accepted today.
+   - `jaeger` names no implementation. It stays in the enum for the 1.x line and is removed at
+     v2.0 under §13.4's window, because narrowing an enum rejects a configuration that is
+     otherwise accepted.
    - `otlp` where the implementation's OTLP support is an optional dependency or build feature
      that is not present. Installing a middleware whose exporter discards every span would be
      worse than installing none: the operator would see tracing "enabled" and no traces, with
@@ -8533,17 +8227,13 @@ is canonical and the namespace section references it.
 
 6. **Precedence, and never two middlewares.** A tracing middleware the caller supplied in code
    wins: when one is already present in the chain, implementations **MUST NOT** install a
-   second from configuration. A `span_exporter` extension **MUST** continue to reconfigure the
+   second from configuration. A `span_exporter` extension **MUST** reconfigure the
    installed middleware rather than adding one, so the ordering is *extension-supplied exporter
-   object* > `observability.tracing.exporter` > the default. This follows the general rule an
-   API argument beats `Config`, and it is load-bearing here: the extension path already warned
-   `no TracingMiddleware found in the middleware chain` precisely because nothing installed one
-   from configuration.
+   object* > `observability.tracing.exporter` > the default. This follows the general rule that
+   an API argument beats `Config` (§9.1.3).
 
-7. **Deprecation is cancelled, not silent.** Implementations **MUST NOT** emit the §9.2.4
-   deprecation warning for `observability.tracing.enabled`, `.sampling_rate` or `.exporter`
-   from v1.44.0 onward. `strategy` and `otlp_endpoint` were never in that table — they were
-   never declared in the schema at all. The remaining keys in that table are unaffected.
+7. **No deprecation warning.** None of the five `observability.tracing.*` keys is deprecated.
+   Implementations **MUST NOT** emit the §9.2.4 deprecation warning for any of them.
 
 ### 10.2 Logging
 
@@ -8637,7 +8327,7 @@ trace_id_spec:
 
 Implementations **MUST** redact fields marked as `x-sensitive` in logs and trace outputs.
 
-```
+```text
 Algorithm: redact_sensitive(data, schema)
 
 Input:
@@ -8665,13 +8355,7 @@ Complexity: O(n), where n is number of data fields
 #### 10.6.1 Configured Redaction Rules (`obs.redaction.*`)
 
 §10.6 covers redaction driven by the **schema** (`x-sensitive`). This section covers
-redaction driven by **configuration**, which every implementation has shipped since D-53
-and which no section of this specification had ever defined. Its only written contract was
-a one-line `description` in `schemas/apcore-config.schema.json`, and that description was
-wrong on both keys — it described `sensitive_keys` as a plain substring match, omitting the
-glob branch all three implementations have; and it described `regex_patterns` as a full
-match, when all three search. An undefined surface is where three implementations diverge
-(#117), so it is defined here.
+redaction driven by **configuration** (D-53).
 
 Redaction is applied as the **union** of three independent rules: (a) `x-sensitive` schema
 annotations (§10.6), (b) `obs.redaction.sensitive_keys` matched against field **names**,
@@ -8688,10 +8372,9 @@ Each entry is interpreted per-entry, by its own spelling:
 | neither | a **substring** | the normalized field name |
 
 1. Both branches are **case-insensitive**, and the fold **MUST** be applied to the pattern
-   and to the field name **alike**. Folding only the field name is a silent bypass: an
-   operator who writes `"*Token*"` — or any capitalised spelling — then gets redaction from
-   an implementation that folds both sides and **plaintext** from one that folds only the
-   name, with no warning, because the pattern is valid and simply matches nothing.
+   and to the field name **alike**. Rationale: folding only the field name is a silent
+   bypass — a capitalised entry such as `"*Token*"` is valid and simply matches nothing, so
+   the field is logged in plaintext with no warning.
 2. The glob branch is **anchored**: the pattern must match the *entire* field name. `key`
    is a substring entry and matches `api_key`; `*key*` is a pattern entry and matches it
    too; `key*` matches neither `api_key` nor `keyring`'s sibling `api_keyring`. This is
@@ -8701,13 +8384,12 @@ Each entry is interpreted per-entry, by its own spelling:
    **SHOULD** additionally collapse separators so a camelCase field (`AccessKey`) matches a
    snake_case entry (`access_key`).
 4. `[`, `]`, `{`, `}` and `\` are **literals** in the glob branch, per §9.2.3 requirement 4.
-   Passing them through to a host regular-expression engine unescaped **MUST NOT** happen:
-   in `RegExp` syntax `[!p]` means "`!` or `p`" while in every glob dialect it means "not
-   `p`", so an entry written `[!p]assword` redacts the exact field the operator excluded
-   and leaks the ones they meant to catch. Under this section `[!p]assword` contains no
-   `*` or `?`, so it is a substring entry and matches a field literally named that — inert
-   rather than inverted, which is the correct outcome for a construct this dialect does not
-   have.
+   Passing them through to a host regular-expression engine unescaped **MUST NOT** happen.
+   Rationale: in `RegExp` syntax `[!p]` means "`!` or `p`" while in a glob dialect it means
+   "not `p`", so passing it through would redact the field the operator excluded and leak the
+   ones they meant to catch. Under this section `[!p]assword` contains no `*` or `?`, so it is
+   a substring entry and matches a field literally named that — inert rather than inverted,
+   which is the correct outcome for a construct this dialect does not have.
 5. An **empty** entry **MUST** be ignored. It is not a substring that matches every field.
 
 ##### `regex_patterns`
@@ -8720,47 +8402,38 @@ Each entry is interpreted per-entry, by its own spelling:
    a string in order to test it. Containers are descended into instead, so a string
    *inside* an object or array is still reached by this rule at its own position.
 
-   This is stated as a prohibition rather than left to the phrase "the value", because the
-   earlier wording here — *"the string form of a field's value"* — read as an instruction
-   to stringify, and one implementation did. **The conversion cannot be specified at all:**
-   for the single value `{"a": 1}` the three host languages render `{'a': 1}`, `[object
-   Object]` and `{"a":1}`, and for `true` they render `True`, `true` and `true`. A rule
-   defined over a per-language rendering is three rules, which is the defect §9.2.3 exists
-   to end. Restricting the rule to strings is also what all three implementations do on the
-   executor capture surface, so this pins the majority behaviour rather than changing it.
+   Rationale: the conversion to a string cannot be specified portably — for the single value
+   `{"a": 1}` host languages render `{'a': 1}`, `[object Object]` and `{"a":1}`, and for
+   `true` they render `True` and `true`. A rule defined over a per-language rendering is one
+   rule per language, which §9.2.3 exists to prevent.
 3. Entries **SHOULD** stay inside §9.2.3 requirement 6c's portable subset — no lookaround,
    no backreferences, no inline flag groups.
 4. **A pattern the engine cannot compile MUST NOT be dropped in silence** (§9.2.3
    requirement 6d). It **MUST** produce a diagnostic naming the pattern and the engine's
-   error, and `validate_config()` **MUST** report it. This is the clause with the sharpest
-   consequence in the section: a `regex_patterns` entry that fails to compile is
-   indistinguishable, from the outside, from one that compiles and matches nothing — and
-   the observable difference is credentials in plaintext in a log. Implementations
-   previously caught the compile error and continued: one re-failed silently on every log
-   line, one substituted a regular expression that can never match, one warned. All three
-   kept running with a redaction rule that redacted nothing.
+   error, and `validate_config()` **MUST** report it. Rationale: a `regex_patterns` entry
+   that fails to compile is indistinguishable, from the outside, from one that compiles and
+   matches nothing — and the observable difference is credentials in plaintext in a log.
 5. Compilation **SHOULD** happen once, when the configuration is read, so the diagnostic
    fires at load rather than per log record. Where an implementation suppresses a repeated
-   diagnostic, the suppression **MUST NOT** outlive the configuration it was raised for: a
-   process-wide "already reported" set silences the *second* deployment that loads the same
-   broken pattern, which is the reload case and the multi-tenant case — exactly the two
+   diagnostic, the suppression **MUST NOT** outlive the configuration it was raised for.
+   Rationale: a process-wide "already reported" set silences the *second* configuration that
+   loads the same broken pattern — the reload case and the multi-tenant case, exactly the two
    where an operator most needs to be told.
 
 ##### Protected fields
 
 Five correlation fields are **never** redacted, whatever an operator's patterns say:
 
-```
+```text
 trace_id   span_id   caller_id   module_id   target_id
 ```
 
 Implementations **MUST** exempt them from rules (b) and (c) alike, at every nesting depth.
-A `sensitive_keys` entry as ordinary as `*id*` otherwise erases exactly the identifiers that
-make the record correlatable, and a log that cannot be correlated cannot be used to
-investigate the incident the redaction was configured for. The exemption covers the
+Rationale: a `sensitive_keys` entry as ordinary as `*id*` would otherwise erase exactly the
+identifiers that make the record correlatable, and a log that cannot be correlated cannot be
+used to investigate the incident the redaction was configured for. The exemption covers the
 protected field's **own value** only: a container reached *through* a protected key is still
-descended into, and sensitive fields inside it are still redacted. All three implementations
-already carry this set; this clause records the agreement.
+descended into, and sensitive fields inside it are still redacted.
 
 ##### Where the rules apply
 
@@ -8774,35 +8447,21 @@ already carry this set; this clause records the agreement.
 
 2. An implementation **MUST NOT** honour the configured `sensitive_keys` / `regex_patterns`
    / `replacement` at one of those surfaces and only the *default* `sensitive_keys` list at
-   the other. That is not a partial implementation, it is a **contradiction**: the same
-   field, in the same execution, is a secret in the log line and plaintext in the captured
-   input, and neither answer is marked as provisional.
-
-   The capture point is the one that matters more, and it is the one that was missed. It
-   fills what the audit trail carries — governance events, error histories, and any
-   middleware reading `context.redacted_inputs` — so an operator who adds a `regex_patterns`
-   entry for a bearer token gets it redacted in the log line they were watching and stored
-   in the record they were not.
+   the other. Rationale: the same field, in the same execution, would be a secret in the log
+   line and plaintext in the captured input. The capture point fills what the audit trail
+   carries — governance events, error histories, and any middleware reading
+   `context.redacted_inputs` — so a rule honoured only at log emission redacts the log line an
+   operator is watching and stores the secret in the record they are not.
 
 3. Where the capture point cannot reach a configuration — a directly constructed executor
-   with none supplied — the default `sensitive_keys` list of §10.6.1 applies, exactly as at
-   log emission. "No configuration" means *the defaults*, never *no redaction*.
+   with none supplied — the default `obs.redaction.sensitive_keys` list (declared in
+   `schemas/apcore-config.schema.json`) applies, exactly as at log emission. "No
+   configuration" means *the defaults*, never *no redaction*.
 
-   This clause exists because the three implementations disagreed on it, which is a fourth
-   divergence at this surface and one no test could see while the *configured* rules reached
-   the capture point in none of them. apcore-python passed no key list into its capture-point
-   helper, and that helper resolves an absent list to the canonical 16-entry default;
-   apcore-typescript and apcore-rust applied `x-sensitive` and the `_secret_` prefix and
-   stopped. So a field named `password`, with no configuration anywhere, was redacted in the
-   captured input by one implementation and stored in plaintext by two.
-
-4. This is stated as a requirement because the specification previously implied its
-   opposite. §10.6's algorithm is published as `redact_sensitive(data, schema)` — two
-   inputs, no configuration — and all three implementations wrote precisely that signature
-   and honoured it. The "both surfaces" rule existed only in `docs/features/observability.md`,
-   with no normative section behind it, so for the entire life of `obs.redaction.*` the
-   configured rules reached **one** of the two surfaces in **every** implementation. A MUST
-   whose subject the published algorithm cannot express is a MUST nothing can satisfy.
+4. §10.6's `redact_sensitive(data, schema)` states the schema-driven rule only. An
+   implementation of the capture point therefore also needs the configured (or default)
+   rules as an input; a two-argument signature that cannot receive them does not satisfy
+   requirement 1.
 
 ### 10.7 Sampling Strategy
 
@@ -8818,11 +8477,8 @@ rate alone cannot express this table:
 | `error_first` | errors always recorded, successful calls with probability `sampling_rate` | consulted |
 | `off` | nothing is recorded | not consulted |
 
-Earlier revisions of this table described `full` and `off` as `sampling_rate: 1.0` and
-`sampling_rate: 0.0`, and named the key `sampling_strategy` — the constructor argument's name
-in all three SDKs, not the configuration key's. The key is `strategy`, as §9.15.2 has declared
-it all along. The rate now means one thing — a probability — instead of doubling as an on/off
-switch that two of the four strategies ignore.
+`sampling_rate` is a probability only; it is never an on/off switch. The configuration key
+that names the strategy is `strategy`.
 
 Sampling decision **MUST** be made at call chain root node, child calls **MUST** inherit parent call's sampling decision.
 
@@ -8992,20 +8648,21 @@ extension_points:
         - "YAMLSchemaLoader"     # Load from file if cache miss
 ```
 
-> **NOTE — Implementation Extension Point Names:**
-> The theoretical extension point names above (`schema_loader`, `id_converter`, `module_loader`, `executor`, `acl_checker`) reflect the original design-time taxonomy. Current SDK implementations (Python and TypeScript) use a different set of five built-in extension point names that map to runtime needs:
+> **NOTE — `ExtensionManager` Extension Point Names:**
+> The extension point names above (`schema_loader`, `id_converter`, `module_loader`, `executor`, `acl_checker`) are the conceptual taxonomy. `ExtensionManager` registers six built-in extension points under the following names:
 >
-> | Spec (Theoretical) | Implementation (Actual) | Rationale |
+> | Conceptual name | `ExtensionManager` name | Rationale |
 > |---------------------|--------------------------|-----------|
 > | `schema_loader`     | `discoverer`             | Unified discovery replaces separate schema/module loading |
 > | `module_loader`     | `module_validator`       | Validation is the primary customization need at load time |
 > | `acl_checker`       | `acl`                    | Shortened for ergonomic API use |
-> | *(no equivalent)*   | `middleware`             | First-class middleware extension point added for runtime pipeline customization |
+> | *(no equivalent)*   | `middleware`             | First-class middleware extension point for runtime pipeline customization |
 > | *(no equivalent)*   | `span_exporter`          | Observability export as a dedicated extension point |
-> | `id_converter`      | *(not yet implemented)*  | Deferred; not a common runtime customization need |
-> | `executor`          | *(not yet implemented)*  | Deferred; local execution covers current use cases |
+> | *(no equivalent)*   | `approval_handler`       | The approval gate's handler (§7) as an extension point |
+> | `id_converter`      | *(not an extension point)* | Not a common runtime customization need |
+> | `executor`          | *(not an extension point)* | Local execution covers the supported use cases |
 >
-> Implementations declaring Level 2 conformance use the actual names (`discoverer`, `middleware`, `acl`, `span_exporter`, `module_validator`, `approval_handler`) in `ExtensionManager`.
+> Implementations declaring Level 2 conformance use the `ExtensionManager` names (`discoverer`, `middleware`, `acl`, `span_exporter`, `module_validator`, `approval_handler`).
 
 ### 11.4 Framework Built-in Middleware
 
@@ -9051,7 +8708,7 @@ builtin_middleware:
 
 Middleware chain execution **MUST** follow this state machine:
 
-```
+```text
                                      Error branch
   ┌──────┐    ┌────────┐    ┌─────────┐    ┌──────┐    ┌──────┐
   │ init │───▶│ before │───▶│ execute │───▶│ after│───▶│ done │
@@ -9082,7 +8739,7 @@ Rules:
 
 Implementations **SHOULD** support the following extension points. Each supported extension point **MUST** define a clear interface contract:
 
-```
+```text
 Extension Point: SchemaLoader
   load(module_id: String) → Schema
   supports(module_id: String) → Boolean
@@ -9104,13 +8761,13 @@ Extension Point: Executor
   execute(module: Module, method: String, inputs: Map, context: Context) → Map
 ```
 
-> **NOTE:** The interface contracts above use the original theoretical names. See the mapping table in §11.3 for the actual extension point names used in SDK implementations (`discoverer`, `middleware`, `acl`, `span_exporter`, `module_validator`, `approval_handler`).
+> **NOTE:** The interface contracts above use the conceptual names. See the mapping table in §11.3 for the `ExtensionManager` names (`discoverer`, `middleware`, `acl`, `span_exporter`, `module_validator`, `approval_handler`).
 
 ### 11.7 Extension Loading Order
 
 Implementations **MUST** load extensions according to the following algorithm:
 
-```
+```text
 Algorithm: load_extensions(config, extension_points)
 
 Steps:
@@ -9188,7 +8845,7 @@ Implementations **MUST** handle middleware edge cases according to the following
 
 Following are formalized interface definitions for each core component (language-agnostic pseudocode). All SDK implementations **MUST** provide equivalent implementations of these interfaces.
 
-```
+```text
 Interface: IDConverter
   /**
    * Convert language-native ID to Canonical ID
@@ -9237,8 +8894,8 @@ Interface: Registry
    * `version` and `metadata` are OPTIONAL parameters an implementation MAY
    * accept; §5.4 governs multi-version coexistence, and resolving BY version
    * remains optional. Accepting the parameters and resolving by version are
-   * separate capabilities — see the SDK status table in
-   * features/registry-system.md.
+   * separate capabilities — see features/registry-system.md
+   * § "Multi-version registration".
    *
    * When `metadata` is accepted, a `dependencies` entry — a list of
    * {module_id, version?, optional?} objects — MUST reach the registered
@@ -9246,17 +8903,12 @@ Interface: Registry
    * `get_definition(module_id).dependencies` returns what the caller declared
    * in the SDK's dependency type rather than as raw input.
    *
-   * Dependencies are structural data the framework itself consumes for load
-   * and reload ordering, not extension metadata. Carrying them only inside the
-   * descriptor's `metadata` map — which §12.2's Returns table defines as
-   * arbitrary extension data — pushes the {module_id, version?, optional?}
-   * parse onto every consumer and lets the two views drift apart.
-   *
-   * An implementation that parses `dependencies` for load-time sorting but
-   * drops it from the descriptor degrades a dependency-ordered reload to its
-   * sort's seed order, which is usually alphabetical and therefore plausible
-   * enough to go unreported — the hazard remains real even where an SDK's
-   * reload path happens to read a different accessor today.
+   * Rationale: dependencies are structural data the framework itself consumes
+   * for load and reload ordering, not extension metadata. Carrying them only
+   * inside the descriptor's `metadata` map — arbitrary extension data — pushes
+   * the {module_id, version?, optional?} parse onto every consumer and lets the
+   * two views drift apart; dropping them from the descriptor degrades a
+   * dependency-ordered reload to its sort's seed order.
    *
    * The ordered side effects, the in-flight reservation and the visibility
    * rule are specified in features/registry-system.md
@@ -9297,8 +8949,7 @@ Interface: Registry
    *
    * Returns a rendered description STRING, not a structured object: the
    * machine-readable accessor is `get_definition`, which returns the
-   * ModuleDescriptor. All three SDKs return a string; the previous
-   * `→ ModuleDescription` declaration matched none of them (D-77, v1.49.0).
+   * ModuleDescriptor (D-77).
    *
    * A module MAY supply its own `describe()` (§5.6), whose declared return is
    * an introspection MAPPING. An implementation MUST return that override only
@@ -9317,19 +8968,16 @@ Interface: Executor
   /**
    * Call a module through the execution pipeline.
    *
-   * Note: In implementations, this is exposed as `call()` (sync) and
-   * `call_async()` (async). The separate `execute(module_id, method, ...)`
+   * Note: Python exposes this as `call()` (sync) and `call_async()`
+   * (async); TypeScript and Rust expose a single asynchronous `call()`.
+   * The separate `execute(module_id, method, ...)`
    * signature is folded into `call()` — the executor always runs the
    * module's `execute()` method through the full pipeline.
    *
    * `context` MUST be bound to at most one Executor. When `context.executor`
    * is non-null and refers to a DIFFERENT Executor instance, the call MUST
-   * raise `CONTEXT_BINDING_ERROR`. Accepting the rebind silently was permitted
-   * as a documented deviation through v1.10.0; no SDK took it — apcore-python
-   * `context.py:152`, apcore-typescript `context.ts:187` and apcore-rust
-   * `context.rs:765` all raise — and the alternative made the behaviour
-   * unassertable, since a conformance case cannot state two legal outcomes
-   * without each driver deciding which one applies to it (apcore#92).
+   * raise `CONTEXT_BINDING_ERROR`. Rationale: a single legal outcome keeps
+   * the behaviour assertable by a conformance case.
    *
    * @param module_id — Canonical ID
    * @param inputs    — Input parameters (conform to input_schema)
@@ -9371,8 +9019,8 @@ Interface: Executor
  * Result of Executor.validate() preflight check.
  *
  * PreflightResult SHOULD be duck-type compatible with ValidationResult
- * (i.e., it has `valid: Boolean` and `errors: List`), so that existing
- * consumers of validate() continue to work after the enhancement.
+ * (i.e., it has `valid: Boolean` and `errors: List`), so that consumers
+ * written against ValidationResult can read it unchanged.
  */
 Type: PreflightCheckResult
   check: String              // "module_id" | "module_lookup" | "call_chain" | "acl" | "approval" | "schema" | "module_preflight" | "module_preview"
@@ -9386,17 +9034,17 @@ Type: Change
   summary: String            // Human-readable single-line summary (REQUIRED — floor for destructive modules)
   before: Any?               // Optional snapshot of prior state; OMIT for unobservable side effects
   after: Any?                // Optional predicted new state; OMIT when unknown (e.g. server-assigned IDs)
-  // x-* extension fields permitted (consistent with §4.6 conventions). See ./rfc-preview-method.md
-  // for cross-SDK schema-encoding guidance (pydantic / serde-flatten / TypeBox Type.Unsafe).
+  // x-* extension fields permitted (consistent with §4.6 conventions); no other
+  // key is permitted. Encoding and round-trip rules: §12.8.5.1.
 
 Type: PreviewResult
-  changes: List<Change>      // Module's prediction of what would change if the call were executed
+  changes: List<Change>      // REQUIRED. Module's prediction of what would change if the call were executed, in order
 
 Type: PreflightResult
   valid: Boolean             // True only if ALL checks passed
   checks: List<PreflightCheckResult>
-  requires_approval: Boolean // True if module has requires_approval annotation
-  predicted_changes: List<Change>  // Populated when module implements preview() and Executor.validate() ran in dry_run mode (default: empty list).
+  requires_approval: Boolean // Governance-effective approval requirement for this call — §7.9.5
+  predicted_changes: List<Change>  // Populated from the module's preview() by Executor.validate() (default: empty list).
                                    // ALWAYS empty when the acl check failed — §12.8.5.1
 
 Interface: ACLChecker
@@ -9469,15 +9117,17 @@ Interface: MetricsCollector
 
 The protocol specification uses `snake_case` for canonical definitions. Each language SDK **MUST** translate to its native naming convention:
 
-| Protocol (canonical) | TypeScript | Python | Go | Rust |
-|---------------------|------------|--------|-----|------|
-| `module_id` | `moduleId` | `module_id` | `ModuleId` | `module_id` |
-| `input_schema` | `inputSchema` | `input_schema` | `InputSchema` | `input_schema` |
-| `output_schema` | `outputSchema` | `output_schema` | `OutputSchema` | `output_schema` |
-| `get_definition()` | `getDefinition()` | `get_definition()` | `GetDefinition()` | `get_definition()` |
-| `call_async()` | `callAsync()` | `call_async()` | `CallAsync()` | `call_async()` |
-| `requires_approval` | `requiresApproval` | `requires_approval` | `RequiresApproval` | `requires_approval` |
-| `open_world` | `openWorld` | `open_world` | `OpenWorld` | `open_world` |
+| Protocol (canonical) | TypeScript | Python | Rust |
+|---------------------|------------|--------|------|
+| `module_id` | `moduleId` | `module_id` | `module_id` |
+| `input_schema` | `inputSchema` | `input_schema` | `input_schema` |
+| `output_schema` | `outputSchema` | `output_schema` | `output_schema` |
+| `get_definition()` | `getDefinition()` | `get_definition()` | `get_definition()` |
+| `call_async()` | — (`call()` is asynchronous) | `call_async()` | — (`call()` is asynchronous) |
+| `requires_approval` | `requiresApproval` | `requires_approval` | `requires_approval` |
+| `open_world` | `openWorld` | `open_world` | `open_world` |
+
+An implementation in another language applies the same rule: the canonical name in that language's idiomatic casing.
 
 **Rule:** Bridge/adapter packages (e.g., apcore-mcp-typescript) **MUST** use the same naming conventions as their language's core SDK. A TypeScript MCP bridge **MUST** use camelCase to match apcore-typescript, not snake_case from the protocol spec.
 
@@ -9490,7 +9140,7 @@ Registry implementations **MUST** support exactly two standard events:
 | `"register"` | After module successfully registered | `(module_id, module) -> None` |
 | `"unregister"` | Before module is removed | `(module_id, module) -> None` |
 
-All SDKs **MUST** export these event names as named constants (e.g., TypeScript: `REGISTRY_EVENTS.REGISTER`, Python: `REGISTRY_EVENTS["REGISTER"]`). Consumers **MUST NOT** hardcode event name strings.
+All SDKs **MUST** export these event names as named constants (e.g., TypeScript: `REGISTRY_EVENTS.REGISTER`, Python: `REGISTRY_EVENTS["REGISTER"]`, Rust: `RegistryEvents::REGISTER`). Consumers **MUST NOT** hardcode event name strings.
 
 #### Error Code Constants Export Requirement
 
@@ -9509,7 +9159,7 @@ export const ErrorCodes = {
 
 For web framework integrations (Django, Flask, FastAPI, NestJS, Express), SDKs **SHOULD** provide a `ContextFactory` protocol:
 
-```
+```text
 Protocol ContextFactory:
     create_context(request: Any) -> Context
 ```
@@ -9522,14 +9172,14 @@ The lifecycle is: request arrives → ContextFactory.create_context(request) →
 
 Modules MAY support incremental output by implementing a `stream` method alongside the required `execute` method:
 
-```
+```text
 stream(inputs, context) → AsyncIterable<Record>
 ```
 
 **Semantics:**
 
 - Each yielded record is a partial result chunk; the framework does not prescribe chunk structure.
-- The complete result is the **recursive deep merge** of all yielded chunks. Implementations **MUST** recurse into nested objects and **MUST** replace (not concatenate) arrays at matching keys. Recursion depth **MUST** be capped to prevent stack exhaustion via adversarial chunk shapes; the canonical default is 32. See `./algorithms.md` §A24 `deep_merge_chunks` for pseudocode and `../../conformance/fixtures/stream_aggregation.json` for the 9 cross-language test cases.
+- The complete result is the **recursive deep merge** of all yielded chunks. Implementations **MUST** recurse into nested objects and **MUST** replace (not concatenate) arrays at matching keys. Recursion depth **MUST** be capped to prevent stack exhaustion via adversarial chunk shapes; the canonical default is 32. See `./algorithms.md` §A24 `deep_merge_chunks` for pseudocode and `../../conformance/fixtures/stream_aggregation.json` for the cross-language test cases.
 - `execute()` MUST remain implemented as the non-streaming fallback.
 - Module descriptors SHOULD declare `annotations.streaming = true` when `stream()` is provided.
 
@@ -9544,8 +9194,9 @@ stream(inputs, context) → AsyncIterable<Record>
 
 | Language   | Executor method signature                                                          |
 |------------|------------------------------------------------------------------------------------|
-| TypeScript | `async *stream(moduleId, inputs?, context?): AsyncGenerator<Record<string, unknown>>` |
-| Python     | `async def stream(module_id, inputs?, context?) -> AsyncIterator[dict[str, Any]]`  |
+| TypeScript | `async *stream(moduleId, inputs?, context?, versionHint?): AsyncGenerator<Record<string, unknown>>` |
+| Python     | `async def stream(module_id, inputs?, context?, version_hint?) -> AsyncIterator[dict[str, Any]]`  |
+| Rust       | `fn stream(&self, module_id: &str, inputs: Value, ctx: Option<&Context<Value>>, version_hint: Option<&str>) -> Pin<Box<dyn Stream<Item = Result<Value, ModuleError>> + Send + '_>>` |
 
 **MCP bridge behavior:**
 
@@ -9577,7 +9228,7 @@ All SDK implementations **MUST** satisfy the following requirements regardless o
 
 Each SDK implementation **MUST** pass the following consistency test suite to ensure cross-language behavior consistency:
 
-```
+```text
 Consistency Test Suite:
 
 1. ID Conversion Tests:
@@ -9605,7 +9256,7 @@ Consistency Test Suite:
    - Priority sorting correctness
 
 5. Executor Tests:
-   - Normal execution flow (input validation → ACL → middleware → execute → output validation)
+   - Normal execution flow in pipeline order (ACL → approval → before-middleware → input validation → execute → output validation → after-middleware)
    - Error propagation and error codes
    - Context propagation (trace_id, call_chain)
    - Circular call detection
@@ -9630,7 +9281,7 @@ Consistency Test Suite:
 
 ### 12.5 Implementation Roadmap
 
-```
+```text
 Phase 1: Core MVP
 ├── IDMap (Directory as ID + cross-language conversion)
 ├── SchemaLoader (YAML → language-native Schema)
@@ -9757,7 +9408,7 @@ print(context.data["key"])  # Reads "value" (reference sharing)
 
 Modules that hold in-memory state (counters, caches, connection pools) can implement `on_suspend()` / `on_resume()` to preserve state across hot-reload cycles:
 
-```
+```text
 Hot-Reload Sequence:
   1. old_instance.on_suspend() → state (dict or null)
   2. old_instance.on_unload()
@@ -9801,7 +9452,7 @@ class CounterModule(Module):
 
 **Safe Unload Algorithm (MUST)**:
 
-```
+```text
 Algorithm: safe_unregister(module_id, registry)
 
 Steps:
@@ -9834,7 +9485,7 @@ Return:
 
 **Cooperative Cancellation (SHOULD)**:
 
-- SDK **SHOULD** prefer cooperative cancellation mechanism (e.g., Python `asyncio.CancelledError`, Go `context.Context`)
+- SDK **SHOULD** prefer cooperative cancellation mechanism (e.g., the context's `CancelToken`, Python `asyncio.CancelledError`)
 - Module **SHOULD** check cancellation signal and actively exit
 
 **Forced Termination (MAY)**:
@@ -9844,7 +9495,7 @@ Return:
 
 **Timeout Enforcement Algorithm (MUST)**:
 
-```
+```text
 Algorithm: enforce_timeout(module_id, inputs, context, timeout_ms)
 
 Steps:
@@ -9889,7 +9540,7 @@ Return:
 
 **Example — Middleware Concurrent Execution:**
 
-```
+```text
 Thread 1: before1 → before2 → execute(A) → after2 → after1
 Thread 2:                before1 → before2 → execute(B) → after2 → after1
                        ↑ Interleaving allowed (different calls)
@@ -9922,10 +9573,10 @@ Implementations **MUST** support mixed calls of sync and async modules, bridging
 | Language | Sync Model | Async Model | Bridging Mechanism |
 |------|---------|---------|---------|
 | Python | Regular function | `async def` | `asyncio.run()` / `run_in_executor()` |
-| JavaScript | Blocking code (rare) | Promise / async/await | Direct await (JS default async) |
+| TypeScript | Blocking code (rare) | Promise / async/await | Direct await (JavaScript is async by default) |
 | Rust | Regular function | `async fn` | `block_on()` / `spawn_blocking()` |
-| Go | goroutine | goroutine + channel | Naturally supported (goroutines lightweight) |
-| Java | Thread | CompletableFuture | `join()` / `supplyAsync()` |
+
+An implementation in another language applies the same four bridging rules with its own primitives.
 
 **Performance Considerations:**
 
@@ -9967,7 +9618,7 @@ class DatabaseModule:
 ### 12.8 Executor.validate() Cross-Language Implementation Guide
 
 The `validate()` preflight method (§12.2, SHOULD level) runs Steps 1–5 and Step 7 of the Executor pipeline
-(plus optional module-level preflight Check 7) without executing module code or middleware. This section provides language-specific guidance for
+(plus the optional module-level `preflight()` and `preview()` of §12.8.5.1) without executing module code or middleware. This section provides language-specific guidance for
 SDK implementers.
 
 #### 12.8.1 Design Principles
@@ -9975,7 +9626,7 @@ SDK implementers.
 1. **Collect, don't throw.** All check failures are appended to a `checks` list. The caller_id sees every problem in one call.
 2. **Early return only when subsequent checks are meaningless.** module_id format failure or module-not-found justifies early return because later checks require a valid module reference.
 3. **Reuse existing internals.** validate() calls the same helper functions used by the `call()` pipeline (regex check, registry lookup, ACL check, schema validation). No new capabilities are required.
-4. **Duck-type backward compatibility.** PreflightResult SHOULD expose `.valid` (Boolean) and `.errors` (List) so existing consumers of the old ValidationResult continue to work.
+4. **Duck-type compatibility.** PreflightResult SHOULD expose `.valid` (Boolean) and `.errors` (List) so consumers written against ValidationResult can read it unchanged.
 5. **Authorization gates disclosure.** A failed `acl` check does not stop the checks the Executor computes on its own, but it **MUST** stop module-level introspection — see §12.8.5.1. `validate()` is a preflight, not a way around the ACL.
 
 #### 12.8.2 Error Handling Mapping
@@ -9985,7 +9636,7 @@ Each check in validate() calls the same helper functions used by the `call()` pi
 | Error Model | Pattern |
 |-------------|---------|
 | **Exception-based** (try/catch) | `try { helper(); push(passed) } catch(e) { push(failed, e) }` |
-| **Error-return** (Go, Rust) | `if err := helper(); err != nil { push(failed, err) } else { push(passed) }` |
+| **Error-return** (Rust) | `match helper() { Ok(_) => push(passed), Err(e) => push(failed, e) }` |
 
 > **Note:** Error-return patterns are more natural than try/catch for this "collect all errors" flow.
 
@@ -9997,7 +9648,8 @@ Each check in validate() calls the same helper functions used by the `call()` pi
 |-------|------|-------------|
 | `valid` | boolean | `true` if all checks passed |
 | `checks` | list of `PreflightCheckResult` | Ordered list of check results |
-| `requires_approval` | boolean | Whether the module requires approval |
+| `requires_approval` | boolean | Whether the call requires approval — the governance-effective value of §7.9.5 |
+| `predicted_changes` | list of `Change` | Changes predicted by the module's `preview()` (§12.8.5.1), in order; empty when none were predicted |
 | `errors` (computed) | list of error objects | Filtered view: only checks where `passed` is `false` |
 
 #### 12.8.4 PreflightCheckResult Type
@@ -10006,7 +9658,7 @@ Each check in validate() calls the same helper functions used by the `call()` pi
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `check` | string | Check name (e.g., `"module_id_format"`, `"acl"`, `"schema"`, `"module_preflight"`) |
+| `check` | string | Check name (e.g., `"module_id"`, `"acl"`, `"schema"`, `"module_preflight"`, `"module_preview"`) |
 | `passed` | boolean | Whether the check passed |
 | `error` | error object or null | Error details when `passed` is `false` |
 | `warnings` | list of strings | Non-fatal advisory messages (default: empty list) |
@@ -10024,6 +9676,33 @@ After schema validation, validate() **MAY** invoke the module's optional `prefli
 - If `preflight()` returns an empty list, a `module_preflight` check result with `passed: true` and no warnings is added.
 - If the module does not define `preflight()`, no `module_preflight` check is added.
 - If `preflight()` raises an exception, the exception is caught and reported as a warning (not a failure).
+
+**Module-level preview (`module_preview`).** After `preflight()`, validate() invokes the module's optional
+`preview(inputs, context)` method (§5.6) when the module implements it. This check is advisory, and it
+never fails validation:
+
+- If `preview()` returns a `PreviewResult`, its `changes` become `predicted_changes`, in the order returned,
+  and a `module_preview` check result with `passed: true` is added.
+- If the module does not implement `preview()`, or `preview()` returns null, `predicted_changes` is empty.
+- If `preview()` raises — a synchronous throw, an asynchronous rejection, or a panic — the exception is
+  caught and reported as a warning on a `module_preview` check result with `passed: true`, and
+  `predicted_changes` is empty.
+- `preview()` is invoked for a streaming module exactly as for any other: it predicts side effects, not output.
+- Implementing `preview()` does not set or imply the `x-supports-dry-run` convention (§4.6); the two are
+  independent signals.
+
+**`Change` records.** `action`, `target` and `summary` are required strings. `action` and `target` are
+free-form — module authors define their own taxonomy. `summary` is the floor: even a module wrapping an
+opaque external API can produce `{action: "send", target: "smtp:user@example.com", summary: "Send order
+confirmation email to user@example.com"}`. `before` and `after` are optional and module-class specific;
+they are omitted when the prior state is unobservable or the new state is unknown.
+
+A `Change` **MAY** carry any number of additional keys matching `^x-`, with arbitrary values; any other
+key that is not a declared field is invalid. Implementations **MUST** preserve `x-*` keys when a `Change`
+is serialized and deserialized: a `Change` carrying `x-foo` round-trips with that key and value
+unchanged. Each SDK uses its idiomatic encoding for this — for example, an extra-allowing model with a
+prefix check, a flattened map, or a schema with `patternProperties: {"^x-": {}}` and
+`additionalProperties: false`.
 
 ##### Authorization gates module-level introspection
 
@@ -10051,17 +9730,18 @@ decision `predicted_changes` exists to inform.
 
 Follow each language's idiomatic casing for PreflightCheckResult and PreflightResult fields:
 
-| Field (Protocol) | snake_case languages | camelCase languages | PascalCase languages |
-|------------------|---------------------|--------------------|--------------------|
-| `check` | `check` | `check` | `Check` |
-| `passed` | `passed` | `passed` | `Passed` |
-| `error` | `error` | `error` | `Error` |
-| `valid` | `valid` | `valid` | `Valid` |
-| `checks` | `checks` | `checks` | `Checks` |
-| `requires_approval` | `requires_approval` | `requiresApproval` | `RequiresApproval` |
-| `errors` (computed) | `errors` | `errors` | `Errors()` |
+| Field (Protocol) | Python | TypeScript | Rust |
+|------------------|--------|------------|------|
+| `check` | `check` | `check` | `check` |
+| `passed` | `passed` | `passed` | `passed` |
+| `error` | `error` | `error` | `error` |
+| `valid` | `valid` | `valid` | `valid` |
+| `checks` | `checks` | `checks` | `checks` |
+| `requires_approval` | `requires_approval` | `requiresApproval` | `requires_approval` |
+| `predicted_changes` | `predicted_changes` | `predictedChanges` | `predicted_changes` |
+| `errors` (computed) | `errors` (property) | `errors` | `errors()` |
 
-> **Convention:** snake_case (Python, Rust), camelCase (TypeScript, Java methods), PascalCase (Go exported fields). Other languages follow their idiomatic convention.
+> **Convention:** An implementation in another language follows the same rule: the protocol field name in that language's idiomatic casing.
 
 ---
 
@@ -10069,7 +9749,7 @@ Follow each language's idiomatic casing for PreflightCheckResult and PreflightRe
 
 ### 13.1 Version Number Specification
 
-```
+```text
 {major}.{minor}.{patch}[-{prerelease}]
 
 major: Incompatible API changes
@@ -10080,26 +9760,6 @@ prerelease: draft, alpha, beta, rc
 
 ### 13.2 Compatibility Promise
 
-!!! note "Normative corrections in v1.9.0 — no deprecation cycle is owed"
-    v1.9.0 changes three requirements that shipped in v1.8.x. **No implementation ever
-    provided the v1.8.x behaviour**, so there is nobody to deprecate *for*: these are
-    corrections to text that was wrong, not a migration users have to make. Verified
-    against all three SDKs rather than assumed.
-
-    | v1.8.x text | v1.9.0 text | Did any SDK ship the v1.8.x behaviour? |
-    |---|---|---|
-    | `$ref` circular-reference detection **MUST** reject `A → B → A` in all forms (§4.11) | Only a `$ref` → `$ref` chain that never reaches a schema body is rejected; a **self-reference** reached by descending through `properties` / `items` / a combinator **MUST** be preserved as a lazy reference (§4.15) | **No.** All three ship the `from_ref_chain` discriminator that implements the v1.9.0 rule. v1.8.x also required Recursive Schema Support, so the blanket rule was never simultaneously satisfiable — implementers followed the requirement that worked. |
-    | `$ref` depth exhaustion **MUST** throw `SCHEMA_CIRCULAR_REF` (§4.15 edge-case table) | It **MUST** throw `SCHEMA_MAX_DEPTH_EXCEEDED` | **No.** All three already emit `SCHEMA_MAX_DEPTH_EXCEEDED`; no SDK emits `SCHEMA_CIRCULAR_REF` for depth. The code was missing from the §8 registry, which is what this change repairs. |
-    | The §9.1 example marked `extensions.root` / `schema.root` and peers as **MUST**, and `apcore-config.schema.json` required `version`, `project`, `extensions`, `schema`, `acl` | Those keys are normative with **fixed defaults**; only `version` and `project.name` make a file invalid by their absence | **No.** All three invented a `version: "0.16.0"` default rather than enforcing the requirement — evidence that hard-required was never what implementers understood. |
-
-    This is a **deliberate relaxation** in the third row and a contradiction-resolution in
-    the first two. All three are judged on their own merits in the linked governance issue;
-    none carries a dual-accept window, because there is no prior behaviour to accept.
-
-    Added in v1.9.0 (new requirements, not corrections): the A23 object-detection rule
-    (§4.16), and the declared-configuration view `get_declared()` / `getDeclared()` /
-    `Config.declared` with the rule that environment overrides count as declaration (§9.1).
-
 - **Within major version**: Protocol backward compatible
 - **Schema evolution**: Support version declaration, old version Schema readable by new SDK
 - **Deprecation policy**: Keep at least 2 minor versions for deprecation period
@@ -10108,7 +9768,7 @@ prerelease: draft, alpha, beta, rc
 
 When SDK loads configuration or Schema, **MUST** perform version negotiation:
 
-```
+```text
 Algorithm: negotiate_version(declared_version, sdk_version)
 
 Input:
@@ -10137,7 +9797,7 @@ Steps:
 
 When Schema version changes, implementations **SHOULD** support automatic migration:
 
-```
+```text
 Algorithm: migrate_schema(schema, from_version, to_version)
 
 Input:
@@ -10197,7 +9857,7 @@ Migration types:
 
 ### A. Complete Example Project Structure
 
-```
+```text
 my-ai-project/
 ├── apcore.yaml              # Framework configuration
 ├── extensions/                   # Extension directory
@@ -10230,14 +9890,14 @@ my-ai-project/
 
 See `.schema.json` files in `schemas/` directory.
 
-### C. Reference Implementations
+### C. Implementations
 
-- **apcore (this project)**: Python reference implementation
-- **apflow**: Task orchestration application example based on apcore
+- **SDKs**: [apcore-python](https://github.com/aiperceivable/apcore-python), [apcore-typescript](https://github.com/aiperceivable/apcore-typescript), [apcore-rust](https://github.com/aiperceivable/apcore-rust). No single SDK is normative; this specification and the conformance fixtures are.
+- **Surface adapters** (independently versioned): `apcore-mcp`, `apcore-a2a`, `apcore-cli`; framework integrations bind HTTP endpoints to modules.
 
 ### D. Module Exposure Methods Reference (Non-core, Reference Only)
 
-apcore modules can be exposed in multiple forms for external invocation. Following are common AI protocol mapping references, **apcore doesn't provide adapter implementations**.
+apcore modules can be exposed in multiple forms for external invocation. The mappings below describe how a module projects onto common AI protocols. The core SDKs do not include these adapters; the ecosystem adapters (`apcore-mcp`, `apcore-a2a`) implement them.
 
 #### D.1 MCP (Model Context Protocol) Mapping
 
@@ -10245,17 +9905,23 @@ apcore modules can be exposed in multiple forms for external invocation. Followi
 # Module → MCP Tool mapping
 mcp_mapping:
   tool:
-    name: "{module.id}"
-    description: "{module.description}"
+    name: "{module.id}"                  # or the display overlay's resolved MCP alias (§5.13)
+    description: "{module.description}"  # or the display overlay's resolved MCP description (§5.13)
     inputSchema: "{module.input_schema}"
     outputSchema: "{module.output_schema}"
 
-    # annotations mapping
+    # annotations mapping (MCP ToolAnnotations; `title` is not mapped)
     annotations:
       readOnlyHint: "{module.annotations.readonly}"
       destructiveHint: "{module.annotations.destructive}"
       idempotentHint: "{module.annotations.idempotent}"
       openWorldHint: "{module.annotations.open_world}"
+
+    # apcore-mcp: hints with no ToolAnnotations equivalent travel in the tool's _meta,
+    # each present only when the annotation is true
+    _meta:
+      requiresApproval: "{module.annotations.requires_approval}"
+      streaming: "{module.annotations.streaming}"
 
   # Example
   example:
@@ -10290,15 +9956,16 @@ mcp_mapping:
 a2a_mapping:
   skill:
     id: "{module.id}"
-    name: "{module.name}"
-    description: "{module.description}"
-    tags: "{module.tags}"
-    examples: "{module.examples[*].title}"
-    inputSchema: "{module.input_schema}"
-    outputSchema: "{module.output_schema}"
-    inputModes: ["application/json"]
-    outputModes: ["application/json"]
+    name: "{display.a2a.alias}"            # display overlay (§5.13); otherwise the module ID humanized ("image.resize" → "Image Resize")
+    description: "{module.description}"    # or the display overlay's resolved A2A description (§5.13)
+    tags: "{module.tags}"                  # plus apcore:readonly / apcore:destructive / apcore:idempotent /
+                                           # apcore:requires-approval for each of those annotations that is true
+    examples: "{module.examples[*].title}" # at most 10
+    inputModes: ["application/json"]       # "text/plain" added for a string-root input_schema; ["text/plain"] when there is none
+    outputModes: ["application/json"]      # ["text/plain"] when the module has no output_schema
 ```
+
+An A2A `AgentSkill` has no schema member, so `input_schema` and `output_schema` do not appear on the skill. A module whose `requires_approval` annotation is true is withheld from the public Agent Card and listed on the authenticated extended card.
 
 #### D.3 OpenAI Function Calling Mapping
 
@@ -10308,7 +9975,7 @@ openai_mapping:
   function:
     name: "{module.id.replace('.', '_')}"  # OpenAI doesn't support dots
     description: "{module.description}"
-    parameters: "{module.input_schema}"
+    parameters: "{module.input_schema}"    # after to_strict_schema() (§4.16), per the openai profile (§4.17)
     strict: true
 
   # annotations mapping (OpenAI Agents SDK)
@@ -10332,7 +9999,7 @@ anthropic_mapping:
 
 ```python
 # Module → LangChain Tool
-from langchain.tools import StructuredTool
+from langchain_core.tools import StructuredTool
 
 def module_to_langchain_tool(module):
     return StructuredTool.from_function(
@@ -10367,75 +10034,76 @@ Each language SDK **SHOULD** provide idiomatic module definition syntax. The fol
 |------|------------|--------------------------|-------------------------|-----------------|
 | Description | Inherit/implement Module interface | Language-native annotation | Wrap existing callable | YAML binding file |
 | Example (Python) | `class M(Module)` | `@module(id=...)` | `module(fn, id=...)` | YAML |
-| Example (TypeScript) | `class M extends Module` | `@module({id: ...})` | `module(fn, {id: ...})` | YAML |
+| Example (TypeScript) | `class M implements Module` | — | `module({ id: ..., inputSchema, outputSchema, execute })` | YAML |
+| Example (Rust) | `impl Module for M` | — | `FunctionModule::new(annotations, input_schema, output_schema, handler)` | YAML |
 
 ---
 
 ## Revision History
 
-> **Note**: The specification document uses its own version track (`1.x.0-draft`), independent of the SDK/ecosystem release version (`0.x.0`). The mapping between specification versions and release versions is recorded in `CHANGELOG.md`.
+The specification is versioned independently of the SDK release line (`0.x`); `CHANGELOG.md` records which SDK release shipped each specification version. The reasoning behind each change is recorded in `CHANGELOG.md` and in the decision records indexed by [`decision-register.md`](./decision-register.md).
 
-| Version | Date | Change Description |
-|------|------|----------|
-| 1.0.0-draft | 2026-02-05 | Initial draft |
-| 1.1.0-draft | 2026-02-07 | Added §5.11 Function-based Module Definition, §5.12 External Schema Binding, Appendix E Module Definition Methods Comparison |
-| 1.2.0-draft | 2026-02-09 | Revised §4.3 supplemented x-llm-description usage guide; Added §4.16 Strict Mode Export, §4.17 Export Profile |
-| 1.3.0-draft | 2026-03-01 | Added §7 Approval System (ApprovalHandler protocol, Executor Step 4.5, error types, built-in and protocol bridge handlers, phased implementation, conformance levels); Updated §4.4 requires_approval annotation to reference runtime enforcement; Added APPROVAL_DENIED/TIMEOUT/PENDING error codes to §8; Renumbered §7–§13 → §8–§14 |
-| 1.4.0-draft | 2026-03-06 | Refined Executor pipeline — Approval Gate is now Step 5, subsequent steps shifted; Added Executor.validate() [SHOULD] to §12.2 with PreflightResult/PreflightCheckResult types for non-destructive preflight checks through Steps 1–6; Updated §7.4, §7.9, streaming protocol references to match new numbering; Added §12.8 Executor.validate() Cross-Language Implementation Guide (error handling mapping, type mapping for Python/TypeScript/Go/Rust/Java/C/C++, schema library requirements, naming conventions); Added C/C++ and TypeScript to §12.6; Added validate() preflight to §12.3 requirements table; Added Preflight Tests to §12.4 consistency test suite |
-| 1.5.0-draft | 2026-03-20 | Added §5.13 Display Overlay — sparse binding.yaml `display` section for surface-facing presentation (CLI/MCP/A2A alias, description, documentation overrides); Defined resolve priority chain algorithm; Added `ResolvedModule` type; Added `SurfaceOverride` and `DisplayOverlay` to `binding.schema.json`; Added `suggested_alias` scanner metadata convention; Deprecated `simplify_ids` in favor of display overlay; Cross-language implementation guide for Python/TypeScript/Rust/Go/Java/Ruby/PHP; Renumbered §5.13 Edge Case Handling → §5.14 → §5.15 |
-| 1.6.0-draft | 2026-03-29 | Added §9.4–9.14 Config Bus Architecture — namespace registration, unified configuration file with legacy/namespace mode detection, mount mechanism for third-party integration, per-namespace environment variable overrides, namespace-aware access API (get/set/bind/namespace), extended validation algorithm A12-NS, hot-reload with namespace support, cross-language implementation requirements (Python/TypeScript/Rust/Go/Java), ecosystem integration patterns (apcore packages, third-party packages, framework auto-registration), optional config discovery; Added error codes CONFIG_NAMESPACE_DUPLICATE, CONFIG_NAMESPACE_RESERVED, CONFIG_ENV_PREFIX_CONFLICT, CONFIG_MOUNT_ERROR, CONFIG_BIND_ERROR; Added `_config` reserved namespace for strict/allow_unknown meta-configuration |
-| 1.6.0-draft | 2026-04-08 | §2.7 EBNF constraint #1 — `canonical_id` maximum length raised from 128 to 192 characters to accommodate deep-namespace languages (Java/.NET/Spring FQN-derived IDs). 192 is filesystem-safe (`192 + ".binding.yaml" = 205 bytes < 255-byte filename limit on ext4/xfs/NTFS/APFS/btrfs`) and remains within `VARCHAR(255)` for typical persistence. Schemas updated: `binding.schema.json`, `module-schema.schema.json`, `module-meta.schema.json`, `acl-config.schema.json` (callers/targets pattern strings, kept symmetric with module_id). Algorithm A01 (`directory_to_canonical_id`) Step 7 threshold updated. Conformance test T01-006 boundary updated. Forward-compatible relaxation: implementations conforming to this revision MUST accept IDs up to 192; older 128-only implementations cannot load IDs in the 129–192 range from newer SDKs. |
-| 1.7.0-draft | 2026-05-04 | **§6.1** — formalised compound operators `$or` (list[object]) and `$not` (object) as conditions sub-fields, with required cross-mode (sync/async) evaluator semantics and fail-closed rules for empty `$not` (resolves issue #46 / `planning/acl-compound-operators-spec-patch`). **§6.2.1** (new) — formalised compound operators `$or` and `$not` as the first element of `callers`/`targets` pattern arrays, with the four allowed forms tabulated and a reservation rule preventing literal-token matching (resolves issue #46). All four behaviour shapes are already implemented uniformly in apcore-python, apcore-typescript, and apcore-rust at v0.20.0 and verified by `../../conformance/fixtures/acl_evaluation.json`; no SDK behaviour change. **§5.1** — `Executor.validate()` description aligned with §12.8: "Steps 1–5 and Step 7" (skipping Step 6 Middleware Before Chain) plus optional module-level preflight, replacing the stale "Steps 1–6" wording that pre-dated the v0.18 step swap (resolves issue #47 / `planning/validate-step-count-spec-patch`). No SDK behaviour change. |
-| 1.8.0-draft | 2026-05-04 | **§5 streaming semantics** — corrected "shallow merge" to "**recursive deep merge** with depth cap" matching all three SDK implementations (`apcore-python/src/apcore/executor.py:_deep_merge`, `apcore-typescript/src/executor.ts:deepMergeChunk`, `apcore-rust/src/executor.rs:deep_merge_chunks`) and `../../conformance/fixtures/stream_aggregation.json` (9 cases). Added algorithm `A24 deep_merge_chunks` to `./algorithms.md` formalising the merge with the canonical 32-depth cap (resolves issue #49). **§7.4 Step 11 Contract** (new block after the pipeline diagram) — five-point normative contract specifying: `call()` returns module output unchanged (no envelope), `stream()` final accumulated dict is what Step 9 validates, `validate()` returns `PreflightResult`, trace metadata lives on `Context` (not the return value), side-channel emissions are independent (resolves issue #50). **§6.7 Canonical System Module Catalogue** (new) — enumerates the 9 canonical `system.*` modules with read/write classification, conformance level (Level 1 for the 6 read modules; Level 2 for the 3 control modules), and 6 cross-cutting requirements (registration via `register_internal()`, audit events for write modules, `system.control.reload_module` mutually-exclusive `module_id`/`path_filter`, sensitive-key redaction in `update_config` output, persistence requirement for `toggle_feature`). Authoritative JSON Schemas remain in SDK source to avoid drift; this section is the contract surface (resolves issue #51). All three patches: zero SDK behaviour change. |
-| 1.9.0 | 2026-05-18 | **§9.9.5 Reserved Namespace Query** (new) — formalised public API requirement that all SDKs MUST expose a read-only query API returning the set of reserved top-level namespace names (`apcore`, `_config` at minimum). Returned set MUST be the single source of truth used by `register_namespace` to enforce `CONFIG_NAMESPACE_RESERVED` (single source of truth invariant). Class-level / module-level access (callable without instantiating Config). Cross-language examples for Python (`Config.reserved_namespaces()`), TypeScript (`Config.reservedNamespaces`), Rust (`Config::reserved_namespaces()`). Intended for third-party consumers (custom CLIs, framework integrations) needing fail-fast pre-validation of user-supplied namespace names. Resolves issue #60. |
-| 1.9.0 | 2026-08-12 | **Finalised — first non-draft release of the specification.** Normative corrections from the cross-language consistency sweep: **§4.11/§4.15/A05** self-reference and circular reference separated (a `$ref` re-entered through a schema body is a recursive data structure and MUST be preserved as a lazy reference; only a `$ref` → `$ref` chain MUST raise), resolving a contradiction with the Recursive Schema Support requirement in the same document; **§4.15/§8** `$ref` depth exhaustion MUST raise `SCHEMA_MAX_DEPTH_EXCEEDED`, not `SCHEMA_CIRCULAR_REF`, and the code is registered; **§4.16/A23** object detection widened to `properties` present AND (`type` absent OR declaring `object`); **§9.1** `required` narrowed to `version` and `project` — a key with a canonical default is normative but not required — and the declared-configuration view (`get_declared()`) added, with environment overrides counting as declaration; **§11 type-mapping** `format` is an annotation and MUST NOT fail validation, and the module boundary MUST NOT coerce types. No implementation had provided the superseded v1.8.x behaviour, so no deprecation cycle was owed. Governance: apcore#79. |
-| 1.10.0 | 2026-08-13 | **§12.2 `Interface: Registry` gains `register` (#90).** The normative component interface declared `discover`, `get`, `list` and `describe` — not `register`, the most-used entry point on the component and the one every SDK exposes with a four-argument signature. `register(module_id, module, version?, metadata?)` is now stated, and when an implementation accepts `metadata`, a `dependencies` entry (a list of `{module_id, version?, optional?}`) **MUST** reach the registered module's descriptor so `get_definition(module_id).dependencies` returns what the caller declared. That requirement existed nowhere: all three SDKs lost it independently and all three fixed it independently (apcore-python `ad2998d`, apcore-typescript#35, apcore-rust `71295e1`), because discovery-time sorting reads its own parse and keeps working — `resolve_dependencies` looks healthy while the accessor is empty and reload order degrades to its sort's seed order, which is alphabetical and therefore plausible. `version` is stated as an OPTIONAL parameter only: all three SDKs accept it, only apcore-python resolves by it, and §5.4 continues to govern multi-version coexistence as optional — making resolution normative would put a requirement into the spec that two of three implementations do not provide, which is the shape 1.9.0 spent a release removing. `get(module_id)` keeps its single-argument normative form for the same reason. No SDK behaviour change: all three already satisfy the requirement. Governance: apcore#90. |
-| 1.11.0 | 2026-08-14 | **§12.2 `Interface: Executor` — cross-executor rebind is a MUST (#92).** `features/core-executor.md` stated it as *SHOULD raise `ContextBindingError`*, with *"SDKs that choose to accept silently instead MUST document the deviation prominently"* as the escape hatch. All three SDKs raise, so the deviation was permitted for nobody — and the alternative had a cost: `conformance/fixtures/context_create.json` had to express it as `expected_one_of: [raise, silent_accept]`, which no driver can assert without deciding its own branch. All three hardcoded `raise` and read the alternation only in a comment, so mutating the entire expectation left every suite green. The rule is now stated normatively with the wire code `CONTEXT_BINDING_ERROR`, the fixture carries a single `expected`, and the feature page records the withdrawal. **No SDK behaviour change.** Governance: apcore#92. |
-| 1.12.0 | 2026-08-14 | **§11 type-mapping — the library-level coercion knob's behaviour is normative when the knob exists (#95).** Offering the switch stays a MAY; an SDK that offers one **MUST** coerce exactly `string→integer`, `string→number`, and `string→boolean` limited to `"true"` / `"false"` case-sensitive, and **MUST NOT** coerce anything else. Previously the paragraph constrained only *where* the knob could be used — not on the module path, not from configuration, default off — and said nothing about what it does, so apcore-rust and apcore-typescript shipped a twelve-spelling case-insensitive dialect (`"yes"`, `"on"`, `"y"`, `"t"`, `"1"`, `"0"` and negatives) while apcore-python coerced no string to a boolean at all, and both were conforming. `"0"` → `false` sat directly against R5, which makes the number `0` a MUST-reject for `boolean`. `conformance/fixtures/schema_validation.json` had pinned the coercing mode cross-SDK in exactly one case, on `integer` — the one axis where all three agreed — which is why it never fired. Governance: apcore#95. |
-| 1.13.0 | 2026-08-17 | **§12.8.5.1 — a failed `acl` check withholds module-level introspection (#96).** `validate()` looked the module up at Step 3 and ran `preflight()` and `preview()` at Check 7 on the strength of that lookup alone, so a caller the ACL had just denied still made module-authored code run and still received what it returned. For a command-wrapping module that is the resolved binary and its argv; for a writer it is the target of the side effect. All three SDKs did this — apcore-python `executor.py`, apcore-typescript `executor.ts`, apcore-rust `executor.rs` — each guarding only on "module lookup succeeded", and `apcore-mcp-rust` had already grown a string-matched disclosure filter over the top of it (`async_task_bridge.rs`), which is the evidence the gap was reachable in a shipped product rather than theoretical. `validate()` **MUST NOT** now invoke either hook, emit a `module_preflight` / `module_preview` check, or populate `predicted_changes` when `acl` failed; the failed `acl` check itself is still reported and no other check is suppressed, because the rule is about authorization and not about validity — a malformed input from a permitted caller still gets the module's own account of what would happen. §12.8.1 gains principle 5, §12.4 gains the test, and `conformance/fixtures/preflight_disclosure.json` pins it. **§4.15** additionally gains the two `format` rows its edge-case table never carried, so that `schema_hardening_formats.json`'s long-standing §4.15 citation resolves to something; [type-mapping §11.1](./type-mapping.md#111-format-keyword) remains the authority. Governance: maintainer approval per GOVERNANCE.md § Decision Making; **no tracking issue was opened.** The `apcore#96` cited when this row was written was a reserved number that issue #96 has since been assigned to for an unrelated change (`system.usage.*` schemas) — the citation is withdrawn rather than repointed, because inventing a link is worse than recording that there is none. |
-| 1.14.0 | 2026-08-25 | **§6.7.1 Usage Module Output Contract (new) — the `system.usage.*` field contract is stated, not deferred (#96).** §6.7 required "equivalent input/output schemas" and pointed at each SDK's source as the schema source of truth. That deferral is why three implementations diverged in five ways without any becoming non-conformant. Now normative: `period` **MUST** match `^[1-9][0-9]*[hd]$`, declared as a `pattern` in `input_schema` so a malformed value fails uniformly with `SCHEMA_VALIDATION_ERROR` rather than through an implementation-private parser (apcore-python accepted `"0h"`, `"-5d"` and `"+3h"`; apcore-typescript rejected all three; apcore-rust parsed no period at all), and **every** statistic in both outputs MUST be computed over `[now − period, now]` — apcore-rust echoed `period` back while `get_all_summaries()` / `get_module_summary()` covered the full retained history. `hourly_distribution[].hour` **MUST** be the collector's own key `YYYY-MM-DDTHH`; apcore-rust reformatted it to `%Y-%m-%dT%H:00:00Z` behind a constant whose comment claimed the two matched, and **this specification's own example in `features/system-modules.md` showed the reformatted spelling**, so the divergent implementation was the one following the docs. Exactly 24 entries, ascending, zero-filled. `p99_latency_ms` **MUST** be nearest-rank `sorted[min(ceil(0.99·N), N) − 1]` with no interpolation — apcore-python computed that index and then returned `sorted[rank]`, one element higher, contradicting its own comment; for 100 samples it answered 100 where the other two answered 99. Unattributed calls are the literal `caller_id` `"unknown"`. `output_schema()` **MUST** declare `properties` and `required`; apcore-rust returned a bare `{"type": "object"}` for both modules. `schemas/sys-usage-summary.schema.json` and `schemas/sys-usage-module.schema.json` are added as the canonical shape — both with `additionalProperties: false`, and the `hour` pattern deliberately rejects the current apcore-rust output. **This is an SDK behaviour change in apcore-rust (all six points) and apcore-python (p99, period grammar).** Governance: apcore#96. |
-| 1.15.0 | 2026-08-25 | **§6.6.5 Governance State Query (new), §6.6.3 rewritten — *configured* and *enforced* are separate facts (#97).** Nothing exposed what is actually gating a registry: apcore-rust leaked `acl` / `approval_handler` / `policy` as public struct fields with no defined semantics, apcore-typescript and apcore-python exposed nothing, and none of the three answered the useful question — because `acl != null` means an ACL is attached, not that ACL evaluation runs. The gates are pipeline **steps**, and three of the four strategies this specification itself defines (`internal`, `testing`, `minimal`) remove `acl_check`, so an adapter reading `acl.is_some()` reports "protected" in precisely the configuration `set_acl()` already warns about. §6.6.5 requires a read-only `governance_state()` returning seven observations plus one derived flag, with normative field names across the three SDKs; `builtin_acl_gate_wired` / `builtin_approval_gate_wired` **MUST** be determined by step type or capability, **never** by step name, because `StrategyInfo` carries names only and a custom step named `acl_check` would otherwise report a gate that is not there — the one direction the flag must never fail in. `unprotected_control_surface` is defined exactly, and is explicitly **not** a security verdict: it reports the absence of a recognised gate, never the presence of protection, and an `is_secure`-shaped field is forbidden. §6.6.3 additionally states what was previously only implied: Layer 1 registers **0 / 6 / 9** modules across two config flags, not one; and Layers 2 and 3 are **inactive by absence** — a missing `acl/` path attaches nothing and **MUST NOT** synthesize an empty default-deny ACL, a missing `ApprovalHandler` warns and continues unless `ExecutionPolicy(strict)` is set. **No default changes and no behaviour changes**; the accessor is purely additive, and apcore-rust's existing public fields are untouched. Governance: apcore#97. |
-| 1.16.0 | 2026-08-25 | **§6.6.5.1 — `unprotected_control_surface` as published in 1.15.0 was unsound and is corrected (#97).** The formula treated `builtin_approval_gate_wired && (approval_handler_configured || policy_strict)` as sufficient to conclude a gate stands in front of `system.control.*`. It is not. `acl_check` evaluates **every** call, so for the ACL half "configured and wired" does mean gated; `approval_gate` resolves **per module** and returns before consulting the handler when the module does not need approval (apcore-typescript `builtin-steps.ts:401`, apcore-python `builtin_steps.py:453`, apcore-rust `builtin_steps.rs:623` — all three short-circuit ahead of both the handler and the `strict` branch). A wired gate with a handler attached, or with `strict = true`, therefore gates nothing at all for a control module that does not declare `requires_approval` — and §6.7 cross-cutting requirement 3 makes that annotation a **SHOULD**, while §6.6.5.1 already notes control modules can be registered internally or manually. So the flag answered `false` — *a gate is standing there* — for an ordinary conformant deployment with an entirely ungated write surface. That is a false `false`, the one direction §6.6.5.2 declares the flag must never fail in, written into the formula by the same change that declared it forbidden. A ninth field `all_control_modules_require_approval` is added as a required conjunct of the approval half, new §6.6.5.1.1 states why the two gates are not symmetric, and §6.6.5.4 gains four cases of which three discriminate the corrected formula from the published one. The field reads the annotation only: resolving an `ExecutionPolicy` that forces approval on an unannotated module would make the accessor evaluate policy, which emits audit events in all three implementations and would break the pure-read requirement of §6.6.5.3 — so a policy-forced gate stays invisible, failing in the conservative direction. **No implementation is affected**: no SDK had shipped `governance_state()` when 1.15.0 published, which is why this is a correction and not a breaking change. Governance: apcore#97. |
-| 1.17.0 | 2026-08-27 | **§9.15.3 — the `sys_modules` namespace registration declared its two activation flags as `True`, contradicting its own cited schema.** The `Config.register_namespace("sys_modules", ...)` block declared `defaults={"enabled": True, ..., "events": {"enabled": True, ...}}` while citing `schemas/sys-modules.schema.json` on the line directly above it — and that schema declares both keys `default: false`. §6.6.3 of this same document states the 0 / 6 / 9 activation ladder in terms of those two flags being false by default, `conformance/fixtures/config_defaults.json` pins false, and all three SDKs implement false. §9.15.3 was the sole dissenting authority. Read literally it instructed implementers to stand up the six read modules in every project that never asked for them, and — via `events.enabled` — the three `system.control.*` **write** modules, the approval-gated control plane, by default. The two activation flags are now `False`; the per-module sub-flags (`health`, `manifest`, `usage`, `control`) stay `True` because they select which modules register once activation has happened rather than activating anything themselves, which is also what the schema declares. **This is a correction, not a behaviour change: no SDK, schema or fixture is affected, and nothing normative is added or weakened.** It does resolve a real cross-language divergence though — apcore-rust's `Config::namespace()` merges registration defaults on every call in both modes, so it was faithfully reporting `sys_modules.enabled = true` in legacy mode from this block while apcore-python and apcore-typescript reported the schema default `false`. Governance: maintainer approval per GOVERNANCE.md § Decision Making; **no tracking issue was opened** — recorded rather than pointed at an invented number, per the precedent set in the 1.13.0 row. |
-| 1.18.0 | 2026-08-27 | **§12.2 — `dependencies` MUST reach the descriptor as a PARSED field, and the rationale for it is corrected (#90 follow-up).** The v1.10.0 row closed with "No SDK behaviour change: all three already satisfy the requirement." That was true of the data surviving and false of the accessor §12.2 names: only apcore-rust carried a parsed `dependencies` field on the descriptor. apcore-python surfaced the unparsed list nested under `descriptor.metadata`, and apcore-typescript surfaced it on neither — `system.manifest.*` consequently reported `dependencies: []` for every module that declared them while apcore-python reported the real list over the same wire contract. The stated rationale was also wrong in its specifics: "Reload ordering reads that accessor" holds only for apcore-rust, since apcore-python and apcore-typescript order reloads from `get_module_metadata()` — which is the sole reason the missing field never surfaced as a bug, and which left a trap, because refactoring either reload path onto the more natural-looking `get_definition()` would have silently degraded ordering to its sort's alphabetical seed order. §12.2 now requires the parsed field and states the invariant that actually holds: dependencies are structural data the framework consumes for load and reload ordering, not extension metadata, so carrying them only inside the descriptor's `metadata` map pushes the `{module_id, version?, optional?}` parse onto every consumer and lets the two views drift. `features/registry-system.md`'s `get_definition` Returns table gains the `dependencies` row it never declared — the table listed twelve fields while the register Contract on the same page referenced a thirteenth. **This IS an SDK change** in apcore-python and apcore-typescript, both of which now carry the parsed field; apcore-rust is unaffected. `display` and `enabled`, which apcore-rust also carries and this table does not declare, are deliberately left open: `display` is accepted by all three but promoted only by Rust and is named nowhere in this specification, and `enabled` is not a shared concept at all — Rust has a registry-level flag while the other two route enable/disable through `ToggleState`. Governance: maintainer approval per GOVERNANCE.md § Decision Making; **no tracking issue was opened.** |
-| 1.19.0 | 2026-08-27 | **§9.14 — the unknown-key walk is recursive; it was specified as one level.** `schemas/apcore-config.schema.json` and its siblings are `additionalProperties: false` at EVERY level, not only at the section root: `observability.tracing`, `acl.audit`, `validation.binding` and `obs.redaction` are each closed in their own right. `reject_unknown_framework_keys` iterated a section's direct children and stopped, so `_config.strict: true` was blind exactly where a typo is hardest to spot — `observability.tracing.sampling_rat` passed the check because its parent `tracing` IS declared, while the canonical schema rejects it, and the misspelled sampling rate then fell back to its default with no error and no log line. The pseudocode was the outlier, not the schema: apcore-typescript already walked the full depth; apcore-python and apcore-rust matched the one-level pseudocode and are corrected. An undeclared subtree is reported ONCE, at the point it stops being declared, rather than once per key beneath it — a misspelled section otherwise produces an error per leaf and buries its own cause. MINOR rather than a breaking change because this is the specification catching up to a closedness it already declared: `strict` still defaults to `false`, and no configuration changes behaviour unless its author opted in. Governance: maintainer approval per GOVERNANCE.md § Decision Making; **no tracking issue was opened.** |
-| 1.20.0 | 2026-08-27 | **`Contract: Registry.register` — `async: false` and `void (TypeScript)` described an API apcore-typescript does not have.** `register` there returns `Promise<void>`: `on_load` is synchronous in apcore-python and apcore-rust — the Rust trait signature enforces it — while apcore-typescript additionally accepts an async `onLoad` and resolves once it has run. Registration is synchronous for everything else in all three: ID validation, the duplicate check and every other error still throw synchronously, and a module with no `onLoad` or a synchronous one is visible before the promise resolves. The contract now states that shape rather than a uniformity that does not hold. It matters to a module author, not just to a reader: a module written with `async def on_load` and registered through apcore-python was published and callable with NONE of its initialisation having run — the coroutine was created, never awaited, and discarded, leaving only a `RuntimeWarning` at the next garbage collection, attributed to whatever code was running then. That is precisely the half-initialised module the deferred-publish design exists to prevent, reached through the one path that skipped the check. Two normative statements are added: an SDK whose `register` awaits an async load hook **MUST** keep the module invisible until it completes, and **MUST NOT** publish a module whose load hook it cannot run. **This IS an SDK change** in apcore-python, which now refuses an awaitable `on_load` with `MODULE_LOAD_ERROR` and does not publish the module — the same outcome any other failing `on_load` already gets. Nothing can depend on the previous behaviour, since an `async def on_load` has never once run. apcore-typescript and apcore-rust are unaffected. Governance: maintainer approval per GOVERNANCE.md § Decision Making; **no tracking issue was opened.** |
-| 1.21.0 | 2026-08-27 | **`Contract: APCore.remove` required an identity removal apcore-rust could not provide, for a reason it had recorded wrongly.** The contract removes by IDENTITY — apcore-python and apcore-typescript take the middleware object back and compare with `is` / `===`. apcore-rust exposed `remove(&str)` and a `remove_middleware(&dyn Middleware)` that resolved to `remove(middleware.name())`, and a doc comment explained the divergence as "trait objects do not support identity comparison". That is false, and false in the direction that made the gap look unfixable: `Arc::ptr_eq` has ignored vtable metadata since Rust 1.76, below the crate's MSRV. The real obstacle is ownership — `use_middleware` **consumes** the `Box`, so by the time a caller wants to remove one it holds no pointer to compare against. The reason determines the fix, which is why the wrong one mattered. It is reachable, not theoretical: duplicate registration only WARNS and always succeeds, so two instances answering one `name()` coexist and the name-based form removes whichever comes first in pipeline order — verified against the pre-fix code, where a caller holding the second of two `"audit"` middlewares removed the first. `use_middleware` now returns a `MiddlewareHandle` and `remove_handle(handle)` removes exactly that registration, mirroring `EventEmitter::subscribe` → `unsubscribe_handle`, which exists for the same reason on the event bus. Two normative statements are added: an SDK that cannot take the middleware object back **MUST** provide a token issued at registration that removes exactly one registration, and **MUST NOT** present a name-based removal as satisfying this contract. **This IS an SDK change** in apcore-rust, and a backward-compatible one — the added return value is discarded by every existing `?;` call site, and both name-based forms remain. apcore-python and apcore-typescript are unaffected. Governance: maintainer approval per GOVERNANCE.md § Decision Making; **no tracking issue was opened.** |
-| 1.22.0 | 2026-08-27 | **§6.1.1 / §6.1.2 (new) — an ACL condition that could not be evaluated disabled the `deny` rule that carried it (#100).** `evaluate_conditions` returned a plain boolean, so "a handler answered no" and "no answer was obtainable" arrived at the rule loop identically, and both meant *this rule does not match*. That is safe in one direction only. An `allow` rule that cannot evaluate its condition does not grant — correct. A `deny` rule that cannot evaluate its condition does not block: evaluation continues to the next rule and then to `default_effect`, so a single misspelled key (`role:` for `roles:`) turned a rule its author believed was blocking into decoration. Verified in all three SDKs — apcore-python `acl.py`, apcore-typescript `acl.ts`, apcore-rust `acl.rs` — each of which logs a warning and records `handler_error` before returning false, so the diagnostics were already right and only the decision was wrong; reproduced end-to-end with `effect: deny` + a misspelled key + `default_effect: allow`, where `check()` returned `true`. §6.1.1 now names the three situations that make a condition **unevaluable** (no registered handler; handler raised/threw/panicked; async handler unresolvable on the sync path) and requires the rule to resolve toward refusing access: a `deny` rule takes effect, an `allow` rule still does not grant. §6.3's algorithm is restated over three outcomes rather than two, §6.5 gains the three rows, and §6.3.1 (new) documents the `AuditEntry` all three SDKs already emit — including `handler_error`, which no section had ever defined despite `conformance/fixtures/acl_handler_error.json` asserting on it. §6.1.2 handles discovery without breaking bootstrap order: because `register_condition` is a runtime global registry and `acl.root` discovery commonly runs before application code, loading **MUST NOT** fail on an unregistered key, but **MUST** warn (naming rule index, key and `effect`) and implementations **MUST** provide an explicit validator to call once registration is complete — covering direct construction and runtime insertion, not only file loading. `schemas/acl-config.schema.json` is corrected in the same change: `RuleConditions` was `additionalProperties: false`, which contradicted the documented `register_condition` extension point, and it listed `time_window` as though it were built in when no SDK registers such a handler and `guides/acl-configuration.md` presents it as a *custom* handler example — a reader copying that guide got a schema-valid file whose `deny` rule never fired. **This IS an SDK change** in all three, and it changes a decision: a `deny` rule whose condition cannot be evaluated now denies. `conformance/fixtures/acl_handler_error.json` pinned the opposite behaviour under the name `throwing_handler_does_not_flip_default_allow_to_deny_unsafely` and is corrected here. Deliberately **out of scope**: §6.5's "conditions present but no context provided", which stays a non-match — calling with no context is a legitimate shape for external entry points, not a misconfiguration, and treating it as a failure would flip the decision for every `@external` call meeting a conditional `deny` rule; it gains a warning and an explicit note on the consequence instead. Precedent: §7.9.4(4) has required since v1.9.0 that a typo cannot silently disable an execution policy; this extends the same guarantee to ACL rules. Governance: maintainer approval per GOVERNANCE.md § Decision Making; tracking issue #100. |
-| 1.23.0 | 2026-08-27 | **§6.8 (new) — an ACL's `default_effect` could not be read back from the loaded object (#101).** `default_effect` is the single most consequential value in an ACL — §6.1 carries a `danger` admonition about setting it to `allow` — and no SDK exposed it: apcore-rust keeps a private field whose only public reader is `rules()`, apcore-typescript declares `private _defaultEffect` with no getter, and apcore-python's `acl.py` defines no `@property` at all, so neither `rules` nor `default_effect` has a public reader there. The specification was the origin: `features/acl-system.md` defined a Contract for `check`, `load`, `discover`, `add_rule`, `remove_rule` and `reload`, and no read-only surface at all, so there was nothing for an SDK to implement. §6.8 makes both accessors **MUST**, requires them to be pure reads reachable through a documented public path, forbids `rules` from handing out a mutable reference into the ACL's own list, and requires both to reflect a `reload()`. Consequence of the gap: tooling that reports or audits the enforced policy had to re-read and re-parse the ACL file to recover a value the object already held, and that copy could drift across `reload()` — while on TypeScript and Rust the private field made re-parsing not merely wasteful but the only option. Numbered §6.8 rather than placed beside §6.1 because §6.2–§6.7 anchors are linked from outside this repository. **This IS an SDK change** in all three, and an additive, backward-compatible one. Governance: maintainer approval per GOVERNANCE.md § Decision Making; tracking issue #101. |
-| 1.24.0 | 2026-08-27 | **§7.9.6 (new) — policy resolution could not see the call's arguments (#102).** Governance decided on *which* module was being called and never on *what it was being called with*: resolution took a module ID and the module's annotations, and a `PolicyRule` carried a module-ID pattern plus two boolean overrides — the shape §7.9.1(2) mandates, and identical in all three SDKs (`policy.py`, `policy.ts`, `policy.rs`). This is a protocol-level gap rather than an SDK omission, and the data was never missing: the approval gate is Step 5 and the invocation's arguments and `Context` are in scope at the call site, which passed only the module ID. The practical cost is that an operator who needs to gate *some* calls to a module must gate *all* of them, producing audit noise and weakening `requires_approval` from "this needs approval" to "this might" — the distinction §7.9.3 exists to preserve. §7.9.6 requires resolution to receive the call site, while forbidding the built-in pattern rules from consulting it, so a rule set's verdict stays a function of module ID and annotations alone and remains reproducible from the policy document. Two constraints are stated explicitly: those `arguments` have **NOT** been schema-validated, because the gate is Step 5 and input validation is Step 7 (§12.8), so a host-supplied policy must not assume them well-formed; and adding the call site **MUST NOT** change the verdict any existing policy produces, with implementations free to expose it as an overload where extending a signature would break their public API. A declarative argument predicate on `PolicyRule` is deliberately **not** specified: ACL rules already discriminate on caller, target, identity type, roles and call depth while policy rules discriminate on module ID alone, and adding a predicate to only one would grow a second condition language over the same decision point — if one is specified it is to be designed jointly with ACL conditions (#100). **This IS an SDK change** in all three, additive and backward-compatible. Governance: maintainer approval per GOVERNANCE.md § Decision Making; tracking issue #102. |
-| 1.25.0 | 2026-08-28 | **Four corrections to v1.22.0–v1.24.0, found by implementing them in all three SDKs (#100, #102).** **§6.1.1 — the closed list of three unevaluable situations was wrong, and wrong in the direction the section exists to prevent.** All three SDKs independently classified a malformed compound value (`$or: "not-a-list"`, `$not: 3`) as UNSATISFIED, and all three independently flagged that choice as suspect, because §6.1.1 said "exactly three situations qualify" and a handler handed a malformed value does run to completion. The result was that a `deny` rule carrying `$or: "typo"` stayed inert — the v1.22.0 defect, reached through a door v1.22.0 left open. A non-mapping `conditions` produced a three-way divergence on the same input: apcore-python raised `AttributeError` out of `check()` (violating its own contract that `check` MUST NOT raise), apcore-typescript denied, apcore-rust went inert. "Unevaluable" is now a **principle** — the implementation cannot answer the condition **as written** — with five non-exhaustive examples, and an implementation meeting an unlisted case **MUST** classify it by the principle rather than defaulting it to UNSATISFIED. **§6.1.4 (new) — a context-independent structural and registry precheck, which resolves two problems at once.** §6.1.1 rule 2 wanted deterministic `handler_error` while the composition rules permitted short-circuiting, and §6.5 kept "no context supplied" a non-match, which let a misspelled key on a context-less call escape §6.1.1 entirely — verified in all three SDKs. The precheck walks the whole `conditions` tree without a context and without running a handler, runs **before** §6.5's context check, and closes the bypass; a rule that *passes* the precheck and then finds no context still takes §6.5's path, so a registered, context-dependent condition such as `roles` is **not** unevaluable merely because this caller supplied no identity. Because the precheck is exhaustive and handler-free its findings are a pure function of the rule, so precheck-origin diagnostics are identical across implementations while execution-origin ones may still vary with short-circuiting — stated explicitly rather than left to a `SHOULD NOT` that pinned neither. §6.1.4 also defines **condition paths** (`$or[1].$not.k`), and `handler_error` and the §6.1.2 validator now order by path rather than by key, because a nested `$or` may carry one key at several positions and ordering by key is then undefined. **§6.1.3 — `sync_registered` / `async_registered` renamed to `sync_resolvable` / `async_resolvable`.** The flags always meant "resolvable on that evaluation path", and since `async_check()` falls back to the sync registry, `async_resolvable` is the union of both — so `async_registered` read as a registry lookup and would be false for every built-in leaf handler, which resolves on both paths. **§7.9.6 — rule 3(b) withdrawn.** It promised that "a host-supplied policy implementation can decide on arguments"; `ExecutionPolicy` is a concrete class in apcore-python and apcore-typescript and a concrete `struct` in apcore-rust, and `set_policy` takes that concrete type in all three, so no host can supply one. Making it pluggable is deliberately not specified. Rule 5 (now 7) is restated as a **capability** requirement rather than an API shape — an explicit, backward-compatible call-site-aware entry point, in whatever form is idiomatic — after the three SDKs produced three reasonable shapes; and a new rule requires `_approval_token` to be stripped **before** policy resolution, which §7.4's existing "before passing to subsequent steps" does not reach, since resolution happens inside Step 5. **§6.8** clarifies rather than relaxes: an accessor **MAY** acquire the ACL lock internally, copy, and release before returning; what is forbidden is returning a value whose validity depends on a lock the caller must release. **§6.3.1** records that `handler_error` is per-`check()` while `matched_rule_index` is per-rule, so one audit entry may legitimately describe two different rules. **This IS an SDK change** in all three, and a behavioural one for cases 4 and 5 of §6.1.1. Governance: maintainer approval per GOVERNANCE.md § Decision Making; tracking issues #100 and #102. |
-| 1.26.0 | 2026-08-28 | **§2.6 step 2 — reserved-word detection is narrowed to the first segment (#99).** The algorithm read "For each segment of `new_id` (split by `.`)". No SDK implemented it: apcore-python, apcore-typescript and apcore-rust all tested the first segment only, each saying so in a comment beside the check. Which side was wrong is the substance of the change, and it is the specification. A reserved word claims a **namespace**, not a token — §2.5 frames `system.*` / `internal.*` / `apcore.*` as namespaces and §6.6.1 restricts registration of IDs *prefixed* `system.`, and only the first segment can assert a prefix. The reserved set is `system`, `internal`, `core`, `apcore`, `plugin`, `schema`, `acl`, so the literal per-segment reading makes `executor.schema.validate`, `orchestrator.core.dispatch` and `api.acl.check` illegal: ordinary IDs that claim nothing, shadow nothing, and cost a large part of the natural naming space to reject. Three independent implementations converging on the first-segment reading, against the literal text, is evidence about intent; the text was the outlier. **This is a narrowing, so no SDK behaviour changes and nothing that validated before stops validating** — IDs legal in every implementation but illegal on paper are now legal on paper. §2.6 additionally states *positively* that later segments are unrestricted, so the per-segment form is not restored by a future reader who finds the omission suspicious. The security property is untouched: threat T8 is impersonation of `system.*`, which requires the first segment, so first-segment enforcement was always sufficient for it — `security-considerations.md` §2.1 drops the "tracked separately" pointer it carried while this was open. `conformance/fixtures/id_conflict_reserved_words.json` pins the decision in all three SDKs, including the `foo.system.bar` case that neither behaviour had ever covered. Governance: maintainer approval per GOVERNANCE.md § Decision Making; tracking issue #99. |
-| 1.27.0 | 2026-08-28 | **§6.1 — an unknown or reserved ACL rule key was dropped in silence, widening an `allow` rule (#107).** `callers`, `targets`, `effect`, `description`, `conditions` is the complete key set, and `schemas/acl-config.schema.json` already declared `additionalProperties: false` on a rule — but no implementation validates an ACL file against the schema at load time, so nothing enforced it. Reproduced in all three SDKs: a rule carrying `actions: ["describe"]`, written by an operator to mean introspection only, loaded cleanly and granted **execute** on `orders.*` to every `agent.*` caller. On a `deny` rule a dropped key is over-broad and therefore safe; on an `allow` rule it is a privilege escalation, and a silent one. This is the §6.1.1 defect class — a fail-open produced by a key nothing evaluates — on the pattern side rather than the condition side, and the loader already carried the mirror-image rule: a **missing** `callers`/`targets` is rejected loudly so an omission cannot render a rule inert, while an **unknown** key was dropped in silence. Loading now fails with `ACLRuleError` naming the rule index and the offending key. The rule can be stricter than §6.1.2's treatment of condition keys, which must warn rather than fail because `register_condition` is a runtime registry that discovery may legitimately precede: a rule key set is fixed by this section, so there is no ordering excuse. `id`, `actions` and `priority`, reserved in earlier revisions and evaluated by nothing, are rejected like any other unknown key — with a message naming them as reserved, since an operator who wrote `actions` intended a restriction and deserves to be told the key does not exist yet — and are **removed from the schema's property list**, because a declared property is exactly what `additionalProperties: false` cannot catch, which is how `actions` came to grant `execute` on a rule that said `describe`. **This IS an SDK change** in all three, and a deliberately breaking one for a configuration that was never doing what it said. `conformance/fixtures/acl_rule_key_closure.json` pins it with 8 cases. Governance: maintainer approval per GOVERNANCE.md § Decision Making; tracking issue #107. |
-| 1.28.0 | 2026-08-28 | **§6.1.6–§6.1.8, §6.8.1, §6.9 — governance could not ask a human about what a call carried (#108).** Every decision point that can read a call's arguments was unable to escalate it to approval, and the one point that decides whether to ask a human is forbidden by §7.9.6 rule 2 from consulting them. The ACL could **refuse** on arguments and `ApprovalHandler` could **wave through** on arguments; nothing could **ask**, and a refusal is not a question — so an operator who needed `git push --force` reviewed had to gate every `git push`, which dilutes `requires_approval` from "this needs approval" to "this might" and floods the audit trail. §6.1.6 splits the two results: `effect` keeps authorization, an orthogonal optional `approval` field carries the requirement, and `approval: required` on a `deny` rule is rejected at load because the combination means nothing. §6.1.7 adds ONE built-in condition key, `arguments`, to the language §6.1 already defines rather than beside it — `has_key` / `has_all_keys` / `has_none_of`, and **no predicate reads a value**: redaction is schema-driven so a module without an input schema gets none, and the ACL runs at Step 4 while validation runs at Step 7, so key presence is the only question well-defined on what is available. It is built-in with no registration point, because a deployment-registered argument handler is precisely the unauditable host code §7.9.6 rule 2 keeps out of a verdict. §6.1.8 gives the condition a **governance projection** computed at Step 3 — key set, optionally types, never values — rather than `redacted_inputs`, whose contract is safe logging and which is a raw copy when no schema exists. §6.8.1 adds the structured `AccessDecision` beside the boolean, and requires the legacy `check()` to **fail closed** on an approval requirement: a non-Executor caller can only read a boolean as "let it through", and returning true would run a call the ACL said needed a human. §6.9 pins the precedence, of which one row is not obvious — a module-scoped `ExecutionPolicy` override may ADD an approval requirement and **MUST NOT** remove one the caller-scoped ACL set, or a policy written for `orders.*` silently strips a requirement an author attached to one untrusted caller. §6.3.1 gains `approval_required` beside `decision` rather than widening it, since `decision` is a string downstream consumers parse. §7.4 and §7.9.5 consume the union. **Deliberately NOT specified:** an argument predicate on `PolicyRule` (a second condition language over one decision point), a pluggable `ExecutionPolicy` (withdrawn as rule 3(b) in v1.25.0 for the same reason), and value-level argument predicates. This was only safe once v1.27.0 closed the rule key set: an SDK that still dropped unknown keys would read a rule carrying `approval` as a bare rule and act on half of what its author wrote. **This IS an SDK change** in all three. Governance: maintainer approval per GOVERNANCE.md § Decision Making; tracking issue #108. |
-| 1.29.0 | 2026-08-31 | **§6.1.1, §6.8.1, §6.9 — an unevaluable approval rule stepped aside and the call was granted without approval (#109).** §6.1.1 was written in v1.22.0, when a rule carried one axis, and "an `allow` rule MUST NOT grant" was then a complete instruction: it means the rule steps aside, and stepping aside was harmless because whatever granted next also said `allow`. v1.28.0 gave rules a **second** axis and §6.1.1 was not revisited for it, so "does not grant" silently discarded the `approval: required` the rule carried and handed the decision to a rule that never carried one. On the shape §6.1.7 was written for — a narrow approval rule ahead of a broad allow, which is the driving case of `acl_argument_scoped_approval.json` — the result was `allow` with `approval_required: false` on exactly the call the operator gated, with `matched_rule_index` naming a rule that never mentioned approval. Reproduced in all three SDKs. **It is not confined to the legacy boolean**: the trigger is an unevaluable approval rule, and §6.1.1 is the path §6.1.2's warn-don't-fail registration ordering, a misspelled predicate and a handler failure all take, so a misspelled `has_keys` or an unregistered condition key reaches it **with a projection present**, on the ordinary Executor pipeline. `default_effect: allow` reaches it with no second rule at all. `validate_rules()` is not a mitigation: it cannot see the projection-absent route, and §6.1.2 makes an unregistered condition key a warning rather than a load failure. §6.1.1 rule 5 makes the requirement **pending** rather than discarded — recorded when the unevaluable `allow` rule's patterns match, composed by disjunction with whatever later grants including `default_effect: allow`, cleared by a denial, and **not** raised by a rule whose patterns do not match, so a rule written about one caller cannot attach a human to calls it was never written about. A rule whose own `callers`/`targets` field is malformed does raise it: its scope cannot be read, so it cannot be shown not to apply, which is the same posture that field already produces under `deny`, where it denies every call. Requiring a human rather than denying is deliberate — the condition that could not be evaluated is the one that decides whether *this* call is the dangerous one, so refusing would turn every ordinary `git push` into the hard failure §6.1.7 exists to eliminate. §6.9 rows 1 and 2 are amended: the requirement may originate in a rule that did not match, and `default_effect: allow` carries it, which makes `approval_required: true` with `matched_rule_index: null` a legal combination. §6.8.1's fail-closed rule is restated as a property of the **decision** rather than of the matched rule. §6.1.6 rule 1 additionally states that `not_required` is the **absence** of a requirement and never the suppression of one, so writing it explicitly on a broad rule does not cancel a pending one — there is deliberately no way to spell "and cancel anything else" on a rule, for the reason §6.9 rule 4 refuses that power to a policy. **Backward compatible for correct configurations:** across all 20 cases of `acl_argument_scoped_approval.json` with a projection present, no decision changes; without one, two change, both `approval_required: false` → `true`, which also flips the legacy `check()` boolean to `false` on those calls — visible to any tooling reading it, and intended. **This IS an SDK change** in all three. Folded into this same unreleased version: **§3's `requires_approval` definition said `false` meant no consent was needed (#110)**, which v1.28.0 made untrue — the annotation is one source among several and §6.9 rows 3-5 union them, so a call on a module declaring `false` can still require approval. The definition, both JSON Schemas and §3's AI reading guide now say the annotation describes the MODULE while `validate()` (§7.9.5) describes the CALL. **Deliberately NOT specified:** a `conditional` tri-state on the annotation — the module author cannot know the answer, since it depends on the ACL and policy the deployment loads, so a third value would have to be computed by the framework rather than declared, which is `validate()` with extra steps and a breaking change to a field every consumer reads as a boolean. No behaviour change and no SDK change for #110. Governance: maintainer approval per GOVERNANCE.md § Decision Making; tracking issues #109 and #110. |
-| 1.30.0 | 2026-08-31 | **§6.1.5 — a rule's `effect` accepted any string outside the YAML loader and was silently read as `deny` (#111).** v1.27.0 closed the rule **key** set because an unknown key was dropped in silence and widened an `allow` rule. The same silence sat one level down on a legal key's **value**: §6.1's field table says `effect` **MUST** be `allow | deny` and `schemas/acl-config.schema.json` declares the enum, but nothing enforced it away from the file path. Measured across the SDKs on `effect: "Allow"` — apcore-python and apcore-typescript rejected it from `ACL.load()` and **accepted** it through direct construction and `add_rule()`; apcore-rust rejected it at `load` and at construction and **accepted** it at `add_rule()`, whose validation covered §6.1.6's `deny` + `approval` combination and nothing else. **All three implementations had a hole and merely had different ones**, which is why the closure is stated per entry point rather than per implementation. All three emit the identical loader message, so the check existed everywhere and simply was not reached from every door. Every implementation meanwhile validated **`default_effect`** — the same two values one field up — at every door it reaches, so the inconsistency was internal as well as cross-language. §6.1.6 rule 3 already requires rejection at file loading, direct construction and runtime insertion, and had never been applied to the field it is named after. **Not a privilege escalation** — no unknown value grants — but a silent functional break, and in two distinct shapes. Where the value is normalised toward `deny`, a rule written to permit denies everything it matches under `default_effect: allow`, and the reading is only accidentally right on a `deny` rule. Where it is not inspected at all, as in apcore-rust, the raw string reached `AccessDecision.access` and the audit `decision` field — `effect: "Allow"` produced `access: "Allow"`, a verdict no consumer parses — and the same literal comparison silently dropped any `approval: required` the rule carried, re-entering §6.1.1 rule 5's defect class through a typo in another field. An implementation **MUST NOT** resolve an unrecognised `effect` to a decision, nor pass it through as one. `default_effect` is stated on the same terms rather than left correct-by-convention, naming the offending value since it has no rule index. **This IS an SDK change** in all three. Governance: maintainer approval per GOVERNANCE.md § Decision Making; tracking issue #111. |
-| 1.31.0 | 2026-09-04 | **§6.2.1 — a pattern array with no operands was read as a scope decision, and made the rule inert (#112).** `callers` / `targets` of `[]`, `["$or"]` or `["$not"]` can never match, and all three SDKs agreed on returning `false` from the matcher, so the rule contributed nothing: with one rule in the ACL the decision tracked `default_effect` exactly across all twelve combinations of the three shapes, both effects and both defaults, and `validate_rules()` reported nothing in any of them. On a `deny` rule under `default_effect: allow` that is a **fail-open** — the call the operator wrote the rule to block is permitted, by a rule that loaded without error and a validator that called it clean — and it is reachable from a plain YAML file, because `ACL.load` rejects an omitted `callers` / `targets` and permits an empty one. Arity is now **closed at every entry point** on §6.1.5's mechanism: at least one operand, `$or` at least one pattern, `$not` exactly one, rejected with `ACLRuleError` at file loading, direct construction and runtime insertion alike. `schemas/acl-config.schema.json` has declared `minItems: 1` on both fields since the file existed and nothing enforced it — the third instance of #107's and #111's shape, in which the constraint was declared in the schema and no door enforced it, because no implementation validates an ACL file against the schema at load time. **Three MUSTs are replaced, not reinterpreted.** §6.5's edge-case table required an empty list to make the rule "never match", which is the behaviour this entry describes as a fail-open, stated one row above the row that already routes the *type* fault to §6.1.4.1. §6.2.1 required `["$not"]` (no pattern) to "evaluate to false (fail-closed)"; the parenthetical predates §6.1.1 (v1.22.0) and is wrong — a non-match is fail-closed on an `allow` rule and fail-**open** on a `deny` one. And `["$not", p1, p2, …]` was *implementation-defined*, consult `p1` and ignore the rest: all three SDKs do exactly that, so the form was uniform across implementations and uniformly **wider than written**, granting `secrets.b` from `targets: ["$not", "secrets.a", "secrets.b"]` on an `allow` rule — a silent privilege escalation from a form the specification blessed with `SHOULD NOT rely on this`. A future version MAY define the multi-operand form as `NOT (p1 OR p2 …)`; rejecting it now is what keeps that option open. **A pattern array is also stated to be FLAT** — the operators do not nest and there is no precedence — which this section never said, while `$or` / `$not` nest arbitrarily in `conditions`: an operator who learned the condition grammar and wrote `["$or", "$not", "a"]` got an OR of two literals that matched `a` and also matched a module literally named `$not`, violating this section's own reserved-token **MUST NOT**, which no implementation honoured. A reserved token outside index 0 is now rejected, which makes that clause hold by construction, and the section gains the worked examples it never had. **A second, validator-only tier is added**, because closing the arities does not exhaust the inert class: `["$not", "*"]` has legal arity, exactly one operand, and matches nothing, producing the identical fail-open. Such an array loads, is reported by `validate_rules()`, and changes no decision — stated as a criterion with a MUST-detect minimum rather than an enumeration, because its predicate cannot be closed without freezing the pattern language, and an incomplete predicate at a door would mean the same ACL file loads in one language and fails in another. §6.1.4.1 is extended from the field's type to its type **and** shape, as the backstop for the one route no door covers — assigning the field on an already-constructed rule, which no constructor can intercept and which, unlike an unrecognised `effect`, the matcher still reads. **This IS an SDK change** in all three, and a **breaking** one for any deployment currently carrying one of these shapes — which is exactly the population that believes it has a rule and does not. Governance: maintainer approval per GOVERNANCE.md § Decision Making; tracking issue #112. |
-| 1.32.0 | 2026-09-05 | **§7.3.1 — `ApprovalRequest`'s own schema never carried the two fields its feature doc already required (decision D-03).** `docs/features/approval-system.md`'s Contract block has said "MUST contain `module_id`, `caller_id`, and `action`" since the Contract blocks were added, and the 2026-05-02 alignment review recorded the same requirement as decision **D-03**, recommending both fields be added to `ApprovalRequest` in all three SDKs and populated from the same construction site that already exists: `caller_id = context.caller_id`, `action = module_id`. Neither ever reached this section's own YAML schema — `required` listed `[module_id, arguments, context, annotations]` and `properties` named neither field — so the single source of truth for the type was the one place in the ecosystem that had not caught up to a decision already approved and dated. `caller_id` is nullable, matching `Context.caller_id` on a top-level call (§5.7) — no `"@external"` substitution, which is an ACL-evaluation-only convention. `action` is a flat duplicate of `module_id`, not a separate free-text label, so a handler (a Slack approver, an audit log) can read `request.action` without cross-referencing `request.module_id` under a second name. Additive on an already-`#[non_exhaustive]` type in apcore-rust and additive-with-default in apcore-python and apcore-typescript, so no existing construction call breaks. **This IS an SDK change** in all three, and additive rather than breaking. `conformance/fixtures/approval_request_fields.json` is added. Governance: maintainer approval per GOVERNANCE.md § Decision Making (D-03, `docs/spec/2026-05-decision-log.md`); no GitHub tracking issue — the decision log is the record. |
-| 1.33.0 | 2026-09-05 | **§6.1.4.1 / §6.2.1 — "assigned onto an already-constructed rule" was ambiguous between two different rules, and the ambiguous reading was the one apcore-python implemented (#112 follow-up).** Both sections used that phrase to describe the one route no rejection reaches — a malformed pattern array left to §6.1.1's UNEVALUABLE backstop rather than raised — but never said whether "already-constructed" meant a rule already **installed inside a live `ACL`** and mutated afterward through a caller's own reference (the route no door runs again to intercept, because no further door is ever reached), or **any rule object currently holding a bad value**, regardless of whether it had ever been offered to a door at all. Measured: apcore-typescript and apcore-rust read it the first way — both validate every rule `ACL`'s own constructor is handed, rejecting a rule mutated before ever being passed to `ACL(rules=[...])` exactly as they reject one built with a bad value directly. apcore-python read it the second way — `ACL.__init__` runs no validation of its own, relying entirely on `ACLRule.__post_init__` (which a rule mutated after its own construction walks straight past) and the §6.1.1 backstop at `check()` time. Both readings are safe at `check()` — neither implementation lets a malformed rule grant access it should not — but they are not the same **observable** behaviour: the identical "build a rule, mutate a field, hand it straight to `ACL(rules=[...])`" call raises `ACLRuleError` at startup in two SDKs and succeeds silently in the third, deferring the same fault to the first `check()`. `ACL`'s own constructor **is** one of the three entry points §6.1.6 rule 3 names ("direct construction"), and a rule handed to it for the first time is being offered to a door for the first time regardless of what mutations happened to the rule object beforehand — a rule's construction history is not legible to the door receiving it and cannot be the thing that decides whether the door's own check runs. Both sections are corrected to name the actual, narrower boundary: the backstop covers a rule already installed inside a live `ACL` and mutated after the fact, through a reference the caller already holds — nothing else. `conformance/fixtures/acl_pattern_arity.json` gains a case built on exactly this sequence (build valid, mutate, hand to `ACL(rules=[...])` for the first time), expecting `reject` uniformly — apcore-typescript and apcore-rust already satisfy it; apcore-python does not yet. **This IS an SDK change** in apcore-python only. The existing "installed rule, mutated in place" backstop cases are unaffected — the fault they exercise happens strictly after their `ACL` has already been constructed from a well-formed rule, a sequence this correction does not touch. Governance: maintainer approval per GOVERNANCE.md § Decision Making; no GitHub tracking issue — found during a cross-repo consistency audit, recorded here rather than pointed at an invented number, per the precedent set in the 1.13.0 row. |
-| 1.34.0 | 2026-09-06 | **§9.2.1 Path-Typed Configuration Keys (new) — the specification never said which configuration values are filesystem paths, so every consumer that had to know maintained its own list (#113).** §9.1.1 gives four keys a relative default (`extensions.root`, `schema.root`, `acl.root`, `bindings.dir`) and §9.2 makes each of them environment-overridable, but nothing marked them as paths. A consumer forwarding apcore configuration across a process boundary — a CLI spawning a worker, a supervisor building a container environment — must know which `APCORE_*` variables carry paths, because a relative value re-roots silently wherever the working directory differs; `apcore-cli` had already hand-maintained exactly such a list (`SANDBOX_PATH_TYPED_VARS`) with a note that adding a key means editing three SDKs. The set is now **closed and declared at the source that already defines the key surface**: `schemas/apcore-config.schema.json` and `schemas/defaults.schema.json` carry `"x-apcore-path": true` on each path-valued property, implementations MUST expose the set through a public accessor, and a new path-valued key MUST carry the marker in the change that adds it. `bindings.pattern` is stated NOT to be path-typed (a glob matched within `dir`, never resolved itself), and `extensions.roots` is stated to be list-valued with no scalar env encoding — an implementation MUST NOT invent a delimiter-separated `APCORE_EXTENSIONS_ROOTS`. **Purely additive**: no key changes meaning, no default moves, and no resolution behaviour is defined here. The **resolution base remains unspecified** and is tracked in #113 — `acl.root` resolves against the config file's directory (`ACL.discover`, D-64) while `schema.root` resolves against the process CWD (`SchemaLoader`), and reconciling those two is a separate decision this entry deliberately does not pre-empt. New conformance fixture `conformance/fixtures/config_path_typed_keys.json`. Governance: maintainer approval per GOVERNANCE.md § Decision Making; tracking issue #113. |
-| 1.35.0 | 2026-09-06 | **§5.12.6 — a MUST with no subject, and §9.2.2 Path Resolution Base (new) — a relative path with no declared base (#114, #113).** **§5.12.6** required that "if `bindings.dir` is configured, implementations MUST scan files matching `pattern` in that directory" and never said *who* scans or *when*. No SDK satisfied it: `bindings.dir` is registered in all three key surfaces (`apcore-python config.py:217`, `apcore-typescript config-key-surface.ts:70`, `apcore-rust config.rs:213`) and read by no code path, while `BindingLoader` is exported public API in all three (`__init__.py:198`, `index.ts:277`, `lib.rs:66`) and called from no internal one — a design, not an oversight, since binding loading is a user-invoked tool. The two readings the old text permitted were "the framework scans at startup", which nobody implements and which would add filesystem I/O to every client's startup and change behaviour for every deployment that merely has a `./bindings` directory, and "a loader honours the key when invoked", which is nearly satisfied already. The requirement now names both: a binding loader invoked **without an explicit directory argument** MUST resolve the directory from `bindings.dir` under §9.2 precedence (env `APCORE_BINDINGS_DIR` > file > default `./bindings`) and MUST match files against `bindings.pattern` through the same chain (default `*.binding.yaml`); an explicit argument still wins; and implementations **MUST NOT** scan automatically at client initialisation. The MUST is not weakened — it is made enforceable and testable for the first time. TypeScript's pre-existing raw `process.env.APCORE_BINDINGS_DIR` read (`bindings.ts:163`) implemented the environment tier alone of this key's chain and is folded into §9.2's mechanism, so those users keep working. The `bindings.files` withdrawal note is retained: that key was schema-invalid and unimplementable; `bindings.dir` is declared by the canonical schema with a default and present in all three key surfaces, so the precedent does not transfer. **§9.2.2** answers the question §9.2.1 deliberately left open in v1.34.0: what a *relative* path-typed value is resolved against. Today `acl.root` resolves against the configuration file's directory (`ACL.discover`, D-64, `docs/features/acl-system.md`) while `schema.root` and `extensions.root` resolve against the process CWD — two sibling keys, identical relative values, identical override syntax, two bases, and no rule saying either is wrong. The **project root** is declared: the configuration file's directory when that file came from §9.14 discovery tiers 1-5 (`$APCORE_CONFIG_FILE`, or a project-local `./project.yaml|.yml|apcore.yaml|.yml`), and the process CWD when it came from the user-level tiers 6-7 or when no file was found. The tier is what selects the base and has to be: in tiers 2-5 the file's directory *is* CWD and the rules are indistinguishable; in tier 1 the file's directory is the better answer; in tiers 6-7 it is the wrong one, because `extensions.root: ./extensions` in `~/.config/apcore/config.yaml` cannot mean `~/.config/apcore/extensions`. That last case is live today in `acl.root` — a user-level config silently supplies an ACL policy to every project the user runs while the project's own `./acl/` is ignored, which for a default-deny system is the inverse of the intent, and the same load resolves `extensions.root` against CWD, so **one configuration document yields two bases**. From **v2.0**, every relative path-typed value (§9.2.1's closed set) resolves against the project root — file-declared, env-sourced, API-supplied and defaults alike — with **one base per `Config`** and **no per-key origin tracking**, which is what makes the rule implementable in three SDKs at once. **This version changes no behaviour.** It is the deprecation phase §13.2's two-minor floor requires: 1.x keeps the current semantics exactly, implementations MUST expose a `project_root` accessor (additive, no resolution attached), and SHOULD warn only when project root differs from CWD **and** a relative path-typed value is present — a blanket warning is explicitly not wanted, since it would fire for the tiers 2-5 majority where nothing changes. Adopting this also settles `docs/spec/rfc-config-include.md` open question #1 (fragment-relative vs root-relative path values), because one base for the whole `Config` leaves the fragment-relative reading no room. New conformance fixtures `conformance/fixtures/bindings_dir_resolution.json` and `conformance/fixtures/config_project_root.json`. Governance: maintainer approval per GOVERNANCE.md § Decision Making; tracking issues #114 and #113. |
-| 1.36.0 | 2026-09-06 | **Four corrections found by writing the first conformance drivers for v1.35.0's own fixtures — three SDKs reported the same defects independently (#113, #114, #115).** **§5.12.2 declared the binding field `target_id` a MUST; everything else in the ecosystem uses `target`** — `schemas/binding.schema.json`, `DECLARATIVE_CONFIG_SPEC` §3.2, both binding fixtures, and all three SDK loaders. The protocol spec was the sole outlier, and on a MUST, so a binding file written from the section that defines the binding-file format loaded in no SDK. Corrected throughout §5.12, and in the ten further places outside it (§5.13.9's `ResolvedModule`, §8.2/§8.6/§8.7's error descriptions, §5.14.6 and §9.15 prose) where a past over-applied rename had left `target_id` standing. No implementation changes: the population of files using `target_id` is empty, because such a file has never loaded. **§5.12.6 gains clause 5 — a resolved binding directory that does not exist MUST raise, naming the directory, and MUST NOT return an empty result.** v1.35.0 named the MUST's subject but left its failure mode unstated, and the fixture guessed the opposite of what all three SDKs do. The contrast with `ACL.discover`'s missing-path no-op (D-64) is now stated as deliberate: ACL discovery is automatic, so silence is right; binding loading is user-invoked, so an absent directory is a mistake. **§9.2.1 gains requirement 5 — an empty string is not a path.** §9.2 counts a *set but empty* `APCORE_*` variable as an override, so `export APCORE_ACL_ROOT=` silently blanked a directory the configuration file correctly declared and then resolved `""` to the working directory. The same shape is on record for `APCORE_CONFIG_FILE` (#88); path-typed keys are where it fails silently rather than loudly. Empty values MUST fall through to the next tier. **§9.2.2 fixes the deprecation warning's cadence at once per configuration load, never once per process.** v1.35.0 required the warning but not its cadence, and the three SDKs promptly invented three — Python deduplicated through the `warnings` filter, TypeScript held a module-global once-flag, Rust warned per load. A process-global flag makes emission order-dependent (the first load consumes the warning, so a later affected document is silent) and is a test-isolation hazard. De-duplication belongs to the host logging layer. **`schemas/defaults.schema.json` gains the `bindings` section** it never had, so `bindings.dir` / `bindings.pattern` finally have a home in the file that calls itself the single source of truth for defaults; until now the `./bindings` default existed only in `apcore-config.schema.json` and every SDK had to hardcode it at the loader, since `config_key_governance.json` pins the default tables to `defaults.schema.json`. `config_key_governance.json` regenerated (65 allowed keys, 20 canonical defaults). Fixture repairs: `bindings_dir_resolution` gains `env_var_must_not_be_read_directly_at_the_loader` (clause 2 had no case, so an implementation reading the raw variable — the exact apcore-typescript#36 defect — passed the whole fixture), its candidate directories now carry distinct module ids (a shared id made `env_overrides_config_file_dir` pass whichever directory was scanned), and `missing_configured_dir` now expects the raise; `config_project_root`'s tier-6/7 cases now name the TIER through tokens instead of hardcoding the POSIX spelling, which had made every driver fail on macOS, and `no_warning_when_all_path_values_absolute` now spells every §9.2.1 key absolutely, without which it was unsatisfiable against §9.2.2's own rule that defaults count. Governance: maintainer approval per GOVERNANCE.md; tracking issues #113, #114, #115. |
-| 1.37.0 | 2026-09-09 | **§9.2.3 Pattern-Valued Values (new) and Algorithm A25 `match_glob` — the specification typed six values as "a glob" and named no matcher, so each SDK inherited its host library's dialect (#116, #117).** `bindings.pattern`, `obs.redaction.sensitive_keys`, `obs.redaction.regex_patterns`, a subscriber's `event_pattern` / `include_events` / `exclude_events`, and `system.control.reload_module`'s `path_filter` were each typed only with the word *glob* or *pattern*. Implementations reached for `pathlib.Path.glob`, `fnmatch`, the `glob` crate, a translated `RegExp` and the `regex` crate — matchers that disagree with one another — so **one declared type became three contracts**, and all three agreed only on the default value nobody had ever changed. **The counter-example is what makes the cause precise, and it is not "a library was available".** `match_modules` (§5.16) is typed only as "glob patterns" in prose too, yet all three implementations match it with **A08** and agree exactly, because its value is a module ID and the surrounding code already had A08 in hand. `path_filter` matches module IDs *as well* and diverged three ways, because it lives in the system-module code where A08 was not already in reach. Same value domain, same libraries available, opposite outcomes: **convergence tracked whether a named algorithm was reachable at the point of use.** The remedy is therefore to name an algorithm at every point of use and close the set — the same shape §9.2.1 used for path-typed keys. **§9.2.3** declares the closed set, three dialect markers (`"x-apcore-pattern": "glob" | "regex" | "module-id"`, carried in the canonical schemas beside `x-apcore-path`), and per-surface case sensitivity. **A25** is specified as an *algorithm*, not a syntax — leftmost-first, non-backtracking, anchored — because two matchers can both claim `*` and `?` and still disagree on `a*a` against `aaa`. Exactly two metacharacters: `*` and `?`. **Every other character is a literal, `[ ] { } \ ! ^ -` included, and every string is a valid pattern**: A25 has no parse phase, so an implementation **MUST NOT** reject one — `glob::Pattern` refused `a[b` and `a**b`, so the same control-plane request one SDK served another refused. **Two of the divergences were silent security bypasses, and both are closed here.** (1) `sensitive_keys` matching lower-cased the *field name* but not the *pattern* in apcore-rust, so `"*Token*"` — or any capitalised spelling — redacted in Python and TypeScript and left **plaintext** in Rust, with no warning, because the pattern was valid and simply matched nothing. §9.2.3 requirement 3 now requires the fold on **both** sides. (Worth recording precisely, because the obvious statement of this bug is wrong: `*key*` does match `API_KEY` in all three, since Rust also tries the lowered key — only an uppercase *pattern* discriminates.) (2) apcore-typescript passed `[…]` verbatim into a `RegExp`, where `[!p]` means "`!` or `p`" rather than "not `p`", so `[!p]assword` **redacted `password`** — the one field the other two deliberately exclude — and leaked `bassword`. Under A25 brackets are literals and the construct is inert rather than inverted. **§10.6.1 (new) gives `obs.redaction.*` its first normative home.** It has shipped since D-53 with no section of this specification defining it; its only written contract was a `description` in `schemas/apcore-config.schema.json`, **wrong on both keys** — it called `sensitive_keys` a plain substring match, omitting the glob branch all three implement, and called `regex_patterns` a *full* match when all three **search**. Both are corrected in the schema and in `docs/features/observability.md`, and the fixture's own regex cases were all spelled `^…$`, which a full match and a search satisfy alike, so the corpus could not see it. §10.6.1 also fixes the per-entry hybrid (an entry with `*` or `?` is an A25 pattern anchored to the whole name; an entry with neither is a substring over the normalized name), requires the five correlation fields (`trace_id`, `span_id`, `caller_id`, `module_id`, `target_id`) to be exempt, and — the clause with the sharpest consequence — **forbids dropping an uncompilable `regex_patterns` entry in silence**: Python re-failed silently on every log line, TypeScript substituted a never-matching regex, only Rust warned, and all three kept running with a redaction rule that redacted nothing. A diagnostic is now **MUST**, and `validate_config()` **MUST** report it. Regex portability is stated rather than assumed: no lookaround, no backreferences, no inline `(?i)` — the intersection of the three engines, which is also the feature set that keeps matching linear. **§9.16.3 (new)** names A25 for event-type patterns and states why it is load-bearing: **`exclude_events` fails open.** A pattern that fails to match means the event is *delivered*, so a matcher supporting fewer metacharacters than the operator wrote does not narrow the filter, it opens it — a subscriber excluding `secret.?vent` excluded it under `fnmatch` and **received** it under a `*`-only matcher. `include_events` fails the safe way round under the identical divergence, which is why it went unnoticed. The narrowest implementation's own doc comment named the mechanism exactly: its support was "the subset of `fnmatch` behaviour the spec fixtures and YAML examples actually exercise" — **where the specification is silent, the corpus becomes the contract, and the corpus under-specifies.** **§6.2.2 (new)** closes the one place the two algorithms could still be confused, without touching A08. A08 keeps `*` as its only metacharacter — promoting `?` would widen `allow` rules that are inert today, which is the one direction an authorization matcher must not move silently — but an ACL pattern containing `?` can never match a module ID (§2.7), so it **MUST** now warn at load and be reported by `validate_rules()`. Meaning unchanged, decision unchanged, silence removed. Same shape as §6.1.2's unregistered-condition-key rule. **Scope, stated as a boundary rather than left to inference.** `extensions.ignore_patterns` is **deliberately excluded** from the closed set: it is registered in all three key surfaces and read by **none** of them, so §3.6's `scan_extensions` step 3a is a **MUST whose input nothing supplies** — the same shape #114 found in `bindings.dir`. Assigning it a dialect would declare a contract no implementation could be measured against, which is the practice this section exists to end; it is recorded as a separate defect instead. §5.13.3's binding example still spelled the target field `target_id` after v1.36.0's correction, so it would have loaded in no SDK — fixed, along with seven prose residuals of the same over-applied rename (`target_id node`, `target_id path`, `target_id namespace`, `target_id type`, `target_id language`). **MINOR, not MAJOR, on the v1.22.0 precedent**: the specification is being corrected to have *one* meaning where it previously had three, and the affected population is a configuration using `?`, `[`, `{` or a mid-string `*` in a pattern-valued key — every one of which behaves differently in each SDK today, so no deployment can be relying on the behaviour across them. **This IS an SDK change in all three.** New conformance fixture `conformance/fixtures/glob_matching.json` (30 cases, 11 of them marked DISCRIMINATING and naming the shipped implementation each separates), plus discriminating cases added to `bindings_dir_resolution` (+4), `redaction_config` (+4), `reload_path_filter` (+4) and `event_management_hardening` (+3). Every added case obeys one rule, which is the corpus lesson of both issues: **a case earns its place only if it fails against at least one implementation as shipped.** The pre-existing corpus failed that test everywhere — every pattern value in every fixture was `*`, a literal, or leading-star-plus-literal-suffix, which is precisely the family on which a real glob, a leading-star strip and a first-star removal all coincide. **Two corrections found while generalising this work into #118, folded in here because none of it has shipped.** `schemas/apcore-config.schema.json` declared `obs.redaction.sensitive_keys` default `[]` while D-54 requires the canonical 16-entry list as the default when the key is absent — all three SDKs ship the list, and only the canonical schema said otherwise, so anything generated from it shipped **no redaction by default**. Corrected to the 16-entry list. And D-54's own prose described `_secret_*` as "matched as a substring (the `*` is informational only)", which described no implementation: it is a pattern and it is anchored, before and after A25 alike. Governance: maintainer approval per GOVERNANCE.md § Decision Making; tracking issues #116, #117, #118. |
-| 1.38.0 | 2026-09-09 | **§9.1.2 Declarative Validation Limits (new) — six declared keys, no consumer, and a set of numbers no two documents agreed on (#118).** `validation.binding.description_max_length` / `documentation_max_length` / `tags_pattern` / `version_require_semver` and `validation.pipeline.step_name_max_length` / `timeout_ms_max` were registered in all three SDK key surfaces and read by **none** of them. What filled the gap in their absence was six different contracts for the single field `description`: §1.6's term table stated `≤200 characters` as a constraint, §4.8's field table repeated it, `schemas/apcore-config.schema.json` declared a configurable default of **500**, `DECLARATIVE_CONFIG_SPEC` §3.2 documented that 500 as Normative, `defaults.schema.json` carried no entry at all, and the only implementation of anything was a `logger.warning` in one SDK at 200 while the other two enforced nothing. **The tie-breaker is that §4.8's own migration algorithm has always said warn, not reject** — *"description exceeds 200 chars (not recommended, but will warn) … Keep as-is"*. So the specification never actually required rejection at 200, and §1.6's parenthetical described a rule no section operationalised and no implementation had. Correcting it is the #115 shape: the specification catching up to what every implementation already did, not the weakening of a MUST. **The decision is that apcore does not impose limits on the content its users author. It offers them.** All six keys are **unconstrained by default** and all six are configurable; §9.1.2 *recommends* 200 / 5000 / a lowercase tag pattern / SemVer / 64 / 300000 and enforces none of them. apcore is a library other projects build on for years: a limit right for one project's LLM-ranked module catalogue is wrong for another's internal tooling, and a framework that picks for both picks wrong for one. **The two format keys default off for a second, harder reason.** `tags_pattern` and `version_require_semver` were declared with *restrictive* defaults (`^[a-z][a-z0-9_]*$`, `true`) that nothing enforced. Shipping them as declared would not have been "implementing a key" — it would have **added a rejection that does not exist today** to every project whose tags are capitalised or hyphenated. Defaulting them off makes the whole change **purely additive: every binding file, module and pipeline that loads before this version still loads after it.** Measured, not assumed: the entire observable population of module `description` values across the three SDKs and this repository is **88 characters at its longest**, and 10 of 10 existing tag values already match the recommended pattern — so neither number was ever load-bearing. **§9.1.2 requirement 6 pins the SemVer grammar as a literal**, unmodified from semver.org, precisely because the lesson of §9.2.3 is that naming a format without pinning it produces one contract per implementation. `1.0` does not satisfy it: the patch component is required. `tags_pattern` is declared a **regex-dialect** value under §9.2.3, so a pattern that does not compile is reported rather than skipped. **Where a limit is checked is stated rather than left to inference** (requirement 3): `validation.binding.*` in the binding loader against each `BindingEntry` — whose schema carries exactly those four fields — and `validation.pipeline.*` when the `pipeline:` section is parsed. `remove:` is deliberately not name-checked: those names identify steps that already exist rather than naming new ones. When a limit **is** configured it is **enforced, not warned about**; the operator asked for a limit, and a limit that only warns is the `regex_patterns` failure of §10.6.1 in another place. §1.6, §4.8 and the surrounding prose are corrected from hard limits to recommendations. `schemas/apcore-config.schema.json` gains the six unconstrained defaults; `defaults.schema.json` gains a `validation` section carrying **one** canonical default — `version_require_semver: false` — because the other five are unconstrained *as* `null`, and `null` is the absence of a default rather than a value worth threading through three SDK default tables. `config_key_governance.json` regenerated (65 allowed keys, 21 canonical defaults). **This IS an SDK change in all three**, and it is additive in every direction. Governance: maintainer approval per GOVERNANCE.md § Decision Making; tracking issue #118. |
-| 1.39.0 | 2026-09-09 | **§9.2.4 Deprecated Configuration Keys (new) and §9.2.4.1 — ten declared keys reach no consumer, and withdrawing them is a migration, not a cleanup (#118).** `observability.tracing.enabled` / `.sampling_rate` / `.exporter`, `observability.metrics.enabled` / `.exporter`, `logging.level` / `.format`, and `acl.audit.enabled` / `.include_denied` / `.log_level` are schema-declared, environment-overridable, documented with defaults — and read by no code path in any SDK. An operator who sets one gets no error, no warning and no effect, and `_config.strict` does not help because every one of them is correctly declared. **This version changes no behaviour.** The keys keep parsing, keep validating, keep answering `get()`, and stay accepted under strict mode for the whole 1.x line. What it adds is the one thing they have never had: a way for an operator to find out. **Deletion was the obvious plan and it is wrong twice over.** First, all ten are accepted today under `_config.strict: true` — measured, not assumed — so removing a declared key turns a currently-valid configuration into a rejected one; §13.2's two-minor floor and §13.4's `remove_field: mark as deprecated for at least 2 minor versions` both apply, and the shape is therefore *keep parsing → warn once per load → remove at 2.0*. Second, and sharper: **for the ACL file, deleting the declaration would have accomplished nothing at all.** No implementation validates an ACL file against `schemas/acl-config.schema.json` — the only references to that file in any SDK are in comments — and the three ACL loaders parse into an open container and take the fields they want, so an `audit:` block is dropped in silence today and would go on being dropped in silence after any schema change. Verified by execution: a file with an `audit:` block and a file with a nonsense root key both load with no warning. §9.2.4.1 therefore puts the notice in the **loader**, scoped to `audit` alone — a deprecation notice, **not** unknown-key closure for ACL files, so every other unrecognised root key keeps being ignored exactly as before. **The warning is driven by the DECLARED document, never the merged view** (requirement 2), because every one of these keys has a default and a merged-view check would fire for every configuration ever loaded — the blanket warning §9.2.2 explicitly rejects, which trains operators to ignore the one that matters. Cadence follows §9.2.2 exactly: once per configuration load, never once per process. **That requirement caught a real cross-SDK divergence while being implemented**: apcore-rust's `get_declared` answers `Some(false)` for `observability.tracing.enabled` in a document that never mentions it, because `observability` is a typed struct field whose leaves always carry a value — so the first implementation warned for every configuration, including clean ones. The Rust warning is driven from `user_namespaces`, which retains the raw object of every typed section as written; that `get_declared` itself cannot answer the question is recorded as a separate finding rather than repaired here, since §9.3's required-field check depends on that method. §9.2.4's table records why each key is going, and the entry worth reading is `sampling_rate`: `TracingMiddleware` decides sampling from `sampling_strategy`, which defaults to `"full"` and short-circuits before the rate is consulted, and **the configuration surface has no key for the strategy** — so wiring the scalar alone would have produced a key that reads configuration, sets a field, and still samples every span. An operator asking for 10% gets 100% today and would still get 100% after that "fix". The ten properties carry `"deprecated": true` in `schemas/apcore-config.schema.json`, and the ACL file's `audit` block carries it in `schemas/acl-config.schema.json`. **Whichever of the two audit homes survives, one is deleted at v2.0**; this section does not choose between them, it starts the window for both so the choice is not also a scheduling problem. `conformance/config_key_consumers.json` records each key's window and pins it with a probe asserting **both** halves — a declared key warns, and a clean configuration does not. Governance: maintainer approval per GOVERNANCE.md § Decision Making; tracking issue #118. |
-| 1.40.0 | 2026-09-09 | **§10.6.1 requirement 2 (new) — `regex_patterns` applies to string values only, and the conversion the old wording implied cannot be specified at all (#117).** Requirement 1 said the pattern is searched *"against the string form of a field's value"*. Read as an instruction to stringify, and apcore-python's log-emission path did exactly that, so **one SDK gave two answers for one value**: with `regex_patterns: ["\\d+"]`, the field `amount: 42` came back `***REDACTED***` from `_apply_redaction_config` and untouched from `redact_sensitive` — measured, and §10.6 requires the rule to hold on **both** of those surfaces. **The reason the phrase has to go rather than be clarified is that no wording could have saved it.** For the single value `{"a": 1}` the three host languages render `{'a': 1}`, `[object Object]` and `{"a":1}`; for `true` they render `True`, `true` and `true`. A matching rule defined over a per-language rendering is not one rule with an ambiguity in it, it is three rules — the precise defect §9.2.3 was written to end, reappearing one section later in a phrase rather than in a type. The rule is now a **MUST NOT**: a number, boolean, `null`, object or array is not tested, and **is not converted in order to test it**; containers are descended into, so a string inside one is still reached at its own position. This pins the majority behaviour rather than changing it — apcore-typescript (`typeof value === 'string'`), apcore-rust (`Value::String(s)`) and apcore-python's own executor-capture path all already restrict to strings, and only one of four code paths did not. **The existing fixture could not see it, for the reason #116 and #117 both turned on.** `redaction_config.json`'s `regex_pattern_value_match` case already carried `amount: 42` next to two patterns — but both were anchored on `Bearer` and `sk-`, so neither could match `"42"` under any interpretation, and a case that cannot fail against any implementation pins nothing. Discriminating cases are added. Requirement 5 additionally scopes diagnostic suppression: an implementation that de-duplicates the requirement-4 warning **MUST NOT** let the suppression outlive the configuration it was raised for. A process-wide "already reported" set — which apcore-python and apcore-typescript both had — silences the *second* load of the same broken pattern, i.e. the reload case and the multi-tenant case, the two where an operator most needs telling; requirement 5's "compile once, when the configuration is read" makes the correct scope the natural one. **This IS an SDK change**, in apcore-python (both halves) and apcore-typescript (suppression scope); apcore-rust already compiles at `from_config`. Governance: maintainer approval per GOVERNANCE.md § Decision Making; tracking issue #117. |
-| 1.41.0 | 2026-09-10 | **§10.6.1 "Where the rules apply" (new) — `obs.redaction.*` reached one of the two surfaces the specification names, in all three implementations, for the whole life of the keys (#120).** `docs/features/observability.md` has always said redaction MUST apply "both at log emission and at the executor's input/output capture point\", as the union of `x-sensitive`, `sensitive_keys` and `regex_patterns`. Measured: the capture point applies `x-sensitive` and the `_secret_` prefix and **nothing else** — apcore-python `builtin_steps.py:272/950/1102` calls `redact_sensitive(ctx.inputs, schema)` with no configured keys or patterns, and apcore-typescript `executor.ts:76` and apcore-rust `executor.rs:417` have **no parameter for them at all**. **The three agree with each other; what they disagree with is the documentation** — and the reason is in this specification rather than in them. §10.6 publishes its algorithm as `redact_sensitive(data, schema)`: two inputs, no configuration. All three wrote that signature and honoured it. The "both surfaces" rule lived only in a feature document with no normative section behind it, so **a MUST whose subject the published algorithm cannot express is a MUST nothing can satisfy.** Requirement 2 states the failure as a contradiction rather than a gap: the same field, in the same execution, is a secret in the log line and plaintext in the captured input, and neither answer is marked provisional. The capture point is the one that matters more and the one that was missed — it fills what the audit trail carries (governance events, error histories, any middleware reading `context.redacted_inputs`), so an operator who adds a `regex_patterns` entry for a bearer token gets it redacted in the log they were watching and stored in the record they were not. Requirement 3 pins the absent-configuration case: **"no configuration" means the defaults, never no redaction** — and the three implementations disagreed even on that, which is a **fourth divergence** at this surface and one no test could see while the *configured* rules reached the capture point in none of them. apcore-python resolved an absent key list to the canonical 16-entry default; apcore-typescript and apcore-rust applied `x-sensitive` and the `_secret_` prefix and stopped. A field named `password`, with nothing configured anywhere, was redacted in the captured input by one SDK and stored in plaintext by two. Wiring therefore changes nothing for an unconfigured apcore-python caller and converges the other two onto it. **This IS an SDK change in all three**, and it is the plumbing rather than the matcher: no capture call site held a `Config`. Found while implementing v1.40.0 and filed separately rather than folded in, because it is a wiring decision and not a dialect one. Governance: maintainer approval per GOVERNANCE.md § Decision Making; tracking issue #120. |
-| 1.42.0 | 2026-09-11 | **§3.5 / §3.6 — `extensions.ignore_patterns` gets a consumer, and therefore a dialect (#118).** The key was registered in all three configuration key surfaces and read by **none** of them, so A04 step 3a — *"if entry name matches ignore_patterns → Skip"* — was a **MUST whose input nothing supplies**. A project that excluded a directory from discovery had it scanned and its modules registered anyway: **a skip rule that failed OPEN**, which is the direction that matters, and the same shape #114 found in `bindings.dir`. v1.37.0 excluded the key from §9.2.3's closed set on purpose — assigning a dialect to a key nothing reads declares a contract nothing can be measured against — and said so in the table. **The order is the rule, not the exception: a dialect is assigned when a consumer exists, not before.** This version supplies the consumer in all three SDKs and assigns the dialect in the same change, so the row, the behaviour and a fixture that can discriminate between them arrive together. The surface is narrow on purpose: A04 says *entry name*, so a pattern matches **one path segment** and `*` cannot cross a directory boundary, because there is no boundary in the value being matched. Matching is **case-sensitive**, unlike `obs.redaction.sensitive_keys` — these are filenames, and folding them would make one configuration behave differently on a case-insensitive filesystem than on the case-sensitive one it was written against. §3.5 also states what was previously only implied: its five rows are **built in and not configurable**, and the configured list is a **union** with them rather than a replacement, so a pattern cannot switch off `.git/` or `__pycache__/`. **This IS an SDK change in all three.** Governance: maintainer approval per GOVERNANCE.md § Decision Making; tracking issue #118. |
-| 1.43.0 | 2026-09-11 | **§5.16 requirements 6 and 7 — a configured `pipeline:` section was accepted, validated and then ignored, in all three SDKs (#118, decision D-72).** The declarative pipeline surface is fully implemented everywhere: `build_strategy_from_config` applies `remove`, then `configure` against a **closed** field set, then `steps`, with its own error code and its own contract in `DECLARATIVE_CONFIG_SPEC` §4. Its first parameter is a dict the **caller** supplies, and nothing extracted the section from a loaded `Config` — no client ever called the builder. Measured: `pipeline: remove: [acl_check]` in `apcore.yaml` left all eleven steps in place. **The asymmetry is why requirement 6 is a MUST.** Failing to REMOVE a step is fail-safe; failing to INSERT one is not. An operator who declared a custom step for audit logging, rate limiting or an authorization gate got a client that **silently never ran it**, with no error and no warning, and the pipeline they read in configuration was not the pipeline that executed. Of the twenty-five keys the #118 audit found inert, this is the most direct route from a declared configuration to a security control that does not run — not the only one (`extensions.ignore_patterns`, closed in v1.42.0, was the same class failing OPEN in the other direction), but the most direct. **Requirement 7 exists for the transition, not the steady state.** Making a previously ignored section take effect means a configuration that has been carrying `remove: [acl_check]` while ACL was enforced anyway starts having ACL genuinely removed — the operator getting what they asked for, and equally the one direction in which honouring configuration can withdraw a protection that was in place a moment earlier. So removing `acl_check` or `approval_gate` now emits a load-time diagnostic on §9.2.2's cadence. It is a notice and **not** a refusal: the configuration is valid, it was written deliberately, and rejecting it would break projects whose `pipeline:` block is harmless. **This IS an SDK change in all three, and it is the one change in this cycle that alters what an existing configuration does.** Governance: maintainer approval per GOVERNANCE.md § Decision Making; tracking issue #118, decision D-72. |
-| 1.44.0 | 2026-09-11 | **§10.1.1 (new), §9.15.2, §10.7 and §9.2.4 — one tracing configuration surface was declared in two places that disagree, and every key in it was inert (#118, decision D-68 C').** v1.39.0 opened a removal window on `observability.tracing.enabled` / `.sampling_rate` / `.exporter` on the finding that no implementation read them. That finding was right and the diagnosis under it was incomplete in a way that changed the remedy. **`observability.tracing.strategy` and `.otlp_endpoint` are not new keys.** §9.15.2's namespace registration has declared both since it was written — `strategy` with default `"full"` and the four values `full`/`proportional`/`error_first`/`off`, `otlp_endpoint` with default `null` — and all three SDKs carry that registration verbatim. Neither appeared in `schemas/apcore-config.schema.json`, so **`_config.strict` rejected both as unknown keys while §9.15.2 documented their defaults**, and `Config.from_defaults()` returned `None` for both. One surface, two declarations, and the more complete one discarded: the third variant of this audit's recurring shape and the sharpest of them. Two further disagreements came out with it — both sections' exporter enums differed (`jaeger` in the schema, `in_memory` in §9.15.2, for tracing; `otlp` versus `in_memory` for metrics), and §9.15.2 named `schemas/observability.schema.json` as this namespace's schema when **no such file has ever existed**, that line being its only reference anywhere. **This version makes the schema canonical**: it gains `strategy` and `otlp_endpoint`, §9.15.2 references it instead of carrying a copy, and the phantom schema reference is removed rather than satisfied, because a third declaration of one surface is the problem and not the fix. **The keys also cannot be fixed one at a time, in any order** — wiring `sampling_rate` alone yields a key that reads configuration, sets a field and still samples every span, since the strategy short-circuits ahead of the rate; adding the strategy yields two keys configuring a middleware nothing installs, no SDK having ever built a `TracingMiddleware` from configuration; and installing one needs an exporter, which is an object rather than a name. So the five move together. **`in_memory` is deliberately NOT admitted to the enum** (§10.1.1 requirement 2): all three in-memory exporters are test buffers a caller selecting them by name has no standardised way to read, so admitting one would manufacture a fresh instance of the failure this section removes — a setting that takes effect and produces nothing visible. `jaeger` stays accepted for 1.x, warns once per configuration load, installs nothing, substitutes nothing, and is removed at v2.0 under §13.4's window, since narrowing an enum rejects a configuration accepted today; the same treatment covers `otlp` wherever OTLP support is an absent optional dependency or build feature, because a middleware whose exporter discards every span is worse than no middleware. **`otlp_endpoint` set against a non-OTLP exporter is a load-time `CONFIG_INVALID` error** (requirement 3), not a silent no-op: an endpoint written down and read by nothing is the shape of every defect #118 found. **§10.7 was itself describing a surface that did not exist** — it named the key `sampling_strategy`, which is the constructor argument's name in all three SDKs and not a configuration key, and spelled `full` and `off` as rates, so the rate doubled as an on/off switch that two of the four strategies ignore. **This also closes a second dead end**: the `span_exporter` extension point warned `no TracingMiddleware found in the middleware chain` precisely because nothing installed one from configuration, and requirement 6 pins the ordering — an extension-supplied exporter object beats the configured name, and a caller-supplied middleware is never joined by a second. `observability.metrics.enabled` and `.exporter` stay in §9.2.4 and proceed to removal: no metrics-exporter abstraction exists in any SDK and `MetricsCollector` arrives only as a constructor argument. **This IS an SDK change in all three, and it ships with them** — the §9.2.4 rows and the schema's `deprecated` flags are lifted in the same change that gives the keys consumers, never ahead of it. Governance: maintainer approval per GOVERNANCE.md § Decision Making; tracking issue #118. |
-| 1.45.0 | 2026-09-11 | **§6.3.2 (new), §9.2.4 and §9.2.4.1 — ACL auditing had two declared configuration homes, neither read, and no delivery contract to wire either of them to (#118, decision D-66).** §6.3.1 has always specified the *record* — thirteen fields, with `handler_error` and `approval_required` carrying precise semantics. Nothing specified **delivery**: `ACL(audit_logger=…)` was the entire surface, with no default sink, no statement of what happens when delivery fails, and no meaning for the `audit:` block's `enabled` / `include_denied` / `log_level`. **The sharpest consequence was measured, not inferred: a raising audit callback propagated out of `check()` and turned an ALLOWED call into an error, in all three SDKs** — the callback is unguarded at `acl.py:1866`, `acl.ts:1698` and the Rust equivalent. Auditing is a side channel and MUST NOT hold a veto over access, which §10.3 has always required of the governance events beside it; requirement 3 states it, bounded to **recoverable** failures because a Rust callback is `Fn(&AuditEntry)` with no error channel and a `panic = "abort"` build cannot be contained. **The ACL file's `audit:` block is the surviving home** and `acl.audit.*` is withdrawn: under the alternative the surviving key would still need wiring, and wiring it means the `apcore.yaml` loader reaching into ACL construction, while here it is local to the ACL loader that already parses the document. §9.2.4's three `acl.audit.*` rows now name their migration target — a notice saying "this is going away" without saying "use that instead" is half a notice. **Declaration activates the default sink, never the default value**: `enabled` defaults to `true`, so a merged-view reading would switch a log record per ACL check on for every ACL file in existence, and the §9.2.4 principle that a notice is driven by the declared document applies unchanged to behaviour. A file with no `audit:` block behaves exactly as before. **There is one effective sink, never two**: a supplied callback receives every entry and is never narrowed, levelled or silenced by the block, because `include_denied: false` in a file silently truncating a compliance sink a developer installed is the API-beats-configuration rule failing in the direction that matters; a block overridden by a callback produces one diagnostic naming **every** field that does not apply. The default sink emits under the stable name **`apcore.acl.audit`** with all thirteen fields as **structured data under their `snake_case` wire names** — without that, one specification yields three different "structured records" from a Python `logging` call, a TypeScript `console` line and a Rust `tracing` event, and nothing downstream consumes all three. Callbacks **MUST** be synchronous: an `async` one returns an unawaited coroutine or `Promise` whose failure surfaces after the decision has been returned, outside the containment requirement 3 promises. Failing-sink diagnostics are suppressed after the first, scoped per ACL instance **and per effective sink configuration**, so replacing a sink or reloading is not hidden behind an old failure. `reload()` now refreshes the block and **preserves** the callback — it previously refreshed only rules and the default effect, making `audit:` the one part of the document a reload missed. The block is validated against `$defs/AuditConfig`; every other unrecognised root key in an ACL file keeps being ignored, exactly as §9.2.4.1 scoped its own notice. **This IS an SDK change in all three, and requirement 3 changes existing behaviour** — a project whose audit callback raises moves from a failed call to a returned decision plus a diagnostic. Governance: maintainer approval per GOVERNANCE.md § Decision Making; tracking issue #118. |
-| 1.46.0 | 2026-09-14 | **§9.6.3 requirements 1–4 (new) — and the last three inert keys of the #118 audit are wired (decisions D-69, D-70, D-71).** **`_config.allow_unknown` (D-69)**: §9.6.3 published a three-row behaviour matrix and **both halves of its `strict: false` line were inert in all three SDKs** — `allow_unknown: false` is documented as "silently ignored (not stored)" and the namespace was stored anyway, so `get()` answered for it, while `allow_unknown: true` is documented as "stored, accessible, **WARN logged**" and nothing logged. A table was not enough, so the four requirements state it: namespace mode only (a legacy document has no namespaces — its root IS the `apcore` namespace, and `strict`'s clause (b) saying it "applies in legacy mode too" is the specification saying clause (a) does not), `false` drops, `true` warns once per load naming every retained namespace, and an **absent** `_config` takes the documented defaults rather than being an exemption. Requirement 2 is the one clause in §9 whose implementation makes a `get()` that returned a value return null; it fires only for a configuration that explicitly writes `allow_unknown: false`. **`extensions.roots` (D-70)** was read by **apcore-rust alone**, so a multi-root project worked on one SDK of three, silently — and what apcore-rust read was **half the key**: it took the paths and dropped the namespaces, while `$defs/ExtensionsConfig`'s own description leads with "multiple roots **with namespace isolation**". Every SDK already had the scanner that applies the prefix (`scan_multi_root` / `scanMultiRoot`); none had a path from a `Config` to it, and the one that did threw away what makes the key worth having. A **one-element** `roots` list is namespaced like an n-element one: the namespace is derived at the configuration door rather than left to the scanner's own "more than one root or an explicit namespace" dispatch, because nothing in the schema makes a one-element list special and `roots` versus `root` **is** the namespaced/backward-compatible distinction. **`id_map.overrides` (D-71)** is the fourth instance of the shape this audit keeps finding: the ID-map mechanism is implemented in all three SDKs and the three agree closely — stage 2 of discovery rewrites a discovered `canonical_id` — while the map arrived only through a constructor argument. Measured: with the key pointing at a valid map renaming `executor/orig/mod.py`, discovery still registered `executor.orig.mod`. A relative value follows **`extensions.root`'s** resolution base, not `acl.root`'s: §9.2.1 leaves that base deliberately unspecified and tracks it in #113, and these two keys are halves of one discovery configuration always read together, so a split base between them would be worse than either — an input to #113, not an answer. Three new conformance fixtures: `allow_unknown_namespaces.json` (6 cases, including the absent-`_config` row, the quiet half, and the legacy boundary so the scoping is a decision rather than an omission), `multi_root_discovery.json` (6 cases, two roots deriving the **same** unprefixed ID so the namespace is observable rather than cosmetic), `id_map_from_config.json` (4 cases, driven through discovery because a driver calling the map loader proves the loader works — which was never the question). **The #118 audit's configuration surface is now 50 live / 1 partial / 16 inert / 0 unaudited**, from 29 inert and 31 unaudited when it opened. **This IS an SDK change in all three.** Governance: maintainer approval per GOVERNANCE.md § Decision Making; tracking issue #118. |
-| 1.47.0 | 2026-09-14 | **§9.1.3 (new) — a declared configuration key MUST reach its mechanism from a `Config` (#118, decision D-73), and `acl.default_effect` is the rule's first application.** The arrangement this section forbids — a mechanism fully implemented and reachable only by passing a constructor or function argument, with a schema key naming it that reaches nothing — arose **four times independently** in code that was otherwise careful: `acl.default_effect`, `acl.audit.*`, `id_map.overrides` and `pipeline.*`. Nothing in this specification forbade it, so nothing caught it, and **each instance looked correct from inside its own SDK because the mechanism worked**. The section closes the class the way §9.2.3 closed pattern dialects and §9.2.1 closed path-typed keys: name the requirement once rather than repair its instances one at a time. Two clauses keep it from leaving the same gap open under a narrower door. **Requirement 1 defines the entry point**: a file load, an `APCORE_*` override and a programmatic `Config` all satisfy it equally; a direct argument that bypasses `Config` does not, and remains legitimate as an argument while being unable to stand in for the key. **Requirement 2 states precedence** — API argument > `Config` > declared default — because the rule gives many keys two doors, "both are wired, which one applies" is the question that produced §9.2.2's project-root divergence one layer up, and the API argument winning is also what keeps the rule from being a breaking change: every caller passing the argument keeps its behaviour and the key becomes the fallback it always looked like. **Requirement 3 covers the key in the wrong file**, which is the same defect wearing a disguise, and applying it is this version's second half. `acl.default_effect` reaches its mechanism from the **ACL file** and not from `apcore.yaml`, where §9.1 also declares it — measured, a project writing `acl.default_effect: allow` in `apcore.yaml` against an ACL file that omits it gets **deny**. The failure is fail-closed, which is why it went unremarked for so long: the key can silently withhold an `allow` an operator asked for and can never silently grant one. Same shape as `acl.audit` and the same remedy §9.2.4.1 chose there — the declaration in the file that reads it survives, the twin joins §9.2.4's table with the ACL file named as its migration target, and it is removed at v2.0. **The enforcement already exists**: `check_config_key_consumers.py`'s `live` criterion is requirement 1 restated, and it was `acl.default_effect` that taught it — the key was recorded `live` in the very guard built to find keys nothing reads, by a probe that constructed `ACL(default_effect=…)` directly. Requirement 2 is pinned per key by the precedence case each wiring fixture carries. **This IS an SDK change in all three** (the deprecation table gains a row); no behaviour changes. Governance: maintainer approval per GOVERNANCE.md § Decision Making; tracking issue #118. |
-| 1.48.0 | 2026-09-14 | **§9.2.4 — `logging.level` and `logging.format` are withdrawn with no replacement key (#118, decision D-67), and §9.15.2 stops pointing the ecosystem at them.** This is the last of the eight decisions #118 opened. The finding is a **boundary**, not an implementation cost: wiring the two keys would require threading their values through `Context` — the object every `Context.logger()` call builds a logger from, and which in **all three SDKs contains no reference to a `Config` at all** — or introducing a process-global logger configuration. The second is the expensive one, and not in effort: every `Context.logger()` returns a fresh instance today, so two `APCore` instances in one process are already isolated, and a global would be the thing that **ends** that. apcore does not own the host's logging policy. **The replacement wording had to be corrected against the code**, because the obvious phrasing is false: apcore's `ContextLogger` **does not route through the host's logging framework** — it writes structured lines directly to standard error (`sys.stderr`, `console.error`, this crate's own writer), and `apcore-python`'s `context_logger.py` does not import `logging` at all. Telling an operator to "configure it through your language's logging API" would send them somewhere with no effect on apcore's output. The supported path is the API argument — construct a `ContextLogger` with the level, format and sink you want and pass it to `ObsLoggingMiddleware(logger=…)`, whose `supplied else default` precedence is §9.1.3 requirement 2 already. **A known boundary is recorded rather than left to be discovered**: that path covers the middleware and not `Context.logger()`, which constructs a default logger per invocation, so a module's `context.logger()` output is always stderr / `info` / JSON in every SDK. Withdrawing `logging.*` makes §9.1.3's rule hold — the keys stop naming a mechanism they cannot reach — without handing the host control of that path, and this specification does not yet define one. §9.15.2's ecosystem table told `apcore-mcp`, `apcore-a2a`, `apcore-cli` and third parties to read `logging.level` / `.format`; an adapter that did got a value no apcore code path acts on, which is how a declared-but-inert key acquires downstream readers and becomes expensive to remove. **No SDK change**: both keys have been in §9.2.4's table and every SDK's deprecation list since v1.39.0, and nothing about their behaviour changes. Governance: maintainer approval per GOVERNANCE.md § Decision Making; tracking issue #118. |
-| 1.49.0 | 2026-09-15 | **Eighteen cross-language divergences settled, from the deep-chain audit of 2026-09-14 (D-74 – D-91).** The shape they share: a contract the spec never stated, so three SDKs each picked an answer and none was wrong to. **§12.2 `describe` returned `→ ModuleDescription`, a type no SDK produces** — all three return a rendered string, `get_definition` is the structured accessor, and when the module supplies its own `describe()` (whose declared return is a mapping) the registry must return it only if it is a string and otherwise fall through, rather than stringifying a dict into a language-specific repr (D-77). **`ExtensionManager.apply` gained a Postconditions section** forbidding it from draining the store; the existing `idempotent: false` row already implied non-consuming by promising that a second `apply` stacks middleware, which a draining implementation silently turns into a no-op (D-78). **The registry event set is now closed and stated** — `register`, `unregister`, and a conditional `file_changed` — after apcore-typescript was found emitting `file_changed` from `watch()` while its own `on()` rejected that name, so every hot-reload notification fired into an empty callback list, and after this page's own example told readers to subscribe to `change` / `add` / `remove`, three names every SDK rejects (D-80). **A stalled topological sort is not a cycle**: two SDKs reported `CIRCULAR_DEPENDENCY` with a fabricated one-element `cycle_path` for a batch member whose dependency simply was not in the batch, sending authors to break a loop that does not exist (D-79). **`ContextFactory.create_context` was rewritten** from `(identity, caller_id, data)` — a factory nobody built, and one that takes the identity the factory exists to extract — to the `(request)` shape apcore-python and apcore-typescript ship (D-76). **`TaskStoreError` must reach the caller**: it was declared on every `TaskStore` method and absorbed by the manager, so a `cancel` whose `save` failed still returned `true` (D-81). Also: insertion order for `list_tasks` is normative and a `task_id` sort does not satisfy it (D-82); the `guard_call_chain` signature published in this spec is normative, and the `Context`-taking form apcore-rust shipped instead made the guard unreachable for any host whose services type was not `serde_json::Value` (D-83); a non-positive call-chain limit raises a typed `GENERAL_INVALID_INPUT` rather than three per-language error types (D-84); malformed version constraints must be reportable rather than resolving to a `(0,0,0)` comparison that reported `"latest"` as satisfied for every `0.x.y` module (D-85); `Registry.register`'s validation steps are ordered intrinsic-then-extrinsic (D-86); the audit-block surface on a directly-constructed ACL is a language idiom but its reachability is required (D-87); index-keyed warning dedupe must be cleared by index-shifting mutations (D-88); the deprecation warning is once per `(module_id, version)` per registry, not once per read (D-89); `reset()` must not substitute the underlying cancellation handle (D-90); and a removal method a host cannot actually call does not satisfy the contract (D-91). **`Config.get`'s Inputs row is corrected** — it claimed an empty key was rejected with `ValueError`, contradicting its own `### Errors` row and describing behaviour no SDK has ever had (D-74). **This IS an SDK change** in all three. Governance: maintainer approval per GOVERNANCE.md § Decision Making. |
-| 1.50.0 | 2026-09-15 | **The deep-chain audit's second wave (D-92 – D-107): sixteen critical cross-language divergences, five of them security defects.** All were invisible to three green test suites and 79 passing conformance fixtures, because a fixture pins an OUTCOME and these implementations reached different outcomes by different paths — `approval_gate.json` passes in all three SDKs off two different sources of truth. **Two independent approval bypasses, which compose.** §7.4 step 2 binds `annotations = module.annotations` and step 3 tests that binding; apcore-rust decided gate firing from the registry DESCRIPTOR instead, so a module declaring `requires_approval: true` whose descriptor omits it ran ungated (D-96). Separately its `FunctionModule` stores `annotations`/`tags`/`documentation`/`metadata` as fields but implements none of the corresponding `Module` accessors, so everything a `*.binding.yaml` declares was discarded at registration — including the approval requirement (D-97). The registry-side half of that had already been fixed under A-D-017, on the reader; the type being read was never updated. **A configuration dot-path must address data, never the host object graph** (D-95): apcore-typescript's `setNested` guarded its descent with `part in current`, and `'__proto__' in {}` is true, so `APCORE_____PROTO_____POLLUTED=x` in the environment polluted `Object.prototype` process-wide at `Config.load()` — no module call, no ACL, no approval. **Symlink confinement runs before the dir/file split** (D-94): apcore-python's check lived inside the directory branch, so a symlinked `.py` whose target escaped the extensions root was discovered and executed — the exact failure the check's own comment describes, on the one branch that yields importable files. **The contextual-audit redaction list is a superset, and bare substrings are the point of it** (D-93): apcore-typescript enumerated compounds (`api_key`, `private_key`, `authorization`) where the peers carry bare `key`/`auth`/`session`, so `signing_key`, `auth_header` and `session_id` reached the event bus verbatim. **`$ref` sibling keys are preserved** (D-98): apcore-rust discarded them, and since §10.6 redaction reads `x-sensitive` off the RESOLVED schema, a field marked sensitive beside a `$ref` was logged in plaintext there and redacted by its peers. Also settled: `global_deadline` is epoch seconds, lives in the field rather than a `data` key, belongs to the call tree rather than the Context, and is recomputed unconditionally on a deserialized Context (D-99 – D-102) — three SDKs had three clocks, and a spec-shaped caller value silently disabled the budget entirely on one of them; a null `identity` stays null and MUST NOT be given a synthetic `@external` principal, resolving a contradiction between this contract's own rows (D-103); a local `#/…` reference resolves against the file root with a fallback to the schema node, so that BOTH layouts load — previously no schema file containing a local `$ref` loaded in all three (D-104); the executor's ACL step MUST take the async path, without which the entire `register_async_condition` extension point is dead in the only code path that enforces (D-105); `TaskStoreError` is declared on eight surfaces and defined by no SDK, so no caller can catch it (D-92); a p99 estimate beyond the largest bucket is that bucket, not zero, which had disabled latency alerting for exactly the slowest modules (D-106); and per-class markers are the only multi-class opt-in, against a fixture still pinning the file-level toggle D-06 withdrew (D-107). **This IS an SDK change** in all three. Governance: maintainer approval per GOVERNANCE.md § Decision Making. |
-| 1.51.0 | 2026-09-16 | **Fourteen policy decisions from the deep-chain audit's warning tail (D-108 – D-121) — the subset where the spec was silent and no implementation was obviously right.** Unlike v1.49.0 and v1.50.0, which corrected defects, these settle questions three SDKs had each answered reasonably and differently. **An unknown extension point is an error; an empty one is not** (D-108) — the `### Errors: No errors raised` row was written about the EMPTY case and read by one SDK as covering the UNKNOWN case, so a misspelled point name returned a silent empty answer and surfaced later as a wiring bug at `apply()`. **Only the healthy/degraded health boundary is configurable** (D-109); two SDKs scaled the degraded/error boundary from it, so `error_rate_threshold: 0.001` silently moved both and a module at 5% was `error` on two SDKs and `degraded` on the third. **A failed reload restores the previous module** (D-112) — best-effort compensation, explicitly NOT atomic replacement: the restore path MUST re-run `on_load`, MAY leave the module unavailable when that also fails, and is per-module on the bulk path, because cross-module transactionality is not a registry primitive. **A bulk reload audits per module with a shared correlation id** (D-111); the aggregate entry two SDKs wrote was keyed on the glob and therefore unfindable by `AuditStore.query(module_id)`. **Storage-backend namespaces are named** — `metrics`, `usage`, `error_history` — and the omitted-argument default is `InMemoryStorageBackend` (D-113); of nine collector/SDK combinations only four wrote at all and the two that did disagreed, so the rename carries a dual-read migration window. **Error timestamps are UTC `Z` with millisecond precision** (D-120), precision included because fixing the suffix alone would leave three precisions behind one `Z`. **A malformed annotation value is tolerated and dropped** (D-115) — one SDK fabricated index keys from a string, another discarded the whole descriptor over a single out-of-range integer; implementations whose integer type cannot hold the bad value must deserialize signed FIRST, or the required clamp is unreachable. **`reload_dependents` is deprecated for removal at v2.0** (D-121): declared by all three SDKs, implemented by none, replacement is an explicit `path_filter`. Also: `project_name` defaults to `"apcore"` (D-110); `remove()` clears the middleware duplicate-identity entry (D-114); the circuit-breaker events carry the DECLARED subscriber type the DLQ path already uses (D-116); registered-namespace defaults do not answer for a legacy document (D-117); an empty `roles` list is omitted from the audit identity snapshot (D-118); and every `system.*` module declares `open_world: false` explicitly rather than inheriting a default that means the opposite (D-119). **This IS an SDK change** in all three; implementation is deliberately deferred until the v1.49.0/v1.50.0 branches are reviewed. Governance: maintainer approval per GOVERNANCE.md § Decision Making. |
-| 1.52.0 | 2026-09-16 | **Two decisions found while REVIEWING the v1.49.0/v1.50.0 work, not by the audit that produced it (D-122, D-123).** **`shutdown()` attempts every cancellation before it reports** (D-122). The three SDKs split on this while implementing D-81 — two stop at the first failure, one attempts all — so it is a genuine choice, decided on the asymmetry of the two failure modes: when the store is unreachable both strategies cancel nothing and stopping early merely arrives there faster, but when ONE task fails, stopping leaves every remaining task uncancelled. An uncancelled task in a shared store is a lasting cost (it holds a `max_tasks` slot for every manager sharing that store, and outlives the process that could have cancelled it); a slower shutdown is transient. The hang objection carries little weight because `shutdown()` is **already an unbounded wait by contract** — it waits for completion and takes no timeout in any SDK — so a caller needing a bound must already impose one. **A hot-reloaded module MUST NOT become visible before its `on_load()` has run** (D-123). `Contract: Registry.register` Side Effects step 8 already requires this, but is scoped to `register`; a watch-driven reload is a different entry point, so an implementation writing the internal maps directly violates no stated rule — which is what apcore-python's `_handle_file_change` does, publishing a module that is visible but never initialised. The rule constrains **publication, not mechanism**: D11-005 leaves the reload mechanism language-defined and this does not narrow it. Recovery semantics are governed by D-112 rules 2-4 and are deliberately NOT restated at the second entry point, because a duplicated rule drifting apart is the defect class this whole audit is about — §10.6.1's key matcher was implemented twice and drifted into a leak, and A-D-017's fix landed on the reader while the type being read was never updated. Only apcore-python is affected: apcore-rust re-runs discovery (which invokes `on_load`) and apcore-typescript's `watch()` never re-registers. Governance: maintainer approval per GOVERNANCE.md § Decision Making. |
-| 1.53.0 | 2026-09-16 | **The D-104 node fallback is scoped to its own document (D-124).** Found in maintainer review of the v1.50.0 branches, then reproduced in all three SDKs. D-104 settled WHICH two bases a local `#/…` pointer tries — the file root, then the schema node — and said nothing about how far the second one travels; every implementation held it on the resolver and consulted it for every local pointer, including ones resolved after following a reference into another file. A `#/$defs/X` written inside an EXTERNAL schema, naming a definition that document does not have, therefore fell back to the CALLING module's schema node and bound to whatever shared the name. Three consequences, in increasing order of cost: an invalid reference reports success where it owes `SCHEMA_NOT_FOUND`; the resolved schema then validates against a contract the external author never wrote; and §10.6 reads `x-sensitive` off the **resolved** schema, so a field the external document marks sensitive can be replaced by a local definition that does not and be logged in plaintext — the same class of leak as SCH-001, by a different route. This does not narrow D-104: a local pointer inside an external document still resolves in THAT document, and Layout B is unaffected, because at the origin the schema node and its document are the same document. Governance: maintainer approval per GOVERNANCE.md § Decision Making. |
-| 1.54.0 | 2026-09-16 | **SECURITY: D-96 binds every SDK and every governance reader (D-125).** D-96's closing remark — that the union is "unobservable in implementations whose descriptors are derived from the module (apcore-python, apcore-typescript)" — was asserted without being checked, and is false. Both peers merge a `*_meta.yaml` / `*.binding.yaml` / `metadata` document into the descriptor with §4.13's YAML > code precedence, which is a second place an operator can declare governance, and neither gate read it. **Reproduced in both:** a module registered with `metadata.annotations.requires_approval: true` produced a descriptor reporting `true`, a `system.manifest.*` entry reporting `true`, a preflight reporting **false**, and **no gate** — it executed with an approval handler configured and the handler was never consulted. That is the bypass D-96 describes, in the two SDKs D-96 named as unaffected, and it is fail-OPEN. The rule is unchanged; its SCOPE is corrected, and now binds the gate, the §7.9.5 preflight, the §6.6.5 posture accessor and the `system.manifest.*` projection alike — a reader narrower than the gate reports a verdict the gate will not honour. The union is `OR` on `requires_approval` and `destructive` only; every other annotation describes behaviour rather than governance and stays instance-sourced. An implementation MUST NOT resolve it with the metadata-merge precedence, which lets the weaker declaration win in both directions. Two consequences: a metadata `requires_approval: false` no longer cancels a code-declared `true`, and the manifest publishes the enforced value. **This IS an SDK change** in all three. Governance: maintainer approval per GOVERNANCE.md § Decision Making. |
-| 1.55.0 | 2026-09-16 | **A `version_hint` an implementation does not resolve by MUST NOT be silent (D-126).** The v1.10.0 row recorded "all three SDKs accept it, only apcore-python resolves by it". The second half is right; the first is not — apcore-rust's `Registry::get(&self, name)` takes no hint, so a Rust caller cannot pass one, and apcore-typescript accepted the argument and discarded it (the parameter name appeared exactly once in the source, in the signature). Found by verifying the spec's inaction-licensing claims about other SDKs, the same sweep that produced D-125. Resolution stays **OPTIONAL** — §5.4 coexistence is optional and making resolution normative would put a requirement into the spec that two of three implementations do not provide, which the v1.10.0 row was right to avoid. What is now required is **visibility**: compile-time refusal satisfies it (apcore-rust), and so does a deprecation warning. The parameter is INERT rather than wrong in apcore-typescript, because its `register` refuses a second registration of the same `module_id` — but a caller writing `get(id, "1.0.0")` believes it has pinned a version and has not, which is §9.1.3's "declared surface reaches no mechanism" on a method parameter. apcore-typescript deprecates for removal at 2.0 rather than removing now, following D-121, at D-89's once-per-module-ID cadence. The v1.10.0 row is left as written; the corrected statement is the current one in registry-system.md. Governance: maintainer approval per GOVERNANCE.md § Decision Making. |
-| 1.56.0 | 2026-09-17 | **SECURITY: a symlink is recorded once, under its real path (D-127).** `follow_symlinks: true` recorded one file reached by two paths as **two modules with different IDs** in apcore-python and apcore-rust — which step 4's `detect_id_conflicts` cannot catch precisely because the IDs differ, so the same module was registered and executed under two names. In the other direction `follow_symlinks` never reached the file branch in apcore-typescript or apcore-rust, so it governed directories and did nothing for files. File identity, module ID and visited-directory tracking are now all keyed on the **canonical real path**; containment is checked on the resolved path, and the ID derives from it rather than from whichever alias the traversal happened to take. |
-| 1.57.0 | 2026-09-17 | **`unregister` removes by IDENTITY, not equality (D-128).** `extension-system.md` said both: its Inputs row read "the exact extension object to remove (identity comparison)" and its prose two paragraphs later read "by identity/equality". apcore-python took the permissive reading and removed with `list.remove`, which compares using `__eq__`, so for any extension type that defines equality — a dataclass middleware is the ordinary case — `unregister(second)` deleted `first`: **a host removing the second of two identically-configured middlewares kept the one it wanted gone and lost the one it wanted kept**, with nothing raised and nothing logged. Implementations MUST compare by identity and MUST NOT treat value equality as authorising a removal. Found while pinning D-91. |
-| 1.58.0 | 2026-09-18 | **The audit-entry schema declares `correlation_id` (D-111).** The requirement that every entry from a single bulk reload carry the same correlation id landed at v1.51.0 and `system-modules.md`'s declared structure was not updated, so the block contradicted a MUST written three sections above it — the same shape D-128 corrected in `extension-system.md`. The field is **optional and empty for single-target operations**, so an existing `AuditStore` keeps working unchanged. |
-| 1.59.0 | 2026-09-18 | **D-89's two open dimensions adjudicated: the READ is the emission point, and the dedupe key includes the notice.** v1.49.0 bounded the deprecation-warning cadence ("at most once per `(module_id, version)` per registry instance") and left the scope open; the three SDKs filled the silence three ways and all three suites were green. **Where it fires:** `get_definition`, never `register`. apcore-rust emitted at registration and its reads never warned, so a host that registered before installing its log subscriber — `discover()` at import time is the ordinary case — lost the warning with no later chance to re-emit, the dedupe entry having already been written. The accepted cost is stated rather than hidden: a module whose definition is never read is not warned about. **What a re-registration does:** the key is `(module_id, version, x-deprecation block)` by deep value equality, and implementations MUST NOT clear it on `unregister`. apcore-python forgot on unregister, so `watch()` — which re-runs discovery as unregister + re-register — re-warned for every deprecated module on every hot reload, the traffic-proportional spam D-89 exists to prevent arriving through the door its wording did not close; apcore-typescript and apcore-rust stayed silent and therefore swallowed a genuinely NEW notice on a re-registered module. Keying on the block gives both halves at once. |
+| Version | Date | Summary | Records |
+|---|---|---|---|
+| 1.60.0 | 2026-09-30 | Editorial: history and implementation narrative removed from normative text; revision history condensed; the declarative-configuration and ephemeral-module documents merged into this specification. No behaviour change. | — |
+| 1.59.0 | 2026-09-18 | The deprecation warning is emitted when a definition is read, and its dedupe key includes the notice. | D-89 |
+| 1.58.0 | 2026-09-18 | The audit-entry schema declares `correlation_id`. | D-111 |
+| 1.57.0 | 2026-09-17 | `unregister` removes an extension by identity, not equality. | D-128 |
+| 1.56.0 | 2026-09-17 | **Security:** a symlink is recorded once, under its real path. | D-127 |
+| 1.55.0 | 2026-09-16 | A `version_hint` an implementation does not resolve by must not be silently ignored. | D-126 |
+| 1.54.0 | 2026-09-16 | **Security:** the governance union (annotation ∪ descriptor metadata) binds every SDK and every governance reader. | D-125 |
+| 1.53.0 | 2026-09-16 | The local-`$ref` node fallback is scoped to the document it was declared in. | D-124 |
+| 1.52.0 | 2026-09-16 | `shutdown()` attempts every task cancellation before reporting; a hot-reloaded module is not visible before `on_load()` completes. | D-122, D-123 |
+| 1.51.0 | 2026-09-16 | Fourteen policy decisions: unknown extension points, health thresholds, failed-reload restore, bulk-reload audit, storage namespaces, error timestamps, annotation tolerance, and more. | D-108 – D-121 |
+| 1.50.0 | 2026-09-15 | Sixteen cross-language corrections, five of them security fixes: approval-source union, binding annotations, config dot-path pollution, symlink confinement, redaction list, `x-sensitive` beside `$ref`, `global_deadline`, local `$ref` resolution. | D-92 – D-107 |
+| 1.49.0 | 2026-09-15 | Eighteen cross-language contracts stated: `describe`, `ExtensionManager.apply`, registry events, dependency sort, `ContextFactory`, `TaskStoreError`, call-chain guard signature, and more. | D-74 – D-91 |
+| 1.48.0 | 2026-09-14 | `logging.level` / `logging.format` withdrawn with no replacement key. | D-67, #118 |
+| 1.47.0 | 2026-09-14 | §9.1.3: a declared configuration key must reach its mechanism from a `Config`; `acl.default_effect` in `apcore.yaml` deprecated. | D-73, #118 |
+| 1.46.0 | 2026-09-14 | §9.6.3 `_config.allow_unknown`; `extensions.roots` and `id_map.overrides` wired from configuration. | D-69 – D-71, #118 |
+| 1.45.0 | 2026-09-11 | §6.3.2: the ACL file's `audit:` block is the one audit configuration home, with a delivery contract. | D-66, #118 |
+| 1.44.0 | 2026-09-11 | §10.1.1: tracing is configured from `observability.tracing.*` (`enabled`, `strategy`, `sampling_rate`, `exporter`, `otlp_endpoint`). | D-68, #118 |
+| 1.43.0 | 2026-09-11 | §5.16: a configured `pipeline:` section takes effect. | D-72, #118 |
+| 1.42.0 | 2026-09-11 | §3.5 / §3.6: `extensions.ignore_patterns` is applied during discovery. | #118 |
+| 1.41.0 | 2026-09-10 | §10.6.1: where `obs.redaction.*` rules apply. | #120 |
+| 1.40.0 | 2026-09-09 | §10.6.1: `regex_patterns` apply to string values only. | #117 |
+| 1.39.0 | 2026-09-09 | §9.2.4 Deprecated Configuration Keys: removal window opened for keys no implementation reads. | #118 |
+| 1.38.0 | 2026-09-09 | §9.1.2 Declarative Validation Limits. | #118 |
+| 1.37.0 | 2026-09-09 | §9.2.3 Pattern-Valued Values and algorithm A25 `match_glob`. | #116, #117 |
+| 1.36.0 | 2026-09-06 | Binding field is `target`; corrections to path resolution and discovery found by the first conformance drivers. | #113 – #115 |
+| 1.35.0 | 2026-09-06 | §5.12.6: `bindings.dir` is loaded from configuration; §9.2.2 Path Resolution Base. | #113, #114 |
+| 1.34.0 | 2026-09-06 | §9.2.1 Path-Typed Configuration Keys. | #113 |
+| 1.33.0 | 2026-09-05 | §6.1.4.1 / §6.2.1: which rules the unevaluable-condition backstop covers. | #112 |
+| 1.32.0 | 2026-09-05 | §7.3.1: `ApprovalRequest` carries `caller_id` and `action`. | D-03 |
+| 1.31.0 | 2026-09-04 | §6.2.1: a pattern array with no operands is rejected. | #112 |
+| 1.30.0 | 2026-08-31 | §6.1.5: `effect` accepts only `allow` or `deny`. | #111 |
+| 1.29.0 | 2026-08-31 | §6.1.1: an unevaluable `allow` rule keeps its approval requirement. | #109 |
+| 1.28.0 | 2026-08-28 | §6.1.6–§6.1.8, §6.8.1, §6.9: argument-scoped approval rules. | #108 |
+| 1.27.0 | 2026-08-28 | §6.1: unknown or reserved ACL rule keys are rejected. | #107 |
+| 1.26.0 | 2026-08-28 | §2.6: reserved-word detection applies to the first segment only. | #99 |
+| 1.25.0 | 2026-08-28 | Corrections to 1.22.0–1.24.0 found while implementing them. | #100, #102 |
+| 1.24.0 | 2026-08-27 | §7.9.6: policy resolution can see the call's arguments. | #102 |
+| 1.23.0 | 2026-08-27 | §6.8: an ACL's `default_effect` can be read back. | #101 |
+| 1.22.0 | 2026-08-27 | §6.1.1 / §6.1.2: unevaluable ACL conditions fail closed. | #100 |
+| 1.21.0 | 2026-08-27 | `APCore.remove` removes middleware by identity in every SDK. | — |
+| 1.20.0 | 2026-08-27 | `Registry.register` contract matches each SDK's sync/async shape. | — |
+| 1.19.0 | 2026-08-27 | §9.14: the unknown-key check walks every nesting level. | — |
+| 1.18.0 | 2026-08-27 | §12.2: `dependencies` reach the descriptor as a parsed field. | #90 |
+| 1.17.0 | 2026-08-27 | §9.15.3: `sys_modules` activation flags default to `false`, matching the schema. | — |
+| 1.16.0 | 2026-08-25 | §6.6.5.1: `unprotected_control_surface` formula corrected. | #97 |
+| 1.15.0 | 2026-08-25 | §6.6.5 Governance State Query; configured and enforced gates are separate facts. | #97 |
+| 1.14.0 | 2026-08-25 | §6.7.1 Usage Module Output Contract. | #96 |
+| 1.13.0 | 2026-08-17 | §12.8.5.1: a failed ACL check withholds module-level preflight and preview. | #96 |
+| 1.12.0 | 2026-08-14 | §11: the type-coercion knob's behaviour is normative where it exists. | #95 |
+| 1.11.0 | 2026-08-14 | §12.2: cross-executor context rebind is a MUST. | #92 |
+| 1.10.0 | 2026-08-13 | §12.2: `Registry.register` stated, with `dependencies` metadata. `version_hint` statement corrected in 1.55.0. | #90, D-126 |
+| 1.9.0 | 2026-08-12 | First non-draft release: `$ref` recursion vs cycles, `SCHEMA_MAX_DEPTH_EXCEEDED`, strict-export object detection, required configuration keys, `get_declared()`. | #79 |
+| 1.9.0-draft | 2026-05-06 – 2026-07-13 | §2.5 `ephemeral.*` namespace, §4.4 `discoverable`, §5.6 `preview()`, §12.8 `predicted_changes`; §9.9.5 reserved-namespace query; §7.9 Execution Policy; §9.16.2 governance events. | #60, #76, #77 |
+| 1.8.0-draft | 2026-05-04 | §5 streaming: recursive deep merge with a depth cap (A24); §7.4 Step 11 result contract. | #49 – #51 |
+| 1.7.0-draft | 2026-05-04 | §6.1 / §6.2.1 compound ACL operators `$or` / `$not`; `validate()` runs Steps 1–5 and 7. | #46, #47 |
+| 1.6.0-draft | 2026-03-29 – 2026-04-08 | §9.4–§9.14 Config Bus; §2.7 canonical ID maximum length raised to 192. | — |
+| 1.5.0-draft | 2026-03-20 | §5.13 Display Overlay. | — |
+| 1.4.0-draft | 2026-03-06 | Approval gate becomes pipeline Step 5; `Executor.validate()` preflight (§12.2, §12.8). | — |
+| 1.3.0-draft | 2026-03-01 | §7 Approval System. | — |
+| 1.2.0-draft | 2026-02-09 | §4.16 Strict Mode Export, §4.17 Export Profiles. | — |
+| 1.1.0-draft | 2026-02-07 | §5.11 Function-based Module Definition, §5.12 External Schema Binding. | — |
+| 1.0.0-draft | 2026-02-05 | Initial draft. | — |

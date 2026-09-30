@@ -24,55 +24,16 @@ jobs:
         with:
           python-version: "3.x"
 
-      - run: pip install mkdocs-material
+      - run: pip install mkdocs-material  # brings PyYAML, used by gen_llms_full.py
 
-      - name: Prepare docs for MkDocs
+      - name: Generate LLM discovery files
         run: |
-          # Copy root-level docs into docs/
-          cp README.md docs/overview.md
-          cp SCOPE.md docs/
-          cp ROADMAP.md docs/
-          cp MIGRATION-v0.18.md docs/migration-v0.18.md
-          mkdir -p docs/assets
-          cp apcore-logo.svg docs/assets/
-
-          # LLM discovery files served at the site root:
-          #  - llms.txt: concise hand-curated index (canonical source at repo root, like README.md)
-          #  - llms-full.txt: full concatenated docs, generated from nav order (never hand-edited)
+          #  - llms.txt: concise hand-curated index (canonical source at repo root)
+          #  - llms-full.txt: full concatenated docs in nav order (generated, never hand-edited)
           cp llms.txt docs/llms.txt
           python scripts/gen_llms_full.py
 
-          # Fix links in overview.md (formerly index.md in the original workflow): ./docs/X → ./X and (docs/X → (X
-          sed -i 's|\./docs/|./|g' docs/overview.md
-          sed -i 's|(docs/|(|g' docs/overview.md
-          sed -i 's|\.\./README\.md|./overview.md|g' docs/overview.md
-          sed -i 's|\./apcore-logo\.svg|./assets/apcore-logo.svg|g' docs/overview.md
-
-          # Fix links in subdirectories to point to the new spec location
-          find docs -name '*.md' -not -name 'index.md' -not -name 'overview.md' -exec sed -i 's|\.\./\.\./PROTOCOL_SPEC\.md|../spec/protocol-spec.md|g' {} +
-          find docs -name '*.md' -not -name 'index.md' -not -name 'overview.md' -exec sed -i 's|\.\./SCOPE\.md|./SCOPE.md|g' {} +
-
-          # Fix docs/index.md (formerly README.md) link to root README (now overview.md)
-          sed -i 's|\.\./README\.md|overview.md|g' docs/index.md
-
-          # Fix copied ROADMAP.md: docs/X → X
-          sed -i 's|docs/||g' docs/ROADMAP.md
-
-          # Fix copied SCOPE.md: docs/X → X
-          sed -i 's|\./docs/|./|g' docs/SCOPE.md
-          sed -i 's|(docs/|(|g' docs/SCOPE.md
-
-          # Fix top-level docs files (concepts.md, architecture.md):
-          for f in docs/concepts.md docs/architecture.md docs/glossary.md; do
-            sed -i 's|\.\./PROTOCOL_SPEC\.md|spec/protocol-spec.md|g' "$f"
-            sed -i 's|\.\./SCOPE\.md|SCOPE.md|g' "$f"
-            sed -i 's|\.\./api/|api/|g' "$f"
-            sed -i 's|\.\./guides/|guides/|g' "$f"
-            sed -i 's|\.\./spec/|spec/|g' "$f"
-            sed -i 's|./README.md|./index.md|g' "$f"
-          done
-
-      - run: mkdocs build
+      - run: mkdocs build --strict
 
       - uses: actions/upload-pages-artifact@v3
         with:

@@ -1,6 +1,6 @@
 # apcore Roadmap
 
-> **Current baseline (2026-08-12):** protocol `1.9.0` (first non-draft release); core SDKs `0.27.0` for Python, TypeScript, and Rust.
+> Current versions are listed on the [documentation home](docs/index.md). "1.0" below means the 1.0 release of the core SDKs; the protocol specification has its own version line (1.x).
 
 This roadmap prioritizes proof of adoption over expansion of the product matrix. The source of truth for implemented behavior is the [protocol specification](docs/spec/protocol-spec.md) plus released SDK code and conformance tests.
 
@@ -19,10 +19,10 @@ Version 1.0 is gated by evidence, not a calendar date.
 
 ### Documentation truth
 
-- [x] Align the protocol frontmatter and roadmap with `1.9.0-draft`
-- [x] Publish current core and adapter release lines in the README
+- [x] Publish current versions in one place (the documentation home)
 - [x] Define apcore as a governed, protocol-neutral capability runtime
-- [ ] Audit examples against current SDK APIs on every release
+- [x] Check every symbol imported by a documentation example against the SDKs in CI (`conformance/check_doc_examples.py`)
+- [ ] Check example signatures and arity, not just symbol names
 - [ ] Mark experimental and planned features explicitly
 
 ### One supported adoption path
@@ -37,7 +37,7 @@ Version 1.0 is gated by evidence, not a calendar date.
 
 ### Cross-language conformance
 
-- [ ] Run all shared fixtures in Python, TypeScript, and Rust CI
+- [x] Run all shared fixtures in Python, TypeScript, and Rust CI
 - [ ] Publish a machine-readable conformance matrix
 - [ ] Block coordinated core releases on behavioral fixture regressions
 - [ ] Add compatibility checks for official MCP, A2A, CLI, and toolkit adapters

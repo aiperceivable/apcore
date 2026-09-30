@@ -486,7 +486,7 @@
     },
     "PipelineConfig": {
       "type": "object",
-      "description": "Pipeline customization. See DECLARATIVE_CONFIG_SPEC.md §4.",
+      "description": "Pipeline customization. See protocol-spec §5.16.1.",
       "additionalProperties": false,
       "properties": {
         "remove": {
@@ -517,7 +517,7 @@
     },
     "PipelineStep": {
       "type": "object",
-      "description": "A custom pipeline step entry. Must specify exactly one of 'type' or 'handler', and exactly one of 'after' or 'before'. See DECLARATIVE_CONFIG_SPEC.md §4.3.",
+      "description": "A custom pipeline step entry. Must specify exactly one of 'type' or 'handler', and exactly one of 'after' or 'before'. See protocol-spec §5.16.1.",
       "required": [
         "name"
       ],
@@ -534,7 +534,7 @@
         },
         "handler": {
           "type": "string",
-          "description": "module:Class reference for dynamic import. Supported in Python and TypeScript; parse-time error in Rust (see DECLARATIVE_CONFIG_SPEC.md §4.4).",
+          "description": "module:Class reference for dynamic import. Supported in Python and TypeScript; parse-time error in Rust (see protocol-spec §5.16.1).",
           "pattern": "^[@./a-zA-Z_][-@./a-zA-Z0-9_]*:[a-zA-Z_][a-zA-Z0-9_.]*$"
         },
         "config": {
@@ -631,7 +631,7 @@
     },
     "ValidationConfig": {
       "type": "object",
-      "description": "Soft / UX policy limits enforced at parse time. See DECLARATIVE_CONFIG_SPEC.md §9.",
+      "description": "Soft / UX policy limits enforced at parse time. See protocol-spec §9.1.2.",
       "additionalProperties": false,
       "properties": {
         "binding": {
@@ -739,7 +739,7 @@
     },
     "BindingsConfig": {
       "type": "object",
-      "description": "Declarative binding-file discovery. See DECLARATIVE_CONFIG_SPEC.md and PROTOCOL_SPEC §9.1.1.",
+      "description": "Declarative binding-file discovery. See protocol-spec §5.12.6 and §9.1.1.",
       "additionalProperties": false,
       "properties": {
         "dir": {
@@ -853,7 +853,7 @@
     },
     "ConfigurableStepFields": {
       "type": "object",
-      "description": "Field overrides applicable to an already-constructed pipeline step. Exactly the four behavioural modifiers of DECLARATIVE_CONFIG_SPEC.md §4.3: the remaining step entry fields are either structural (`name`, `type`, `handler`, `after`, `before`) or constructor arguments (`config`), and none of them means anything applied to a step that already exists. `requires` / `provides` are deliberately absent — a step's capability contract is declared by its implementation, and letting configuration rewrite it disables the PipelineDependencyError check that features/middleware-system.md states as a MUST.",
+      "description": "Field overrides applicable to an already-constructed pipeline step. Exactly the four behavioural modifiers of protocol-spec §5.16.1: the remaining step entry fields are either structural (`name`, `type`, `handler`, `after`, `before`) or constructor arguments (`config`), and none of them means anything applied to a step that already exists. `requires` / `provides` are deliberately absent — a step's capability contract is declared by its implementation, and letting configuration rewrite it disables the PipelineDependencyError check that features/middleware-system.md states as a MUST.",
       "additionalProperties": false,
       "properties": {
         "match_modules": {

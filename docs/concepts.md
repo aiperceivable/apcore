@@ -10,13 +10,11 @@ description: Understanding apcore's design philosophy, the Cognitive Interface f
 
 ### 1.1 The Concept: Cognitive Interface
 
-Traditional software provides **UI** for humans and **API** for programs. apcore defines the **Cognitive Interface** for AI Agents.
-- **Intent-Oriented**: AI thinks in terms of "What to do" (Intents), not "Which endpoint to call".
-- **Strict Contracts**: Mandatory schemas ensure AI uses your tools correctly every time.
-- **Behavioral Personality**: Annotations like `readonly`, `destructive`, and `requires_approval` give Agents the guardrails they need to make safe decisions.
-- **Self-Healing**: Error guidance (`ai_guidance`) tells the Agent exactly how to fix issues and retry. Self-Healing serves two higher-level goals:
-  - **Self-Repair**: The Agent autonomously corrects errors and retries within a single interaction.
-  - **Self-Evolution**: The system continuously adapts through health monitoring, event-driven feedback loops, and runtime reconfiguration.
+Traditional software provides **UI** for humans and **API** for programs. apcore adds an **agent-readable capability contract**:
+- **Intent-oriented description**: `description` and `documentation` say what a capability does, so a caller can match it to an intent.
+- **Strict contracts**: mandatory input and output schemas let the runtime validate every call. They make the contract machine-readable; they do not guarantee that a model picks or uses the tool correctly.
+- **Behavioral metadata**: annotations such as `readonly`, `destructive` and `requires_approval` feed access and approval decisions and tell callers what a call does.
+- **Recovery guidance**: structured errors carry `retryable`, `ai_guidance`, `user_fixable` and `suggestion`, so an agent can decide whether and how to retry.
 
 ### 1.2 The AI Collaboration Lifecycle
 
@@ -25,15 +23,15 @@ apcore organizes module metadata into a coherent lifecycle that guides an Agent 
 1.  **Discovery (Identity) — `description`**: Helps the Agent find the right tool for its intent.
 2.  **Strategy (Wisdom) — `metadata`**: Teaches the Agent *when* and *how* to use the tool correctly (e.g., `x-when-to-use`, `x-common-mistakes`).
 3.  **Governance (Safety) — `requires_approval`**: Sets the safety boundary for sensitive operations.
-4.  **Recovery (Resilience) — error guidance fields**: Every `ModuleError` carries optional fields that enable AI agents to recover autonomously: `retryable` (can the call be retried?), `ai_guidance` (machine-readable recovery hint), `user_fixable` (can the end-user fix it?), and `suggestion` (actionable fix). See PROTOCOL_SPEC §8.1.1.
+4.  **Recovery (Resilience) — error guidance fields**: every `ModuleError` carries optional fields that help a caller recover: `retryable` (can the call be retried?), `ai_guidance` (machine-readable recovery hint), `user_fixable` (can the end user fix it?) and `suggestion` (actionable fix). See [protocol-spec §8.1.1](./spec/protocol-spec.md#8-error-handling-specification).
 
-Together with health sensing (`system.health.*`) and the control plane (`system.control.*`), the Recovery stage completes the Self-Healing loop — powering both **Self-Repair** and **Self-Evolution** (see §1.1).
+Health modules (`system.health.*`) and runtime control (`system.control.*`) let operators and agents observe and adjust a running system — see [System Modules](./features/system-modules.md).
 
 ---
 
 ### 1.3 Why Do We Need apcore?
 
-The growing number of fragmented MCP implementations across the ecosystem proves the demand is real. apcore is the only solution that provides a **complete SDK** with a **unified standard** — enforced schema, behavioral annotations, access control, audit trails, and cross-language consistency. It doesn't replace any project's AI capabilities; it brings them all under one standard.
+Every protocol server that exposes application capabilities has to re-implement the same rules: validate inputs, decide who may call what, ask for approval, and leave an audit trail. apcore puts those rules in one runtime, with enforced schemas, behavioral annotations, access control, approval and audit, implemented consistently in Python, TypeScript and Rust. It does not replace a project's AI capabilities; it governs the capabilities behind them.
 
 **Problems with traditional module development:**
 
@@ -44,9 +42,9 @@ def send_email(to, subject, body, cc=None):
     # ... implementation ...
 ```
 
-- AI/LLM cannot know parameter constraints (to's email address, subject's content)
-- Cannot automatically validate inputs/outputs
-- Cannot auto-discover and register
+- A caller cannot know the parameter constraints (that `to` is an email address, what `subject` may contain)
+- Inputs and outputs are not validated
+- Nothing discovers or registers the operation
 
 **apcore's solution:**
 
@@ -88,8 +86,8 @@ Schema is auto-generated from type annotations, existing code logic remains unch
 | **Schema Mandatory** | All modules must define input_schema / output_schema / description |
 | **Directory as ID** | File paths automatically become module IDs, zero-config |
 | **Convention over Configuration** | Works by following conventions, no tedious configuration |
-| **AI-Perceivable** | Designed from the start to be AI-perceivable and understandable |
-| **Universal Standard** | Not just AI framework, but a universal module standard that is naturally AI-Perceivable |
+| **AI-Perceivable** | Contracts and behavior are machine-readable, so agents do not have to infer them from prose |
+| **Protocol-neutral** | The same module is callable from code, CLI, HTTP, MCP or A2A with the same governance |
 
 ---
 
@@ -380,7 +378,7 @@ class SendEmailModule:
 
 **Three-layer metadata summary:**
 
-```
+```text
 ┌──────────────────────────────────────────────────────┐
 │  Core Layer (Required)                               │
 │  input_schema / output_schema / description          │
@@ -445,7 +443,7 @@ metadata:
 
 **Module ID is automatically generated from directory path.** This is one of apcore's core designs.
 
-```
+```text
 File Path                                   Module ID
 ─────────────────────────────────────────────────────────
 extensions/executor/email/send_email.py    →   executor.email.send_email
@@ -480,35 +478,19 @@ max_length: 192
 
 ---
 
-### 2.7 ID Map (Cross-Language ID Mapping)
+### 2.7 IDs Across Languages
 
-**ID Map handles cross-language ID conversion.** Different languages have different naming conventions, ID Map automatically handles conversion.
+A module ID is language-neutral. Each SDK derives the same canonical ID from the same relative path, whatever its file naming conventions:
 
-```yaml
-# Module ID (unified)
-executor.email.send_email
+```text
+Canonical ID: executor.email.send_email
 
-# Local representation in each language
-Python:     executor/email/send_email.py      class SendEmailModule
-Rust:       executor/email/send_email.rs       struct SendEmailModule
-Go:         executor/email/send_email.go       type SendEmailModule
-Java:       executor/email/SendEmail.java     class SendEmailModule
-TypeScript: executor/email/sendEmail.ts        class SendEmailModule
+Python:      extensions/executor/email/send_email.py
+TypeScript:  extensions/executor/email/send_email.ts
+Rust:        extensions/executor/email/send_email.rs
 ```
 
-**ID Map configuration (special case overrides):**
-
-```yaml
-# apcore.yaml
-id_map:
-  auto_detect: true  # Auto-detect language by file extension
-
-  # Special mappings (override auto rules)
-  overrides:
-    "executor.email.send_email":
-      java:
-        class: "com.mycompany.email.SendEmailModule"
-```
+Local names that are not snake_case (`SendEmail`, `sendEmail`) are normalized to snake_case segments. See [protocol-spec §2](./spec/protocol-spec.md#2-naming-specification) for the normative ID grammar and conversion rules.
 
 ---
 
@@ -521,10 +503,10 @@ id_map:
 ```python
 from apcore import Registry
 
-# Create Registry (single root directory, backward compatible)
+# Create a Registry bound to one extensions root
 registry = Registry(extensions_dir="./extensions")
 
-# Or: multi-root directory mode (namespace isolation)
+# Or: several roots, each namespaced by its directory name
 # registry = Registry(extensions_dirs=["./extensions", "./plugins"])
 
 # Or: no bound directory, manual registration only
@@ -536,7 +518,7 @@ registry.discover()
 # Get module
 module = registry.get("executor.email.send_email")
 
-# Get module definition descriptor (cross-language compatible, replaces get_class)
+# Get the module's definition descriptor
 definition = registry.get_definition("executor.email.send_email")
 
 # Get the resolved input/output schema (dict) for programmatic processing
@@ -603,12 +585,16 @@ result = executor.call(
 
 **Execution flow:**
 
-```
-Input → Lookup module → ACL check → Input validation → Middleware(before) → execute() → Output validation → Middleware(after) → Output
-          ↓          ↓          ↓            ↓              ↓            ↓             ↓
-       Not found  Denied    Failed       Can modify     Business       Failed      Can modify
-          ↓          ↓          ↓            ↓              ↓            ↓             ↓
-       Exception  Exception  Exception    Continue      Return        Exception    Continue
+```text
+context → call-chain guard → lookup → ACL → approval → middleware before → input validation
+        → execute() → output validation → middleware after → result
+
+  lookup fails            → MODULE_NOT_FOUND
+  ACL denies              → ACL_DENIED
+  approval not granted    → APPROVAL_DENIED / APPROVAL_PENDING / APPROVAL_TIMEOUT
+  input or output invalid → SCHEMA_VALIDATION_ERROR
+  middleware before/after → may replace inputs / output
+  any error               → on_error() hooks in reverse order may recover
 ```
 
 ---
@@ -624,7 +610,7 @@ Input → Lookup module → ACL check → Input validation → Middleware(before
 **Core fields**:
 
 - **Framework engine dependencies**: `trace_id`, `caller_id`, `call_chain`, `executor`
-- **Identity and security**: `identity`, `redacted_inputs`, `logger` (property)
+- **Identity and security**: `identity`, `redacted_inputs`
 - **Shared state**: `data` (reference-passed pipeline state)
 
 **Field classification**:
@@ -689,7 +675,15 @@ rules:
 
 # Default policy
 default_effect: deny
+
+# Audit every decision (allow and deny) through the default sink
+audit:
+  enabled: true
+  include_denied: true
+  log_level: info
 ```
+
+The ACL file is loaded from `acl.root` in `apcore.yaml`. Without an ACL file no ACL is attached and no access check runs — see [ACL System](./features/acl-system.md).
 
 **ACL rule matching:**
 
@@ -730,23 +724,20 @@ class LoggingMiddleware(Middleware):
         return None
 ```
 
-**Middleware registration:**
+**Middleware registration** happens in code:
 
-```yaml
-# apcore.yaml
-middleware:
-  - id: "logging"
-    class: "myapp.middleware.LoggingMiddleware"
-    priority: 100
+```python
+from apcore import APCore
 
-  - id: "tracing"
-    class: "apcore.middleware.TracingMiddleware"
-    priority: 90
+client = APCore()
+client.use(LoggingMiddleware())
 ```
+
+Tracing middleware is also installed automatically when `observability.tracing.enabled` is true in `apcore.yaml`. See [Middleware System](./features/middleware-system.md).
 
 **Execution order (onion model):**
 
-```
+```text
 Request → [Middleware A before] → [Middleware B before] → execute()
                                                           ↓
 Response ← [Middleware A after]  ← [Middleware B after]  ← Result
@@ -763,7 +754,7 @@ Response ← [Middleware A after]  ← [Middleware B after]  ← Result
 ```python
 # Auto-generated tracing info
 {
-    "trace_id": "550e8400-e29b-41d4-a716-446655440000",
+    "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736",
     "span_id": "1234567890abcdef",
     "parent_span_id": "0987654321fedcba",
     "module_id": "executor.email.send_email",
@@ -781,7 +772,7 @@ Response ← [Middleware A after]  ← [Middleware B after]  ← Result
     "timestamp": "2026-02-05T10:30:00Z",
     "level": "info",
     "message": "Module executed",
-    "trace_id": "550e8400-e29b-41d4-a716-446655440000",
+    "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736",
     "module_id": "executor.email.send_email",
     "duration_ms": 123
 }
@@ -793,14 +784,14 @@ Response ← [Middleware A after]  ← [Middleware B after]  ← Result
 # Auto-collected metrics
 apcore_module_calls_total{module_id="executor.email.send_email", status="success"} 100
 apcore_module_duration_seconds{module_id="executor.email.send_email"} 0.123
-apcore_module_errors_total{module_id="executor.email.send_email", error_code="VALIDATION_ERROR"} 5
+apcore_module_errors_total{module_id="executor.email.send_email", error_code="SCHEMA_VALIDATION_ERROR"} 5
 ```
 
 ---
 
 ## 3. Concept Relationship Diagram
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────────────────┐
 │                    apcore — AI-Perceivable Core                          │
 ├─────────────────────────────────────────────────────────────────────────┤
@@ -841,8 +832,8 @@ apcore_module_errors_total{module_id="executor.email.send_email", error_code="VA
 | Schema | `S = JSON Schema Draft 2020-12 + x-* extensions` | `∀ data: validate(data, S) → {true, false}` |
 | Canonical ID | `ID = segment ("." segment)*` where `segment = [a-z][a-z0-9_]*` | `len(ID) ≤ 192 ∧ ∀ segment ∉ reserved_words` |
 | Registry | `R = Map<CanonicalID, Module>` | `∀ id ∈ R: is_valid_canonical_id(id) ∧ validate_module(R[id])` |
-| Executor | `E = (R, ACL, [Middleware])` | `E.call(id, inputs, ctx) ⟹ ACL.check(ctx.caller, id) ∧ Schema.validate(inputs)` |
-| Context | `C = (trace_id, caller_id, call_chain, executor, identity, data)` | `trace_id ≠ null ∧ len(call_chain) ≤ 32` |
+| Executor | `E = (R, ACL, ApprovalHandler, [Middleware])` | `E.call(id, inputs, ctx) ⟹ ACL.check(ctx.caller_id, id) ∧ approved(id) ∧ Schema.validate(inputs)` |
+| Context | `C = (trace_id, caller_id, call_chain, executor, identity, data)` | `trace_id ≠ null ∧ len(call_chain) ≤ max_call_depth` |
 | ACL | `ACL = ([Rule], default_effect)` | `evaluate(caller, target) → {allow, deny}` |
 
 ### 3.2 Concept Relationship Matrix
@@ -863,8 +854,8 @@ These invariants **must** always hold during system runtime:
 
 1. **ID Uniqueness**: `∀ m1, m2 ∈ Registry: m1.id ≠ m2.id`
 2. **Schema Integrity**: `∀ m ∈ Registry: m.input_schema ≠ null ∧ m.output_schema ≠ null`
-3. **Call Chain Acyclic**: `∀ ctx: ¬∃ cycle in ctx.call_chain`
-4. **Call Depth Bounded**: `∀ ctx: len(ctx.call_chain) ≤ MAX_DEPTH (32)`
+3. **No Indirect Cycles**: a module may call itself directly (bounded by `max_module_repeat`, default 3), but `[a, b, a]` is rejected with `CIRCULAR_CALL`
+4. **Call Depth Bounded**: `∀ ctx: len(ctx.call_chain) ≤ max_call_depth` (default 32)
 5. **trace_id Propagation**: `∀ child_ctx derived from parent_ctx: child_ctx.trace_id == parent_ctx.trace_id`
 6. **ACL Consistency**: `∀ call: ACL.check(caller, target) result is deterministic under same ruleset`
 7. **Schema Validation Idempotent**: `∀ data, schema: validate(data, schema) multiple calls yield consistent result`
@@ -873,7 +864,7 @@ These invariants **must** always hold during system runtime:
 
 ## 4. Typical Usage Flow
 
-```
+```text
 1. Define Schema
    └── Define input/output Schema (SDK model class or YAML)
 

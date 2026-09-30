@@ -1,5 +1,5 @@
 ---
-description: "Pattern-based ACL with first-match-wins rule evaluation for inter-module access control: wildcard and @external/@system patterns, identity/role/depth conditions, default-deny, YAML hot-reload."
+description: "Pattern-based ACL with first-match-wins evaluation: wildcard and @external/@system patterns, identity/role/depth/argument conditions, approval rules, audit delivery, default-deny, hot-reload."
 ---
 
 # Access Control System
@@ -10,15 +10,19 @@ description: "Pattern-based ACL with first-match-wins rule evaluation for inter-
 
 ## Overview
 
-Pattern-based Access Control List (ACL) with first-match-wins evaluation for module access control. The system enforces which callers may invoke which target modules, using wildcard patterns, special identity patterns (`@external`, `@system`), and optional conditions based on identity type, roles, and call depth. Configuration can be loaded from YAML files and hot-reloaded at runtime.
+Pattern-based Access Control List (ACL) with first-match-wins evaluation for module access control. The system enforces which callers may invoke which target modules, using wildcard patterns, special identity patterns (`@external`, `@system`), and optional conditions based on identity type, roles, call depth and the call's argument keys. A rule can also require human approval for the calls it allows. Configuration is loaded from an ACL YAML file (which also configures audit delivery) and can be hot-reloaded at runtime.
+
+An ACL is enforced only when one is attached to the Executor. If no ACL file is found at `acl.root` and none is set programmatically, **no ACL is attached and no access check runs** — a missing file does not produce a default-deny ACL (D-64). `default_effect` comes from the ACL file itself; the `acl.default_effect` key in `apcore.yaml` has no effect.
 
 ## Requirements
 
 - Implement first-match-wins rule evaluation: rules are evaluated in order, and the first rule whose patterns match the caller and target determines the access decision (allow or deny).
 - Support wildcard patterns for caller and target matching (e.g., `admin.*`, `*`), delegating to a shared pattern-matching utility.
 - Handle special patterns: `@external` matches calls with no caller (external entry points), and `@system` matches calls where the execution context has a system-type identity.
-- Support conditional rules with `identity_types` (identity type must be in list), `roles` (at least one role must overlap), and `max_call_depth` (call chain length must not exceed threshold).
+- Support conditional rules with `identity_types` (identity type must be in list), `roles` (at least one role must overlap), `max_call_depth` (call chain length must not exceed threshold), and `arguments` (which argument keys the call carries).
+- Support an `approval` field on `allow` rules (`required` / `not_required`) so a rule can grant access and require human approval for the same call.
 - Provide `default_effect` fallback (allow or deny) when no rule matches.
+- Deliver audit records per the ACL file's `audit:` block or a programmatic callback.
 - Load ACL configuration from YAML files via `ACL.load()`, with strict validation of structure and rule fields.
 - Support runtime rule management: `add_rule()` inserts at highest priority (position 0), `remove_rule()` removes by caller/target pattern match.
 - Support hot reload from the original YAML file via `reload()`.
@@ -32,7 +36,7 @@ The ACL system consists of two primary components: the `ACLRule` dataclass repre
 
 #### Rule Evaluation
 
-```
+```text
 check(caller_id, target_id, context)
   |
   +--> effective_caller = "@external" if caller_id is None else caller_id
@@ -41,9 +45,12 @@ check(caller_id, target_id, context)
   |      1. Test caller patterns (OR logic: any pattern matching is sufficient)
   |      2. Test target patterns (OR logic)
   |      3. Test conditions (AND logic: all conditions must pass)
-  |      4. If all pass -> return rule.effect == "allow"
+  |      4. If all pass -> decision = rule.effect, approval_required = (rule.approval == "required")
   |
-  +--> No rule matched -> return default_effect  (MUST be "deny" in production; see warning below)
+  +--> No rule matched -> decision = default_effect  (MUST be "deny" in production; see warning below)
+  |
+  +--> check() returns true only for "allow" with no approval requirement;
+       check_access() returns both results (AccessDecision)
 ```
 
 !!! danger "default_effect: always use deny in production"
@@ -58,8 +65,8 @@ check(caller_id, target_id, context)
 #### Pattern Matching
 
 Pattern matching is handled at two levels:
-- **Special patterns** (`@external`, `@system`) are resolved directly in `ACL._match_pattern()` using caller identity and context.
-- **All other patterns** (exact strings, wildcard `*`, prefix wildcards like `executor.*`) are delegated to the foundation `match_pattern()` utility in `utils/pattern.py`, which implements Algorithm A08 with support for `*` wildcards matching any character sequence including dots.
+- **Special patterns** (`@external`, `@system`) are resolved by the ACL itself using the caller ID and context: `@external` matches a missing `caller_id`, `@system` a system-type identity.
+- **All other patterns** (exact strings, wildcard `*`, prefix wildcards like `executor.*`) are delegated to the shared `match_pattern()` utility, which implements Algorithm A08: `*` matches any character sequence including dots and is the only metacharacter (`?` is a literal, §6.2.2).
 
 #### Conditional Rules
 
@@ -67,8 +74,9 @@ When a rule has a `conditions` dict, all specified conditions must be satisfied 
 - `identity_types`: Context identity's type must be in the provided list.
 - `roles`: At least one of the context identity's roles must overlap with the condition's role list (set intersection).
 - `max_call_depth`: The length of `context.call_chain` must not exceed the threshold.
+- `arguments`: A structure-only test of the call's argument keys — `has_key` (any listed key present), `has_all_keys` (every listed key present), `has_none_of` (no listed key present); several predicates are AND-ed. It never reads argument values. It reads the call's governance projection (§6.1.8); when no projection is available the condition is unevaluable, never "no arguments" ([PROTOCOL_SPEC §6.1.7](../spec/protocol-spec.md)).
 
-These three are the built-ins. The set is open: `register_condition()` adds a condition key at runtime, and a rule may reference any key a handler has been registered for.
+These four are the built-ins, plus the compound operators `$or` and `$not`. The set is open: `register_condition()` adds a condition key at runtime, and a rule may reference any key a handler has been registered for. `arguments` itself has no registration point.
 
 If no context is provided but conditions are present, the rule does not match — **provided the rule passes the precheck below**. A malformed rule is unevaluable first, context or no context. See the warning in [PROTOCOL_SPEC §6.5](../spec/protocol-spec.md#65-edge-case-handling) — a *well-formed* conditional `deny` rule is not a backstop for context-less callers.
 
@@ -86,7 +94,7 @@ When a condition is unevaluable the rule MUST resolve toward refusing access:
 | `allow` | does not match → continue | does not match → continue (MUST NOT grant); a carried `approval: required` becomes **pending** |
 | `deny` | does not match → continue | **rule takes effect → the call is denied** |
 
-**An unevaluable `allow` rule does not take its approval requirement with it (spec v1.29.0).** "Does not grant" means the rule steps aside, and a rule now carries two axes. If it carried `approval: required`, the requirement is recorded as **pending** and composed by disjunction with whatever grants later — a subsequent `allow` rule, or `default_effect: allow`. A final `deny` clears it, and `matched_rule_index` keeps naming the rule that actually decided. A rule whose `callers`/`targets` do not match this call raises nothing; a rule whose pattern field is itself malformed does, because its scope cannot be read and so cannot be shown not to apply here.
+**An unevaluable `allow` rule does not take its approval requirement with it.** "Does not grant" means the rule steps aside, and a rule now carries two axes. If it carried `approval: required`, the requirement is recorded as **pending** and composed by disjunction with whatever grants later — a subsequent `allow` rule, or `default_effect: allow`. A final `deny` clears it, and `matched_rule_index` keeps naming the rule that actually decided. A rule whose `callers`/`targets` do not match this call raises nothing; a rule whose pattern field is itself malformed does, because its scope cannot be read and so cannot be shown not to apply here.
 
 Without this, the shape the `arguments` condition exists for — a narrow approval rule ahead of a broad allow — fails open: the narrow rule steps aside, the broad one grants, and `git push --force` runs with no human asked. Normative text: [PROTOCOL_SPEC §6.1.1](../spec/protocol-spec.md#611-unevaluable-conditions-v1220-100) rule 5.
 
@@ -118,19 +126,13 @@ Findings name a **condition path**, not just a key, since a key can occur at sev
 
 Paths nest — `$or[1].$not.k`. `handler_error` and `validate_rules()` both order by path.
 
-!!! danger "A misspelled condition key used to make a `deny` rule inert"
-    Before spec v1.22.0 an unevaluable condition made the rule *not match*, so
-    `deny` rules failed open: `role:` written for `roles:` produced a rule that
-    blocked nothing, and the call fell through to the next rule or to
-    `default_effect`. Warnings were emitted the whole time — the diagnostics were
-    right and only the decision was wrong.
-
 ### Components
 
-- **`ACLRule`** -- Dataclass with fields: `callers` (list of patterns), `targets` (list of patterns), `effect` ("allow" or "deny"), optional `description`, and optional `conditions` dict.
-- **`ACL`** -- Main class managing an ordered rule list. Provides `check()`, `add_rule()`, `remove_rule()`, `reload()`, the read-only accessors `default_effect` and `rules`, the diagnostic `validate_rules()`, and the `ACL.load()` classmethod for YAML loading. All mutating methods are protected by a lock for thread safety.
+- **`ACLRule`** -- A rule with fields: `callers` (list of patterns), `targets` (list of patterns), `effect` (`"allow"` or `"deny"`), optional `approval` (`"required"` or `"not_required"`, default `"not_required"`; `required` on a `deny` rule is rejected with `ACLRuleError`), optional `description`, and optional `conditions` dict. The key set is closed: any other key is rejected with `ACLRuleError` (§6.1.5). Python dataclass; TypeScript plain object (`ACLRule` interface); Rust `#[non_exhaustive]` struct built with `ACLRule::new(callers, targets, effect)` and optional fields assigned afterwards.
+- **`ACL`** -- Main class managing an ordered rule list. Provides `check()` / `check_access()` (and async variants), `add_rule()`, `remove_rule()`, `reload()`, the read-only accessors `default_effect` and `rules`, the diagnostic `validate_rules()`, and the `ACL.load()` / `ACL.discover()` constructors. All mutating methods are protected by a lock for thread safety.
+- **`AccessDecision`** -- Structured result of `check_access()`: `access` (`"allow"`/`"deny"`), `approval_required`, `matched_rule_index`, `reason` ([PROTOCOL_SPEC §6.8.1](../spec/protocol-spec.md)). The Executor's `acl_check` step uses it and hands `approval_required` to the [approval gate](./approval-system.md).
 - **`AuditEntry`** -- Structured record of one `check()` decision, emitted through the configured audit logger on every call. Field contract: [PROTOCOL_SPEC §6.3.1](../spec/protocol-spec.md#631-audit-entry).
-- **`match_pattern()`** -- Wildcard pattern matcher in `utils/pattern.py`. Supports `*` as a wildcard matching any character sequence. Handles prefix, suffix, and infix wildcards via segment splitting.
+- **`match_pattern()`** -- Shared wildcard pattern matcher (Algorithm A08). Supports `*` as a wildcard matching any character sequence, in prefix, suffix, and infix positions.
 
 ### Thread Safety
 
@@ -141,6 +143,10 @@ The `ACL` class uses an internal lock on all public methods. The `check()` metho
 ```yaml
 version: "1.0"
 default_effect: deny
+audit:                      # optional; declaring it activates the default audit sink
+  enabled: true
+  include_denied: true
+  log_level: info
 rules:
   - callers: ["api.*"]
     targets: ["db.*"]
@@ -165,7 +171,19 @@ rules:
         - roles: ["data_admin"]
         - identity_types: ["service"]
       $not:
-        max_call_depth: 1  # Deny if call depth is exactly 1
+        max_call_depth: 1  # ...and only when called from another module (call depth > 1)
+    # Allowed, but a call carrying a "force" argument must be approved by a human...
+  - callers: ["agent.*"]
+    targets: ["repo.push"]
+    effect: allow
+    approval: required
+    conditions:
+      arguments:
+        has_key: ["force"]
+    # ...while an ordinary push is allowed outright
+  - callers: ["agent.*"]
+    targets: ["repo.push"]
+    effect: allow
     # Compound operators in callers/targets pattern arrays
   - callers: ["$or", "admin.*", "moderator.*"]   # match if either pattern matches
     targets: ["audit.*"]
@@ -188,7 +206,7 @@ rules:
 
 **Only the first form nests.** A pattern array is **flat**: there is one operator position — index 0 — and every element after it is a plain pattern string, never a nested array and never another operator. `["$or", "$not", "a"]` is *not* or-of-not, and `["api.*", "$not", "cli.*"]` is *not* "api.* but not cli.*"; both are rejected. This is the difference that catches people out, because the same two tokens nest arbitrarily inside `conditions` (`$or[1].$not.k` is a defined path there — [PROTOCOL_SPEC §6.1.4](../spec/protocol-spec.md#614-structural-and-registry-precheck-v1250-100)).
 
-**The array's shape is a closed set, rejected with `ACLRuleError` at every entry point** — file loading, direct construction and runtime insertion ([PROTOCOL_SPEC §6.2.1](../spec/protocol-spec.md#621-compound-operators-in-pattern-arrays)): at least one element, every element a non-empty string, `$or` with at least one operand, `$not` with exactly one, and `$or` / `$not` nowhere but index 0. Before v1.31.0 each of these made the rule match nothing instead — which is harmless on an `allow` rule and, on a `deny` rule under `default_effect: allow`, permits the call the rule was written to block.
+**The array's shape is a closed set, rejected with `ACLRuleError` at every entry point** — file loading, direct construction and runtime insertion ([PROTOCOL_SPEC §6.2.1](../spec/protocol-spec.md#621-compound-operators-in-pattern-arrays)): at least one element, every element a non-empty string, `$or` with at least one operand, `$not` with exactly one, and `$or` / `$not` nowhere but index 0.
 
 ```yaml
 # ---- legal ----
@@ -232,7 +250,7 @@ default_effect: deny
     refused it anyway — true of the complete policy above, not true in general. Rewriting a
     rule into this form changes the policy's order, not just one field.
 
-**Async sub-conditions:** `$or`/`$not` evaluate their children using the same evaluator mode (sync or async) as the outer call. Implementations register both sync and async compound handlers; mixing an async handler under a sync evaluator MUST fail closed with a warning. See `docs/spec/design-context-annotations-acl.md` §"Compound + async limitation" for the rationale.
+**Async sub-conditions:** `$or`/`$not` evaluate their children using the same evaluator mode (sync or async) as the outer call. Implementations register both sync and async compound handlers; an async-only handler reached from the sync `check()` path is unevaluable (see [Sync handler resolution](#contract-aclcheck) below).
 
 ## Contract: ACL.check
 
@@ -263,7 +281,8 @@ Normative behavioral contract. All SDK implementations MUST satisfy these guaran
 
 ### Returns
 
-- On success: plain `bool` (`true` = allow, `false` = deny). The return type MUST NOT be wrapped in a `Result`/`Either` type.
+- On success: plain `bool`. `true` only when the decision is `allow` **and** the call needs no approval; an allowed call whose rule carries `approval: required` returns `false`, because a non-Executor caller can only read the boolean as "let it through" (§6.8.1). The return type MUST NOT be wrapped in a `Result`/`Either` type.
+- `check_access()` (`checkAccess()` in TypeScript) takes the same inputs and returns the full `AccessDecision` — `access` and `approval_required` separately. `async_check()` / `async_check_access()` are the async counterparts.
 
 ### Properties
 
@@ -284,19 +303,15 @@ Normative behavioral contract. All SDK implementations MUST satisfy these guaran
     - **apcore-rust** polls the future once with a noop `Waker`; `Poll::Ready(v)` uses `v`, `Poll::Pending` is UNEVALUABLE.
     - **apcore-typescript** can NOT inspect a Promise synchronously; if the handler returns a `Promise`, sync `check()` reports UNEVALUABLE. Use `asyncCheck()` to support Promise-returning handlers.
 
-    !!! warning "Changed in spec v1.22.0"
-        Through v1.21.0 this case was specified as "treated as unsatisfied", which
-        made a `deny` rule guarded by an async-only handler **inert** on the sync
-        path — the same failure mode as a misspelled key. It is now one of §6.1.1's
-        three unevaluable situations.
 
 ## Contract: ACL.load
 
 ### Inputs
 
 - `yaml_path`: string, required. Path to the YAML configuration file.
-  - validation: file must exist at the given path (`os.path.isfile(yaml_path)` must return true)
+  - validation: a file must exist at the given path
   - reject_with: `ConfigNotFoundError(config_path=yaml_path)`
+- `audit_logger` (optional) — audit callback (see [Audit Delivery](#audit-delivery)); Python keyword argument, TypeScript second positional argument. Rust takes only the path; set a logger afterwards with `set_audit_logger`.
 
 ### Preconditions
 
@@ -314,12 +329,14 @@ Normative behavioral contract. All SDK implementations MUST satisfy these guaran
 - The returned `ACL` instance has `_yaml_path` set to `yaml_path`.
 - `default_effect` is `"deny"` if not explicitly specified in the file.
 - Rules are ordered identically to their order in the YAML file.
+- The file's `audit:` block, if declared, configures the default audit sink (see [Audit Delivery](#audit-delivery)).
 - A warning is emitted for every rule that references a condition key with no handler registered **at load time**, naming the rule index, the key, and the rule's `effect`. The load still succeeds — see Errors below.
 
 ### Errors
 
 - `ConfigNotFoundError(config_path=yaml_path)` — file does not exist at `yaml_path`.
-- `ACLRuleError` — YAML parse failure, top-level value is not a mapping, `rules` key is absent, `rules` value is not a list, any rule entry is not a mapping, any rule is missing a required key (`callers`, `targets`, or `effect`), `effect` value is not `"allow"` or `"deny"`, `callers`/`targets` value is not a list, or a `callers`/`targets` array's shape is outside [§6.2.1](../spec/protocol-spec.md#621-compound-operators-in-pattern-arrays)'s closure (empty, an empty element, `$or` with no operands, `$not` with none or more than one, or a reserved token away from index 0).
+- `ACLRuleError` — YAML parse failure, top-level value is not a mapping, `default_effect` is not `"allow"` or `"deny"`, `rules` key is absent, `rules` value is not a list, any rule entry is not a mapping, any rule is missing a required key (`callers`, `targets`, or `effect`) or carries a key outside the closed set (`callers`, `targets`, `effect`, `approval`, `description`, `conditions`), `effect` value is not `"allow"` or `"deny"`, `approval` is not `"required"` / `"not_required"` or is `"required"` on a `deny` rule, `callers`/`targets` value is not a list, or a `callers`/`targets` array's shape is outside [§6.2.1](../spec/protocol-spec.md#621-compound-operators-in-pattern-arrays)'s closure (empty, an empty element, `$or` with no operands, `$not` with none or more than one, or a reserved token away from index 0).
+- `ConfigError` (`CONFIG_INVALID`) — the `audit:` block fails `$defs/AuditConfig` in `schemas/acl-config.schema.json` (wrong type or unknown key inside the block). Other unrecognised root keys are ignored.
 - **NOT** an error: a rule referencing an unregistered condition key. `register_condition()` writes to a runtime, process-wide registry, and `acl.root` discovery commonly runs before application code has registered anything, so failing here would reject valid configurations on ordering alone. Loading warns; [`validate_rules()`](#contract-aclvalidate_rules) is the deterministic check to run once registration is complete; and [§6.1.1](../spec/protocol-spec.md#611-unevaluable-conditions-v1220-100) guarantees the rule cannot silently pass traffic either way.
 
 ### Returns
@@ -336,15 +353,15 @@ Normative behavioral contract. All SDK implementations MUST satisfy these guaran
 
 ## Contract: ACL.discover
 
-Config-driven activation of the `acl.root` key (decision D-64). `discover()` resolves `acl.root` and loads an ACL **only when the configured path exists**, so that ACL enforcement can be turned on by configuration alone — without application code calling `ACL.load()` + `set_acl()` by hand. The application bootstrap (`APCore`) calls `discover()` automatically and attaches the result.
+Config-driven activation of the `acl.root` key (D-64). `discover()` resolves `acl.root` and loads an ACL **only when the configured path exists**, so that ACL enforcement can be turned on by configuration alone — without application code calling `ACL.load()` + `set_acl()` by hand. The application bootstrap (`APCore`) calls `discover()` automatically and attaches the result.
 
 !!! danger "Missing-path invariant — MUST NOT synthesize a default-deny ACL"
-    When the resolved `acl.root` path does **not** exist, `discover()` MUST return "no ACL" (`None`/`null`/`Option::None`) and attach nothing. It MUST NOT construct an empty ACL — an empty ACL with `default_effect: deny` would deny **every** inter-module call in every project that has no ACL today. A missing path means *no enforcement*, identical to the pre-D-64 default. `acl.default_effect` takes effect only once a real ACL file is loaded.
+    When the resolved `acl.root` path does **not** exist, `discover()` MUST return "no ACL" (`None`/`null`/`Option::None`) and attach nothing. It MUST NOT construct an empty ACL — an empty ACL with `default_effect: deny` would deny **every** inter-module call in every project that has no ACL file. A missing path means *no enforcement*. `default_effect` is read from the ACL file once one is loaded; `acl.default_effect` in `apcore.yaml` is an inert key and never applies.
 
 ### Inputs
 
 - `config`: the loaded `Config`, required. `acl.root` is read from it.
-  - `acl.root` default: `"./acl"` in all SDKs (Rust no longer hard-requires the key).
+  - `acl.root` default: `"./acl"` in all SDKs.
 
 ### Preconditions
 
@@ -353,29 +370,10 @@ Config-driven activation of the `acl.root` key (decision D-64). `discover()` res
 ### Side Effects (ordered)
 
 1. Read `acl.root` from `config` (apply the `"./acl"` default if unset).
-2. Resolve the path: relative to the config file's directory when the `Config` knows its source path, else relative to the current working directory. **This is the current (1.x) behaviour and is superseded at 2.0** — see the note below.
+2. Resolve the path: relative to the config file's directory when the `Config` knows its source path, else relative to the current working directory. (This makes `acl.root` the one path-typed key whose base differs from `schema.root` and `extensions.root`, which resolve against the CWD; [PROTOCOL_SPEC §9.2.2](../spec/protocol-spec.md#922-path-resolution-base) defines the single project-root rule planned for 2.0.)
 3. If the resolved path is a **directory**, target `<root>/global_acl.yaml` (the `acl/{scope}_acl.yaml` convention, PROTOCOL_SPEC §3.1); if it is a **file**, target it directly.
 4. If the target file exists, load it via `ACL.load()` and return the new `ACL`.
 5. If the resolved path / target file does not exist, return "no ACL" and attach nothing.
-
-!!! warning "Step 2's base is superseded at 2.0 by PROTOCOL_SPEC §9.2.2"
-    Step 2 records what `discover()` does **today**, and it is unchanged for the whole 1.x
-    line — implement it exactly as written. It is also the reason `acl.root` is the one
-    path-typed key (PROTOCOL_SPEC §9.2.1) whose base differs from its siblings: `schema.root`
-    and `extensions.root` resolve against the process CWD, unconditionally.
-
-    [PROTOCOL_SPEC §9.2.2 Path Resolution Base](../spec/protocol-spec.md#922-path-resolution-base)
-    declares the target rule and opens the deprecation window (spec v1.35.0, issue #113): from
-    2.0, every relative path-typed value resolves against a single **project root** — the
-    configuration file's directory when that file came from §9.14 discovery tiers 1-5, and the
-    process CWD when it came from the user-level tiers 6-7 or when no file was found.
-
-    For a project-local config (tiers 2-5) the two rules coincide and nothing changes. The
-    difference is the **user-level tiers**, where D-64's rule is actively wrong: a config at
-    `~/.config/apcore/config.yaml` carrying `acl.root: ./acl` loads its policy from
-    `~/.config/apcore/acl/` into every project that user runs, while the project's own `./acl/`
-    is ignored — the inverse of what a default-deny ACL is for. Do **not** change this
-    behaviour before 2.0; the §9.2.2 migration path is the supported route.
 
 ### Postconditions
 
@@ -385,7 +383,7 @@ Config-driven activation of the `acl.root` key (decision D-64). `discover()` res
 
 ### Errors
 
-- `ACLRuleError` — only when a target file **exists but is structurally invalid** (propagated from `ACL.load()`). A missing path is never an error.
+- `ACLRuleError` / `ConfigError` — only when a target file **exists but is invalid** (propagated from `ACL.load()`). A missing path is never an error.
 
 ### Returns
 
@@ -401,81 +399,93 @@ Config-driven activation of the `acl.root` key (decision D-64). `discover()` res
 
 ### Usage
 
-With `acl.root` set in `apcore.yaml`, enforcement is wired automatically — no manual `ACL.load()` / `set_acl()` needed:
+With `acl.root` set in `apcore.yaml`, enforcement is wired automatically — no manual `ACL.load()` / `set_acl()` needed. `default_effect` and `audit:` belong in the ACL file, not here:
 
 ```yaml
 # apcore.yaml
 acl:
   root: ./acl            # directory holding global_acl.yaml (default: ./acl)
-  default_effect: deny   # applies only once an ACL file is actually loaded
 ```
 
 === "Python"
     ```python
-    from apcore import APCore, Config
+    from apcore import ACL, APCore, Config
 
     # APCore calls ACL.discover(config) and attaches the result.
-    # If ./acl/global_acl.yaml exists, enforcement is active; if not, it is a no-op.
+    # If ./acl/global_acl.yaml exists, enforcement is active; if not, no ACL is attached.
     app = APCore(config=Config.load("apcore.yaml"))
 
-    # Equivalent explicit form (also still supported):
-    from apcore.acl import ACL
+    # Equivalent explicit form:
     acl = ACL.discover(Config.load("apcore.yaml"))
     if acl is not None:
         app.executor.set_acl(acl)
     ```
 === "TypeScript"
     ```typescript
-    import { APCore, Config, ACL } from 'apcore-js';
+    import { ACL, APCore, Config } from "apcore-js";
 
     // APCore calls ACL.discover(config) and attaches the result.
-    const app = new APCore({ config: Config.load('apcore.yaml') });
+    const app = new APCore({ config: Config.load("apcore.yaml") });
 
     // Equivalent explicit form:
-    const acl = ACL.discover(Config.load('apcore.yaml'));
+    const acl = ACL.discover(Config.load("apcore.yaml"));
     if (acl !== null) {
-      app.executor.setAcl(acl);
+        app.executor.setAcl(acl);
     }
     ```
 === "Rust"
     ```rust
-    use apcore::{APCore, config::Config, acl::ACL};
+    use std::path::Path;
 
-    // APCore calls ACL::discover(&config) and attaches the result.
-    let config = Config::load("apcore.yaml")?;
-    let app = APCore::new(config.clone())?;
+    use apcore::{ACL, APCore, Config, Executor, ModuleError, Registry};
 
-    // Equivalent explicit form:
-    if let Some(acl) = ACL::discover(&config)? {
-        // set_acl needs &mut Executor; `executor()` yields &Executor.
-        let mut executor = Executor::new(registry.clone(), config.clone());
-        executor.set_acl(acl);
+    fn main() -> Result<(), ModuleError> {
+        // APCore::with_config calls ACL::discover(&config) and attaches the result.
+        let config = Config::load(Path::new("apcore.yaml"))?;
+        let _app = APCore::with_config(config.clone());
+
+        // Equivalent explicit form. `set_acl` needs `&mut Executor`, so configure
+        // the Executor before handing it to APCore.
+        let mut executor = Executor::new(Registry::default(), config.clone());
+        if let Some(acl) = ACL::discover(&config)? {
+            executor.set_acl(acl);
+        }
+        let _explicit = APCore::with_options(None, Some(executor), Some(config), None);
+        Ok(())
     }
     ```
 
-## Audit configuration and warning discipline
+## Audit Delivery
 
-> **Added in spec v1.49.0** (D-87, D-88).
+Every `check()` produces an `AuditEntry` ([PROTOCOL_SPEC §6.3.1](../spec/protocol-spec.md#631-audit-entry)). Where it goes is decided by **exactly one effective sink** (§6.3.2):
 
-**D-87 — supplying the `audit:` block to a directly-constructed ACL.** §6.3.2
-requirement 1 makes the block the one configuration home for audit delivery, and
-`load()` / `reload()` carry it in every SDK. A host that builds an ACL
-programmatically rather than from a file **MUST** also have a way to supply it.
-The *shape* of that way is a language idiom and is deliberately unconstrained: an
-optional constructor parameter (apcore-python, apcore-typescript) and a builder or
-setter (apcore-rust, whose constructors are fixed-arity) are equally conforming.
-What is required is that the capability be reachable, and that the audit sink be
-rebuilt when it is supplied.
+| Condition | Effective sink |
+|---|---|
+| An audit callback was supplied (`audit_logger`) | That callback, which receives every entry, allow and deny alike |
+| No callback, and the ACL file **declares** an `audit:` block with `enabled: true` | The default sink: one structured record per decision, event name `apcore.acl.audit`, at `log_level` |
+| Otherwise | None — no audit records are produced |
 
-**D-88 — the §6.5 "conditions present but no context" warning is deduped per rule
-index, so index-shifting mutations MUST clear the dedupe state.** `add_rule`
-inserts at index 0 and shifts every existing rule, so a retained entry suppresses
-the warning for a *different* rule than the one it was recorded for. Any operation
-that inserts, removes or reorders rules — `add_rule`, `remove_rule`, `reload` —
-**MUST** clear the dedupe set. An implementation that does not dedupe at all is
-also conforming (the warning is a `SHOULD`), but an implementation that dedupes by
-index and does not clear is **not**: it silently drops a warning the section
-requires, and does so for the rule the operator just added.
+The `audit:` block lives in the ACL file (see [YAML Configuration Format](#yaml-configuration-format)) and configures the default sink only:
+
+| Key | Default | Meaning |
+|---|---|---|
+| `enabled` | `true` | Whether the default sink is active. Consulted only when the block is declared — an ACL file without `audit:` produces no audit output unless a callback is supplied |
+| `include_denied` | `true` | `false` withholds `deny` entries from the default sink, and warns once per load |
+| `log_level` | `info` | `trace` / `debug` / `info` / `warn` / `error` |
+
+The `acl.audit.*` keys in `apcore.yaml` are inert; configure auditing in the ACL file.
+
+- A supplied callback is never narrowed or silenced by the block. If both are present, one diagnostic per ACL construction names the block's fields that do not apply.
+- The callback must be synchronous; one that returns an awaitable is treated as a failed delivery. Delivery failures never change the access decision, and after the first one further diagnostics for the same sink are suppressed.
+- `reload()` re-reads the `audit:` block and keeps a programmatic callback.
+
+Supplying the callback or the audit configuration programmatically:
+
+| SDK | Callback | Audit configuration |
+|---|---|---|
+| Python | `ACL(rules, default_effect, audit_logger=fn)`, `ACL.load(path, audit_logger=fn)` | `ACL(..., audit_config={"enabled": True, ...})` |
+| TypeScript | `new ACL(rules, defaultEffect, auditLogger)`, `ACL.load(path, auditLogger)` | `new ACL(rules, defaultEffect, auditLogger, auditConfig)` |
+| Rust | `ACL::new(rules, default_effect, Some(Arc::new(logger)))`, `acl.set_audit_logger(fn)` | `acl.with_audit_config(Some(AuditConfig { .. }))` / `set_audit_config` |
 
 ## Contract: ACL.add_rule
 
@@ -483,18 +493,11 @@ requires, and does so for the rule the operator just added.
 
 - `rule`: pre-built `ACLRule` to insert at the front of the rule list (highest priority).
 
-> **Cross-language ergonomic note (D10-006).** Python additionally exposes a
-> kwargs-form overload `add_rule(*, callers, targets, effect="deny",
-> description="", conditions=None)` that constructs the rule on the caller's
-> behalf. This kwargs surface is **Python-only** — TypeScript and Rust callers
-> use struct/object literals to build `ACLRule` directly, which is already
-> idiomatic in those languages and offers equivalent ergonomics. The
-> kwargs path is therefore not normative for cross-language conformance;
-> only the prebuilt-rule form is required across SDKs.
+Python additionally accepts keyword arguments (`add_rule(callers=..., targets=..., effect=..., ...)`) and builds the rule itself; TypeScript takes a plain `ACLRule` object; Rust takes an `ACLRule` built with `ACLRule::new` and also offers `try_add_rule`, which returns the `ACLRuleError` instead of panicking. Only the prebuilt-rule form is required across SDKs.
 
 ### Preconditions
 
-- `rule` is a well-formed `ACLRule` (callers + targets non-empty, effect ∈ {"allow", "deny"}). Since spec v1.31.0 this is **enforced, not assumed**: `add_rule` re-validates the rule it is handed — including one that was well-formed when constructed and has since had `callers` or `targets` assigned — and raises `ACLRuleError` ([§6.2.1](../spec/protocol-spec.md#621-compound-operators-in-pattern-arrays)). Validation order within a rule is `effect` → `approval` → `callers` / `targets`.
+- `rule` is a well-formed `ACLRule` (callers + targets non-empty, effect ∈ {"allow", "deny"}, valid `approval`). This is **enforced**: `add_rule` re-validates the rule it is handed — including one that was well-formed when constructed and has since had `callers` or `targets` assigned — and raises `ACLRuleError` ([§6.2.1](../spec/protocol-spec.md#621-compound-operators-in-pattern-arrays)). Validation order within a rule is `effect` → `approval` → `callers` / `targets`.
 
 ### Side Effects (ordered)
 
@@ -508,10 +511,12 @@ requires, and does so for the rule the operator just added.
 - The rule is the first entry in the rule list; all prior rules shift up by one index.
 - Any subsequent `check()` call evaluates the new rule before all previously inserted rules.
 - A warning has been emitted for each unresolvable condition key the rule references. No exception is raised for one.
+- The dedupe state of the §6.5 "conditions present but no context" warning is cleared, because the insertion shifted every rule index (D-88). `remove_rule` and `reload` clear it too.
 
 ### Errors
 
-- `ValueError` (Python kwargs path only) — when `rule` is `None` and either `callers` or `targets` is also `None`. Not raised on the prebuilt-rule path used uniformly across SDKs.
+- `ACLRuleError` — the rule is malformed (see Preconditions). Rust's `add_rule` panics with the same message; use `try_add_rule` to receive it as an error.
+- `ValueError` (Python keyword path only) — when `rule` is `None` and either `callers` or `targets` is also `None`.
 
 ### Returns
 
@@ -582,14 +587,14 @@ _(none — operates on the YAML path stored during `ACL.load`)_
 4. Call `ACL.load(yaml_path)` outside the lock (reads and validates the YAML file).
 5. Acquire the ACL lock again.
 6. Replace `_rules` with the newly loaded rule list.
-7. Replace `_default_effect` with the newly loaded default effect.
+7. Replace `_default_effect` with the newly loaded default effect, and the audit configuration with the reloaded `audit:` block.
 8. Release the ACL lock.
 
 ### Postconditions
 
 - `_rules` and `_default_effect` reflect the current content of the YAML file.
 - `_yaml_path` is unchanged.
-- `_audit_logger` is unchanged (not replaced from the reloaded instance).
+- The audit callback is unchanged (not replaced from the reloaded instance); the `audit:` block's configuration is re-applied from the file.
 - Any `add_rule()` or `remove_rule()` mutations made between the two lock acquisitions (steps 2–5) are discarded.
 
 ### Errors
@@ -771,9 +776,7 @@ Condition handlers are registered at runtime into a process-wide registry, and a
 
 === "Python"
     ```python
-    from apcore import APCore
-    from apcore.acl import ACL, ACLRule
-    from apcore.context import Context, Identity
+    from apcore import ACL, ACLRule, APCore, Context, Identity
 
     # Load ACL from YAML
     acl = ACL.load("acl.yaml")
@@ -781,7 +784,8 @@ Condition handlers are registered at runtime into a process-wide registry, and a
     # Check access
     identity = Identity(id="api.gateway", type="service", roles=["reader"])
     ctx = Context.create(identity=identity)
-    allowed = acl.check("api.gateway", "db.query", ctx)  # True / False
+    allowed = acl.check("api.gateway", "db.query", ctx)          # bool
+    decision = acl.check_access("api.gateway", "db.query", ctx)  # access + approval_required
 
     # Runtime modification
     acl.add_rule(ACLRule(
@@ -791,9 +795,8 @@ Condition handlers are registered at runtime into a process-wide registry, and a
         description="Admins can call any module",
     ))
 
-    # Wire into executor via APCore.
-    # Use set_acl(): it propagates the ACL to the pipeline's acl_check step.
-    # Plain attribute assignment does NOT wire enforcement.
+    # Wire into the executor. set_acl() propagates the ACL to the pipeline's
+    # acl_check step; assigning an attribute does not.
     client = APCore()
     client.executor.set_acl(acl)
 
@@ -801,24 +804,20 @@ Condition handlers are registered at runtime into a process-wide registry, and a
     # warning is a one-shot log line. To OBSERVE the state at any later point:
     assert client.executor.governance_state().builtin_acl_gate_wired
     ```
-
-> **An attached ACL is not an enforced one.** `acl_check` is a pipeline step, and the `internal`, `testing` and `minimal` strategies all remove it — so `set_acl()` on an executor running one of those leaves the ACL attached and never consulted. [`governance_state()`](./core-executor.md#governance-state-api) reports `acl_configured` and `builtin_acl_gate_wired` separately for exactly this reason ([PROTOCOL_SPEC §6.6.5](../spec/protocol-spec.md#665-governance-state-query)).
 === "TypeScript"
     ```typescript
-    import { APCore } from "apcore-js";
-    import { ACL, ACLRule } from "apcore-js";
-    import { Context, Identity } from "apcore-js";
+    import { ACL, APCore, Context, createIdentity } from "apcore-js";
 
-    // Load ACL from YAML
-    const acl = await ACL.load("acl.yaml");
+    // Load ACL from YAML (synchronous)
+    const acl = ACL.load("acl.yaml");
 
     // Check access
-    const identity: Identity = { id: "api.gateway", type: "service", roles: ["reader"] };
+    const identity = createIdentity("api.gateway", "service", ["reader"]);
     const ctx = Context.create(identity);
-    const allowed = acl.check("api.gateway", "db.query", ctx);
+    const allowed = acl.check("api.gateway", "db.query", ctx);          // boolean
+    const decision = acl.checkAccess("api.gateway", "db.query", ctx);  // access + approvalRequired
 
-    // Runtime modification
-    // ACLRule is an interface — pass a plain object literal.
+    // Runtime modification — ACLRule is a plain object
     acl.addRule({
         callers: ["admin.*"],
         targets: ["*"],
@@ -826,86 +825,82 @@ Condition handlers are registered at runtime into a process-wide registry, and a
         description: "Admins can call any module",
     });
 
-    // Wire into executor via APCore.
-    // Use setAcl(): it propagates the ACL to the pipeline's acl_check step.
-    // Plain field assignment does NOT wire enforcement.
+    // Wire into the executor. setAcl() propagates the ACL to the pipeline's
+    // acl_check step; assigning a field does not.
     const client = new APCore();
     client.executor.setAcl(acl);
+    console.assert(client.executor.governanceState().builtinAclGateWired);
     ```
 === "Rust"
     ```rust
-    use apcore::acl::{ACL, ACLRule};
-    use apcore::context::{Context, Identity};
-    use apcore::APCore;
-
-    // Load ACL from YAML
-    let acl = ACL::load("acl.yaml")?;
-
-    // Check access
     use std::collections::HashMap;
-    let identity = Identity::new(
-        "api.gateway".to_string(),
-        "service".to_string(),
-        vec!["reader".to_string()],
-        HashMap::new(),
-    );
-    let ctx = Context::create(Some(identity), None, None, None, Value::Null, None);
-    let allowed = acl.check("api.gateway", "db.query", Some(&ctx));
 
-    // Runtime modification
-    acl.add_rule(ACLRule {
-        callers: vec!["admin.*".to_string()],
-        targets: vec!["*".to_string()],
-        effect: "allow".to_string(),
-        description: Some("Admins can call any module".to_string()),
-        conditions: None,
-    });
+    use apcore::{ACLRule, APCore, Config, Context, Executor, Identity, ModuleError, Registry, ACL};
+    use serde_json::Value;
 
-    // Wire into executor via APCore
-    let mut client = APCore::new();
-    // `APCore` exposes only `executor() -> &Executor`, and set_acl needs &mut.
-    // Build the Executor yourself when you need to attach an ACL after the fact:
-    let mut executor = Executor::new(registry.clone(), config.clone());
-    executor.set_acl(acl);
+    fn main() -> Result<(), ModuleError> {
+        // Load ACL from YAML
+        let mut acl = ACL::load("acl.yaml")?;
+
+        // Check access
+        let identity = Identity::new(
+            "api.gateway".to_string(),
+            "service".to_string(),
+            vec!["reader".to_string()],
+            HashMap::new(),
+        );
+        let ctx: Context<Value> =
+            Context::create(Some(identity), None, None, None, Value::Null, None);
+        let _allowed = acl.check(Some("api.gateway"), "db.query", Some(&ctx));
+        let _decision = acl.check_access(Some("api.gateway"), "db.query", Some(&ctx), None);
+
+        // Runtime modification — ACLRule is #[non_exhaustive]: build with new(),
+        // then assign the optional fields.
+        let mut rule = ACLRule::new(vec!["admin.*".to_string()], vec!["*".to_string()], "allow");
+        rule.description = Some("Admins can call any module".to_string());
+        acl.try_add_rule(rule)?;
+
+        // `APCore` exposes only `executor() -> &Executor`, and set_acl needs &mut,
+        // so attach the ACL before handing the Executor to APCore.
+        let mut executor = Executor::new(Registry::default(), Config::default());
+        executor.set_acl(acl);
+        let client = APCore::with_options(None, Some(executor), None, None);
+        assert!(client.executor().governance_state().builtin_acl_gate_wired);
+        Ok(())
+    }
     ```
+
+!!! warning "An attached ACL is not an enforced one"
+    `acl_check` is a pipeline step, and the `internal`, `testing` and `minimal` strategies all remove it — so `set_acl()` on an executor running one of those leaves the ACL attached and never consulted. [`governance_state()`](./core-executor.md#governance-state-api) reports `acl_configured` and `builtin_acl_gate_wired` separately for exactly this reason ([PROTOCOL_SPEC §6.6.5](../spec/protocol-spec.md#665-governance-state-query)).
 
 ## Dependencies
 
-- `apcore.context.Context` -- Provides `identity`, `call_chain`, and other context fields for conditional rule evaluation.
-- `apcore.context.Identity` -- Dataclass with `id`, `type`, and `roles` fields used by `@system` pattern and condition checks.
-- `apcore.errors.ACLRuleError` -- Raised for invalid ACL configuration (bad YAML structure, missing keys, invalid effect values).
-- `apcore.errors.ConfigNotFoundError` -- Raised when the YAML file path does not exist.
-- `apcore.utils.pattern.match_pattern` -- Foundation wildcard matching for non-special patterns.
+- **Context** — Provides `identity`, `call_chain` and the governance projection for conditional rule evaluation.
+- **Identity** — `id`, `type` and `roles`, used by the `@system` pattern and the `identity_types` / `roles` conditions.
+- **Error System** — `ACLRuleError` for invalid rules, `ConfigNotFoundError` for a missing file, `ConfigError` for an invalid `audit:` block, `ACLDeniedError` raised by the Executor on a deny.
+- **Pattern matching** — `match_pattern()` (Algorithm A08) for non-special patterns.
+- **Approval System** — Receives `approval_required` from the Executor's `acl_check` step.
 
 ??? info "Python SDK reference"
-    The following tables are **not protocol requirements** — they document the Python SDK's source layout and runtime dependencies for implementers/users of `apcore-python`.
+    The following table is **not a protocol requirement** — it documents the Python SDK's source layout for implementers/users of `apcore-python`.
 
-    **Source files:**
-
-    | File | Lines | Purpose |
-    |------|-------|---------|
-    | `src/apcore/acl.py` | 279 | `ACLRule` dataclass and `ACL` class with pattern matching, YAML loading, and runtime management |
-    | `src/apcore/utils/pattern.py` | 46 | `match_pattern()` wildcard utility (Algorithm A08) |
-
-    **Runtime dependencies:**
-
-    - `yaml` (PyYAML) -- YAML parsing for configuration loading.
-    - `threading` (stdlib) -- Lock for thread-safe access to the rule list.
-- `os` (stdlib) -- File existence checks in `ACL.load()`.
-- `logging` (stdlib) -- Debug-level logging of access decisions.
+    | File | Purpose |
+    |------|---------|
+    | `src/apcore/acl.py` | `ACLRule`, `AccessDecision`, `AuditEntry`, and the `ACL` class (loading, evaluation, audit delivery, runtime management) |
+    | `src/apcore/acl_handlers.py` | Built-in condition handlers (`identity_types`, `roles`, `max_call_depth`, `arguments`, `$or`, `$not`) |
+    | `src/apcore/utils/pattern.py` | `match_pattern()` wildcard utility (Algorithm A08) |
 
 ## Testing Strategy
 
-### Unit Tests (`tests/test_acl.py`)
+- **Pattern matching**: `@external` matches a missing `caller_id` (and not a string caller), `@system` matches system-type identities (and fails for none or non-system identities), exact patterns, wildcard `*`, prefix wildcards like `executor.*`, and the closed pattern-array shape.
+- **First-match-wins evaluation**: the first matching allow grants, the first matching deny refuses, and rule order takes precedence over specificity.
+- **Default effect**: both `default_effect: deny` and `default_effect: allow` when no rule matches; a missing ACL file attaches no ACL.
+- **YAML loading**: rules with descriptions, conditions and `approval`; errors for a missing file, invalid YAML, missing or non-list `rules`, missing or unknown rule keys, invalid `effect` / `approval` values, `approval: required` on a `deny` rule, and an invalid `audit:` block.
+- **Conditional rules**: `identity_types`, `roles`, `max_call_depth` and `arguments` matching and failing; unevaluable conditions (unknown key, malformed value, raising handler, async handler on the sync path) deny on a `deny` rule and do not grant on an `allow` rule.
+- **Approval**: `check()` returns false for an allowed call that needs approval, while `check_access()` reports `access: allow, approval_required: true`.
+- **Audit delivery**: callback vs default sink selection, `include_denied`, a failing sink not changing the decision, and `reload()` re-applying the `audit:` block.
+- **Runtime modification**: `add_rule()` inserts at position 0, `remove_rule()` returns true/false, `reload()` re-reads the YAML file and updates rules.
+- **Thread safety**: concurrent `check()` calls, and concurrent `add_rule()` + `check()`, with no corruption.
+- **Integration**: ACL enforcement end to end through the Executor pipeline.
 
-- **Pattern matching**: Tests for `@external` matching None callers (and not matching string callers), `@system` matching system-type identities (and failing for None or non-system identities), exact patterns, wildcard `*`, and prefix wildcards like `executor.*`.
-- **First-match-wins evaluation**: Verifies that the first matching allow returns True, first matching deny returns False, and that rule order takes precedence over specificity.
-- **Default effect**: Tests both `default_effect="deny"` and `default_effect="allow"` when no rule matches.
-- **YAML loading**: Validates correct loading of rules with descriptions and conditions, and error handling for missing files (`ConfigNotFoundError`), invalid YAML, missing `rules` key, non-list `rules`, missing required keys (`callers`, `targets`, `effect`), invalid effect values, and non-list `callers`.
-- **Conditional rules**: Tests `identity_types` matching and failing, `roles` intersection matching and failing, `max_call_depth` within and exceeding limits, and conditions failing when context or identity is None.
-- **Runtime modification**: `add_rule()` inserts at position 0, `remove_rule()` returns True/False, `reload()` re-reads the YAML file and updates rules.
-- **Context interaction**: Verifies `caller_id=None` maps to `@external`, and context is forwarded to conditional evaluation.
-- **Thread safety**: Concurrent `check()` calls (10 threads x 200 iterations) with no errors, and concurrent `add_rule()` + `check()` with no corruption.
-
-### Integration Tests (`tests/integration/test_acl_enforcement.py`)
-- End-to-end tests exercising ACL enforcement through the `Executor` pipeline.
+Cross-language cases live in `conformance/fixtures/acl_*.json` (evaluation, rule-key closure, effect closure, pattern arity, handler errors, argument-scoped approval, audit delivery, root discovery).

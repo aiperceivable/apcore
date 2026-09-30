@@ -1,6 +1,6 @@
 site_name: apcore — AI-Perceivable Core
 site_description: A governed, protocol-neutral runtime and module standard for agent-callable application capabilities.
-site_url: https://aiperceivable.github.io/apcore/
+site_url: https://apcore.aiperceivable.com/
 repo_url: https://github.com/aiperceivable/apcore
 repo_name: aiperceivable/apcore
 
@@ -35,12 +35,11 @@ theme:
     - content.code.copy
     - toc.follow
 
-# Pages deliberately kept out of `nav`. Redirect stubs must stay published so
-# old inbound links keep resolving, but they do not belong in the navigation
-# tree — listing them here records that intent instead of leaving them to look
-# like an accidental orphan.
-not_in_nav: |
-  context-annotations-acl/tech-design.md
+validation:
+  omitted_files: warn
+  absolute_links: warn
+  unrecognized_links: warn
+  anchors: warn
 
 plugins:
   - search
@@ -62,27 +61,25 @@ markdown_extensions:
 
 nav:
   - Start Here:
-      - Project Overview: index.md
-      - Core Concepts: concepts.md
+      - Overview: index.md
       - Getting Started: getting-started.md
+      - Core Concepts: concepts.md
+      - Architecture: architecture.md
+      - Positioning: POSITIONING.md
       - Glossary: glossary.md
-  - Concepts & Architecture:
-      - Project Positioning: POSITIONING.md
-      - Architecture Design: architecture.md
-      - Documentation Map: site-map.md
   - Guides:
-      - Overview: guides/index.md
+      - guides/index.md
       - Foundations:
           - Creating Modules: guides/creating-modules.md
           - Schema Definition: guides/schema-definition.md
           - Testing Modules: guides/testing-modules.md
       - Governance & Extension:
           - ACL Configuration: guides/acl-configuration.md
-          - Middleware System: guides/middleware.md
-      - Professional Integration:
-          - Multi-Language: guides/multi-language.md
+          - Writing Middleware: guides/middleware.md
+      - Integration:
+          - Multi-Language Development: guides/multi-language.md
           - Adapter Development: guides/adapter-development.md
-          - Legacy Integration: guides/integrating-existing-projects.md
+          - Integrating Existing Projects: guides/integrating-existing-projects.md
       - Cookbooks:
           - Approval Flow: guides/cookbook-approval-flow.md
           - Cancellation: guides/cookbook-cancellation.md
@@ -90,7 +87,7 @@ nav:
           - Observability: guides/cookbook-observability.md
       - Troubleshooting: guides/troubleshooting.md
   - Features:
-      - Overview: features/index.md
+      - features/index.md
       - Foundational Protocols:
           - Module Interface: features/module-interface.md
           - Context Object: features/context-object.md
@@ -98,49 +95,49 @@ nav:
           - Bindings (Decorator/YAML): features/decorator-bindings.md
       - Execution & Workflow:
           - Core Executor: features/core-executor.md
-          - Streaming Pipeline: features/streaming.md
-          - Async Task Management: features/async-tasks.md
-          - Cancellation Mechanism: features/cancellation.md
-          - Config Bus: features/config-bus.md
+          - Execution Pipeline: features/execution-pipeline.md
+          - Streaming: features/streaming.md
+          - Async Tasks: features/async-tasks.md
+          - Cancellation: features/cancellation.md
       - Security & Governance:
           - ACL System: features/acl-system.md
           - Identity System: features/identity-system.md
           - Approval System: features/approval-system.md
           - Call Chain Guard: features/call-chain-guard.md
       - Reliability & Ops:
-          - Observability: features/observability.md
-          - Error & AI Guidance: features/error-system.md
+          - Observability & Tracing: features/observability.md
+          - Metrics & Usage: features/metrics-and-usage.md
+          - Error History: features/error-history.md
+          - Redaction: features/redaction.md
+          - Errors & AI Guidance: features/error-system.md
           - Event System: features/event-system.md
           - System Modules (system.*): features/system-modules.md
       - Framework Internals:
           - Registry System: features/registry-system.md
           - Schema System: features/schema-system.md
+          - Config Bus: features/config-bus.md
           - Extension Points: features/extension-system.md
           - Middleware System: features/middleware-system.md
           - Multi-Module Discovery: features/multi-module-discovery.md
-  - Framework Specs:
+  - Specification:
       - spec/index.md
-      - Core Specs:
-          - Canonical Protocol Spec: spec/protocol-spec.md
-          - Conformance Definition: spec/conformance.md
-          - Declarative Config Spec: spec/DECLARATIVE_CONFIG_SPEC.md
+      - Normative:
+          - Protocol Specification: spec/protocol-spec.md
+          - Conformance: spec/conformance.md
           - Type Mapping: spec/type-mapping.md
-          - API Surface & Naming Conventions: spec/api-surface-conventions.md
+          - API Surface & Naming: spec/api-surface-conventions.md
+      - Reference:
           - Algorithm Reference: spec/algorithms.md
           - Security Considerations: spec/security-considerations.md
-      - Design Docs:
-          - Execution Pipeline Design: spec/design-execution-pipeline.md
           - Durability Boundary: spec/design-durability-boundary.md
-          - Context-Annotations-ACL Design: spec/design-context-annotations-acl.md
-      - RFCs & Logs:
-          - Decision Log (2026-05): spec/2026-05-decision-log.md
-          - Decision Log (2026-09): spec/2026-09-decision-log.md
-          - Config Surface Decisions (2026-09): spec/2026-09-config-surface-decisions.md
-          - Deep-Chain Decisions (D-74–D-91): spec/2026-09-deep-chain-decisions.md
-          - Discovery TOCTOU assessment: spec/2026-09-discovery-toctou-assessment.md
-          - "RFC — preview() Method": spec/rfc-preview-method.md
-          - "RFC — Ephemeral Modules": spec/rfc-ephemeral-modules.md
-          - "RFC — include: Config Composition": spec/rfc-config-include.md
+      - RFCs:
+          - "RFC: include: Config Composition": spec/rfc-config-include.md
+      - Decision Records:
+          - Decision Register: spec/decision-register.md
+          - "Deep-Chain Decisions (D-74 – D-128)": spec/2026-09-deep-chain-decisions.md
+          - "Config Surface Decisions (D-66 – D-73)": spec/2026-09-config-surface-decisions.md
+          - "Consistency Audit Decisions (E-01 – E-03)": spec/2026-09-decision-log.md
+          - "Decision Log 2026-05 (D-01 – D-65)": spec/2026-05-decision-log.md
 
 extra:
   social:

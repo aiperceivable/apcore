@@ -51,7 +51,7 @@ A root writable by a party *less* trusted than the host is **outside this
 model**, and confinement is not the control that would protect it: a writer
 there can drop a module that passes every check and does whatever it likes
 inside `execute()`. The symlink time-of-check/time-of-use window described in
-[Discovery TOCTOU](./docs/spec/2026-09-discovery-toctou-assessment.md) is one
+[Discovery TOCTOU](./docs/spec/security-considerations.md#28-discovery-toctou-ot9) is one
 consequence of that boundary, not a defect within it, and the assessment is
 **accepted as written**: document the boundary, do not add per-platform
 mechanism to close one window in a deployment the project does not claim to

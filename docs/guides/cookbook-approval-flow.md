@@ -1,30 +1,30 @@
 ---
-description: "End-to-end cookbook for approval-gated modules with a custom ApprovalHandler, covering Phase A sync block-until-decided and Phase B async pending resume via _approval_token."
+description: "Cookbook: approval-gated modules with an ApprovalHandler — decide immediately (Phase A) or return pending and resume later with _approval_token (Phase B)."
 ---
 
 # Cookbook — Approval-Gated Modules
 
 > **Type:** User cookbook. **Normative spec:** [PROTOCOL_SPEC §7](../spec/protocol-spec.md#7-approval-system). Feature reference: [features/approval-system.md](../features/approval-system.md).
 
-End-to-end example: a module that requires sign-off before executing, served by a custom `ApprovalHandler`. Covers Phase A (sync block-until-decided) and Phase B (async `pending` → resume via `_approval_token`).
+End-to-end recipe: a module that must be signed off before it runs, served by an `ApprovalHandler`. Phase A decides during the call; Phase B returns `pending`, and the caller retries later with `_approval_token`.
 
 ## When to use this pattern
 
-- The module performs an action that needs human or policy review (refunds, deletions, broadcast emails, infra changes).
-- You want enforcement at the **framework boundary** so it can't be bypassed by a misconfigured caller.
+- The module does something that needs human or policy review: refunds, deletions, broadcast emails, infrastructure changes.
+- You want the check enforced by the executor, where a caller cannot skip it.
 - You need an audit trail of who approved what.
 
 ## When NOT to use this pattern
 
-- For pre-call validation that doesn't need a human: use `module.preflight()` (advisory) or input schema constraints.
-- For rate limiting: write a middleware, not an approval handler.
-- For "are you allowed to call this at all": that's ACL ([features/acl-system.md](../features/acl-system.md)) — Approval is finer-grained, runs *after* ACL.
+- Checks that need no human: use input schema constraints or the module's `preflight()`.
+- "May this caller use this module at all?" is an ACL question ([ACL Configuration Guide](./acl-configuration.md)). The ACL check runs before the approval gate.
+- Rate limiting belongs in middleware.
 
 ---
 
-## 1. Marking the module
+## 1. Mark the module
 
-The annotation is what triggers the gate. Without `requires_approval=true` the executor skips Step 5 entirely.
+`requires_approval` in the module's annotations makes the approval gate stop the call. The gate also fires when an ACL rule says `approval: required` or an `ExecutionPolicy` with `gate_destructive` matches a destructive module — see [features/approval-system.md](../features/approval-system.md).
 
 === "Python"
     ```python
@@ -33,52 +33,44 @@ The annotation is what triggers the gate. Without `requires_approval=true` the e
 
     client = APCore()
 
+
     @client.module(
         id="finance.refund",
-        description="Issue a refund — requires approval",
+        description="Issue a refund (requires approval)",
         annotations={"requires_approval": True},
     )
     def refund(order_id: str, amount_cents: int, reason: str, context: Context) -> dict:
-        # `@client.module` accepts no input_schema/output_schema kwargs — both are
-        # inferred from these annotations and the return type.
-        # By the time we reach here, an approver has signed off.
-        return {"refund_id": gateway.refund(order_id, amount_cents, reason)}
+        # Only reached once the approval gate has let the call through.
+        return {"refund_id": f"rf_{order_id}"}
     ```
 
 === "TypeScript"
     ```typescript
     import { Type } from '@sinclair/typebox';
-    import { APCore, Context } from 'apcore-js';
+    import { APCore, createAnnotations } from 'apcore-js';
 
     const client = new APCore();
 
     client.module({
       id: 'finance.refund',
-      description: 'Issue a refund — requires approval',
-      annotations: { requiresApproval: true },
+      description: 'Issue a refund (requires approval)',
+      annotations: createAnnotations({ requiresApproval: true }),
       inputSchema: Type.Object({
         order_id: Type.String(),
         amount_cents: Type.Integer({ minimum: 1 }),
         reason: Type.String(),
       }),
       outputSchema: Type.Object({ refund_id: Type.String() }),
-      execute: async (inputs, context: Context) => {
-        const refundId = await gateway.refund(
-          inputs.order_id as string, inputs.amount_cents as number, inputs.reason as string,
-        );
-        return { refund_id: refundId };
-      },
+      // Only reached once the approval gate has let the call through.
+      execute: async (inputs) => ({ refund_id: `rf_${inputs.order_id as string}` }),
     });
     ```
 
 === "Rust"
     ```rust
-    use apcore::{APCore, Context, Module, ModuleAnnotations};
-    use apcore::errors::ModuleError;
-    use apcore::registry::{ModuleDescriptor, DependencyInfo};
+    use apcore::{Context, Module, ModuleAnnotations, ModuleError};
     use async_trait::async_trait;
     use serde_json::{json, Value};
-    use std::collections::HashMap;
 
     struct RefundModule;
 
@@ -86,317 +78,359 @@ The annotation is what triggers the gate. Without `requires_approval=true` the e
     impl Module for RefundModule {
         fn input_schema(&self) -> Value {
             json!({
-                "type":"object",
-                "properties":{
-                    "order_id":     {"type":"string"},
-                    "amount_cents": {"type":"integer","minimum":1},
-                    "reason":       {"type":"string"},
+                "type": "object",
+                "properties": {
+                    "order_id":     {"type": "string"},
+                    "amount_cents": {"type": "integer", "minimum": 1},
+                    "reason":       {"type": "string"}
                 },
-                "required":["order_id","amount_cents","reason"]
+                "required": ["order_id", "amount_cents", "reason"]
             })
         }
+
         fn output_schema(&self) -> Value {
-            json!({"type":"object","properties":{"refund_id":{"type":"string"}}})
+            json!({"type": "object", "properties": {"refund_id": {"type": "string"}}})
         }
-        fn description(&self) -> &'static str { "Issue a refund — requires approval" }
+
+        fn description(&self) -> &str {
+            "Issue a refund (requires approval)"
+        }
+
+        // The approval gate reads the module's own annotations.
+        fn annotations(&self) -> ModuleAnnotations {
+            ModuleAnnotations {
+                requires_approval: true,
+                ..Default::default()
+            }
+        }
+
         async fn execute(&self, inputs: Value, _ctx: &Context<Value>) -> Result<Value, ModuleError> {
-            let refund_id = gateway::refund(
-                inputs["order_id"].as_str().unwrap(),
-                inputs["amount_cents"].as_i64().unwrap(),
-                inputs["reason"].as_str().unwrap(),
-            ).await?;
-            Ok(json!({"refund_id": refund_id}))
+            // Only reached once the approval gate has let the call through.
+            let order_id = inputs["order_id"].as_str().unwrap_or_default();
+            Ok(json!({"refund_id": format!("rf_{order_id}")}))
         }
     }
-
-    // The high-level `client.register()` defaults annotations, so to enable
-    // the approval gate we hand-build a ModuleDescriptor and use the
-    // underlying Registry directly.
-    let module = RefundModule;
-    let descriptor = ModuleDescriptor {
-        module_id:     "finance.refund".into(),
-        name:          None,
-        description:   module.description().into(),
-        documentation: None,
-        input_schema:  module.input_schema(),
-        output_schema: module.output_schema(),
-        version:       "1.0.0".into(),
-        tags:          vec![],
-        annotations:   Some(ModuleAnnotations {
-            requires_approval: true,
-            ..Default::default()
-        }),
-        examples:      vec![],
-        metadata:      HashMap::new(),
-        display:       None,
-        sunset_date:   None,
-        dependencies:  Vec::<DependencyInfo>::new(),
-        enabled:       true,
-    };
-
-    let client = APCore::new();
-    client.registry().register("finance.refund", Box::new(module), descriptor)?;
     ```
 
-## 2. Phase A — sync handler (block until decided)
+To confirm a module is gated, run a preflight: `validate()` reports the effective requirement as `requires_approval` (`requiresApproval` in TypeScript).
 
-The simplest case: the handler blocks until a human/policy returns a decision. Use this when sign-off latency is bounded.
+## 2. Phase A — decide during the call
+
+The handler returns `approved` or `rejected` before the call continues. `CallbackApprovalHandler` wraps an async function. This policy approves small refunds and rejects the rest; replace it with a call to your review tool when the answer comes back within the request.
 
 === "Python"
     ```python
     from apcore.approval import ApprovalRequest, ApprovalResult, CallbackApprovalHandler
 
-    # CallbackApprovalHandler requires an async callback.
-    async def policy_check(req: ApprovalRequest) -> ApprovalResult:
-        # Fields you can branch on:  req.module_id, req.arguments, req.context.identity
-        if req.arguments.get("amount_cents", 0) > 100_00:
-            # Block on Slack — pseudocode
-            verdict = await slack.ask_approval(req)
-            return ApprovalResult(
-                status="approved" if verdict.ok else "rejected",
-                approved_by=verdict.user_email,
-                reason=verdict.reason,
-            )
-        return ApprovalResult(status="approved", approved_by="auto:policy", reason="under threshold")
 
-    # Set via the public setter — direct attribute assignment will not wire
-    # the strategy's ApprovalGate step.
-    client.executor.set_approval_handler(CallbackApprovalHandler(policy_check))
+    async def refund_policy(request: ApprovalRequest) -> ApprovalResult:
+        if request.arguments.get("amount_cents", 0) <= 10_000:
+            return ApprovalResult(status="approved", approved_by="policy:small-refund")
+        return ApprovalResult(status="rejected", reason="refunds over 100.00 need a reviewer")
 
-    # Caller side — blocks for as long as the handler takes.
-    # Python's client.call is synchronous; use client.call_async(...) inside
-    # an asyncio coroutine if you need a non-blocking variant.
-    result = client.call("finance.refund", {"order_id": "o-1", "amount_cents": 25000, "reason": "duplicate"})
+
+    client.executor.set_approval_handler(CallbackApprovalHandler(refund_policy))
+
+    result = client.call("finance.refund", {"order_id": "o-1", "amount_cents": 2_500, "reason": "duplicate"})
+    print(result)  # {'refund_id': 'rf_o-1'}
     ```
 
 === "TypeScript"
     ```typescript
-    import { ApprovalRequest, ApprovalResult, CallbackApprovalHandler } from 'apcore-js';
+    import { CallbackApprovalHandler, createApprovalResult } from 'apcore-js';
+    import type { ApprovalRequest, ApprovalResult } from 'apcore-js';
 
-    const policyCheck = async (req: ApprovalRequest): Promise<ApprovalResult> => {
-      if ((req.arguments.amount_cents as number) > 100_00) {
-        const verdict = await slack.askApproval(req);
-        return {
-          status: verdict.ok ? 'approved' : 'rejected',
-          approvedBy: verdict.userEmail,
-          reason: verdict.reason,
-        };
+    const refundPolicy = async (request: ApprovalRequest): Promise<ApprovalResult> => {
+      if ((request.arguments.amount_cents as number) <= 10_000) {
+        return createApprovalResult({ status: 'approved', approvedBy: 'policy:small-refund' });
       }
-      return { status: 'approved', approvedBy: 'auto:policy', reason: 'under threshold' };
+      return createApprovalResult({ status: 'rejected', reason: 'refunds over 100.00 need a reviewer' });
     };
 
-    // Use the setter — it both stores the handler and wires the
-    // BuiltinApprovalGate step in the active strategy.
-    client.executor.setApprovalHandler(new CallbackApprovalHandler(policyCheck));
+    client.executor.setApprovalHandler(new CallbackApprovalHandler(refundPolicy));
 
-    const result = await client.call(
-      'finance.refund',
-      { order_id: 'o-1', amount_cents: 25_000, reason: 'duplicate' },
-    );
+    const result = await client.call('finance.refund', { order_id: 'o-1', amount_cents: 2_500, reason: 'duplicate' });
+    console.log(result); // { refund_id: 'rf_o-1' }
     ```
 
 === "Rust"
     ```rust
-    use apcore::{APCore, ApprovalHandler, ApprovalRequest, ApprovalResult,
-                 Config, Executor, ModuleError, Registry};
-    use async_trait::async_trait;
+    use apcore::{APCore, ApprovalResult, CallbackApprovalHandler, Config, Executor, Registry};
     use std::sync::Arc;
 
-    // The Python and TypeScript tabs call an undefined `slack` helper; Rust needs
-    // it to resolve at compile time, so it is stubbed here.
-    mod slack {
-        use apcore::{ApprovalRequest, ModuleError};
+    // `APCore::executor()` is read-only, so build the Executor, attach the
+    // handler, then hand the Executor to the client.
+    fn build_client() -> Result<APCore, ModuleError> {
+        let mut executor = Executor::new(Arc::new(Registry::new()), Arc::new(Config::default()));
+        executor.set_approval_handler(Box::new(CallbackApprovalHandler::new(|request| async move {
+            if request.arguments["amount_cents"].as_i64().unwrap_or(0) <= 10_000 {
+                Ok(ApprovalResult::approved("policy:small-refund"))
+            } else {
+                Ok(ApprovalResult::rejected("refunds over 100.00 need a reviewer"))
+            }
+        })));
+        let client = APCore::with_options(None, Some(executor), None, None);
+        client.register("finance.refund", Box::new(RefundModule))?;
+        Ok(client)
+    }
 
-        pub struct Verdict {
-            pub ok: bool,
-            pub user_email: String,
-            pub reason: String,
+    #[tokio::main]
+    async fn main() -> Result<(), ModuleError> {
+        let client = build_client()?;
+        let args = json!({"order_id": "o-1", "amount_cents": 2_500, "reason": "duplicate"});
+        let result = client.call("finance.refund", args, None, None).await?;
+        println!("{result}"); // {"refund_id":"rf_o-1"}
+        Ok(())
+    }
+    ```
+
+A `rejected` result reaches the caller as `APPROVAL_DENIED`; `timeout` as `APPROVAL_TIMEOUT`.
+
+## 3. Phase B — return `pending`, resume later
+
+When sign-off takes minutes or hours, the handler returns `pending` with an `approval_id` straight away. The call fails with `APPROVAL_PENDING` carrying that id. Once a reviewer has decided, the caller repeats the call with the id as `_approval_token` in the inputs; the gate removes the token and asks the handler's `check_approval()` for the decision.
+
+`CallbackApprovalHandler` answers every `check_approval()` with `rejected`, so Phase B needs its own handler. This one keeps decisions in memory; a real one would use your ticketing or workflow system.
+
+=== "Python"
+    ```python
+    import uuid
+
+    from apcore.errors import ApprovalPendingError
+
+
+    class ReviewQueueHandler:
+        """Queues each request and answers once a reviewer has decided."""
+
+        def __init__(self) -> None:
+            self._decisions: dict[str, ApprovalResult | None] = {}
+
+        async def request_approval(self, request: ApprovalRequest) -> ApprovalResult:
+            approval_id = uuid.uuid4().hex
+            self._decisions[approval_id] = None  # open a review ticket here
+            return ApprovalResult(status="pending", approval_id=approval_id, reason="queued for review")
+
+        async def check_approval(self, approval_id: str) -> ApprovalResult:
+            if approval_id not in self._decisions:
+                return ApprovalResult(status="rejected", reason="unknown or already used approval id")
+            decision = self._decisions[approval_id]
+            if decision is None:
+                return ApprovalResult(status="pending", approval_id=approval_id, reason="still in review")
+            del self._decisions[approval_id]  # a token is good for one call
+            return decision
+
+        def record(self, approval_id: str, approved: bool, reviewer: str) -> None:
+            status = "approved" if approved else "rejected"
+            self._decisions[approval_id] = ApprovalResult(status=status, approved_by=reviewer)
+
+
+    queue = ReviewQueueHandler()
+    client.executor.set_approval_handler(queue)
+
+    args = {"order_id": "o-2", "amount_cents": 25_000, "reason": "damaged"}
+    try:
+        client.call("finance.refund", args)
+    except ApprovalPendingError as e:
+        approval_id = e.approval_id  # persist it together with args
+
+    # Later, after the reviewer has signed off:
+    queue.record(approval_id, approved=True, reviewer="alice@example.com")
+    result = client.call("finance.refund", {**args, "_approval_token": approval_id})
+    print(result)  # {'refund_id': 'rf_o-2'}
+    ```
+
+=== "TypeScript"
+    ```typescript
+    import { randomUUID } from 'node:crypto';
+    import { ApprovalPendingError } from 'apcore-js';
+    import type { ApprovalHandler } from 'apcore-js';
+
+    class ReviewQueueHandler implements ApprovalHandler {
+      private readonly decisions = new Map<string, ApprovalResult | null>();
+
+      async requestApproval(_request: ApprovalRequest): Promise<ApprovalResult> {
+        const approvalId = randomUUID();
+        this.decisions.set(approvalId, null); // open a review ticket here
+        return createApprovalResult({ status: 'pending', approvalId, reason: 'queued for review' });
+      }
+
+      async checkApproval(approvalId: string): Promise<ApprovalResult> {
+        if (!this.decisions.has(approvalId)) {
+          return createApprovalResult({ status: 'rejected', reason: 'unknown or already used approval id' });
+        }
+        const decision = this.decisions.get(approvalId);
+        if (!decision) {
+          return createApprovalResult({ status: 'pending', approvalId, reason: 'still in review' });
+        }
+        this.decisions.delete(approvalId); // a token is good for one call
+        return decision;
+      }
+
+      record(approvalId: string, approved: boolean, reviewer: string): void {
+        this.decisions.set(
+          approvalId,
+          createApprovalResult({ status: approved ? 'approved' : 'rejected', approvedBy: reviewer }),
+        );
+      }
+    }
+
+    const queue = new ReviewQueueHandler();
+    client.executor.setApprovalHandler(queue);
+
+    const args = { order_id: 'o-2', amount_cents: 25_000, reason: 'damaged' };
+    let approvalId = '';
+    try {
+      await client.call('finance.refund', args);
+    } catch (e) {
+      if (!(e instanceof ApprovalPendingError) || e.approvalId === null) throw e;
+      approvalId = e.approvalId; // persist it together with args
+    }
+
+    // Later, after the reviewer has signed off:
+    queue.record(approvalId, true, 'alice@example.com');
+    const resumed = await client.call('finance.refund', { ...args, _approval_token: approvalId });
+    console.log(resumed); // { refund_id: 'rf_o-2' }
+    ```
+
+=== "Rust"
+    ```rust
+    use apcore::{ApprovalHandler, ApprovalRequest, ErrorCode};
+    use std::collections::HashMap;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::Mutex;
+
+    /// Queues each request and answers once a reviewer has decided.
+    #[derive(Debug, Default)]
+    struct ReviewQueueHandler {
+        next_id: AtomicU64,
+        decisions: Mutex<HashMap<String, Option<ApprovalResult>>>,
+    }
+
+    impl ReviewQueueHandler {
+        fn record(&self, approval_id: &str, approved: bool, reviewer: &str) {
+            let decision = if approved {
+                ApprovalResult::approved(reviewer)
+            } else {
+                ApprovalResult::rejected(format!("rejected by {reviewer}"))
+            };
+            self.decisions.lock().unwrap().insert(approval_id.to_string(), Some(decision));
+        }
+    }
+
+    fn pending(approval_id: &str, reason: &str) -> ApprovalResult {
+        let mut result = ApprovalResult::default(); // #[non_exhaustive]: assign fields
+        result.status = "pending".to_string();
+        result.approval_id = Some(approval_id.to_string());
+        result.reason = Some(reason.to_string());
+        result
+    }
+
+    #[async_trait]
+    impl ApprovalHandler for ReviewQueueHandler {
+        async fn request_approval(&self, _request: &ApprovalRequest) -> Result<ApprovalResult, ModuleError> {
+            let approval_id = format!("apr-{}", self.next_id.fetch_add(1, Ordering::SeqCst));
+            self.decisions.lock().unwrap().insert(approval_id.clone(), None); // open a review ticket here
+            Ok(pending(&approval_id, "queued for review"))
         }
 
-        pub async fn ask_approval(_req: &ApprovalRequest) -> Result<Verdict, ModuleError> {
-            Ok(Verdict {
-                ok: true,
-                user_email: "reviewer@example.com".to_string(),
-                reason: "approved in #finance-approvals".to_string(),
+        async fn check_approval(&self, approval_id: &str) -> Result<ApprovalResult, ModuleError> {
+            let mut decisions = self.decisions.lock().unwrap();
+            Ok(match decisions.get(approval_id) {
+                None => ApprovalResult::rejected("unknown or already used approval id"),
+                Some(None) => pending(approval_id, "still in review"),
+                // A token is good for one call.
+                Some(Some(_)) => decisions.remove(approval_id).flatten().expect("decision present"),
             })
         }
     }
 
-    // Rust's `CallbackApprovalHandler` takes a SYNCHRONOUS closure
-    // (`impl Fn(&ApprovalRequest) -> ApprovalResult`), so it cannot perform the
-    // Slack round-trip the Python and TypeScript tabs do. For an async decision,
-    // implement `ApprovalHandler` directly. See the note below this example.
-    #[derive(Debug)]
-    struct PolicyCheck;
+    #[tokio::main]
+    async fn main() -> Result<(), ModuleError> {
+        let queue = Arc::new(ReviewQueueHandler::default());
+        let mut executor = Executor::new(Arc::new(Registry::new()), Arc::new(Config::default()));
+        executor.set_approval_handler_shared(queue.clone());
+        let client = APCore::with_options(None, Some(executor), None, None);
+        client.register("finance.refund", Box::new(RefundModule))?;
 
-    #[async_trait]
-    impl ApprovalHandler for PolicyCheck {
-        async fn request_approval(
-            &self,
-            req: &ApprovalRequest,
-        ) -> Result<ApprovalResult, ModuleError> {
-            // Fields you can branch on: req.module_id, req.arguments, req.context
-            let amount = req.arguments["amount_cents"].as_i64().unwrap_or(0);
+        let args = json!({"order_id": "o-2", "amount_cents": 25_000, "reason": "damaged"});
+        let approval_id = match client.call("finance.refund", args.clone(), None, None).await {
+            // The approval id travels in the error's details.
+            Err(e) if e.code == ErrorCode::ApprovalPending => e.details["approval_id"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string(), // persist it together with args
+            Err(e) => return Err(e),
+            Ok(_) => unreachable!("the refund is gated"),
+        };
 
-            // `ApprovalResult` is `#[non_exhaustive]`: a downstream crate builds one
-            // from `Default::default()` and assigns fields. A struct literal — with
-            // or without `..Default::default()` — is E0639. See
-            // spec/api-surface-conventions.md §9.1.
-            let mut result = ApprovalResult::default();
-            if amount > 100_00 {
-                let verdict = slack::ask_approval(req).await?;
-                result.status = if verdict.ok { "approved" } else { "rejected" }.to_string();
-                result.approved_by = Some(verdict.user_email);
-                result.reason = Some(verdict.reason);
-            } else {
-                result.status = "approved".to_string();
-                result.approved_by = Some("auto:policy".to_string());
-                result.reason = Some("under threshold".to_string());
-            }
-            Ok(result)
-        }
-
-        async fn check_approval(
-            &self,
-            _approval_id: &str,
-        ) -> Result<ApprovalResult, ModuleError> {
-            let mut result = ApprovalResult::default();
-            result.status = "rejected".to_string();
-            result.reason = Some("Phase B not supported by this handler".to_string());
-            Ok(result)
-        }
+        // Later, after the reviewer has signed off:
+        queue.record(&approval_id, true, "alice@example.com");
+        let mut resume = args.clone();
+        resume["_approval_token"] = json!(approval_id);
+        let result = client.call("finance.refund", resume, None, None).await?;
+        println!("{result}"); // {"refund_id":"rf_o-2"}
+        Ok(())
     }
-
-    // APCore exposes only `executor()` (immutable), so to attach an
-    // approval handler we construct the Executor up front and pass it via
-    // APCore::with_options.
-    let registry = Arc::new(Registry::default());
-    let mut executor = Executor::new(registry.clone(), Arc::new(Config::default()));
-    executor.set_approval_handler(Box::new(PolicyCheck));
-    let client = APCore::with_options(None, Some(executor), None, None);
     ```
 
-!!! warning "`CallbackApprovalHandler` is async in Python and TypeScript, synchronous in Rust"
-    `apcore-python` and `apcore-typescript` accept an async callback
-    (`Callable[[ApprovalRequest], Coroutine[..., ApprovalResult]]` and
-    `(request: ApprovalRequest) => Promise<ApprovalResult>` respectively), so the
-    convenience handler is enough for a decision that performs I/O.
-    `apcore-rust`'s `CallbackApprovalHandler::new` takes
-    `impl Fn(&ApprovalRequest) -> ApprovalResult` — synchronous, borrowing, and
-    not `Result`-returning — so it suits only decisions computable in-process.
-    Implement `ApprovalHandler` directly for anything else. Tracked as a
-    cross-language divergence in issue #104.
+The Rust tab replaces the Phase A `main` and `build_client`; the Python and TypeScript tabs continue the Phase A file.
 
-## 3. Phase B — async resume via `_approval_token`
+## 4. What happens when no handler is attached
 
-When approval may take minutes/hours (a human must wake up, an external workflow tool needs to fire), Phase B lets the handler return `pending` immediately. The caller catches `APPROVAL_PENDING`, persists `approval_id`, and retries later with `_approval_token` in `arguments`.
+With no `ApprovalHandler`, the gate is **skipped** with a warning and the module runs unapproved. To fail closed instead, attach an `ExecutionPolicy` with `strict` enabled — gated calls are then denied with `APPROVAL_DENIED` until a handler is attached:
 
 === "Python"
     ```python
-    from apcore.errors import ApprovalPendingError
+    from apcore import APCore, ExecutionPolicy
 
-    try:
-        result = client.call("finance.refund", {"order_id": "o-1", "amount_cents": 25000, "reason": "duplicate"})
-    except ApprovalPendingError as e:
-        # Persist e.approval_id so a different process / cron can retry
-        save_pending(approval_id=e.approval_id, original_call={"order_id": "o-1", ...})
-        return {"status": "queued", "approval_id": e.approval_id}
-
-    # Later — when the workflow tool decides:
-    pending = load_pending(approval_id)
-    result = client.call(
-        "finance.refund",
-        {**pending["original_call"], "_approval_token": pending["approval_id"]},
-    )
+    client = APCore(policy=ExecutionPolicy(strict=True))
     ```
 
 === "TypeScript"
     ```typescript
-    import { ApprovalPendingError } from 'apcore-js';
+    import { APCore, ExecutionPolicy } from 'apcore-js';
 
-    try {
-      const result = await client.call('finance.refund', { order_id: 'o-1', amount_cents: 25_000, reason: 'duplicate' });
-    } catch (e) {
-      if (e instanceof ApprovalPendingError) {
-        await savePending({ approvalId: e.approvalId, originalCall: { order_id: 'o-1', /* ... */ } });
-        return { status: 'queued', approval_id: e.approvalId };
-      }
-      throw e;
-    }
-
-    // Later
-    const pending = await loadPending(approvalId);
-    const result = await client.call('finance.refund', {
-      ...pending.originalCall,
-      _approval_token: pending.approvalId,
-    });
+    // ExecutionPolicy(rules, options)
+const client = new APCore({ policy: new ExecutionPolicy(null, { strict: true }) });
     ```
 
 === "Rust"
     ```rust
-    use apcore::errors::ErrorCode;
-    use serde_json::{json, Value};
+    use apcore::{Config, Executor, ExecutionPolicy, Registry};
+    use std::sync::Arc;
 
-    let original_call = json!({"order_id":"o-1","amount_cents":25_000,"reason":"duplicate"});
-
-    match client.call("finance.refund", original_call.clone(), None).await {
-        Ok(r) => r,
-        // ModuleError is a struct with `code: ErrorCode` and `details: HashMap`.
-        // approval_id (when present) is carried in `details`.
-        Err(e) if e.code == ErrorCode::ApprovalPending => {
-            let approval_id = e.details
-                .get("approval_id")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string();
-            save_pending(&approval_id, &original_call).await?;
-            return Ok(json!({"status":"queued","approval_id": approval_id}));
-        }
-        Err(e) => return Err(e),
-    };
-
-    // Later — retry with the token injected into arguments.
-    let mut args = original_call.clone();
-    args["_approval_token"] = json!(approval_id);
-    client.call("finance.refund", args, None).await?;
+    fn strict_executor() -> Executor {
+        let mut executor = Executor::new(Arc::new(Registry::new()), Arc::new(Config::default()));
+        executor.set_policy(Some(ExecutionPolicy::default().with_strict(true)));
+        executor // hand to APCore::with_options(None, Some(executor), None, None)
+    }
     ```
 
-## 4. Pitfalls
+The approval handler is always attached in code; there is no `apcore.yaml` key for it.
+
+## 5. Pitfalls
 
 | Pitfall | Symptom | Fix |
 |---------|---------|-----|
-| Forgetting `requires_approval=true` | Module runs without sign-off | Annotation drives the gate; verify with `client.describe(id).annotations` |
-| Handler returns `approved` for every request | No actual gating | Audit your handler logic; consider `AlwaysDenyHandler` as default in tests |
-| Token is not single-use | Replay attack — same token approves multiple invocations | Bind tokens to `(caller_id, target_id, input_hash)` and consume on first success — see [security-considerations.md §2.3](../spec/security-considerations.md#23-approval-gate-replay-t2) |
-| Pre-approval middleware has side effects on resume | Logging/metrics double-emitted on Phase B retry | Inspect `_approval_token` in the middleware and short-circuit; pipeline re-enters from Step 1 — see PROTOCOL_SPEC §7 |
-| `APPROVAL_TIMEOUT` retried automatically | Infinite retry loop | Approval timeouts are retryable=Yes by default but a retry will hit the same handler; back off and surface to a human |
-| Handler raises an exception instead of returning `rejected` | Caller sees `MODULE_EXECUTE_ERROR`, not `APPROVAL_DENIED` | Always return an `ApprovalResult` — wrap exceptions with `try/except` inside the handler |
+| No handler attached | Warning at call time; the module runs without sign-off | Attach a handler, or use `ExecutionPolicy(strict=True)` to fail closed |
+| Using `CallbackApprovalHandler` for Phase B | Every resume fails with `APPROVAL_DENIED` ("Phase B not supported") | Implement `check_approval()` in your own handler (section 3) |
+| Handler raises instead of returning `rejected` | The caller gets the raised error (a non-apcore exception arrives as `MODULE_EXECUTE_ERROR`), not `APPROVAL_DENIED` | Return an `ApprovalResult` with `status="rejected"` for a refusal; let only genuine failures raise |
+| Reusable tokens | One sign-off approves many calls | Consume the token in `check_approval()` (section 3); see [security-considerations.md §2.3](../spec/security-considerations.md#23-approval-gate-replay-t2) |
+| Resuming re-runs the early pipeline | ACL audit entries and approval events appear twice for one logical call | Expected: a resume starts again at step 1 — context creation, call-chain guard, lookup, ACL, approval. Middleware `before` hooks run once, on the call that gets through |
+| Retrying `APPROVAL_TIMEOUT` in a tight loop | Repeated prompts to the same reviewer | Back off, or turn the timeout into a Phase B `pending` |
 
-## 5. Built-in handlers (when to use which)
+## 6. Built-in handlers
 
-| Handler | When | Notes |
-|---------|------|-------|
-| `AlwaysDenyHandler` | Default for tests; never approves | The framework default — do not rely on this in production |
-| `AutoApproveHandler` | Local dev / unit tests where the gate is in the way | Never ship to production |
-| `CallbackApprovalHandler(fn)` | Custom policy or human-in-the-loop bridge | What you'll use 90% of the time |
-| Bridge handlers (e.g. Slack, PagerDuty) | When the company already has a sign-off tool | Build on top of `CallbackApprovalHandler` |
-
-## 6. Wiring it in `apcore.yaml`
-
-```yaml
-# apcore.yaml — extract
-approval:
-  handler: my_app.approval.PolicyCheckHandler  # dotted path to your handler class
-  timeout_ms: 60000                            # cap blocking handlers
-```
-
-The handler class must satisfy the `ApprovalHandler` protocol (see [features/approval-system.md](../features/approval-system.md)).
+| Handler | Use |
+|---------|-----|
+| `CallbackApprovalHandler(fn)` | Phase A decisions from an async function |
+| `AutoApproveHandler` | Tests and local development only — approves everything |
+| `AlwaysDenyHandler` | Tests, or to block every gated module explicitly |
 
 ---
 
 ## See also
 
-- [features/approval-system.md](../features/approval-system.md) — full state machine and protocol
-- [spec/security-considerations.md §2.3](../spec/security-considerations.md#23-approval-gate-replay-t2) — token security
-- [conformance fixture `approval_gate`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/approval_gate.json) — 5 behavioural cases
-- [PROTOCOL_SPEC §7](../spec/protocol-spec.md#7-approval-system) — normative spec
+- [features/approval-system.md](../features/approval-system.md) — approval states, request fields and handler protocol
+- [spec/security-considerations.md §2.3](../spec/security-considerations.md#23-approval-gate-replay-t2) — token replay
+- [PROTOCOL_SPEC §7](../spec/protocol-spec.md#7-approval-system) — normative approval rules

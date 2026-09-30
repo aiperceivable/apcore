@@ -1,32 +1,43 @@
 ---
-description: "Specifies mapping rules from JSON Schema Draft 2020-12 types to native Python, Rust, and TypeScript types (with Go and Java reference) to ensure cross-language data consistency and type safety."
+description: "Canonical mapping from JSON Schema Draft 2020-12 to Python, TypeScript (TypeBox) and Rust types, with format, null and optional-field handling, and the validation-keyword requirements every SDK enforces."
 ---
 
 # apcore — Cross-language Type Mapping Specification
 
-> This document defines standard mapping rules from JSON Schema types to native types in various languages for the apcore framework, ensuring behavioral consistency across language implementations.
+> This document is the canonical mapping from JSON Schema types to the native types of the three apcore SDKs, and states what each SDK enforces at the validation boundary. Guides link here instead of keeping their own tables. [protocol-spec.md](./protocol-spec.md) is normative and wins on any conflict.
 
 ## 1. Overview
 
 ### 1.1 Purpose
 
-apcore adopts JSON Schema Draft 2020-12 as the standard description format for module `input_schema` / `output_schema` (see [PROTOCOL_SPEC §4](./protocol-spec.md#4-schema-specification)). When implementing SDKs in various languages, implementations **MUST** accurately map JSON Schema types to corresponding language native types to ensure:
+apcore uses JSON Schema Draft 2020-12 for module `input_schema` / `output_schema` (see [protocol-spec §4](./protocol-spec.md#4-schema-specification)). Every SDK **MUST** map JSON Schema types to native types consistently, so that:
 
-- **Data Consistency**: The same JSON data has the same semantics when deserialized in different languages
-- **Type Safety**: Fully utilize each language's type system to detect errors as early as possible at compile-time or runtime
-- **AI Awareness**: Schema-driven type mapping enables LLMs to accurately understand field constraints
-- **Interoperability**: Modules implemented in different languages can exchange data through unified JSON format
+- **Data Consistency**: The same JSON data has the same semantics in every SDK
+- **Type Safety**: Each language's type system catches errors as early as possible
+- **AI Awareness**: Schema-driven types let an LLM read field constraints accurately
+- **Interoperability**: Modules in different languages exchange data through one JSON format
 
 ### 1.2 Scope
 
-This specification covers type mappings for the following languages: **Python**, **Rust**, and **TypeScript** (which have official SDK implementations). Type mappings for **Go** and **Java** are provided as reference for future implementers but do not have official SDKs at this time. Specific library choices for schema validation are left to each SDK implementation.
+This specification covers the three SDKs: **Python** (apcore-python), **TypeScript** (apcore-js, schemas built with TypeBox) and **Rust** (apcore-rust).
 
 ### 1.3 Terminology
 
 - **JSON Schema Type**: `type` values defined in JSON Schema Draft 2020-12
-- **Native Type**: Corresponding built-in or standard library types in each programming language
-- **Serialization Format**: Representation format of types in JSON transmission
-- **Round-trip Fidelity**: Whether data remains unchanged after serialization → transmission → deserialization
+- **Native Type**: The type a module author writes in each language
+- **Serialization Format**: Representation of a value in JSON transmission
+- **Round-trip Fidelity**: Whether data is unchanged after serialization → transmission → deserialization
+
+### 1.4 How the SDKs use these mappings
+
+A module declares its contract in one of two ways, and the tables below serve both:
+
+| | Python | TypeScript | Rust |
+|---|---|---|---|
+| **Schema first** — the schema is written as JSON Schema (YAML, a binding file, or a dict) | Validated inputs arrive as a `dict` of JSON values | Validated inputs arrive as a plain object | Validated inputs arrive as `serde_json::Value` |
+| **Code first** — the schema is derived from native types | `@module` / `module()` infers it from type annotations through pydantic | Schemas are TypeBox objects; the same object is the JSON Schema and the static type (`Static<typeof S>`) | `typed_handler::<I, O>()` derives it with `schemars` from `#[derive(JsonSchema)]` types |
+
+Either way, the module-invocation boundary validates the JSON value against the JSON Schema without type coercion (§17.3). Native types are what an author writes; they never widen what the schema accepts.
 
 ---
 
@@ -45,16 +56,14 @@ type: string
 | Language | Native Type | Notes |
 |------|---------|------|
 | Python | `str` | Unicode string |
+| TypeScript | `Type.String()` → `string` | UTF-16 internal encoding |
 | Rust | `String` | UTF-8 heap-allocated string |
-| Go | `string` | UTF-8 immutable string |
-| Java | `String` | UTF-16 internal encoding |
-| TypeScript | `string` | UTF-16 internal encoding |
 
 **Notes:**
 
 - All implementations **MUST** support the complete Unicode character set
 - JSON transmission **MUST** use UTF-8 encoding
-- Java/TypeScript use UTF-16 internally; special attention needed for character length calculation when dealing with surrogate pairs
+- TypeScript uses UTF-16 internally; take care with surrogate pairs when computing character lengths
 
 ### 2.2 Integer Type (`integer`)
 
@@ -69,12 +78,12 @@ type: integer
 | Language | Native Type | Range | Notes |
 |------|---------|------|------|
 | Python | `int` | Arbitrary precision | Python natively supports big integers |
-| Rust | `i64` | -2^63 ~ 2^63-1 | Can use `i128` or `BigInt` for larger range |
-| Go | `int64` | -2^63 ~ 2^63-1 | — |
-| Java | `long` | -2^63 ~ 2^63-1 | Can use `BigInteger` for larger range |
-| TypeScript | `number` | -(2^53-1) ~ 2^53-1 safe range | IEEE 754 double precision, see boundary cases |
+| TypeScript | `Type.Integer()` → `number` | -(2^53-1) ~ 2^53-1 safe range | IEEE 754 double precision, see §14.1 |
+| Rust | `i64` | -2^63 ~ 2^63-1 | `u64` / `i128` when the schema's range needs it |
 
 **Supported Constraints:** `minimum`, `maximum`, `exclusiveMinimum`, `exclusiveMaximum`, `multipleOf`. All SDK implementations **MUST** enforce these constraints during validation.
+
+A number with a zero fractional part is an `integer` (JSON Schema 2020-12 §6.1.1): `4.0` satisfies `{"type": "integer"}`, `4.5` does not (§17.3).
 
 ### 2.3 Number Type (`number`)
 
@@ -88,11 +97,9 @@ type: number
 
 | Language | Native Type | Precision | Notes |
 |------|---------|------|------|
-| Python | `float` | IEEE 754 double precision | Can also use `Decimal` for high precision |
+| Python | `float` | IEEE 754 double precision | Use a `string` field and `Decimal` for exact decimals (§14.2) |
+| TypeScript | `Type.Number()` → `number` | IEEE 754 double precision | — |
 | Rust | `f64` | IEEE 754 double precision | — |
-| Go | `float64` | IEEE 754 double precision | — |
-| Java | `double` | IEEE 754 double precision | Can use `BigDecimal` for high precision |
-| TypeScript | `number` | IEEE 754 double precision | — |
 
 **Constraint mappings** are the same as integer type (`minimum`, `maximum`, `exclusiveMinimum`, `exclusiveMaximum`, `multipleOf`).
 
@@ -109,15 +116,13 @@ type: boolean
 | Language | Native Type | Notes |
 |------|---------|------|
 | Python | `bool` | — |
+| TypeScript | `Type.Boolean()` → `boolean` | — |
 | Rust | `bool` | — |
-| Go | `bool` | — |
-| Java | `boolean` / `Boolean` | Primitive type / wrapper class |
-| TypeScript | `boolean` | — |
 
 **Notes:**
 
-- JSON **MUST** use `true` / `false`, does not accept variants like `0` / `1` / `"true"` / `"false"`
-- This holds at the module-invocation boundary unconditionally: `0`, `1`, `"true"` and `"false"` **MUST** be rejected for a `boolean`, and no host configuration may relax it (§17.3)
+- JSON **MUST** use `true` / `false`; `0` / `1` / `"true"` / `"false"` are not booleans
+- At the module-invocation boundary `0`, `1`, `"true"` and `"false"` **MUST** be rejected for a `boolean`, and no host configuration may relax it (§17.3)
 
 ### 2.5 Null Type (`null`)
 
@@ -132,10 +137,10 @@ type: "null"
 | Language | Native Type | Notes |
 |------|---------|------|
 | Python | `None` | — |
-| Rust | `()` or `Option::None` | Usually not used alone, combined with `Option<T>` |
-| Go | `nil` | — |
-| Java | `null` | — |
-| TypeScript | `null` | Distinct from `undefined` |
+| TypeScript | `Type.Null()` → `null` | Distinct from `undefined` |
+| Rust | `Option::None` (`()` alone is rarely useful) | Usually combined with `Option<T>` |
+
+A bare `null` type is rare; `null` normally appears as one branch of a nullable type (§4).
 
 ---
 
@@ -159,13 +164,11 @@ required: [name]
 
 | Language | Native Type | Mapping Method |
 |------|---------|---------|
-| Python | `class MyModel` | Class with typed fields |
-| Rust | `struct MyStruct { ... }` | Struct with typed fields |
-| Go | `type MyStruct struct { ... }` | Struct with JSON tags |
-| Java | `class MyClass { ... }` | Class with typed fields |
-| TypeScript | `interface MyType { ... }` | Interface or object schema |
+| Python | `class User(BaseModel)` | pydantic model with typed fields |
+| TypeScript | `Type.Object({ name: Type.String(), age: Type.Optional(Type.Integer()) })` | `Static<typeof User>` gives the interface |
+| Rust | `#[derive(Serialize, Deserialize, JsonSchema)] struct User { ... }` | serde struct; `schemars` derives the schema |
 
-**Supported Constraints:** `minProperties`, `maxProperties` (§6.5.1–§6.5.2), `required` (§6.5.3), `dependentRequired` (§6.5.4), `patternProperties`, `additionalProperties`, `propertyNames` (§10.3.2), `dependentSchemas` (§10.2.2.4) and `unevaluatedProperties` (§11.3). All SDK implementations **MUST** enforce these during validation — see §17 for the per-keyword requirement and its rationale.
+**Supported Constraints:** `minProperties`, `maxProperties` (§6.5.1–§6.5.2), `required` (§6.5.3), `dependentRequired` (§6.5.4), `patternProperties`, `additionalProperties`, `propertyNames` (§10.3.2), `dependentSchemas` (§10.2.2.4) and `unevaluatedProperties` (§11.3). All SDK implementations **MUST** enforce these during validation — see §17 for the per-keyword requirement.
 
 `minProperties` / `maxProperties` count the keys the *instance* carried, undeclared ones included: every `additionalProperties` form except `false` keeps unknown keys, and they count.
 
@@ -183,13 +186,11 @@ items:
 
 | Language | Native Type | Notes |
 |------|---------|------|
-| Python | `list[str]` | Generic list |
+| Python | `list[str]` | — |
+| TypeScript | `Type.Array(Type.String())` → `string[]` | — |
 | Rust | `Vec<String>` | — |
-| Go | `[]string` | Slice type |
-| Java | `List<String>` | Usually uses `ArrayList` |
-| TypeScript | `string[]` or `Array<string>` | — |
 
-**Supported Constraints:** `minItems`, `maxItems`, `uniqueItems`, `contains` / `minContains` / `maxContains`, `prefixItems` and `unevaluatedItems`. All SDK implementations **MUST** enforce these constraints during validation — see §17 for the per-keyword requirement and its rationale.
+**Supported Constraints:** `minItems`, `maxItems`, `uniqueItems`, `contains` / `minContains` / `maxContains`, `prefixItems` and `unevaluatedItems`. All SDK implementations **MUST** enforce these constraints during validation — see §17.
 
 **Tuple form:** when `prefixItems` is present, `items` describes only the positions *past* the prefix (JSON Schema 2020-12 §10.3.1.2). Applying `items` to the whole array is a conformance defect: it rejects a valid tuple head.
 
@@ -219,11 +220,9 @@ items:
 
 | Language | Native Type |
 |------|---------|
-| Python | `list[ErrorDetail]` (where `ErrorDetail` is a typed class) |
+| Python | `list[ErrorDetail]` (where `ErrorDetail` is a pydantic model) |
+| TypeScript | `Type.Array(ErrorDetail)` → `Static<typeof ErrorDetail>[]` |
 | Rust | `Vec<ErrorDetail>` |
-| Go | `[]ErrorDetail` |
-| Java | `List<ErrorDetail>` |
-| TypeScript | `ErrorDetail[]` |
 
 ---
 
@@ -231,34 +230,32 @@ items:
 
 ### 4.1 Nullable Type (`T | null`)
 
-**JSON Schema Definition (using `oneOf`):**
-
-```yaml
-oneOf:
-  - type: string
-  - type: "null"
-```
-
-**Or using Draft 2020-12 array type syntax:**
+A nullable value is written with the Draft 2020-12 type array or an `anyOf` with a `null` branch:
 
 ```yaml
 type: [string, "null"]
 ```
 
+```yaml
+anyOf:
+  - type: string
+  - type: "null"
+```
+
 **Cross-language Mappings:**
 
-| Language | Native Type | Notes |
+| Language | Native Type | Schema the SDK infers from code |
 |------|---------|------|
-| Python | `str \| None` or `Optional[str]` | `str \| None` syntax preferred |
-| Rust | `Option<String>` | Rust type system natively supports |
-| Go | `*string` | Pointer type represents nullable |
-| Java | `@Nullable String` or `Optional<String>` | Needs annotation marking |
-| TypeScript | `string \| null` | — |
+| Python | `str \| None` | `anyOf: [{type: string}, {type: "null"}]` (pydantic) |
+| TypeScript | `Type.Union([Type.String(), Type.Null()])` → `string \| null` | `anyOf` of the two branches |
+| Rust | `Option<String>` | `type: [string, "null"]` (schemars) |
+
+JSON Schema has no `nullable` keyword; `"nullable": true` is OpenAPI 3.0 syntax and Draft 2020-12 validators ignore it.
 
 **Serialization Rules:**
 
-- When value is `null`, JSON **MUST** output as `null` (not omit the field)
-- This has different semantics from "optional field omission" (see §6.1)
+- When value is `null`, JSON **MUST** output `null` (not omit the field)
+- Null and absent are different (§6.1)
 
 ---
 
@@ -278,10 +275,10 @@ enum: [pending, running, completed, failed, cancelled]
 | Language | Native Type | Example |
 |------|---------|------|
 | Python | `Literal["pending", "running", ...]` or `StrEnum` | `class Status(StrEnum): PENDING = "pending"` |
-| Rust | `enum Status { Pending, Running, ... }` | Map to snake_case for JSON serialization |
-| Go | `type Status string` + constants | `const StatusPending Status = "pending"` |
-| Java | `enum Status { PENDING("pending"), ... }` | Map to snake_case for JSON serialization |
-| TypeScript | `z.enum(["pending", "running", ...])` | Or `type Status = "pending" \| "running" \| ...` |
+| TypeScript | `Type.Union([Type.Literal("pending"), ...])` → `"pending" \| "running" \| ...` | Emits `anyOf` of `const`, which validates the same values |
+| Rust | `#[serde(rename_all = "snake_case")] enum Status { Pending, Running, ... }` | Derive `JsonSchema` to emit `enum` |
+
+A value outside the list **MUST** fail with `SCHEMA_VALIDATION_ERROR` (§14.5).
 
 ### 5.2 Integer Enum
 
@@ -296,11 +293,9 @@ enum: [0, 1, 2, 3]
 
 | Language | Native Type | Example |
 |------|---------|------|
-| Python | `IntEnum` | `class Priority(IntEnum): LOW = 0` |
-| Rust | `#[repr(i64)] enum Priority { Low = 0, ... }` | — |
-| Go | `type Priority int64` + `iota` constants | — |
-| Java | `enum Priority { LOW(0), ... }` | — |
-| TypeScript | `z.union([z.literal(0), z.literal(1), ...])` | Or `const enum` |
+| Python | `Literal[0, 1, 2, 3]` or `IntEnum` | `class Priority(IntEnum): LOW = 0` |
+| TypeScript | `Type.Union([Type.Literal(0), Type.Literal(1), ...])` | — |
+| Rust | `i64` (the validator enforces `enum`) | A fieldless enum serializes by name, not number, under plain serde |
 
 ---
 
@@ -319,30 +314,32 @@ properties:
     type: string
     default: ""
 required: [name]
-# note not in required, is optional field
+# note is not in required, so it is optional
 ```
 
 **Cross-language Mappings:**
 
 | Language | Required Field (`name`) | Optional Field (`note`) | Notes |
 |------|-------------------|-------------------|------|
-| Python | `name: str` | `note: str = ""` or `note: str \| None = None` | Use default value if has default, otherwise use `None` |
-| Rust | `name: String` | `note: Option<String>` with default | — |
-| Go | `Name string \`json:"name"\`` | `Note *string \`json:"note,omitempty"\`` | Pointer + omitempty |
-| Java | `@NotNull String name` | `String note` (can be null) | — |
-| TypeScript | `name: string` | `note?: string` | Optional property syntax |
+| Python | `name: str` | `note: str = ""` | A parameter with a default is left out of `required` |
+| TypeScript | `name: Type.String()` | `note: Type.Optional(Type.String())` | Static type `note?: string` |
+| Rust | `name: String` | `#[serde(default)] note: String` or `note: Option<String>` | A missing `Option` field deserializes to `None` |
+
+**Optional and nullable are independent.** `note: str | None = None` (Python), `Type.Optional(Type.Union([Type.String(), Type.Null()]))` (TypeScript) and `Option<String>` (Rust) are both optional and nullable.
 
 **Important Distinctions:**
 
 | Semantics | JSON Representation | Description |
 |------|----------|------|
-| Field missing (optional field not provided) | Key does not exist | Uses Schema's `default` value or language zero value |
-| Field is null (explicit null value) | `"field": null` | Requires nullable declaration |
-| Field is empty string | `"field": ""` | Has value, but empty |
+| Field missing (optional field not provided) | Key does not exist | No SDK fills a schema `default` into the inputs; a Python code-first parameter's own default applies |
+| Field is null (explicit null value) | `"field": null` | Requires a nullable declaration (§4) |
+| Field is empty string | `"field": ""` | Has a value, but empty |
 
 ---
 
 ## 7. Date and Time Type Mappings
+
+`date-time`, `date` and `time` are `string` values with a `format`. **No SDK converts them to a native date or time type**: the module receives the JSON string and parses it if it needs to.
 
 ### 7.1 `date-time` Format
 
@@ -355,19 +352,20 @@ format: date-time
 
 **Cross-language Mappings:**
 
-| Language | Native Type | JSON Format | Example |
+| Language | Declared Type | Parse inside the module with | Example |
 |------|---------|----------|------|
-| Python | `datetime` | ISO 8601 | `"2026-02-07T10:30:00Z"` |
-| Rust | `chrono::DateTime<Utc>` | ISO 8601 | `"2026-02-07T10:30:00Z"` |
-| Go | `time.Time` | RFC 3339 | `"2026-02-07T10:30:00Z"` |
-| Java | `OffsetDateTime` / `Instant` | ISO 8601 | `"2026-02-07T10:30:00Z"` |
-| TypeScript | `Date` or `string` | ISO 8601 | `"2026-02-07T10:30:00Z"` |
+| Python | `str` | `datetime.fromisoformat()` | `"2026-02-07T10:30:00Z"` |
+| TypeScript | `Type.String({ format: "date-time" })` → `string` | `new Date()` | `"2026-02-07T10:30:00Z"` |
+| Rust | `String` | `chrono::DateTime::parse_from_rfc3339` | `"2026-02-07T10:30:00Z"` |
+
+!!! warning "Python: do not annotate a code-first parameter as `datetime`, `date`, `time` or `UUID`"
+    pydantic infers the right `format` from those annotations, but the module-invocation boundary validates in strict mode and inputs arrive as JSON strings, so such a parameter rejects every call with `SCHEMA_VALIDATION_ERROR`. Declare `str` and parse inside the module.
 
 **Notes:**
 
-- All implementations **MUST** output ISO 8601 / RFC 3339 format when serializing
-- Implementations **SHOULD** use UTC timezone (`Z` suffix) unless business explicitly requires timezone offset
-- Deserialization **MUST** accept formats with timezone offsets (e.g., `+08:00`)
+- Serialization **MUST** produce ISO 8601 / RFC 3339
+- Implementations **SHOULD** use UTC (`Z` suffix) unless the business explicitly requires an offset
+- Parsing **MUST** accept timezone offsets (e.g., `+08:00`)
 
 ### 7.2 `date` Format
 
@@ -378,15 +376,11 @@ type: string
 format: date
 ```
 
-**Cross-language Mappings:**
-
-| Language | Native Type | JSON Format | Example |
+| Language | Declared Type | Parse inside the module with | Example |
 |------|---------|----------|------|
-| Python | `date` | ISO 8601 | `"2026-02-07"` |
-| Rust | `chrono::NaiveDate` | ISO 8601 | `"2026-02-07"` |
-| Go | `civil.Date` (or custom type) | ISO 8601 | `"2026-02-07"` |
-| Java | `LocalDate` | ISO 8601 | `"2026-02-07"` |
-| TypeScript | `string` | ISO 8601 | `"2026-02-07"` |
+| Python | `str` | `date.fromisoformat()` | `"2026-02-07"` |
+| TypeScript | `Type.String({ format: "date" })` → `string` | — | `"2026-02-07"` |
+| Rust | `String` | `chrono::NaiveDate::parse_from_str` | `"2026-02-07"` |
 
 ### 7.3 `time` Format
 
@@ -397,15 +391,11 @@ type: string
 format: time
 ```
 
-**Cross-language Mappings:**
-
-| Language | Native Type | JSON Format | Example |
+| Language | Declared Type | Parse inside the module with | Example |
 |------|---------|----------|------|
-| Python | `time` | ISO 8601 | `"10:30:00"` |
-| Rust | `chrono::NaiveTime` | ISO 8601 | `"10:30:00"` |
-| Go | Custom type | ISO 8601 | `"10:30:00"` |
-| Java | `LocalTime` | ISO 8601 | `"10:30:00"` |
-| TypeScript | `string` | ISO 8601 | `"10:30:00"` |
+| Python | `str` | `time.fromisoformat()` | `"10:30:00"` |
+| TypeScript | `Type.String({ format: "time" })` → `string` | — | `"10:30:00"` |
+| Rust | `String` | `chrono::NaiveTime::parse_from_str` | `"10:30:00"` |
 
 ---
 
@@ -439,17 +429,15 @@ required: [user]
 
 | Language | Strategy | Example |
 |------|------|------|
-| Python | Nested class | `class Address` + `class User` |
-| Rust | Nested struct | `struct Address { ... }` + `struct User { ... }` |
-| Go | Nested struct (can inline) | `type Address struct { ... }` + `type User struct { ... }` |
-| Java | Nested class or separate class | `class Address { ... }` + `class User { ... }` |
-| TypeScript | Nested interface or schema | Nested type definitions |
+| Python | Nested pydantic models | `class Address(BaseModel)` + `class User(BaseModel)` |
+| TypeScript | Nested `Type.Object` | `const Address = Type.Object({...})`; `const User = Type.Object({ address: Address })` |
+| Rust | Nested structs | `struct Address { ... }` + `struct User { ... }` |
 
 **Naming Convention:**
 
 - Nested objects **SHOULD** be extracted as independent named types
-- Type names **SHOULD** be generated based on property paths (e.g., `user.address` corresponds to `UserAddress`)
-- When Schema uses `$ref` references (see PROTOCOL_SPEC §4.10), all languages **MUST** map to the same shared type
+- Type names **SHOULD** be generated from property paths (e.g., `user.address` → `UserAddress`)
+- When a schema uses `$ref` (see [protocol-spec §4.11](./protocol-spec.md#411-schema-references-ref)), all languages **MUST** map it to the same shared type
 
 ---
 
@@ -481,11 +469,11 @@ oneOf:
 
 | Language | Native Type | Notes |
 |------|---------|------|
-| Python | `EmailNotification \| SmsNotification` (Discriminated Union) | Uses `discriminator` field |
-| Rust | `enum Notification { Email(EmailData), Sms(SmsData) }` | Tagged union |
-| Go | `interface{}` + runtime judgment | Go lacks native union types |
-| Java | Sealed Class or `@JsonSubTypes` | Java 17+ recommends sealed classes |
-| TypeScript | `z.discriminatedUnion("type", [...])` | Type guard |
+| Python | `Annotated[Email \| Sms, Field(discriminator="type")]` | Discriminated union |
+| TypeScript | `Type.Union([Email, Sms])` | TypeBox has no `oneOf` builder; `Type.Union` emits `anyOf` |
+| Rust | `#[serde(tag = "type")] enum Notification { Email { .. }, Sms { .. } }` | Internally tagged enum |
+
+`oneOf` in a JSON Schema document is enforced as **exactly one** branch by every SDK (§17.2), whatever the native type an author chose.
 
 ### 9.2 `anyOf` Type
 
@@ -502,16 +490,14 @@ anyOf:
 | Language | Native Type | Notes |
 |------|---------|------|
 | Python | `str \| int` | — |
-| Rust | `enum StringOrInt { Str(String), Int(i64) }` | Untagged union |
-| Go | `interface{}` | Runtime type assertion |
-| Java | `Object` + runtime type check | Or use custom wrapper class |
-| TypeScript | `string \| number` | — |
+| TypeScript | `Type.Union([Type.String(), Type.Integer()])` → `string \| number` | — |
+| Rust | `#[serde(untagged)] enum StringOrInt { Str(String), Int(i64) }` | Untagged enum |
 
 **Implementation Recommendations:**
 
-- If `anyOf` contains `null`, equivalent to nullable (see §4.1)
-- For cases where all branches in `anyOf` are object types, **recommend** using discriminated union
-- Static type languages (Rust, Go, Java) may need additional runtime dispatch logic when handling `anyOf`
+- An `anyOf` whose only other branch is `null` is a nullable type (§4.1)
+- When every branch is an object type, prefer a discriminated union
+- Rust needs an untagged enum or `serde_json::Value` with runtime dispatch
 
 ---
 
@@ -532,10 +518,8 @@ additionalProperties:
 | Language | Native Type | Notes |
 |------|---------|------|
 | Python | `dict[str, str]` | — |
-| Rust | `HashMap<String, String>` | — |
-| Go | `map[string]string` | — |
-| Java | `Map<String, String>` | Usually uses `HashMap` |
-| TypeScript | `Record<string, string>` | — |
+| TypeScript | `Type.Record(Type.String(), Type.String())` → `Record<string, string>` | — |
+| Rust | `HashMap<String, String>` | `BTreeMap` for ordered output |
 
 ### 10.2 Mixed Mode (Fixed Properties + Additional Properties)
 
@@ -555,15 +539,13 @@ additionalProperties:
 
 | Language | Strategy | Notes |
 |------|------|------|
-| Python | Fixed fields + extra fields allowed via config | — |
-| Rust | Fixed fields + flattened extra `HashMap<String, i64>` | — |
-| Go | Fixed fields + `Extra map[string]int64` with custom JSON codec | — |
-| Java | Fixed fields + `@JsonAnySetter Map<String, Integer>` | — |
-| TypeScript | Object schema with catchall type | — |
+| Python | pydantic model with `extra="allow"` | Extra fields are validated against `additionalProperties` |
+| TypeScript | `Type.Object({ name: Type.String() }, { additionalProperties: Type.Integer() })` | — |
+| Rust | Fixed fields + `#[serde(flatten)] extra: HashMap<String, i64>` | — |
 
 ### 10.3 `additionalProperties: false`
 
-When `input_schema` declares `additionalProperties: false` (PROTOCOL_SPEC §4.2 **SHOULD**), implementations **MUST** reject inputs containing unknown fields.
+When `input_schema` declares `additionalProperties: false` (protocol-spec §4.2 **SHOULD**), implementations **MUST** reject inputs containing unknown fields.
 
 A field is "unknown" only if neither `properties` nor `patternProperties` claimed it (JSON Schema 2020-12 §10.3.2.3). A key matched by a `patternProperties` entry **MUST NOT** be rejected by `additionalProperties: false`.
 
@@ -577,7 +559,7 @@ To close an object *after* the branches of `allOf` / `anyOf` / `oneOf` / `if`-`t
 
 `format` carries a semantic hint about a `string` value. It is an **annotation, not an assertion**: under the default format-annotation vocabulary of JSON Schema 2020-12 §7.2.1, a value that does not satisfy its declared `format` **MUST NOT** fail validation. Implementations **SHOULD** recognise the formats below and emit a warning when a value does not conform, and **MUST** accept the value regardless. A `format` the implementation does not recognise is collected as an annotation and **MUST** pass silently — a contract is free to declare `format: "path"` or any other vocabulary term without becoming uncallable.
 
-Recognised formats:
+Recognised formats (the same eight in all three SDKs):
 
 | `format` Value | Meaning | Regex/Rule | Example |
 |-------------|------|----------|------|
@@ -590,13 +572,25 @@ Recognised formats:
 | `date` | Date | ISO 8601 | `"2026-02-07"` |
 | `time` | Time | ISO 8601 | `"10:30:00"` |
 
+**No SDK converts a formatted value.** It stays a JSON string on the way into and out of the module; §7 shows how to parse the date and time formats.
+
 ### 11.2 Format Validation Requirements
 
-All SDK implementations **SHOULD** check a value against its declared `format` when the format appears in §11.1, and **SHOULD** report a non-conforming value as a warning. The check **MUST NOT** produce `SCHEMA_VALIDATION_ERROR` — see §11.1. The specific validation libraries and methods are left to each SDK implementation.
+All SDK implementations **SHOULD** check a value against its declared `format` when the format appears in §11.1, and **SHOULD** report a non-conforming value as a warning. The check **MUST NOT** produce `SCHEMA_VALIDATION_ERROR` — see §11.1.
 
 To make a format binding, express it as an assertion the vocabulary already carries: `pattern` for a syntactic shape, or `enum` for a closed set. `format` alone never rejects.
 
-**Where the warning is emitted is not yet uniform.** apcore-typescript and apcore-python emit it on the module-invocation path. apcore-rust computes format warnings in `SchemaValidator::validate_detailed_raw`, but its module-invocation path does not go through `SchemaValidator` at all — the executor's `validate_against_schema` builds its own `jsonschema` validator and returns on `is_valid`, so a Rust module call emits no format warning. Making it uniform means calling the warning path from `validate_against_schema`, not rerouting `SchemaValidator`. The conformance fixture `schema_hardening_formats.json` asserts the annotation semantics (validation passes) on all three SDKs; its `warn_logged` expectations are satisfied through a direct call to the warning path, not through a module invocation, so they do not pin this difference.
+**Where each SDK emits the warning:**
+
+| SDK | On module invocation | Standalone validator |
+|---|---|---|
+| apcore-python | Yes — input and output validation steps | Yes |
+| apcore-typescript | Yes — `SchemaValidator` on the invocation path | Yes |
+| apcore-rust | **No** — the executor's `validate_against_schema` does not call the format check | Yes — `SchemaValidator` / `format_warnings()` |
+
+The conformance fixture `schema_hardening_formats.json` asserts the annotation semantics (validation passes) on all three SDKs; its `warn_logged` expectations go through the standalone warning path, so they do not cover the Rust invocation gap.
+
+**TypeScript and TypeBox.** TypeBox's own `Value.Check` rejects a string whose `format` is not in its global `FormatRegistry`. apcore's `SchemaValidator` treats every format as an annotation for the duration of its check, so the rule above holds on the apcore path; calling `Value.Check` directly on such a schema does not.
 
 ---
 
@@ -604,27 +598,23 @@ To make a format binding, express it as an assertion the vocabulary already carr
 
 The following table summarizes all JSON Schema type to language mappings:
 
-| JSON Schema | Python | Rust | Go | Java | TypeScript |
-|-------------|--------|------|----|------|------------|
-| `string` | `str` | `String` | `string` | `String` | `string` |
-| `integer` | `int` | `i64` | `int64` | `long` / `Long` | `number` |
-| `number` | `float` | `f64` | `float64` | `double` / `Double` | `number` |
-| `boolean` | `bool` | `bool` | `bool` | `boolean` / `Boolean` | `boolean` |
-| `null` | `None` | `()` | `nil` | `null` | `null` |
-| `object` (with properties) | class | `struct` | `struct` | `class` | interface / object |
-| `array` (with items) | `list[T]` | `Vec<T>` | `[]T` | `List<T>` | `T[]` |
-| `T \| null` | `T \| None` | `Option<T>` | `*T` | `@Nullable T` | `T \| null` |
-| `string enum` | `Literal[...]` / `StrEnum` | `enum` | `type T string` + const | `enum` | union type |
-| `integer enum` | `IntEnum` | `enum` | `type T int64` + iota | `enum` | union type |
-| `oneOf` | Discriminated Union | `enum` (tagged) | `interface{}` | Sealed Class | discriminated union |
-| `anyOf` | Union type | `enum` (untagged) | `interface{}` | `Object` | union type |
-| `additionalProperties` | `dict[str, V]` | `HashMap<String, V>` | `map[string]V` | `Map<String, V>` | `Record<string, V>` |
-| `string` + `format: date-time` | `datetime` | `DateTime<Utc>` | `time.Time` | `OffsetDateTime` | `Date` / `string` |
-| `string` + `format: date` | `date` | `NaiveDate` | `civil.Date` | `LocalDate` | `string` |
-| `string` + `format: time` | `time` | `NaiveTime` | Custom | `LocalTime` | `string` |
-| `string` + `format: email` | `str` + validation | `String` + validation | `string` + validation | `String` + validation | `string` + validation |
-| `string` + `format: uri` | `str` + validation | `String` + validation | `string` + validation | `String` + validation | `string` + validation |
-| `string` + `format: uuid` | `UUID` | `Uuid` | `uuid.UUID` | `UUID` | `string` + validation |
+| JSON Schema | Python | TypeScript (TypeBox → static type) | Rust |
+|-------------|--------|------------|------|
+| `string` | `str` | `Type.String()` → `string` | `String` |
+| `integer` | `int` | `Type.Integer()` → `number` | `i64` |
+| `number` | `float` | `Type.Number()` → `number` | `f64` |
+| `boolean` | `bool` | `Type.Boolean()` → `boolean` | `bool` |
+| `null` | `None` | `Type.Null()` → `null` | `Option::None` |
+| `object` (with properties) | pydantic `BaseModel` | `Type.Object({...})` | `struct` |
+| `array` (with items) | `list[T]` | `Type.Array(T)` → `T[]` | `Vec<T>` |
+| `T \| null` | `T \| None` | `Type.Union([T, Type.Null()])` → `T \| null` | `Option<T>` |
+| optional property | parameter with a default | `Type.Optional(T)` → `prop?: T` | `Option<T>` or `#[serde(default)]` |
+| string `enum` | `Literal[...]` / `StrEnum` | `Type.Union([Type.Literal(...)])` | `enum` (serde) |
+| integer `enum` | `Literal[...]` / `IntEnum` | `Type.Union([Type.Literal(...)])` | `i64` |
+| `oneOf` | discriminated union | `Type.Union([...])` (emits `anyOf`) | `enum` (tagged) |
+| `anyOf` | `A \| B` | `Type.Union([...])` | `enum` (untagged) |
+| `additionalProperties` | `dict[str, V]` | `Type.Record(Type.String(), V)` → `Record<string, V>` | `HashMap<String, V>` |
+| `string` + any `format` | `str` | `Type.String({ format })` → `string` | `String` |
 
 ---
 
@@ -643,7 +633,7 @@ Implementations **MUST** guarantee perfect round-trips for the following types:
 | `null` | **MUST** perfect round-trip | — |
 | `integer` (within safe range) | **MUST** perfect round-trip | Absolute value ≤ 2^53 - 1 (cross-language safe boundary) |
 | `number` (IEEE 754 representable) | **SHOULD** perfect round-trip | Floating-point precision limits |
-| `object` | **MUST** perfect round-trip | Field order **may** differ |
+| `object` | **MUST** perfect round-trip | Field order **MAY** differ |
 | `array` | **MUST** perfect round-trip | Element order **MUST** be preserved |
 
 ### 13.2 Serialization Specifications
@@ -655,7 +645,7 @@ Implementations **MUST** guarantee perfect round-trips for the following types:
 | Integers **MUST NOT** serialize as floats | **MUST** | `42` not `42.0` |
 | Floats **MUST** preserve decimal part | **MUST** | `3.14` not `3` |
 | `null` fields **SHOULD** be explicitly output | **SHOULD** | `{"field": null}` |
-| Object key order **may** not be guaranteed | **MAY** | But **SHOULD** maintain stable output |
+| Object key order **MAY** not be guaranteed | **MAY** | But **SHOULD** maintain stable output |
 
 ---
 
@@ -665,21 +655,19 @@ Implementations **MUST** guarantee perfect round-trips for the following types:
 
 **Problem Description:**
 
-JavaScript (TypeScript runtime) uses IEEE 754 double-precision floating-point numbers to represent all numbers, with safe integer range of `-(2^53 - 1)` to `2^53 - 1`. Integers outside this range will lose precision.
+JavaScript (the TypeScript runtime) represents every number as an IEEE 754 double, with a safe integer range of `-(2^53 - 1)` to `2^53 - 1`. Integers outside this range lose precision.
 
 **Impact Range:**
 
 | Language | Integer Range | Is Affected |
 |------|---------|-----------|
 | Python | Arbitrary precision | No |
-| Rust | i64 (-2^63 ~ 2^63-1) | Partial (when exceeding i64 range) |
-| Go | int64 (-2^63 ~ 2^63-1) | Partial |
-| Java | long (-2^63 ~ 2^63-1) | Partial |
 | TypeScript | number (safe range 2^53-1) | Yes |
+| Rust | i64 (-2^63 ~ 2^63-1) | Only beyond i64 |
 
 **Cross-language Safe Boundary:**
 
-apcore defines **2^53 - 1** (i.e., `9007199254740991`, JavaScript `Number.MAX_SAFE_INTEGER`) as the cross-language integer safe boundary. This boundary is determined by the weakest consumer (JavaScript/TypeScript) in JSON specification.
+apcore defines **2^53 - 1** (`9007199254740991`, JavaScript `Number.MAX_SAFE_INTEGER`) as the cross-language integer safe boundary, set by the weakest consumer (JavaScript/TypeScript).
 
 **Specification Requirements:**
 
@@ -691,13 +679,13 @@ apcore defines **2^53 - 1** (i.e., `9007199254740991`, JavaScript `Number.MAX_SA
 
 **Large Number `format` Specification:**
 
-Values exceeding the safe boundary **MUST** be transmitted using `type: string`, with `format` indicating semantics:
+Values exceeding the safe boundary **MUST** be transmitted as `type: string`, with `format` naming the semantics. These formats are not in §11.1's recognised set, so they are annotations only: add a `pattern` to reject malformed values, and convert inside the module.
 
-| `format` Value | Meaning | Range | Language Mappings |
+| `format` Value | Meaning | Range | Convert to |
 |-------------|------|------|-----------|
-| `int64` | 64-bit signed integer | -2^63 ~ 2^63-1 | Python `int`, Rust `i64`, Go `int64`, Java `long`, TS `BigInt` |
-| `bigint` | Arbitrary precision integer | Unlimited | Python `int`, Rust `num_bigint::BigInt`, Go `math/big.Int`, Java `BigInteger`, TS `BigInt` |
-| `decimal` | High precision decimal | Unlimited | Python `Decimal`, Rust `rust_decimal::Decimal`, Go `shopspring/decimal`, Java `BigDecimal`, TS `decimal.js` |
+| `int64` | 64-bit signed integer | -2^63 ~ 2^63-1 | Python `int`, TypeScript `BigInt`, Rust `i64` |
+| `bigint` | Arbitrary precision integer | Unlimited | Python `int`, TypeScript `BigInt`, Rust `num_bigint::BigInt` |
+| `decimal` | High precision decimal | Unlimited | Python `Decimal`, TypeScript `decimal.js`, Rust `rust_decimal::Decimal` |
 
 **Schema Example:**
 
@@ -738,8 +726,8 @@ IEEE 754 double-precision floating-point numbers cannot precisely represent all 
 
 **Solution Strategy:**
 
-1. For high-precision scenarios like financial calculations, **recommend** using `string` type for transmission, with each language converting to its native high-precision decimal type
-2. Use `x-precision` extension field in Schema to annotate precision requirements
+1. For financial or other exact calculations, transmit the value as a `string` (`format: decimal`, §14.1) and convert it to the language's decimal type inside the module
+2. Use the `x-precision` extension field in the schema to annotate precision requirements
 
 ### 14.3 Date Timezone Handling
 
@@ -768,18 +756,18 @@ In JSON, `{}` can represent both an empty object (object with no properties) and
 
 **Problem Description:**
 
-Enum values and plain strings are completely identical in transmission format (e.g., `"pending"`); need Schema information to distinguish.
+Enum values and plain strings are identical on the wire (e.g., `"pending"`); only the schema distinguishes them.
 
 **Specification Requirements:**
 
-- Deserialization **MUST** refer to Schema's `enum` constraint for validation
-- If input value is not in `enum` list, **MUST** return `SCHEMA_VALIDATION_ERROR`
+- Validation **MUST** check the schema's `enum` constraint
+- If the input value is not in the `enum` list, validation **MUST** fail with `SCHEMA_VALIDATION_ERROR`
 
 ---
 
 ## 15. Reserved Keyword Adaptations
 
-Some spec-defined method names conflict with language reserved keywords. Implementations **MUST** provide the equivalent functionality under a language-idiomatic alternative name. The following table documents all known keyword conflicts and their canonical adaptations:
+Some spec-defined method names conflict with language reserved keywords. Implementations **MUST** provide the equivalent functionality under a language-idiomatic alternative name:
 
 | Spec Method | Python | TypeScript | Rust | Reason |
 |---|---|---|---|---|
@@ -789,10 +777,10 @@ Some spec-defined method names conflict with language reserved keywords. Impleme
 
 - When a spec method name is a reserved keyword in a target language, the SDK **MUST** choose a name that preserves the verb and adds a noun suffix describing the argument (e.g., `use` → `use_middleware`).
 - The adapted name **MUST** be documented in the SDK's README API Overview section.
-- Implementations **MUST NOT** rely on language-specific escape mechanisms (e.g., Rust raw identifiers `r#keyword`, Kotlin backtick-quoted identifiers `` `keyword` ``) as the primary API surface. The adapted name **MUST** be a natural identifier in the target language.
+- Implementations **MUST NOT** rely on language-specific escape mechanisms (e.g., Rust raw identifiers `r#keyword`) as the primary API surface. The adapted name **MUST** be a natural identifier in the target language.
 - Cross-language sync checks **MUST** treat the adapted name as equivalent to the spec name and **MUST NOT** flag it as a divergence.
 
-**Maintenance:** SDK implementers **SHOULD** check for keyword conflicts when adding new public methods and update this table accordingly. The table above is maintained as conflicts are discovered — it is not an exhaustive pre-analysis of all possible keyword collisions.
+**Maintenance:** SDK implementers **SHOULD** check for keyword conflicts when adding new public methods and update this table accordingly.
 
 ---
 
@@ -809,16 +797,17 @@ The TypeScript SDK uses **`@sinclair/typebox`** (^0.34) for JSON Schema–shaped
 
 **Remaining limitation vs. full Draft 2020-12:** `$ref` to external URIs / files is not supported; use `apcore`'s schema registry for cross-module references.
 
-**Python SDK** uses `jsonschema ^4.21` (fully Draft 2020-12 conformant); keywords Pydantic cannot express are delegated to it as a sub-schema assertion.
-**Rust SDK** uses `jsonschema ^0.28` (pre-1.0; conformance grows with each minor; check release notes) and hands it the raw schema, so every keyword in §17 is enforced by the library directly.
+### 16.2 Python and Rust
+
+**Python SDK** converts schemas to pydantic models and uses `jsonschema` (>=4.21, fully Draft 2020-12 conformant) for keywords pydantic cannot express, delegated as a sub-schema assertion.
+
+**Rust SDK** uses `jsonschema` 0.28 and hands it the raw schema, so every keyword in §17 is enforced by the library directly. Typed handlers derive their schemas with `schemars` 0.8.
 
 ---
 
 ## 17. Validation Keyword Conformance
 
-§2–§11 describe how *types* map. This section states, keyword by keyword, what an SDK is required to do at the validation boundary — the path a module invocation actually takes (schema-to-native conversion followed by the SDK's validator), not a side-channel raw-schema check.
-
-It exists because "partial support" is not a specification. While this document said `if/then/else`, `contains` and `prefixItems` were "partially supported" and said nothing at all about `patternProperties`, `propertyNames`, `dependentRequired` or `minProperties`/`maxProperties`, the three SDKs drifted: apcore-rust rejected inputs that apcore-typescript and apcore-python accepted, from the identical contract. A caller cannot reason about a contract whose constraints are enforced in one runtime and ignored in another.
+§2–§11 describe how *types* map. This section states, keyword by keyword, what an SDK is required to do at the validation boundary — the path a module invocation actually takes (schema-to-native conversion followed by the SDK's validator), not a side-channel raw-schema check. A caller cannot reason about a contract whose constraints are enforced in one runtime and ignored in another, so "partial support" is not an option.
 
 ### 17.1 General rules
 
@@ -840,7 +829,7 @@ It exists because "partial support" is not a specification. While this document 
 | `required` | §6.5.3 | **MUST** enforce | A name listed here without a `properties` entry is still required: `{"required": ["b"]}` is a complete schema and is the usual shape of an `if` / `then` / `dependentSchemas` sub-schema. |
 | `dependentRequired` | §6.5.4 | **MUST** enforce | Expresses "flag A requires flag B", which CLI- and form-shaped contracts rely on. Pure key-presence logic, cheap in every language. |
 | `allOf`, `anyOf`, `oneOf`, `not` | §10.2.1 | **MUST** enforce | `oneOf` **MUST** be exclusive (exactly one branch), not first-match. |
-| `if`, `then`, `else` | §10.2.2.1–§10.2.2.3 | **MUST** enforce | `if` never fails an instance on its own; it selects `then` or `else`, and a missing branch asserts nothing. Rejecting the schema outright (as apcore-python once did) is **NOT** conformant. |
+| `if`, `then`, `else` | §10.2.2.1–§10.2.2.3 | **MUST** enforce | `if` never fails an instance on its own; it selects `then` or `else`, and a missing branch asserts nothing. Rejecting the schema outright is **NOT** conformant. |
 | `dependentSchemas` | §10.2.2.4 | **MUST** enforce | The schema-valued counterpart of `dependentRequired`. |
 | `prefixItems`, `items` | §10.3.1.1–§10.3.1.2 | **MUST** enforce | With `prefixItems` present, `items` applies **only** past the prefix. Applying `items` to the tuple head is a defect, not a simplification. |
 | `properties`, `patternProperties`, `additionalProperties` | §10.3.2.1–§10.3.2.3 | **MUST** enforce | `additionalProperties` targets only the keys `properties` and `patternProperties` did not claim; a pattern-matched key **MUST NOT** be rejected by `additionalProperties: false`. |
@@ -855,13 +844,13 @@ It exists because "partial support" is not a specification. While this document 
 
 **R5 — No coercion.** The module-invocation boundary **MUST NOT** perform type coercion. Every keyword in §17.2, `type` included, is asserted against the instance as it arrived. `{"type": "integer"}` **MUST** reject `"42"`; `{"type": "boolean"}` **MUST** reject `1`, `0`, `"true"` and `"false"`; `{"type": "string"}` **MUST** reject `42`. This holds for inputs and outputs alike, at every depth, and inside `items` / `additionalProperties` / union branches exactly as at the top level.
 
-**This is not host-configurable.** A module's input contract has to mean the same thing regardless of which host loaded it. If a host could switch coercion on, the same module would accept `{"count": "3"}` in one deployment and reject it in another — the contract would no longer be a contract, and a caller could not reason about it without also knowing the deployment's configuration. That is why there is no `schema.validation.coerce_types` key: the `schema` namespace is `root` / `strategy` / `max_ref_depth` and nothing else, and `defaults.schema.json` declares it `additionalProperties: false` (PROTOCOL_SPEC §4.9). Earlier revisions of this section referenced such a key; no SDK ever read it.
+**This is not host-configurable.** A module's input contract has to mean the same thing regardless of which host loaded it. If a host could switch coercion on, the same module would accept `{"count": "3"}` in one deployment and reject it in another. There is therefore no configuration key for it: the `schema` namespace is `root` / `strategy` / `max_ref_depth` and nothing else, and `defaults.schema.json` declares it `additionalProperties: false` (protocol-spec §4.9).
 
-**What "no coercion" does *not* mean.** The rule is about instance *types*, not renderings. JSON Schema 2020-12 §6.1.1 defines `integer` as any number with a zero fractional part, so `4.0` **MUST** satisfy `{"type": "integer"}` while `4.5` **MUST NOT**; `42` **MUST** satisfy `{"type": "number"}`. An SDK whose native integer type cannot hold `4.0` has to narrow it — that is honouring the type definition, not relaxing it. (This is a real trap: pydantic's strict mode rejects `4.0` for `int`, so apcore-python normalises the zero-fraction case before the check.)
+**What "no coercion" does *not* mean.** The rule is about instance *types*, not renderings. JSON Schema 2020-12 §6.1.1 defines `integer` as any number with a zero fractional part, so `4.0` **MUST** satisfy `{"type": "integer"}` while `4.5` **MUST NOT**; `42` **MUST** satisfy `{"type": "number"}`. An SDK whose native integer type cannot hold `4.0` has to narrow it — that is honouring the type definition, not relaxing it. pydantic's strict mode rejects `4.0` for `int`, so apcore-python normalises the zero-fraction case before the check.
 
-**Library-level knob.** An SDK **MAY** keep a coercion switch on its standalone validator API — apcore-python `SchemaValidator(coerce_types=…)`, apcore-typescript `new SchemaValidator(…)`, apcore-rust `SchemaValidator::with_coerce_types(…)` — for callers validating their *own* untyped input (a CLI parsing argv, a form handler). Such a knob **MUST NOT** reach the module-invocation path, **MUST NOT** be readable from a configuration file, and its default **SHOULD** be no-coercion so the two paths cannot silently disagree. apcore-rust shipped a validator whose default coerced while its executor path did not, and the two answered differently for the same schema and input; that is the failure mode this paragraph exists to prevent.
+**Library-level knob.** An SDK **MAY** keep a coercion switch on its standalone validator API — apcore-python `SchemaValidator(coerce_types=…)`, apcore-typescript `new SchemaValidator(…)`, apcore-rust `SchemaValidator::with_coerce_types(…)` — for callers validating their *own* untyped input (a CLI parsing argv, a form handler). Such a knob **MUST NOT** reach the module-invocation path, **MUST NOT** be readable from a configuration file, and its default **SHOULD** be no-coercion so the two paths cannot silently disagree.
 
-**What the knob coerces, when it exists (normative as of v1.12.0).** Offering the switch stays a **MAY**; an SDK with no coercing mode at all is conforming. But an SDK that offers one **MUST** coerce exactly this set, and **MUST NOT** coerce anything else:
+**What the knob coerces, when it exists.** Offering the switch is a **MAY**; an SDK with no coercing mode at all is conforming. An SDK that offers one **MUST** coerce exactly this set, and **MUST NOT** coerce anything else:
 
 | from | to | accepted |
 |---|---|---|
@@ -869,17 +858,15 @@ It exists because "partial support" is not a specification. While this document 
 | string | `number` | surrounding whitespace is trimmed, then the whole remainder must parse as a finite number — `"1.5"`, `"42"`, `"-0.5"`, `" 1.5 "`. |
 | string | `boolean` | exactly `"true"` and `"false"`, **case-sensitive**. |
 
-`"42.0"` coercing to `integer` is not a tolerance: R5's own note above states that `4.0` **MUST** satisfy `{"type": "integer"}`, since JSON Schema 2020-12 §6.1.1 defines `integer` as any number with a zero fractional part. The string form follows the number form. Whitespace trimming is stated explicitly because all three SDKs do it and an unstated tolerance is the thing this table exists to remove.
+`"42.0"` coercing to `integer` follows from R5's note above: `4.0` satisfies `{"type": "integer"}`, and the string form follows the number form.
 
-Coercion is **from a string only**, and only toward a type the schema declares.
+Coercion is **from a string only**, and only toward a type the schema declares. A number is never coerced to a boolean, a boolean never to a number, and nothing is coerced toward `string`.
 
-**Not to be confused with §9.2 environment-override coercion.** `APCORE_*` variables arrive as strings and are coerced into config values by a *different* rule, which accepts `true` / `false` **case-insensitively** — apcore-python `_coerce_env_value`, apcore-typescript `coerceEnvValue`, apcore-rust `coerce_env_value`, all three matching. That is the §9.2 contract and this table does not govern it. So an SDK correctly carries two boolean coercions with different casing rules: case-sensitive here, because a JSON Schema instance is JSON and JSON's literals are lowercase; case-insensitive there, because a shell variable is not JSON and `APCORE_DEBUG=True` is what an operator types. Neither is a defect, and a reader who does not know which section applies could reasonably think one of them is. A number is never coerced to a boolean, a boolean never to a number, and nothing is coerced toward `string`.
+The boolean row is deliberately narrow. `"true"` and `"false"` are JSON's own spelling of a boolean. `"yes"`, `"on"`, `"y"`, `"t"`, `"1"`, `"0"` and their negatives are shell and INI conventions that belong to whatever parses `argv`, not to a JSON Schema validator. `"0"` → `false` is the sharpest case: R5 makes the *number* `0` a MUST-reject for `boolean`, so accepting the string `"0"` would put two paths of the same SDK on opposite sides of one value.
 
-The boolean row is deliberately narrow. `"true"` and `"false"` are JSON's own spelling of a boolean, so accepting them is reading the same value written as text. `"yes"`, `"on"`, `"y"`, `"t"`, `"1"`, `"0"` and their negatives are shell and INI conventions: they belong to whatever parses `argv`, not to a JSON Schema validator, and each one is somebody's default rather than anybody's standard. `"0"` → `false` is the sharpest case — R5 above makes the *number* `0` a MUST-reject for `boolean`, so accepting the string `"0"` puts two paths of the same SDK on opposite sides of one value.
+**Not to be confused with §9.2 environment-override coercion.** `APCORE_*` variables arrive as strings and are coerced into config values by a *different* rule, which accepts `true` / `false` **case-insensitively** — apcore-python `_coerce_env_value`, apcore-typescript `coerceEnvValue`, apcore-rust `coerce_env_value`. That is the protocol-spec §9.2 contract and this table does not govern it: case-sensitive here, because a JSON Schema instance is JSON; case-insensitive there, because `APCORE_DEBUG=True` is what an operator types.
 
-This is stated because it was not. apcore-rust and apcore-typescript shipped a twelve-spelling case-insensitive dialect (`"true" | "yes" | "on" | "y" | "t" | "1"` and its negatives) while apcore-python coerced no string to a boolean at all, and `conformance/fixtures/schema_validation.json` pinned the coercing mode across SDKs in exactly one case — on `integer`, the one axis where all three agreed. Both behaviours were conforming, because the paragraph above constrains only where the knob may be used and never what it does (apcore#95).
-
-**Keyword slicing.** An SDK that delegates part of a schema to a strict Draft 2020-12 engine **SHOULD** delegate the applicator keywords alone rather than the whole schema, so a `type` its own conversion already enforced is not re-asserted twice over a differently-shaped value. The one documented exception is `unevaluatedItems` / `unevaluatedProperties`, which are defined against the annotations of every sibling keyword and therefore cannot be evaluated from a slice.
+**Keyword slicing.** An SDK that delegates part of a schema to a strict Draft 2020-12 engine **SHOULD** delegate the applicator keywords alone rather than the whole schema, so a `type` its own conversion already enforced is not re-asserted twice over a differently-shaped value. The one exception is `unevaluatedItems` / `unevaluatedProperties`, which are defined against the annotations of every sibling keyword and therefore cannot be evaluated from a slice.
 
 **Fixture.** `conformance/fixtures/schema_keyword_parity.json` asserts R5 at the boundary; the opt-in library-level coercing mode is covered separately by `conformance/fixtures/schema_validation.json` (`expected_valid_strict` / `expected_valid_coerce`).
 
@@ -887,9 +874,10 @@ This is stated because it was not. apcore-rust and apcore-typescript shipped a t
 
 ## 18. References
 
-- [PROTOCOL_SPEC §4 — Schema Specification](./protocol-spec.md#4-schema-specification)
-- [PROTOCOL_SPEC §4.10 — Language-specific Schema Implementations](./protocol-spec.md#410-language-specific-schema-implementations)
-- [PROTOCOL_SPEC §4.11 — Schema References ($ref)](./protocol-spec.md#411-schema-references-ref)
-- [PROTOCOL_SPEC §12.3 — Cross-language Implementation Requirements](./protocol-spec.md#123-cross-language-implementation-requirements)
+- [protocol-spec §4 — Schema Specification](./protocol-spec.md#4-schema-specification)
+- [protocol-spec §4.10 — Language-specific Schema Implementations](./protocol-spec.md#410-language-specific-schema-implementations)
+- [protocol-spec §4.11 — Schema References ($ref)](./protocol-spec.md#411-schema-references-ref)
+- [protocol-spec §5.11.5 — Language Type → JSON Schema Mapping Table](./protocol-spec.md#5115-language-type-json-schema-mapping-table)
+- [protocol-spec §12.3 — Cross-language Implementation Requirements](./protocol-spec.md#123-cross-language-implementation-requirements)
 - [JSON Schema Draft 2020-12](https://json-schema.org/draft/2020-12/json-schema-core)
 - [RFC 8259 — The JavaScript Object Notation (JSON) Data Interchange Format](https://www.rfc-editor.org/rfc/rfc8259)

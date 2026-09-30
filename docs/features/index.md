@@ -6,7 +6,7 @@ description: "Index of apcore feature specs by category: foundational protocols,
 
 > Implementation-ready feature specifications for apcore subsystems.
 
-This directory contains detailed specifications for each subsystem of the apcore framework. These documents are intended for SDK implementers and contributors who need to understand the internal mechanics, requirements, and edge cases of specific features.
+One page per apcore subsystem: what it does, the contract the SDKs implement, and Python / TypeScript / Rust usage. These pages are the reference for SDK users and implementers; the normative text is the [Protocol Specification](../spec/protocol-spec.md).
 
 ## Specification Categories
 
@@ -20,10 +20,10 @@ This directory contains detailed specifications for each subsystem of the apcore
 ### Execution & Workflow
 *The runtime behavior of the execution engine.*
 - [Core Executor](./core-executor.md) — The 11-step pipeline mechanics.
+- [Execution Pipeline](./execution-pipeline.md) — The Step protocol, strategy presets, and the pipeline engine.
 - [Streaming Pipeline](./streaming.md) — Incremental output and chunk merging.
 - [Async Task Management](./async-tasks.md) — Background execution and concurrency.
-- [Cancellation Mechanism](./cancellation.md) — Cooperative and forced termination.
-- [Config Bus](./config-bus.md) — Unified multi-package configuration.
+- [Cancellation Mechanism](./cancellation.md) — Cooperative cancellation via cancel tokens (no forced termination).
 
 ### Security & Governance
 *Guardrails, identity, and access control.*
@@ -34,7 +34,10 @@ This directory contains detailed specifications for each subsystem of the apcore
 
 ### Reliability & Ops
 *Observability, errors, and system-level introspection.*
-- [Observability](./observability.md) — Tracing, metrics, and logs.
+- [Observability](./observability.md) — Tracing, spans, and exporters.
+- [Metrics & Usage](./metrics-and-usage.md) — Call counters, latency histograms, and usage tracking.
+- [Error History](./error-history.md) — Recent-error aggregation for introspection.
+- [Redaction](./redaction.md) — Sensitive-key redaction in logs, traces, and events.
 - [Error & AI Guidance](./error-system.md) — Self-healing error protocols.
 - [Event System](./event-system.md) — Framework-wide async event bus.
 - [System Modules (system.*)](./system-modules.md) — Built-in control plane modules.
@@ -46,6 +49,6 @@ This directory contains detailed specifications for each subsystem of the apcore
 - [Extension Points](./extension-system.md) — The pluggable architecture.
 - [Middleware System](./middleware-system.md) — The onion execution model.
 - [Multi-Module Discovery](./multi-module-discovery.md) — Multi-class file scanning.
-
+- [Config Bus](./config-bus.md) — Unified multi-package configuration.
 
 For a high-level overview of how these features fit together, see the [Architecture Design](../architecture.md) or the [Core Concepts](../concepts.md).

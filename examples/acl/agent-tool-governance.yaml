@@ -14,6 +14,12 @@
 version: "1.0"
 default_effect: deny
 
+# Audit every decision (allow and deny) through the default sink (spec §6.3.2).
+audit:
+  enabled: true
+  include_denied: true
+  log_level: info
+
 rules:
   # 1. External / unauthenticated entry points (no caller_id) — read-only.
   #    No query, no writes, no deletes. The smallest public surface.

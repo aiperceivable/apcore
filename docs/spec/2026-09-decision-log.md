@@ -1,17 +1,20 @@
 ---
-description: "Maintainer decision log for three cross-language inconsistencies found during a 2026-09-05 consistency audit (independent of the 2026-05 apcore-skills:sync batch), covering start_reaper's async signature, APCore.discover's sync/async split, and the ACL construction door's rule-mutation gap."
-title: Cross-language alignment decision log (2026-09)
+description: "Historical record of three decisions (E-01–E-03) from a 2026-09-05 consistency audit: start_reaper's synchronous start, APCore.discover's sync/async split, and ACL construction re-validating rules."
+title: Consistency audit decisions (E-01–E-03, 2026-09-05)
 date: 2026-09-05
 status: resolved — 3/3 items closed the same day they were opened
 audience: maintainers + spec reviewers
 source: cross-repo consistency audit (2026-09-05), triggered while dispatching parallel SDK fixes for the 2026-05 batch's remaining findings
 ---
 
-# Cross-language alignment — 2026-09 decisions
+# Consistency audit decisions (E-01–E-03, 2026-09-05)
+
+!!! info "Historical decision record"
+    Current behaviour is defined by [protocol-spec.md](./protocol-spec.md); decision status is tracked in [decision-register.md](./decision-register.md).
 
 This log is separate from `2026-05-decision-log.md` on purpose: these three items were not part of the 20-module 2026-05 sync batch that log tracks. They surfaced while investigating a fourth, unrelated finding (`ApprovalRequest.caller_id`/`action`, decision D-03) and were resolved the same session, so this file records the reasoning rather than an open recommendation awaiting a separate approval round.
 
-Decision template per item: **Status quo** (what each SDK does today, with evidence) / **Options considered** / **Decision** / **Action taken**.
+Decision template per item: **Status quo** (what each SDK did at the time, with evidence) / **Options considered** / **Decision** / **Action taken**.
 
 ---
 

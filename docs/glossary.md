@@ -12,15 +12,15 @@ A single-page reference for terminology used across the apcore protocol, the thr
 
 **ACL (Access Control List)** — A list of `callers → targets → effect` rules evaluated first-match-wins to determine whether one module is allowed to invoke another. Default effect is **always `deny`** in production. Conditions support identity types, roles, call depth, and the `$or` / `$not` compound operators. See [PROTOCOL_SPEC §6](./spec/protocol-spec.md#6-acl-specification) and [features/acl-system.md](./features/acl-system.md).
 
-**Adapter** — A separate package that bridges apcore modules to a host framework (FastAPI, Flask, Django, NestJS, Axum, …). Adapters live outside the apcore core and SDK repos — see e.g. `fastapi-apcore`, `nestjs-apcore`, `axum-apcore`. They scan apcore modules and surface them as routes, queue jobs, or RPC methods.
+**Adapter** — A separate, independently versioned package that projects apcore modules onto a surface. *Surface adapters* (`apcore-mcp`, `apcore-a2a`, `apcore-cli`) expose modules as MCP tools, A2A skills or CLI commands; *framework integrations* (`fastapi-apcore`, `django-apcore`, `flask-apcore`, `nestjs-apcore`, `express-apcore`, `hono-apcore`, `axum-apcore`) bind HTTP endpoints to modules. See [Adapter Development](./guides/adapter-development.md).
 
-**Annotations** — Optional behavioral hints on a module (`requires_approval`, `tags`, `version`, `extra` extensible fields). Distinct from the schema's input/output type info. The wire format and `extra` semantics are normative — see [PROTOCOL_SPEC §4.4.1](./spec/protocol-spec.md#441-annotations-extension-field-extra-wire-format).
+**Annotations** — `ModuleAnnotations`: optional behavioral hints on a module — `readonly`, `destructive`, `idempotent`, `requires_approval`, `open_world`, `streaming`, `cacheable`, `cache_ttl`, `cache_key_fields`, `paginated`, `pagination_style`, `discoverable`, plus the open `extra` map. Distinct from the input/output schemas and from `tags`/`version`, which are module metadata. See [protocol-spec §4.4](./spec/protocol-spec.md#44-module-behavior-annotations-annotations) and [§4.4.1](./spec/protocol-spec.md#441-annotations-extension-field-extra-wire-format) for the `extra` wire format.
 
 **APCore Client** — The user-facing client SDK class (`APCore` in all three SDKs) that wires together a `Registry`, `Executor`, optional `ACL`, optional `ApprovalHandler`, middleware, and config. Decorator binding (`@client.module`) and `client.call()` / `client.stream()` / `client.validate()` are exposed here.
 
-**Approval Gate** — Pipeline Step 5. Invokes the registered `ApprovalHandler` when the target module declares `requires_approval=true`. Skipped entirely when no handler is configured or the annotation is absent. See [PROTOCOL_SPEC §7](./spec/protocol-spec.md#7-approval-system).
+**Approval Gate** — Pipeline Step 5. Invokes the configured `ApprovalHandler` when approval is required — by the module's `requires_approval` annotation, its registry metadata, a matching ACL rule with `approval: required`, or an `ExecutionPolicy` that gates destructive modules. With no handler configured the gate is skipped with a warning, unless `ExecutionPolicy(strict=true)` makes it fail closed. See [protocol-spec §7](./spec/protocol-spec.md#7-approval-system).
 
-**ApprovalHandler** — Pluggable interface that the executor calls to obtain an `ApprovalResult` (`approved` / `rejected` / `timeout` / `pending`). Phase A is sync-blocking; Phase B uses `pending` + `_approval_token` for async resume.
+**ApprovalHandler** — Pluggable interface that the executor calls to obtain an `ApprovalResult` (`approved` / `rejected` / `timeout` / `pending`). A handler either decides immediately (block until decided) or returns `pending`; the caller then resumes by retrying with `_approval_token` in the inputs. See [Approval System](./features/approval-system.md).
 
 ## B
 
@@ -32,7 +32,7 @@ A single-page reference for terminology used across the apcore protocol, the thr
 
 **Call Chain** — The ordered list of `caller_id`s representing the active call stack, propagated via `Context.call_chain`. Used by the Call Chain Guard (Step 2) to detect circular invocations and enforce maximum call depth.
 
-**Call Chain Guard** — Pipeline Step 2. Inspects `context.call_chain` for circular calls (target already present) and over-depth (chain length exceeds policy). Raises `CIRCULAR_CALL` or `CALL_DEPTH_EXCEEDED` on violation.
+**Call Chain Guard** — Pipeline Step 2. Enforces `executor.max_call_depth`, detects circular calls, and limits how often one module may repeat in a chain (`executor.max_module_repeat`). Raises `CALL_DEPTH_EXCEEDED`, `CIRCULAR_CALL` or `CALL_FREQUENCY_EXCEEDED`. See [Call Chain Guard](./features/call-chain-guard.md).
 
 **Canonical ID** — The dotted-path identifier for a module derived from its filesystem path (e.g. `executor.email.send_email` from `<root>/executor/email/send_email.py`). Algorithm A01 in [PROTOCOL_SPEC §2.1](./spec/protocol-spec.md#2-naming-specification) is normative; A02 normalizes IDs across language casing conventions.
 
@@ -44,17 +44,25 @@ A single-page reference for terminology used across the apcore protocol, the thr
 
 ## D
 
-**Declarative Config** — The unified YAML configuration surface (`apcore.yaml` plus optional bindings YAML and pipeline YAML) consumed identically by all three SDKs. Specified in [docs/spec/DECLARATIVE_CONFIG_SPEC.md](./spec/DECLARATIVE_CONFIG_SPEC.md).
+**Config Bus** — The namespaced configuration system: one `apcore.yaml` (or project file) holds sections for apcore and for ecosystem packages, each registered as a namespace, with per-namespace environment-variable overrides. See [Config Bus](./features/config-bus.md) and [protocol-spec §9](./spec/protocol-spec.md#9-configuration-specification).
 
-**Default Effect** — The fallback decision (`allow` / `deny`) applied when no ACL rule matches a `(caller_id, target_id)` pair. **Production deployments MUST set `deny`.**
+**Decision Register** — The index of every recorded design decision (`D-xx`) with its status and the spec version that carries it. Decision records explain *why* a rule exists; the specification defines *what* it is. See [Decision register](./spec/decision-register.md).
+
+**Default Effect** — The fallback decision (`allow` / `deny`) an ACL file applies when no rule matches a `(caller_id, target_id)` pair. Set it in the ACL file; always use `deny` in production.
+
+**Display Overlay** — The optional `display` section of a binding entry that gives a module a per-surface alias, description, guidance and tags (MCP, A2A, CLI) without changing its canonical ID. See [protocol-spec §5.13](./spec/protocol-spec.md#513-display-overlay-surface-facing-presentation).
 
 ## E
 
+**Ephemeral Module** — A module registered at runtime under the reserved `ephemeral.*` namespace (for example, a tool synthesized by an agent). Such modules normally set `discoverable: false` so they are callable by ID but hidden from listings. See [protocol-spec §2.5](./spec/protocol-spec.md#25-reserved-words).
+
 **Executor** — The component that runs a module invocation through the 11-step pipeline (Context Creation → Call Chain Guard → Module Lookup → ACL Check → Approval Gate → Middleware Before → Input Validation → Execute → Output Validation → Middleware After → Return). See [features/core-executor.md](./features/core-executor.md).
 
-**External Module / `@external`** — The literal caller pattern matching invocations that originated outside apcore (e.g., a public HTTP entry point). Used in ACL rules instead of a Canonical ID.
+**Execution Pipeline / Strategy** — The ordered list of steps a call runs through. The standard strategy has eleven built-in steps; preset and custom strategies can remove, insert or replace steps. See [Execution Pipeline](./features/execution-pipeline.md).
 
-**Extension (module extension)** — Older synonym for "module" used in some early docs. Prefer **module** in new writing.
+**Execution Policy** — `ExecutionPolicy`: executor-level governance settings — `strict` (fail closed when approval is required but no handler is configured), gating of destructive modules, and external policy overrides. See [protocol-spec §7.9](./spec/protocol-spec.md#79-execution-policy-v190-76).
+
+**External Module / `@external`** — The literal caller pattern matching invocations that originated outside apcore (e.g., a public HTTP entry point). Used in ACL rules instead of a Canonical ID.
 
 **Extension (`x-*`) Fields** — Schema and annotation fields prefixed with `x-` reserved for forward-compatible additions. Implementations **MUST** silently ignore unknown `x-*` keys. Notable examples: `x-llm-description`, `x-examples`, `x-sensitive`.
 
@@ -78,7 +86,9 @@ A single-page reference for terminology used across the apcore protocol, the thr
 
 ## P
 
-**PreflightResult** — The return type of `Executor.validate()` carrying per-check status, a `requires_approval` flag, and `.valid`/`.errors` properties for backward compatibility with the legacy `ValidationResult`. Six pipeline checks plus an optional module-level preflight; see [PROTOCOL_SPEC §12.8](./spec/protocol-spec.md#12-sdk-implementation-guide).
+**Preview** — Optional `Module.preview()`: returns the changes a call would make without making them. Its result appears as `predicted_changes` in a `PreflightResult`; `preview()` runs only when the ACL check passes. See [Module Interface](./features/module-interface.md).
+
+**PreflightResult** — The return type of `validate()`: per-check status for pipeline Steps 1–5 and 7 (no middleware, no execution), a `requires_approval` flag, `predicted_changes` from an optional `Module.preview()`, and `.valid` / `.errors` summaries. See [protocol-spec §12.8](./spec/protocol-spec.md#128-executorvalidate-cross-language-implementation-guide).
 
 ## R
 
@@ -92,9 +102,9 @@ A single-page reference for terminology used across the apcore protocol, the thr
 
 **Schema** — JSON Schema Draft 2020-12 document describing module input or output. Specified in [PROTOCOL_SPEC §4](./spec/protocol-spec.md#4-schema-specification). Three layers: **Core** (required: `input_schema`, `output_schema`, `description`), **Annotation** (optional behavioral hints), **Extension** (`x-*` open-ended).
 
-**Stream / Streaming Module** — A module whose `execute()` yields successive partial outputs (chunks). The Executor merges chunks via recursive deep-merge (depth-capped at 32), validates the final accumulated output against the output schema, and emits per-chunk events for observability. See [features/streaming.md](./features/streaming.md).
+**Stream / Streaming Module** — A module that implements `stream()` and yields partial outputs (chunks). The executor deep-merges the chunks (depth limit `stream.max_merge_depth`, default 32), validates the accumulated output against the output schema, and falls back to `execute()` for modules without `stream()`. See [Streaming](./features/streaming.md).
 
-**System Modules (`system.*`)** — Reserved namespace for framework-provided control-plane modules: `system.health.*`, `system.manifest.*`, `system.control.*`. Authorization is enforced by the same ACL system as user modules. See [features/system-modules.md](./features/system-modules.md).
+**System Modules (`system.*`)** — Reserved namespace for built-in introspection and control modules: `system.health.*`, `system.usage.*`, `system.manifest.*`, `system.control.*`. Registered when `sys_modules.enabled` is true (control modules additionally need `sys_modules.control.enabled`) and governed by the same ACL and approval rules as user modules. See [System Modules](./features/system-modules.md).
 
 ## T
 
@@ -104,6 +114,6 @@ A single-page reference for terminology used across the apcore protocol, the thr
 
 ## See also
 
-- [Concept Index](./site-map.md#concept-index) — quick navigation table in the documentation map.
 - [PROTOCOL_SPEC §1.6](./spec/protocol-spec.md#1-overview) — full normative terminology section.
-- [docs/spec/conformance.md](./spec/conformance.md) — fixture catalog cross-referenced by feature.
+- [Conformance](./spec/conformance.md) — conformance levels and the cross-language fixture suite.
+- [Decision register](./spec/decision-register.md) — the recorded reason behind each normative rule.

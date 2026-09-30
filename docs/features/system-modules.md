@@ -5,37 +5,54 @@ description: "Built-in system.* control-plane modules for AI introspection: heal
 # System Modules
 
 <!-- preamble-tier-doc -->
-> **Type:** Implementation guide. **Normative spec:** [PROTOCOL_SPEC](../spec/protocol-spec.md) §5 Module Specification (system module conventions).
+> **Type:** Implementation guide. **Normative spec:** [PROTOCOL_SPEC](../spec/protocol-spec.md) §6.6 System Module Permissions and §6.7 (system module output contracts).
 
 
 ## Overview
 
-Built-in `system.*` modules provide AI bidirectional introspection — allowing AI agents to query, monitor, and control the apcore runtime. System modules are registered automatically when `sys_modules.enabled: true` in config, and use the reserved `system.*` namespace (see PROTOCOL_SPEC §2.5, §6.6).
+The built-in `system.*` modules let AI agents and operators query and control a running apcore instance: health, module manifests, usage statistics, and — behind approval — runtime configuration, hot reload and feature toggles. They live in the reserved `system.*` namespace (PROTOCOL_SPEC §2.5, §6.6) and are registered through `register_internal()`.
 
-## Requirements
+`APCore` registers them automatically when the loaded configuration sets `sys_modules.enabled: true`; the read-only modules need nothing else, the three `system.control.*` modules also need `sys_modules.events.enabled: true`.
 
-### Health Monitoring
-- `system.health.summary` — Aggregate health status across all modules with classification (healthy / degraded / error / unknown).
-- `system.health.module` — Per-module health detail with latency metrics and recent errors.
+| Module | Purpose | Annotations |
+|---|---|---|
+| [`system.health.summary`](#systemhealthsummary) | Health status of every module (healthy / degraded / error / unknown) | readonly, idempotent |
+| [`system.health.module`](#systemhealthmodule) | Health detail for one module: latency and recent errors | readonly, idempotent |
+| [`system.manifest.module`](#systemmanifestmodule) | One module's schema, annotations, tags, source path | readonly, idempotent |
+| [`system.manifest.full`](#systemmanifestfull) | Full registry manifest, filterable by tags and prefix | readonly, idempotent |
+| [`system.usage.summary`](#systemusagesummary) | Usage statistics for every module, with trends | readonly, idempotent |
+| [`system.usage.module`](#systemusagemodule) | One module's usage, per-caller breakdown, hourly distribution | readonly, idempotent |
+| [`system.control.update_config`](#systemcontrolupdate_config) | Change a runtime configuration value | requires_approval |
+| [`system.control.reload_module`](#systemcontrolreload_module) | Hot-reload one module, or every module matching a pattern | requires_approval |
+| [`system.control.toggle_feature`](#systemcontroltoggle_feature) | Disable or re-enable a module without unloading it | requires_approval |
 
-### Manifest & Discovery
-- `system.manifest.module` — Single module introspection (schema, annotations, tags, source path).
-- `system.manifest.full` — Full registry manifest with filtering by tags and prefix.
+Every system module declares `open_world: false` explicitly — none of them reaches an external system (D-119).
 
-### Usage Analytics
-- `system.usage.summary` — Usage statistics across all modules with trend detection.
-- `system.usage.module` — Per-module usage detail with caller breakdown and hourly distribution.
+## Activation
 
-### Runtime Control
-- `system.control.update_config` — Hot-patch runtime config values with constraint validation.
-- `system.control.reload_module` — Hot-reload a module from disk without restart.
-- `system.control.toggle_feature` — Enable/disable modules at runtime with reason tracking.
+| Key | Default | Gates |
+|---|---|---|
+| `sys_modules.enabled` | `false` | Master switch. When `true`, the error-history and usage middlewares are installed and the read modules below are registered. |
+| `sys_modules.health.enabled` | `true` | `system.health.*` |
+| `sys_modules.manifest.enabled` | `true` | `system.manifest.*` |
+| `sys_modules.usage.enabled` | `true` | `system.usage.*` (the usage middleware is installed regardless) |
+| `sys_modules.events.enabled` | `false` | The `EventEmitter`, `PlatformNotifyMiddleware`, configured event subscribers, the registry event bridge — and the control modules |
+| `sys_modules.control.enabled` | `true` | `system.control.*`, which register only when **both** `events.enabled` and `control.enabled` are `true` |
+| `sys_modules.control.overrides_path` | none | File that persists runtime overrides (see [Persistent overrides](#persistent-overrides-pluggable-overridesstore)) |
 
-Control modules require `requires_approval: true` and are only registered when `sys_modules.enabled: true`.
+With the defaults this gives three states (§6.6.3):
 
-## Module Reference
+| Config | Modules registered |
+|---|---|
+| `sys_modules.enabled: false` | **0** |
+| `sys_modules.enabled: true`, `events.enabled: false` | **6** — `system.health.*`, `system.usage.*`, `system.manifest.*` |
+| `sys_modules.enabled: true`, `events.enabled: true` | **9** — the six plus the three `system.control.*` write modules |
 
-### system.health.summary
+A registry holding only the six read modules has no write surface; anything reasoning about exposure should distinguish the two enabled states.
+
+The control modules declare `requires_approval: true`, so the approval gate applies to them. Approval, like ACL, is inactive by absence ([§6.6.3.1](../spec/protocol-spec.md#6631-layers-2-and-3-are-inactive-by-absence)): with no `ApprovalHandler` the gate is skipped with a warning unless `ExecutionPolicy(strict=true)` is set, and a missing ACL file attaches no ACL. To see what actually gates a registry, read [`executor.governance_state()`](./core-executor.md#governance-state-api) (§6.6.5).
+
+## system.health.summary
 
 Aggregated health overview of all registered modules.
 
@@ -45,7 +62,7 @@ Aggregated health overview of all registered modules.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `error_rate_threshold` | float | 0.01 | Threshold for healthy status (1%) |
+| `error_rate_threshold` | float | 0.01 | Upper bound of the `healthy` band |
 | `include_healthy` | bool | true | Include healthy modules in output |
 
 **Output:**
@@ -86,82 +103,12 @@ Aggregated health overview of all registered modules.
 
 | Status | Condition |
 |--------|-----------|
-| healthy | `error_rate < error_rate_threshold` (default 1%, configurable) |
+| healthy | `error_rate < error_rate_threshold` (default 1%) |
 | degraded | `error_rate_threshold <= error_rate < 0.10` |
-| error | `error_rate >= 0.10` (**fixed, not configurable**) |
+| error | `error_rate >= 0.10` |
 | unknown | No calls recorded |
 
-> **D-109 (v1.51.0) — only the healthy/degraded boundary is configurable.**
-> `error_rate_threshold` moves the FIRST boundary and nothing else; the
-> degraded/error boundary is fixed at 10%. apcore-python and apcore-typescript
-> scaled the second boundary from the first (`healthy_threshold * 10`), so a
-> caller passing `0.001` silently got an error boundary of 1% as well and a
-> module measuring 5% was classified `error` there and `degraded` on
-> apcore-rust — which reads the table above. The consequence of the fixed form
-> is worth stating plainly, because it surprises: with
-> `error_rate_threshold: 0.001`, `healthy` is `< 0.1%`, `degraded` spans
-> `0.1%–10%`, and `error` still begins at 10%. A caller who wants a stricter
-> ERROR boundary is asking for a second knob, which this contract deliberately
-> does not have.
-
-## System-module output and audit conventions
-
-> **Added in spec v1.51.0** (D-110, D-111, D-112, D-118, D-119).
-
-**D-110 — `project_name` defaults to `"apcore"`.** When `project.name` is not
-configured, `system.manifest.full` reports `"apcore"`, not the empty string.
-apcore-rust already did; apcore-python and apcore-typescript returned `""` from
-`manifest.full` while their own `system.health.summary` returned `"apcore"` — so
-two system modules in the same SDK disagreed about the same missing value.
-Aligning on `"apcore"` changes one call site per SDK instead of two, and removes
-that internal contradiction rather than relocating it.
-
-**D-111 — a bulk reload writes one audit entry PER MODULE, plus a correlation
-id.** apcore-python and apcore-rust wrote a single aggregate entry whose
-`target_module_id` was the glob (`executor.*`). `AuditStore.query(module_id?)`
-filters by a concrete module id, so that entry is **unfindable** by the accessor
-the audit store exists for. Each reloaded module therefore gets its own entry.
-Because per-module entries lose the fact that they were one operation, every
-entry from a single bulk reload **MUST** carry the same correlation id, so "what
-did this deploy touch" remains one query.
-
-**D-112 — a failed reload restores the previous module (best-effort
-compensation, NOT atomic replacement).** apcore-typescript re-registered the
-original on failure; apcore-python and apcore-rust left it unregistered, and the
-contract said callers must handle the partial state. For a control plane that is
-the wrong default: a failed hot-fix should not make a working module *disappear*.
-
-Stated precisely, because the mechanism cannot deliver more than this:
-
-1. Restoration is **compensating**, not transactional. The module is genuinely
-   unregistered for a window, and a concurrent call in that window sees
-   `MODULE_NOT_FOUND`. An implementation **MUST NOT** claim atomic replacement.
-2. The restore path **MUST** re-run the restored module's `on_load`. Its
-   `on_unload` already ran during the unregister, so re-publishing without
-   `on_load` yields a module that is visible but torn down — harder to diagnose
-   than one that is absent.
-3. If that restoring load ALSO fails, the module **MAY** remain unavailable:
-   there is no good state left to return to, and publishing a module whose load
-   hook failed is the defect §12.2's deferred-publish rule exists to prevent.
-4. On the bulk path, restoration is **per module**. The operation as a whole
-   still fails (D-17's rule), but implementations are **NOT** required to
-   roll back modules that already reloaded successfully — cross-module
-   transactionality is not a primitive the registry has.
-
-**D-118 — an empty `roles` list is omitted from the audit identity snapshot.**
-apcore-python and apcore-rust omit the key; apcore-typescript always emitted
-`roles: []`. The spec names `id`, `type` and optionally `display_name`, so a
-subscriber branching on `'roles' in payload.identity` gets different answers for
-an identity that has no roles.
-
-**D-119 — every `system.*` module declares `open_world: false` EXPLICITLY.**
-No system module reaches an external system, so `false` is the semantically
-correct value — apcore-typescript set it, apcore-python and apcore-rust left it
-at the language default, which is `true`. An AI agent using `open_world` to
-decide whether a call leaves the process therefore got opposite answers for an
-in-process health query. The value **MUST** be written out rather than inherited:
-relying on a default that means the opposite of the intended value is how the
-divergence arose.
+Only the healthy/degraded boundary is configurable; the degraded/error boundary is fixed at 10% (D-109). With `error_rate_threshold: 0.001`, `healthy` is `< 0.1%`, `degraded` spans `0.1%–10%`, and `error` still begins at 10%.
 
 ## Contract: system.health.summary
 
@@ -170,21 +117,19 @@ divergence arose.
 - `include_healthy`: bool, optional, default `true`
 
 ### Errors
-- No errors under normal operation — standard input-schema validation applies to malformed field types
+- None beyond standard input-schema validation.
 
 ### Returns
-- On success: `dict` — `{project, summary, modules[]}` per the Output shape above
+- `dict` — `{project, summary, modules[]}` per the output shape above
 
 ### Properties
-- idempotent: true (declared via `annotations.idempotent=true`)
+- idempotent: true
 - thread_safe: true — read-only aggregation over already-collected call statistics
 - async: false
-- pure: true — no state mutation
+- pure: true
 - reentrant: true
 
----
-
-### system.health.module
+## system.health.module
 
 Detailed health information for a single module.
 
@@ -196,6 +141,8 @@ Detailed health information for a single module.
 |-------|------|---------|-------------|
 | `module_id` | string | *(required)* | Module to query |
 | `error_limit` | int | 10 | Max recent errors to return |
+
+`status` uses the default classification (healthy below 1%, error from 10%); this module takes no threshold input.
 
 **Output:**
 
@@ -243,7 +190,7 @@ Detailed health information for a single module.
 
 ---
 
-### system.manifest.module
+## system.manifest.module
 
 Full manifest for a single registered module.
 
@@ -299,7 +246,7 @@ Full manifest for a single registered module.
 
 ---
 
-### system.manifest.full
+## system.manifest.full
 
 Complete system manifest with filtering.
 
@@ -319,10 +266,25 @@ Complete system manifest with filtering.
 ```json
 {
   "project_name": "my-project",
-  "module_count": 5,
-  "modules": [ ... ]
+  "module_count": 1,
+  "modules": [
+    {
+      "module_id": "math.add",
+      "description": "Add two numbers",
+      "documentation": null,
+      "source_path": "extensions/math/add.py",
+      "input_schema": { "type": "object" },
+      "output_schema": { "type": "object" },
+      "annotations": { "readonly": true },
+      "tags": ["math"],
+      "dependencies": [],
+      "metadata": {}
+    }
+  ]
 }
 ```
+
+Each `modules[]` entry has the shape of `system.manifest.module`'s output. `project_name` is `project.name`, or `"apcore"` when it is not configured (D-110).
 
 ## Contract: system.manifest.full
 
@@ -347,7 +309,7 @@ Complete system manifest with filtering.
 
 ---
 
-### system.usage.summary
+## system.usage.summary
 
 Usage overview with trend detection across all modules.
 
@@ -407,7 +369,7 @@ Modules sorted by `call_count` descending.
 
 ---
 
-### system.usage.module
+## system.usage.module
 
 Detailed usage for a single module with caller breakdown.
 
@@ -451,7 +413,7 @@ Detailed usage for a single module with caller breakdown.
 **`hourly_distribution` invariants** ([PROTOCOL_SPEC §6.7.1.2](../spec/protocol-spec.md#6712-hourly_distribution)):
 
 - `hour` is the UTC bucket key `YYYY-MM-DDTHH` — **not** `YYYY-MM-DDTHH:00:00Z`. This is the key `UsageCollector` produces in every SDK; the module layer MUST NOT reformat it.
-- Exactly **24** entries, covering `now−23h .. now`, ascending by `hour`, gaps zero-filled rather than omitted — so a consumer can index positionally. The two-entry array this example previously showed was not a valid response.
+- Exactly **24** entries, covering `now−23h .. now`, ascending by `hour`, gaps zero-filled rather than omitted — so a consumer can index positionally.
 - The 24-entry span is fixed. `period` filters the counts inside each bucket; it does not change the array length.
 
 **`p99_latency_ms`** is the nearest-rank 99th percentile — `sorted[min(ceil(0.99·N), N) − 1]`, no interpolation, `0` when there are no samples. For 100 samples `1..100` the answer is **99**, not 100 ([PROTOCOL_SPEC §6.7.1.3](../spec/protocol-spec.md#6713-p99_latency_ms)).
@@ -485,7 +447,10 @@ Canonical shape: [`schemas/sys-usage-module.schema.json`](https://github.com/aip
 
 ---
 
-### system.control.update_config
+
+---
+
+## system.control.update_config
 
 Update a runtime configuration value by dot-path key.
 
@@ -510,62 +475,55 @@ Update a runtime configuration value by dot-path key.
 }
 ```
 
-**Restrictions:**
-- Cannot change `sys_modules.enabled` (restricted key).
-- Sensitive keys (containing `token`, `secret`, `key`, `password`, `auth`, `credential`) are logged with masked values.
-- Changes are in-memory only; not persisted to YAML.
-- Emits `apcore.config.updated` event.
+- `sys_modules.enabled` cannot be changed (the only restricted key).
+- A key is **sensitive** when any dot-separated segment (lowercased) equals, starts with `<s>_`, or ends with `_<s>`, for `<s>` in `token`, `secret`, `key`, `password`, `auth`, `credential`. Its old and new values are replaced with `***REDACTED***` in the response, the event and the audit entry (the overrides store receives the real value).
+- The change is in memory; it is persisted only when an overrides store is configured (see [Persistent overrides](#persistent-overrides-pluggable-overridesstore)).
+- Emits `apcore.config.updated`.
 
 ## Contract: system.control.update_config
 
 ### Inputs
-- `key`: string, required
-  - validation: non-empty string
-  - reject_with: `InvalidInputError(message="'key' is required and must not be empty")`
-- `value`: any, required
-  - validation: none — any JSON-serializable value accepted; constraint checking applied post-set
-- `reason`: string, required
-  - validation: non-empty string
-  - reject_with: `InvalidInputError(message="'reason' is required and must not be empty")`
+- `key`: string, required, non-empty — else `InvalidInputError`
+- `value`: any JSON value, required — constraint checking happens after the set
+- `reason`: string, required, non-empty — else `InvalidInputError`
 
 ### Preconditions
-- `key` must not be in the restricted keys set (currently: `sys_modules.enabled`)
-  - reject_with: `ModuleError(code=CONFIG_KEY_RESTRICTED)`
-- If `key` has a registered constraint, `value` must satisfy it; checked immediately after `Config.set`
-  - reject_with: `ConfigError` — `Config` is rolled back to `old_value` before raising
+- `key` is not restricted (`sys_modules.enabled`) — else `CONFIG_KEY_RESTRICTED`
+- If `key` has a value constraint (see [Config Bus § Value constraints](./config-bus.md#value-constraints)), `value` satisfies it — else the config is rolled back to `old_value` and `ConfigError` (`CONFIG_INVALID`) is raised
 
 ### Side Effects (ordered)
-1. Read current value of `key` from `Config` (captures `old_value`)
-2. Set `key` to `value` in `Config` (in-memory only; not persisted to YAML)
-3. Validate constraint for `key` if one exists; on failure, roll back and raise `ConfigError`
-4. Emit `apcore.config.updated` event via `EventEmitter` (values masked for sensitive keys)
-5. Log change at INFO level (values masked for sensitive keys)
+1. Read the current value of `key` (`old_value`)
+2. Set `key` to `value` in `Config`
+3. Check the key's constraint; on failure roll back and raise
+4. Persist to the overrides store, if one is configured (best effort: a write failure is logged, not raised)
+5. Emit `apcore.config.updated` (values masked for sensitive keys)
+6. Record an audit entry, if an `AuditStore` is configured
+7. Log the change at INFO (values masked for sensitive keys)
 
 ### Postconditions
 - On success: `config.get(key)` returns `value`
-- On `ConfigError`: `config.get(key)` returns the original `old_value` (atomically rolled back)
+- On `CONFIG_INVALID`: `config.get(key)` returns `old_value`
 
 ### Errors
-- `InvalidInputError` — `key` is absent or empty; or `reason` is absent or empty
-- `ModuleError(code=CONFIG_KEY_RESTRICTED)` — `key` is in the restricted set
-- `ConfigError` — `value` violates a registered constraint; `Config` rolled back before raising
+- `InvalidInputError` (`GENERAL_INVALID_INPUT`) — `key` or `reason` missing or empty
+- `CONFIG_KEY_RESTRICTED` — `key` is restricted
+- `ConfigError` (`CONFIG_INVALID`) — `value` violates the key's constraint
 
 ### Returns
-- On success: `dict` — `{success: true, key: str, old_value: any, new_value: any}`
-  - `old_value` and `new_value` replaced with redaction sentinel for sensitive key segments
+- `{success: true, key, old_value, new_value}`; values masked for sensitive keys
 
 ### Properties
-- idempotent: false — repeated calls with different values produce different state
-- thread_safe: false — `Config.set` is not internally locked; concurrent callers must serialize
+- idempotent: false
+- thread_safe: false — `Config.set` is not internally locked; serialize concurrent callers
 - async: false
-- pure: false — mutates `Config` state and emits an event
+- pure: false — mutates `Config` and emits an event
 - reentrant: false
 
 ---
 
-### system.control.reload_module
+## system.control.reload_module
 
-Hot-reload a module from disk without restart.
+Hot-reload one module from disk — or every module matching a pattern — without restarting.
 
 **Annotations:** `requires_approval=True`
 
@@ -573,10 +531,13 @@ Hot-reload a module from disk without restart.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `module_id` | string | *(required)* | Module to reload |
+| `module_id` | string | one of `module_id` / `path_filter` | Single module to reload |
+| `path_filter` | string | one of `module_id` / `path_filter` | Pattern (Algorithm A25: `*` and `?` only) matched against registered module IDs, for a bulk reload |
 | `reason` | string | *(required)* | Audit reason |
 
-**Output:**
+`module_id` and `path_filter` are mutually exclusive (`MODULE_RELOAD_CONFLICT`); omitting both is `GENERAL_INVALID_INPUT`. A `path_filter` matching nothing is a no-op with an empty `reloaded_modules`. Bulk reloads run in dependency order, leaves first. `reload_dependents` is deprecated and ignored (it warns once); to reload dependents, use a `path_filter` that covers them (D-121). Rust additionally accepts `reload_config: true`, which re-reads the configuration file when the module was constructed with a bound `Config`.
+
+**Output (single module):**
 
 ```json
 {
@@ -588,54 +549,59 @@ Hot-reload a module from disk without restart.
 }
 ```
 
-**Process:** `safe_unregister()` with drain → `discover()` re-load → re-register → emit `apcore.module.reloaded` event.
+**Output (`path_filter`):**
+
+```json
+{
+  "success": true,
+  "module_id": null,
+  "reloaded_modules": ["executor.email.send", "executor.math.add"],
+  "reload_duration_ms": 120.7
+}
+```
+
+Emits `apcore.module.reloaded` for each reloaded module.
 
 ## Contract: system.control.reload_module
 
 ### Inputs
-- `module_id`: string, required
-  - validation: non-empty string
-  - reject_with: `InvalidInputError`
-- `reason`: string, required
-  - validation: non-empty string
-  - reject_with: `InvalidInputError(message="'reason' is required and must be a non-empty string")`
+- `module_id` or `path_filter` (exactly one), `reason` (required, non-empty)
 
 ### Preconditions
-- `module_id` must be present in the `Registry` before reload begins
-  - reject_with: `ModuleNotFoundError(module_id=module_id)`
+- For a single reload, `module_id` is registered — else `MODULE_NOT_FOUND`
 
-### Side Effects (ordered)
-1. Read current module from `Registry` to capture `previous_version`
-2. Call `module.on_suspend()` if the method is defined — captures suspended state; errors are logged at ERROR and suppressed (best-effort)
-3. Call `registry.safe_unregister(module_id)` — drains in-flight calls then removes the module
-4. Call `registry.discover()` to reload module source from disk; if `module_id` is absent after discovery, raise `ReloadFailedError`
-5. Call `registry.register_internal(module_id, new_module)` to re-register the freshly loaded module
-6. Call `new_module.on_resume(suspended_state)` if the method is defined and state is non-`None`; errors are logged at ERROR and suppressed (best-effort)
-7. Emit `apcore.module.reloaded` event via `EventEmitter`
-8. Log reload at INFO level
+### Side Effects (ordered, per module)
+1. Read the current module and its version
+2. Call `on_suspend()` if defined (best effort; errors are logged)
+3. `safe_unregister(module_id)` — drain in-flight calls, then remove the module
+4. Re-run discovery to load the module from disk
+5. Register the new instance (running its `on_load`)
+6. Call `on_resume(state)` if defined and a state was captured (best effort)
+7. Emit `apcore.module.reloaded`; record an audit entry per module (bulk entries share one `correlation_id`)
 
-### Postconditions
-- On success: `registry.get(module_id)` returns a freshly loaded module instance
-- If step 4 raises, `module_id` is unregistered and callers must handle the partial state
+If step 4 or 5 fails, see [Reload failure semantics](#reload-failure-semantics).
 
 ### Errors
-- `InvalidInputError` — `module_id` or `reason` is absent, wrong type, or empty
-- `ModuleNotFoundError` — `module_id` is not registered before reload begins
-- `ReloadFailedError` — `registry.discover()` raised or `module_id` was absent after discovery
+- `InvalidInputError` (`GENERAL_INVALID_INPUT`) — `reason` missing, or neither `module_id` nor `path_filter`
+- `ModuleReloadConflictError` (`MODULE_RELOAD_CONFLICT`) — both `module_id` and `path_filter`
+- `ModuleNotFoundError` (`MODULE_NOT_FOUND`) — `module_id` is not registered
+- `ReloadFailedError` (`RELOAD_FAILED`) — discovery failed or the module was missing afterwards
 
 ### Returns
-- On success: `dict` — `{success: true, module_id: str, previous_version: str, new_version: str, reload_duration_ms: float}`
+- Single: `{success, module_id, previous_version, new_version, reload_duration_ms}`
+- Bulk: `{success, module_id: null, reloaded_modules, reload_duration_ms}`
+- Rust adds `config_reloaded` to both.
 
 ### Properties
-- idempotent: false — each call unregisters and re-registers; invoking twice reloads twice
-- thread_safe: false — concurrent reload calls are not serialized beyond `safe_unregister`
+- idempotent: false — each call unregisters and re-registers
+- thread_safe: false — concurrent reloads are serialized only by `safe_unregister`
 - async: false
-- pure: false — mutates `Registry`, performs file I/O, emits an event
+- pure: false — mutates the registry, reads files, emits events
 - reentrant: false
 
 ---
 
-### system.control.toggle_feature
+## system.control.toggle_feature
 
 Disable or enable a module without unloading it.
 
@@ -659,108 +625,84 @@ Disable or enable a module without unloading it.
 }
 ```
 
-Disabled modules remain registered but calls raise `ModuleDisabledError`. Toggle state is thread-safe (via `ToggleState` class), **isolated to the owning `APCore` instance** — disabling a module on one instance does not affect another instance in the same process — and survives reload of that instance. Emits `apcore.module.toggled` event.
+A disabled module stays registered; calls to it fail with `MODULE_DISABLED` at the module-lookup step. Toggle state is held by a thread-safe `ToggleState` that belongs to the owning `APCore` instance — disabling a module on one instance does not affect another in the same process — and survives reloads of that module. Emits `apcore.module.toggled`.
 
 ## Contract: system.control.toggle_feature
 
 ### Inputs
-- `module_id`: string, required
-  - validation: non-empty string
-  - reject_with: `InvalidInputError(message="'module_id' is required and must be a non-empty string")`
-- `enabled`: bool, required
-  - validation: must be a `bool` instance (not `None`, not a string or integer)
-  - reject_with: `InvalidInputError(message="'enabled' is required and must be a boolean")`
-- `reason`: string, required
-  - validation: non-empty string
-  - reject_with: `InvalidInputError(message="'reason' is required and must be a non-empty string")`
+- `module_id`: string, required, non-empty — else `InvalidInputError`
+- `enabled`: boolean, required (not null, string or number) — else `InvalidInputError`
+- `reason`: string, required, non-empty — else `InvalidInputError`
 
 ### Preconditions
-- `module_id` must be registered in the `Registry`
-  - reject_with: `ModuleNotFoundError(module_id=module_id)`
+- `module_id` is registered — else `MODULE_NOT_FOUND`
 
 ### Side Effects (ordered)
-1. Query `Registry.has(module_id)` (read-only existence check)
-2. Acquire internal lock on `ToggleState._lock`
-3. Mutate `ToggleState._disabled` set: add `module_id` when `enabled=false`; discard it when `enabled=true`
-4. Release `ToggleState._lock`
-5. Emit `apcore.module.toggled` event via `EventEmitter`
-6. Log toggle at INFO level
+1. Check the module exists
+2. Update the `ToggleState` under its lock (disable or enable)
+3. Persist the toggle to the overrides store, if one is configured
+4. Emit `apcore.module.toggled`; record an audit entry, if an `AuditStore` is configured
+5. Log at INFO
 
 ### Postconditions
-- When `enabled=false`: `is_module_disabled(module_id)` returns `true`; calls raise `ModuleDisabledError(code=MODULE_DISABLED)`
-- When `enabled=true`: `is_module_disabled(module_id)` returns `false`; module calls proceed normally
-- Toggle state persists across module reload of the same instance (held by the owning `APCore` instance's `ToggleState`, external to `Registry`); it is isolated to that instance, not shared process-globally (issue #71)
+- `enabled=false`: calls to `module_id` fail with `ModuleDisabledError` (`MODULE_DISABLED`)
+- `enabled=true`: calls proceed normally
+- The state persists across reloads of the module and is isolated to the owning `APCore` instance
 
 ### Errors
-- `InvalidInputError` — `module_id` is absent/empty, `enabled` is absent/non-boolean, or `reason` is absent/empty
-- `ModuleNotFoundError` — `module_id` is not registered in the `Registry`
+- `InvalidInputError` (`GENERAL_INVALID_INPUT`) — invalid input as above
+- `ModuleNotFoundError` (`MODULE_NOT_FOUND`) — `module_id` is not registered
 
 ### Returns
-- On success: `dict` — `{success: true, module_id: str, enabled: bool}`
+- `{success: true, module_id, enabled}`
 
 ### Properties
-- idempotent: true — toggling to the current state produces the same outcome
-- thread_safe: true — `ToggleState` uses `threading.Lock` to serialize all mutations
+- idempotent: true — toggling to the current state changes nothing (Rust's registration descriptor currently marks it `idempotent: false`)
+- thread_safe: true
 - async: false
-- pure: false — mutates `ToggleState`, emits an event, writes a log entry
+- pure: false — mutates `ToggleState`, emits an event
 - reentrant: false
 
-## Registration & Setup
+## System-module output and audit conventions
 
-### Auto-Registration via `register_sys_modules()`
+- `system.manifest.full` reports `project_name: "apcore"` when `project.name` is not configured (D-110).
+- A bulk reload writes one audit entry **per module**, and all entries from one operation share a `correlation_id` (D-111).
+- An identity snapshot with no roles omits the `roles` key instead of emitting `[]` (D-118).
+- Every `system.*` module declares `open_world: false` explicitly (D-119).
 
-```python
-from apcore.sys_modules.registration import register_sys_modules
+## Reload failure semantics
 
-context = register_sys_modules(
-    registry=registry,
-    executor=executor,
-    config=config,
-    metrics_collector=None,  # auto-created if needed
-)
-```
+When a reload fails after the old instance was removed, the previous instance is restored (D-112):
 
-**Workflow:**
+1. Restoration is **compensating, not atomic**. The module is genuinely unregistered for a window, and a concurrent call in that window gets `MODULE_NOT_FOUND`.
+2. The restored instance's `on_load` runs again (its `on_unload` already ran during the unregister).
+3. If that restoring `on_load` also fails, the module may stay unavailable — publishing a module whose load hook failed is what [registration ordering](./registry-system.md#registration-ordering-invariants) forbids.
+4. On the bulk path restoration is per module; modules that already reloaded successfully are not rolled back, and the operation reports failure (`RELOAD_FAILED`).
 
-1. Check `config.get("sys_modules.enabled")` — exit if `false`.
-2. Create `ErrorHistory` and register `ErrorHistoryMiddleware`.
-3. Create `UsageCollector` and register `UsageMiddleware`.
-4. Register health, manifest, and usage modules.
-5. If `sys_modules.events.enabled`:
-   - Create `EventEmitter` and `PlatformNotifyMiddleware`.
-   - Register control modules.
-   - Instantiate event subscribers from config.
-   - Bridge registry events to EventEmitter.
+| SDK | Single-module failure | Bulk (`path_filter`) failure |
+|---|---|---|
+| Python | restore, raise `RELOAD_FAILED`; a failed restore is logged and the module stays unavailable | restore the failing module and raise; earlier modules stay reloaded |
+| TypeScript | restore, raise `RELOAD_FAILED`; a failed restore propagates its own error | raises only if discovery itself throws; a module missing after discovery is restored and left out of `reloaded_modules`, and the call returns `success: true` |
+| Rust | restore, return `RELOAD_FAILED` | restore every affected module and return `RELOAD_FAILED` if discovery fails or any module is missing |
 
-**Return value:**
+## Registration
 
-```python
-{
-    "error_history": ErrorHistory,
-    "error_history_middleware": ErrorHistoryMiddleware,
-    "usage_collector": UsageCollector,
-    "usage_middleware": UsageMiddleware,
-    "event_emitter": EventEmitter,               # if events enabled
-    "platform_notify_middleware": PlatformNotifyMiddleware,  # if events enabled
-}
-```
+### With `APCore`
 
-### Via APCore Client (Recommended)
+`APCore` calls `register_sys_modules` itself when constructed with a configuration that sets `sys_modules.enabled: true`, sharing its own `ToggleState`. It also installs the error-history and usage middlewares and, when events are enabled, the `EventEmitter`.
 
 === "Python"
 
     ```python
-    from apcore import APCore
-    from apcore.config import Config
+    from apcore import APCore, Config
 
-    config = Config.load("apcore.yaml")
+    config = Config.load("apcore.yaml")  # sys_modules.enabled: true, events.enabled: true
     client = APCore(config=config)
 
-    # System modules auto-registered! Query them directly:
     health = client.call("system.health.summary", {})
     usage = client.call("system.usage.summary", {"period": "24h"})
 
-    # Control via convenience methods:
+    # Convenience wrappers around system.control.toggle_feature:
     client.disable("some.module", reason="maintenance")
     client.enable("some.module", reason="done")
     ```
@@ -770,14 +712,13 @@ context = register_sys_modules(
     ```typescript
     import { APCore, Config } from 'apcore-js';
 
-    const config = Config.load('apcore.yaml');
+    const config = Config.load('apcore.yaml'); // sys_modules.enabled: true, events.enabled: true
     const client = new APCore({ config });
 
-    // System modules auto-registered! Query them directly:
     const health = await client.call('system.health.summary', {});
     const usage = await client.call('system.usage.summary', { period: '24h' });
 
-    // Control via convenience methods:
+    // Convenience wrappers around system.control.toggle_feature:
     await client.disable('some.module', 'maintenance');
     await client.enable('some.module', 'done');
     ```
@@ -785,18 +726,127 @@ context = register_sys_modules(
 === "Rust"
 
     ```rust
-    use apcore::APCore;
+    use apcore::{APCore, ModuleError};
     use serde_json::json;
 
-    let client = APCore::from_path("apcore.yaml")?;
+    #[tokio::main]
+    async fn main() -> Result<(), ModuleError> {
+        // apcore.yaml: sys_modules.enabled: true, events.enabled: true
+        let client = APCore::from_path("apcore.yaml")?;
 
-    // System modules auto-registered! Query them directly:
-    let health = client.call("system.health.summary", json!({}), None, None).await?;
-    let usage = client.call("system.usage.summary", json!({"period": "24h"}), None, None).await?;
+        let health = client.call("system.health.summary", json!({}), None, None).await?;
+        let usage = client.call("system.usage.summary", json!({ "period": "24h" }), None, None).await?;
+        println!("{health} {usage}");
 
-    // Control via convenience methods:
-    client.disable("some.module", Some("maintenance"))?;
-    client.enable("some.module", Some("done"))?;
+        // Convenience wrappers around system.control.toggle_feature:
+        client.disable("some.module", Some("maintenance")).await?;
+        client.enable("some.module", Some("done")).await?;
+        Ok(())
+    }
+    ```
+
+`disable` / `enable` raise `SysModulesDisabledError` (`SYS_MODULES_DISABLED`) when the client registered no system modules. They call `system.control.toggle_feature` through the executor — so the approval gate applies, and the module exists only when `sys_modules.events.enabled` is `true`.
+
+### Calling `register_sys_modules` directly
+
+`APCore` accepts no audit store or custom overrides store. To supply one, build the registry and executor yourself (with no `APCore` over the same registry — a second registration fails with `DUPLICATE_MODULE_ID` for every system module) and call `register_sys_modules`:
+
+=== "Python"
+
+    ```python
+    from apcore import Config, Executor, FileOverridesStore, Registry, register_sys_modules
+    from apcore.sys_modules.audit import InMemoryAuditStore
+
+    config = Config.load("apcore.yaml")  # sys_modules.enabled: true, events.enabled: true
+    registry = Registry(config=config)
+    executor = Executor(registry, config=config)
+    audit_store = InMemoryAuditStore()
+
+    ctx = register_sys_modules(
+        registry,
+        executor,
+        config,
+        audit_store=audit_store,
+        overrides_store=FileOverridesStore("/etc/apcore/overrides.yaml"),
+        fail_on_error=True,  # raise SysModuleRegistrationError instead of logging
+    )
+
+    executor.call("system.control.toggle_feature", {"module_id": "system.usage.summary", "enabled": False, "reason": "maintenance"})
+    for entry in audit_store.query(module_id="system.usage.summary"):
+        print(entry.action, entry.actor_id, entry.change)
+    ```
+
+=== "TypeScript"
+
+    ```typescript
+    import {
+      Config,
+      Executor,
+      FileOverridesStore,
+      InMemoryAuditStore,
+      Registry,
+      registerSysModules,
+    } from 'apcore-js';
+
+    const config = Config.load('apcore.yaml'); // sys_modules.enabled: true, events.enabled: true
+    const registry = new Registry({ config });
+    const executor = new Executor({ registry, config });
+    const auditStore = new InMemoryAuditStore();
+
+    // Synchronous; positional (registry, executor, config, metricsCollector, options).
+    const ctx = registerSysModules(registry, executor, config, null, {
+      auditStore,
+      overridesStore: new FileOverridesStore('/etc/apcore/overrides.yaml'),
+      failOnError: true, // throw SysModuleRegistrationError instead of logging
+    });
+
+    await executor.call('system.control.toggle_feature', {
+      module_id: 'system.usage.summary',
+      enabled: false,
+      reason: 'maintenance',
+    });
+    for (const entry of auditStore.query({ moduleId: 'system.usage.summary' })) {
+      console.log(entry.action, entry.actorId, entry.change);
+    }
+    ```
+
+=== "Rust"
+
+    ```rust
+    use std::path::Path;
+    use std::sync::Arc;
+
+    use apcore::sys_modules::{register_sys_modules_with_options, AuditStore, InMemoryAuditStore, SysModulesOptions};
+    use apcore::{Config, Executor, FileOverridesStore, Registry};
+    use serde_json::json;
+
+    #[tokio::main]
+    async fn main() -> Result<(), Box<dyn std::error::Error>> {
+        let config = Config::load(Path::new("apcore.yaml"))?; // sys_modules.enabled / events.enabled: true
+        let registry = Arc::new(Registry::new());
+        let executor = Executor::new(Arc::clone(&registry), config.clone());
+        let audit_store = Arc::new(InMemoryAuditStore::new());
+
+        let options = SysModulesOptions {
+            audit_store: Some(audit_store.clone()),
+            overrides_store: Some(Arc::new(FileOverridesStore::new("/etc/apcore/overrides.yaml"))),
+            fail_on_error: true,
+            ..SysModulesOptions::default()
+        };
+        let _ctx = register_sys_modules_with_options(Arc::clone(&registry), &executor, &config, None, options)?;
+
+        executor
+            .call(
+                "system.control.toggle_feature",
+                json!({ "module_id": "system.usage.summary", "enabled": false, "reason": "maintenance" }),
+                None,
+                None,
+            )
+            .await?;
+        let entries = audit_store.query(Some("system.usage.summary"), None, None).await?;
+        println!("{} audit entries", entries.len());
+        Ok(())
+    }
     ```
 
 ## Configuration
@@ -805,944 +855,292 @@ context = register_sys_modules(
 sys_modules:
   enabled: true
   error_history:
-    max_entries_per_module: 50    # Ring buffer per-module capacity
-    max_total_entries: 1000       # Ring buffer total capacity
+    max_entries_per_module: 50    # per-module ring-buffer capacity
+    max_total_entries: 1000       # total ring-buffer capacity
   events:
-    enabled: true                 # Required for control modules
+    enabled: true                 # required for the control modules
     thresholds:
-      error_rate: 0.1             # 10% triggers apcore.health.error_threshold_exceeded
-      latency_p99_ms: 5000.0      # 5s triggers apcore.health.latency_threshold_exceeded
+      error_rate: 0.1             # apcore.health.error_threshold_exceeded
+      latency_p99_ms: 5000.0      # apcore.health.latency_threshold_exceeded
     subscribers:
       - type: "webhook"
         url: "https://platform.example.com/events"
         headers:
-          Authorization: "Bearer token"
-```
-
-## Dependencies
-
-### Internal
-- `Registry` — Module lookup and registration.
-- `Executor` — Module execution and middleware management.
-- `Config` — Configuration values and hot reload.
-- `MetricsCollector` — Call counts and latency histograms for health modules.
-- `ErrorHistory` — Recent error tracking for health modules.
-- `UsageCollector` — Call tracking for usage modules.
-- `EventEmitter` — Event dispatch for control modules.
-
-### Permissions
-System modules use the reserved `system.*` namespace. Registration bypasses reserved word checks via `registry.register_internal()`. See [PROTOCOL_SPEC §6.6](../spec/protocol-spec.md#66-system-module-permissions) for the defense-in-depth permission model.
-
-**Activation has two stages, not one** ([§6.6.3](../spec/protocol-spec.md#663-defense-in-depth-model)):
-
-| Config | Modules registered |
-|---|---|
-| `sys_modules.enabled: false` *(default)* | **0** |
-| `sys_modules.enabled: true`, `sys_modules.events.enabled: false` *(default)* | **6** — `system.health.*`, `system.usage.*`, `system.manifest.*` |
-| both `true` | **9** — the above plus the three `system.control.*` write modules |
-
-The control modules live inside the events branch because their audit events need the `EventEmitter`. A registry holding the six read modules has no write surface at all, which is why anything reasoning about exposure should distinguish the two states rather than treat "system modules are on" as one.
-
-**Layers 2 and 3 are inactive by absence** ([§6.6.3.1](../spec/protocol-spec.md#6631-layers-2-and-3-are-inactive-by-absence)): a missing `acl/` path attaches no ACL (and MUST NOT synthesize an empty default-deny one), and a missing `ApprovalHandler` skips the gate with a warning unless `ExecutionPolicy(strict=true)` is set. Neither absence fails closed.
-
-To observe what is actually gating a registry — rather than infer it from `acl != null` — read [`executor.governance_state()`](./core-executor.md#governance-state-api) (§6.6.5).
-
-??? info "Python SDK reference"
-    The following table is **not a protocol requirement** — it documents the Python SDK's source layout for implementers/users of `apcore-python`.
-
-    | File | Purpose |
-    |------|---------|
-    | `src/apcore/sys_modules/registration.py` | `register_sys_modules()`, subscriber factory registry |
-    | `src/apcore/sys_modules/health.py` | `HealthSummaryModule`, `HealthModuleModule` |
-    | `src/apcore/sys_modules/manifest.py` | `ManifestModuleModule`, `ManifestFullModule` |
-    | `src/apcore/sys_modules/usage.py` | `UsageSummaryModule`, `UsageModuleModule` |
-    | `src/apcore/sys_modules/control.py` | `UpdateConfigModule`, `ReloadModuleModule`, `ToggleFeatureModule`, `ToggleState` |
-
-## Contract: checkModuleDisabled / check_module_disabled
-
-### Inputs
-
-| Parameter | Type | Required | Description |
-|---|---|---|---|
-| `module_id` | `str` | Yes | Fully-qualified module ID to inspect. |
-| `registry` | `Registry` | Yes | Registry that holds toggle state. |
-
-### Errors
-
-| Code | Condition |
-|---|---|
-| `MODULE_DISABLED` | The module's current `ToggleState` is `DISABLED`. |
-
-### Returns
-
-`None` — raises/throws on disabled; returns normally when enabled.
-
-### Properties
-
-- **Pure:** Yes — reads registry state only, no side effects.
-- **Throws:** `ModuleDisabledError` (code `MODULE_DISABLED`).
-
----
-
-## Contract: isModuleDisabled / is_module_disabled
-
-### Inputs
-
-| Parameter | Type | Required | Description |
-|---|---|---|---|
-| `module_id` | `str` | Yes | Fully-qualified module ID to inspect. |
-
-The free `is_module_disabled(module_id)` / `isModuleDisabled(moduleId)` function reads
-from the **process-global fallback** `ToggleState` and takes `module_id` as its sole
-argument — there is no `registry` parameter. This standalone function exists for callers
-that hold no `APCore` instance; the execution pipeline itself consults the **owning
-instance's** `ToggleState` (injected into the lookup step), so per-instance toggles are
-honored on the call path (issue #71; see `conformance/fixtures/toggle_state_isolation.json`).
-
-### Errors
-
-- None — this function never raises; returns `false` for unknown module IDs.
-
-### Returns
-
-`bool` — `true` if disabled, `false` if enabled or toggle state not set.
-
-### Properties
-
-- **Pure:** Yes — reads registry state only, no side effects.
-- **Does not throw.**
-
----
-
-## Testing Strategy
-
-- **Health modules**: Verify status classification thresholds, error aggregation from ErrorHistory, latency metrics from MetricsCollector.
-- **Manifest modules**: Verify schema/annotation extraction, prefix/tag filtering, source path computation.
-- **Usage modules**: Verify call counting, trend computation, hourly distribution padding, per-caller breakdown.
-- **Control modules**: Verify approval requirement, config update with constraint validation, module reload lifecycle, toggle state persistence across reload.
-- **Registration**: Verify auto-registration workflow, config-driven subscriber creation, middleware ordering.
-
----
-
-## System Modules Hardening (Issue #45)
-
-### 1.1 Config and Feature Toggle Persistence
-
-Currently `system.control.update_config` and `system.control.toggle_feature` changes are in-memory only (see [line 299](#systemcontrolupdate_config)).
-
-#### Normative Rules
-
-- Implementations MUST support an optional `overrides_path` configuration field. When set, changes from `system.control.update_config` and `system.control.toggle_feature` MUST be persisted to `overrides_path` as YAML.
-- The overrides file MUST be loaded on startup and applied AFTER the base config, so manual restores of the base config do not erase runtime overrides.
-- Implementations SHOULD support alternative backends (Redis, etcd, a remote config service) via the pluggable `OverridesStore` interface. Its surface is the **whole map**, not per key: `load() → mapping` and `save(mapping)` (decision **D-47**). A single-key change is a read-modify-write, which is what the `system.control.*` code paths do. An earlier revision of this line specified `set(key, value)` / `get(key)` / `get_all()` / `delete(key)`; no SDK ever implemented it, and `conformance/fixtures/overrides_store.json` now pins the D-47 surface.
-- When no `overrides_path` or KV store is configured, the existing in-memory-only behavior MUST be preserved (backward compatible).
-
-#### YAML Configuration
-
-```yaml
-sys_modules:
+          Authorization: "Bearer <token>"
   control:
-    overrides_path: "/etc/apcore/overrides.yaml"
+    enabled: true                 # default
+    overrides_path: "/var/lib/apcore/overrides.yaml"
 ```
 
-`overrides_path` is the only **configuration** key here. An alternative backend
-is supplied **programmatically**, because there is nothing for YAML to name: this
-document requires that SDKs [MUST NOT ship Redis, Postgres or S3
-implementations](./observability.md#pluggable-storage-backends), so a
-`type: "redis"` block would name a class the framework does not have.
+`sys_modules.usage.retention_hours` and `sys_modules.usage.bucketing_strategy` are accepted but read by no SDK (see [Config Bus § Deprecated and inert keys](./config-bus.md#deprecated-and-inert-keys)).
 
-=== "Python"
-    ```python
-    import json
+## Persistent overrides — pluggable `OverridesStore`
 
-    from apcore import APCore
-    from apcore.sys_modules.registration import register_sys_modules
+Changes made by `update_config` and `toggle_feature` are in memory unless an overrides store is configured. With one, every change is written to it, and at startup its contents are applied **after** the base configuration, so a runtime override survives a restart and a manual edit of the base file.
 
-    class RedisOverridesStore:          # yours, against your own client
-        def __init__(self, client, prefix="apcore:overrides:"):
-            self._client, self._prefix = client, prefix
+- `sys_modules.control.overrides_path` configures a `FileOverridesStore` (YAML). Under `APCore` this is the only way to configure one. In Python and TypeScript it is loaded at startup and written on every change; in Rust it is loaded at startup, but the control modules registered by `APCore` do not write back to it.
+- `register_sys_modules` also accepts an `overrides_store` of any implementation (`FileOverridesStore`, `InMemoryOverridesStore`, or your own); it takes precedence over `overrides_path`.
+- With neither, overrides are in memory only.
 
-        def load(self) -> dict:
-            raw = self._client.get(self._prefix + "all")
-            return json.loads(raw) if raw else {}
+The store interface is the **whole map** — two methods (D-47):
 
-        def save(self, overrides: dict) -> None:
-            self._client.set(self._prefix + "all", json.dumps(overrides))
-
-    client = APCore()
-    register_sys_modules(client, overrides_store=RedisOverridesStore(my_redis))
-    ```
-
-!!! note "An earlier revision showed this as YAML"
-    This block previously offered `overrides_store: {type: "redis", url: …}` as
-    an alternative to `overrides_path`. No SDK ever read it — `overrides_store`
-    is a `register_sys_modules()` parameter, not a configuration key — and no
-    SDK could have, since none ships a Redis backend to instantiate. Under
-    `_config.strict` (§9.10) that key is now rejected outright, which is what
-    surfaced it.
-
-#### Usage Examples
-
-=== "Python"
-
-    ```python
-    from apcore import APCore
-    from apcore.config import Config
-
-    # Startup: load base config, then apply overrides from disk
-    config = Config.load("apcore.yaml")
-    # overrides_path is declared in apcore.yaml under sys_modules.control
-    client = APCore(config=config)
-
-    # Runtime update — persisted to overrides_path automatically
-    await client.executor.call_async(
-        "system.control.update_config",
-        {"key": "executor.default_timeout", "value": 60000, "reason": "increase timeout"},
-        context,
-    )
-    ```
-
-=== "TypeScript"
-
-    ```typescript
-    import { APCore, Config } from 'apcore-js';
-
-    // Startup: load base config, then apply overrides from disk
-    const config = Config.load('apcore.yaml');
-    // overrides_path is declared in apcore.yaml under sys_modules.control
-    const client = new APCore({ config });
-
-    // Runtime update — persisted to overrides_path automatically
-    await client.executor.call(
-        'system.control.update_config',
-        { key: 'executor.default_timeout', value: 60000, reason: 'increase timeout' },
-        context,
-    );
-    ```
-
-=== "Rust"
-
-    ```rust
-    use apcore::APCore;
-    use serde_json::json;
-
-    // Startup: load base config, then apply overrides from disk
-    // overrides_path is declared in apcore.yaml under sys_modules.control
-    let client = APCore::from_path("apcore.yaml")?;
-
-    // Runtime update — persisted to overrides_path automatically
-    client.executor().call(
-        "system.control.update_config",
-        json!({
-            "key": "executor.default_timeout",
-            "value": 60000,
-            "reason": "increase timeout"
-        }),
-        None,
-        None,
-    ).await?;
-    ```
-
-#### Persistent Overrides — pluggable `OverridesStore`
-
-All three SDKs ship a pluggable `OverridesStore` abstraction plus a `FileOverridesStore` implementation backed by `overrides_path`. The abstraction is exposed in the form idiomatic to each language (decision **D-47**):
-
-| SDK | Form | Public symbol |
-|-----|------|---------------|
-| Python | `typing.Protocol` (runtime-checkable) | `apcore.sys_modules.overrides.OverridesStore` |
-| TypeScript | `interface` | `OverridesStore` (exported from the package root, `apcore-js` — `package.json` declares only `.` and `./context-keys` as subpaths) |
-| Rust | `pub trait OverridesStore: Send + Sync` | `apcore::sys_modules::overrides::OverridesStore` |
-
-`FileOverridesStore` and `InMemoryOverridesStore` are the bundled implementations; users MAY supply their own implementation (e.g. a Redis- or KMS-backed store) by satisfying the protocol/interface/trait directly.
-
-The abstraction MUST expose the **whole-map** surface of decision **D-47** — two methods, not four:
-
-| Method | Behavior |
+| Method | Behaviour |
 |---|---|
-| `load() → mapping` | Snapshot of every persisted override (used at startup to apply on top of base config). MUST return an empty mapping, never an error, when the backing store is empty or absent |
-| `save(mapping)` | Replace the entire override set with `mapping`. Persisting a single key is a read-modify-write over `load()` — which is what the `system.control.*` code paths do |
+| `load() → mapping` | Every persisted override. Returns an empty mapping, never an error, when the store is empty or its file does not exist yet. |
+| `save(mapping)` | Replace the entire override set. A single-key change is a read-modify-write, which is what the control modules do. |
 
-An earlier revision of this table specified a per-key surface (`save(key, value)` / `get(key)` / `get_all()` / `delete(key)`). No SDK ever implemented it: apcore-python `sys_modules/overrides.py`, apcore-typescript `sys-modules/overrides.ts` and apcore-rust `sys_modules/overrides.rs` all ship `load()` / `save(mapping)`, and `conformance/fixtures/overrides_store.json` pins that surface.
+| SDK | Form | Sync / async |
+|---|---|---|
+| Python | `apcore.OverridesStore` (runtime-checkable Protocol) | sync |
+| TypeScript | `OverridesStore` interface | `load()` / `save()` may return a value or a promise; an async `load()` is skipped at startup with a warning |
+| Rust | `apcore::OverridesStore` trait (`Send + Sync`) | async; an injected store is not loaded at startup (a warning is logged) |
 
-Wiring during APCore construction:
-
-=== "Python"
-
-    ```python
-    from apcore import APCore
-    from apcore.config import Config
-    from apcore.sys_modules.overrides import (
-        OverridesStore,           # the Protocol — implement to plug in a custom backend
-        FileOverridesStore,       # default, YAML-backed
-        InMemoryOverridesStore,   # default, in-memory (for tests)
-    )
-
-    config = Config.load("apcore.yaml")
-
-    # The store is a register_sys_modules() parameter, not an APCore ctor param.
-    client = APCore(config=config)
-
-    # Production: persist runtime overrides to disk
-    overrides_store: OverridesStore = FileOverridesStore(path="/etc/apcore/overrides.yaml")
-    register_sys_modules(
-        client.registry, client.executor, config, overrides_store=overrides_store
-    )
-
-    # Tests: in-memory only, no disk side effects
-    test_client = APCore(config=config)
-    register_sys_modules(
-        test_client.registry, test_client.executor, config,
-        overrides_store=InMemoryOverridesStore(),
-    )
-    ```
-
-=== "TypeScript"
-
-    ```typescript
-    import { APCore, Config } from "apcore-js";
-    import {
-        OverridesStore,            // the interface — implement to plug in a custom backend
-        FileOverridesStore,        // default, YAML-backed
-        InMemoryOverridesStore,    // default, in-memory (for tests)
-        registerSysModules,
-    } from "apcore-js";
-
-    const config = Config.load("apcore.yaml");
-
-    // The store is a registerSysModules() option, not an APCore ctor option.
-    const client = new APCore({ config });
-
-    // Production: persist runtime overrides to disk
-    const overridesStore = new FileOverridesStore("/etc/apcore/overrides.yaml");
-    registerSysModules(client.registry, client.executor, config, null, { overridesStore });
-
-    // Tests: in-memory only, no disk side effects
-    const testClient = new APCore({ config });
-    registerSysModules(testClient.registry, testClient.executor, config, null, {
-        overridesStore: new InMemoryOverridesStore(),
-    });
-    ```
-
-=== "Rust"
-
-    ```rust
-    use apcore::APCore;
-    use apcore::sys_modules::overrides::{FileOverridesStore, InMemoryOverridesStore, OverridesStore};
-    use std::sync::Arc;
-
-    // Production: persist runtime overrides to disk
-    let store: Arc<dyn OverridesStore> = Arc::new(FileOverridesStore::new("/etc/apcore/overrides.yaml"));
-    let client = APCore::from_path("apcore.yaml")?
-        .with_overrides_store(store);
-
-    // Tests: in-memory only, no disk side effects
-    let test_store: Arc<dyn OverridesStore> = Arc::new(InMemoryOverridesStore::new());
-    let test_client = APCore::from_path("apcore.yaml")?
-        .with_overrides_store(test_store);
-    ```
-
-`FileOverridesStore` MUST treat a missing `path` on first run as an empty store (no error) — the file is created lazily on the first `save()` call. This makes first-run, fresh-install, and ephemeral CI environments behave identically to long-lived installations.
+`FileOverridesStore` creates its file lazily on the first `save()`, so a fresh install behaves like a long-lived one. There is no configuration key for other backends (Redis, a remote config service), and SDKs ship none ([same rule as storage backends](./metrics-and-usage.md#pluggable-storage-backends)): implement the interface and pass the instance to `register_sys_modules`.
 
 ## Contract: OverridesStore.load
 
 ### Inputs
-- No inputs
+- None
 
 ### Errors
-- No error for a missing backing file/path — `FileOverridesStore` treats that as an empty store (see above). Other failure modes (malformed backing data, a remote-backend connection failure) are implementation-defined and not pinned by `conformance/fixtures/overrides_store.json`.
+- None for a missing backing file — that is an empty store. Other failures (malformed data, a remote backend being unreachable) are implementation-defined.
 
 ### Returns
-- On success: mapping/dict/`HashMap` — the full stored overrides map; empty when the store has never been saved to
+- The full overrides map; empty when nothing has been saved
 
 ### Properties
-- async: SDK-specific (see the `OverridesStore` protocol/interface/trait table above)
-- thread_safe: not separately specified — a custom backend SHOULD document its own concurrency guarantees
-- pure: true against a stable backing store — reads whatever the most recent `save()` wrote, without mutating it
+- async: SDK-specific (see above)
+- thread_safe: not specified — a custom backend should document its own guarantees
+- pure: true against a stable backing store
 - idempotent: true
 
 ## Contract: OverridesStore.save
 
 ### Inputs
-- `mapping` (mapping/dict/`HashMap`, required) — the **entire** overrides map to persist. The surface is the whole map, not a single key: a caller changing one key MUST read the current map via `load()`, modify it, and `save()` the result (decision **D-47**).
+- `mapping` (required) — the **entire** overrides map to persist
 
 ### Errors
-- Not normatively pinned beyond the D-47 surface fixed by `conformance/fixtures/overrides_store.json`; a backend-specific failure (disk write error, remote-backend connection failure) is implementation-defined
+- Backend-specific failures are implementation-defined; the control modules log them and continue.
 
 ### Returns
-- On success: void/None/() — `FileOverridesStore` creates the backing file lazily on the first `save()` call if it did not already exist
+- Nothing; `FileOverridesStore` creates its file on the first call if needed
 
 ### Properties
 - async: SDK-specific
-- thread_safe: not separately specified
-- pure: false — replaces the entire persisted overrides map
-- idempotent: true — saving the same `mapping` twice produces the same persisted state
+- thread_safe: not specified
+- pure: false — replaces the persisted map
+- idempotent: true — saving the same mapping twice leaves the same state
 
----
+## Audit trail
 
-### 1.2 Contextual Audit Trail
+The control modules record who changed what. Every state change produces an audit **event** on the event bus, and — when an `AuditStore` is configured — a persisted `AuditEntry`. Both are populated from the same snapshot of the caller, so `AuditEntry.actor_id` and the event's `caller_id` agree.
 
-System control modules that modify state MUST record an audit entry for every change.
+### AuditStore
 
-#### Normative Rules
+| SDK | Interface | `query` |
+|---|---|---|
+| Python | `AuditStore` Protocol; `InMemoryAuditStore` in `apcore.sys_modules.audit` | `query(module_id=None, actor_id=None, since=None) -> list[AuditEntry]` (sync; `since` is an ISO 8601 string) |
+| TypeScript | `AuditStore` interface; `InMemoryAuditStore` | `query({ moduleId?, actorId?, since? }): AuditEntry[]` (sync) |
+| Rust | async `AuditStore` trait; `apcore::sys_modules::InMemoryAuditStore` | `query(module_id, actor_id, since: Option<DateTime<Utc>>).await -> Result<Vec<AuditEntry>, ModuleError>` |
 
-- `system.control.update_config`, `system.control.reload_module`, and `system.control.toggle_feature` MUST extract the caller identity from `context.identity` and record it in a structured audit entry.
-- Each audit entry MUST contain: `timestamp`, `module_id` (the target), `action` (update_config/reload_module/toggle_feature), `actor_id` (from `context.identity.id`), `actor_type` (from `context.identity.type`), `change` (before/after for config; enabled/disabled for toggle; module_version for reload).
-- Implementations MUST support an `AuditStore` interface with `append(entry)` and `query(module_id?, actor_id?, since?) → List[AuditEntry]`.
-- When no AuditStore is configured, audit entries SHOULD be logged at INFO level and discarded (not stored).
-
-#### AuditEntry Schema
+All three also have `append(entry)`. The sys-modules `AuditEntry` is distinct from the ACL's `AuditEntry` exported at the package root.
 
 ```yaml
 AuditEntry:
-  timestamp: str      # ISO 8601
-  action: enum        # update_config | reload_module | toggle_feature
+  timestamp: str        # ISO 8601
+  action: str           # update_config | reload_module | toggle_feature
   target_module_id: str
-  actor_id: str
-  actor_type: str     # user | service | agent | api_key | system
+  actor_id: str         # context.identity.id, or "@external"
+  actor_type: str       # context.identity.type
   trace_id: str
-  correlation_id: str # groups one multi-target operation; "" otherwise (D-111)
   change:
-    before: any       # previous value / null
-    after: any        # new value / null
+    before: any
+    after: any
+  correlation_id: str   # shared by the entries of one bulk reload; "" otherwise (D-111)
 ```
 
-> **D-111 (v1.58.0) — the schema now declares `correlation_id`.** The
-> requirement that "every entry from a single bulk reload MUST carry the same
-> correlation id" landed at v1.51.0, and this block was not updated, so the
-> declared structure contradicted a MUST written three sections above it —
-> the same shape D-128 corrected in `extension-system.md`. The field is
-> **optional and empty for single-target operations**, which need no grouping,
-> so an existing `AuditStore` implementation keeps working unchanged.
+TypeScript uses camelCase field names (`targetModuleId`, `actorId`, …).
 
-#### Usage Examples
+### Audit event payload
+
+The `data` of `apcore.config.updated`, `apcore.module.toggled` and `apcore.module.reloaded` carries the operation's fields plus the caller:
+
+- `caller_id` — always present; `"@external"` when the context has no caller ID.
+- `identity` — present only when the context has an identity: `id`, `type`, `roles` (omitted when empty), and the identity's other attributes, with the value of any attribute whose name contains `token`, `secret`, `password`, `passwd`, `key`, `auth`, `credential`, `cookie`, `session` or `bearer` replaced by `"<redacted>"`. Omitted — not `null` — when there is no identity.
+- Raw credentials (bearer tokens, API keys) never appear in the payload.
+
+```json
+{
+  "event_type": "apcore.config.updated",
+  "module_id": "system.control.update_config",
+  "severity": "info",
+  "data": {
+    "key": "executor.default_timeout",
+    "old_value": 30000,
+    "new_value": 60000,
+    "caller_id": "ops.console",
+    "identity": { "id": "user-42", "type": "user", "display_name": "alice@example.com" }
+  }
+}
+```
+
+```json
+{
+  "event_type": "apcore.module.toggled",
+  "module_id": "risky.module",
+  "severity": "info",
+  "data": { "module_id": "risky.module", "enabled": false, "caller_id": "@external" }
+}
+```
+
+The event bus is the minimum auditing surface: events are emitted whether or not an `AuditStore` is configured. Rust's `update_config` event additionally carries `reason`, `actor_id` and `actor_type`.
+
+## Usage metrics in Prometheus
+
+`PrometheusExporter` serves the usage collector's data alongside the call metrics when you attach it:
+
+- `apcore_usage_calls_total{module_id, status}` — counter
+- `apcore_usage_error_rate{module_id}` — gauge (0.0–1.0)
+- `apcore_usage_p50_latency_ms`, `apcore_usage_p95_latency_ms`, `apcore_usage_p99_latency_ms` `{module_id}` — gauges
+
+The exporter is constructed and started in code — there is no configuration key for it. The usage collector to attach is the one `register_sys_modules` created (it is in the returned context), and the metrics collector should be the one registration used:
 
 === "Python"
 
     ```python
-    from apcore import APCore
-    from apcore.config import Config
-    from apcore.sys_modules.audit import InMemoryAuditStore
+    from apcore import Config, Executor, Registry, register_sys_modules
+    from apcore.observability import MetricsCollector, PrometheusExporter
 
-    config = Config.load("apcore.yaml")
-    audit_store = InMemoryAuditStore()
+    config = Config.load("apcore.yaml")  # sys_modules.enabled: true
+    registry = Registry(config=config)
+    executor = Executor(registry, config=config)
+    collector = MetricsCollector()
 
-    # The store is a register_sys_modules() parameter, not an APCore ctor param.
-    client = APCore(config=config)
-    register_sys_modules(client.registry, client.executor, config, audit_store=audit_store)
-
-    # After a control call, query the audit log
-    await client.executor.call_async(
-        "system.control.toggle_feature",
-        {"module_id": "risky.module", "enabled": False, "reason": "maintenance"},
-        context,
-    )
-
-    entries = audit_store.query(module_id="risky.module")
-    # entries[0].actor_id == context.identity.id
-    # entries[0].change == {"before": True, "after": False}
+    ctx = register_sys_modules(registry, executor, config, metrics_collector=collector)
+    exporter = PrometheusExporter(collector, usage_collector=ctx["usage_collector"])
+    exporter.start(port=9090, path="/metrics")
     ```
 
 === "TypeScript"
 
     ```typescript
-    import { APCore, Config, InMemoryAuditStore, registerSysModules } from 'apcore-js';
+    import { Config, Executor, MetricsCollector, PrometheusExporter, Registry, registerSysModules } from 'apcore-js';
 
-    const config = Config.load('apcore.yaml');
-    const auditStore = new InMemoryAuditStore();
+    const config = Config.load('apcore.yaml'); // sys_modules.enabled: true
+    const registry = new Registry({ config });
+    const executor = new Executor({ registry, config });
+    const collector = new MetricsCollector();
 
-    // The store is a registerSysModules() option, not an APCore ctor option.
-    const client = new APCore({ config });
-    registerSysModules(client.registry, client.executor, config, null, { auditStore });
-
-    // After a control call, query the audit log
-    await client.executor.call(
-        'system.control.toggle_feature',
-        { module_id: 'risky.module', enabled: false, reason: 'maintenance' },
-        context,
-    );
-
-    const entries = await auditStore.query({ moduleId: 'risky.module' });
-    // entries[0].actorId === context.identity.id
-    // entries[0].change === { before: true, after: false }
+    const ctx = registerSysModules(registry, executor, config, collector);
+    const exporter = new PrometheusExporter({ collector, usageCollector: ctx.usageCollector });
+    exporter.start({ port: 9090, path: '/metrics' });
     ```
 
 === "Rust"
 
     ```rust
-    use apcore::APCore;
-    use apcore::sys_modules::audit::InMemoryAuditStore;
+    use std::path::Path;
     use std::sync::Arc;
-    use serde_json::json;
 
-    let audit_store = Arc::new(InMemoryAuditStore::new());
-    // There is no APCore::with_audit_store — pass the store to
-    // register_sys_modules_with_options via SysModulesOptions.
-    let client = APCore::from_path("apcore.yaml")?;
-
-    // After a control call, query the audit log
-    client.executor().call(
-        "system.control.toggle_feature",
-        json!({ "module_id": "risky.module", "enabled": false, "reason": "maintenance" }),
-        None,
-        None,
-    ).await?;
-
-    let entries = audit_store.query(Some("risky.module"), None, None)?;
-    // entries[0].actor_id == context.identity.id
-    // entries[0].change.before == Some(json!(true)), entries[0].change.after == Some(json!(false))
-    ```
-
----
-
-## Contextual Auditing
-
-Control modules (`system.control.update_config`, `system.control.toggle_feature`, `system.control.reload_module`) **MUST** include `caller_id` and (if present) a redacted `identity` snapshot in their emitted audit events. When the caller is unauthenticated, `caller_id` **MUST** default to `"@external"`.
-
-This requirement complements the structured audit-store contract in §1.2. While §1.2 governs the persisted `AuditEntry` shape, this section governs the **event payload** that is published on the event bus (e.g., `apcore.config.updated`, `apcore.module.toggled`, `apcore.module.reloaded`) so that real-time subscribers see the same identity context the audit store retains.
-
-### Normative rules
-
-- The event payload (`event.data`) **MUST** carry a `caller_id` string field.
-- When `context.caller_id` is `None`/`null`/`""`, the payload `caller_id` **MUST** be the literal string `"@external"`.
-- When `context.identity` is set, the payload **MUST** include an `identity` object containing `id`, `type`, and (optionally) `display_name`. Any field marked `x-sensitive: true` in the Identity schema **MUST** be redacted before inclusion (replaced with `"<redacted>"`).
-- When `context.identity` is `None`/`null`, the payload **MUST NOT** contain an `identity` field (omit, do not emit `null`).
-- Implementations **MUST NOT** include raw bearer tokens, API keys, or other credential material in the audit event payload — only the redacted Identity snapshot is permitted.
-
-### Audit event payload shape
-
-=== "Python"
-
-    ```python
-    # Emitted by system.control.update_config when context.caller_id and
-    # context.identity are populated.
-    event = ApCoreEvent(
-        event_type="apcore.config.updated",
-        module_id="system.control.update_config",
-        timestamp="2026-05-03T12:00:00Z",
-        severity="info",
-        data={
-            "key": "executor.default_timeout",
-            "old_value": 30000,
-            "new_value": 60000,
-            "reason": "increase timeout",
-            "caller_id": "ops.console",
-            "identity": {
-                "id": "user-42",
-                "type": "user",
-                "display_name": "alice@example.com",
-            },
-        },
-    )
-
-    # Unauthenticated caller — caller_id defaults to @external, identity omitted.
-    event = ApCoreEvent(
-        event_type="apcore.module.toggled",
-        module_id="system.control.toggle_feature",
-        timestamp="2026-05-03T12:00:00Z",
-        severity="info",
-        data={
-            "module_id": "risky.module",
-            "enabled": False,
-            "reason": "incident-1234",
-            "caller_id": "@external",
-        },
-    )
-    ```
-
-=== "TypeScript"
-
-    ```typescript
-    // Emitted by system.control.update_config when context.caller_id and
-    // context.identity are populated.
-    // ApCoreEvent is an interface — this is the emitted payload shape.
-    const event: ApCoreEvent = {
-        eventType: "apcore.config.updated",
-        moduleId: "system.control.update_config",
-        timestamp: "2026-05-03T12:00:00Z",
-        severity: "info",
-        data: {
-            key: "executor.default_timeout",
-            old_value: 30000,
-            new_value: 60000,
-            reason: "increase timeout",
-            caller_id: "ops.console",
-            identity: {
-                id: "user-42",
-                type: "user",
-                display_name: "alice@example.com",
-            },
-        },
-    };
-
-    // Unauthenticated caller — caller_id defaults to @external, identity omitted.
-    const externalEvent: ApCoreEvent = {
-        eventType: "apcore.module.toggled",
-        moduleId: "system.control.toggle_feature",
-        timestamp: "2026-05-03T12:00:00Z",
-        severity: "info",
-        data: {
-            module_id: "risky.module",
-            enabled: false,
-            reason: "incident-1234",
-            caller_id: "@external",
-        },
-    };
-    ```
-
-=== "Rust"
-
-    ```rust
-    use apcore::events::ApCoreEvent;
-    use serde_json::json;
-
-    // Emitted by system.control.update_config when context.caller_id and
-    // context.identity are populated.
-    let event = ApCoreEvent {
-        event_type: "apcore.config.updated".to_string(),
-        module_id: "system.control.update_config".to_string(),
-        timestamp: "2026-05-03T12:00:00Z".to_string(),
-        severity: "info".to_string(),
-        data: json!({
-            "key": "executor.default_timeout",
-            "old_value": 30000,
-            "new_value": 60000,
-            "reason": "increase timeout",
-            "caller_id": "ops.console",
-            "identity": {
-                "id": "user-42",
-                "type": "user",
-                "display_name": "alice@example.com"
-            }
-        }),
-    };
-
-    // Unauthenticated caller — caller_id defaults to @external, identity omitted.
-    let external_event = ApCoreEvent {
-        event_type: "apcore.module.toggled".to_string(),
-        module_id: "system.control.toggle_feature".to_string(),
-        timestamp: "2026-05-03T12:00:00Z".to_string(),
-        severity: "info".to_string(),
-        data: json!({
-            "module_id": "risky.module",
-            "enabled": false,
-            "reason": "incident-1234",
-            "caller_id": "@external"
-        }),
-    };
-    ```
-
-### Relationship to §1.2 AuditStore
-
-When both an `AuditStore` (§1.2) and the event bus are configured, implementations **MUST** populate both surfaces from the same in-memory snapshot of `caller_id` + `identity` so the persisted `AuditEntry.actor_id` and the event payload `caller_id` agree. Implementations **MUST NOT** drop the audit event when no `AuditStore` is configured — the event bus is the minimum surface for contextual auditing.
-
----
-
-### 1.3 Prometheus Exporter for UsageCollector
-
-#### Normative Rules
-
-- When a Prometheus exporter is running, the UsageCollector MUST expose its data via the `/metrics` endpoint established in observability hardening (§ Observability Hardening 1.6). The exporter is constructed and started by the application — there is no configuration key that starts it.
-- The UsageCollector MUST emit these additional Prometheus metrics:
-    - `apcore_usage_calls_total{module_id, status}` — counter
-    - `apcore_usage_error_rate{module_id}` — gauge (0.0–1.0)
-    - `apcore_usage_p50_latency_ms{module_id}`, `apcore_usage_p95_latency_ms{module_id}`, `apcore_usage_p99_latency_ms{module_id}` — gauges
-- The Prometheus exporter MUST call `collector.get_module_stats()` and transform to the text format; MUST NOT block the HTTP handler for more than its export budget (default 1000 ms), which is a constructor argument.
-
-#### There is no YAML for this
-
-!!! danger "`observability.prometheus.*` does not exist"
-    Earlier revisions of this section showed a YAML block with
-    `observability.prometheus.enabled` and `export_timeout_ms`. **Neither key is declared
-    anywhere and neither is read by any SDK** — measured — so a configuration carrying them is
-    *rejected* under `_config.strict: true` rather than ignored. The requirements above are
-    restated in terms of the exporter, which exists; its export budget is a constructor
-    argument. See [apcore#118](https://github.com/aiperceivable/apcore/issues/118).
-
-#### Usage Examples
-
-=== "Python"
-
-    ```python
-    from apcore import APCore
-    from apcore.config import Config
-
-    config = Config.load("apcore.yaml")
-    # observability.prometheus.enabled: true in apcore.yaml
-    client = APCore(config=config)
-
-    # UsageCollector metrics are now included in GET /metrics:
-    #   apcore_usage_calls_total{module_id="math.add",status="success"} 5000
-    #   apcore_usage_error_rate{module_id="math.add"} 0.0004
-    #   apcore_usage_p99_latency_ms{module_id="math.add"} 45.0
-    ```
-
-=== "TypeScript"
-
-    ```typescript
-    import { APCore, Config } from 'apcore-js';
-
-    const config = Config.load('apcore.yaml');
-    // observability.prometheus.enabled: true in apcore.yaml
-    const client = new APCore({ config });
-
-    // UsageCollector metrics are now included in GET /metrics:
-    //   apcore_usage_calls_total{module_id="math.add",status="success"} 5000
-    //   apcore_usage_error_rate{module_id="math.add"} 0.0004
-    //   apcore_usage_p99_latency_ms{module_id="math.add"} 45.0
-    ```
-
-=== "Rust"
-
-    ```rust
-    use apcore::APCore;
-
-    // observability.prometheus.enabled: true in apcore.yaml
-    let client = APCore::from_path("apcore.yaml")?;
-
-    // UsageCollector metrics are now included in GET /metrics:
-    //   apcore_usage_calls_total{module_id="math.add",status="success"} 5000
-    //   apcore_usage_error_rate{module_id="math.add"} 0.0004
-    //   apcore_usage_p99_latency_ms{module_id="math.add"} 45.0
-    ```
-
----
-
-### 1.4 Granular Reload via Path Filtering
-
-Currently `system.control.reload_module` reloads a single module by ID. The optional `path_filter` input restricts re-discovery to module IDs matching a glob pattern, enabling partial reloads (e.g., only `executor.email.*`) instead of a full registry sweep.
-
-#### Normative Rules
-
-- Implementations MUST support an **optional** `path_filter` input field on `system.control.reload_module` that accepts a glob-dialect pattern (e.g., `executor.*`, `analytics.reports.*`), matched with algorithm **A25** ([PROTOCOL_SPEC §9.2.3](../spec/protocol-spec.md)) against each registered module ID. When specified, the module MUST restrict re-discovery to module IDs matching the pattern and reload only those modules.
-- `path_filter` is matched with **A25**, not with the host language's glob library and not with A08. `*` and `?` are the only metacharacters; every other character is a literal, so `a[b` is a pattern matching the literal name `a[b` and MUST NOT raise. This is stated because the three SDKs previously used three different matchers here, and the same control-plane request reloaded two modules, reloaded none, or was refused as malformed depending on which one served it (#117).
-- `path_filter` and `module_id` MUST be mutually exclusive. If both are provided, implementations MUST raise a `MODULE_RELOAD_CONFLICT` error.
-- A `path_filter` that matches zero modules MUST be a no-op: `reloaded_modules` is the empty list and no error is raised.
-- When `path_filter` is omitted **and** `module_id` is omitted, implementations MUST raise `InvalidInputError` (one of the two MUST be present).
-- Reload order for multiple matches MUST follow the dependency topological order (leaf modules first, then modules that depend on them).
-
-#### Updated Input for `system.control.reload_module`
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `module_id` | string | *(one of required)* | Single module to reload (mutually exclusive with `path_filter`) |
-| `path_filter` | string | *(one of required)* | Glob-dialect pattern (A25) for bulk reload, matched against module IDs (mutually exclusive with `module_id`) |
-| `reload_dependents` | bool | `false` | **DEPRECATED (v1.51.0, D-121) — removal scheduled for v2.0.** Declared by all three SDKs and implemented by none, so it has never done anything: the field is accepted and ignored. Three independent implementations skipping it is evidence it is not a capability the protocol actually needs, and continuing to declare it manufactures an interface no caller can rely on — the §9.1.3 "declared surface reaches no mechanism" shape, applied to a module INPUT field. **Replacement:** call `reload_module` with an explicit `path_filter` that covers the dependents you want reloaded. During the deprecation window behaviour is unchanged (accepted, ignored); after removal, passing the field is a **validation error** rather than a silent no-op, because every SDK's input schema sets `additionalProperties: false`. That transition is abrupt by construction and MUST be called out in the migration notes. |
-| `reason` | string | *(required)* | Audit reason |
-
-#### Usage Examples
-
-=== "Python"
-
-    ```python
-    from apcore import APCore
-    from apcore.config import Config
-
-    config = Config.load("apcore.yaml")
-    client = APCore(config=config)
-
-    # Reload all executor modules
-    result = await client.executor.call_async(
-        "system.control.reload_module",
-        {"path_filter": "executor.*", "reload_dependents": False, "reason": "deploy"},
-        context,
-    )
-    # result["reloaded_modules"] == ["executor.email.send", "executor.math.add", ...]
-
-    # Reload a single module by ID (existing behavior unchanged)
-    result = await client.executor.call_async(
-        "system.control.reload_module",
-        {"module_id": "executor.email.send", "reason": "hotfix"},
-        context,
-    )
-    ```
-
-=== "TypeScript"
-
-    ```typescript
-    import { APCore, Config } from 'apcore-js';
-
-    const config = Config.load('apcore.yaml');
-    const client = new APCore({ config });
-
-    // Reload all executor modules
-    const result = await client.executor.call(
-        'system.control.reload_module',
-        { path_filter: 'executor.*', reload_dependents: false, reason: 'deploy' },
-        context,
-    );
-    // result.reloaded_modules === ['executor.email.send', 'executor.math.add', ...]
-
-    // Passing both fields raises MODULE_RELOAD_CONFLICT
-    // await client.executor.call('system.control.reload_module',
-    //   { module_id: 'x', path_filter: 'y.*', reason: 'test' }, context);
-    // → throws ModuleReloadConflictError
-    ```
-
-=== "Rust"
-
-    ```rust
-    use apcore::APCore;
-    use serde_json::json;
-
-    let client = APCore::from_path("apcore.yaml")?;
-
-    // Reload all executor modules
-    let result = client.executor().call(
-        "system.control.reload_module",
-        json!({ "path_filter": "executor.*", "reload_dependents": false, "reason": "deploy" }),
-        None,
-        None,
-    ).await?;
-    // result["reloaded_modules"] contains the list of reloaded module IDs
-    ```
-
-#### Rust-only: `Config::reload_from_disk()`
-
-The Rust SDK additionally exposes `Config::reload_from_disk()` for refreshing **static** configuration (the `apcore.yaml` base file plus any `overrides_path` overlay) without restarting the binary. This is distinct from `system.control.reload_module`, which reloads module *code*; `reload_from_disk` reloads only the configuration tree.
-
-**Rationale:** Rust applications run as long-lived single binaries with no equivalent of Python's importlib reload or TypeScript's `require.cache` invalidation. Operators need a way to re-read the YAML files to pick up SRE-driven config edits (timeouts, feature flags, redaction rules) without taking the process down. Python and TypeScript can already achieve this by re-running `Config.load()` and re-attaching it to the client; Rust's borrow rules make that pattern awkward, so the SDK provides an explicit API.
-
-**Normative rules (Rust-only):**
-
-- `Config::reload_from_disk()` MUST re-read the original YAML path passed to `Config::load`/`Config::from_path` and apply any configured `sys_modules.control.overrides_path` overlay on top.
-- The reload MUST be atomic: either the new config fully replaces the old one or, on parse error, the old config remains active and the call MUST return `Err(ConfigError)`.
-- `reload_from_disk` MUST emit `apcore.config.reloaded` via the `EventEmitter` (if events are enabled) on success.
-- The reload MUST NOT mutate `sys_modules.enabled` post-startup: that key is restricted (see [`system.control.update_config` restrictions](#systemcontrolupdate_config)) and MUST be ignored if changed on disk after process start.
-- Python and TypeScript SDKs do **not** require this method; their callers re-construct `Config` and rebuild `APCore` to achieve equivalent behavior.
-
-```rust
-use apcore::config::Config;
-use apcore::APCore;
-use std::sync::Arc;
-
-let config = Arc::new(Config::from_path("apcore.yaml")?);
-let client = APCore::new(config.clone())?;
-
-// ... process runs; SRE edits apcore.yaml on disk ...
-
-// Re-read YAML + overrides without restarting the binary.
-config.reload_from_disk()?;
-// Subscribers to apcore.config.reloaded see the new values.
-// In-flight calls continue under the snapshot they started with.
-```
-
----
-
-### 1.5 Startup Failure Handling
-
-#### Normative Rules
-
-- **Python**: `register_sys_modules()` MUST accept a `fail_on_error: bool = False` parameter. When `True`, any system module registration failure MUST raise immediately. When `False` (default), failures MUST be logged at ERROR level but execution continues.
-- **TypeScript**: `registerSysModules()` MUST accept `failOnError: boolean = false` with the same behavior.
-- **Rust**: `register_sys_modules()` MUST return `Result<SysModulesContext, SysModuleError>` instead of returning `Option` or panicking. The caller MUST handle the Result. The `Ok` arm carries the same context the Python/TypeScript call returns — it is not unit.
-
-#### Usage Examples
-
-=== "Python"
-
-    ```python
-    from apcore.sys_modules.registration import register_sys_modules
-
-    # Default: log errors and continue
-    context = register_sys_modules(
-        registry=registry,
-        executor=executor,
-        config=config,
-        fail_on_error=False,   # default — errors logged at ERROR, execution continues
-    )
-
-    # Strict: raise immediately on any failure
-    try:
-        context = register_sys_modules(
-            registry=registry,
-            executor=executor,
-            config=config,
-            fail_on_error=True,
-        )
-    except SysModuleRegistrationError as exc:
-        print(f"System module registration failed: {exc}")
-        raise SystemExit(1)
-    ```
-
-=== "TypeScript"
-
-    ```typescript
-    import { registerSysModules, SysModuleRegistrationError } from 'apcore-js';
-
-    // Default: log errors and continue
-    const context = await registerSysModules({
-        registry,
-        executor,
-        config,
-        failOnError: false,   // default — errors logged at ERROR, execution continues
-    });
-
-    // Strict: raise immediately on any failure
-    try {
-        const context = await registerSysModules({
-            registry,
-            executor,
-            config,
-            failOnError: true,
-        });
-    } catch (err) {
-        if (err instanceof SysModuleRegistrationError) {
-            console.error(`System module registration failed: ${err.message}`);
-            process.exit(1);
-        }
-        throw err;
+    use apcore::{register_sys_modules, Config, Executor, MetricsCollector, PrometheusExporter, Registry};
+
+    #[tokio::main]
+    async fn main() -> Result<(), Box<dyn std::error::Error>> {
+        let config = Config::load(Path::new("apcore.yaml"))?; // sys_modules.enabled: true
+        let registry = Arc::new(Registry::new());
+        let executor = Executor::new(Arc::clone(&registry), config.clone());
+        let collector = MetricsCollector::new();
+
+        // The collectors are cheap clones over shared state.
+        let ctx = register_sys_modules(Arc::clone(&registry), &executor, &config, Some(collector.clone()))?;
+        let exporter = PrometheusExporter::new(collector).with_usage_collector(ctx.usage_collector.clone());
+        exporter.start(9090, "/metrics").await?;
+        Ok(())
     }
     ```
-
-=== "Rust"
-
-    ```rust
-    use apcore::sys_modules::{register_sys_modules, SysModuleError};
-
-    // register_sys_modules always returns Result — caller MUST handle it
-    let context = register_sys_modules(&registry, &executor, &config)?;
-
-    // Explicit match for fine-grained handling
-    match register_sys_modules(&registry, &executor, &config) {
-        Ok(ctx) => {
-            // All system modules registered successfully
-            serve(ctx).await;
-        }
-        Err(SysModuleError::RegistrationFailed { module_id, source }) => {
-            eprintln!("Failed to register system module {module_id}: {source}");
-            std::process::exit(1);
-        }
-    }
-    ```
-
----
 
 ## Contract: register_sys_modules
 
 ### Inputs
 
-| Parameter | Type | Required | Description |
-|---|---|---|---|
-| `executor` | `Executor` | Yes | The executor to register modules on. |
-| `registry` | `Registry` | Yes | Registry to register system modules into. |
-| `config` | `Config` | Yes | Config instance; reads `sys_modules.*` keys. |
-| `metrics_collector` | `MetricsCollector \| None` | No | If `None`, a new one is created and attached. |
-| `fail_on_error` | `bool` | No (default `False`) | Whether to raise on registration failure. [Python/TypeScript only] |
+| SDK | Signature |
+|---|---|
+| Python | `register_sys_modules(registry, executor, config, metrics_collector=None, fail_on_error=False, audit_store=None, overrides_store=None, toggle_state=None) -> dict` |
+| TypeScript | `registerSysModules(registry, executor, config, metricsCollector?, options?: { failOnError?, overridesPath?, overridesStore?, auditStore?, toggleState? }): SysModulesContext` (synchronous) |
+| Rust | `register_sys_modules(registry: Arc<Registry>, executor: &Executor, config: &Config, metrics_collector: Option<MetricsCollector>)` and `register_sys_modules_with_options(..., options: SysModulesOptions)` → `Result<SysModulesContext, SysModuleError>` |
+
+- `metrics_collector` — created when omitted and needed.
+- `toggle_state` — defaults to the process-global state; `APCore` passes its own.
+- `fail_on_error` — when `true`, a module that fails to register raises; when `false` (default) the failure is logged and registration continues.
 
 ### Errors
 
-| Code | Condition |
-|---|---|
-| `SYS_MODULE_REGISTRATION_FAILED` | A system module failed to register (only raised when `fail_on_error=True` in Python/TypeScript; always returned as `Err` in Rust). |
+- `SysModuleRegistrationError` (`SYS_MODULE_REGISTRATION_FAILED`) — a system module failed to register, raised only with `fail_on_error` (Rust: `SysModuleError::RegistrationFailed { module_id, source }`).
 
 ### Returns
 
-- **On success:** `SysModulesContext` — all system modules registered.
-- **Rust:** `Result<SysModulesContext, SysModuleError>` — the `Ok` arm carries the same `SysModulesContext`, so the return is uniform across all three SDKs.
+- The registration context: the error history, usage collector and their middlewares, the event emitter and notify middleware (when events are enabled), the toggle state and the overrides / audit stores in use. Python returns a `dict` (empty when `sys_modules.enabled` is false).
 
 ### Properties
 
-- **async:** false
-- **thread_safe:** false — call once at startup before serving requests
-- **pure:** false — registers modules into executor
-- **idempotent:** false — registering twice causes `MODULE_ALREADY_REGISTERED`
+- async: false
+- thread_safe: false — call once at startup, before serving requests
+- pure: false — registers modules and installs middleware
+- idempotent: false — a second call on the same registry fails with `DUPLICATE_MODULE_ID` for every system module and installs the middlewares again
+
+## Contract: check_module_disabled / is_module_disabled
+
+`is_module_disabled(module_id) -> bool` and `check_module_disabled(module_id)` (raises `ModuleDisabledError` / `MODULE_DISABLED` when disabled) are free functions in all three SDKs (`isModuleDisabled` / `checkModuleDisabled` in TypeScript; Python: `apcore.sys_modules.control`).
+
+### Inputs
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `module_id` | string | yes | Module ID to inspect |
+
+### Errors
+
+- `is_module_disabled`: none; `false` for unknown IDs.
+- `check_module_disabled`: `ModuleDisabledError` (`MODULE_DISABLED`) when the module is disabled.
+
+### Returns
+
+`is_module_disabled`: `true` if disabled. `check_module_disabled`: nothing.
+
+### Properties
+
+- pure: true — reads toggle state only
+
+These functions read the **process-global** `ToggleState`. An `APCore` instance keeps its own, so toggles made through `client.disable()` are not visible to them — ask the client's toggle state instead (`client.toggle_state` in Python, `client.toggleState` in TypeScript, `client.toggle_state()` in Rust). The execution pipeline always consults the owning instance's state.
+
+## Dependencies
+
+- `Registry` — module lookup and registration (`register_internal()` bypasses the reserved-namespace check for `system.*`).
+- `Executor` — execution and middleware.
+- `Config` — `sys_modules.*` values, runtime updates.
+- `MetricsCollector` — call counts and latency for the health modules.
+- `ErrorHistory` — recent errors for the health modules ([Error History](./error-history.md)).
+- `UsageCollector` — call tracking for the usage modules.
+- `EventEmitter` — events from the control modules.
+
+??? info "Python SDK reference"
+    Not a protocol requirement — the `apcore-python` source layout.
+
+    | File | Purpose |
+    |------|---------|
+    | `src/apcore/sys_modules/registration.py` | `register_sys_modules()`, subscriber factory |
+    | `src/apcore/sys_modules/health.py` | `HealthSummaryModule`, `HealthModuleModule` |
+    | `src/apcore/sys_modules/manifest.py` | `ManifestModuleModule`, `ManifestFullModule` |
+    | `src/apcore/sys_modules/usage.py` | `UsageSummaryModule`, `UsageModuleModule` |
+    | `src/apcore/sys_modules/control.py` | `UpdateConfigModule`, `ReloadModuleModule`, `ToggleFeatureModule`, `ToggleState` |
+    | `src/apcore/sys_modules/overrides.py` | `OverridesStore`, `FileOverridesStore`, `InMemoryOverridesStore` |
+    | `src/apcore/sys_modules/audit.py` | `AuditStore`, `InMemoryAuditStore`, `AuditEntry` |
+
+## Testing strategy
+
+- **Health** — classification thresholds, error aggregation from `ErrorHistory`, latency from `MetricsCollector`.
+- **Manifest** — schema and annotation extraction, prefix and tag filtering, source paths, `project_name` default.
+- **Usage** — call counting, `period` filtering, trend classification, the 24-bucket hourly distribution, nearest-rank p99, per-caller breakdown.
+- **Control** — approval requirement; config update with constraint rollback and sensitive-key masking; reload lifecycle and failure restoration; `path_filter` / `module_id` exclusivity; toggle persistence across reload and isolation between instances.
+- **Persistence and audit** — overrides applied after the base config; `OverridesStore` whole-map surface (`conformance/fixtures/overrides_store.json`); audit entries and event payloads (`@external`, identity redaction, correlation IDs).
+- **Registration** — gating by each `sys_modules.*` key; `fail_on_error`.

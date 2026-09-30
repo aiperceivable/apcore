@@ -1,126 +1,51 @@
 ---
-description: "Developing apcore modules across Python, Rust, Go, Java, and TypeScript using YAML Schema as a shared cross-language contract for consistent, interoperable module interfaces."
+description: "Developing apcore modules across the Python, TypeScript, and Rust SDKs: shared YAML schema files, canonical module IDs, ID maps, and cross-language pitfalls."
 ---
 
-# apcore — Multi-Language Development Guide
+# Multi-Language Development Guide
 
-> Use YAML Schema as a shared contract to develop apcore modules in Python, Rust, Go, Java, TypeScript, and other languages.
+> Use one YAML schema and one module ID to implement or call the same module from Python, TypeScript, and Rust.
 
 ## 1. Overview
 
-One of the core designs of apcore is **cross-language interoperability**. Using YAML Schema as a shared contract, SDKs in different languages can load the same Schema definitions to achieve consistent module interfaces.
+apcore has three SDKs — Python, TypeScript, and Rust. A module written in one of them is described by the same things in all of them:
 
-**Cross-Language Architecture:**
+- a **canonical module ID** (`executor.email.send_email`),
+- an **input and output JSON Schema** (Draft 2020-12),
+- **annotations** (`readonly`, `destructive`, `requires_approval`, …),
+- **error codes** from the shared error catalogue.
 
+Keeping those four in one place is what lets a Python service, a TypeScript tool server, and a Rust worker agree on what `executor.email.send_email` accepts and returns.
+
+```text
+            schemas/executor/email/send_email.schema.yaml
+                        (shared contract)
+                               │
+           ┌───────────────────┼───────────────────┐
+           ▼                   ▼                   ▼
+      apcore-python     apcore-typescript      apcore-rust
+           │                   │                   │
+           └───────────────────┼───────────────────┘
+                               ▼
+                 executor.email.send_email
+                    (canonical module ID)
 ```
-                    YAML Schema (Shared Contract)
-                          │
-          ┌───────┬───────┼───────┬───────┐
-          ▼       ▼       ▼       ▼       ▼
-       Python   Rust     Go     Java    TypeScript
-        SDK      SDK     SDK     SDK      SDK
-          │       │       │       │       │
-          └───────┴───────┴───────┴───────┘
-                          │
-                    Canonical ID
-                (Unified Addressing System)
-```
 
-**Core Principles:**
-
-| Principle | Description |
+| Principle | What it means in practice |
 |------|------|
-| **Schema is the Source of Truth** | YAML Schema files define the input/output structure of modules, with each language SDK generating or loading types from them |
-| **Canonical ID is the Unified Address** | All languages use the same dot-separated snake_case ID to reference modules |
-| **Type Mapping has Standards** | Clear mapping table from JSON Schema types to language-specific types |
-| **Behavior Through Annotations** | Module behavior annotations (readonly, destructive, etc.) are universal across languages |
+| **The schema file is the source of truth** | Input/output structure lives in a `*.schema.yaml` file that each SDK loads at runtime |
+| **The canonical ID is the address** | Every SDK calls the module by the same dot-separated snake_case ID |
+| **Types map by a published table** | JSON Schema types map to native types as described in the [Type Mapping Specification](../spec/type-mapping.md) |
+| **Behaviour travels as annotations** | `readonly`, `destructive`, `requires_approval`, and the rest mean the same thing in every SDK |
 
 ---
 
-## 2. Cross-Language Development Model
+## 2. Canonical Module IDs
 
-### 2.1 How apcore Supports Multiple Languages
+A canonical ID is a dot-separated sequence of lowercase snake_case segments:
 
-apcore achieves cross-language support through the following mechanisms:
-
-1. **YAML Schema Sharing**: Module `input_schema` and `output_schema` are defined in YAML files, read by all language SDKs
-2. **Canonical ID**: Module IDs use language-agnostic dot-separated snake_case format (e.g., `executor.validator.db_params`)
-3. **ID Map**: Converts local naming conventions of each language (PascalCase, camelCase, etc.) to Canonical ID
-4. **JSON Schema Draft 2020-12**: Schema is based on international standards, with mature validation libraries available in all languages
-
-```
-Development Workflow:
-  1. Define YAML Schema → schemas/executor/validator/db_params.schema.yaml
-  2. Each language SDK loads the Schema
-  3. Implement Module interface (execute method)
-  4. Framework automatically handles Schema validation, ACL checks, etc.
-```
-
-### 2.2 YAML Schema as a Shared Contract
-
-```yaml
-# schemas/executor/email/send_email.schema.yaml
-# This file is shared by SDKs in all languages
-
-$schema: "https://apcore.dev/schema/v1"
-version: "1.0.0"
-module_id: "executor.email.send_email"
-
-description: |
-  Email sending module.
-  Sends emails via SMTP protocol.
-
-input_schema:
-  type: object
-  properties:
-    to:
-      oneOf:
-        - type: string
-          format: email
-        - type: array
-          items:
-            type: string
-            format: email
-      description: "Recipient(s)"
-    subject:
-      type: string
-      maxLength: 200
-      description: "Email subject"
-    body:
-      type: string
-      description: "Email body (plain text)"
-    html:
-      type: string
-      description: "Email body (HTML)"
-    smtp_host:
-      type: string
-      description: "SMTP server address"
-    smtp_port:
-      type: integer
-      description: "SMTP server port (default 587)"
-      default: 587
-  required: [to, subject]
-  additionalProperties: false
-
-output_schema:
-  type: object
-  properties:
-    success:
-      type: boolean
-      description: "Whether the send was successful"
-    message_id:
-      type: string
-      description: "Message ID"
-  required: [success]
-```
-
-### 2.3 Canonical ID as Unified Addressing
-
-Canonical ID is the globally unique identifier for a module, using a language-agnostic format:
-
-```
-Format: dot-separated snake_case
-Regex: ^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$
+```text
+Pattern:    ^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$
 Max length: 192 characters
 
 Examples:
@@ -130,281 +55,307 @@ Examples:
   common.util.sql_parser
 ```
 
-Each language uses the same Canonical ID to reference modules:
+Every SDK calls a module by that ID:
 
 === "Python"
 
     ```python
-    result = executor.call("executor.email.send_email", inputs, context)
+    from apcore import APCore
+
+    client = APCore()
+    client.discover()
+
+    result = client.call(
+        "executor.email.send_email",
+        {"to": "user@example.com", "subject": "Hello", "body": "World"},
+    )
     ```
 
 === "TypeScript"
 
     ```typescript
-    const result = await executor.call("executor.email.send_email", inputs, context);
+    import { APCore } from 'apcore-js';
+
+    const client = new APCore();
+    await client.discover();
+
+    const result = await client.call('executor.email.send_email', {
+      to: 'user@example.com',
+      subject: 'Hello',
+      body: 'World',
+    });
     ```
 
 === "Rust"
 
     ```rust
-    let result = executor.call("executor.email.send_email", &inputs, &context)?;
+    use apcore::errors::ModuleError;
+    use apcore::APCore;
+    use serde_json::json;
+
+    async fn send(client: &APCore) -> Result<serde_json::Value, ModuleError> {
+        // call(module_id, inputs, context, version_hint)
+        client
+            .call(
+                "executor.email.send_email",
+                json!({ "to": "user@example.com", "subject": "Hello", "body": "World" }),
+                None,
+                None,
+            )
+            .await
+    }
     ```
 
-=== "Go"
+### 2.1 How each SDK derives an ID from a file
 
-    ```go
-    result, err := executor.Call("executor.email.send_email", inputs, ctx)
-    ```
+| SDK | Rule | Example |
+|------|------|------|
+| Python | Path under the extensions root, separators → `.`, `.py` dropped | `extensions/executor/validator/db_params.py` → `executor.validator.db_params` |
+| TypeScript | Same rule, `.ts` / `.js` dropped. The file name is used as-is, so it must already be snake_case — `dbParams.ts` yields `executor.validator.dbParams`, which is not a legal ID and is skipped with a warning | `extensions/executor/validator/db_params.ts` → `executor.validator.db_params` |
+| Rust | Modules are compiled into the binary, so they are usually registered with an explicit ID: `client.register("executor.validator.db_params", Box::new(DbParamsValidator))` | — |
 
-=== "Java"
-
-    ```java
-    Map<String, Object> result = executor.call("executor.email.send_email", inputs, context);
-    ```
+Class, struct, and function names never affect a discovered ID. See [protocol-spec §2.1](../spec/protocol-spec.md#21-directory-as-id-core-rule) for the derivation algorithm and [§2.7](../spec/protocol-spec.md#27-id-formal-grammar) for the grammar.
 
 ---
 
-## 3. YAML Schema Sharing
+## 3. Sharing a YAML Schema
 
-### 3.1 Schema Files as the Source of Truth
+### 3.1 The schema file
 
-In multi-language projects, YAML Schema files are the **Single Source of Truth**. Each language SDK should generate or load type definitions from Schema files, rather than writing them manually.
+Schema files live under `schema.root` (default `./schemas`) at a path mirroring the module ID:
 
-```
+```text
 schemas/
 ├── executor/
 │   ├── email/
-│   │   └── send_email.schema.yaml
+│   │   └── send_email.schema.yaml      → executor.email.send_email
 │   └── validator/
-│       └── db_params.schema.yaml
-├── orchestrator/
-│   └── engine/
-│       └── task_flow.schema.yaml
+│       └── db_params.schema.yaml       → executor.validator.db_params
 └── common/
-    ├── error.schema.yaml
-    └── pagination.schema.yaml
+    └── pagination.schema.yaml          → reusable definitions for $ref
 ```
 
-### 3.2 How Each Language SDK Consumes Schema
+```yaml
+# schemas/executor/email/send_email.schema.yaml
+$schema: "https://apcore.dev/schema/v1"
+version: "1.0.0"
+module_id: "executor.email.send_email"
+description: "Send an email through the configured SMTP relay"
 
-SDKs can consume YAML Schema files via two strategies:
+input_schema:
+  type: object
+  properties:
+    to:
+      type: string
+      description: "Recipient email address"
+    subject:
+      type: string
+      maxLength: 200
+      description: "Email subject"
+    body:
+      type: string
+      description: "Plain-text email body"
+    smtp_port:
+      type: integer
+      description: "SMTP server port"
+      default: 587
+  required: [to, subject, body]
+  additionalProperties: false
 
-| Strategy | Best For | Description |
-|------|----------|------|
-| **Code Generation** | Compiled languages (Rust, Go, Java, etc.) | Generate native types from YAML Schema at build time. Type-safe, zero runtime overhead. |
-| **Runtime Loading** | Dynamic languages (Python, TypeScript, etc.) | Load and validate YAML Schema at runtime. Flexible, no build step needed. |
+output_schema:
+  type: object
+  properties:
+    success:
+      type: boolean
+      description: "Whether the send was accepted by the relay"
+    message_id:
+      type: string
+      description: "Relay-assigned message ID"
+  required: [success]
+```
 
-Each SDK **should** document its schema consumption approach in its own repository.
+`description`, `input_schema`, and `output_schema` are required. The file format is defined in [protocol-spec §4.2](../spec/protocol-spec.md#42-schema-format).
+
+### 3.2 Loading it at runtime
+
+All three SDKs read schema files at runtime with `SchemaLoader` — there is no code-generation step. The loader reads `schema.root`, `schema.strategy`, and `schema.max_ref_depth` from the `Config` you give it and resolves `$ref`s when it loads the file.
+
+=== "Python"
+
+    ```python
+    from apcore import APCore, Config, Context, SchemaLoader
+
+    loader = SchemaLoader(Config.from_defaults())
+    schema_def = loader.load("executor.email.send_email")
+    input_schema, output_schema = loader.get_schema("executor.email.send_email")
+
+
+    class SendEmailModule:
+        description = schema_def.description
+        input_schema = input_schema.model      # Pydantic model generated from the YAML
+        output_schema = output_schema.model
+
+        def execute(self, inputs: dict, context: Context) -> dict:
+            return {"success": True, "message_id": "msg_123"}
+
+
+    client = APCore()
+    client.register("executor.email.send_email", SendEmailModule())
+    ```
+
+=== "TypeScript"
+
+    ```typescript
+    import { APCore, Config, FunctionModule, SchemaLoader } from 'apcore-js';
+
+    const loader = new SchemaLoader(Config.fromDefaults());
+    const schemaDef = loader.load('executor.email.send_email');
+    const [input, output] = loader.getSchema('executor.email.send_email');
+
+    const client = new APCore();
+    client.register(
+      'executor.email.send_email',
+      new FunctionModule({
+        moduleId: 'executor.email.send_email',
+        description: schemaDef.description,
+        inputSchema: input.schema, // TypeBox schema built from the YAML
+        outputSchema: output.schema,
+        execute: async () => ({ success: true, message_id: 'msg_123' }),
+      }),
+    );
+    ```
+
+=== "Rust"
+
+    ```rust
+    use apcore::errors::ModuleError;
+    use apcore::{APCore, Config, Context, Module, SchemaDefinition, SchemaLoader};
+    use async_trait::async_trait;
+    use serde_json::{json, Value};
+
+    pub struct SendEmailModule {
+        schema: SchemaDefinition,
+    }
+
+    #[async_trait]
+    impl Module for SendEmailModule {
+        fn input_schema(&self) -> Value {
+            self.schema.input_schema.clone()
+        }
+
+        fn output_schema(&self) -> Value {
+            self.schema.output_schema.clone()
+        }
+
+        fn description(&self) -> &str {
+            &self.schema.description
+        }
+
+        async fn execute(&self, _inputs: Value, _ctx: &Context<Value>) -> Result<Value, ModuleError> {
+            Ok(json!({ "success": true, "message_id": "msg_123" }))
+        }
+    }
+
+    #[tokio::main]
+    async fn main() -> Result<(), ModuleError> {
+        let config = Config::default();
+        // Reads <schema.root>/executor/email/send_email.schema.yaml at startup.
+        let schema = SchemaLoader::with_config(&config, None).load("executor.email.send_email")?;
+
+        let client = APCore::with_config(config);
+        client.register("executor.email.send_email", Box::new(SendEmailModule { schema }))?;
+        Ok(())
+    }
+    ```
+
+`schema.strategy` decides what wins when a module has both a YAML file and a schema written in code (`yaml_first`, `native_first`, or `yaml_only`); see [Schema Definition § Schema Loading Strategy](./schema-definition.md#8-schema-loading-strategy).
+
+A [binding file](./creating-modules.md#external-schema-binding-yaml) can also point at a shared schema with `schema_ref`, which is the zero-code way to reuse the same contract.
 
 ---
 
-## 4. SDK Implementation
+## 4. What Every SDK Provides
 
-Each language SDK **should** implement the Module interface following the language's idiomatic patterns. SDK-specific examples, patterns, and library choices are documented in each SDK's own repository.
+SDK-specific idioms (Pydantic, TypeBox, `serde_json`) are covered in each SDK's own repository. The shared surface is:
 
-**Key requirements for all SDKs:**
-
-| Requirement | Description |
+| Area | What it means |
 |------|------|
-| Module interface | Implement `execute()`, `description`, `annotations`, `input_schema`, `output_schema` |
-| Schema validation | Validate inputs against `input_schema` and outputs against `output_schema` |
-| Canonical ID | Support directory-based ID generation and cross-language ID mapping |
-| Error handling | Return structured errors with standard error codes |
+| Module interface | `execute()`, `description`, `input_schema`, `output_schema`, optional `annotations` — see [Module Interface](../features/module-interface.md) |
+| Schema validation | Inputs are validated against `input_schema` before `execute()`, outputs against `output_schema` after |
+| Canonical IDs | Directory-derived IDs, plus the ID map below for files whose names are not already canonical |
+| Errors | Structured errors with the shared error codes — see [Error System](../features/error-system.md) |
 
 ---
 
 ## 5. ID Map Configuration
 
-### 5.1 When ID Map is Needed
+### 5.1 When you need one
 
-ID Map is used to convert local naming conventions of each language to Canonical ID.
+Discovery derives an ID from the file path. You need an ID map only when a file's path does **not** produce the ID you want — for example a legacy file name that is not snake_case, or a module you are moving without changing its public ID. Projects whose file names are already snake_case need no ID map.
 
-**Scenarios requiring ID Map:**
+### 5.2 Configuration
 
-| Scenario | Description |
-|------|------|
-| Rust modules | Rust uses `::` separator and PascalCase struct names |
-| Java modules | Java uses `.` separator and PascalCase class names, with package names |
-| Mixed-language projects | Modules in different languages need to call each other |
-| Custom mapping | When automatic conversion rules don't meet requirements |
-
-**Scenarios NOT requiring ID Map:**
-
-| Scenario | Description |
-|------|------|
-| Pure Python projects | Python already uses snake_case and `.` separator |
-| Pure Go projects | Go also uses `.` separator |
-| All modules follow standard naming | Auto-detection is sufficient |
-
-### 5.2 Configuration Example
+`id_map.overrides` is the only ID-map setting that has an effect. Its value is the path of an ID-map file, resolved like `extensions.root`:
 
 ```yaml
 # apcore.yaml
-
+extensions:
+  root: ./extensions
 id_map:
-  # Auto-detect: determine language by file extension
-  auto_detect: true
-
-  # Language rules (defaults are usually sufficient)
-  languages:
-    python:
-      extensions: [".py"]
-      separator: "."
-      file_case: "snake_case"
-      class_case: "PascalCase"
-
-    rust:
-      extensions: [".rs"]
-      separator: "::"
-      file_case: "snake_case"
-      struct_case: "PascalCase"
-
-    go:
-      extensions: [".go"]
-      separator: "."
-      file_case: "snake_case"
-      struct_case: "PascalCase"
-
-    java:
-      extensions: [".java"]
-      separator: "."
-      file_case: "PascalCase"
-      class_case: "PascalCase"
-
-    typescript:
-      extensions: [".ts", ".tsx"]
-      separator: "."
-      file_case: "camelCase"
-      class_case: "PascalCase"
-
-  # Special mappings (override auto rules)
-  overrides:
-    "executor.validator.db_params":
-      java:
-        class: "com.mycompany.DbParamsValidator"
-        package: "com.mycompany.validators"
-      rust:
-        module: "executor::validator::db_params"
-        struct: "DbParamsValidator"
+  overrides: ./id_map.yaml
 ```
 
-### 5.3 Mapping from Language Naming Conventions to Canonical ID
-
+```yaml
+# id_map.yaml
+mappings:
+  - file: executor/validator/DbParams.py     # path relative to the extensions root
+    id: executor.validator.db_params         # ID to register instead of the derived one
+  - file: legacy/sendMail.ts
+    id: executor.email.send_email
 ```
-Python:
-  File: extensions/executor/validator/db_params.py
-  Class: DbParamsValidator
-  → Canonical ID: executor.validator.db_params
 
-Rust:
-  File: extensions/executor/validator/db_params.rs
-  Module path: executor::validator::db_params
-  Struct: DbParamsValidator
-  → Canonical ID: executor.validator.db_params
-
-Go:
-  File: extensions/executor/validator/db_params.go
-  Package: validator
-  Struct: DbParamsValidator
-  → Canonical ID: executor.validator.db_params
-
-Java:
-  File: extensions/executor/validator/DbParams.java
-  Package: com.example.extensions.executor.validator
-  Class: DbParamsValidator
-  → Canonical ID: executor.validator.db_params
-
-TypeScript:
-  File: extensions/executor/validator/dbParams.ts
-  Class: DbParamsValidator
-  → Canonical ID: executor.validator.db_params
-```
+Each entry replaces the ID that discovery would have derived for that file. The map is applied during directory discovery in all three SDKs; modules registered explicitly with `register()` keep the ID you pass. A constructor argument (`Registry(id_map_path=…)` in Python, `idMapPath` in TypeScript, `DefaultDiscoverer::with_id_map` in Rust) takes precedence over the config key.
 
 ---
 
-## 6. Type Mapping Reference
+## 6. Type Mapping
 
-### 6.1 Basic Type Mapping Quick Reference
-
-| JSON Schema Type | Python | Rust | Go | Java | TypeScript |
-|-----------------|--------|------|----|------|------------|
-| `string` | `str` | `String` | `string` | `String` | `string` |
-| `integer` | `int` | `i64` | `int64` | `long` / `Long` | `number` |
-| `number` | `float` | `f64` | `float64` | `double` / `Double` | `number` |
-| `boolean` | `bool` | `bool` | `bool` | `boolean` / `Boolean` | `boolean` |
-| `null` | `None` | `Option::None` | `nil` | `null` | `null` |
-| `object` | `dict[str, Any]` | `HashMap<String, Value>` | `map[string]any` | `Map<String, Object>` | `Record<string, any>` |
-| `array` | `list[T]` | `Vec<T>` | `[]T` | `List<T>` | `T[]` |
-
-### 6.2 Format Type Mapping
-
-| JSON Schema Format | Python | Rust | Go | Java | TypeScript |
-|-----------------|--------|------|----|------|------------|
-| `format: date-time` | `datetime` | `chrono::DateTime<Utc>` | `time.Time` | `Instant` / `ZonedDateTime` | `Date` / `string` |
-| `format: date` | `date` | `chrono::NaiveDate` | `time.Time` | `LocalDate` | `string` |
-| `format: uuid` | `uuid.UUID` | `uuid::Uuid` | `uuid.UUID` | `UUID` | `string` |
-| `format: email` | `str` | `String` | `string` | `String` | `string` |
-| `format: uri` | `str` | `String` | `string` | `String` | `string` |
-
-### 6.3 Composite Type Mapping
-
-| JSON Schema | Python | Rust | Go | Java | TypeScript |
-|------------|--------|------|----|------|------------|
-| `enum: [...]` | `Literal[...]` | `enum` | `type T string` + const | `enum` | union type |
-| `oneOf` / `anyOf` | `Union[A, B]` | `enum { A(A), B(B) }` | `interface{}` | `Object` | `A \| B` |
-| `T \| null` | `Optional[T]` | `Option<T>` | `*T` | `@Nullable T` | `T \| null` |
-| `additionalProperties: T` | `dict[str, T]` | `HashMap<String, T>` | `map[string]T` | `Map<String, T>` | `Record<string, T>` |
-
-For complete type mapping reference, see [Type Mapping Specification](../spec/type-mapping.md).
+How JSON Schema types map to Python, TypeScript, and Rust types — including nullable types, enums, `format`, large integers, and round-trip fidelity — is specified in one place: the [Type Mapping Specification](../spec/type-mapping.md). Note that `format` is an annotation, not a type binding: no SDK turns `format: date-time` into a native date type ([type-mapping §11.1](../spec/type-mapping.md#111-format-keyword)).
 
 ---
 
 ## 7. Common Pitfalls
 
-### 7.1 Integer Precision Issues (JavaScript/JSON 53-bit Limitation)
+### 7.1 Integer precision (JavaScript's 53-bit limit)
 
-JavaScript's `Number` type uses IEEE 754 double-precision floating-point, with a safe integer range of `-2^53 + 1` to `2^53 - 1` (i.e., `Number.MAX_SAFE_INTEGER = 9007199254740991`).
+JavaScript numbers are IEEE 754 doubles, so integers above `2^53 - 1` (`9007199254740991`) lose precision when parsed:
 
-**Problem:**
-
-```json
-// JSON returned from backend
-{"order_id": 9007199254740993}
-
-// After JavaScript parsing
-JSON.parse('{"order_id": 9007199254740993}')
-// → { order_id: 9007199254740992 }  Precision loss!
+```javascript
+JSON.parse('{"order_id": 9007199254740993}');
+// → { order_id: 9007199254740992 }
 ```
 
-**Solution:**
+If an ID or counter can exceed that range, transmit it as a string:
 
 ```yaml
-# Use string to transmit large integers in Schema
 properties:
   order_id:
     type: string
     pattern: "^[0-9]+$"
-    description: "Order ID (string format to avoid precision loss)"
-    x-llm-description: "Large integer transmitted as string to avoid JavaScript precision loss"
+    description: "Order ID (string, to avoid precision loss)"
 ```
 
-**Recommendation:** Use `type: string` with `pattern: "^[0-9]+$"` in Schema for integers that may exceed the safe range. Each language converts to its native large integer type.
+See [type-mapping §14.1](../spec/type-mapping.md#141-large-integer-precision-loss).
 
-### 7.2 DateTime and Timezone Handling
+### 7.2 Date-times and time zones
 
-**Problem:** Different languages handle timezones differently by default, which can lead to time discrepancies.
-
-**Best Practices:**
-
-| Rule | Description |
+| Rule | Why |
 |------|------|
-| Store in UTC | All timestamps unified in UTC for storage and transmission |
-| Display in local timezone | Convert to local timezone only at UI layer |
-| Always include timezone info | Avoid using "naive" time (time without timezone) |
-| Use ISO 8601 format | Uniformly use `2026-02-07T10:30:00Z` format |
+| Store and transmit in UTC | Languages default to different local-time behaviour |
+| Always include a zone offset | "Naive" times are ambiguous across services |
+| Use ISO 8601 (`2026-02-07T10:30:00Z`) | Every SDK can parse it |
 
 ```yaml
-# Schema recommends using ISO 8601 + UTC
 properties:
   created_at:
     type: string
@@ -413,120 +364,73 @@ properties:
     x-examples: ["2026-02-07T10:30:00Z"]
 ```
 
-### 7.3 Unicode Normalization Differences
+### 7.3 Unicode normalization
 
-**Problem:** Different operating systems and languages have different Unicode string normalization forms.
-
-```
-"cafe\u0301" (e + combining accent) vs "caf\u00e9" (precomposed e)
-These two are visually identical but have different bytes.
-```
-
-**Recommended Practice:**
-
-- All SDK implementations **should** normalize Unicode strings to NFC form
-- Use `x-constraints` in Schema to annotate Unicode handling requirements
+`"café"` (e + combining accent) and `"café"` (precomposed é) look identical but are different strings. apcore passes strings through unchanged, so normalize (for example to NFC) at your own boundary before comparing, hashing, or de-duplicating text. You can record the expectation for callers with `x-constraints`:
 
 ```yaml
-# Annotate Unicode handling requirements in Schema
 properties:
   name:
     type: string
-    description: "Username"
-    x-constraints: "MUST use NFC normalization form"
+    description: "Display name"
+    x-constraints: "Send NFC-normalized text"
 ```
 
-### 7.4 Null vs Undefined vs Missing Fields
-
-**Problem:** `null` in JSON, missing fields, and language-specific concepts (like JavaScript's `undefined`) have different semantics.
+### 7.4 `null` vs. empty vs. missing
 
 ```json
-// Three different situations
-{"name": null}      // Field exists, value is null
-{"name": ""}        // Field exists, value is empty string
-{}                  // Field does not exist (missing)
+{"name": null}
+{"name": ""}
+{}
 ```
 
-**Handling in Schema:**
+These are three different inputs: present-and-null, present-and-empty, and absent. Express which ones you accept with `required` and the `type` list:
 
 ```yaml
 properties:
-  name:
-    type: ["string", "null"]   # Allow string or null
-    description: "Username"
-
-required: ["name"]  # Field must exist (but value can be null)
+  required_field:
+    type: string                # must be present, must be a string
+  optional_field:
+    type: string
+    default: "default value"    # may be absent; a string when present
+  nullable_field:
+    type: ["string", "null"]    # must be present, may be null
+required: [required_field, nullable_field]
 ```
 
-**Best Practices:**
+### 7.5 Floating-point precision
+
+`0.1 + 0.2` is `0.30000000000000004` in every language that uses IEEE 754. For money, use integer minor units or a decimal string:
 
 ```yaml
-# Clearly distinguish between required and optional
-
-# Required field: must exist and not be null
-required_field:
-  type: string
-
-# Optional field: can be absent, not null when present
-optional_field:
-  type: string
-  default: "default value"
-
-# Nullable field: must exist, but can be null
-nullable_field:
-  type: ["string", "null"]
-```
-
-### 7.5 Floating-Point Precision
-
-**Problem:** IEEE 754 floating-point numbers may produce different precision results in different languages.
-
-```python
-# Python
-0.1 + 0.2  # 0.30000000000000004
-```
-
-**Recommended Practice:**
-
-- Use `integer` for monetary fields (in cents) or `string` (precise decimal)
-- When precise comparison is needed, use epsilon tolerance
-
-```yaml
-# Monetary handling in Schema
 properties:
   amount_cents:
     type: integer
-    description: "Amount (unit: cents)"
     minimum: 0
-    x-llm-description: "Amount as integer in cents, e.g., 1999 represents 19.99 dollars"
-
-  # Or use string
+    description: "Amount in cents, e.g. 1999 for 19.99"
   amount:
     type: string
     pattern: "^\\d+\\.\\d{2}$"
-    description: "Amount (string format, precise to cents)"
-    x-examples: ["19.99", "100.00"]
+    description: "Amount as a decimal string, e.g. \"19.99\""
 ```
 
-### 7.6 Enum Value Serialization Differences
+### 7.6 Enum values
 
-**Problem:** Different languages have different serialization conventions for enums.
+Languages have different enum naming conventions. On the wire, always send the exact string the schema lists — typically snake_case — and map to your language's enum type inside the module:
 
 ```yaml
-# Uniformly use snake_case in Schema
 properties:
   status:
     type: string
     enum: ["pending", "in_progress", "completed", "failed"]
 ```
 
-**Recommendation:** Enum values in JSON transmission **must** use the exact string values defined in Schema (typically `snake_case`). Each language SDK handles the mapping between its local naming convention and the Schema-defined values.
-
 ---
 
 ## Next Steps
 
-- [Schema Definition Guide](./schema-definition.md) - Deep dive into Schema definitions
-- [Module Testing Guide](./testing-modules.md) - Cross-language testing strategies
-- [Creating Modules Guide](./creating-modules.md) - Complete module creation tutorial
-- [Architecture Design](../architecture.md) - Overall system architecture
+- [Schema Definition Guide](./schema-definition.md) — Writing schemas in each SDK
+- [Creating Modules Guide](./creating-modules.md) — Module creation tutorial
+- [Testing Modules Guide](./testing-modules.md) — Testing strategies
+- [Type Mapping Specification](../spec/type-mapping.md) — Canonical type mapping
+- [Architecture Design](../architecture.md) — Overall system architecture

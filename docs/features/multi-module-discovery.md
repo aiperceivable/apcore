@@ -1,54 +1,64 @@
 ---
-description: "Opt-in scanner mode letting multiple module classes share one file: derives IDs as base_id.snake_case_class_segment, validates grammar, raises MODULE_ID_CONFLICT on duplicate segments."
+description: "Opt-in per-class mode letting several module classes share one file: derives IDs as base_id.snake_case_class_segment, validates grammar, raises MODULE_ID_CONFLICT on duplicate segments."
 ---
 
 # Multi-Module Discovery
 
 <!-- preamble-tier-doc -->
-> **Type:** Implementation guide. **Normative spec:** [PROTOCOL_SPEC](../spec/protocol-spec.md) §3 Directory Specification.
+> **Type:** Implementation guide. **Normative spec:** [PROTOCOL_SPEC](../spec/protocol-spec.md) §2.1.1 Multi-Class Discovery.
 
 
 ## Overview
 
-Multi-module discovery is an opt-in extension to the standard apcore module scanner that allows multiple module classes to coexist in a single file. By default, apcore enforces a one-file-one-module model: the canonical module ID is derived entirely from the file path (see [PROTOCOL_SPEC §2.1](../spec/protocol-spec.md#21-directory-as-id-core-rule)). Multi-class discovery relaxes that constraint by appending the snake_case-converted class name as an additional segment to the base file ID.
+By default apcore uses a one-file-one-module model: the canonical module ID is derived entirely from the file path (see [PROTOCOL_SPEC §2.1](../spec/protocol-spec.md#21-directory-as-id-core-rule)). Multi-module discovery lets several module classes share one file by appending the snake_case form of each class name to the file's base ID.
 
-This feature exists to serve two practical needs:
+It serves two needs:
 
-- **Large module files**: related operations (e.g., `Addition`, `Subtraction`, `Multiplication`) naturally belong together in one file but should each be independently addressable by the registry and ACL engine.
-- **Logical grouping**: module authors may prefer to collocate tightly coupled class definitions rather than spread them across many single-class files.
+- **Related operations in one file** — `Addition`, `Subtraction`, `Multiplication` belong together but must each be independently addressable by the registry and the ACL engine.
+- **Logical grouping** — tightly coupled classes can live side by side instead of being spread across single-class files.
 
-Multi-class mode is always opt-in. Existing single-class files are unaffected and produce identical IDs regardless of whether the feature is enabled.
+Multi-class discovery is an explicit call, separate from the registry's ordinary `discover()` scan: you hand one file to it and register what it returns.
 
-## Requirements
+## Opt-in model: per-class markers
 
-- Implementations **MAY** support multi-class discovery mode.
-- Multi-class discovery **MUST** be explicitly enabled per file (via decorator) or globally (via configuration); it **MUST NOT** activate automatically.
-- When enabled for a file, the scanner **MUST** enumerate all exported classes that implement the Module interface.
-- Each qualifying class **MUST** receive a module ID of the form `base_id.class_segment`, where `base_id` is the standard file-derived ID and `class_segment` is the snake_case conversion of the class name.
-- The full derived `module_id` **MUST** conform to the canonical ID grammar defined in [PROTOCOL_SPEC §2.7](../spec/protocol-spec.md#27-id-formal-grammar).
-- If two classes in the same file produce the same `class_segment`, implementations **MUST** raise `MODULE_ID_CONFLICT` and **MUST NOT** register any module from that file.
-- A file containing exactly one Module class **MUST** produce the same ID in both single-class and multi-class modes (backward compatibility guarantee).
-- The `snake_case` conversion algorithm **MUST** be applied consistently across all SDKs (see [Discovery Algorithm](#discovery-algorithm) below).
+Opt-in is **per class** — there is no file-level or configuration toggle (D-107). Each SDK carries the marker in its own idiom:
 
-## Technical Design
+| SDK | Marker |
+|---|---|
+| Python | the `@multi_class` class decorator (`from apcore.registry import multi_class`) |
+| TypeScript | `multiClass: true` on the `ClassDescriptor` you pass in |
+| Rust | `.with_multi_class(true)` on the `MultiClassEntry` (or `DiscoveredClass`) you pass in |
 
-### Discovery Algorithm
+A file is in multi-class mode when at least one qualifying class carries the marker. What counts as a qualifying class differs by SDK:
 
-The scanner executes the following steps when multi-class discovery is enabled for a file:
+- **Python** enumerates only the classes that carry `@multi_class` (and look like a Module: `input_schema`, `output_schema`, callable `execute`, defined in that file). Undecorated classes are ignored.
+- **TypeScript and Rust** qualify every class whose descriptor says it implements Module (`implementsModule` / `implements_module`). Once any of them carries the marker, **every** qualifying class in the file receives an ID; with no marker, the file is single-class and only the first qualifying class is used.
 
-1. **Compute base ID** — apply Algorithm A01 (`directory_to_canonical_id`) to derive the standard file-path-based ID.
-2. **Enumerate classes** — collect all exported classes in the file that implement the Module interface.
-3. **Convert class name to segment** — for each class, apply `snake_case(ClassName)`:
-   - Replace every non-alphanumeric character with `_`.
-   - Lowercase the entire string.
-   - Collapse consecutive `_` characters to a single `_`.
-   - Strip leading and trailing `_` characters.
-4. **Derive module ID** — concatenate `base_id + "." + class_segment`.
-5. **Validate** — verify the full `module_id` matches the canonical ID grammar (`^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$`) and does not exceed 192 characters.
-6. **Conflict detection** — collect all `class_segment` values for the file; if any two are equal, raise `MODULE_ID_CONFLICT` before registering any module.
-7. **Register** — each validated module ID is registered independently in the registry.
+To keep a helper class out of the result, do not mark it (Python) or do not describe it as implementing Module (TypeScript, Rust).
 
-**snake_case conversion examples:**
+## ID derivation
+
+For a file in multi-class mode:
+
+1. **Base ID** — apply Algorithm A01 (`directory_to_canonical_id`): take the path components after the `extensions_root` directory, strip the file extension, join with `.`. If `extensions_root` does not appear in the path, the base ID is the bare file stem.
+2. **Single-class identity** — if exactly one class qualifies, its ID is the base ID unchanged (no segment appended). This keeps existing single-class IDs stable.
+3. **Class segment** — for each qualifying class, convert the class name with the snake_case algorithm below.
+4. **Segment grammar** — the segment must match `^[a-z][a-z0-9_]*$`; otherwise `INVALID_SEGMENT`.
+5. **Conflict check** — if the segment was already produced by another class in the same file, `MODULE_ID_CONFLICT`.
+6. **Module ID** — `base_id + "." + segment`; it must match the canonical ID grammar `^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$` (otherwise `INVALID_SEGMENT`) and be at most 192 characters (otherwise `ID_TOO_LONG`).
+
+Any error aborts the whole file: no module from it is registered.
+
+### snake_case algorithm
+
+All three SDKs implement the same six steps (`class_name_to_segment` / `classNameToSegment`):
+
+1. Insert `_` between a run of capitals and a following capitalised word — regex `([A-Z]+)([A-Z][a-z])` → `\1_\2` (`HTTPSender` → `HTTP_Sender`).
+2. Insert `_` between a lowercase letter or digit and a following capital — regex `([a-z\d])([A-Z])` → `\1_\2` (`MathOps` → `Math_Ops`).
+3. Replace every non-alphanumeric character with `_`.
+4. Lowercase.
+5. Collapse consecutive `_` to one.
+6. Strip leading and trailing `_`.
 
 | Class name | Segment |
 |---|---|
@@ -56,400 +66,254 @@ The scanner executes the following steps when multi-class discovery is enabled f
 | `MathOps` | `math_ops` |
 | `HTTPSender` | `http_sender` |
 | `MyModule_V2` | `my_module_v2` |
+| `_Internal__Helper_` | `internal_helper` |
 
-### Enabling Multi-Class Mode
+Steps 1 and 2 are what split CamelCase; without them `MathOps` would become `mathops`.
 
-Multi-class discovery is **opt-in per file** via a language-idiomatic marker:
+### Conflict detection
 
-**Per-file opt-in:** Apply `@multi_class` (Python decorator), `@multiClass()` (TypeScript decorator), or `#[multi_class]` (Rust macro attribute) to the file or each participating class. Only classes in annotated files are scanned for multi-class IDs. Files that contain exactly one Module class are unaffected (backward compatibility guarantee applies).
+Two classes conflict when their segments are identical, for example:
 
-> **Note**: An earlier draft of the spec mentioned a global config key `extensions.multi_class_discovery`. That toggle was never implemented in any SDK and was removed per [decision-log D-06](../spec/2026-05-decision-log.md#d-06-multi_class_enabled-config-plumbing). Per-class markers are the only opt-in path.
+- `MyModule` and `My_Module` → both `my_module`
+- `HTTPClient` and `Http_Client` → both `http_client`
 
-> **D-107 (v1.50.0) — the note above was true of the spec and of no
-> implementation.** Three SDKs shipped three opt-in models and the conformance
-> fixture pinned a fourth. apcore-python honours a per-class marker and nothing
-> else. apcore-rust has no per-class marker at all — `DiscoveredClass` is
-> `{name, implements_module}` — and gates on a file-level
-> `DiscoveryConfig::multi_class` whose own doc comment still cites
-> `extensions.multi_class_discovery`, the key D-06 removed. apcore-typescript
-> ships **both**, under two names with opposite defaults: `Registry.discoverMultiClass`
-> honours the per-class `multiClass` field, while the publicly exported free
-> function ignores it and defaults to off — so this page's own TypeScript example
-> silently returns one module where it documents two. And
-> `conformance/fixtures/multi_module_discovery.json` carries a file-level
-> `multi_class_enabled` on every non-conversion case, so all three SDKs pass a
-> fixture pinning the model this note says does not exist.
->
-> **Per-class markers are authoritative**, as stated. A file-level toggle cannot
-> express the case the feature exists for — two participating classes beside a
-> helper class that must not become a module — and it is the same flag D-06
-> already removed once. Required changes: apcore-rust adds a per-class marker to
-> `DiscoveredClass` and drops the file-level gate; apcore-typescript's free
-> function resolves opt-in the way its `Registry` method already does
-> (`classes.some(c => c.multiClass)`); and the fixture's `multi_class_enabled`
-> input becomes a per-class field. Until the fixture changes it is pinning the
-> withdrawn model, which is why it could not see any of this.
+The SDK logs the conflict and raises `MODULE_ID_CONFLICT`; the error details carry `file_path`, `class_names` (both classes), and `conflicting_segment`.
 
-### Conflict Detection
+## API
 
-Two classes produce a conflict when their snake_case-converted names are identical. Common sources of conflict:
+| SDK | Entry point | Returns |
+|---|---|---|
+| Python | `Registry.discover_multi_class(file_path, extensions_root="extensions")` — also the free function `apcore.discover_multi_class(file_path, extensions_root="extensions", pre_approval_hook=None)` | `list[tuple[str, type]]` — `(module_id, class)` pairs; you instantiate and register |
+| TypeScript | `registry.discoverMultiClass(filePath, classes, extensionsRoot = "extensions")` — also the free function `discoverMultiClass` | `MultiClassEntry[]` — `{ moduleId, className }`; you register the matching instances |
+| Rust | `Registry::register_multi_class(&self, file_path, extensions_root, entries, &DiscoveryConfig)` — also the pure `derive_module_ids(file_path, extensions_root, &classes, &DiscoveryConfig)` | `Result<Vec<String>, ModuleError>` — the IDs; `register_multi_class` also registers them |
 
-- `MyModule` and `My_Module` both produce `my_module`.
-- `HTTPClient` and `Http_Client` both produce `http_client`.
+Notes:
 
-When a conflict is detected, implementations **MUST**:
+- **Python imports the file** to enumerate its classes. `Registry.discover_multi_class` forwards the `pre_approval_hook` given to `Registry(...)`; the hook is called with the file path before import and rejects the file by raising (surfaced as `ModuleLoadError`).
+- **TypeScript and Rust do not read the file.** They cannot enumerate classes at runtime, so you pass the class list: `ClassDescriptor { name, implementsModule, multiClass? }` in TypeScript, `MultiClassEntry::new(class_name, Box<dyn Module>)` in Rust. There is no pre-approval hook in either SDK because no code is loaded.
+- **Rust registration is atomic.** `register_multi_class` rolls back the modules it already registered from the batch if a later registration fails (for example, a duplicate ID from another file).
+- **Deprecated inputs.** TypeScript's fourth `multiClassEnabled` argument and Rust's `DiscoveryConfig::multi_class` field are ignored; the per-class marker is the only opt-in. Rust still requires a `&DiscoveryConfig` argument — pass `&DiscoveryConfig::default()`.
 
-1. Raise `MODULE_ID_CONFLICT` with the file path, both class names, and the conflicting segment in the error details.
-2. Abort registration of the entire file — no partial registration is permitted.
-3. Log the conflict at `ERROR` level with `trace_id` if a context is available.
+### Errors
 
-### Backward Compatibility
+| Code | Python / TypeScript class | When |
+|---|---|---|
+| `MODULE_ID_CONFLICT` | `ModuleIdConflictError` | Two classes in the file produce the same segment |
+| `INVALID_SEGMENT` | `InvalidSegmentError` | A segment, or the full derived ID, violates the ID grammar (e.g. a class name that starts with a digit) |
+| `ID_TOO_LONG` | `IdTooLongError` | The derived module ID exceeds 192 characters |
+| `MODULE_LOAD_ERROR` | `ModuleLoadError` | Python only: the file cannot be imported, or the pre-approval hook rejected it |
 
-The single-class guarantee ensures zero breaking changes for existing module files:
-
-- A file with one Module class under multi-class mode produces `base_id.class_segment`, which differs from the original `base_id`.
-- **Exception — the single-class identity guarantee:** if exactly one class is present, implementations **MUST** use the original `base_id` (without appending the class segment), regardless of whether multi-class mode is enabled. This preserves all existing module IDs.
-- ACL rules, conformance fixtures, and external references to existing IDs remain valid without modification.
+Rust returns these as `ModuleError` with `ErrorCode::ModuleIdConflict`, `ErrorCode::InvalidSegment` or `ErrorCode::IdTooLong`.
 
 ## Usage
 
+The file `extensions/math/math_ops.*` below contains two modules; both register under `math.math_ops.*`.
+
 === "Python"
     ```python
-    from apcore import Module, ModuleAnnotations, Context
-    from apcore.registry import multi_class
+    # extensions/math/math_ops.py
     from pydantic import BaseModel, Field
 
-    class AddInput(BaseModel):
+    from apcore import Context, Module
+    from apcore.registry import multi_class
+
+
+    class MathInput(BaseModel):
         a: float = Field(..., description="First operand")
         b: float = Field(..., description="Second operand")
+
 
     class MathResult(BaseModel):
         result: float = Field(..., description="Computed result")
 
+
     @multi_class
     class Addition(Module):
-        input_schema = AddInput
+        input_schema = MathInput
         output_schema = MathResult
         description = "Add two numbers and return their sum."
 
         def execute(self, inputs: dict, context: Context) -> dict:
-            validated = AddInput(**inputs)
-            return MathResult(result=validated.a + validated.b).model_dump()
+            return {"result": inputs["a"] + inputs["b"]}
+
 
     @multi_class
     class Subtraction(Module):
-        input_schema = AddInput
+        input_schema = MathInput
         output_schema = MathResult
         description = "Subtract b from a and return the difference."
 
         def execute(self, inputs: dict, context: Context) -> dict:
-            validated = AddInput(**inputs)
-            return MathResult(result=validated.a - validated.b).model_dump()
+            return {"result": inputs["a"] - inputs["b"]}
+    ```
 
-    # File: extensions/math/math_ops.py
-    # Registered IDs:
-    #   math.math_ops.addition
-    #   math.math_ops.subtraction
+    ```python
+    # app.py
+    from pathlib import Path
+
+    from apcore import Registry
+
+    ALLOWED = Path("extensions").resolve()
+
+
+    def only_inside_extensions(path: Path) -> None:
+        if not Path(path).resolve().is_relative_to(ALLOWED):
+            raise PermissionError(f"refusing to import {path}")
+
+
+    registry = Registry(pre_approval_hook=only_inside_extensions)
+
+    for module_id, cls in registry.discover_multi_class("extensions/math/math_ops.py"):
+        registry.register(module_id, cls())
+
+    print(registry.list())  # ['math.math_ops.addition', 'math.math_ops.subtraction']
     ```
 
 === "TypeScript"
     ```typescript
-    import { discoverMultiClass } from "apcore-js";
-    import type { ClassDescriptor, Context, Module } from "apcore-js";
     import { Type } from "@sinclair/typebox";
+    import { Registry } from "apcore-js";
+    import type { ClassDescriptor, Context, Module } from "apcore-js";
 
-    const MathInputSchema = Type.Object({
-        a: Type.Number({ description: "First operand" }),
-        b: Type.Number({ description: "Second operand" }),
+    const MathInput = Type.Object({
+      a: Type.Number({ description: "First operand" }),
+      b: Type.Number({ description: "Second operand" }),
+    });
+    const MathResult = Type.Object({
+      result: Type.Number({ description: "Computed result" }),
     });
 
-    const MathResultSchema = Type.Object({
-        result: Type.Number({ description: "Computed result" }),
-    });
+    // extensions/math/math_ops.ts
+    class Addition implements Module {
+      inputSchema = MathInput;
+      outputSchema = MathResult;
+      description = "Add two numbers and return their sum.";
 
-    // `Module` is an interface — implement it. TypeScript has no `@multiClass`
-    // decorator; multi-class mode is opted into per class through the
-    // `ClassDescriptor.multiClass` flag handed to discoverMultiClass().
-    export class Addition implements Module {
-        inputSchema = MathInputSchema;
-        outputSchema = MathResultSchema;
-        description = "Add two numbers and return their sum.";
-
-        async execute(inputs: Record<string, unknown>, context: Context): Promise<Record<string, unknown>> {
-            const a = inputs.a as number;
-            const b = inputs.b as number;
-            return { result: a + b };
-        }
+      async execute(inputs: Record<string, unknown>, _context: Context): Promise<Record<string, unknown>> {
+        return { result: (inputs.a as number) + (inputs.b as number) };
+      }
     }
 
-    export class Subtraction implements Module {
-        inputSchema = MathInputSchema;
-        outputSchema = MathResultSchema;
-        description = "Subtract b from a and return the difference.";
+    class Subtraction implements Module {
+      inputSchema = MathInput;
+      outputSchema = MathResult;
+      description = "Subtract b from a and return the difference.";
 
-        async execute(inputs: Record<string, unknown>, context: Context): Promise<Record<string, unknown>> {
-            const a = inputs.a as number;
-            const b = inputs.b as number;
-            return { result: a - b };
-        }
+      async execute(inputs: Record<string, unknown>, _context: Context): Promise<Record<string, unknown>> {
+        return { result: (inputs.a as number) - (inputs.b as number) };
+      }
     }
 
-    // File: extensions/math/math_ops.ts
+    // Describe the file's classes; `multiClass: true` is the per-class opt-in.
     const classes: ClassDescriptor[] = [
-        { name: "Addition", implementsModule: true, multiClass: true },
-        { name: "Subtraction", implementsModule: true, multiClass: true },
+      { name: "Addition", implementsModule: true, multiClass: true },
+      { name: "Subtraction", implementsModule: true, multiClass: true },
     ];
+    const instances: Record<string, Module> = {
+      Addition: new Addition(),
+      Subtraction: new Subtraction(),
+    };
 
-    const entries = discoverMultiClass("extensions/math/math_ops.ts", classes, "extensions");
-    // Registered IDs:
-    //   math.math_ops.addition
-    //   math.math_ops.subtraction
+    const registry = new Registry();
+    for (const entry of registry.discoverMultiClass("extensions/math/math_ops.ts", classes)) {
+      await registry.register(entry.moduleId, instances[entry.className]);
+    }
+
+    console.log(registry.list()); // ['math.math_ops.addition', 'math.math_ops.subtraction']
     ```
 
 === "Rust"
     ```rust
-    use apcore::{Context, Module};
-    use apcore::errors::ModuleError;
-    use apcore::registry::{MultiClassEntry, DiscoveryConfig};
-    use async_trait::async_trait;
-    use serde_json::{json, Value};
     use std::path::Path;
 
-    pub struct Addition;
+    use apcore::{Context, DiscoveryConfig, Module, ModuleError, MultiClassEntry, Registry};
+    use async_trait::async_trait;
+    use serde_json::{json, Value};
+
+    fn math_input() -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "a": { "type": "number", "description": "First operand" },
+                "b": { "type": "number", "description": "Second operand" }
+            },
+            "required": ["a", "b"]
+        })
+    }
+
+    fn math_result() -> Value {
+        json!({
+            "type": "object",
+            "properties": { "result": { "type": "number", "description": "Computed result" } },
+            "required": ["result"]
+        })
+    }
+
+    struct Addition;
 
     #[async_trait]
     impl Module for Addition {
         fn description(&self) -> &str { "Add two numbers and return their sum." }
-        fn input_schema(&self) -> Value { json!({ "type": "object" }) }
-        fn output_schema(&self) -> Value { json!({ "type": "object" }) }
+        fn input_schema(&self) -> Value { math_input() }
+        fn output_schema(&self) -> Value { math_result() }
 
-        async fn execute(
-            &self,
-            inputs: Value,
-            _ctx: &Context<Value>,
-        ) -> Result<Value, ModuleError> {
+        async fn execute(&self, inputs: Value, _ctx: &Context<Value>) -> Result<Value, ModuleError> {
             let a = inputs["a"].as_f64().unwrap_or(0.0);
             let b = inputs["b"].as_f64().unwrap_or(0.0);
             Ok(json!({ "result": a + b }))
         }
     }
 
-    pub struct Subtraction;
+    struct Subtraction;
 
     #[async_trait]
     impl Module for Subtraction {
         fn description(&self) -> &str { "Subtract b from a and return the difference." }
-        fn input_schema(&self) -> Value { json!({ "type": "object" }) }
-        fn output_schema(&self) -> Value { json!({ "type": "object" }) }
+        fn input_schema(&self) -> Value { math_input() }
+        fn output_schema(&self) -> Value { math_result() }
 
-        async fn execute(
-            &self,
-            inputs: Value,
-            _ctx: &Context<Value>,
-        ) -> Result<Value, ModuleError> {
+        async fn execute(&self, inputs: Value, _ctx: &Context<Value>) -> Result<Value, ModuleError> {
             let a = inputs["a"].as_f64().unwrap_or(0.0);
             let b = inputs["b"].as_f64().unwrap_or(0.0);
             Ok(json!({ "result": a - b }))
         }
     }
 
-    // Rust has no proc-macro auto-discovery; pass instances explicitly to
-    // Registry::register_multi_class:
-    //
-    // let entries = vec![
-    //     MultiClassEntry::new("Addition", Box::new(Addition)),
-    //     MultiClassEntry::new("Subtraction", Box::new(Subtraction)),
-    // ];
-    // registry.register_multi_class(
-    //     Path::new("extensions/math/math_ops.rs"),
-    //     "extensions",
-    //     entries,
-    //     &DiscoveryConfig::with_multi_class(),
-    // )?;
-    //
-    // Registered IDs:
-    //   math.math_ops.addition
-    //   math.math_ops.subtraction
-    ```
+    fn main() -> Result<(), ModuleError> {
+        let registry = Registry::new();
 
-## Contract: Registry.discover_multi_class
+        // `.with_multi_class(true)` is the per-class opt-in.
+        let entries = vec![
+            MultiClassEntry::new("Addition", Box::new(Addition)).with_multi_class(true),
+            MultiClassEntry::new("Subtraction", Box::new(Subtraction)).with_multi_class(true),
+        ];
 
-All three SDKs expose `discover_multi_class` as a **method on `Registry`**, matching the spec contract. The free-function form remains available as an internal helper for SDK-internal use, but new application code SHOULD prefer the method form.
+        let ids = registry.register_multi_class(
+            Path::new("extensions/math/math_ops.rs"),
+            "extensions",
+            entries,
+            &DiscoveryConfig::default(),
+        )?;
 
-> **Cross-language signature divergence (D11-004 — intentional, language-idiomatic).**
-> The method input set differs across SDKs because each language's
-> static-analysis story differs:
->
-> - **Python** can `import` a file at runtime and reflect on its module
->   members, so the method takes only `(file_path, extensions_root)` and
->   does the reading internally.
-> - **TypeScript** cannot reliably introspect class declarations at
->   runtime (ES module specifiers are immutable, AST traversal requires a
->   heavyweight dev dependency like `ts-morph`), so the method takes
->   pre-resolved `ClassDescriptor[]` from the caller's scanner output:
->   `(filePath, classes, extensionsRoot, multiClassEnabled)`.
-> - **Rust** uses macro-driven registration (no runtime class reflection),
->   so the multi-class entry point lives as `discover_multi_class` on a
->   separate trait module helper rather than on `Registry` directly.
->
-> This is **language-idiomatic divergence** rather than a parity bug.
-> Cross-language fixtures cannot 1:1-port a single `discover_multi_class`
-> call. Application code that needs to scan multi-class files SHOULD use
-> each SDK's idiomatic surface (file-path-in for Python; pre-parsed
-> classes for TypeScript; macro-driven trait-module helper for Rust).
-
-| SDK | Public method | Internal helper |
-|---|---|---|
-| Python | `Registry.discover_multi_class(file_path, extensions_root="extensions")` | `apcore.registry.multi_class._discover_multi_class(...)` |
-| TypeScript | `Registry.discoverMultiClass(filePath, classes, extensionsRoot, multiClassEnabled)` | `_discoverMultiClass(filePath, classes, ...)` (module-private) |
-| Rust | `apcore::registry::multi_class::derive_module_ids(...)` (trait-module helper, not on `Registry`) | same |
-
-### Inputs
-
-- `file_path` (str/string/&str, required) — path to the file to scan, relative to the project root
-- `classes` (`ClassDescriptor[]`, **TypeScript-only**, required) — pre-resolved class descriptors produced by the caller's scanner. Python derives this internally via `import`; Rust derives via macros at compile time.
-- `extensions_root` (str/string/&str, optional, default=`"extensions"`) — root directory name used by Algorithm A01
-- `multi_class_enabled` (`bool`, **TypeScript-only**, optional, default=`false`) — whether to apply the per-file opt-in described in [Enabling Multi-Class Mode](#enabling-multi-class-mode). Python infers from the `@multi_class` decorator; Rust infers from a macro attribute.
-- `pre_approval_hook` (callable, **Python-only**, optional) — pre-import safety check; see [Python-only `pre_approval_hook`](#python-only-pre_approval_hook) below
-
-### Errors
-
-- `MODULE_ID_CONFLICT` — two or more classes in the file produce the same `class_segment` after snake_case conversion; details include `file_path`, `class_names`, and `conflicting_segment`
-- `INVALID_SEGMENT` — a derived `class_segment` does not conform to the canonical ID grammar (e.g., starts with a digit after snake_case conversion)
-- `ID_TOO_LONG` — the full derived `module_id` exceeds 192 characters
-
-### Returns
-
-- On success: list of `(module_id: str, class_ref)` pairs — one entry per qualifying Module class discovered in the file
-
-### Properties
-
-- async: false
-- thread_safe: true
-- pure: false (reads file system)
-- idempotent: true (repeated calls with the same file produce the same result)
-
-### Cross-SDK usage
-
-=== "Python"
-    ```python
-    from apcore import Registry
-
-    registry = Registry()
-    discovered = registry.discover_multi_class("extensions/math/math_ops.py")
-    for module_id, cls in discovered:
-        print(module_id, cls.__name__)
-    ```
-=== "TypeScript"
-    ```typescript
-    import { Registry, type ClassDescriptor } from "apcore-js";
-
-    const registry = new Registry();
-    // TypeScript callers pre-resolve ClassDescriptors via their scanner;
-    // commonly produced by the build-time AST scan that wires extension
-    // modules into the bundle.
-    const classes: ClassDescriptor[] = await scanFile("extensions/math/math-ops.ts");
-    const discovered = registry.discoverMultiClass(
-        "extensions/math/math-ops.ts",
-        classes,
-        "extensions",
-        /* multiClassEnabled */ true,
-    );
-    for (const entry of discovered) {
-        console.log(entry.moduleId, entry.className);
-    }
-    ```
-=== "Rust"
-    ```rust
-    use apcore::registry::multi_class::derive_module_ids;
-
-    // Rust resolves classes at compile time via macros; the trait-module
-    // helper takes the pre-derived candidate list rather than reading
-    // a file at runtime.
-    let candidates = build_macro_class_list();  // from your #[apcore::multi_class] expansion
-    let discovered = derive_module_ids(
-        "extensions/math/math_ops.rs",
-        &candidates,
-        "extensions",
-    )?;
-    for (module_id, class_ref) in discovered {
-        println!("{} -> {:?}", module_id, class_ref);
+        assert_eq!(ids, vec!["math.math_ops.addition", "math.math_ops.subtraction"]);
+        Ok(())
     }
     ```
 
-### Python-only `pre_approval_hook`
+## Behaviour without the marker
 
-!!! note "Python-only safety hook"
-    `pre_approval_hook` (`Registry.discover_multi_class(file_path, extensions_root, pre_approval_hook=...)`) protects against importing arbitrary code, since Python imports the file at scan time. TypeScript and Rust do **not** import code from disk for discovery — they parse static AST/source — so the hook is **not** present in those SDKs. Callers using TypeScript or Rust should sandbox file system access externally (e.g. constrain `extensions_root`, run discovery under an OS-level allowlist, or pre-resolve the file list themselves) (D-30).
+When no qualifying class carries the marker:
 
-The hook receives the absolute path of the file the registry is about to import; returning `False` (or raising) skips the file. The free-function form `_discover_multi_class(...)` accepts the same parameter.
+- **Python** — `discover_multi_class` returns `[]` (there are no qualifying classes). The ordinary `discover()` scan treats a file with more than one Module class as an ambiguous entry point and does not load it.
+- **TypeScript / Rust** — the file is single-class: the result is one entry, the base ID, for the first qualifying class.
 
-=== "Python"
-    ```python
-    from pathlib import Path
-    from apcore import Registry
+## Testing checklist
 
-    ALLOWED_DIRS = (Path("extensions/math").resolve(),)
+- **Single-class identity** — a file with one qualifying class yields the base ID, with no segment.
+- **Distinct IDs** — two marked classes yield two correctly suffixed IDs.
+- **snake_case coverage** — `Addition`, `MathOps`, `HTTPSender`, and names with leading, trailing or consecutive non-alphanumeric characters.
+- **Conflict** — two classes mapping to the same segment raise `MODULE_ID_CONFLICT` and leave the registry unchanged.
+- **Grammar and length** — derived IDs match the canonical grammar; an ID over 192 characters raises `ID_TOO_LONG`.
+- **No marker** — the per-SDK behaviour in [Behaviour without the marker](#behaviour-without-the-marker).
 
-    def is_safe(path: str) -> bool:
-        resolved = Path(path).resolve()
-        return any(resolved.is_relative_to(allowed) for allowed in ALLOWED_DIRS)
-
-    registry = Registry()
-    discovered = registry.discover_multi_class(
-        "extensions/math/math_ops.py",
-        extensions_root="extensions",
-        pre_approval_hook=is_safe,
-    )
-    ```
-
-=== "TypeScript"
-    ```typescript
-    // No pre_approval_hook — TS parses static AST and never imports code at scan time.
-    // Sandbox file system access externally before calling discoverMultiClass.
-    import { Registry } from "apcore-js";
-
-    const registry = new Registry();
-    const discovered = await registry.discoverMultiClass(
-        "extensions/math/math_ops.ts",
-        { extensionsRoot: "extensions" },
-    );
-    ```
-
-=== "Rust"
-    ```rust
-    // No pre_approval_hook — Rust parses source via `syn`/proc-macros and never executes code at scan time.
-    // Sandbox file system access externally (e.g., constrain `extensions_root` or use an OS allowlist).
-    use apcore::Registry;
-
-    let registry = Registry::new();
-    let discovered = registry.discover_multi_class("extensions/math/math_ops.rs")?;
-    ```
-
-## File extensions and skip patterns
-
-Multi-module discovery scans a configured directory tree for module definitions. Each SDK ships sensible language-native defaults; the table below documents them so cross-language projects can reason about what gets picked up (D-31).
-
-| SDK | Extensions | Skip patterns |
-|---|---|---|
-| Python | `.py` | `__pycache__/`, `*.pyc`, files starting with `_` |
-| TypeScript | `.ts`, `.js` | `*.d.ts`, `*.test.*`, `*.spec.*` |
-| Rust | `.rs` (configurable via `with_extensions`) | (none — Rust scans only `.rs`) |
-
-**Notes:**
-
-- Python's leading-`_` skip rule preserves the long-standing convention that `_private.py`, `__init__.py`, and similar files are not auto-discovered.
-- TypeScript's `*.d.ts` / `*.test.*` / `*.spec.*` skip patterns prevent declaration files and test files from being mistaken for module sources during AST parsing.
-- Rust's extension list is configurable: callers may pass additional extensions to `RegistryBuilder::with_extensions(...)` (e.g. for projects that generate `.rs.in` templates), but the default is `[".rs"]` only.
-- Implementations **MAY** expose extension/skip-pattern overrides as configuration knobs in the future; the table above documents the canonical defaults all 3 SDKs ship today.
-
-## Testing Strategy
-
-- **Single-class identity**: confirm that a file with one Module class produces `base_id` (not `base_id.class_segment`) under multi-class mode.
-- **Two-class distinct IDs**: confirm that a file with two Module classes produces two distinct, correctly-suffixed IDs.
-- **snake_case conversion coverage**: test `Addition` → `addition`, `MathOps` → `math_ops`, `HTTPSender` → `http_sender`, and edge cases with leading/trailing/consecutive non-alphanumeric characters.
-- **Conflict detection**: verify that two classes mapping to the same segment raise `MODULE_ID_CONFLICT` and leave the registry unmodified.
-- **Grammar conformance**: assert that all derived IDs satisfy `^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$`.
-- **Disabled by default**: confirm that a file with two Module classes and no opt-in is loaded as a single-class module (first class wins or raises, per SDK policy).
-- **Full ID length**: verify that a derived ID exceeding 192 characters raises `ID_TOO_LONG`.
-- Test naming follows the `test_<unit>_<behavior>` convention.
+The cross-language cases live in `conformance/fixtures/multi_module_discovery.json`.
