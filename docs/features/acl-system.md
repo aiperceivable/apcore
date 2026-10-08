@@ -241,6 +241,11 @@ rules:
     effect: allow
     description: "Everything else"
 default_effect: deny
+
+audit:
+  enabled: true
+  include_denied: true
+  log_level: info
 ```
 
 !!! warning "That two-rule form is not a drop-in replacement inside an existing rule list"
