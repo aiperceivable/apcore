@@ -7,14 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [Unreleased]
-
-### Added
-
-- **Public bare-name canonicalization in Python, TypeScript and Rust** ([Rust #40](https://github.com/aiperceivable/apcore-rust/issues/40), specification 1.65.0). `canonicalize_name` / `canonicalizeName` returns a canonical segment or a structured diagnostic with the original name. It repairs ASCII punctuation without changing A02, preserves existing underscores, and never silently removes Unicode, invents a digit-prefix repair, or truncates output. Shared fixture `canonicalize_name.json` contains 32 cases.
-
----
-
 ## [0.32.0] - 2026-10-08
 
 > Ships `PROTOCOL_SPEC` **v1.60.0 → v1.64.0**. v1.60.0 is editorial (no behaviour change); v1.61.0
@@ -23,6 +15,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > aligns the three SDKs where they disagreed (D-133–D-152, [#123](https://github.com/aiperceivable/apcore/issues/123)). Reasoning is in
 > [`docs/spec/2026-09-divergence-decisions.md`](./docs/spec/2026-09-divergence-decisions.md).
 
+### Added
+
+- **Public bare-name canonicalization in Python, TypeScript and Rust** ([Rust #40](https://github.com/aiperceivable/apcore-rust/issues/40), specification 1.65.0). `canonicalize_name` / `canonicalizeName` returns a canonical segment or a structured diagnostic with the original name. It repairs ASCII punctuation without changing A02, preserves existing underscores, and never silently removes Unicode, invents a digit-prefix repair, or truncates output. Shared fixture `canonicalize_name.json` contains 32 cases.
 ### Security
 
 - **An ACL, approval handler or policy given to an executor did not reach a pre-built strategy's gates** (D-129) — with a deny-all ACL the call ran while `governance_state()` reported the gate as configured and wired. Providers are now bound into the running built-in gate however the strategy was supplied, and `governance_state()` reports what the gate holds. Fixture `gate_provider_binding.json`.
