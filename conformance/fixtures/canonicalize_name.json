@@ -1,0 +1,365 @@
+{
+  "description": "Public bare-name canonicalization: one ASCII name becomes a segment or a structured diagnostic, without changing Algorithm A02.",
+  "spec_sections": [
+    "PROTOCOL_SPEC 2.2.1",
+    "PROTOCOL_SPEC 2.7"
+  ],
+  "driver_contract": {
+    "path": "Call the SDK's public canonicalize_name/canonicalizeName function for every case. Assert the original input, nullable canonical segment and nullable diagnostic. Rust must use the crate-root API; TypeScript must also verify its browser export. No exception or panic is permitted for a string input.",
+    "fields": "Python and Rust expose original_name and canonical_name; TypeScript uses originalName and canonicalName. Compare the error's snake_case string value. Namespace reservation and collision detection remain registration/scanning responsibilities."
+  },
+  "test_cases": [
+    {
+      "id": "cli_hyphen",
+      "input": {
+        "name": "cat-file"
+      },
+      "expected": {
+        "original_name": "cat-file",
+        "canonical_name": "cat_file",
+        "error": null
+      }
+    },
+    {
+      "id": "cli_rev_parse",
+      "input": {
+        "name": "rev-parse"
+      },
+      "expected": {
+        "original_name": "rev-parse",
+        "canonical_name": "rev_parse",
+        "error": null
+      }
+    },
+    {
+      "id": "hyphenated_name",
+      "input": {
+        "name": "user-profiles"
+      },
+      "expected": {
+        "original_name": "user-profiles",
+        "canonical_name": "user_profiles",
+        "error": null
+      }
+    },
+    {
+      "id": "camel_case",
+      "input": {
+        "name": "getUserById"
+      },
+      "expected": {
+        "original_name": "getUserById",
+        "canonical_name": "get_user_by_id",
+        "error": null
+      }
+    },
+    {
+      "id": "acronym",
+      "input": {
+        "name": "getHTTPResponse"
+      },
+      "expected": {
+        "original_name": "getHTTPResponse",
+        "canonical_name": "get_http_response",
+        "error": null
+      }
+    },
+    {
+      "id": "dot_is_name_separator",
+      "input": {
+        "name": "api.GetUser"
+      },
+      "expected": {
+        "original_name": "api.GetUser",
+        "canonical_name": "api_get_user",
+        "error": null
+      }
+    },
+    {
+      "id": "colon_run_is_name_separator",
+      "input": {
+        "name": "api::GetUser"
+      },
+      "expected": {
+        "original_name": "api::GetUser",
+        "canonical_name": "api_get_user",
+        "error": null
+      }
+    },
+    {
+      "id": "punctuation_run",
+      "input": {
+        "name": "cat---file"
+      },
+      "expected": {
+        "original_name": "cat---file",
+        "canonical_name": "cat_file",
+        "error": null
+      }
+    },
+    {
+      "id": "ascii_edge_punctuation",
+      "input": {
+        "name": " \t--Cat.File!!\r\n"
+      },
+      "expected": {
+        "original_name": " \t--Cat.File!!\r\n",
+        "canonical_name": "cat_file",
+        "error": null
+      }
+    },
+    {
+      "id": "existing_underscores",
+      "input": {
+        "name": "a___b"
+      },
+      "expected": {
+        "original_name": "a___b",
+        "canonical_name": "a___b",
+        "error": null
+      }
+    },
+    {
+      "id": "generated_operation_name",
+      "input": {
+        "name": "read_item_items__item_id__get"
+      },
+      "expected": {
+        "original_name": "read_item_items__item_id__get",
+        "canonical_name": "read_item_items__item_id__get",
+        "error": null
+      }
+    },
+    {
+      "id": "trailing_underscore",
+      "input": {
+        "name": "trail_"
+      },
+      "expected": {
+        "original_name": "trail_",
+        "canonical_name": "trail_",
+        "error": null
+      }
+    },
+    {
+      "id": "underscore_next_to_punctuation",
+      "input": {
+        "name": "cat_--file"
+      },
+      "expected": {
+        "original_name": "cat_--file",
+        "canonical_name": "cat__file",
+        "error": null
+      }
+    },
+    {
+      "id": "numeric_start",
+      "input": {
+        "name": "2fa"
+      },
+      "expected": {
+        "original_name": "2fa",
+        "canonical_name": null,
+        "error": "invalid_start"
+      }
+    },
+    {
+      "id": "cli_numeric_start",
+      "input": {
+        "name": "7z"
+      },
+      "expected": {
+        "original_name": "7z",
+        "canonical_name": null,
+        "error": "invalid_start"
+      }
+    },
+    {
+      "id": "leading_underscore",
+      "input": {
+        "name": "_lead"
+      },
+      "expected": {
+        "original_name": "_lead",
+        "canonical_name": null,
+        "error": "invalid_start"
+      }
+    },
+    {
+      "id": "both_underscore_edges",
+      "input": {
+        "name": "__both__"
+      },
+      "expected": {
+        "original_name": "__both__",
+        "canonical_name": null,
+        "error": "invalid_start"
+      }
+    },
+    {
+      "id": "empty",
+      "input": {
+        "name": ""
+      },
+      "expected": {
+        "original_name": "",
+        "canonical_name": null,
+        "error": "empty_name"
+      }
+    },
+    {
+      "id": "punctuation_only",
+      "input": {
+        "name": ".. -- \t"
+      },
+      "expected": {
+        "original_name": ".. -- \t",
+        "canonical_name": null,
+        "error": "empty_name"
+      }
+    },
+    {
+      "id": "unicode_uppercase",
+      "input": {
+        "name": "getÜber"
+      },
+      "expected": {
+        "original_name": "getÜber",
+        "canonical_name": null,
+        "error": "non_ascii"
+      }
+    },
+    {
+      "id": "unicode_multi_codepoint_lowercase",
+      "input": {
+        "name": "İd"
+      },
+      "expected": {
+        "original_name": "İd",
+        "canonical_name": null,
+        "error": "non_ascii"
+      }
+    },
+    {
+      "id": "unicode_digit",
+      "input": {
+        "name": "٣A"
+      },
+      "expected": {
+        "original_name": "٣A",
+        "canonical_name": null,
+        "error": "non_ascii"
+      }
+    },
+    {
+      "id": "unicode_titlecase",
+      "input": {
+        "name": "ǅName"
+      },
+      "expected": {
+        "original_name": "ǅName",
+        "canonical_name": null,
+        "error": "non_ascii"
+      }
+    },
+    {
+      "id": "unicode_whitespace",
+      "input": {
+        "name": "cat file"
+      },
+      "expected": {
+        "original_name": "cat file",
+        "canonical_name": null,
+        "error": "non_ascii"
+      }
+    },
+    {
+      "id": "unicode_before_trimming",
+      "input": {
+        "name": "!!!Ü!!!"
+      },
+      "expected": {
+        "original_name": "!!!Ü!!!",
+        "canonical_name": null,
+        "error": "non_ascii"
+      }
+    },
+    {
+      "id": "namespace_word_is_legal_segment",
+      "input": {
+        "name": "system"
+      },
+      "expected": {
+        "original_name": "system",
+        "canonical_name": "system",
+        "error": null
+      }
+    },
+    {
+      "id": "max_length",
+      "input": {
+        "name": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "expected": {
+        "original_name": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "canonical_name": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "error": null
+      }
+    },
+    {
+      "id": "over_max_length",
+      "input": {
+        "name": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "expected": {
+        "original_name": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "canonical_name": null,
+        "error": "name_too_long"
+      }
+    },
+    {
+      "id": "expanded_max_length",
+      "input": {
+        "name": "aBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaB"
+      },
+      "expected": {
+        "original_name": "aBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaB",
+        "canonical_name": "a_ba_ba_ba_ba_ba_ba_ba_ba_ba_ba_ba_ba_ba_ba_ba_ba_ba_ba_ba_ba_ba_ba_ba_ba_ba_ba_ba_ba_ba_ba_ba_ba_ba_ba_ba_ba_ba_ba_ba_ba_ba_ba_ba_ba_ba_ba_ba_ba_ba_ba_ba_ba_ba_ba_ba_ba_ba_ba_ba_ba_ba_ba_ba_b",
+        "error": null
+      }
+    },
+    {
+      "id": "expanded_over_max_length",
+      "input": {
+        "name": "aBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaB"
+      },
+      "expected": {
+        "original_name": "aBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaB",
+        "canonical_name": null,
+        "error": "name_too_long"
+      }
+    },
+    {
+      "id": "ascii_control_separator",
+      "input": {
+        "name": "cat\u0000file"
+      },
+      "expected": {
+        "original_name": "cat\u0000file",
+        "canonical_name": "cat_file",
+        "error": null
+      }
+    },
+    {
+      "id": "digit_after_separator",
+      "input": {
+        "name": "tool-7z"
+      },
+      "expected": {
+        "original_name": "tool-7z",
+        "canonical_name": "tool_7z",
+        "error": null
+      }
+    }
+  ]
+}

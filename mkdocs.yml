@@ -93,6 +93,7 @@ nav:
           - Context Object: features/context-object.md
           - APCore Client: features/apcore-client.md
           - Bindings (Decorator/YAML): features/decorator-bindings.md
+          - ID Normalization: features/id-normalization.md
       - Execution & Workflow:
           - Core Executor: features/core-executor.md
           - Execution Pipeline: features/execution-pipeline.md

@@ -1,12 +1,12 @@
 ---
-description: "The canonical, normative apcore protocol specification (RFC 2119, v1.64.0): module, schema, naming, ACL, approval, error, config, and observability requirements for all conforming SDKs."
+description: "The canonical, normative apcore protocol specification (RFC 2119, v1.65.0): module, schema, naming, ACL, approval, error, config, and observability requirements for all conforming SDKs."
 ---
 
 # apcore — AI-Perceivable Core Standard Specification
 
 > **Canonical specification.** This document is the single normative source for the apcore protocol. Where any other document disagrees with it, this document wins.
 
-> Version: 1.64.0
+> Version: 1.65.0
 > Status: Active — the 1.x line adds requirements compatibly; breaking changes are reserved for 2.0
 > Last Updated: 2026-10-08
 
@@ -329,6 +329,26 @@ mappings:
 3. An entry without `file` is skipped with a warning.
 4. An entry's `file` is resolved against the extension root the file is discovered under, in every implementation; it is never resolved against the working directory or the map file's directory. An entry carries `file` and `id` only (D-138).
 5. `id_map.overrides` is path-typed (§9.2.1). `null` means no ID map, and an empty value — including a set-but-empty environment variable — falls through to the next tier (§9.2.1 requirement 5) (D-138).
+
+#### 2.2.1 Bare-Name Canonicalization
+
+SDKs **MUST** expose `canonicalize_name(name)` (TypeScript: `canonicalizeName`) for converting an arbitrary name, such as a CLI subcommand, to **one** §2.7 segment. This is a separate, explicitly repairing operation; it **MUST NOT** change A02, split a language-native ID, register a module, or invent a prefix for an invalid start.
+
+The public `CanonicalNameResult` has `original_name`, nullable `canonical_name`, and nullable `error` fields (TypeScript: `originalName` and `canonicalName`). `CanonicalNameError` identifies one of `empty_name`, `non_ascii`, `invalid_start`, or `name_too_long`. For a string input the function **MUST** return a result, rather than raise an exception or panic; `original_name` **MUST** retain the input exactly. A success has a canonical segment and no error; a failure has no canonical segment and exactly one error.
+
+Implementations **MUST** apply these steps in order:
+
+1. If any input character is outside ASCII, return `non_ascii` before trimming or case conversion. Implementations **MUST NOT** transliterate, delete, or replace non-ASCII characters to manufacture a legal-looking name.
+2. Trim leading and trailing ASCII characters outside `[A-Za-z0-9_]`. Existing leading and trailing underscores are retained.
+3. Apply A02's ASCII case-boundary insertion and ASCII lowercase conversion to the remaining name.
+4. Replace each maximal run of ASCII characters outside `[A-Za-z0-9_]` with one underscore. Existing underscore runs remain unchanged. Dots and colons are name punctuation here, not namespace or language separators.
+5. If the candidate is empty, return `empty_name`; otherwise, if its first character is not `[a-z]`, return `invalid_start`.
+6. If the candidate exceeds 192 ASCII characters, return `name_too_long`. Implementations **MUST NOT** truncate it.
+7. Return the candidate with no error.
+
+This operation checks segment syntax only. A reserved word such as `system` is a syntactically valid segment; namespace reservation, the full ID's length, and normalization collisions remain subject to §2.5–§2.7 during scanning and registration. Different names can produce the same segment, so a caller **MUST NOT** treat this function as proof that a module ID is unique or registrable.
+
+Examples: `cat-file` → `cat_file`, `api::GetUser` → `api_get_user`, `a___b` → `a___b`, `2fa` → `invalid_start`, `getÜber` → `non_ascii`. Shared verification: `conformance/fixtures/canonicalize_name.json`.
 
 ### 2.3 Special Word Handling
 
@@ -10212,6 +10232,7 @@ The specification is versioned independently of the SDK release line (`0.x`); `C
 
 | Version | Date | Summary | Records |
 |---|---|---|---|
+| 1.65.0 | 2026-10-08 | Add public bare-name canonicalization with structured, non-throwing results in all SDKs; preserve A02, ASCII-only case conversion and existing underscores, and reject non-ASCII, invalid starts and overlong output (§2.2.1). | [Rust #40](https://github.com/aiperceivable/apcore-rust/issues/40) |
 | 1.64.0 | 2026-10-08 | Algorithm A02 is exhaustive and ASCII-scoped: it preserves existing underscores and non-ASCII characters through case conversion, then rejects a result outside the Canonical ID grammar; it never repairs arbitrary identifiers (§2.2). The repairing class-name conversion is named `snake_case_name` and is distinct from A02's `snake_case_identifier` (§2.1.1). | #122 |
 | 1.63.0 | 2026-09-30 | The three SDKs aligned: a timeout cancels the call's own child token and returns at once (§12.7.5); `validate()` reports every check (§12.8); explicit retryable defaults (§8.6); JSON-mode input validation (type-mapping §17.3); `id_map.overrides` is path-typed (§2.2, §9.2.1); binding files reject unknown keys and inference failures (§5.12); export profiles (§4.17); preflight reporting (§12.8.5.1); per-step `MODULE_TIMEOUT` (§5.16.1); built-in namespaces (§9.15); subscriber circuit events (§9.16.2); env-var dispatch (§9.8.2); marked-class discovery (§2.1.1); the ephemeral contract (§2.5.1); error details shape (§8.1); `x-sensitive` inside combinators (§10.6, A13); `middleware.disabled` and `extensions.auto_discover` deprecated (§9.2.4). Removed what no implementation has: the validate span, config-file extension registration and chaining (§10.1, §11.3, §11.7). | D-133 – D-152 |
 | 1.62.0 | 2026-09-30 | The specification is corrected to behaviour all three SDKs share, including MUSTs no implementation met: reserved words apply to the first segment only and `__` is allowed (§2.5, §2.7); entry-point failures raise `MODULE_LOAD_ERROR` (§5.2); schema inference follows each language's type source (§5.12.5); `APCORE_`-prefixed `env_prefix` values are allowed, only duplicates are rejected (§9.8.2); unknown configuration fields are retained unless `_config.strict` (§13.5); duplicate registration raises `DUPLICATE_MODULE_ID` (§12.7.4); `after()` output is not re-validated and timeouts wrap `execute()` only (§11.8); `validate()` must not invoke `execute()` (§12.2). No behaviour change. | D-132 |

@@ -44,6 +44,7 @@ Level 0 defines the minimal viable implementation of apcore. SDKs reaching this 
 | **Executor** | Runs the pipeline steps `context_creation` (1), `module_lookup` (3), `input_validation` (7), `execute` (8), `output_validation` (9) and `return_result` (11) | protocol-spec §5.16, §12.2 |
 | **Directory as ID** | `directory_to_canonical_id()` algorithm implementation, directory path automatically maps to Canonical ID | protocol-spec §2.1 |
 | **ID format validation** | EBNF syntax validation for Canonical ID | protocol-spec §2.7 |
+| **Bare-name canonicalization** | Public `canonicalize_name()` / `canonicalizeName()` returns a segment or a structured diagnostic without exceptions for string input | protocol-spec §2.2.1 |
 | **ID conflict detection** | `detect_id_conflicts()` algorithm, detects duplicate IDs and reserved-word conflicts on the first segment | protocol-spec §2.6 |
 | **Basic error handling** | Unified error format (`code`, `message`), framework error codes (MODULE_*, SCHEMA_*, GENERAL_*) | protocol-spec §8.1, §8.2 |
 | **Error propagation** | `propagate_error()` algorithm, module errors wrapped as ModuleError | protocol-spec §8.3 |
@@ -319,12 +320,13 @@ The following requirements are not met by the current SDK releases (apcore-pytho
 
 ## 8. Conformance Test Fixtures
 
-The repository ships **90 cross-language fixture files** under `conformance/fixtures/` covering **1075 test cases**. `conformance-integrity` checks these two numbers, §8.1's per-fixture counts and its Total row against the fixtures themselves. Each fixture is consumed by all three SDK test runners (§5.2). An SDK declaring a conformance level **MUST** pass every fixture whose tested feature is required at that level (§5.3).
+The repository ships **91 cross-language fixture files** under `conformance/fixtures/` covering **1107 test cases**. `conformance-integrity` checks these two numbers, §8.1's per-fixture counts and its Total row against the fixtures themselves. Each fixture is consumed by all three SDK test runners (§5.2). An SDK declaring a conformance level **MUST** pass every fixture whose tested feature is required at that level (§5.3).
 
 ### 8.1 Fixture Inventory
 
 | Fixture | Cases | Tested feature |
 |---------|------:|----------------|
+| [`canonicalize_name`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/canonicalize_name.json) | 32 | Public bare-name normalization: ASCII punctuation repair, underscore preservation, non-throwing diagnostics and length limits (§2.2.1) |
 | [`acl_agent_scoping`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/acl_agent_scoping.json) | 19 | Agent-scoped ACL governance: per-agent caller patterns and scoping rules (spec §6) |
 | [`allow_unknown_namespaces`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/allow_unknown_namespaces.json) | 8 | `_config.allow_unknown`: drop or store an unregistered namespace (§9.6.3, D-69) |
 | [`acl_audit_delivery`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/acl_audit_delivery.json) | 17 | ACL audit delivery: one effective sink, containment, the wire record (§6.3.2, D-66) |
@@ -415,7 +417,7 @@ The repository ships **90 cross-language fixture files** under `conformance/fixt
 | [`usage_contract`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/usage_contract.json) | 11 | `system.usage.*` value semantics no schema can assert (spec §6.7.1) |
 | [`usage_exporter`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/usage_exporter.json) | 3 | `UsageExporter` push interface (D-55) |
 | [`version_negotiation`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/version_negotiation.json) | 10 | Version negotiation (Algorithm A14) |
-| **Total** | **1075** | **90 fixtures** |
+| **Total** | **1107** | **91 fixtures** |
 
 ### 8.2 Loading Fixtures from a Test Runner
 

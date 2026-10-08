@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Added
+
+- **Public bare-name canonicalization in Python, TypeScript and Rust** ([Rust #40](https://github.com/aiperceivable/apcore-rust/issues/40), specification 1.65.0). `canonicalize_name` / `canonicalizeName` returns a canonical segment or a structured diagnostic with the original name. It repairs ASCII punctuation without changing A02, preserves existing underscores, and never silently removes Unicode, invents a digit-prefix repair, or truncates output. Shared fixture `canonicalize_name.json` contains 32 cases.
+
+---
+
 ## [0.32.0] - 2026-10-08
 
 > Ships `PROTOCOL_SPEC` **v1.60.0 → v1.64.0**. v1.60.0 is editorial (no behaviour change); v1.61.0

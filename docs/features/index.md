@@ -16,6 +16,7 @@ One page per apcore subsystem: what it does, the contract the SDKs implement, an
 - [Context Object](./context-object.md) — Per-invocation state and shared data.
 - [APCore Client](./apcore-client.md) — The unified entry point for all SDK features.
 - [Bindings (Decorator/YAML)](./decorator-bindings.md) — How code is mapped to the standard.
+- [ID Normalization](./id-normalization.md) — Bare-name canonicalization and non-repairing module-ID conversion.
 
 ### Execution & Workflow
 *The runtime behavior of the execution engine.*

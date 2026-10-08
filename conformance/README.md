@@ -2,6 +2,8 @@
 
 Shared JSON fixtures for cross-language conformance testing. All SDK implementations **should** consume these fixtures to guarantee behavioral parity.
 
+The shared bare-name canonicalization contract is covered by `canonicalize_name.json` (32 cases, protocol §2.2.1).
+
 ## Format
 
 All fixture files use **JSON** format (`.json`), with one intentional exception:
@@ -20,6 +22,7 @@ SDK conformance runners **must** load `.json` files with a JSON parser. The `.ya
 | `glob_matching.json` | A25 | Portable glob matching for every other pattern-valued value (`*` and `?`) |
 | `specificity.json` | A10 | ACL rule specificity scoring |
 | `normalize_id.json` | A02 | Cross-language module ID normalization: preserves existing underscores and rejects leading underscores, non-ASCII input, and non-identifier characters without repair |
+| `canonicalize_name.json` | §2.2.1 | Public bare-name canonicalization: ASCII separator repair, original-name retention, structured diagnostics, and the 192-character segment limit; distinct from A02 module-ID normalization |
 | `id_conflict_reserved_words.json` | A02 | Reserved-word ID conflicts are detected on the FIRST SEGMENT only; later segments are unrestricted (spec §2.6 step 2, v1.26.0, #99) |
 | `call_chain.json` | A20 | Call chain safety (depth, frequency, circularity) |
 | `error_codes.json` | A17 | Error code registry collision detection; canonical 14 reserved prefixes + exact-framework-code rejection for one-off codes (sync A-D-006/A-D-007) |
