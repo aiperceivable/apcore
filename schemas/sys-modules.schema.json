@@ -71,7 +71,8 @@
         },
         "overrides_path": {
           "type": ["string", "null"],
-          "description": "Path to the runtime overrides file. When set and no OverridesStore is supplied explicitly, a file-backed store is constructed from it.",
+          "x-apcore-path": true,
+          "description": "Path-typed (protocol-spec 9.2.1): the runtime overrides file. When set and no OverridesStore is supplied explicitly, a file-backed store is constructed from it.",
           "default": null
         }
       }

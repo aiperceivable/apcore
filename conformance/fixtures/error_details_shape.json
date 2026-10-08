@@ -1,0 +1,150 @@
+{
+  "description": "Error details have one wire shape (PROTOCOL_SPEC 8.1, decision D-149). A SCHEMA_VALIDATION_ERROR carries `details.errors`, a list of items with exactly the keys `path`, `keyword` and `message`: `path` is an RFC 6901 JSON Pointer into the validated instance (`/count`, `/tags/1`, and `\"\"` for the root), `keyword` is the JSON Schema keyword that failed at that location. Measured before D-149 no two SDKs agreed and no SDK was self-consistent: apcore-python emitted `{field, code, message}` with a dotted path on the executor path and `{path, message, constraint, expected, actual}` with root `/` from its validator; apcore-typescript emitted a numeric TypeBox error type as `constraint` and root `/`; apcore-rust emitted `{field, message}` on the executor path and a dotted, bracketed path from its validator. `details` keys are snake_case in every serialized error.",
+  "spec_sections": [
+    "PROTOCOL_SPEC 8.1"
+  ],
+  "module_contract": {
+    "module_id": "demo.order",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "tags": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "priority": {
+          "type": "string",
+          "enum": [
+            "low",
+            "high"
+          ]
+        }
+      },
+      "required": [
+        "count"
+      ]
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "ok": {
+          "type": "boolean"
+        }
+      }
+    }
+  },
+  "driver_contract": {
+    "path": "Register the module of `module_contract` with a real Executor and call it — or the module named by `input.call_module_id` when present — with `input.inputs` through the public call path. Catch the error and serialize it with the SDK's canonical error serializer (Python to_dict, TypeScript toJSON, Rust serde). Assert on the serialized form.",
+    "errors_items": "`expected.errors` lists the items `details.errors` MUST contain, compared as whole objects on `path` and `keyword` (order not significant). Every item of `details.errors` — listed or not — MUST have exactly the keys `path`, `keyword` and `message`, with `message` a non-empty string. `expected.error_count` is the exact length of the list when present.",
+    "detail_keys": "`expected.detail_keys_present` / `expected.detail_keys_absent` name keys of the serialized `details` object."
+  },
+  "test_cases": [
+    {
+      "id": "type_mismatch_at_a_property",
+      "input": {
+        "inputs": {
+          "count": "three"
+        }
+      },
+      "expected": {
+        "error_code": "SCHEMA_VALIDATION_ERROR",
+        "errors": [
+          {
+            "path": "/count",
+            "keyword": "type"
+          }
+        ],
+        "error_count": 1
+      }
+    },
+    {
+      "id": "missing_required_property_is_reported_at_the_root",
+      "description": "`required` is a keyword of the object, so the failure is located at the object that lacks the property — the root, whose pointer is the empty string, not `/`.",
+      "input": {
+        "inputs": {}
+      },
+      "expected": {
+        "error_code": "SCHEMA_VALIDATION_ERROR",
+        "errors": [
+          {
+            "path": "",
+            "keyword": "required"
+          }
+        ],
+        "error_count": 1
+      }
+    },
+    {
+      "id": "array_item_path_is_a_json_pointer",
+      "description": "Fails a dotted (`tags.1`) or bracketed (`tags[1]`) path.",
+      "input": {
+        "inputs": {
+          "count": 2,
+          "tags": [
+            "a",
+            7
+          ]
+        }
+      },
+      "expected": {
+        "error_code": "SCHEMA_VALIDATION_ERROR",
+        "errors": [
+          {
+            "path": "/tags/1",
+            "keyword": "type"
+          }
+        ],
+        "error_count": 1
+      }
+    },
+    {
+      "id": "keyword_names_the_failed_constraint",
+      "description": "`keyword` is the JSON Schema keyword, not a validator-library error type.",
+      "input": {
+        "inputs": {
+          "count": 0,
+          "priority": "urgent"
+        }
+      },
+      "expected": {
+        "error_code": "SCHEMA_VALIDATION_ERROR",
+        "errors": [
+          {
+            "path": "/count",
+            "keyword": "minimum"
+          },
+          {
+            "path": "/priority",
+            "keyword": "enum"
+          }
+        ],
+        "error_count": 2
+      }
+    },
+    {
+      "id": "typed_error_details_are_snake_case",
+      "description": "A framework error raised with structured details serializes every `details` key in snake_case.",
+      "input": {
+        "call_module_id": "demo.absent",
+        "inputs": {
+          "count": 1
+        }
+      },
+      "expected": {
+        "error_code": "MODULE_NOT_FOUND",
+        "detail_keys_present": [
+          "module_id"
+        ],
+        "detail_keys_absent": [
+          "moduleId"
+        ]
+      }
+    }
+  ]
+}

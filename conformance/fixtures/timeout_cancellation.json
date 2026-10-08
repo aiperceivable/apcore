@@ -1,0 +1,181 @@
+{
+  "description": "A timeout cancels the timed-out call's own cancel token and raises MODULE_TIMEOUT at once; every call receives a child token of its caller's (PROTOCOL_SPEC 12.7.5, Algorithm A22, decision D-133). Before D-133 no SDK cancelled any token on a timeout, and each nested call SHARED its caller's token object, so the two obvious fixes are both wrong: cancelling the shared token on a nested timeout also cancels the caller, which is then unable to catch the error and continue. The cases below pin both directions: a timeout MUST cancel the timed-out call's token (fails the status quo), and MUST NOT reach the caller's token or the token the application supplied (fails the shared-token fix). There is no grace period and no forced termination.",
+  "spec_sections": [
+    "PROTOCOL_SPEC 12.7.5",
+    "PROTOCOL_SPEC 5.7",
+    "algorithms.md A22"
+  ],
+  "driver_contract": {
+    "path": "Drive a real Executor through the SDK's public call path (the async one where the SDK has both). Register the modules a case names under `modules`; each is a module whose Context the driver can observe.",
+    "module_kinds": "`sleeper` waits `sleep_ms` in steps of at most 10 ms using the language's ordinary non-blocking wait (asyncio.sleep, a timer promise, tokio::time::sleep), checking its Context's cancel_token between steps when `checks_token` is true and raising the SDK's cancellation error when it is cancelled; it returns {\"slept\": true} if it finishes. `caller` calls the module named in `calls` through its Context's executor; when `catches` names an error code it catches exactly that code and returns {\"caught\": <code>}, otherwise it lets the error propagate.",
+    "token_capture": "Every module stores a reference to the cancel_token of the Context it was invoked with, before doing anything else, in a slot the driver reads after the call returns. `expected.token_cancelled` maps a module id (or `application` for the token passed to Context.create) to whether that token reports cancelled once the call has returned. A token that is absent (null) counts as not cancelled; a case expecting true therefore also fails an implementation that gives the call no token.",
+    "timeouts": "`module_timeout_ms` is declared on the module as its `resources.timeout` (PROTOCOL_SPEC 12.7.5, Timeout Levels). `config` is loaded as the executor's configuration; keys it omits keep their defaults.",
+    "application_token": "When `input.application_token` is true, the driver creates a CancelToken, passes it to Context.create and calls with that Context. When `input.cancel_application_token_after_ms` is set, the driver cancels that token from outside the call after that many milliseconds.",
+    "elapsed": "`expected.returns_within_ms` bounds the wall-clock time from the call to its result or error. It is generous on purpose — it tells an implementation that waits for the module apart from one that returns when the timer fires, not one fast machine from a slow one.",
+    "outcome": "`expected.error_code` is the wire code of the error the top-level call raises; `expected.output` is the result when the call succeeds."
+  },
+  "test_cases": [
+    {
+      "id": "timeout_cancels_the_timed_out_calls_token",
+      "description": "The status-quo defect: MODULE_TIMEOUT was raised and the module's token was left uncancelled, so a module that checks its token never learned it had timed out.",
+      "input": {
+        "modules": {
+          "slow.worker": {
+            "kind": "sleeper",
+            "sleep_ms": 2000,
+            "checks_token": true,
+            "module_timeout_ms": 100
+          }
+        },
+        "call": "slow.worker",
+        "application_token": false
+      },
+      "expected": {
+        "error_code": "MODULE_TIMEOUT",
+        "token_cancelled": {
+          "slow.worker": true
+        },
+        "returns_within_ms": 1500
+      }
+    },
+    {
+      "id": "global_deadline_timeout_cancels_the_token",
+      "description": "The global deadline clamps the per-module timer (12.7.5, Timeout Levels); when the clamped timer fires the call's token is cancelled exactly as for a per-module timeout.",
+      "input": {
+        "config": {
+          "executor": {
+            "global_timeout": 150
+          }
+        },
+        "modules": {
+          "slow.worker": {
+            "kind": "sleeper",
+            "sleep_ms": 2000,
+            "checks_token": true,
+            "module_timeout_ms": 0
+          }
+        },
+        "call": "slow.worker",
+        "application_token": false
+      },
+      "expected": {
+        "error_code": "MODULE_TIMEOUT",
+        "token_cancelled": {
+          "slow.worker": true
+        },
+        "returns_within_ms": 1500
+      }
+    },
+    {
+      "id": "nested_timeout_is_caught_by_its_caller",
+      "description": "The over-correction. A nested call times out; its own token is cancelled, its caller's is not, so the caller catches MODULE_TIMEOUT and returns normally. An implementation that still shares one token between caller and callee cancels the caller's token too.",
+      "input": {
+        "modules": {
+          "flow.parent": {
+            "kind": "caller",
+            "calls": "slow.child",
+            "catches": "MODULE_TIMEOUT",
+            "module_timeout_ms": 10000
+          },
+          "slow.child": {
+            "kind": "sleeper",
+            "sleep_ms": 2000,
+            "checks_token": true,
+            "module_timeout_ms": 100
+          }
+        },
+        "call": "flow.parent",
+        "application_token": false
+      },
+      "expected": {
+        "output": {
+          "caught": "MODULE_TIMEOUT"
+        },
+        "token_cancelled": {
+          "flow.parent": false,
+          "slow.child": true
+        },
+        "returns_within_ms": 1500
+      }
+    },
+    {
+      "id": "root_timeout_does_not_cancel_the_application_token",
+      "description": "The root call's token is a child of the token the application supplied, so a timeout cancels the call and leaves the application's token usable for its next call. An implementation that cancels the supplied token itself fails here.",
+      "input": {
+        "modules": {
+          "slow.worker": {
+            "kind": "sleeper",
+            "sleep_ms": 2000,
+            "checks_token": true,
+            "module_timeout_ms": 100
+          }
+        },
+        "call": "slow.worker",
+        "application_token": true
+      },
+      "expected": {
+        "error_code": "MODULE_TIMEOUT",
+        "token_cancelled": {
+          "application": false,
+          "slow.worker": true
+        },
+        "returns_within_ms": 1500
+      }
+    },
+    {
+      "id": "cancelling_the_caller_cancels_the_child",
+      "description": "The link in the other direction: cancelling a token cancels every token derived from it. The application cancels its token while the nested call runs; the child observes its own token cancelled and the call ends with EXECUTION_CANCELLED. An implementation that gives the child an unlinked token lets the child run to completion.",
+      "input": {
+        "modules": {
+          "flow.parent": {
+            "kind": "caller",
+            "calls": "slow.child",
+            "catches": null,
+            "module_timeout_ms": 10000
+          },
+          "slow.child": {
+            "kind": "sleeper",
+            "sleep_ms": 2000,
+            "checks_token": true,
+            "module_timeout_ms": 10000
+          }
+        },
+        "call": "flow.parent",
+        "application_token": true,
+        "cancel_application_token_after_ms": 100
+      },
+      "expected": {
+        "error_code": "EXECUTION_CANCELLED",
+        "token_cancelled": {
+          "application": true,
+          "flow.parent": true,
+          "slow.child": true
+        },
+        "returns_within_ms": 1500
+      }
+    },
+    {
+      "id": "no_grace_period_for_a_module_that_ignores_its_token",
+      "description": "A module that never checks its token is not waited for: MODULE_TIMEOUT arrives when the timer fires, well before the module would finish. Guards against a grace period or a wait-for-exit being added back.",
+      "input": {
+        "modules": {
+          "slow.worker": {
+            "kind": "sleeper",
+            "sleep_ms": 3000,
+            "checks_token": false,
+            "module_timeout_ms": 100
+          }
+        },
+        "call": "slow.worker",
+        "application_token": false
+      },
+      "expected": {
+        "error_code": "MODULE_TIMEOUT",
+        "token_cancelled": {
+          "slow.worker": true
+        },
+        "returns_within_ms": 1500
+      }
+    }
+  ]
+}

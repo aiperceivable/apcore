@@ -32,7 +32,7 @@ The protocol specification defines algorithms that implementations must or shoul
 | A13 | `redact_sensitive()` | Sensitive data redaction | §10.6 | **MUST** |
 | A14 | `negotiate_version()` | Version negotiation | §13.3 | **MUST** |
 | A15 | `migrate_schema()` | Schema migration | §13.4 | **SHOULD** |
-| A16 | `load_extensions()` | Extension loading | §11.7 | **MUST** |
+| A16 | `load_extensions()` | Extension wiring (`ExtensionManager.apply`) | §11.7 | **MUST** |
 | A17 | `detect_error_code_collisions()` | Error code collision detection | §8.4 | **MUST** |
 | A18 | `generate_schema_from_function()` | Generate JSON Schema from function signature | §5.11.4 | **SHOULD** |
 | A19 | `resolve_target()` | Resolve binding target for function-based modules | §5.12.3 | **SHOULD** |
@@ -142,6 +142,7 @@ Steps:
 **Preconditions:**
 
 - `language` must be one of the five supported languages
+- `local_id` is a valid identifier in the source language; this algorithm does not repair arbitrary strings
 
 **Postconditions:**
 
@@ -156,14 +157,20 @@ Steps:
   1. Determine separator sep based on language:
      - python: "."  |  rust: "::"  |  go: "."  |  java: "."  |  typescript: "."
   2. segments ← split local_id by sep
-  3. For each segment, perform case normalization:
-     - If segment is PascalCase → convert to snake_case
-     - If segment is camelCase → convert to snake_case
-     - If segment is already snake_case → keep unchanged
+  3. For each segment, apply snake_case_identifier:
+     a. If it contains no ASCII uppercase character (U+0041–U+005A), return it unchanged.
+     b. Insert one "_" at each ASCII lower-or-digit → upper boundary and each
+        ASCII upper → upper-then-lower boundary.
+     c. Map ASCII uppercase to ASCII lowercase; leave every other code point unchanged.
+     d. Do not collapse, strip, replace, or otherwise repair characters.
   4. canonical_id ← join all segments with "."
   5. Validate canonical_id conforms to ID EBNF grammar (see §2.7)
   6. Return canonical_id
 ```
+
+`snake_case_identifier` preserves existing underscores and non-ASCII characters; step 5 rejects
+a result outside the Canonical ID grammar. It is distinct from the repairing
+`snake_case_name` operation that §2.1.1 uses for class names.
 
 **Complexity Analysis:**
 
@@ -1019,15 +1026,30 @@ Algorithm: redact_sensitive(data, schema)
 
 Steps:
   1. redacted ← deep_copy(data)
-  2. For each (field_name, field_schema) in schema.properties:
-     a. If field_schema["x-sensitive"] == true:
+  2. For each (field_name, field_schema) in all_properties(schema):
+     a. If is_sensitive(field_schema):
         - If redacted[field_name] exists and is not null:
           redacted[field_name] ← "***REDACTED***"
-     b. If field_schema.type == "object" and has properties:
+     b. Else if all_properties(field_schema) is not empty and redacted[field_name] is an object:
         - Recurse: redacted[field_name] ← redact_sensitive(redacted[field_name], field_schema)
-     c. If field_schema.type == "array" and items has x-sensitive:
+     c. Else if is_sensitive(s) for some s in item_schemas(field_schema)
+        and redacted[field_name] is an array:
         - Execute redaction on each element in array
   3. Return redacted
+
+is_sensitive(s):
+  s["x-sensitive"] == true, or is_sensitive(b) for any branch b of
+  s.anyOf, s.oneOf or s.allOf
+
+all_properties(s):
+  the (name, schema) pairs of s.properties, followed by all_properties(b)
+  for each branch b of s.anyOf, s.oneOf and s.allOf. A field named in
+  several branches is visited once per schema that names it, so it is
+  redacted when any of them marks it sensitive.
+
+item_schemas(s):
+  s.items, followed by item_schemas(b) for each branch b of s.anyOf,
+  s.oneOf and s.allOf
 ```
 
 **Complexity Analysis:**
@@ -1042,6 +1064,7 @@ Steps:
 - Redaction **MUST** operate on a copy and **MUST NOT** modify the original data
 - The replacement is a constant token (`"***REDACTED***"` by default) and must not leak the length of the original value
 - `x-sensitive` fields in nested objects must also be recursively processed
+- The walk descends into `anyOf` / `oneOf` / `allOf` branches: a field is sensitive when any branch of its schema marks it, and properties declared inside a branch are visited like direct properties. A non-sensitive sibling branch does not un-mark a field, and a field no branch marks stays visible (D-152)
 - Each element in array needs independent redaction (if items schema contains `x-sensitive`)
 - If `data` contains fields not defined in Schema, A13 does not redact them; the configured rules below may
 - `schema` is the **resolved** schema. A05 preserves `x-sensitive` written beside a `$ref` (D-98) and never binds an external document's pointer to the caller's definitions (D-124); either defect turns a sensitive field into plaintext here
@@ -1188,65 +1211,55 @@ Steps:
 
 **Source**: protocol-spec §11.7
 
-**Description**: Loads extension point implementations by priority and strategy. Supports three strategies: `first_success` (first successful takes effect), `all` (execute all), `fallback` (fallback chain).
+**Description**: Wires the extensions registered on an `ExtensionManager` into a Registry and an Executor. Registration is code-only; implementations of one point are neither ordered by priority nor chained.
 
 **Input Parameters:**
 
 | Parameter | Type | Description |
 |------|------|------|
-| `config` | `Object` | Framework configuration |
-| `extension_points` | `Map<String, List<ExtensionImpl>>` | Mapping from extension point name → implementation list |
-
-Where `ExtensionImpl` structure is:
-
-```text
-ExtensionImpl {
-  class: String,          // Implementation class name
-  priority: Integer,      // Priority
-  config: Object          // Implementation configuration
-}
-```
+| `manager` | `ExtensionManager` | The registered extensions, keyed by extension point name |
+| `registry` | `Registry` | Receives `discoverer` and `module_validator` |
+| `executor` | `Executor` | Receives `acl`, `approval_handler`, `middleware` and `span_exporter` |
 
 **Output:**
 
-- Active implementations of each extension point are registered to framework
+- Every registered implementation is installed into the Registry or Executor
 
 **Preconditions:**
 
-- Extension implementation classes declared in configuration can be loaded
+- Each registered implementation satisfied its point's expected type at registration
 
 **Postconditions:**
 
-- Each extension point has at least one active implementation (framework default implementation as fallback)
+- A point with no registered implementation keeps the framework default
 
 **Pseudocode:**
 
 ```text
-Algorithm: load_extensions(config, extension_points)
+Algorithm: load_extensions(manager, registry, executor)
 
 Steps:
-  1. Sort implementations of each extension point by priority descending
-  2. For each extension point:
-     a. If strategy == "first_success": try in order, first successful takes effect
-     b. If strategy == "all": all implementations execute, merge results
-     c. If strategy == "fallback": try in order, try next on failure
-  3. If extension point has no available implementation → use framework default implementation
+  1. If manager holds a discoverer → registry.set_discoverer(it)
+  2. If manager holds a module_validator → registry.set_validator(it)
+  3. If manager holds an acl → executor.set_acl(it)
+  4. If manager holds an approval_handler → executor.set_approval_handler(it)
+  5. For each middleware, in registration order → executor.use(it)
+  6. If one or more span_exporters are registered → set them (composed into one
+     exporter when there are several) on the tracing middleware already in the
+     executor's chain; when the chain has none, log a warning and install nothing
 ```
 
 **Complexity Analysis:**
 
 | Dimension | Complexity | Description |
 |------|--------|------|
-| Time | O(n log n + n) | n is total number of extension implementations (sort + traverse) |
-| Space | O(n) | Space required for sorting |
+| Time | O(n) | n is the number of registered implementations |
+| Space | O(1) | Beyond the composite exporter |
 
 **Implementation Notes:**
 
-- The SDKs' `ExtensionManager` exposes six extension points — `discoverer`, `middleware`, `acl`, `span_exporter`, `module_validator`, `approval_handler` (§11.3). No SDK implements A16's priority ordering or chaining strategies yet ([conformance.md §7](./conformance.md#7-known-deviations))
-- `first_success` strategy: stop when loading succeeds, suitable for Schema loading (cache → filesystem)
-- `all` strategy: all implementations execute, suitable for notification extensions
-- `fallback` strategy: similar to `first_success`, but continues trying next on failure
-- Extension loading failure should log warning, but should not cause framework startup failure (unless no available implementation and no default implementation)
+- The six extension point names are `discoverer`, `middleware`, `acl`, `span_exporter`, `module_validator`, `approval_handler` (protocol-spec §11.3). A single-valued point holds one implementation and a later registration replaces it; `middleware` and `span_exporter` are multi-valued.
+- There is no priority ordering among implementations of one point, no `first_success` / `all` / `fallback` strategy, and no registration from `apcore.yaml` (D-143).
 
 ---
 
@@ -1633,7 +1646,7 @@ Return:
 
 **Source**: protocol-spec §12.7.5
 
-**Purpose**: Ensure module execution completes within the configured time, using cooperative cancellation first and forced termination where the language supports it.
+**Purpose**: Bound a module's `execute()` by its timeout: on expiry, cancel the call's own `cancel_token` and throw `MODULE_TIMEOUT` at once.
 
 **Signature**:
 
@@ -1645,8 +1658,8 @@ enforce_timeout(module_id: string, inputs: dict, context: Context, timeout_ms: i
 
 - `module_id`: Module ID
 - `inputs`: Input parameters
-- `context`: Execution context
-- `timeout_ms`: Timeout duration (milliseconds); `0` disables the per-module limit (`executor.default_timeout`)
+- `context`: The call's own Context. Its `cancel_token` is the call's own token, a child of its caller's (protocol-spec §12.7.5 requirement 4)
+- `timeout_ms`: Timeout duration (milliseconds), clamped to the time left before `context.global_deadline`; `0` disables the per-module limit (`executor.default_timeout`)
 
 **Output**:
 
@@ -1660,7 +1673,7 @@ enforce_timeout(module_id: string, inputs: dict, context: Context, timeout_ms: i
 **Postconditions**:
 
 - If execution completes within the limit, returns its output
-- If the limit is reached, throws `MODULE_TIMEOUT`
+- If the limit is reached, the call's `cancel_token` is cancelled and `MODULE_TIMEOUT` is thrown at once; the caller's token is not cancelled
 
 **Pseudocode**:
 
@@ -1668,16 +1681,14 @@ enforce_timeout(module_id: string, inputs: dict, context: Context, timeout_ms: i
 Algorithm: enforce_timeout(module_id, inputs, context, timeout_ms)
 
 Steps:
-  1. Start timer (from first before() middleware)
-  2. Concurrent execution:
-     a. Main task: execute_with_middleware(module_id, inputs, context)
-     b. Timeout monitor: sleep(timeout_ms)
-  3. If main task completes first → Cancel timer, return result
-  4. If timeout triggers first:
-     - Send cancellation signal (cooperative)
-     - Wait maximum grace_period (default 5 seconds)
-     - If still hasn't exited → Forcibly terminate (if supported)
-     - Throw MODULE_TIMEOUT error
+  1. If context.global_deadline has passed:
+     a. Cancel context.cancel_token
+     b. Throw MODULE_TIMEOUT without invoking the module
+  2. Invoke module.execute(inputs, context) and start a timer of timeout_ms
+  3. If execute() completes first → Cancel the timer, return its result
+  4. If the timer fires first:
+     a. Cancel context.cancel_token
+     b. Throw MODULE_TIMEOUT
 
 Return:
   - Success → Module output
@@ -1686,15 +1697,15 @@ Return:
 
 **Complexity Analysis**:
 
-- Time complexity: O(1) + module execution time (up to `timeout_ms` + grace period)
+- Time complexity: O(1) + module execution time (up to `timeout_ms`)
 - Space complexity: O(1)
 
 **Implementation Notes**:
 
-1. **Cooperative cancellation first**: a long-running module checks `context.cancel_token` and exits when it is cancelled.
-2. **Forced termination** may leak resources (open files, held locks). Use it only after cooperative cancellation fails, and log ERROR with `module_id` and the timeout after doing so.
-3. **Two limits**: the per-module limit (`executor.default_timeout`, or the module's declared `resources.timeout`) and the call-chain limit (`executor.global_timeout`), which covers before + execute + after for the whole chain. `0` disables either.
-4. **Grace period**: no SDK currently waits the step 4 grace period; see [conformance.md §7](./conformance.md#7-known-deviations).
+1. **Cooperative cancellation**: a long-running module checks `context.cancel_token` and exits when it is cancelled.
+2. **Child tokens**: every call's token is a child of its caller's. Cancelling a token cancels every token derived from it; cancelling a child leaves its parent untouched. A timeout therefore stops the timed-out call and the calls beneath it, and its caller receives `MODULE_TIMEOUT` as an ordinary error (D-133).
+3. **No grace period, no forced termination**: `MODULE_TIMEOUT` is thrown as soon as the timer fires. A module that ignores its token may keep running; its result is discarded (D-133).
+4. **Two limits**: the per-module limit (`executor.default_timeout`, or the module's declared `resources.timeout`) bounds `execute()`; the call-tree deadline (`executor.global_timeout`) is set at Step 1 and clamps it. `0` disables either.
 
 ---
 

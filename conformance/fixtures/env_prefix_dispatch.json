@@ -1,0 +1,118 @@
+{
+  "description": "Environment-variable dispatch in namespace mode (PROTOCOL_SPEC 9.8.2 rules 3 and 4, decision D-146). Only the `apcore` namespace may use the exact prefix `APCORE` (CONFIG_NAMESPACE_RESERVED); a prefix that merely begins with `APCORE_` is legal. A variable is dispatched to ONE namespace, the longest matching prefix, and an `APCORE_` variable that matches no registered prefix belongs to `apcore`. Measured before D-146: all three SDKs accepted `APCORE` for any namespace; apcore-python and apcore-typescript applied every `APCORE_*` variable to the `apcore` namespace AND dispatched it by prefix, so `APCORE_MCP_TRANSPORT` landed in both `apcore-mcp.transport` and `apcore.mcp.transport`; apcore-rust wrote an unmatched `APCORE_` variable to a top-level path outside every namespace.",
+  "spec_sections": [
+    "PROTOCOL_SPEC 9.8.2",
+    "PROTOCOL_SPEC 9.9.1"
+  ],
+  "driver_contract": {
+    "isolation": "Start each case from a namespace registry holding only the framework's built-in namespaces, and with every environment variable beginning `APCORE` unset except those in `input.env`.",
+    "registration": "Register each entry of `input.namespaces` with the SDK's public register_namespace, in order. When `expected.register_error_code` is present, the LAST registration MUST raise that code and nothing further is run.",
+    "load": "Otherwise write `input.config_file` (a namespace-mode document) to a real file and load it with the SDK's Config loader, with `input.env` set.",
+    "values": "`expected.values` maps a namespace-qualified dot-path (PROTOCOL_SPEC 9.9.1, first segment the namespace) to the value `Config.get` MUST return. `expected.absent` lists namespace-qualified dot-paths `Config.get` MUST report as absent (null / None / undefined)."
+  },
+  "test_cases": [
+    {
+      "id": "exact_apcore_prefix_is_reserved",
+      "input": {
+        "namespaces": [
+          {
+            "name": "myapp",
+            "env_prefix": "APCORE"
+          }
+        ]
+      },
+      "expected": {
+        "register_error_code": "CONFIG_NAMESPACE_RESERVED"
+      }
+    },
+    {
+      "id": "apcore_underscore_package_prefix_is_legal",
+      "description": "The over-correction guard: `APCORE_MCP` shares a leading string with `APCORE` and is legal (9.8.2 rule 2).",
+      "input": {
+        "namespaces": [
+          {
+            "name": "apcore-mcp",
+            "env_prefix": "APCORE_MCP"
+          }
+        ],
+        "config_file": {
+          "apcore": {
+            "version": "1.0.0",
+            "project": {
+              "name": "envtest"
+            }
+          },
+          "apcore-mcp": {}
+        },
+        "env": {}
+      },
+      "expected": {
+        "values": {
+          "apcore.project.name": "envtest"
+        }
+      }
+    },
+    {
+      "id": "a_variable_goes_to_the_longest_prefix_only",
+      "input": {
+        "namespaces": [
+          {
+            "name": "apcore-mcp",
+            "env_prefix": "APCORE_MCP"
+          }
+        ],
+        "config_file": {
+          "apcore": {
+            "version": "1.0.0",
+            "project": {
+              "name": "envtest"
+            }
+          },
+          "apcore-mcp": {}
+        },
+        "env": {
+          "APCORE_MCP_TRANSPORT": "stdio"
+        }
+      },
+      "expected": {
+        "values": {
+          "apcore-mcp.transport": "stdio"
+        },
+        "absent": [
+          "apcore.mcp.transport"
+        ]
+      }
+    },
+    {
+      "id": "an_unmatched_apcore_variable_belongs_to_apcore",
+      "input": {
+        "namespaces": [
+          {
+            "name": "apcore-mcp",
+            "env_prefix": "APCORE_MCP"
+          }
+        ],
+        "config_file": {
+          "apcore": {
+            "version": "1.0.0",
+            "project": {
+              "name": "envtest"
+            }
+          },
+          "apcore-mcp": {}
+        },
+        "env": {
+          "APCORE_EXECUTOR_DEFAULT__TIMEOUT": "5000"
+        }
+      },
+      "expected": {
+        "values": {
+          "apcore.executor.default_timeout": 5000
+        },
+        "absent": [
+          "apcore-mcp.executor.default_timeout"
+        ]
+      }
+    }
+  ]
+}

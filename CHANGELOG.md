@@ -7,11 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [Unreleased]
+## [0.32.0] - 2026-10-08
 
-> Ships `PROTOCOL_SPEC` **v1.60.0 → v1.62.0**. v1.60.0 is editorial (no behaviour change); v1.61.0
+> Ships `PROTOCOL_SPEC` **v1.60.0 → v1.64.0**. v1.60.0 is editorial (no behaviour change); v1.61.0
 > closes three ways a governance gate could silently stop gating (D-129–D-131); v1.62.0 corrects
-> about fifty places where the specification disagreed with three agreeing implementations (D-132). Reasoning is in
+> about fifty places where the specification disagreed with three agreeing implementations (D-132); v1.63.0
+> aligns the three SDKs where they disagreed (D-133–D-152, [#123](https://github.com/aiperceivable/apcore/issues/123)). Reasoning is in
 > [`docs/spec/2026-09-divergence-decisions.md`](./docs/spec/2026-09-divergence-decisions.md).
 
 ### Security
@@ -24,12 +25,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **The specification follows three agreeing, correct implementations** (D-132, v1.62.0) — including MUSTs no SDK met: reserved words are checked on the first segment only and `__` is allowed; entry-point failures raise `MODULE_LOAD_ERROR`; `APCORE_`-prefixed `env_prefix` values are allowed; unknown configuration keys are retained unless `_config.strict`; duplicate registration raises `DUPLICATE_MODULE_ID`; `after()` output is not re-validated; timeouts wrap `execute()` only; `validate()` must not invoke `execute()`. No behaviour change.
 
+- **The three SDKs aligned where they disagreed** (D-133–D-152, v1.63.0, [#123](https://github.com/aiperceivable/apcore/issues/123)). Breaking for callers relying on the old shapes: a timeout raises `MODULE_TIMEOUT` immediately and cancels the call's own child token (no grace period or forced termination); `validate()` reports every check; binding files reject unknown keys, one-sided schema pairs, invalid `auto_schema` and every inference failure; the `mcp` export profile carries `requires_approval` / `streaming` in `_meta`; schema-validation error `details.errors` items are `{path, keyword, message}` with JSON-Pointer paths; only the `apcore` namespace may use the exact `APCORE` env prefix and variables are dispatched to one namespace; `id_map.overrides` is a path; `x-sensitive` is honoured inside `anyOf` / `oneOf` / `allOf`. Removed from the specification: the `apcore.module.validate` span and config-file extension registration and chaining.
+
+- **A02 identifier conversion is ASCII-scoped and non-repairing** (v1.64.0, [#122](https://github.com/aiperceivable/apcore/issues/122)). Existing underscores, including `__`, are preserved; ASCII case boundaries are the only added underscores; out-of-alphabet input and a leading underscore are rejected rather than rewritten. `snake_case_name` remains the separate repairing conversion for discovery class names.
+
 ### Changed — documentation
 
+- **Cancellation guidance describes the call's own cooperative signal.** Timeout signalling does not cancel the caller, undo LLM usage or charges, or choose application retry and compensation policy.
 - **Documentation describes the current product only.** Implementation history, audit narrative and version-tagged notes were removed from the specification body, feature pages and guides; the reasoning stays in this changelog and the decision records, indexed by the new [`docs/spec/decision-register.md`](./docs/spec/decision-register.md). The specification's revision history is condensed to one line per version.
 - **One source per topic.** `DECLARATIVE_CONFIG_SPEC.md` and the implemented `preview()` / ephemeral-module RFCs are merged into `protocol-spec.md`; the execution-pipeline design document becomes the feature page `features/execution-pipeline.md`; the discovery TOCTOU assessment moves into `security-considerations.md`; the observability page is split into tracing, metrics & usage, error history and redaction; the superseded v0.17 design document, `site-map.md`, the v0.18 migration guide and completed `planning/` entries are removed.
 - **Examples and config shown as working now work.** Examples were checked against SDK 0.31.0 (constructors, arity, async); inert, deprecated or nonexistent configuration keys were removed from examples; the pipeline order (`middleware_before` before `input_validation`), the ACL file's `audit:` block and the approval-gate trigger are stated consistently.
 - **README is a landing page**; versions are stated only on the documentation home; the documentation site URL is `https://apcore.aiperceivable.com/`.
+
+### Fixed
+
+- **Schema-validation fixture paths use D-149's JSON Pointer wire shape.** Required and additional-property violations point to their containing object, including the empty pointer for the root.
+- **The preflight-disclosure fixture follows D-134's collect-all contract.** A denied caller with invalid inputs gets both ACL and schema failures; module-authored hooks, predicted changes and the disclosure sentinel remain withheld. Passed checks remain present after a schema failure.
+
+### Deprecated
+
+- **`middleware.disabled` and `extensions.auto_discover`** (D-137, D-150) — read by no implementation; declaring either warns once per load. Removed at v2.0.
 
 ---
 

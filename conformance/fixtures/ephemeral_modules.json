@@ -1,0 +1,248 @@
+{
+  "description": "The ephemeral.* namespace contract (PROTOCOL_SPEC 2.5.1, decision D-148). Each registration and unregistration of an ephemeral module produces EXACTLY ONE apcore.registry.module_registered / module_unregistered event on the client's event emitter under the standard bootstrap, whose payload carries `caller_id`, `identity` (a redacted snapshot, or null) and `namespace_class: \"ephemeral\"`; the bare ID `ephemeral` is in the namespace; the privileged registration path and filesystem discovery reject an ephemeral ID with INVALID_MODULE_ID. Measured before D-148: apcore-python delivered no event under the standard bootstrap (nothing wired the registry's emitter) and omitted `namespace_class`; apcore-typescript emitted two events for the bare ID; apcore-rust had no context on register(), so `caller_id` was always \"@external\" and `identity` was missing, and it rejected with GENERAL_INVALID_INPUT.",
+  "spec_sections": [
+    "PROTOCOL_SPEC 2.5.1",
+    "PROTOCOL_SPEC 9.16.2"
+  ],
+  "driver_contract": {
+    "bootstrap": "Build the client through the SDK's standard bootstrap with the configuration `{sys_modules: {enabled: true, events: {enabled: true}}}` and subscribe a recording subscriber to the client's event emitter BEFORE the case's operations run. Do not wire the registry's emitter by hand: whether the bootstrap wires it is part of what is tested.",
+    "operations": "Run `input.operations` in order. `register` registers a trivial module under `module_id` through the public Registry.register() path; `unregister` removes it; `register_internal` uses the privileged registration API; `discover` runs filesystem discovery over a tree holding one module file at `file`, relative to the extensions root and written with the SDK's own module extension. `context` is the Context passed to the operation (built with Context.create from the given caller_id and identity); an absent `context` means the operation is given none.",
+    "events": "`expected.events` lists, in order, every apcore.registry.module_registered / module_unregistered event the recorder saw for the case's module IDs, with the listed payload keys. `payload` is compared key by key; `payload_absent_keys` names keys that MUST NOT be present; `identity_id` compares `payload.identity.id`. Events for other module IDs (the system modules the bootstrap registers) are ignored.",
+    "sentinel": "`expected.secret_absent` is a substring that MUST NOT appear anywhere in the serialized payload of any recorded event: the identity snapshot redacts or omits credential-bearing attributes.",
+    "errors": "`expected.error_code` is the wire code of the error the last operation raises."
+  },
+  "test_cases": [
+    {
+      "id": "register_emits_one_event_with_the_ephemeral_payload",
+      "description": "The headline rule, and the case that fails an implementation whose standard bootstrap does not deliver the registry's audit event.",
+      "input": {
+        "operations": [
+          {
+            "op": "register",
+            "module_id": "ephemeral.summarize_ticket",
+            "context": {
+              "caller_id": "agent.planner",
+              "identity": {
+                "id": "user-7",
+                "type": "user",
+                "roles": [
+                  "ops"
+                ],
+                "attrs": {
+                  "api_key": "sk-live-SENTINEL-4471"
+                }
+              }
+            }
+          }
+        ]
+      },
+      "expected": {
+        "events": [
+          {
+            "event_type": "apcore.registry.module_registered",
+            "module_id": "ephemeral.summarize_ticket",
+            "payload": {
+              "caller_id": "agent.planner",
+              "namespace_class": "ephemeral"
+            },
+            "identity_id": "user-7"
+          }
+        ],
+        "secret_absent": "sk-live-SENTINEL-4471"
+      }
+    },
+    {
+      "id": "unregister_emits_one_event_with_the_ephemeral_payload",
+      "input": {
+        "operations": [
+          {
+            "op": "register",
+            "module_id": "ephemeral.summarize_ticket",
+            "context": {
+              "caller_id": "agent.planner",
+              "identity": {
+                "id": "user-7",
+                "type": "user",
+                "roles": [
+                  "ops"
+                ],
+                "attrs": {
+                  "api_key": "sk-live-SENTINEL-4471"
+                }
+              }
+            }
+          },
+          {
+            "op": "unregister",
+            "module_id": "ephemeral.summarize_ticket",
+            "context": {
+              "caller_id": "agent.planner",
+              "identity": {
+                "id": "user-7",
+                "type": "user",
+                "roles": [
+                  "ops"
+                ],
+                "attrs": {
+                  "api_key": "sk-live-SENTINEL-4471"
+                }
+              }
+            }
+          }
+        ]
+      },
+      "expected": {
+        "events": [
+          {
+            "event_type": "apcore.registry.module_registered",
+            "module_id": "ephemeral.summarize_ticket",
+            "payload": {
+              "caller_id": "agent.planner",
+              "namespace_class": "ephemeral"
+            },
+            "identity_id": "user-7"
+          },
+          {
+            "event_type": "apcore.registry.module_unregistered",
+            "module_id": "ephemeral.summarize_ticket",
+            "payload": {
+              "caller_id": "agent.planner",
+              "namespace_class": "ephemeral"
+            },
+            "identity_id": "user-7"
+          }
+        ],
+        "secret_absent": "sk-live-SENTINEL-4471"
+      }
+    },
+    {
+      "id": "no_context_reports_external_caller_and_null_identity",
+      "description": "`identity` is always present; with no context it is null, not omitted.",
+      "input": {
+        "operations": [
+          {
+            "op": "register",
+            "module_id": "ephemeral.scratch"
+          }
+        ]
+      },
+      "expected": {
+        "events": [
+          {
+            "event_type": "apcore.registry.module_registered",
+            "module_id": "ephemeral.scratch",
+            "payload": {
+              "caller_id": "@external",
+              "identity": null,
+              "namespace_class": "ephemeral"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "bare_ephemeral_id_is_in_the_namespace",
+      "description": "`ephemeral` itself is a member (2.5.1 Membership). A prefix test on \"ephemeral.\" misses it: one implementation emitted the plain bridge event beside the ephemeral one, another emitted only the plain event.",
+      "input": {
+        "operations": [
+          {
+            "op": "register",
+            "module_id": "ephemeral",
+            "context": {
+              "caller_id": "agent.planner",
+              "identity": {
+                "id": "user-7",
+                "type": "user",
+                "roles": [
+                  "ops"
+                ],
+                "attrs": {
+                  "api_key": "sk-live-SENTINEL-4471"
+                }
+              }
+            }
+          }
+        ]
+      },
+      "expected": {
+        "events": [
+          {
+            "event_type": "apcore.registry.module_registered",
+            "module_id": "ephemeral",
+            "payload": {
+              "caller_id": "agent.planner",
+              "namespace_class": "ephemeral"
+            },
+            "identity_id": "user-7"
+          }
+        ]
+      }
+    },
+    {
+      "id": "a_lookalike_id_is_not_ephemeral",
+      "description": "The over-correction: `ephemerals.tool` is outside the namespace, so its event carries the ordinary payload and no `namespace_class`.",
+      "input": {
+        "operations": [
+          {
+            "op": "register",
+            "module_id": "ephemerals.tool",
+            "context": {
+              "caller_id": "agent.planner",
+              "identity": {
+                "id": "user-7",
+                "type": "user",
+                "roles": [
+                  "ops"
+                ],
+                "attrs": {
+                  "api_key": "sk-live-SENTINEL-4471"
+                }
+              }
+            }
+          }
+        ]
+      },
+      "expected": {
+        "events": [
+          {
+            "event_type": "apcore.registry.module_registered",
+            "module_id": "ephemerals.tool",
+            "payload_absent_keys": [
+              "namespace_class"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "register_internal_rejects_an_ephemeral_id",
+      "input": {
+        "operations": [
+          {
+            "op": "register_internal",
+            "module_id": "ephemeral.tool"
+          }
+        ]
+      },
+      "expected": {
+        "error_code": "INVALID_MODULE_ID",
+        "events": []
+      }
+    },
+    {
+      "id": "discovery_that_derives_an_ephemeral_id_fails",
+      "input": {
+        "operations": [
+          {
+            "op": "discover",
+            "file": "ephemeral/tool"
+          }
+        ]
+      },
+      "expected": {
+        "error_code": "INVALID_MODULE_ID",
+        "events": []
+      }
+    }
+  ]
+}

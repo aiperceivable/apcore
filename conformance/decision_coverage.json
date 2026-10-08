@@ -874,6 +874,199 @@
       "kind": "unconstrained",
       "note": "Editorial corrections of the specification to behaviour all three SDKs already share; each area stays pinned by its existing fixtures and SDK tests. No behaviour changed, so there is nothing new to pin.",
       "cases": []
+    },
+    "D-133": {
+      "title": "a timeout cancels the call's own token and returns immediately",
+      "kind": "behavioural",
+      "cases": [
+        "timeout_cancellation.json#timeout_cancels_the_timed_out_calls_token",
+        "timeout_cancellation.json#nested_timeout_is_caught_by_its_caller",
+        "timeout_cancellation.json#root_timeout_does_not_cancel_the_application_token",
+        "timeout_cancellation.json#cancelling_the_caller_cancels_the_child"
+      ],
+      "discriminates": "timeout_cancels_the_timed_out_calls_token is red for the status quo (no SDK cancelled any token, and none created one for a call that was given none). nested_timeout_is_caught_by_its_caller and root_timeout_does_not_cancel_the_application_token are red for the obvious fix that cancels a SHARED token: the caller's token (or the application's) ends up cancelled. cancelling_the_caller_cancels_the_child is red for a child token that is not linked to its parent."
+    },
+    "D-134": {
+      "title": "`validate()` reports every check",
+      "kind": "behavioural",
+      "cases": [
+        "preflight_check_reporting.json#a_schema_failure_keeps_the_checks_before_it",
+        "preflight_check_reporting.json#an_acl_failure_does_not_stop_the_schema_check",
+        "preflight_check_reporting.json#an_unknown_module_records_no_module_dependent_check"
+      ],
+      "discriminates": "a_schema_failure_keeps_the_checks_before_it is red for an implementation that drops passed checks on the failure path (apcore-python, apcore-typescript); an_acl_failure_does_not_stop_the_schema_check is red for any fail-fast dry run (all three); an_unknown_module_records_no_module_dependent_check is red for the over-correction that reports a failed schema check for a module it never found."
+    },
+    "D-135": {
+      "title": "retryable defaults are explicit",
+      "kind": "behavioural",
+      "cases": [
+        "error_recovery_metadata.json#execution_cancelled",
+        "error_recovery_metadata.json#circuit_breaker_open",
+        "error_recovery_metadata.json#pipeline_configuration_error"
+      ],
+      "discriminates": "execution_cancelled is red in all three (retryable was unset); circuit_breaker_open is red in apcore-typescript (false) and apcore-rust (set only by the middleware's builder); pipeline_configuration_error is red for an unset value and for an implementation that answers true for every code. The existing module_execute_error_unset case keeps the MUST scoped to the four codes."
+    },
+    "D-136": {
+      "title": "input validation accepts the JSON the contract describes",
+      "kind": "behavioural",
+      "cases": [
+        "json_input_native_types.json#date_time_uuid_and_enum_strings_are_accepted",
+        "json_input_native_types.json#number_for_a_date_time_is_rejected"
+      ],
+      "discriminates": "date_time_uuid_and_enum_strings_are_accepted is red in apcore-python while it validates a native model in strict Python mode; number_for_a_date_time_is_rejected is red for the over-correction to lax validation, which accepts a Unix timestamp for a date-time field."
+    },
+    "D-137": {
+      "title": "`middleware.disabled` is deprecated",
+      "kind": "deferred",
+      "note": "The deprecation warning is pinned the way every other 9.2.4 key is: a `deprecation` block on the key in conformance/config_key_consumers.json, checked by the `deprecated_inert_keys` probe. It is added when the SDKs warn; adding it first turns the probe red.",
+      "case_sketch": "config_key_consumers.json `middleware.disabled` gains `deprecation: {since: 1.63.0, removed_no_earlier_than: 2.0, probe: deprecated_inert_keys}`, and check_config_key_consumers.py's DEPRECATED_INERT_KEYS gains the key with a list value. RED while an SDK loads a document declaring `middleware.disabled: [metrics]` without a 9.2.4 warning naming it; the probe's clean-document half stays red for a blanket warning.",
+      "sketch_host": "NEW"
+    },
+    "D-138": {
+      "title": "`id_map.overrides` is a path-typed key",
+      "kind": "behavioural",
+      "cases": [
+        "id_map_from_config.json#file_is_relative_to_the_extension_root",
+        "id_map_from_config.json#an_empty_env_value_falls_through_to_the_file",
+        "id_map_from_config.json#a_non_empty_env_value_still_overrides_the_file",
+        "config_path_typed_keys.json#id_map_overrides_is_path_typed"
+      ],
+      "discriminates": "file_is_relative_to_the_extension_root names the module twice, root-relative and CWD-relative under different IDs: red for CWD resolution and for apcore-rust's absolute-path match (which keeps the derived ID). an_empty_env_value_falls_through_to_the_file is red in all three (the empty string overrode the file); a_non_empty_env_value_still_overrides_the_file is red for an implementation that stops reading the variable. id_map_overrides_is_path_typed is red for every SDK accessor that still hardcodes the old five keys."
+    },
+    "D-139": {
+      "title": "binding files fail loudly",
+      "kind": "behavioural",
+      "cases": [
+        "binding_file_validation.json#unknown_entry_key_is_rejected",
+        "binding_file_validation.json#one_sided_schema_pair_is_rejected",
+        "binding_file_validation.json#invalid_auto_schema_value_is_rejected",
+        "binding_file_validation.json#implicit_mode_without_an_inferable_schema_fails",
+        "binding_file_validation.json#a_complete_explicit_entry_loads"
+      ],
+      "discriminates": "unknown_entry_key_is_rejected is red in all three (unknown keys were ignored); one_sided_schema_pair_is_rejected and invalid_auto_schema_value_is_rejected are red in apcore-typescript; implicit_mode_without_an_inferable_schema_fails is red in apcore-typescript and apcore-rust (permissive fallback). a_complete_explicit_entry_loads is red for an over-strict loader that rejects free-form keys inside `metadata` or a documented field."
+    },
+    "D-140": {
+      "title": "export profiles follow 4.17 and Appendix D.1",
+      "kind": "behavioural",
+      "cases": [
+        "export_profiles.json#anthropic_strips_every_x_keyword",
+        "export_profiles.json#anthropic_keeps_a_property_named_like_an_extension",
+        "export_profiles.json#mcp_carries_requires_approval_and_streaming_in_meta",
+        "export_profiles.json#mcp_omits_false_hints_from_meta",
+        "export_profiles.json#mcp_preserves_x_keywords"
+      ],
+      "discriminates": "anthropic_strips_every_x_keyword is red in apcore-rust (x-* passed through). mcp_carries_requires_approval_and_streaming_in_meta is red in all three (streaming in annotations, no requiresApproval). mcp_omits_false_hints_from_meta is red for an exporter that always writes both hints; mcp_preserves_x_keywords is red for one that strips x-* in the mcp profile too. anthropic_keeps_a_property_named_like_an_extension is red in apcore-python and apcore-typescript, whose strip deleted every `x-` key including a property NAME, and so is the anthropic case's keyword check for an implementation that strips nothing under `properties`."
+    },
+    "D-141": {
+      "title": "preflight check reporting",
+      "kind": "behavioural",
+      "cases": [
+        "preflight_check_reporting.json#preview_returning_null_adds_no_check",
+        "preflight_check_reporting.json#no_preview_still_carries_empty_predicted_changes",
+        "preflight_check_reporting.json#no_preflight_may_yield_a_passed_check"
+      ],
+      "discriminates": "preview_returning_null_adds_no_check is red in apcore-python and apcore-typescript (a passed module_preview check was added); no_preview_still_carries_empty_predicted_changes is red in apcore-typescript (undefined) and apcore-rust (skipped when empty on the wire); no_preflight_may_yield_a_passed_check pins the MAY in both directions: absent or passed, never failed."
+    },
+    "D-142": {
+      "title": "a per-step timeout raises `MODULE_TIMEOUT`",
+      "kind": "behavioural",
+      "cases": [
+        "pipeline_hardening.json#step_timeout_raises_module_timeout",
+        "pipeline_hardening.json#step_within_its_timeout_runs"
+      ],
+      "discriminates": "step_timeout_raises_module_timeout is red in apcore-typescript, whose step timer rejected with a plain Error that reached the caller as MODULE_EXECUTE_ERROR; step_within_its_timeout_runs is red for a timer that fires regardless of the configured value."
+    },
+    "D-143": {
+      "title": "the specification drops what no implementation has",
+      "kind": "unconstrained",
+      "note": "Spec-only: the apcore.module.validate span, extension registration from apcore.yaml and extension chaining are removed from the specification because no SDK has them; nothing changes in behaviour. apcore-rust's unwired `middleware:` YAML chain parser is removed as dead code, with no observable effect.",
+      "cases": []
+    },
+    "D-144": {
+      "title": "the built-in namespaces declare what the schema declares",
+      "kind": "behavioural",
+      "cases": [
+        "config_key_governance.json#observability_namespace_declares_what_the_schema_declares",
+        "config_key_governance.json#the_three_builtin_namespaces_are_registered"
+      ],
+      "discriminates": "Red in all three while the built-in registration carries logging / error_history / platform_notify (and redaction in apcore-typescript), none of which $defs/ObservabilityConfig declares; the case's required_keys are red for an implementation that drops the registration altogether. the_three_builtin_namespaces_are_registered is red in apcore-rust, which registered no `obs` namespace, and for any implementation that registers a built-in namespace under a different env prefix."
+    },
+    "D-145": {
+      "title": "subscriber circuit events carry `subscriber_id`",
+      "kind": "behavioural",
+      "cases": [
+        "event_management_hardening.json#circuit_opened_event_carries_the_subscriber_id",
+        "event_management_hardening.json#circuit_closed_event_carries_the_subscriber_id"
+      ],
+      "discriminates": "Red in all three: no payload carried subscriber_id. The id is hyphenated and unrelated to the declared type, so an implementation that reports the type or a class name under subscriber_id is red too."
+    },
+    "D-146": {
+      "title": "environment-variable dispatch",
+      "kind": "behavioural",
+      "cases": [
+        "env_prefix_dispatch.json#exact_apcore_prefix_is_reserved",
+        "env_prefix_dispatch.json#apcore_underscore_package_prefix_is_legal",
+        "env_prefix_dispatch.json#a_variable_goes_to_the_longest_prefix_only",
+        "env_prefix_dispatch.json#an_unmatched_apcore_variable_belongs_to_apcore"
+      ],
+      "discriminates": "exact_apcore_prefix_is_reserved is red in all three; apcore_underscore_package_prefix_is_legal is red for an implementation that rejects every APCORE_-leading prefix. a_variable_goes_to_the_longest_prefix_only is red in apcore-python and apcore-typescript (double write into apcore.mcp.transport); an_unmatched_apcore_variable_belongs_to_apcore is red in apcore-rust (written outside every namespace)."
+    },
+    "D-147": {
+      "title": "multi-class discovery registers marked classes only",
+      "kind": "behavioural",
+      "cases": [
+        "multi_module_discovery.json#unmarked_class_beside_marked_ones_is_not_registered",
+        "multi_module_discovery.json#two_classes_distinct_ids",
+        "multi_module_discovery.json#one_marked_class_beside_an_unmarked_one_keeps_its_segment"
+      ],
+      "discriminates": "unmarked_class_beside_marked_ones_is_not_registered is red in apcore-typescript and apcore-rust, which give every qualifying class an ID once any is marked; two_classes_distinct_ids stays red for an implementation that stops registering a file's marked classes. one_marked_class_beside_an_unmarked_one_keeps_its_segment is red in apcore-python, which dropped the unmarked class and then gave the single survivor the bare base_id, so marking a second class would have renamed the first; single_class_id_unchanged keeps rule 5's bare base_id for a file with exactly one Module class."
+    },
+    "D-148": {
+      "title": "the ephemeral contract is implemented as written",
+      "kind": "behavioural",
+      "cases": [
+        "ephemeral_modules.json#register_emits_one_event_with_the_ephemeral_payload",
+        "ephemeral_modules.json#no_context_reports_external_caller_and_null_identity",
+        "ephemeral_modules.json#bare_ephemeral_id_is_in_the_namespace",
+        "ephemeral_modules.json#a_lookalike_id_is_not_ephemeral",
+        "ephemeral_modules.json#register_internal_rejects_an_ephemeral_id"
+      ],
+      "discriminates": "register_emits_one_event_with_the_ephemeral_payload is red in apcore-python (no event under the standard bootstrap, no namespace_class) and apcore-rust (caller_id always @external, no identity); no_context_reports_external_caller_and_null_identity is red where identity is omitted rather than null; bare_ephemeral_id_is_in_the_namespace is red in apcore-typescript (two events) and apcore-python (plain payload); register_internal_rejects_an_ephemeral_id is red in apcore-typescript and apcore-rust (GENERAL_INVALID_INPUT). a_lookalike_id_is_not_ephemeral is red for a prefix test without the dot."
+    },
+    "D-149": {
+      "title": "error details have one wire shape",
+      "kind": "behavioural",
+      "cases": [
+        "error_details_shape.json#type_mismatch_at_a_property",
+        "error_details_shape.json#missing_required_property_is_reported_at_the_root",
+        "error_details_shape.json#array_item_path_is_a_json_pointer",
+        "error_details_shape.json#keyword_names_the_failed_constraint"
+      ],
+      "discriminates": "Every item must have exactly {path, keyword, message}: red in all three today (no SDK emitted `keyword`; apcore-python and apcore-rust emitted `field` on the executor path). missing_required_property_is_reported_at_the_root is red for root `/` (apcore-python validator, apcore-typescript); array_item_path_is_a_json_pointer is red for dotted or bracketed paths; keyword_names_the_failed_constraint is red for a library error type in place of the keyword (apcore-typescript's numeric TypeBox kind)."
+    },
+    "D-150": {
+      "title": "`extensions.auto_discover` is deprecated",
+      "kind": "deferred",
+      "note": "Pinned like D-137: a `deprecation` block on the key in conformance/config_key_consumers.json, checked by the deprecated_inert_keys probe, added when the SDKs warn.",
+      "case_sketch": "config_key_consumers.json `extensions.auto_discover` gains a `deprecation` block with probe deprecated_inert_keys, and check_config_key_consumers.py's DEPRECATED_INERT_KEYS gains the key with a boolean value. RED while an SDK loads a document declaring `extensions.auto_discover: false` without a 9.2.4 warning naming it.",
+      "sketch_host": "NEW"
+    },
+    "D-151": {
+      "title": "each SDK declares its conformance",
+      "kind": "unconstrained",
+      "note": "Per-SDK repository content (an apcore-conformance.yaml file, conformance.md 6.1), not behaviour a fixture can observe. Each SDK's declaration is checked in its own repository.",
+      "cases": []
+    },
+    "D-152": {
+      "title": "`x-sensitive` is honoured inside schema combinators",
+      "kind": "behavioural",
+      "cases": [
+        "redaction_config.json#x_sensitive_inside_an_any_of_branch_is_redacted",
+        "redaction_config.json#x_sensitive_in_any_branch_redacts_the_value_whichever_branch_it_matches",
+        "redaction_config.json#properties_declared_inside_a_branch_are_walked",
+        "redaction_config.json#a_combinator_without_a_marker_stays_visible"
+      ],
+      "discriminates": "The first three are red in all three SDKs (no redaction walk descended into anyOf / oneOf / allOf); the value in the second matches the UNMARKED branch, so an implementation that redacts only when the marked branch validates is red too. a_combinator_without_a_marker_stays_visible is red for the over-correction that redacts every union-typed field."
     }
   }
 }

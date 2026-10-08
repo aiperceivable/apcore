@@ -19,7 +19,7 @@ SDK conformance runners **must** load `.json` files with a JSON parser. The `.ya
 | `pattern_matching.json` | A08 | ACL / `match_modules` module-ID pattern matching (`*` only) |
 | `glob_matching.json` | A25 | Portable glob matching for every other pattern-valued value (`*` and `?`) |
 | `specificity.json` | A10 | ACL rule specificity scoring |
-| `normalize_id.json` | A02 | Cross-language module ID normalization |
+| `normalize_id.json` | A02 | Cross-language module ID normalization: preserves existing underscores and rejects leading underscores, non-ASCII input, and non-identifier characters without repair |
 | `id_conflict_reserved_words.json` | A02 | Reserved-word ID conflicts are detected on the FIRST SEGMENT only; later segments are unrestricted (spec §2.6 step 2, v1.26.0, #99) |
 | `call_chain.json` | A20 | Call chain safety (depth, frequency, circularity) |
 | `error_codes.json` | A17 | Error code registry collision detection; canonical 14 reserved prefixes + exact-framework-code rejection for one-off codes (sync A-D-006/A-D-007) |
@@ -88,7 +88,7 @@ SDK conformance runners **must** load `.json` files with a JSON parser. The `.ya
 | `allow_unknown_namespaces.json` | #118 D-69, spec v1.46.0 | §9.6.3's `_config.allow_unknown` matrix. BOTH halves of the `strict: false` row were inert: `false` stored the namespace it documents as dropped, and `true` never logged the WARN it documents. Includes the absent-`_config` defaults row, the quiet half, and the legacy-mode boundary — pinned so the namespace-only scoping is a decision rather than an omission |
 | `storage_backend.json` | Issue #43, D-39 | StorageBackend trait/interface: save+get round-trip, list-with-prefix, idempotent delete, namespace isolation, save-overwrites. `value` is a JSON **object**, never bytes — all three collectors index into it |
 | `overrides_store.json` | Issue #45.1, D-40 | OverridesStore (FileOverridesStore + InMemoryOverridesStore) on the D-47 whole-map surface `load()` / `save(mapping)`: save persists across reopen, startup applies overrides after base config, in-memory store for tests, missing path on first run is OK, key removal as read-modify-write |
-| `error_fingerprinting.json` | Issue #43 §4 | Error fingerprint = (error_code, top-frame hash, sanitized message template). UUID/timestamp/numeric-ID dedup, distinct error codes never collapse, distinct call sites never collapse |
+| `error_fingerprinting.json` | Issue #43 §4 | Error fingerprint = SHA-256(`error_code:module_id:normalize_message(message)`); the call site is not an input. UUID/timestamp/numeric-ID dedup, distinct error codes never collapse, distinct modules never collapse |
 | `redaction_config.json` | Issue #43 §5 | Configurable redaction via `obs.redaction.regex_patterns` and `obs.redaction.sensitive_keys`. Default sensitive_keys cover common credential terms; trace_id/caller_id/target_id/module_id/span_id MUST never be redacted |
 | `reload_path_filter.json` | Issue #45.4 | Granular reload — `path_filter` glob restricts re-discovery, no `path_filter` = single-`module_id` reload unchanged, zero-match filter is a no-op, both fields together raises `MODULE_RELOAD_CONFLICT` |
 | `usage_exporter.json` | Issue #45 §3, D-55 | `UsageExporter` push interface — `NoopUsageExporter` drops summaries (default), `PeriodicUsageExporter` polls `UsageCollector.summary()` at `interval_seconds` (default 3600) and calls `exporter.export(summary)`, `stop()` halts the loop, awaits `exporter.shutdown()`, and is idempotent |
@@ -98,6 +98,14 @@ SDK conformance runners **must** load `.json` files with a JSON parser. The `.ya
 | `gate_provider_binding.json` | D-129 | An ACL / ApprovalHandler / ExecutionPolicy given to the executor is bound into the running built-in gate step for every way a strategy is supplied (preset, default, pre-built instance); `governance_state()` reports what the gate holds. Each case makes a real call. |
 | `gate_step_configure.json` | D-130 | `pipeline.configure` on `acl_check` / `approval_gate` rejects `ignore_errors: true`, `match_modules` and `pure: true` with `PIPELINE_CONFIGURATION_ERROR`; `timeout_ms` and non-gate steps unaffected. |
 | `governance_state.json` | Issue #97 | `Executor.governance_state()` — eight observations plus one derived flag separating *configured* from *actually wired*: the ACL and approval gates are pipeline steps, and the `internal` / `testing` / `minimal` presets remove them, so `acl != null` reports "protected" for an executor whose ACL no step consults. Includes the lookalike case (a custom step NAMED `acl_check`) and the three cases that discriminate the corrected v1.16.0 derived flag from the unsound one published in v1.15.0 |
+| `timeout_cancellation.json` | §12.7.5, A22, D-133 | A timeout cancels the timed-out call's own cancel token and raises `MODULE_TIMEOUT` at once, with no grace period; every call gets a child token of its caller's, so a nested timeout is catchable by its caller and never cancels the caller's or the application's token, while cancelling a caller cancels its children |
+| `preflight_check_reporting.json` | §12.8, D-134, D-141 | `validate()` reports every check: a failure does not stop later checks and passed checks are never dropped; no module-dependent check when the module is unknown; `preview()` returning null adds no check; `predicted_changes` always present |
+| `json_input_native_types.json` | type-mapping §17.3, D-136 | A module declared from native date-time / UUID / enum types accepts the JSON strings its schema accepts and still rejects what it rejects (a number for a date-time, a string outside the enum) |
+| `binding_file_validation.json` | §5.12.2, §5.12.5, D-139 | Binding files fail loudly: unknown top-level / entry keys, a one-sided schema pair and an invalid `auto_schema` are `BINDING_FILE_INVALID`; an uninferable schema is `BINDING_SCHEMA_INFERENCE_FAILED` in every mode, implicit included; a complete entry with free-form `metadata` still loads |
+| `export_profiles.json` | §4.17, Appendix D.1, D-140 | `anthropic` strips every `x-*` keyword but keeps a property NAMED `x-…`; `mcp` carries `requiresApproval` / `streaming` in `_meta` only when true, never in `annotations`, and keeps `x-*` |
+| `env_prefix_dispatch.json` | §9.8.2, D-146 | `APCORE` is reserved for the `apcore` namespace (`CONFIG_NAMESPACE_RESERVED`), `APCORE_<X>` prefixes are legal, a variable is dispatched to exactly one namespace by longest prefix, an unmatched `APCORE_` variable belongs to `apcore` |
+| `ephemeral_modules.json` | §2.5.1, D-148 | Exactly one registry audit event per ephemeral register / unregister under the standard bootstrap with `caller_id`, `identity` (or null) and `namespace_class`; the bare ID `ephemeral`; `INVALID_MODULE_ID` rejections from `register_internal` and discovery |
+| `error_details_shape.json` | §8.1, D-149 | `SCHEMA_VALIDATION_ERROR` `details.errors` items are exactly `{path, keyword, message}`, `path` an RFC 6901 pointer (`""` for the root); serialized `details` keys are snake_case |
 | `usage_contract.json` | Issue #96 | `system.usage.*` value semantics the two canonical schemas cannot assert — nearest-rank `p99_latency_ms`, `period` as a filter rather than an echo, the `YYYY-MM-DDTHH` hour key, the 24-entry invariant, and the literal `unknown` caller |
 
 ## Coverage Gaps
@@ -110,7 +118,6 @@ The following PROTOCOL_SPEC algorithms do **not** yet have conformance fixtures:
 | A07 | §5.3 | Dependency topological sorting |
 | A12 | §9.3–§9.7 | Config validation (non-namespace mode) |
 | A21 | §12.8 | Safe module unregister |
-| A22 | §12.7.5 | Enforce timeout |
 
 A07 is partially exercised by `registry_load_ordering.json` (discovery load order) but has no dedicated fixture for the topological sort itself.
 

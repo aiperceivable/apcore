@@ -668,7 +668,7 @@ def sync_caller(executor: Executor):
 - `executor.default_timeout` — per-module execution timeout, default 30 000 ms
 - `executor.global_timeout` — budget for the whole call tree, default 60 000 ms
 
-**Cancellation** is cooperative in all three SDKs: a module checks `context.cancel_token` between units of work and exits when it is cancelled, and a timeout cancels the token. See [Cancellation](./features/cancellation.md). The grace period and forced termination described in [protocol-spec §12.7.5](./spec/protocol-spec.md#1275-timeout-enforcement) are not implemented by any SDK yet.
+**Cancellation** is cooperative in all three SDKs: a module checks `context.cancel_token` between units of work and exits when it is cancelled, and a timeout cancels the token. See [Cancellation](./features/cancellation.md).
 
 ## 8. Memory Model
 

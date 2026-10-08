@@ -100,6 +100,8 @@ Normative behavioral contract. All SDK implementations MUST satisfy these guaran
 | TypeScript | `register(moduleId, module, version?, metadata?, options?) -> Promise<void>` |
 | Rust | `register(name, module, descriptor)`, `register_module(name, module)`, `register_versioned(name, module, version, metadata)` → `Result<(), ModuleError>` |
 
+For ephemeral registration and removal, pass the invoking Context to include its caller identity in the audit event: Python accepts `context=` on `register()` and `unregister()`; TypeScript accepts `{ context }` in their options; Rust exposes `register_with_context()`, `register_module_with_context()` and `unregister_with_context()`, each taking an optional Context reference. The standard executor bootstrap connects these events to the configured event emitter (D-148).
+
 ### Preconditions
 
 - The registry's lock MUST be held for the duplicate-ID check.

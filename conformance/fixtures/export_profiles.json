@@ -1,0 +1,187 @@
+{
+  "description": "Export profiles follow PROTOCOL_SPEC 4.17 and Appendix D.1 (decision D-140). The `anthropic` profile strips every `x-*` keyword at any depth of the input schema — apcore-rust passed them through. The `mcp` profile maps readonly / destructive / idempotent / open_world to MCP ToolAnnotations hints, and carries `requires_approval` and `streaming` — which MCP ToolAnnotations do not define — in the tool's `_meta` as `requiresApproval` and `streaming`, each present only when true, never in `annotations`. All three SDKs put `streaming` in `annotations` and emitted no `requiresApproval` at all.",
+  "spec_sections": [
+    "PROTOCOL_SPEC 4.17",
+    "PROTOCOL_SPEC Appendix D.1"
+  ],
+  "module_contract": {
+    "module_id": "demo.send",
+    "description": "Send a message",
+    "input_schema": {
+      "type": "object",
+      "x-owner": "billing",
+      "properties": {
+        "to": {
+          "type": "string",
+          "description": "Recipient address",
+          "x-sensitive": true,
+          "x-examples": [
+            "a@example.com"
+          ]
+        },
+        "items": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "sku": {
+                "type": "string",
+                "x-constraints": {
+                  "pattern_hint": "upper"
+                }
+              }
+            }
+          }
+        },
+        "x-trace": {
+          "type": "string",
+          "description": "Caller-supplied trace tag",
+          "x-sensitive": false
+        }
+      },
+      "required": [
+        "to"
+      ]
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "sent": {
+          "type": "boolean"
+        }
+      }
+    }
+  },
+  "driver_contract": {
+    "path": "Export through the SDK's public profile exporter (SchemaExporter.export with the profile, or the Registry export that delegates to it) for a module registered from `module_contract` with the case's `annotations`.",
+    "paths": "`expected.paths` maps a JSON Pointer into the exported object to the value it MUST hold.",
+    "absent_paths": "`expected.absent_paths` lists JSON Pointers that MUST NOT resolve.",
+    "no_x_keywords_under": "`expected.no_x_keywords_under` is a JSON Pointer: no object key beginning with `x-` may appear anywhere beneath it, EXCEPT a key of a `properties` object, which is a property name rather than a keyword."
+  },
+  "test_cases": [
+    {
+      "id": "anthropic_strips_every_x_keyword",
+      "input": {
+        "profile": "anthropic",
+        "annotations": {
+          "readonly": false,
+          "destructive": true,
+          "idempotent": false,
+          "open_world": true,
+          "requires_approval": true,
+          "streaming": true
+        }
+      },
+      "expected": {
+        "no_x_keywords_under": "/input_schema",
+        "paths": {
+          "/name": "demo_send",
+          "/input_schema/type": "object",
+          "/input_schema/properties/to/type": "string",
+          "/input_schema/required": [
+            "to"
+          ],
+          "/input_schema/properties/items/items/properties/sku/type": "string"
+        }
+      }
+    },
+    {
+      "id": "anthropic_keeps_a_property_named_like_an_extension",
+      "description": "D-140: only x- KEYWORDS are stripped. A property whose NAME begins with `x-` is data; stripping it removes an input the module accepts. apcore-python and apcore-typescript deleted every dict key beginning with `x-`, property names included.",
+      "input": {
+        "profile": "anthropic",
+        "annotations": {
+          "readonly": false,
+          "destructive": true,
+          "idempotent": false,
+          "open_world": true,
+          "requires_approval": true,
+          "streaming": true
+        }
+      },
+      "expected": {
+        "paths": {
+          "/input_schema/properties/x-trace/type": "string"
+        },
+        "absent_paths": [
+          "/input_schema/properties/x-trace/x-sensitive"
+        ]
+      }
+    },
+    {
+      "id": "mcp_carries_requires_approval_and_streaming_in_meta",
+      "input": {
+        "profile": "mcp",
+        "annotations": {
+          "readonly": false,
+          "destructive": true,
+          "idempotent": false,
+          "open_world": true,
+          "requires_approval": true,
+          "streaming": true
+        }
+      },
+      "expected": {
+        "paths": {
+          "/_meta/requiresApproval": true,
+          "/_meta/streaming": true,
+          "/annotations/destructiveHint": true,
+          "/annotations/readOnlyHint": false
+        },
+        "absent_paths": [
+          "/annotations/streaming",
+          "/annotations/requiresApproval",
+          "/annotations/requires_approval"
+        ]
+      }
+    },
+    {
+      "id": "mcp_omits_false_hints_from_meta",
+      "description": "Each `_meta` hint is present only when its annotation is true, and neither appears in `annotations` when false either. Fails an implementation that always writes both keys.",
+      "input": {
+        "profile": "mcp",
+        "annotations": {
+          "readonly": true,
+          "destructive": false,
+          "idempotent": true,
+          "open_world": false,
+          "requires_approval": false,
+          "streaming": false
+        }
+      },
+      "expected": {
+        "paths": {
+          "/annotations/readOnlyHint": true,
+          "/annotations/idempotentHint": true
+        },
+        "absent_paths": [
+          "/_meta/requiresApproval",
+          "/_meta/streaming",
+          "/annotations/streaming",
+          "/annotations/requiresApproval"
+        ]
+      }
+    },
+    {
+      "id": "mcp_preserves_x_keywords",
+      "description": "The over-correction guard: the `mcp` profile keeps the schema as-is, `x-*` included (4.17).",
+      "input": {
+        "profile": "mcp",
+        "annotations": {
+          "readonly": false,
+          "destructive": true,
+          "idempotent": false,
+          "open_world": true,
+          "requires_approval": true,
+          "streaming": true
+        }
+      },
+      "expected": {
+        "paths": {
+          "/inputSchema/properties/to/x-sensitive": true,
+          "/inputSchema/x-owner": "billing"
+        }
+      }
+    }
+  ]
+}

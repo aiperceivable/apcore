@@ -264,14 +264,14 @@ A task waiting for its next retry attempt is `pending` with `retry_count > 0`; t
 |-----------|--------|------------|------|
 | Submit | `await submit(module_id, inputs, context=None, retry_policy=None) -> str` | `await submit(moduleId, inputs, { context?, retry? }): Promise<string>` | `submit(module_id, inputs, context).await -> Result<String>`; `submit_with_retry(module_id, inputs, context, retry)` |
 | Status | `get_status(task_id) -> TaskInfo \| None`; `await get_status_async(task_id)` | `await getStatus(taskId): Promise<TaskInfo \| null>` | `get_status(task_id) -> Result<Option<TaskInfo>>`; `get_status_async(task_id).await` |
-| Result | `get_result(task_id) -> Any` | `await getResult(taskId)` | `get_result(task_id) -> Result<Value>`; `get_result_async(task_id).await` |
+| Result | `get_result(task_id) -> Any`; `await get_result_async(task_id)` | `await getResult(taskId)` | `get_result(task_id) -> Result<Value>`; `get_result_async(task_id).await` |
 | Cancel | `await cancel(task_id) -> bool` | `await cancel(taskId): Promise<boolean>` | `cancel(task_id).await -> Result<bool>` |
 | List | `list_tasks(status=None) -> list[TaskInfo]`; `await list_tasks_async(status=None)` | `await listTasks(status?): Promise<TaskInfo[]>` | `list_tasks(status: Option<TaskStatus>) -> Result<Vec<TaskInfo>>` |
 | Cleanup | `await cleanup(max_age_seconds=3600.0) -> int` | `await cleanup(maxAgeSeconds = 3600): Promise<number>` | `cleanup(max_age_seconds) -> Result<usize>` |
 | Reaper | `start_reaper(*, ttl_seconds=3600.0, sweep_interval_ms=300_000) -> ReaperHandle`; `await stop_reaper()` | `startReaper({ ttlSeconds?, sweepIntervalMs? }): Promise<ReaperHandle>` | `start_reaper(ReaperConfig) -> Result<ReaperHandle>`; `stop_reaper() -> bool` |
 | Shutdown | `await shutdown()` | `await shutdown()` | `shutdown().await -> Result<()>` |
 
-In TypeScript every accessor is asynchronous, because the store is. In Python and Rust the synchronous accessors (`get_status`, `get_result`, `list_tasks`, and in Rust `cleanup`) drive the store call without an event loop; that works for `InMemoryTaskStore` and any store that completes without suspending. With an I/O-backed store use the async variants: a suspending store makes the synchronous accessor raise `RuntimeError` in Python and panic in Rust. Python has no async `get_result`, and Rust no async `list_tasks` / `cleanup`; with an I/O-backed store read the record through `get_status_async()` or the store itself.
+In TypeScript every accessor is asynchronous, because the store is. In Python and Rust the synchronous accessors (`get_status`, `get_result`, `list_tasks`, and in Rust `cleanup`) drive the store call without an event loop; that works for `InMemoryTaskStore` and any store that completes without suspending. With an I/O-backed store use the async variants: a suspending store makes the synchronous accessor raise `RuntimeError` in Python and panic in Rust. Rust has no async `list_tasks` / `cleanup`; with an I/O-backed store read the record through `get_status_async()` or the store itself.
 
 ### Concurrency Model
 

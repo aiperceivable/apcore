@@ -682,7 +682,7 @@ When a reload fails after the old instance was removed, the previous instance is
 | SDK | Single-module failure | Bulk (`path_filter`) failure |
 |---|---|---|
 | Python | restore, raise `RELOAD_FAILED`; a failed restore is logged and the module stays unavailable | restore the failing module and raise; earlier modules stay reloaded |
-| TypeScript | restore, raise `RELOAD_FAILED`; a failed restore propagates its own error | raises only if discovery itself throws; a module missing after discovery is restored and left out of `reloaded_modules`, and the call returns `success: true` |
+| TypeScript | restore, raise `RELOAD_FAILED`; a failed restore propagates its own error | restore every module missing after discovery and raise `RELOAD_FAILED` naming them; modules that did reload stay reloaded |
 | Rust | restore, return `RELOAD_FAILED` | restore every affected module and return `RELOAD_FAILED` if discovery fails or any module is missing |
 
 ## Registration

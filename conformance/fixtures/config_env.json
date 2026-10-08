@@ -1,5 +1,5 @@
 {
-  "description": "Environment variable to Config path mapping (Algorithm A12-NS, spec §9.8). Tests path resolution and prefix matching only — type coercion is tested separately in schema_validation.json.",
+  "description": "Environment variable to Config path mapping (Algorithm A12-NS, spec §9.8). Tests path resolution and prefix matching only — type coercion is tested separately in schema_validation.json. `global` is not a namespace: it carries only the bare-variable `env_map` (Config.env_map), and declares no env prefix, since the exact prefix `APCORE` belongs to the `apcore` namespace alone (§9.8.2 rule 3, D-146). An `APCORE_` variable no registered prefix matches belongs to `apcore` (§9.8.2 rule 4), which is what `global_prefix_fallback` pins.",
   "namespaces": [
     {
       "name": "observability",
@@ -18,7 +18,6 @@
     },
     {
       "name": "global",
-      "env_prefix": "APCORE",
       "env_map": {
         "PORT": "server.port",
         "DEBUG": "logging.level",

@@ -350,6 +350,51 @@
         "event_emitted": "apcore.subscriber.circuit_opened",
         "event_subscriber_type_equals_dlq_subscriber_type": true
       }
+    },
+    {
+      "id": "circuit_opened_event_carries_the_subscriber_id",
+      "description": "D-145 (PROTOCOL_SPEC 9.16.2): the payload names WHICH subscriber's breaker opened. Two subscribers of one type are otherwise indistinguishable, and none of the three SDKs put `subscriber_id` in the payload although each breaker wrapper exposed it. The id is not derivable from the type (and carries a hyphen), so an implementation that reports the type, or a class name, in its place fails.",
+      "input": {
+        "subscriber": {
+          "subscriber_id": "alerts-secondary",
+          "subscriber_type": "webhook"
+        },
+        "circuit_breaker_config": {
+          "timeout_ms": 3000,
+          "open_threshold": 1,
+          "recovery_window_ms": 30000
+        },
+        "failure_sequence": [
+          {
+            "attempt": 1,
+            "outcome": "failure"
+          }
+        ]
+      },
+      "expected": {
+        "circuit_state": "OPEN",
+        "event_emitted": "apcore.subscriber.circuit_opened",
+        "event_subscriber_id": "alerts-secondary",
+        "event_subscriber_type": "webhook"
+      }
+    },
+    {
+      "id": "circuit_closed_event_carries_the_subscriber_id",
+      "description": "D-145: the same for the closing transition.",
+      "input": {
+        "subscriber": {
+          "subscriber_id": "alerts-secondary",
+          "subscriber_type": "webhook"
+        },
+        "circuit_state": "HALF_OPEN",
+        "delivery_outcome": "success"
+      },
+      "expected": {
+        "circuit_state": "CLOSED",
+        "consecutive_failures": 0,
+        "event_emitted": "apcore.subscriber.circuit_closed",
+        "event_subscriber_id": "alerts-secondary"
+      }
     }
   ]
 }

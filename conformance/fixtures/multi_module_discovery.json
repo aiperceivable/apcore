@@ -151,6 +151,64 @@
         ],
         "note": "Only the first qualifying class is loaded in single-class mode; the second is silently ignored or causes an error per SDK policy. The base_id is never suffixed."
       }
+    },
+    {
+      "id": "unmarked_class_beside_marked_ones_is_not_registered",
+      "description": "D-147: once a file opts in, only the classes that carry the per-class marker receive IDs. This is the case the per-class model exists for (D-107): two participating classes beside a helper class that implements the Module interface but must not become a module. An implementation that gives every qualifying class an ID once any is marked registers `math.math_ops.helper` too; one that stops registering anything from a file with an unmarked class loses the two modules.",
+      "input": {
+        "file_path": "extensions/math/math_ops.py",
+        "extensions_root": "extensions",
+        "classes": [
+          {
+            "name": "Addition",
+            "implements_module": true,
+            "multi_class": true
+          },
+          {
+            "name": "Subtraction",
+            "implements_module": true,
+            "multi_class": true
+          },
+          {
+            "name": "Helper",
+            "implements_module": true,
+            "multi_class": false
+          }
+        ]
+      },
+      "expected": {
+        "module_ids": [
+          "math.math_ops.addition",
+          "math.math_ops.subtraction"
+        ],
+        "error": null
+      }
+    },
+    {
+      "id": "one_marked_class_beside_an_unmarked_one_keeps_its_segment",
+      "description": "D-147: a marked class's ID is always base_id.segment, whatever the number of marked classes, so marking a second class later never renames the first. The file has two Module classes, so the single-class identity rule (2.1.1 rule 5) does not apply. apcore-python dropped the unmarked class and then gave the one survivor the bare base_id.",
+      "input": {
+        "file_path": "extensions/math/math_ops.py",
+        "extensions_root": "extensions",
+        "classes": [
+          {
+            "name": "Addition",
+            "implements_module": true,
+            "multi_class": true
+          },
+          {
+            "name": "Helper",
+            "implements_module": true,
+            "multi_class": false
+          }
+        ]
+      },
+      "expected": {
+        "module_ids": [
+          "math.math_ops.addition"
+        ],
+        "error": null
+      }
     }
   ]
 }

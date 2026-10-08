@@ -371,6 +371,239 @@
           7
         ]
       }
+    },
+    {
+      "id": "x_sensitive_inside_an_any_of_branch_is_redacted",
+      "_why": "D-152, the shape an optional field takes (`Secret | None` puts the marker in anyOf[0]). `note` is the control on the same object.",
+      "redaction_config": {
+        "use_defaults": false,
+        "regex_patterns": [],
+        "sensitive_keys": [],
+        "replacement": "***REDACTED***"
+      },
+      "schema": {
+        "type": "object",
+        "properties": {
+          "pin": {
+            "anyOf": [
+              {
+                "type": "string",
+                "x-sensitive": true
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "note": {
+            "type": "string"
+          }
+        }
+      },
+      "input": {
+        "pin": "4711",
+        "note": "hello"
+      },
+      "expected": {
+        "pin": "***REDACTED***",
+        "note": "hello"
+      }
+    },
+    {
+      "id": "x_sensitive_in_any_branch_redacts_the_value_whichever_branch_it_matches",
+      "_why": "D-152: a value described by several branches is redacted when ANY of them marks it; the walk does not decide which branch matched. The value is an integer, matching the UNMARKED branch — an implementation that redacts only when the marked branch validates leaks it.",
+      "redaction_config": {
+        "use_defaults": false,
+        "regex_patterns": [],
+        "sensitive_keys": [],
+        "replacement": "***REDACTED***"
+      },
+      "schema": {
+        "type": "object",
+        "properties": {
+          "account_ref": {
+            "oneOf": [
+              {
+                "type": "string",
+                "x-sensitive": true
+              },
+              {
+                "type": "integer"
+              }
+            ]
+          }
+        }
+      },
+      "input": {
+        "account_ref": 5500123
+      },
+      "expected": {
+        "account_ref": "***REDACTED***"
+      }
+    },
+    {
+      "id": "x_sensitive_in_an_all_of_branch_is_redacted",
+      "redaction_config": {
+        "use_defaults": false,
+        "regex_patterns": [],
+        "sensitive_keys": [],
+        "replacement": "***REDACTED***"
+      },
+      "schema": {
+        "type": "object",
+        "properties": {
+          "pin_code": {
+            "allOf": [
+              {
+                "type": "string"
+              },
+              {
+                "x-sensitive": true
+              }
+            ]
+          }
+        }
+      },
+      "input": {
+        "pin_code": "abc"
+      },
+      "expected": {
+        "pin_code": "***REDACTED***"
+      }
+    },
+    {
+      "id": "properties_declared_inside_a_branch_are_walked",
+      "_why": "D-152: a property declared inside a combinator branch is a field of the object like one declared directly. `code` sits in the sibling branch, unmarked, and stays visible.",
+      "redaction_config": {
+        "use_defaults": false,
+        "regex_patterns": [],
+        "sensitive_keys": [],
+        "replacement": "***REDACTED***"
+      },
+      "schema": {
+        "type": "object",
+        "anyOf": [
+          {
+            "properties": {
+              "otp": {
+                "type": "string",
+                "x-sensitive": true
+              }
+            }
+          },
+          {
+            "properties": {
+              "code": {
+                "type": "string"
+              }
+            }
+          }
+        ]
+      },
+      "input": {
+        "otp": "123456",
+        "code": "abc"
+      },
+      "expected": {
+        "otp": "***REDACTED***",
+        "code": "abc"
+      }
+    },
+    {
+      "id": "a_combinator_without_a_marker_stays_visible",
+      "_why": "The over-correction guard: a field whose branches carry no marker is not sensitive because it is a union. A marked field whose value is null stays null.",
+      "redaction_config": {
+        "use_defaults": false,
+        "regex_patterns": [],
+        "sensitive_keys": [],
+        "replacement": "***REDACTED***"
+      },
+      "schema": {
+        "type": "object",
+        "properties": {
+          "contact": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "pin": {
+            "anyOf": [
+              {
+                "type": "string",
+                "x-sensitive": true
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "input": {
+        "contact": "alice@example.com",
+        "pin": null
+      },
+      "expected": {
+        "contact": "alice@example.com",
+        "pin": null
+      }
+    },
+    {
+      "id": "array_items_marked_inside_a_branch_are_redacted",
+      "redaction_config": {
+        "use_defaults": false,
+        "regex_patterns": [],
+        "sensitive_keys": [],
+        "replacement": "***REDACTED***"
+      },
+      "schema": {
+        "type": "object",
+        "properties": {
+          "cards": {
+            "type": "array",
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "x-sensitive": true
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            }
+          },
+          "labels": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "input": {
+        "cards": [
+          "4111",
+          "5500"
+        ],
+        "labels": [
+          "home"
+        ]
+      },
+      "expected": {
+        "cards": [
+          "***REDACTED***",
+          "***REDACTED***"
+        ],
+        "labels": [
+          "home"
+        ]
+      }
     }
   ],
   "driver_contract": {
@@ -378,6 +611,7 @@
     "which_key_is_read_is_part_of_the_contract": "Behaviour-given-a-config is not enough. Drivers MUST build the config from the exact dot-path the case names and assert the resulting redaction, so that reading the wrong key path fails here rather than in an operator's production logs.",
     "legacy_spelling_is_per_sdk_history": "The CANONICAL key `obs.redaction.*` is the cross-language contract and every SDK MUST read it — that is `canonical_config_key_is_read`, and it applies to all three. The LEGACY spelling is not: each SDK carries whatever it shipped before D-53, and apcore-python carries nothing. Drivers read `legacy_key_by_sdk` for their own language; a `null` entry means the case does not apply and MUST be skipped with that reason stated, not xfailed as though the SDK were deficient.",
     "a_case_must_carry_its_own_inputs": "Every config-key case names BOTH the key to write (`legacy_key_by_sdk` / `config_canonical`) and the value to write (`legacy_value` / the value inside `config_canonical`). An earlier revision named the key and dropped the value, which forces each driver to invent one — and a driver-invented input is not a cross-language contract, it is three private guesses that happen to agree today.",
-    "non_string_values_are_not_stringified": "A driver MUST feed the `input` object through its SDK's redaction with the value TYPES intact — a driver that JSON-serialises the case and reloads it as text, or that coerces every leaf to a string before calling, makes `regex_patterns_do_not_test_non_string_values` unable to fail and re-creates the blind spot that hid the defect. The distinction under test is exactly whether the implementation converts, so the conversion must not happen in the harness (PROTOCOL_SPEC 10.6.1 requirement 2)."
+    "non_string_values_are_not_stringified": "A driver MUST feed the `input` object through its SDK's redaction with the value TYPES intact — a driver that JSON-serialises the case and reloads it as text, or that coerces every leaf to a string before calling, makes `regex_patterns_do_not_test_non_string_values` unable to fail and re-creates the blind spot that hid the defect. The distinction under test is exactly whether the implementation converts, so the conversion must not happen in the harness (PROTOCOL_SPEC 10.6.1 requirement 2).",
+    "schema_marked_fields": "Cases carrying `schema` exercise the `x-sensitive` rule (PROTOCOL_SPEC 10.6, A13) alongside the configured rules: pass `schema` as the schema the redaction walks — the same entry point the executor's input capture uses (apcore-python `redact_sensitive(data, schema, ...)`, and its equivalents). Their `redaction_config` disables every configured rule, and no field name in them matches a default sensitive key, so each redaction in `expected` can only come from an `x-sensitive` marker. D-152: the walk descends into `anyOf` / `oneOf` / `allOf` branches; before it, no SDK did, so an optional field (`Secret | None`) was captured and logged in plain text."
   }
 }

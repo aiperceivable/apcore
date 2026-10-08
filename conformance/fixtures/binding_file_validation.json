@@ -1,0 +1,281 @@
+{
+  "description": "Binding files fail loudly (PROTOCOL_SPEC 5.12.2, 5.12.5, decision D-139). An unknown top-level key or an unknown entry key, an explicit schema pair with one side missing, and an invalid `auto_schema` value fail with BINDING_FILE_INVALID; a target from which no schema can be inferred fails with BINDING_SCHEMA_INFERENCE_FAILED in every mode, implicit included. A permissive fallback turns a typo into a module whose inputs are never validated. Measured before D-139: all three SDKs ignored unknown keys; apcore-typescript defaulted the missing side of a schema pair to `{}` and accepted any `auto_schema` value; apcore-typescript and apcore-rust gave an implicit-mode entry that yielded no schema a permissive object schema.",
+  "spec_sections": [
+    "PROTOCOL_SPEC 5.12.2",
+    "PROTOCOL_SPEC 5.12.5"
+  ],
+  "driver_contract": {
+    "path": "Write `input.file` as YAML to a binding file on disk and load it with the SDK's public binding loader, then register the result (the step that resolves targets and infers schemas).",
+    "targets": "`fixture_targets:typed_greet` resolves to a callable the SDK CAN infer schemas from — `(name: str) -> dict` with type hints in Python, a function exported beside `inputSchema` / `outputSchema` in TypeScript, a typed handler in Rust. `fixture_targets:untyped_greet` resolves to a callable it CANNOT infer from — no type hints in Python, no schemas exported beside it in TypeScript, an untyped handler in Rust. Each driver maps the two placeholders to its own helpers.",
+    "outcome": "`expected.error_code` is the wire code the load or registration raises; `expected.module_ids` the IDs registered when it succeeds."
+  },
+  "test_cases": [
+    {
+      "id": "unknown_top_level_key_is_rejected",
+      "input": {
+        "file": {
+          "spec_version": "1.0",
+          "bindings": [
+            {
+              "module_id": "demo.greet",
+              "target": "fixture_targets:typed_greet",
+              "input_schema": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "name"
+                ]
+              },
+              "output_schema": {
+                "type": "object",
+                "properties": {
+                  "greeting": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          ],
+          "binding_defaults": {
+            "tags": [
+              "x"
+            ]
+          }
+        }
+      },
+      "expected": {
+        "error_code": "BINDING_FILE_INVALID"
+      }
+    },
+    {
+      "id": "unknown_entry_key_is_rejected",
+      "input": {
+        "file": {
+          "spec_version": "1.0",
+          "bindings": [
+            {
+              "module_id": "demo.greet",
+              "target": "fixture_targets:typed_greet",
+              "input_schema": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "name"
+                ]
+              },
+              "output_schema": {
+                "type": "object",
+                "properties": {
+                  "greeting": {
+                    "type": "string"
+                  }
+                }
+              },
+              "descripton": "typo"
+            }
+          ]
+        }
+      },
+      "expected": {
+        "error_code": "BINDING_FILE_INVALID"
+      }
+    },
+    {
+      "id": "misspelled_schema_key_is_rejected",
+      "description": "The motivating typo: `input_shema` beside a valid `output_schema`. Read with unknown keys ignored, the entry is a one-sided explicit pair — which one SDK then defaulted to an empty input schema.",
+      "input": {
+        "file": {
+          "spec_version": "1.0",
+          "bindings": [
+            {
+              "module_id": "demo.greet",
+              "target": "fixture_targets:typed_greet",
+              "input_shema": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "name"
+                ]
+              },
+              "output_schema": {
+                "type": "object",
+                "properties": {
+                  "greeting": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          ]
+        }
+      },
+      "expected": {
+        "error_code": "BINDING_FILE_INVALID"
+      }
+    },
+    {
+      "id": "one_sided_schema_pair_is_rejected",
+      "input": {
+        "file": {
+          "spec_version": "1.0",
+          "bindings": [
+            {
+              "module_id": "demo.greet",
+              "target": "fixture_targets:typed_greet",
+              "input_schema": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "name"
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "expected": {
+        "error_code": "BINDING_FILE_INVALID"
+      }
+    },
+    {
+      "id": "invalid_auto_schema_value_is_rejected",
+      "input": {
+        "file": {
+          "spec_version": "1.0",
+          "bindings": [
+            {
+              "module_id": "demo.greet",
+              "target": "fixture_targets:typed_greet",
+              "auto_schema": "maybe"
+            }
+          ]
+        }
+      },
+      "expected": {
+        "error_code": "BINDING_FILE_INVALID"
+      }
+    },
+    {
+      "id": "implicit_mode_without_an_inferable_schema_fails",
+      "input": {
+        "file": {
+          "spec_version": "1.0",
+          "bindings": [
+            {
+              "module_id": "demo.greet",
+              "target": "fixture_targets:untyped_greet"
+            }
+          ]
+        }
+      },
+      "expected": {
+        "error_code": "BINDING_SCHEMA_INFERENCE_FAILED"
+      }
+    },
+    {
+      "id": "explicit_auto_schema_without_an_inferable_schema_fails",
+      "input": {
+        "file": {
+          "spec_version": "1.0",
+          "bindings": [
+            {
+              "module_id": "demo.greet",
+              "target": "fixture_targets:untyped_greet",
+              "auto_schema": true
+            }
+          ]
+        }
+      },
+      "expected": {
+        "error_code": "BINDING_SCHEMA_INFERENCE_FAILED"
+      }
+    },
+    {
+      "id": "a_complete_explicit_entry_loads",
+      "description": "The over-correction guard: every documented entry field, with free-form keys inside `metadata`, loads. An implementation that rejects keys below the entry level fails here.",
+      "input": {
+        "file": {
+          "spec_version": "1.0",
+          "bindings": [
+            {
+              "module_id": "demo.greet",
+              "target": "fixture_targets:typed_greet",
+              "description": "Greet a user",
+              "documentation": "Returns a greeting.",
+              "input_schema": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "name"
+                ]
+              },
+              "output_schema": {
+                "type": "object",
+                "properties": {
+                  "greeting": {
+                    "type": "string"
+                  }
+                }
+              },
+              "tags": [
+                "demo"
+              ],
+              "version": "1.2.0",
+              "annotations": {
+                "readonly": true
+              },
+              "metadata": {
+                "x-owner": "team-a",
+                "ticket": "OPS-1"
+              }
+            }
+          ]
+        }
+      },
+      "expected": {
+        "module_ids": [
+          "demo.greet"
+        ]
+      }
+    },
+    {
+      "id": "implicit_mode_with_an_inferable_schema_loads",
+      "input": {
+        "file": {
+          "spec_version": "1.0",
+          "bindings": [
+            {
+              "module_id": "demo.greet",
+              "target": "fixture_targets:typed_greet"
+            }
+          ]
+        }
+      },
+      "expected": {
+        "module_ids": [
+          "demo.greet"
+        ]
+      }
+    }
+  ]
+}

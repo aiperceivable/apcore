@@ -10,7 +10,9 @@ description: "Cooperative cancellation via a thread-safe CancelToken on Context:
 
 ## Overview
 
-The Cancellation System provides caller-driven cancellation for module executions. It is built around a lightweight `CancelToken` that the caller attaches to the execution `Context`; the pipeline checks it before running the module, and module code checks it periodically during long-running work. Timeouts are enforced separately by the executor (see [Timeouts](#integration-with-executor-timeout)) and do not use the token.
+The Cancellation System provides cooperative cancellation for module executions. It is built around a lightweight `CancelToken` that the caller can attach to the execution `Context`; the executor gives each call its own child token, the pipeline checks it before running the module, and module code checks it periodically during long-running work. A timeout cancels the timed-out call's token (see [Timeouts](#integration-with-executor-timeout)). Cancelling a child does not cancel its parent.
+
+`CancelToken` is a cancellation signal, not an LLM usage or billing token. It cannot undo consumed tokens, reverse charges, or guarantee that a remote request stops. Module code controls how it responds to the signal; retry, compensation, and accounting decisions belong to the application.
 
 ## Requirements
 
@@ -127,6 +129,8 @@ An `AbortSignal` cannot be un-aborted, so after `cancel()` the signal stays abor
 
 The `CancelToken` is an optional field on the `Context` object. When a parent context creates a child context via `Context.child()`, the cancel token is propagated to the child, ensuring that cancellation cascades through nested module calls.
 
+These direct `Context.child()` calls inherit the token. At an executor call boundary, the executor creates a separate linked child token instead: cancelling the caller reaches that invocation, but cancelling the invocation does not reach the caller.
+
 === "Python"
     ```python
     from apcore import CancelToken, Context
@@ -172,19 +176,17 @@ To cancel a call, create the context with a token, pass it to `call()`, and invo
 
 ### Integration with Executor Timeout
 
-The executor enforces timeouts at Step 8 of the pipeline independently of the `CancelToken`:
+The executor enforces timeouts at Step 8 of the pipeline and signals cancellation through the call's own `CancelToken`:
 
 1. The effective timeout is the module's declared `resources.timeout` (milliseconds), else `executor.default_timeout`, clamped to whatever remains of the call tree's `global_deadline` (from `executor.global_timeout`). `0` means no per-module limit.
-2. If the deadline has already passed when Step 8 is reached, `ModuleTimeoutError` (`MODULE_TIMEOUT`) is raised without invoking the module.
-3. Otherwise the module runs under the timer. When the timer fires first, the executor raises `ModuleTimeoutError` immediately. It does **not** call `cancel()` on the context's `CancelToken`, and there is no grace period. What happens to the still-running module differs by language:
+2. If the deadline has already passed when Step 8 is reached, the executor cancels the call's token and raises `ModuleTimeoutError` (`MODULE_TIMEOUT`) without invoking the module.
+3. Otherwise the module runs under the timer. When the timer fires first, the executor cancels the call's token and raises `ModuleTimeoutError` immediately, without waiting for the module to exit. There is no grace period or forced termination. The application-supplied token and the calling module's token are not cancelled by a child timeout.
 
 | SDK | Mechanism | Effect on the running module |
 |-----|-----------|------------------------------|
-| Python | `asyncio.wait_for` | An `async` module's coroutine is cancelled (`asyncio.CancelledError` at its current `await`). A sync module runs in a thread pool and cannot be interrupted; its thread runs to completion and the result is discarded. |
+| Python | Timer raced against module execution | The timeout is reported without waiting for cooperative cleanup. A sync module runs in a thread pool and cannot be forcibly interrupted. Module code can check the cancelled token; late results are discarded. |
 | TypeScript | `Promise.race` against a timer (and the token's abort signal) | The module's promise is not interrupted; it keeps running and its result is discarded. |
-| Rust | `tokio::time::timeout` | The module future is dropped, so it stops at its current `.await`. |
-
-[protocol-spec §12.7.5](../spec/protocol-spec.md) specifies a grace period before forced termination; no SDK implements it yet.
+| Rust | Timer raced against a spawned invocation task | The timed-out task remains running so module code can observe its cancelled token and clean up cooperatively. The executor does not wait for it; late results are discarded. |
 
 ### Usage in Module Code
 
@@ -307,7 +309,7 @@ Modules performing long-running work **SHOULD** check the cancel token between u
 - **Basic lifecycle tests** verify the cancel → check → raise flow and the reset mechanism.
 - **Context propagation tests** verify that the token propagates through `Context.child()`.
 - **Pipeline check tests** verify that a token cancelled before the call raises `ExecutionCancelledError` at Step 2, and one cancelled during Steps 3–7 raises it at Step 8 without invoking the module.
-- **Executor timeout tests** verify that an expired timer raises `ModuleTimeoutError` (`MODULE_TIMEOUT`).
+- **Executor timeout tests** verify that an expired timer cancels the call's token and raises `ModuleTimeoutError` (`MODULE_TIMEOUT`) immediately, without cancelling the caller or waiting for module cleanup.
 - **Concurrent cancellation tests** verify thread-safety when `cancel()` is called from a timer thread while `check()` is called from the module thread.
 
 ## Contract: CancelToken.is_cancelled

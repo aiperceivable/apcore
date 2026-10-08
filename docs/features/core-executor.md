@@ -158,7 +158,7 @@ The `on_error` chain runs over the middlewares whose `before()` was entered; a r
 
 The per-module timeout applies to Step 8 and is clamped to the time left before the global deadline, so a nested call tree cannot outlive its root's budget. `0` disables the per-module limit (the global deadline still applies); a negative timeout raises `GENERAL_INVALID_INPUT`.
 
-**On timeout** the Executor raises `MODULE_TIMEOUT` immediately. It does not signal the Context's `cancel_token`: Python cancels the module's coroutine (a synchronous module running in a worker thread keeps running to completion), TypeScript stops awaiting the module's promise, and Rust drops the module's future. The cooperative-cancel-then-grace-period sequence of [PROTOCOL_SPEC §12.7.5](../spec/protocol-spec.md#1275-timeout-enforcement) is not implemented by any SDK.
+**On timeout** the Executor cancels the call's own `cancel_token` and raises `MODULE_TIMEOUT` immediately, without waiting for module cleanup. Each call has a child token linked to its caller's token, so the timeout signals cancellation to work beneath that call, never to its caller. There is no forced termination or guarantee that a remote request stops; module code handles cancellation cooperatively ([Cancellation](./cancellation.md#integration-with-executor-timeout)).
 
 A module that wants to stop early on caller-driven cancellation checks its cancel token ([Cancellation](./cancellation.md)):
 

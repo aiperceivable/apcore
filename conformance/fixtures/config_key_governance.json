@@ -2,12 +2,14 @@
   "description": "Cross-language governance of the configuration key surface. Asserts that each SDK's default table and constraint table stay inside the key set the canonical schemas declare, and that every canonical default is reproduced exactly. This fixture exists because the same defect class recurred four times in one audit cycle: schema.validation.* (declared by no schema, validated by all three SDKs), a frozen version/project default pair invented by Python and TypeScript that made the required-field check unreachable, middleware.circuit_breaker.* (forbidden by apcore-config.schema.json, validated by all three SDKs, read by none), and a missing Rust default table that resolved 15 documented keys to null. Every one of them is a disagreement between schemas/ and an SDK table, and none was detectable by any test.",
   "driver_contract": {
     "sources": "The canonical key surface is derived from schemas/apcore-config.schema.json, schemas/defaults.schema.json and schemas/sys-modules.schema.json (the last namespaced under 'sys_modules.'). `allowed_keys` and `canonical_defaults` below are a projection of those files, regenerated and diffed by the doc repo's own test — do NOT hand-edit them, and do NOT treat this fixture as a second source of truth. Fix the schema, regenerate, then fix the SDK.",
-    "sdk_tables": "Each driver supplies its SDK's constraint-table key set (apcore-python `_CONSTRAINTS`, apcore-typescript `CONSTRAINTS`, apcore-rust `CONSTRAINED_CONFIG_KEYS`) and its default-table key set (`_DEFAULTS` / `DEFAULTS` / `config_default_keys()`). Registered-namespace defaults declared at runtime (PROTOCOL_SPEC 9.15) are NOT part of the default table and are out of scope.",
+    "sdk_tables": "Each driver supplies its SDK's constraint-table key set (apcore-python `_CONSTRAINTS`, apcore-typescript `CONSTRAINTS`, apcore-rust `CONSTRAINED_CONFIG_KEYS`) and its default-table key set (`_DEFAULTS` / `DEFAULTS` / `config_default_keys()`). Registered-namespace defaults declared at runtime (PROTOCOL_SPEC 9.15) are NOT part of the default table, and the default-table cases do not read them; the `builtin_namespace` cases read the built-in `observability` registration instead.",
     "assertion": "Report the offending keys, not just a boolean — a driver that fails with 'expected 0 violations, got 3' costs more to diagnose than the bug it caught.",
     "default_value_comparison": "Compare canonical_defaults against the RESOLVED default view — construct a defaults-only Config (`Config.from_defaults()`) and read each key through `get()`. Do NOT compare against the default table directly: an SDK may legitimately implement a default as a typed struct field rather than a table entry (apcore-rust's ExecutorConfig and ObservabilityConfig carry serde defaults that never appear in CONFIG_DEFAULTS), and a table-only comparison reports seven false positives on that SDK. The behavioural question a caller cares about is whether the key resolves to the documented value. Compare numerically when both sides are numbers so 1.0 and 1 agree.",
     "undeclared_key_check": "The undeclared-key direction DOES read the tables directly, because it needs enumeration: the question is which keys this SDK claims to know about. Typed struct fields are exempt — they are declared by the schemas by construction.",
     "strict_enumerates_every_key": "The strict case declares TWO undeclared keys in DIFFERENT sections on purpose. Drivers MUST assert both appear in the error, not merely that an error was raised: an implementation that fails on the first offending key satisfies a raise-only assertion while forcing the operator into one restart per typo.",
-    "default_tier_must_be_asserted_by_reading_it_back": "Assert the retained key by READING IT BACK through get(), not by checking that load did not raise. Not-raising is also true of an implementation that discarded the key at parse time — which is precisely the defect this case exists to catch."
+    "default_tier_must_be_asserted_by_reading_it_back": "Assert the retained key by READING IT BACK through get(), not by checking that load did not raise. Not-raising is also true of an implementation that discarded the key at parse time — which is precisely the defect this case exists to catch.",
+    "builtin_namespace": "For cases carrying `builtin_namespace`, load a NAMESPACE-mode document that declares nothing under that namespace (`{apcore: {version: \"1.0.0\", project: {name: \"probe\"}}}`) and enumerate the leaf dot-paths of `Config.namespace(<name>)` — the defaults the framework's own registration supplies — each prefixed with the namespace name. Every one MUST be in `allowed_keys`; `expected.required_keys` MUST all be present.",
+    "builtin_namespaces_registered": "For a case carrying `builtin_namespaces_registered`, construct nothing but the SDK's Config (load a namespace-mode document as for `builtin_namespace`) and ask the SDK's public namespace registry whether each named namespace is registered (apcore-python `Config.registered_namespaces()`, apcore-typescript `Config.registeredNamespaces()`, apcore-rust `Config::registered_namespaces()`), and that its env prefix is the one given."
   },
   "canonical_sources": [
     "schemas/apcore-config.schema.json",
@@ -171,6 +173,32 @@
           "executor.zz_undeclared",
           "acl.zz_also_undeclared"
         ]
+      }
+    },
+    {
+      "id": "observability_namespace_declares_what_the_schema_declares",
+      "description": "D-144 (PROTOCOL_SPEC 9.15.2): the built-in `observability` registration declares `tracing` and `metrics` only, the two blocks $defs/ObservabilityConfig declares. All three SDKs also registered `logging`, `error_history` and `platform_notify` blocks that nothing reads (and apcore-typescript a `redaction` block), whose live equivalents are sys_modules.error_history.*, sys_modules.events.thresholds.* and obs.redaction.*. The required keys are the guard in the other direction: an implementation that drops the registration altogether fails them.",
+      "builtin_namespace": "observability",
+      "expected": {
+        "violations": [],
+        "required_keys": [
+          "observability.tracing.enabled",
+          "observability.tracing.strategy",
+          "observability.tracing.sampling_rate",
+          "observability.tracing.exporter"
+        ]
+      }
+    },
+    {
+      "id": "the_three_builtin_namespaces_are_registered",
+      "description": "D-144 (PROTOCOL_SPEC 9.15): the framework pre-registers `observability`, `sys_modules` and `obs`. apcore-rust registered only the first two, so `obs.redaction.*` had no namespace, no env prefix and no defaults of its own there.",
+      "builtin_namespaces_registered": {
+        "observability": "APCORE_OBSERVABILITY",
+        "sys_modules": "APCORE_SYS",
+        "obs": "APCORE_OBS"
+      },
+      "expected": {
+        "missing": []
       }
     }
   ]

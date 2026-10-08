@@ -2,9 +2,10 @@
 """Fail on `sys.` used as a module-ID namespace.
 
 The apcore control plane is `system.*`. There is no `sys.*` namespace, and `sys`
-is not a reserved word — PROTOCOL_SPEC 2.5 reserves eight (`system`, `internal`,
-`core`, `apcore`, `plugin`, `schema`, `acl`, `ephemeral`), and the three SDKs
-reserve the first seven in `RESERVED_WORDS`. So `sys.control.reload_module` is
+is not a reserved word — PROTOCOL_SPEC 2.5 reserves seven (`system`, `internal`,
+`core`, `apcore`, `plugin`, `schema`, `acl`), the set the three SDKs hold in
+`RESERVED_WORDS`; `ephemeral` is restricted by registration path, not reserved
+(2.5.1). So `sys.control.reload_module` is
 not a privileged ID that needs a bypass; it is an ordinary ID anyone can
 register, naming a module that does not exist.
 

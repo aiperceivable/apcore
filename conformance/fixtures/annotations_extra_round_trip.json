@@ -1,5 +1,5 @@
 {
-  "description": "Cross-language ModuleAnnotations.extra wire-format round-trip (spec \u00a74.4). Locks the canonical nested form and verifies Python/TypeScript/Rust SDKs produce and consume identical JSON. See planning notes for the rationale (Rust previously used #[serde(flatten)], Python/TS used nested). Spec MUST: extension keys are serialized as a nested 'extra' object; flattened root-level extension keys are forbidden for producers.",
+  "description": "Cross-language ModuleAnnotations.extra wire-format round-trip (spec \u00a74.4). Locks the canonical nested form and verifies Python/TypeScript/Rust SDKs produce and consume identical JSON. See planning notes for the rationale (Rust previously used #[serde(flatten)], Python/TS used nested). Spec MUST: extension keys are serialized as a nested 'extra' object; flattened root-level extension keys are forbidden for producers. `discoverable` (\u00a74.4) is a canonical field and is part of every full wire form below; drivers compare it like any other field.",
   "test_cases": [
     {
       "id": "canonical_nested_round_trip",
@@ -19,6 +19,7 @@
         ],
         "paginated": false,
         "pagination_style": "cursor",
+        "discoverable": true,
         "extra": {
           "mcp.category": "tools",
           "cli.approval_message": "Are you sure?"
@@ -39,6 +40,57 @@
         ],
         "paginated": false,
         "pagination_style": "cursor",
+        "discoverable": true,
+        "extra": {
+          "mcp.category": "tools",
+          "cli.approval_message": "Are you sure?"
+        }
+      },
+      "expected_deserialized_extra": {
+        "mcp.category": "tools",
+        "cli.approval_message": "Are you sure?"
+      }
+    },
+    {
+      "id": "discoverable_false_round_trips",
+      "description": "`discoverable` is a canonical field (\u00a74.4) and part of the wire form (\u00a74.4.1 example). A value of false MUST survive a round trip unchanged; every other case carries the default true, so this is the case that fails an implementation that hardcodes or drops the field.",
+      "input": {
+        "readonly": true,
+        "destructive": false,
+        "idempotent": true,
+        "requires_approval": false,
+        "open_world": true,
+        "streaming": false,
+        "cacheable": true,
+        "cache_ttl": 60,
+        "cache_key_fields": [
+          "query",
+          "locale"
+        ],
+        "paginated": false,
+        "pagination_style": "cursor",
+        "discoverable": false,
+        "extra": {
+          "mcp.category": "tools",
+          "cli.approval_message": "Are you sure?"
+        }
+      },
+      "expected_serialized": {
+        "readonly": true,
+        "destructive": false,
+        "idempotent": true,
+        "requires_approval": false,
+        "open_world": true,
+        "streaming": false,
+        "cacheable": true,
+        "cache_ttl": 60,
+        "cache_key_fields": [
+          "query",
+          "locale"
+        ],
+        "paginated": false,
+        "pagination_style": "cursor",
+        "discoverable": false,
         "extra": {
           "mcp.category": "tools",
           "cli.approval_message": "Are you sure?"
@@ -64,6 +116,7 @@
         "cache_key_fields": null,
         "paginated": false,
         "pagination_style": "cursor",
+        "discoverable": true,
         "extra": {}
       },
       "expected_serialized": {
@@ -78,6 +131,7 @@
         "cache_key_fields": null,
         "paginated": false,
         "pagination_style": "cursor",
+        "discoverable": true,
         "extra": {}
       },
       "expected_deserialized_extra": {}
@@ -97,6 +151,7 @@
         "cache_key_fields": null,
         "paginated": false,
         "pagination_style": "cursor",
+        "discoverable": true,
         "extra": {
           "mcp.category": "tools",
           "mcp.subcategory": "filesystem",
@@ -117,6 +172,7 @@
         "cache_key_fields": null,
         "paginated": false,
         "pagination_style": "cursor",
+        "discoverable": true,
         "extra": {
           "mcp.category": "tools",
           "mcp.subcategory": "filesystem",
@@ -148,6 +204,7 @@
         "cache_key_fields": null,
         "paginated": false,
         "pagination_style": "cursor",
+        "discoverable": true,
         "extra": {
           "ui.label.zh": "\u786e\u8ba4\u64cd\u4f5c",
           "ui.label.ja": "\u64cd\u4f5c\u3092\u78ba\u8a8d",
@@ -173,6 +230,7 @@
         "cache_key_fields": null,
         "paginated": false,
         "pagination_style": "cursor",
+        "discoverable": true,
         "extra": {
           "ui.label.zh": "\u786e\u8ba4\u64cd\u4f5c",
           "ui.label.ja": "\u64cd\u4f5c\u3092\u78ba\u8a8d",
@@ -233,6 +291,7 @@
         "cache_key_fields": null,
         "paginated": false,
         "pagination_style": "cursor",
+        "discoverable": true,
         "extra": {
           "mcp.category": "tools",
           "cli.approval_message": "ok?"
@@ -280,6 +339,7 @@
         "cache_key_fields": null,
         "paginated": false,
         "pagination_style": "cursor",
+        "discoverable": true,
         "extra": {
           "mcp.category": "tools",
           "cli.approval_message": "ok?"
@@ -305,6 +365,7 @@
         "cache_key_fields": null,
         "paginated": false,
         "pagination_style": "cursor",
+        "discoverable": true,
         "extra": {
           "a.b.c": 1,
           "a.b": 2,
@@ -323,6 +384,7 @@
         "cache_key_fields": null,
         "paginated": false,
         "pagination_style": "cursor",
+        "discoverable": true,
         "extra": {
           "a.b.c": 1,
           "a.b": 2,

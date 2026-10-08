@@ -311,8 +311,6 @@ The following requirements are not met by the current SDK releases (apcore-pytho
 | Requirement | Spec reference | Level | Current status |
 |---|---|---|---|
 | Version negotiation on load | protocol-spec §13.3 | Level 2 MUST | `negotiate_version()` is exported as a function in all three SDKs, but no SDK calls it when loading configuration or schema files. |
-| Extension point chaining and loading order | protocol-spec §11.3, §11.7 | Level 2 MUST | `ExtensionManager` holds one implementation per single-valued point and a list per multi-valued point. There is no priority ordering, no `first_success` / `all` / `fallback` strategy, and no registration from `apcore.yaml`. |
-| Timeout grace period | protocol-spec §12.7.5 | MUST | The SDKs raise `MODULE_TIMEOUT` as soon as the timer fires; none waits the grace period of `enforce_timeout` step 4 for the module to exit. |
 | Schema migration | protocol-spec §13.4 | Level 2 SHOULD | `migrate_schema()` is not implemented. |
 | Module isolation | protocol-spec §5.5 | Level 2 SHOULD | Process- or container-level isolation is not implemented; modules run in the host process. |
 | Multi-version coexistence | protocol-spec §5.4 | Level 2 SHOULD | apcore-python resolves a `version_hint` on `Registry.get`. apcore-typescript accepts the hint, ignores it, and warns that it is deprecated. apcore-rust takes no hint. |
@@ -321,7 +319,7 @@ The following requirements are not met by the current SDK releases (apcore-pytho
 
 ## 8. Conformance Test Fixtures
 
-The repository ships **82 cross-language fixture files** under `conformance/fixtures/` covering **999 test cases**. `conformance-integrity` checks these two numbers, §8.1's per-fixture counts and its Total row against the fixtures themselves. Each fixture is consumed by all three SDK test runners (§5.2). An SDK declaring a conformance level **MUST** pass every fixture whose tested feature is required at that level (§5.3).
+The repository ships **90 cross-language fixture files** under `conformance/fixtures/` covering **1075 test cases**. `conformance-integrity` checks these two numbers, §8.1's per-fixture counts and its Total row against the fixtures themselves. Each fixture is consumed by all three SDK test runners (§5.2). An SDK declaring a conformance level **MUST** pass every fixture whose tested feature is required at that level (§5.3).
 
 ### 8.1 Fixture Inventory
 
@@ -337,18 +335,20 @@ The repository ships **82 cross-language fixture files** under `conformance/fixt
 | [`acl_effect_value_closure`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/acl_effect_value_closure.json) | 10 | A rule's `effect` value is a closed set at every entry point — file loading, direct construction and runtime insertion; `default_effect` on the same terms (spec §6.1.5) |
 | [`acl_pattern_arity`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/acl_pattern_arity.json) | 51 | A `callers` / `targets` pattern array's shape is a closed set at every entry point, plus a validator-only tier for well-formed arrays that match nothing (spec §6.2.1) |
 | [`acl_root_discovery`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/acl_root_discovery.json) | 10 | `ACL.discover()` config-driven `acl.root` resolution; missing path MUST attach nothing (spec §6.6.3.1, D-64) |
-| [`annotations_extra_round_trip`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/annotations_extra_round_trip.json) | 11 | `ModuleAnnotations.extra` wire-format round-trip (spec §4.4.1) |
+| [`annotations_extra_round_trip`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/annotations_extra_round_trip.json) | 12 | `ModuleAnnotations.extra` wire-format round-trip (spec §4.4.1) |
 | [`approval_gate`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/approval_gate.json) | 8 | Approval gate enforcement at Executor Step 5 (spec §7.4) |
 | [`approval_request_fields`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/approval_request_fields.json) | 2 | `ApprovalRequest` carries `caller_id` (read straight off `Context.caller_id` — null on a top-level call, never the `@external` ACL sentinel) and `action` (= `module_id`), populated by the approval gate at Executor Step 5 (spec §7.3.1, D-03) |
 | [`async_task_cancellation`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/async_task_cancellation.json) | 2 | `AsyncTaskManager.cancel()` real abort via CancelToken (D-18) |
 | [`async_task_evolution`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/async_task_evolution.json) | 10 | Pluggable `TaskStore`, retry with backoff |
 | [`bindings_dir_resolution`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/bindings_dir_resolution.json) | 13 | Binding-directory resolution: a loader invoked without an explicit directory resolves `bindings.dir` / `bindings.pattern` under §9.2 precedence, an explicit argument wins, and no scan happens at client initialisation (spec §5.12.6) |
 | [`binding_errors`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/binding_errors.json) | 6 | Binding error message conformance (protocol-spec §5.12.8) |
+| [`binding_file_validation`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/binding_file_validation.json) | 9 | Binding files fail loudly: unknown keys, a one-sided schema pair and an invalid `auto_schema` are `BINDING_FILE_INVALID`; an uninferable schema is `BINDING_SCHEMA_INFERENCE_FAILED` in every mode (spec §5.12.2, §5.12.5, D-139) |
 | [`call_chain`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/call_chain.json) | 11 | Call-chain safety guard (Algorithm A20) |
 | [`config_defaults`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/config_defaults.json) | 18 | Config default values cross-SDK identity (spec §9.1.1) |
 | [`config_env`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/config_env.json) | 13 | Env-var → Config path mapping (Algorithm A12-NS, spec §9.8) |
-| [`config_key_governance`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/config_key_governance.json) | 6 | Configuration key surface governance (§9.1 / §9.3 / §9.15.3) |
-| [`config_path_typed_keys`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/config_path_typed_keys.json) | 7 | Closed set of path-typed configuration keys (§9.2.1) |
+| [`env_prefix_dispatch`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/env_prefix_dispatch.json) | 4 | Namespace-mode env dispatch: `APCORE` reserved for `apcore`, one namespace per variable by longest prefix, unmatched `APCORE_` variables belong to `apcore` (spec §9.8.2, D-146) |
+| [`config_key_governance`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/config_key_governance.json) | 8 | Configuration key surface governance (§9.1 / §9.3 / §9.15.3) |
+| [`config_path_typed_keys`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/config_path_typed_keys.json) | 8 | Closed set of path-typed configuration keys (§9.2.1) |
 | [`config_project_root`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/config_project_root.json) | 14 | The project root that path-typed values resolve against from v2.0 — config-file directory for §9.14 tiers 1-5, CWD for the user-level tiers 6-7 and when no file is found; one case per tier, plus the deprecation-warning condition (spec §9.2.2) |
 | [`context_create`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/context_create.json) | 15 | `Context.create()` canonical 6-parameter factory and executor binding |
 | [`context_serialization`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/context_serialization.json) | 8 | Context JSON round-trip (spec §5.7) |
@@ -356,36 +356,41 @@ The repository ships **82 cross-language fixture files** under `conformance/fixt
 | [`contextual_audit`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/contextual_audit.json) | 10 | Contextual audit trail for control-plane modules (D-35) |
 | [`dependency_version_constraints`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/dependency_version_constraints.json) | 18 | Dependency version constraint enforcement (spec §5.3, §5.15.2) |
 | [`error_codes`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/error_codes.json) | 19 | Error code collision detection (Algorithm A17, spec §8.4) |
-| [`error_fingerprinting`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/error_fingerprinting.json) | 6 | Error fingerprint composition for ErrorHistory dedup |
-| [`error_recovery_metadata`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/error_recovery_metadata.json) | 19 | `retryable` / `ai_guidance` / `user_fixable` / `suggestion` recovery metadata (spec §8) |
+| [`error_details_shape`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/error_details_shape.json) | 5 | `SCHEMA_VALIDATION_ERROR` details items are `{path, keyword, message}` with a JSON Pointer path; `details` keys are snake_case (spec §8.1, D-149) |
+| [`ephemeral_modules`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/ephemeral_modules.json) | 7 | `ephemeral.*`: one audit event per register / unregister under the standard bootstrap, the bare ID `ephemeral`, `INVALID_MODULE_ID` rejections (spec §2.5.1, D-148) |
+| [`error_fingerprinting`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/error_fingerprinting.json) | 6 | Error fingerprint = SHA-256 of `code:module_id:normalized_message` for ErrorHistory dedup |
+| [`error_recovery_metadata`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/error_recovery_metadata.json) | 22 | `retryable` / `ai_guidance` / `user_fixable` / `suggestion` recovery metadata (spec §8) |
 | [`error_serialization`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/error_serialization.json) | 2 | `ModuleError.to_dict()` snake_case wire form (spec §8) |
 | [`event_delivery_semantics`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/event_delivery_semantics.json) | 6 | Event retry, DLQ and `apcore.event.delivery_failed` (spec §9.16) |
-| [`event_management_hardening`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/event_management_hardening.json) | 15 | SubscriberFactory parity, built-in subscribers |
+| [`event_management_hardening`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/event_management_hardening.json) | 17 | SubscriberFactory parity, built-in subscribers |
 | [`event_naming`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/event_naming.json) | 7 | Event-name canonicalization (spec §9.16, D-34) |
 | [`executor_trace_cancellation`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/executor_trace_cancellation.json) | 1 | `call_with_trace()` cancellation short-circuit (D-19 / D-20) |
 | [`gate_provider_binding`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/gate_provider_binding.json) | 9 | Governance providers reach the gate they configure: an ACL, handler or policy given to the executor is enforced by the running built-in gate however the strategy was supplied, and `governance_state()` reports what the gate holds (spec §6.6.5.5, D-129) |
+| [`json_input_native_types`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/json_input_native_types.json) | 4 | A natively typed contract accepts the JSON strings its schema accepts — date-time, UUID, enum — and still rejects what the schema rejects (type-mapping §17.3, D-136) |
 | [`gate_step_configure`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/gate_step_configure.json) | 8 | `configure` cannot weaken `acl_check` / `approval_gate`: `ignore_errors: true`, `match_modules` and `pure: true` are rejected at load (spec §5.16.1, D-130) |
 | [`governance_state`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/governance_state.json) | 13 | `Executor.governance_state()` — configured vs. actually wired (spec §6.6.5) |
 | [`identity_system`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/identity_system.json) | 8 | Identity construction and propagation (spec §5.7) |
 | [`multi_root_discovery`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/multi_root_discovery.json) | 6 | `extensions.roots` multi-root discovery with namespace isolation (§9.1.1, D-70) |
 | [`middleware_hardening`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/middleware_hardening.json) | 11 | Context namespacing, CircuitBreaker |
 | [`middleware_on_error_recovery`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/middleware_on_error_recovery.json) | 4 | Middleware after-chain error recovery |
-| [`multi_module_discovery`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/multi_module_discovery.json) | 8 | Multi-class discovery, snake_case conversion, conflict detection (spec §2.1.1) |
-| [`normalize_id`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/normalize_id.json) | 16 | ID normalization (Algorithm A02) |
-| [`id_map_from_config`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/id_map_from_config.json) | 4 | `id_map.overrides` reaches the ID-map mechanism (§9.1.1, D-71) |
+| [`multi_module_discovery`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/multi_module_discovery.json) | 10 | Multi-class discovery, snake_case conversion, conflict detection; only marked classes receive IDs (spec §2.1.1, D-147) |
+| [`normalize_id`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/normalize_id.json) | 23 | ID normalization (Algorithm A02): ASCII case conversion preserves existing underscores and rejects invalid source identifiers without repair (#122) |
+| [`id_map_from_config`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/id_map_from_config.json) | 7 | `id_map.overrides` reaches the ID-map mechanism (§9.1.1, D-71); `file` is relative to the extension root, an empty env value falls through (§2.2, D-138) |
 | [`id_conflict_reserved_words`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/id_conflict_reserved_words.json) | 9 | Reserved-word ID conflicts on the first segment only; later segments unrestricted (spec §2.6 step 2) |
 | [`observability_hardening`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/observability_hardening.json) | 10 | Pluggable storage, BatchSpan, OTel parity |
 | [`openai_strict_compat`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/openai_strict_compat.json) | 30 | OpenAI structured-outputs strict-mode incompatibility detection (protocol-spec §5.12.5) |
 | [`overrides_store`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/overrides_store.json) | 5 | OverridesStore pluggable persistence |
 | [`pattern_matching`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/pattern_matching.json) | 12 | ACL / `match_modules` module-ID pattern matching (Algorithm A08) |
 | [`extension_point_lookup`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/extension_point_lookup.json) | 12 | An unknown extension point is an error, an empty one is not (D-108) |
+| [`export_profiles`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/export_profiles.json) | 5 | Export profiles: `anthropic` strips every `x-*` keyword and keeps properties named `x-…`; `mcp` carries `requiresApproval` / `streaming` in `_meta`, never in `annotations` (spec §4.17, Appendix D.1, D-140) |
 | [`glob_matching`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/glob_matching.json) | 30 | Portable glob matching for pattern-valued values (Algorithm A25, §9.2.3) |
 | [`pipeline_failfast_config`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/pipeline_failfast_config.json) | 7 | Pipeline configuration fail-fast (spec §5.16) |
-| [`pipeline_hardening`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/pipeline_hardening.json) | 5 | Pipeline execution hardening: fail-fast, replace-step, run_until (spec §5.16) |
+| [`pipeline_hardening`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/pipeline_hardening.json) | 7 | Pipeline execution hardening: fail-fast, replace-step, run_until, a step timeout raises `MODULE_TIMEOUT` (spec §5.16, D-142) |
 | [`pipeline_section_wiring`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/pipeline_section_wiring.json) | 6 | A configured `pipeline:` section reaches the running strategy (§5.16 requirements 6 and 7, D-72) |
 | [`pipeline_step_middleware`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/pipeline_step_middleware.json) | 9 | Pipeline StepMiddleware lifecycle (spec §5.16 requirement 5) |
 | [`preflight_disclosure`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/preflight_disclosure.json) | 4 | `validate()` withholds `preflight()` / `preview()` from an ACL-denied caller (spec §12.8.5.1) |
-| [`redaction_config`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/redaction_config.json) | 13 | Redaction config via `obs.redaction.regex_patterns` / `sensitive_keys` (spec §10.6.1) |
+| [`preflight_check_reporting`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/preflight_check_reporting.json) | 7 | `validate()` reports every check, passed and failed; preview() returning null adds no check; `predicted_changes` is always present (spec §12.8, D-134, D-141) |
+| [`redaction_config`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/redaction_config.json) | 19 | Redaction config via `obs.redaction.regex_patterns` / `sensitive_keys` (spec §10.6.1); `x-sensitive` inside `anyOf` / `oneOf` / `allOf` (spec §10.6, D-152) |
 | [`registry_load_ordering`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/registry_load_ordering.json) | 4 | Discovery load order and dependency topological sort (Algorithm A07) |
 | [`reload_path_filter`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/reload_path_filter.json) | 10 | Granular reload via `path_filter` glob (`system.control.reload_module`) |
 | [`schema_content_hash`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/schema_content_hash.json) | 5 | Schema content-hash cache key — key-order invariant (spec §4) |
@@ -404,12 +409,13 @@ The repository ships **82 cross-language fixture files** under `conformance/fixt
 | [`stream_aggregation`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/stream_aggregation.json) | 10 | Stream chunk aggregation (recursive deep merge, Algorithm A24) |
 | [`system_modules_hardening`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/system_modules_hardening.json) | 16 | System modules hardening: persistence, audit, Prometheus (spec §6.7) |
 | [`toggle_state_isolation`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/toggle_state_isolation.json) | 4 | Per-instance `ToggleState` isolation |
+| [`timeout_cancellation`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/timeout_cancellation.json) | 6 | A timeout cancels the timed-out call's own token and returns at once; every call gets a child token of its caller's (spec §12.7.5, A22, D-133) |
 | [`tracing_from_config`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/tracing_from_config.json) | 12 | `observability.tracing.*` reaches the running middleware (§10.1.1, D-68) |
 | [`trace_context`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/trace_context.json) | 8 | W3C TraceContext alignment (spec §10.5) |
 | [`usage_contract`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/usage_contract.json) | 11 | `system.usage.*` value semantics no schema can assert (spec §6.7.1) |
 | [`usage_exporter`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/usage_exporter.json) | 3 | `UsageExporter` push interface (D-55) |
 | [`version_negotiation`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/version_negotiation.json) | 10 | Version negotiation (Algorithm A14) |
-| **Total** | **999** | **82 fixtures** |
+| **Total** | **1075** | **90 fixtures** |
 
 ### 8.2 Loading Fixtures from a Test Runner
 

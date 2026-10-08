@@ -1,5 +1,8 @@
 {
-  "description": "Error fingerprinting and deduplication for ErrorHistory. Fingerprint composition: SHA-256(error_code + ':' + top_frame_hash + ':' + sanitized_message_template). Sanitization replaces UUID, ISO 8601 timestamps, and integers >= 4 digits with placeholders, lowercases, and trims. Two errors with the same fingerprint MUST collapse into a single ErrorEntry (count incremented, last_seen_at updated). Different error_code values MUST produce distinct fingerprints. The top_frame_hash field is computed from the first non-framework stack frame; for the purpose of this fixture, callers SHOULD substitute caller_id when stack traces are unavailable. See docs/features/error-history.md#error-fingerprinting and #14-error-fingerprinting-for-deduplication.",
+  "description": "Error fingerprinting and deduplication for ErrorHistory (docs/features/error-history.md#error-fingerprinting). Fingerprint = lowercase hex SHA-256(error_code + ':' + module_id + ':' + normalize_message(message)), UTF-8. normalize_message replaces, in this order, UUIDs with <UUID>, ISO 8601 dates and timestamps with <TIMESTAMP> and integers of four or more digits with <ID>, then trims and lowercases. The call site is not an input: stack frames differ between Python, V8 and Rust, so including one would give the same error a different fingerprint in each SDK. Two errors with the same fingerprint MUST collapse into a single ErrorEntry (count incremented, last_seen_at updated). Different error_code values, or different module_id values, MUST produce distinct fingerprints.",
+  "driver_contract": {
+    "module_id": "Each error's `caller_id` is the `module_id` argument of ErrorHistory.record — the module whose call failed, which is what the error-history middleware passes. No other value (a stack frame, a caller) is part of the fingerprint."
+  },
   "test_cases": [
     {
       "id": "uuid_message_dedup",
@@ -93,20 +96,18 @@
         {
           "error_code": "VALIDATION_FAILED",
           "caller_id": "executor.users.create",
-          "top_frame": "users.py:create:42",
           "message": "Field is required"
         },
         {
           "error_code": "VALIDATION_FAILED",
           "caller_id": "executor.orders.create",
-          "top_frame": "orders.py:create:88",
           "message": "Field is required"
         }
       ],
       "expected": {
         "entry_count": 2,
         "fingerprints_distinct": 2,
-        "_note": "Same code + same normalized message but different top_frame_hash MUST yield distinct fingerprints"
+        "_note": "Same code and same normalized message in two different modules MUST yield distinct fingerprints: module_id is part of the fingerprint."
       }
     },
     {

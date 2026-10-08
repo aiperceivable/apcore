@@ -43,7 +43,7 @@
         "age": 30
       },
       "expected_valid": false,
-      "expected_error_path": "name"
+      "expected_error_path": ""
     },
     {
       "id": "wrong_type_string_for_integer",
@@ -84,7 +84,7 @@
         "count": "abc"
       },
       "expected_valid": false,
-      "expected_error_path": "count"
+      "expected_error_path": "/count"
     },
     {
       "id": "empty_schema_accepts_any_value",
@@ -157,7 +157,7 @@
         "extra": "not_allowed"
       },
       "expected_valid": false,
-      "expected_error_path": "extra"
+      "expected_error_path": ""
     },
     {
       "id": "additional_properties_allowed_by_default",
@@ -267,7 +267,7 @@
         }
       },
       "expected_valid": false,
-      "expected_error_path": "address.zip"
+      "expected_error_path": "/address/zip"
     },
     {
       "id": "array_items_validation",
@@ -312,7 +312,7 @@
         ]
       },
       "expected_valid": false,
-      "expected_error_path": "tags[1]"
+      "expected_error_path": "/tags/1"
     },
     {
       "id": "coerce_string_true_to_boolean",

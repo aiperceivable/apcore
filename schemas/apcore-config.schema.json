@@ -190,7 +190,7 @@
       "properties": {
         "auto_discover": {
           "type": "boolean",
-          "description": "Whether to automatically discover modules in the extensions directory.",
+          "description": "Deprecated, removed at v2.0 (protocol-spec 9.2.4): discovery runs when discover() is called, whatever this value. Read only by the configuration validation warning.",
           "default": true
         },
         "lazy_load": {
@@ -441,7 +441,7 @@
       "properties": {
         "disabled": {
           "type": "array",
-          "description": "List of built-in middleware IDs to disable. Framework-required middleware (schema_validation, acl_check) cannot be disabled.",
+          "description": "Deprecated, removed at v2.0: read by no implementation (protocol-spec 9.2.4, 11.4). Remove a middleware with remove(), or a pipeline step with pipeline.remove.",
           "items": {
             "type": "string"
           },
@@ -710,30 +710,13 @@
           "default": true
         },
         "overrides": {
-          "type": "object",
-          "description": "Manual ID mapping overrides. Keys are Canonical IDs, values are language-specific mappings.",
-          "additionalProperties": {
-            "type": "object",
-            "description": "Language-specific mapping for a module.",
-            "additionalProperties": {
-              "type": "object",
-              "properties": {
-                "class": {
-                  "type": "string",
-                  "description": "Fully qualified class/struct name."
-                },
-                "package": {
-                  "type": "string",
-                  "description": "Package name (Java/Go)."
-                },
-                "module": {
-                  "type": "string",
-                  "description": "Module path (Rust)."
-                }
-              }
-            }
-          },
-          "default": {}
+          "type": ["string", "null"],
+          "x-apcore-path": true,
+          "description": "Path-typed (protocol-spec 9.2.1): the path of an ID map file, a YAML document whose `mappings` list holds `{file, id}` entries, `file` relative to the extension root (protocol-spec 2.2). null means no ID map; an empty value falls through to the next tier. An explicit API argument (for example Registry id_map_path) takes precedence over this key.",
+          "default": null,
+          "examples": [
+            "./id_map.yaml"
+          ]
         }
       }
     },

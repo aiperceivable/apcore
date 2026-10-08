@@ -96,6 +96,51 @@
       "local_id": "V2.User123Profile",
       "language": "typescript",
       "expected": "v2.user123_profile"
+    },
+    {
+      "id": "double_underscore_preserved",
+      "local_id": "read_item_items__item_id__get",
+      "language": "python",
+      "expected": "read_item_items__item_id__get"
+    },
+    {
+      "id": "triple_underscore_preserved",
+      "local_id": "a___b",
+      "language": "typescript",
+      "expected": "a___b"
+    },
+    {
+      "id": "trailing_underscore_kept",
+      "local_id": "getUser_",
+      "language": "python",
+      "expected": "get_user_"
+    },
+    {
+      "id": "screaming_snake",
+      "local_id": "HTTP_SERVER",
+      "language": "rust",
+      "expected": "http_server"
+    },
+    {
+      "id": "leading_underscore_rejected",
+      "local_id": "_lead",
+      "language": "python",
+      "expected_error": true,
+      "expected_normalized": "_lead"
+    },
+    {
+      "id": "non_ascii_rejected_without_transformation",
+      "local_id": "getÜber",
+      "language": "typescript",
+      "expected_error": true,
+      "expected_normalized": "getÜber"
+    },
+    {
+      "id": "kebab_case_rejected_without_repair",
+      "local_id": "user-profiles",
+      "language": "python",
+      "expected_error": true,
+      "expected_normalized": "user-profiles"
     }
   ]
 }

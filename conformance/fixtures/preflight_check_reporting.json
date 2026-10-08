@@ -1,0 +1,310 @@
+{
+  "description": "Executor.validate() reports every check (PROTOCOL_SPEC 12.8.1 principle 2, decision D-134) and reports module-level preflight/preview as 12.8.3 / 12.8.5.1 say (decision D-141). Before D-134 all three SDKs ran the dry run fail-fast: the first failing check ended it, and apcore-python and apcore-typescript also discarded every check that had passed before it. The one exception stays: after a failed `acl` check, module-level preflight() and preview() are withheld (12.8.5.1, pinned by preflight_disclosure.json). D-141: a module without preflight() MAY still yield a passed `module_preflight` check; preview() returning null adds no `module_preview` check; `predicted_changes` is always present, empty when nothing is predicted.",
+  "spec_sections": [
+    "PROTOCOL_SPEC 12.8.1",
+    "PROTOCOL_SPEC 12.8.3",
+    "PROTOCOL_SPEC 12.8.5.1"
+  ],
+  "module_contract": {
+    "module_id": "demo.transfer",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "amount": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "required": [
+        "amount"
+      ]
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "ok": {
+          "type": "boolean"
+        }
+      }
+    },
+    "preflight_returns": [
+      "balance is low"
+    ],
+    "preview_change": {
+      "action": "transfer",
+      "target": "account:42",
+      "summary": "Move funds from account 42"
+    }
+  },
+  "driver_contract": {
+    "path": "Drive the real Executor.validate() against a real Registry and a real ACL built from `input.acl_rules` / `input.default_effect`, with caller `input.caller_id` and inputs `input.inputs`.",
+    "module": "Register the module of `module_contract` under `input.module_id` unless `input.module_id` names a module that is deliberately not registered (`register: false`). `input.implements_preflight` / `input.implements_preview` say whether the module defines those methods; `input.preview_returns_null` makes preview() return null instead of `preview_change`.",
+    "checks_present": "Subset assertion: every named check appears in `checks`.",
+    "checks_absent": "Every named check is absent from `checks` altogether.",
+    "failed_checks": "Exact set of the checks whose `passed` is false.",
+    "passed_checks": "Subset assertion: every named check appears with `passed: true`. This is what fails an implementation that drops the checks that passed before a failure.",
+    "optional_passed_checks": "Each named check is either absent, or present with `passed: true` and no warnings (a MAY: D-141 allows it for a language that cannot tell a default method from an implemented one).",
+    "predicted_changes": "`expected.predicted_changes_count` is the length of `predicted_changes`. `expected.predicted_changes_present: true` asserts the field is present as a list in the SDK's serialized result (Python dataclasses.asdict, TypeScript JSON.stringify, Rust serde_json::to_value), under `predicted_changes` (`predictedChanges` in TypeScript); absent or null fails."
+  },
+  "test_cases": [
+    {
+      "id": "every_check_passes",
+      "description": "The control: a permitted caller with valid inputs.",
+      "input": {
+        "module_id": "demo.transfer",
+        "acl_rules": [
+          {
+            "callers": [
+              "*"
+            ],
+            "targets": [
+              "demo.transfer"
+            ],
+            "effect": "allow"
+          }
+        ],
+        "default_effect": "deny",
+        "caller_id": "ops.console",
+        "inputs": {
+          "amount": 5
+        },
+        "implements_preflight": true,
+        "implements_preview": true
+      },
+      "expected": {
+        "valid": true,
+        "failed_checks": [],
+        "passed_checks": [
+          "module_lookup",
+          "acl",
+          "schema",
+          "module_preflight",
+          "module_preview"
+        ],
+        "predicted_changes_count": 1,
+        "predicted_changes_present": true
+      }
+    },
+    {
+      "id": "a_schema_failure_keeps_the_checks_before_it",
+      "description": "D-134: the checks that passed before the failing one stay in the result. apcore-python and apcore-typescript returned only the failed `schema` check (plus `module_id`), dropping `module_lookup` and `acl`.",
+      "input": {
+        "module_id": "demo.transfer",
+        "acl_rules": [
+          {
+            "callers": [
+              "*"
+            ],
+            "targets": [
+              "demo.transfer"
+            ],
+            "effect": "allow"
+          }
+        ],
+        "default_effect": "deny",
+        "caller_id": "ops.console",
+        "inputs": {
+          "amount": 0
+        },
+        "implements_preflight": true,
+        "implements_preview": true
+      },
+      "expected": {
+        "valid": false,
+        "failed_checks": [
+          "schema"
+        ],
+        "passed_checks": [
+          "module_lookup",
+          "acl",
+          "module_preflight"
+        ],
+        "predicted_changes_present": true
+      }
+    },
+    {
+      "id": "an_acl_failure_does_not_stop_the_schema_check",
+      "description": "D-134: a failing check does not stop the checks after it. With the caller denied AND the inputs invalid, both failures are reported; every SDK stopped at `acl`. Module-level preflight/preview stay withheld after the ACL failure (12.8.5.1).",
+      "input": {
+        "module_id": "demo.transfer",
+        "acl_rules": [
+          {
+            "callers": [
+              "*"
+            ],
+            "targets": [
+              "demo.transfer"
+            ],
+            "effect": "deny"
+          }
+        ],
+        "default_effect": "allow",
+        "caller_id": "untrusted.caller",
+        "inputs": {
+          "amount": 0
+        },
+        "implements_preflight": true,
+        "implements_preview": true
+      },
+      "expected": {
+        "valid": false,
+        "failed_checks": [
+          "acl",
+          "schema"
+        ],
+        "passed_checks": [
+          "module_lookup"
+        ],
+        "checks_absent": [
+          "module_preflight",
+          "module_preview"
+        ],
+        "predicted_changes_count": 0,
+        "predicted_changes_present": true
+      }
+    },
+    {
+      "id": "an_unknown_module_records_no_module_dependent_check",
+      "description": "D-134's boundary: a check that needs the module is not recorded when there is no module. An implementation that reports a failed `schema` check for a module it never found fails here. The ACL permits every target, so `module_lookup` is the only check that can fail.",
+      "input": {
+        "module_id": "demo.missing",
+        "register": false,
+        "acl_rules": [
+          {
+            "callers": [
+              "*"
+            ],
+            "targets": [
+              "*"
+            ],
+            "effect": "allow"
+          }
+        ],
+        "default_effect": "deny",
+        "caller_id": "ops.console",
+        "inputs": {
+          "amount": 5
+        }
+      },
+      "expected": {
+        "valid": false,
+        "failed_checks": [
+          "module_lookup"
+        ],
+        "checks_absent": [
+          "schema",
+          "module_preflight",
+          "module_preview"
+        ],
+        "predicted_changes_count": 0,
+        "predicted_changes_present": true
+      }
+    },
+    {
+      "id": "preview_returning_null_adds_no_check",
+      "description": "D-141: preview() returning null means no prediction is available, and records nothing. apcore-python and apcore-typescript added a passed `module_preview` check.",
+      "input": {
+        "module_id": "demo.transfer",
+        "acl_rules": [
+          {
+            "callers": [
+              "*"
+            ],
+            "targets": [
+              "demo.transfer"
+            ],
+            "effect": "allow"
+          }
+        ],
+        "default_effect": "deny",
+        "caller_id": "ops.console",
+        "inputs": {
+          "amount": 5
+        },
+        "implements_preflight": true,
+        "implements_preview": true,
+        "preview_returns_null": true
+      },
+      "expected": {
+        "valid": true,
+        "failed_checks": [],
+        "checks_absent": [
+          "module_preview"
+        ],
+        "predicted_changes_count": 0,
+        "predicted_changes_present": true
+      }
+    },
+    {
+      "id": "no_preview_still_carries_empty_predicted_changes",
+      "description": "D-141: `predicted_changes` is always present. apcore-typescript left it undefined and apcore-rust skipped it when serializing an empty list.",
+      "input": {
+        "module_id": "demo.transfer",
+        "acl_rules": [
+          {
+            "callers": [
+              "*"
+            ],
+            "targets": [
+              "demo.transfer"
+            ],
+            "effect": "allow"
+          }
+        ],
+        "default_effect": "deny",
+        "caller_id": "ops.console",
+        "inputs": {
+          "amount": 5
+        },
+        "implements_preflight": true,
+        "implements_preview": false
+      },
+      "expected": {
+        "valid": true,
+        "failed_checks": [],
+        "checks_absent": [
+          "module_preview"
+        ],
+        "predicted_changes_count": 0,
+        "predicted_changes_present": true
+      }
+    },
+    {
+      "id": "no_preflight_may_yield_a_passed_check",
+      "description": "D-141: a module that does not implement preflight() either records no `module_preflight` check or a passed one with no warnings; it never records a failed one.",
+      "input": {
+        "module_id": "demo.transfer",
+        "acl_rules": [
+          {
+            "callers": [
+              "*"
+            ],
+            "targets": [
+              "demo.transfer"
+            ],
+            "effect": "allow"
+          }
+        ],
+        "default_effect": "deny",
+        "caller_id": "ops.console",
+        "inputs": {
+          "amount": 5
+        },
+        "implements_preflight": false,
+        "implements_preview": true
+      },
+      "expected": {
+        "valid": true,
+        "failed_checks": [],
+        "optional_passed_checks": [
+          "module_preflight"
+        ],
+        "passed_checks": [
+          "module_preview"
+        ],
+        "predicted_changes_count": 1,
+        "predicted_changes_present": true
+      }
+    }
+  ]
+}

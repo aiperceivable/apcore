@@ -1,14 +1,14 @@
 ---
-description: "The canonical, normative apcore protocol specification (RFC 2119, v1.62.0): module, schema, naming, ACL, approval, error, config, and observability requirements for all conforming SDKs."
+description: "The canonical, normative apcore protocol specification (RFC 2119, v1.64.0): module, schema, naming, ACL, approval, error, config, and observability requirements for all conforming SDKs."
 ---
 
 # apcore — AI-Perceivable Core Standard Specification
 
 > **Canonical specification.** This document is the single normative source for the apcore protocol. Where any other document disagrees with it, this document wins.
 
-> Version: 1.62.0
+> Version: 1.64.0
 > Status: Active — the 1.x line adds requirements compatibly; breaking changes are reserved for 2.0
-> Last Updated: 2026-09-30
+> Last Updated: 2026-10-08
 
 ---
 
@@ -205,18 +205,27 @@ directory_to_id:
 
 Implementations **MAY** support multi-class discovery mode, which allows multiple module classes to be defined in a single file. Multi-class discovery **MUST** be explicitly enabled — the default (single-class) behavior **MUST** remain unchanged.
 
+Opt-in is per class: a class takes part when it carries the implementation's multi-class marker, and a
+file is in multi-class mode when at least one of its classes carries it (D-107). In a file in
+multi-class mode, only the classes that carry the marker receive IDs: implementations **MUST NOT**
+register a class of that file that does not carry the marker, whether or not it implements the Module
+interface. A marked class's ID is always `base_id + "." + class_segment`, however many classes of the
+file carry the marker — one marked class beside an unmarked Module class included — so marking a second
+class never renames the first. The one exception is rule 5 below: a file with exactly one Module class
+keeps its `base_id` (D-147).
+
 When multi-class discovery is enabled for a file:
 
 1. The scanner **MUST** enumerate all exported classes in the file.
-2. For each class that implements the Module interface, derive its ID:
+2. For each class that carries the marker and implements the Module interface, derive its ID:
    - `base_id` ← `directory_to_canonical_id(file_path, extensions_root)`   [Algorithm A01]
-   - `class_segment` ← `snake_case(ClassName)`
+   - `class_segment` ← `snake_case_name(ClassName)`
    - `module_id` ← `base_id + "." + class_segment`
 3. The resulting `module_id` **MUST** conform to the Canonical ID grammar (§2.7).
 4. If two classes in the same file produce the same `class_segment`, implementations **MUST** raise `MODULE_ID_CONFLICT`.
 5. A file with exactly one Module class **MUST** produce the same ID whether multi-class mode is on or off (backward compatibility guarantee).
 
-`snake_case` conversion, in this order:
+`snake_case_name` is a repairing conversion for a class name, in this order:
 
 1. Insert `_` between a run of uppercase letters and an uppercase letter followed by a lowercase letter (`HTTPSender` → `HTTP_Sender`).
 2. Insert `_` between a lowercase letter or digit and an uppercase letter (`MathOps` → `Math_Ops`).
@@ -231,6 +240,9 @@ class Addition   → "addition"
 class MathOps    → "math_ops"
 class HTTPSender → "http_sender"
 ```
+
+`snake_case_name` is distinct from §2.2's non-repairing `snake_case_identifier`.
+Implementations **MUST NOT** share one transformation between the two operations.
 
 #### Module ID Format Constraint
 
@@ -255,7 +267,11 @@ All SDK implementations **MUST** validate module IDs against this pattern during
 
 ### 2.2 ID Map (Cross-language Conversion)
 
-**ID Map** covers two conversions. Implementations **MUST** support canonical conversion from a language-native ID to a Canonical ID (Algorithm A02, below). Separately, an operator can replace the ID that discovery derives for a given module file through an ID map file (below).
+**ID Map** covers two conversions. Implementations **MUST** support canonical conversion from a
+language-native ID to a Canonical ID (Algorithm A02, below). A02 receives a valid identifier in
+the source language; it does not repair an arbitrary string. A value that cannot become a
+Canonical ID is rejected at step 5, rather than rewritten. Separately, an operator can replace
+the ID that discovery derives for a given module file through an ID map file (below).
 
 ```text
 Algorithm: normalize_to_canonical_id(local_id, language)
@@ -271,14 +287,27 @@ Steps:
   1. Determine separator sep based on language:
      - python: "."  |  rust: "::"  |  go: "."  |  java: "."  |  typescript: "."
   2. segments ← Split local_id by sep
-  3. For each segment, perform case normalization:
-     - If segment is PascalCase → Convert to snake_case
-     - If segment is camelCase → Convert to snake_case
-     - If segment is already snake_case → Keep unchanged
+  3. For each segment, perform snake_case_identifier normalization:
+     a. If segment contains no ASCII uppercase character (U+0041–U+005A),
+        return it unchanged.
+     b. Otherwise insert one "_" at each ASCII case boundary:
+        - ASCII lowercase or digit followed by ASCII uppercase
+        - ASCII uppercase followed by ASCII uppercase then ASCII lowercase
+     c. Map each ASCII uppercase character to its ASCII lowercase counterpart.
+        Leave every other code point unchanged.
+     d. Return. Do not collapse, strip, replace, or otherwise repair characters.
   4. canonical_id ← Join all segments with "."
   5. Validate canonical_id conforms to ID EBNF syntax (see §2.7)
   6. Return canonical_id
 ```
+
+`snake_case_identifier` preserves leading and trailing underscores. A trailing underscore can
+pass §2.7; a leading underscore fails it and an operator who needs a different registered ID uses
+`id_map.overrides`, not an inferred repair. The case operation is deliberately ASCII-scoped,
+matching §2.7's ASCII output alphabet: a non-ASCII identifier is preserved through step 3 and
+rejected by step 5. Implementations **MUST NOT** replace an out-of-alphabet character and return
+the replacement as a Canonical ID. An existing `__` remains `__`; this operation only adds case
+boundary underscores.
 
 **ID map file.** `id_map.overrides` (§9.1) is the path of a YAML map file. A map supplied directly to the registry or discoverer (`Registry(id_map_path=…)` / `idMapPath` / `DefaultDiscoverer::with_id_map`) takes precedence over the key (D-73). The file carries a top-level `mappings` list; each entry maps one module file, by its path relative to the extension root, to the Canonical ID it is registered under:
 
@@ -298,6 +327,8 @@ mappings:
 1. During discovery, after Algorithm A01 has derived each file's ID, a file named by an entry's `file` is registered under that entry's `id` instead. A file the map does not name keeps its derived ID. The replacement ID is validated like any other discovered ID (§2.6, §2.7); one that fails validation is not registered.
 2. A configured map file that does not exist fails with `CONFIG_NOT_FOUND`. One that does not parse, or whose top level has no `mappings` list, fails with `CONFIG_INVALID`.
 3. An entry without `file` is skipped with a warning.
+4. An entry's `file` is resolved against the extension root the file is discovered under, in every implementation; it is never resolved against the working directory or the map file's directory. An entry carries `file` and `id` only (D-138).
+5. `id_map.overrides` is path-typed (§9.2.1). `null` means no ID map, and an empty value — including a set-but-empty environment variable — falls through to the next tier (§9.2.1 requirement 5) (D-138).
 
 ### 2.3 Special Word Handling
 
@@ -378,6 +409,7 @@ not.
 3. Discovery **MUST NOT** populate the namespace. An `ephemeral.*` ID yielded by filesystem
    discovery (§3.6) or by a custom discoverer is never registered; filesystem discovery that
    derives one fails with an error.
+4. The errors of rule 2 and rule 3 carry the code `INVALID_MODULE_ID` (§8.2) (D-148).
 
 Rationale: each reserved namespace maps to exactly one registration path — `system.*` only
 through `register_internal()` (§6.6.1), `ephemeral.*` only through `register()`. That keeps
@@ -409,6 +441,12 @@ event (§9.16.2) — never the plain registry event plus a second contextual one
 | `caller_id` | `context.caller_id` of the registering call; `"@external"` when it is absent, null or empty |
 | `identity` | A snapshot of `context.identity` with credential-bearing attributes redacted or omitted; `null` when the context carries no identity |
 | `namespace_class` | `"ephemeral"` |
+
+All three keys are always present. The rule holds for the bare ID `ephemeral` exactly as for
+`ephemeral.<name>`. An implementation's standard bootstrap — the client with the event system
+enabled (`sys_modules.events.enabled: true`, §9.15.3) — **MUST** deliver the event to the event
+emitter it wires, and a registration or unregistration that is given no context reports
+`caller_id: "@external"` and `identity: null` (D-148).
 
 Registrations outside the namespace carry the payload §9.16.2 defines.
 
@@ -1911,6 +1949,7 @@ apcore defines standard export Profiles for adapter developers to follow. Profil
 - Schema: Preserve as-is (with `x-*` extension fields)
 - ID: Use as-is (`executor.email.send_email`)
 - Annotations: `readonly` → `readOnlyHint`, `destructive` → `destructiveHint`, `idempotent` → `idempotentHint`, `open_world` → `openWorldHint`
+- `requires_approval` and `streaming` have no MCP `ToolAnnotations` equivalent. They travel in the tool's `_meta` as `requiresApproval` and `streaming`, each present only when the annotation is `true`, and never in `annotations` (D-140)
 - Output schema: not carried. An MCP adapter that advertises a tool `outputSchema` takes it from the module's `output_schema` (Appendix D.1)
 - See Appendix D.1 MCP Mapping
 
@@ -1921,7 +1960,7 @@ apcore defines standard export Profiles for adapter developers to follow. Profil
 - See Appendix D.3 OpenAI Mapping
 
 **`anthropic` Profile:**
-- Schema: Strip `x-*` fields
+- Schema: Strip every `x-*` keyword, at any depth of `input_schema`. Only keywords are stripped: a property *name* beginning with `x-` (a key of `properties`) is data, and the property is kept (D-140)
 - ID: Replace `.` with `_`
 - Replace `description` with `x-llm-description` then strip
 - Examples: `module.examples[*].inputs` → `input_examples`
@@ -2448,7 +2487,7 @@ context_schema:
 
     cancel_token:
       nullable: true
-      description: "Cooperative cancellation token for long-running operations (MAY)"
+      description: "Cooperative cancellation token. During a call it is that call's own token, a child of its caller's (§12.7.5)"
 
     services:
       type: object
@@ -2471,7 +2510,7 @@ context_schema:
 | `executor` | Framework engine dependency | Only channel for inter-module calls |
 | `identity` | Widely needed | ACL is framework first-class citizen, needs standardized "who" |
 | `data` | Universal bag | span_id, locale, pipeline intermediate state, etc. all mutable data |
-| `cancel_token` | Optional extension | Cooperative cancellation for timeout enforcement |
+| `cancel_token` | Optional extension | Cooperative cancellation; a timeout cancels the timed-out call's own token (§12.7.5) |
 | `services` | Optional extension | DI container for framework integrations |
 | `redacted_inputs` | Optional extension | Safe logging of sensitive inputs |
 
@@ -2976,7 +3015,7 @@ bindings:
 
 When `spec_version` is absent, implementations treat the file as `"1.0"` and log a warning. Any other value is logged as a warning and loading proceeds.
 
-A binding file that cannot be read or parsed, whose top level is not a mapping, that has no `bindings` key or whose `bindings` value is not a list, or that contains an entry without `module_id` or `target`, **MUST** fail with `BINDING_FILE_INVALID`.
+A binding file that cannot be read or parsed, whose top level is not a mapping, that has no `bindings` key or whose `bindings` value is not a list, or that contains an entry without `module_id` or `target`, **MUST** fail with `BINDING_FILE_INVALID`. So **MUST** a file whose top level carries a key other than `spec_version` and `bindings`, and a file with an entry that carries a field not in the table below: an unknown key is a typo until proven otherwise, and ignoring it can turn a misspelled schema field into a module with no schema (D-139).
 
 **Binding Item Field Definitions:**
 
@@ -3000,7 +3039,7 @@ Implementations **MUST** carry every field of an entry's `annotations` — the f
 
 **Schema Source.** Each entry takes its schemas from exactly one source:
 
-1. **Explicit** — `input_schema` and `output_schema`. An entry that sets one without the other **MUST** fail with `BINDING_FILE_INVALID`.
+1. **Explicit** — `input_schema` and `output_schema`. An entry that sets one without the other **MUST** fail with `BINDING_FILE_INVALID`; the missing side is never defaulted (D-139).
 2. **External file** — `schema_ref` (§5.12.4).
 3. **Auto** — `auto_schema` (§5.12.5).
 4. **Implicit auto** — none of the fields above; the schemas are inferred from the target as in auto mode (§5.12.5).
@@ -3078,9 +3117,9 @@ If target callable lacks sufficient type information, **MUST** throw `BINDING_SC
 | `"strict"` | As permissive; in addition the implementation **MUST** check each inferred schema against OpenAI/Anthropic structured-output strict mode (the keyword set pinned by `conformance/fixtures/openai_strict_compat.json`) and fail an incompatible one with `BINDING_STRICT_SCHEMA_INCOMPATIBLE`. |
 | `false` | Disables inference. With no other schema source the entry **MUST** fail with `BINDING_SCHEMA_INFERENCE_FAILED`. |
 
-Any other value **MUST** fail with `BINDING_FILE_INVALID`.
+Any other value **MUST** fail with `BINDING_FILE_INVALID` (D-139).
 
-An entry in implicit auto mode (§5.12.2) is inferred as under `auto_schema: true`. Whether an implicit-mode entry whose target yields no schema fails with `BINDING_SCHEMA_INFERENCE_FAILED` or receives a permissive object schema is implementation-defined.
+An entry in implicit auto mode (§5.12.2) is inferred as under `auto_schema: true`. When inference cannot produce a schema — in any mode, implicit included — the entry **MUST** fail with `BINDING_SCHEMA_INFERENCE_FAILED`. Implementations **MUST NOT** substitute a permissive schema: it would register a module whose inputs are never validated (D-139).
 
 #### 5.12.6 Discovery Mechanism
 
@@ -3719,7 +3758,7 @@ The canonical spelling of every field is snake_case, as in the schema. An implem
 | `match_modules` | array of string | Module-ID patterns (algorithm A08, §6.2) restricting the step to matching modules. |
 | `ignore_errors` | boolean | Log step errors instead of aborting the pipeline (requirement 1). Default `false`. |
 | `pure` | boolean | Marks the step side-effect-free. Default `false`. |
-| `timeout_ms` | integer | Per-step timeout in milliseconds; `0` means none. Default `0`. |
+| `timeout_ms` | integer | Per-step timeout in milliseconds; `0` means none. Default `0`. A step that runs past it fails with `MODULE_TIMEOUT`, and the caller of `call()` receives that code (D-142). |
 | `after` | string | Insert immediately after the named step. |
 | `before` | string | Insert immediately before the named step. |
 
@@ -5379,6 +5418,16 @@ error_format:
       description: "Actionable suggestion for resolving the error"
 ```
 
+**`details` keys.** Every key of `details` is snake_case in the serialized error of every implementation (`module_id`, `caller_id`, `timeout_ms`), whatever name the host language uses for the field in memory (D-149).
+
+**Schema validation details.** A `SCHEMA_VALIDATION_ERROR` carries `details.errors`, a list with one item per failed check. Each item is an object with exactly three keys (D-149):
+
+| Key | Value |
+|---|---|
+| `path` | A JSON Pointer (RFC 6901) to the failing value within the validated instance — `/count`, `/tags/1`; the empty string `""` for the instance root |
+| `keyword` | The JSON Schema keyword that failed at `path` — `type`, `required`, `minimum`, `enum`, … A missing required property is reported at the object that lacks it, with keyword `required` |
+| `message` | A human-readable description of the failure |
+
 #### 8.1.1 AI Error Guidance Fields
 
 The four optional fields (`retryable`, `ai_guidance`, `user_fixable`, `suggestion`) enable AI agents to programmatically understand and respond to errors without parsing human-readable messages.
@@ -5441,6 +5490,24 @@ error_codes:
   CONFIG_INVALID:
     description: "Invalid configuration file"
     http_status: 500
+  CONFIG_BIND_ERROR:
+    description: "Binding a configuration namespace to a typed model failed"
+    http_status: 500
+  CONFIG_MOUNT_ERROR:
+    description: "Invalid Config Bus mount operation (§9.7)"
+    http_status: 500
+  CONFIG_NAMESPACE_DUPLICATE:
+    description: "A configuration namespace is registered twice (§9.5)"
+    http_status: 500
+  CONFIG_NAMESPACE_RESERVED:
+    description: "A reserved namespace name or env prefix is registered by another package (§9.8.2)"
+    http_status: 500
+  CONFIG_ENV_PREFIX_CONFLICT:
+    description: "An env_prefix is already registered by another namespace (§9.8.2)"
+    http_status: 500
+  CONFIG_ENV_MAP_CONFLICT:
+    description: "An environment variable is already mapped by an env_map (§9.8.3)"
+    http_status: 500
 
   # Module-related (MODULE_*)
   MODULE_NOT_FOUND:
@@ -5461,6 +5528,34 @@ error_codes:
   INVALID_MODULE_ID:
     description: "module_id is empty or fails the Module ID Format Constraint (§2.1)"
     http_status: 400
+  MODULE_ID_CONFLICT:
+    description: "Multi-class discovery derived the same ID for two classes in one file (§2.1.1)"
+    http_status: 500
+  MODULE_RELOAD_CONFLICT:
+    description: "system.control.reload_module received both module_id and path_filter"
+    http_status: 400
+  DUPLICATE_MODULE_ID:
+    description: "A module ID that is already registered was registered again (§12.7.4)"
+    http_status: 409
+  ID_TOO_LONG:
+    description: "A derived module ID exceeds the 192-character maximum (§2.7)"
+    http_status: 500
+  INVALID_SEGMENT:
+    description: "A derived multi-class segment does not match the Canonical ID grammar (§2.1.1)"
+    http_status: 500
+  STREAMING_INTERFACE_MISMATCH:
+    description: "A module declares streaming support but its stream() method does not satisfy the streaming interface"
+    http_status: 500
+
+  # Context-related
+  CONTEXT_BINDING_ERROR:
+    description: "An Executor tried to bind a Context already bound to a different Executor"
+    http_status: 500
+
+  # Circuit breaker
+  CIRCUIT_BREAKER_OPEN:
+    description: "CircuitBreakerMiddleware rejected the call because the circuit is open"
+    http_status: 503
 
   # Execution-related (EXECUTION_*)
   EXECUTION_CANCELLED:
@@ -5543,20 +5638,77 @@ error_codes:
     description: "Middleware chain execution failed"
     http_status: 500
 
-  # Pipeline-related (PIPELINE_*)
+  # Pipeline-related (PIPELINE_*, STEP_*, STRATEGY_*)
   PIPELINE_CONFIGURATION_ERROR:
     description: "Pipeline configuration names a step or anchor that does not exist, or sets a field the step does not accept (§5.16.1)"
+    http_status: 500
+  PIPELINE_ABORT:
+    description: "A pipeline step aborted the pipeline"
+    http_status: 500
+  PIPELINE_STEP_ERROR:
+    description: "A pipeline step failed; wraps the step's error (§5.16 requirement 1)"
+    http_status: 500
+  PIPELINE_DEPENDENCY_ERROR:
+    description: "A step's requires is not satisfied by the provides of the steps before it"
+    http_status: 500
+  PIPELINE_STEP_NOT_FOUND:
+    description: "configure_step() named a step the strategy does not contain"
+    http_status: 500
+  STEP_NOT_FOUND:
+    description: "A strategy API call (remove, insert_after, insert_before) named a step the strategy does not contain"
+    http_status: 500
+  STEP_NAME_DUPLICATE:
+    description: "Two steps of one strategy carry the same name"
+    http_status: 500
+  STEP_NOT_REMOVABLE:
+    description: "remove() named a step the strategy marks non-removable"
+    http_status: 500
+  STEP_NOT_REPLACEABLE:
+    description: "replace() named a step the strategy marks non-replaceable"
+    http_status: 500
+  STRATEGY_NOT_FOUND:
+    description: "A pipeline strategy preset name does not exist (§6.6.3.2)"
+    http_status: 500
+
+  # System modules (SYS_*)
+  SYS_MODULES_DISABLED:
+    description: "An operation that needs the system modules was called while sys_modules.enabled is false"
+    http_status: 500
+  SYS_MODULE_REGISTRATION_FAILED:
+    description: "A system.* module failed to register at startup"
+    http_status: 500
+
+  # Async tasks (TASK_*, REAPER_*)
+  TASK_LIMIT_EXCEEDED:
+    description: "AsyncTaskManager task ceiling reached"
+    http_status: 429
+  TASK_STORE_UNAVAILABLE:
+    description: "A TaskStore backend is unreachable or refused an operation"
+    http_status: 503
+  REAPER_ALREADY_RUNNING:
+    description: "start_reaper() was called while a reaper is already running"
     http_status: 500
 
   # Version-related (VERSION_*)
   VERSION_INCOMPATIBLE:
     description: "SDK/config version incompatible"
     http_status: 500
+  VERSION_CONSTRAINT_INVALID:
+    description: "A dependency version constraint string is malformed (§5.3)"
+    http_status: 500
 
   # Error code registry (ERROR_CODE_*)
   ERROR_CODE_COLLISION:
     description: "Custom error code collides with framework or other module code"
     http_status: 500
+  ERROR_FORMATTER_DUPLICATE:
+    description: "An error formatter is already registered for the adapter name"
+    http_status: 500
+
+  # Trace context
+  INVALID_PARENT_ID:
+    description: "TraceContext.inject received a parent_id override that is not 16 lowercase hex characters"
+    http_status: 400
 
   # Dependency-related (CIRCULAR_*, DEPENDENCY_*)
   CIRCULAR_DEPENDENCY:
@@ -5740,6 +5892,7 @@ Implementations **MUST NOT** default retry failed module invocations. Retry beha
 | `MODULE_TIMEOUT` | **Yes** | Timeout may be temporary |
 | `GENERAL_INTERNAL_ERROR` | **Yes** | Internal error may be transient |
 | `APPROVAL_TIMEOUT` | **Yes** | Approval handler may respond on retry |
+| `CIRCUIT_BREAKER_OPEN` | **Yes** | The circuit closes again after its recovery window |
 | `MODULE_EXECUTE_ERROR` | **Depends** | Depends on module's `annotations.idempotent` |
 | `CONFIG_NOT_FOUND` | **No** | Configuration file missing, needs deployment fix |
 | `CONFIG_INVALID` | **No** | Configuration content invalid, needs manual fix |
@@ -5750,7 +5903,7 @@ Implementations **MUST NOT** default retry failed module invocations. Retry beha
 | `MODULE_NOT_FOUND` | **No** | Module non-existence won't change with retry |
 | `MODULE_DISABLED` | **No** | Module explicitly disabled, needs re-enabling |
 | `MODULE_LOAD_ERROR` | **No** | Load errors typically need code fixes |
-| `EXECUTION_CANCELLED` | **Yes** | Cancellation may be temporary, retry with new CancelToken |
+| `EXECUTION_CANCELLED` | **Yes** | Cancellation may be temporary; retry with a fresh `CancelToken`, since the cancelled one stays cancelled |
 | `RELOAD_FAILED` | **Yes** | Reload may succeed after transient issue resolves |
 | `SCHEMA_VALIDATION_ERROR` | **No** | Input error won't change with retry |
 | `SCHEMA_NOT_FOUND` | **No** | Schema reference missing, needs config fix |
@@ -5777,8 +5930,11 @@ Implementations **MUST NOT** default retry failed module invocations. Retry beha
 | `MIDDLEWARE_CHAIN_ERROR` | **No** | Middleware failed, needs code fix |
 | `VERSION_INCOMPATIBLE` | **No** | Version mismatch, needs upgrade or config fix |
 | `ERROR_CODE_COLLISION` | **No** | Error code conflict, needs code fix |
+| `PIPELINE_CONFIGURATION_ERROR` | **No** | Pipeline configuration invalid, needs config fix |
 
 Implementations **SHOULD** use this table as the default `retryable` value for each error subclass. Callers may override the default on a per-instance basis.
+
+For `EXECUTION_CANCELLED`, `APPROVAL_TIMEOUT`, `CIRCUIT_BREAKER_OPEN` and `PIPELINE_CONFIGURATION_ERROR` the default is a **MUST**: an error of one of these codes constructed without an explicit `retryable` **MUST** carry the value in the table above — `true` for the first three, `false` for `PIPELINE_CONFIGURATION_ERROR` — and **MUST NOT** leave it unset (D-135). Retry middleware still never retries a cancelled call on its own: a cancellation does not reach the `on_error` chain.
 
 > **Note:** `GENERAL_NOT_IMPLEMENTED` and `DEPENDENCY_NOT_FOUND` are defined in §8.2 and appear in the §8.7 hierarchy. Both are non-retryable by default.
 
@@ -5942,7 +6098,7 @@ project:
 # Extension configuration
 extensions:
   root: "./extensions"               # MUST (default: "./extensions")
-  auto_discover: true                # SHOULD, auto-discovery (default: true)
+  auto_discover: true                # Deprecated, no effect — see §9.2.4
   lazy_load: true                    # MAY, lazy loading (default: true). No effect — read by no implementation
   follow_symlinks: false             # MUST NOT default true (default: false)
   max_depth: 8                       # SHOULD, max scan depth (default: 8, max: 16)
@@ -5985,7 +6141,7 @@ observability:
 
 # Middleware configuration
 middleware:
-  disabled: []                       # MAY, list of disabled built-in middleware. No effect — read by no implementation
+  disabled: []                       # Deprecated, no effect — see §9.2.4
 
 # Binding configuration
 bindings:
@@ -6197,7 +6353,7 @@ Examples:
 
 #### 9.2.1 Path-Typed Configuration Keys
 
-A **path-typed** key is a configuration key whose value is a filesystem path. The set is **closed** and is declared by the canonical schemas: a property carrying `"x-apcore-path": true` in `schemas/apcore-config.schema.json` is path-typed, and no other key is.
+A **path-typed** key is a configuration key whose value is a filesystem path. The set is **closed** and is declared by the canonical schemas: a property carrying `"x-apcore-path": true` in `schemas/apcore-config.schema.json`, or in a namespace schema it references (`schemas/sys-modules.schema.json`), is path-typed, and no other key is.
 
 | Key | Environment variable | Default |
 |---|---|---|
@@ -6206,6 +6362,10 @@ A **path-typed** key is a configuration key whose value is a filesystem path. Th
 | `schema.root` | `APCORE_SCHEMA_ROOT` | `"./schemas"` |
 | `acl.root` | `APCORE_ACL_ROOT` | `"./acl"` |
 | `bindings.dir` | `APCORE_BINDINGS_DIR` | `"./bindings"` |
+| `id_map.overrides` | `APCORE_ID__MAP_OVERRIDES` | `null` (no ID map) |
+| `sys_modules.control.overrides_path` | `APCORE_SYS_CONTROL_OVERRIDES__PATH` | `null` (no overrides file) |
+
+`id_map.overrides` and `sys_modules.control.overrides_path` are path-typed (D-138).
 
 **Requirements:**
 
@@ -6269,6 +6429,8 @@ project_root =
 | `schema.root` | Process CWD, unconditionally | Nothing normative; implementation behaviour only |
 | `extensions.root` | Process CWD, unconditionally | Nothing normative; implementation behaviour only |
 | `bindings.dir` | Process CWD, unconditionally | Nothing normative; the loader contract is §5.12.6 |
+| `id_map.overrides` | Process CWD, unconditionally | Nothing normative; implementation behaviour only |
+| `sys_modules.control.overrides_path` | Process CWD, unconditionally | Nothing normative; implementation behaviour only |
 
 Sibling keys with identical relative values and identical override syntax therefore resolve against different bases; the target semantics give every path-typed key of a `Config` the same one.
 
@@ -6473,6 +6635,8 @@ authoritative list.
 | `logging.format` | §9.1 | No replacement key (D-67) — as above | Not before v2.0 |
 | `observability.metrics.enabled` | §9.1.1 | No replacement key. Metrics come from a `MetricsCollector` supplied to the API | Not before v2.0 |
 | `observability.metrics.exporter` | §9.1.1 | No replacement key. There is no metrics-exporter abstraction; a `MetricsCollector` is supplied as a constructor argument | Not before v2.0 |
+| `middleware.disabled` | §9.1 | No replacement key. Remove a registered middleware with `remove()`, or a pipeline step with `pipeline.remove` (§5.16.1). The built-in middleware it names are not installed (§11.4) (D-137) | Not before v2.0 |
+| `extensions.auto_discover` | §9.1 | No replacement key. Discovery runs when `discover()` is called; the key is read only by §9.3's semantic-validation warning (D-150) | Not before v2.0 |
 
 **Requirements:**
 
@@ -7234,7 +7398,8 @@ Env prefix conflicts arise when one registered prefix is a string prefix of anot
 
 1. Each `env_prefix` **MUST** be unique across all registered namespaces. Attempting to register a duplicate `env_prefix` **MUST** raise `CONFIG_ENV_PREFIX_CONFLICT`.
 2. An `env_prefix` that begins with `APCORE_` — `APCORE_MCP`, `APCORE_OBSERVABILITY`, `APCORE_SYS` — is permitted; a conflict is a duplicate (rule 1), not a shared leading string. Such a prefix and the `apcore` namespace's `APCORE` both match its variables, and implementations resolve that by longest-prefix match (dispatch algorithm below).
-3. The prefix `APCORE` is reserved for the `apcore` namespace. Attempting to register it for another namespace **MUST** raise `CONFIG_NAMESPACE_RESERVED`.
+3. The exact prefix `APCORE` is reserved for the `apcore` namespace. Attempting to register it for another namespace **MUST** raise `CONFIG_NAMESPACE_RESERVED` (D-146).
+4. An environment variable is dispatched to **one** namespace: the one whose prefix is the longest match. An `APCORE_` variable that matches no registered prefix belongs to the `apcore` namespace and is read through §9.2's conversion. Implementations **MUST NOT** write one variable into two namespaces — a variable dispatched to a namespace whose prefix begins with `APCORE_` is not also applied to the `apcore` namespace (D-146).
 
 **Resolving the `APCORE` / `APCORE_MCP` ambiguity:**
 
@@ -7268,7 +7433,11 @@ Steps:
   1. For each (prefix, ns_name) in registered_prefixes (longest first):
        If env_key starts with prefix:
          → Return (ns_name, env_key[len(prefix):])
-  2. Return nil (env var does not match any namespace)
+  2. If env_key starts with "APCORE_":
+       → Return ("apcore", env_key[len("APCORE_"):])   # §9.2 conversion applies
+  3. Return nil (env var does not match any namespace)
+
+Each env_key is dispatched once; the result names the only namespace it is written to (rule 4).
 ```
 
 #### 9.8.3 Env Override Application Algorithm
@@ -7886,9 +8055,9 @@ This is a **MAY**-level feature. Implementations that do not support discovery *
 
 ### 9.15 apcore Built-in Namespace Registrations
 
-The framework pre-registers two namespaces for its own subsystems at startup, before any application `Config.load()` call. This applies the Config Bus pattern (§9.4) to apcore's own internal configuration — the same mechanism apcore exposes to third parties is used by apcore itself.
+The framework pre-registers three namespaces for its own subsystems at startup, before any application `Config.load()` call: `observability` (§9.15.2), `sys_modules` (§9.15.3) and `obs` (§9.15.4). Every implementation **MUST** register all three (D-144). This applies the Config Bus pattern (§9.4) to apcore's own internal configuration — the same mechanism apcore exposes to third parties is used by apcore itself.
 
-Both namespaces promote existing flat keys that already live inside the `apcore` namespace into dedicated, independently-configurable namespaces. The migration is strictly additive: legacy mode files continue to work unchanged.
+The namespaces promote existing flat keys that already live inside the `apcore` namespace into dedicated, independently-configurable namespaces. The migration is strictly additive: legacy mode files continue to work unchanged.
 
 #### 9.15.1 Bootstrap Order
 
@@ -7898,13 +8067,14 @@ Both namespaces promote existing flat keys that already live inside the `apcore`
 │                                                             │
 │  1. Config.register_namespace("observability", ...)         │
 │  2. Config.register_namespace("sys_modules", ...)           │
+│     Config.register_namespace("obs", ...)                   │
 │  3. [Application / ecosystem packages register their own]   │
 │  4. Config.load(path)                                       │
 │  5. register_sys_modules(config)                            │
 └─────────────────────────────────────────────────────────────┘
 ```
 
-Third-party packages **SHOULD** register their namespaces after step 2 and before step 4 (at import time).
+Third-party packages **SHOULD** register their namespaces after step 2 and before step 4 (at import time). The order of the three built-in registrations among themselves is not significant.
 
 #### 9.15.2 `observability` Namespace
 
@@ -7933,24 +8103,15 @@ Config.register_namespace(
             "enabled": False,          # Deprecated, no effect — see §9.2.4
             "exporter": "stdout",      # Deprecated, no effect — see §9.2.4
         },
-        "logging": {
-            "enabled": True,
-            "level": "info",           # "trace"|"debug"|"info"|"warn"|"error"|"fatal"
-            "format": "json",          # "json" | "text"
-            "redact_sensitive": True,
-        },
-        "error_history": {
-            "max_entries_per_module": 50,
-            "max_total_entries": 1000,
-        },
-        "platform_notify": {
-            "enabled": False,
-            "error_rate_threshold": 0.1,
-            "latency_p99_threshold_ms": 5000.0,
-        },
     },
 )
 ```
+
+The namespace **MUST** declare `tracing` and `metrics` only — the two blocks `$defs/ObservabilityConfig`
+declares — and **MUST NOT** register any other block under `observability` (D-144). The settings
+those other blocks would name live elsewhere: error-history bounds in `sys_modules.error_history.*`,
+the platform-notify thresholds in `sys_modules.events.thresholds.*` (§9.15.3), and redaction in
+`obs.redaction.*` (§10.6.1).
 
 **Migration:** Existing `apcore.observability.*` flat keys map 1:1 to `observability.*` namespace keys. No changes required to existing configuration files.
 
@@ -7998,8 +8159,13 @@ Config.register_namespace(
             "bucketing_strategy": "hourly",  # No effect — read by no implementation
         },
         "control":  {"enabled": True},
+        "error_history": {
+            "max_entries_per_module": 50,
+            "max_total_entries": 1000,
+        },
         "events": {
             "enabled": False,
+            "subscribers": [],
             "thresholds": {
                 "error_rate": 0.1,
                 "latency_p99_ms": 5000.0,
@@ -8027,6 +8193,27 @@ Config.register_namespace(
 APCORE_SYS_ENABLED=true
 APCORE_SYS_EVENTS_THRESHOLDS_ERROR_RATE=0.05
 APCORE_SYS_EVENTS_ENABLED=false
+```
+
+
+#### 9.15.4 `obs` Namespace
+
+Carries the configured redaction rules of §10.6.1. Its declaration is `$defs/ObsConfig` in
+`schemas/apcore-config.schema.json`, and the registration **MUST** agree with it (D-144).
+
+```python
+Config.register_namespace(
+    "obs",
+    # Types and defaults: schemas/apcore-config.schema.json $defs/ObsConfig.
+    env_prefix="APCORE_OBS",
+    defaults={
+        "redaction": {
+            "regex_patterns": [],
+            "sensitive_keys": [...],          # the canonical default list, §10.6.1
+            "replacement": "***REDACTED***",
+        },
+    },
+)
 ```
 
 ---
@@ -8077,6 +8264,10 @@ The following are the canonical event type names, payload keys, and severity for
 | `apcore.subscriber.circuit_closed` | — | `info` | Event delivery (per-subscriber breaker) | `subscriber_id`, `subscriber_type`, `recovery_attempt` |
 | `apcore.event.delivery_failed` | — | `error` | Event bus (dead-letter path) | `subscriber_type`, `subscriber_id`, `original_event`, `error`, `attempt_count`, `timestamp` — the full payload is specified in [features/event-system.md](../features/event-system.md#dead-letter-event-apcoreeventdelivery_failed) § Dead-Letter Event on Permanent Failure, which is authoritative |
 
+The payloads of `apcore.subscriber.circuit_opened` and `apcore.subscriber.circuit_closed` **MUST** carry
+`subscriber_id`, the ID of the subscriber whose breaker changed state, beside `subscriber_type`: two
+subscribers of one type are otherwise indistinguishable (D-145).
+
 > **Governance events.** `apcore.approval.decision`, `apcore.policy.override`, and `apcore.acl.denied` make the governance chain (ACL → policy → approval) observable on the event bus. They are emitted **only** when an event emitter is configured, are best-effort side channels (execution outcome **MUST NOT** depend on their delivery), and follow the skip contract: the approval gate emits `apcore.approval.decision` only when it actually adjudicates (never on a skipped gate), and `apcore.acl.denied` is **NOT** emitted during a dry-run `validate()` preflight. See §7.9 (Execution Policy) for the policy layer that drives `apcore.policy.override`.
 
 #### 9.16.3 Event Pattern Matching
@@ -8126,14 +8317,14 @@ tracing:
     - name: "apcore.module.execute"
       attributes: [module_id, method, duration_ms, success]
 
-    - name: "apcore.module.validate"
-      attributes: [module_id, valid, error_count]
-
   # Propagation methods
   propagation:
     - "Auto-propagate through context parameter"
     - "Use W3C Trace Context for HTTP calls"
 ```
+
+`apcore.module.execute` is the one span the specification defines. `Executor.validate()` (§12.8) is
+not traced (D-143).
 
 #### 10.1.1 Tracing from Configuration (`observability.tracing.*`)
 
@@ -8299,6 +8490,8 @@ trace_id_spec:
 
 Implementations **MUST** redact fields marked as `x-sensitive` in logs and trace outputs.
 
+A field is marked when its schema carries `x-sensitive: true`, or when any branch of an `anyOf`, `oneOf` or `allOf` in its schema does — which is where an optional field (`Secret | None`) puts the marker. Properties declared inside a combinator branch are fields of the object like those declared directly, and a value described by several branches is redacted when any of them marks it sensitive. The walk does not decide which branch the value matched (D-152).
+
 ```text
 Algorithm: redact_sensitive(data, schema)
 
@@ -8311,15 +8504,30 @@ Output:
 
 Steps:
   1. redacted ← deep_copy(data)
-  2. For each (field_name, field_schema) in schema.properties:
-     a. If field_schema["x-sensitive"] == true:
+  2. For each (field_name, field_schema) in all_properties(schema):
+     a. If is_sensitive(field_schema):
         - If redacted[field_name] exists and is not null:
           redacted[field_name] ← "***REDACTED***"
-     b. If field_schema.type == "object" and has properties:
+     b. Else if all_properties(field_schema) is not empty and redacted[field_name] is an object:
         - Recurse: redacted[field_name] ← redact_sensitive(redacted[field_name], field_schema)
-     c. If field_schema.type == "array" and items has x-sensitive:
+     c. Else if is_sensitive(s) for some s in item_schemas(field_schema)
+        and redacted[field_name] is an array:
         - Redact each element in array
   3. Return redacted
+
+is_sensitive(s):
+  s["x-sensitive"] == true, or is_sensitive(b) for any branch b of
+  s.anyOf, s.oneOf or s.allOf
+
+all_properties(s):
+  the (name, schema) pairs of s.properties, followed by all_properties(b)
+  for each branch b of s.anyOf, s.oneOf and s.allOf. A field named in
+  several branches is visited once per schema that names it, so it is
+  redacted when any of them marks it sensitive.
+
+item_schemas(s):
+  s.items, followed by item_schemas(b) for each branch b of s.anyOf,
+  s.oneOf and s.allOf
 
 Complexity: O(n), where n is number of data fields
 ```
@@ -8470,7 +8678,6 @@ span_naming:
   pattern: "apcore.{component}.{operation}"
   examples:
     module_execute: "apcore.module.execute"
-    module_validate: "apcore.module.validate"
     acl_check: "apcore.acl.check"
     middleware_before: "apcore.middleware.before"
     middleware_after: "apcore.middleware.after"
@@ -8479,7 +8686,7 @@ span_naming:
 
   attributes:
     - "module_id"        # MUST
-    - "method"           # MUST (execute|validate|describe)
+    - "method"           # MUST (execute|describe)
     - "duration_ms"      # MUST
     - "success"          # MUST (boolean)
     - "error_code"       # SHOULD (when failed)
@@ -8577,30 +8784,17 @@ extension_points:
       use_case: "Integrate external permission system"
       default: "YAMLACLChecker"
 
-  # Extension point registration
+  # Extension point registration (code only)
   registration:
-    config:
-      location: "apcore.yaml"
-      example:
-        extensions:
-          schema_loader: "my_project.loaders.RemoteSchemaLoader"
-          executor: "my_project.executors.DistributedExecutor"
-
     code:
       example: |
         extensions = ExtensionManager()
         extensions.register("discoverer", RemoteDiscoverer(url="https://..."))
         extensions.apply(registry, executor)
-
-  # Extension point chaining (multiple implementations)
-  chaining:
-    enabled: true
-    strategy: "first_success"    # first_success | all | fallback
-    example:
-      schema_loader:
-        - "CacheSchemaLoader"    # Check cache first
-        - "YAMLSchemaLoader"     # Load from file if cache miss
 ```
+
+Extensions are registered in code. No key in `apcore.yaml` registers an extension, and the
+implementations registered for one point are not chained (§11.7) (D-143).
 
 > **NOTE — `ExtensionManager` Extension Point Names:**
 > The extension point names above (`schema_loader`, `id_converter`, `module_loader`, `executor`, `acl_checker`) are the conceptual taxonomy. `ExtensionManager` registers six built-in extension points under the following names:
@@ -8620,43 +8814,28 @@ extension_points:
 
 ### 11.4 Framework Built-in Middleware
 
-```yaml
-builtin_middleware:
-  # Must enable (cannot disable)
-  required:
-    - id: "schema_validation"
-      description: "Input/output Schema validation"
-      priority: 1000
+Validation and access control are not middleware. They are steps of the execution pipeline (§7.4):
+`acl_check` (Step 4), `approval_gate` (Step 5), `input_validation` (Step 7) and `output_validation`
+(Step 9). Each of them is removable, through `pipeline.remove` (§5.16.1) or a custom strategy, and removing
+`acl_check` or `approval_gate` warns (§5.16 requirement 7). `context_creation`, `module_lookup`, `execute`
+and `return_result` cannot be removed.
 
-    - id: "acl_check"
-      description: "Permission check"
-      priority: 999
+No middleware is installed by default. An implementation installs middleware the application did not
+register itself only in these cases:
 
-  # Default enabled (can disable)
-  default_enabled:
-    - id: "tracing"
-      description: "Trace context propagation"
-      priority: 950
+| Middleware | Installed when |
+|---|---|
+| Tracing middleware | The loaded configuration sets `observability.tracing.enabled: true` (§10.1.1) |
+| Usage and error-history middleware | `sys_modules.enabled: true` (§9.15.3) |
+| Platform-notify middleware | `sys_modules.events.enabled: true` (§9.15.3) |
 
-    - id: "logging"
-      description: "Call logging"
-      priority: 900
+Every other middleware an implementation ships — logging, metrics, retry, circuit breaker — is installed
+by the application with `use()` (§11.2). See
+[middleware-system.md § Built-in Middleware](../features/middleware-system.md#built-in-middleware).
 
-    - id: "metrics"
-      description: "Metrics collection"
-      priority: 890
-
-    - id: "error_wrapper"
-      description: "Error wrapping and formatting"
-      priority: 800
-
-  # Disable built-in middleware
-  disable:
-    config:
-      middleware:
-        disabled:
-          - "metrics"            # Disable metrics collection
-```
+`middleware.disabled` is deprecated (§9.2.4). It names built-in middleware that are not installed, and
+no implementation reads it; declaring it warns once per configuration load. Remove a registered
+middleware with `remove()`, or a pipeline step with `pipeline.remove` (D-137).
 
 ### 11.5 Middleware Execution State Machine
 
@@ -8719,19 +8898,20 @@ Extension Point: Executor
 
 ### 11.7 Extension Loading Order
 
-Implementations **MUST** load extensions according to the following algorithm:
+Extensions are registered in code with `ExtensionManager.register(point_name, extension)` and wired
+with `apply(registry, executor)` (§11.3):
 
-```text
-Algorithm: load_extensions(config, extension_points)
+1. A single-valued point (`discoverer`, `acl`, `module_validator`, `approval_handler`) holds one
+   implementation; registering another replaces it.
+2. A multi-valued point (`middleware`, `span_exporter`) holds every registered implementation in
+   registration order.
+3. `apply()` **MUST** install every registered implementation — the one a single-valued point holds,
+   and each implementation of a multi-valued point in registration order. A point with no registered
+   implementation keeps the framework default.
 
-Steps:
-  1. Sort each extension point's implementations by priority descending
-  2. For each extension point:
-     a. If strategy == "first_success": Try in order, first success takes effect
-     b. If strategy == "all": Execute all implementations, merge results
-     c. If strategy == "fallback": Try in order, try next on failure
-  3. If extension point has no available implementation → Use framework default implementation
-```
+There is no priority ordering among the implementations of one point, no chaining strategy
+(`first_success`, `all`, `fallback`), and no registration from `apcore.yaml` (D-143). Algorithm A16
+describes `apply()`.
 
 ### 11.8 Edge Case Handling
 
@@ -9237,9 +9417,10 @@ Consistency Test Suite:
 
 7. Preflight (validate) Tests:
    - Valid module + valid inputs → PreflightResult.valid=true, all checks passed
-   - Invalid module_id format → module_id check failed, early return
-   - Unknown module → module_lookup check failed, early return
+   - Invalid module_id format → module_id check failed; the later checks still run (§12.8.1 principle 2)
+   - Unknown module → module_lookup check failed; no schema / module_preflight / module_preview check
    - ACL denial → acl check failed, valid=false
+   - ACL denial and invalid inputs → both the acl and the schema check fail; checks that passed before them stay reported
    - ACL denial → NO module_preflight / module_preview check, predicted_changes empty (§12.8.5.1)
    - Module with requires_approval → requires_approval=true; the ApprovalHandler is not invoked
    - Schema validation failure → schema check failed with error details
@@ -9451,32 +9632,36 @@ Return:
 
 #### 12.7.5 Timeout Enforcement
 
-**Cooperative Cancellation (SHOULD)**:
+**Timeout Levels:**
 
-- SDK **SHOULD** prefer cooperative cancellation mechanism (e.g., the context's `CancelToken`, Python `asyncio.CancelledError`)
-- Module **SHOULD** check cancellation signal and actively exit
+| Level | Scope | Default | Configuration |
+|------|------|--------|------|
+| Per-module timeout | The module's `execute()` (Step 8) | 30000ms | The module's declared `resources.timeout`, else `executor.default_timeout` |
+| Global deadline | The whole call tree, from `context_creation` (Step 1) of the root call | 60000ms | `executor.global_timeout`; set on the Context at Step 1 when it carries none, inherited by nested calls |
 
-**Forced Termination (MAY)**:
-
-- If module doesn't respond to cancellation signal, SDK **may** forcibly terminate execution thread/coroutine
-- After forced termination **MUST** log ERROR including `module_id` and timeout duration
+The per-module timeout is clamped to the time left before the global deadline. `0` disables either
+limit. ACL evaluation and schema validation are not separately timed.
 
 **Timeout Enforcement Algorithm (MUST)**:
 
 ```text
 Algorithm: enforce_timeout(module_id, inputs, context, timeout_ms)
 
+Input:
+  context    — the call's own Context; context.cancel_token is the call's own
+               token, a child of its caller's (requirement 4)
+  timeout_ms — the per-module timeout, clamped to the time left before
+               context.global_deadline
+
 Steps:
-  1. Start timer (from first before() middleware)
-  2. Concurrent execution:
-     a. Main task: execute_with_middleware(module_id, inputs, context)
-     b. Timeout monitor: sleep(timeout_ms)
-  3. If main task completes first → Cancel timer, return result
-  4. If timeout triggers first:
-     - Send cancellation signal (cooperative)
-     - Wait maximum grace_period (default 5 seconds)
-     - If still hasn't exited → Forcibly terminate (if supported)
-     - Throw MODULE_TIMEOUT error
+  1. If context.global_deadline has passed:
+     a. Cancel context.cancel_token
+     b. Throw MODULE_TIMEOUT without invoking the module
+  2. Invoke module.execute(inputs, context) and start a timer of timeout_ms
+  3. If execute() completes first → Cancel the timer, return its result
+  4. If the timer fires first:
+     a. Cancel context.cancel_token
+     b. Throw MODULE_TIMEOUT
 
 Return:
   - Success → Module output
@@ -9485,14 +9670,27 @@ Return:
 
 **For detailed algorithm see algorithms.md A22 — enforce_timeout()**
 
-**Timeout Levels:**
+**Requirements:**
 
-| Level | Scope | Default | Description |
-|------|------|--------|------|
-| Per-module timeout | Individual module execution | 30000ms | Configuration item `executor.default_timeout` |
-| Global timeout | before + execute + after (entire call chain) | 60000ms | Configuration item `executor.global_timeout` |
-| ACL check timeout | ACL rule evaluation | 1000ms | Separate timing |
-| Schema validation timeout | Input/output validation | Included in global timeout | Not separately timed |
+1. When the timer fires, or the global deadline has passed, implementations **MUST** throw
+   `MODULE_TIMEOUT` immediately. They **MUST NOT** wait for the module to exit; there is no grace
+   period (D-133).
+2. Implementations **MUST** cancel the timed-out call's own `cancel_token` before throwing
+   `MODULE_TIMEOUT`, so a module that checks its token stops its work (D-133).
+3. There is no forced termination. A module that ignores its token may keep running after its
+   caller has received `MODULE_TIMEOUT`; what it returns is discarded (D-133).
+4. Every call **MUST** receive its own `cancel_token`, a child of its caller's token: the token of the
+   calling module's Context for a nested call, and for a root call the token the application
+   supplied to `Context.create` (§5.7), when it supplied one. Cancelling a token **MUST** cancel
+   every token derived from it, and cancelling a child **MUST NOT** cancel its parent. A timeout
+   therefore cancels the timed-out call and the calls beneath it, never its caller: a nested call's
+   `MODULE_TIMEOUT` reaches the calling module as an error it can catch, and the caller continues
+   (D-133).
+5. A call whose `cancel_token` is already cancelled when `execute` (Step 8) is reached **MUST NOT**
+   invoke the module and throws `EXECUTION_CANCELLED` (§8.2).
+
+**Cooperative cancellation.** A long-running module **SHOULD** check its Context's `cancel_token`
+and exit when it is cancelled.
 
 #### 12.7.6 Middleware Chain Atomicity
 
@@ -9559,7 +9757,6 @@ Implementations **MUST** guarantee resource cleanup according to this table:
 |---------|-------------------|-----------------|--------------|---------|------|
 | Normal completion | ✅ Called | ✅ Executed | ✅ Guaranteed | ✅ GC reclaimed | **MUST** |
 | Timeout (cooperative cancel) | ✅ Called | ✅ Executed | ✅ Guaranteed | ✅ GC reclaimed | **MUST** |
-| Timeout (forced termination) | ⚠️ May not call | ⚠️ May not execute | ⚠️ May leak | ✅ GC reclaimed (eventually) | **MAY** |
 | Process crash/kill | ❌ Not called | ❌ Not executed | ❌ Leak | ❌ Lost | N/A |
 
 **Best Practices:**
@@ -9592,10 +9789,12 @@ SDK implementers.
 #### 12.8.1 Design Principles
 
 1. **Collect, don't throw.** All check failures are appended to a `checks` list. The caller_id sees every problem in one call.
-2. **Early return only when subsequent checks are meaningless.** module_id format failure or module-not-found justifies early return because later checks require a valid module reference.
+2. **Every check runs.** `validate()` evaluates each pure step and records its check whatever an earlier check reported: a failing check does not stop the checks after it, and a check that passed is never dropped because a later one failed. A check that needs the module — `schema`, `module_preflight`, `module_preview` — is not recorded when `module_lookup` failed, because there is nothing to check; the one other exception is principle 5 (D-134).
 3. **Reuse existing internals.** validate() calls the same helper functions used by the `call()` pipeline (regex check, registry lookup, ACL check, schema validation). No new capabilities are required.
 4. **Duck-type compatibility.** PreflightResult SHOULD expose `.valid` (Boolean) and `.errors` (List) so consumers written against ValidationResult can read it unchanged.
 5. **Authorization gates disclosure.** A failed `acl` check does not stop the checks the Executor computes on its own, but it **MUST** stop module-level introspection — see §12.8.5.1. `validate()` is a preflight, not a way around the ACL.
+
+Implementations **MUST** follow principle 2: a `PreflightResult` reports every check the dry run could evaluate, passed and failed, in pipeline order (D-134).
 
 #### 12.8.2 Error Handling Mapping
 
@@ -9617,7 +9816,7 @@ Each check in validate() calls the same helper functions used by the `call()` pi
 | `valid` | boolean | `true` if all checks passed |
 | `checks` | list of `PreflightCheckResult` | Ordered list of check results |
 | `requires_approval` | boolean | Whether the call requires approval — the governance-effective value of §7.9.5 |
-| `predicted_changes` | list of `Change` | Changes predicted by the module's `preview()` (§12.8.5.1), in order; empty when none were predicted |
+| `predicted_changes` | list of `Change` | Changes predicted by the module's `preview()` (§12.8.5.1), in order. Always present: an empty list when none were predicted, never omitted or null, in memory and when serialized (D-141) |
 | `errors` (computed) | list of error objects | Filtered view: only checks where `passed` is `false` |
 
 #### 12.8.4 PreflightCheckResult Type
@@ -9642,7 +9841,7 @@ After schema validation, validate() **MAY** invoke the module's optional `prefli
 
 - If `preflight()` returns a non-empty list of strings, they are stored as `warnings` on a `module_preflight` check result with `passed: true`.
 - If `preflight()` returns an empty list, a `module_preflight` check result with `passed: true` and no warnings is added.
-- If the module does not define `preflight()`, no `module_preflight` check is added.
+- If the module does not define `preflight()`, no `module_preflight` check is added. An implementation whose language cannot tell a default method from an implemented one **MAY** instead add a `module_preflight` check with `passed: true` and no warnings (D-141).
 - If `preflight()` raises an exception, the exception is caught and reported as a warning (not a failure).
 
 **Module-level preview (`module_preview`).** After `preflight()`, validate() invokes the module's optional
@@ -9651,7 +9850,7 @@ never fails validation:
 
 - If `preview()` returns a `PreviewResult`, its `changes` become `predicted_changes`, in the order returned,
   and a `module_preview` check result with `passed: true` is added.
-- If the module does not implement `preview()`, or `preview()` returns null, `predicted_changes` is empty.
+- If the module does not implement `preview()`, or `preview()` returns null, `predicted_changes` is empty and no `module_preview` check is added (D-141).
 - If `preview()` raises — a synchronous throw, an asynchronous rejection, or a panic — the exception is
   caught and reported as a warning on a `module_preview` check result with `passed: true`, and
   `predicted_changes` is empty.
@@ -10013,6 +10212,8 @@ The specification is versioned independently of the SDK release line (`0.x`); `C
 
 | Version | Date | Summary | Records |
 |---|---|---|---|
+| 1.64.0 | 2026-10-08 | Algorithm A02 is exhaustive and ASCII-scoped: it preserves existing underscores and non-ASCII characters through case conversion, then rejects a result outside the Canonical ID grammar; it never repairs arbitrary identifiers (§2.2). The repairing class-name conversion is named `snake_case_name` and is distinct from A02's `snake_case_identifier` (§2.1.1). | #122 |
+| 1.63.0 | 2026-09-30 | The three SDKs aligned: a timeout cancels the call's own child token and returns at once (§12.7.5); `validate()` reports every check (§12.8); explicit retryable defaults (§8.6); JSON-mode input validation (type-mapping §17.3); `id_map.overrides` is path-typed (§2.2, §9.2.1); binding files reject unknown keys and inference failures (§5.12); export profiles (§4.17); preflight reporting (§12.8.5.1); per-step `MODULE_TIMEOUT` (§5.16.1); built-in namespaces (§9.15); subscriber circuit events (§9.16.2); env-var dispatch (§9.8.2); marked-class discovery (§2.1.1); the ephemeral contract (§2.5.1); error details shape (§8.1); `x-sensitive` inside combinators (§10.6, A13); `middleware.disabled` and `extensions.auto_discover` deprecated (§9.2.4). Removed what no implementation has: the validate span, config-file extension registration and chaining (§10.1, §11.3, §11.7). | D-133 – D-152 |
 | 1.62.0 | 2026-09-30 | The specification is corrected to behaviour all three SDKs share, including MUSTs no implementation met: reserved words apply to the first segment only and `__` is allowed (§2.5, §2.7); entry-point failures raise `MODULE_LOAD_ERROR` (§5.2); schema inference follows each language's type source (§5.12.5); `APCORE_`-prefixed `env_prefix` values are allowed, only duplicates are rejected (§9.8.2); unknown configuration fields are retained unless `_config.strict` (§13.5); duplicate registration raises `DUPLICATE_MODULE_ID` (§12.7.4); `after()` output is not re-validated and timeouts wrap `execute()` only (§11.8); `validate()` must not invoke `execute()` (§12.2). No behaviour change. | D-132 |
 | 1.61.0 | 2026-09-30 | **Security:** providers are bound into the gate they configure, and `governance_state()` reports what the running gate holds (§6.6.5.5); `configure` cannot weaken `acl_check` / `approval_gate` (§5.16.1); built-in logging middleware logs redacted values (§10.6.1 req. 5). | D-129 – D-131 |
 | 1.60.0 | 2026-09-30 | Editorial: history and implementation narrative removed from normative text; revision history condensed; the declarative-configuration and ephemeral-module documents merged into this specification. No behaviour change. | — |

@@ -521,10 +521,10 @@ Python `call_async()` is a coroutine distinct from the blocking `call()`. TypeSc
 - An exception raised by the module's `on_load()` propagates after the partial registration is rolled back
 
 ### Returns
-- None/void/`Result<(), ModuleError>`
+- Python: `None`. TypeScript: `Promise<void>` that settles after an async `onLoad` has run (synchronous validation errors are still thrown synchronously). Rust: `Result<(), ModuleError>`.
 
 ### Properties
-- async: false
+- async: false in Python and Rust; TypeScript returns a promise (see Returns)
 - thread_safe: true
 - pure: false (mutates the registry, fires `register` callbacks)
 - idempotent: false

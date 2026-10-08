@@ -1,5 +1,9 @@
 {
   "description": "Default AI error-recovery metadata per framework error code. When a framework error is constructed without an explicit override, every language SDK MUST produce these defaults: user_fixable is resolved from the error code (caller can fix by changing input/config = true; governance/system/structural/transient = false); retryable is the error class default. Codes whose user_fixable is null are intentionally left unset for the module author to supply (business errors). ai_guidance text is intentionally NOT pinned here (it is human-readable and may carry runtime context) — only retryable and user_fixable are part of the cross-language contract.",
+  "driver_contract": {
+    "construction": "Construct each error the way the SDK constructs it for that code when no override is given: the typed error class in Python and TypeScript (for example ExecutionCancelledError, CircuitBreakerOpenError, the pipeline ConfigurationError), `ModuleError::new(code)` in Rust. Assert BOTH `retryable` and `user_fixable`: `null` means the field is unset.",
+    "retryable_is_part_of_the_contract": "PROTOCOL_SPEC 8.6 makes the retryable default of EXECUTION_CANCELLED, APPROVAL_TIMEOUT, CIRCUIT_BREAKER_OPEN and PIPELINE_CONFIGURATION_ERROR a MUST (D-135). A driver that asserts only `user_fixable` leaves exactly those cases unchecked."
+  },
   "test_cases": [
     {"id": "schema_validation_error", "code": "SCHEMA_VALIDATION_ERROR", "expected": {"retryable": false, "user_fixable": true}},
     {"id": "general_invalid_input", "code": "GENERAL_INVALID_INPUT", "expected": {"retryable": false, "user_fixable": true}},
@@ -19,6 +23,9 @@
     {"id": "circular_call", "code": "CIRCULAR_CALL", "expected": {"retryable": false, "user_fixable": false}},
     {"id": "call_frequency_exceeded", "code": "CALL_FREQUENCY_EXCEEDED", "expected": {"retryable": false, "user_fixable": false}},
     {"id": "general_internal_error", "code": "GENERAL_INTERNAL_ERROR", "expected": {"retryable": true, "user_fixable": false}},
-    {"id": "module_execute_error_unset", "code": "MODULE_EXECUTE_ERROR", "expected": {"retryable": null, "user_fixable": null}}
+    {"id": "module_execute_error_unset", "code": "MODULE_EXECUTE_ERROR", "expected": {"retryable": null, "user_fixable": null}},
+    {"id": "execution_cancelled", "code": "EXECUTION_CANCELLED", "expected": {"retryable": true, "user_fixable": null}, "description": "D-135: a cancelled call may be retried with a fresh CancelToken. All three SDKs left retryable unset."},
+    {"id": "circuit_breaker_open", "code": "CIRCUIT_BREAKER_OPEN", "expected": {"retryable": true, "user_fixable": null}, "description": "D-135: the circuit closes again after its recovery window. apcore-typescript defaulted to false; apcore-rust set true only in the middleware's builder, not for the code."},
+    {"id": "pipeline_configuration_error", "code": "PIPELINE_CONFIGURATION_ERROR", "expected": {"retryable": false, "user_fixable": null}, "description": "D-135: a configuration error does not go away on retry, and the default is set explicitly to false rather than left unset. Also the case that fails an implementation that answers true for every code."}
   ]
 }

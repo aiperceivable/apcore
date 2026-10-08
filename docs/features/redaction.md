@@ -18,7 +18,7 @@ The same rules apply to structured logs and to the inputs and outputs the execut
 
 ## Schema annotation: `x-sensitive`
 
-Mark a field in the module's schema and its value is redacted wherever the executor captures that schema's data. Nested objects are followed; an array whose `items` are marked has every element redacted. `null` values stay `null`. The algorithm is [A13 `redact_sensitive`](../spec/algorithms.md#a13-redact_sensitive-sensitive-data-redaction).
+Mark a field in the module's schema and its value is redacted wherever the executor captures that schema's data. Nested objects are followed, and so are the branches of `anyOf` / `oneOf` / `allOf`: a field is redacted when any branch of its schema marks it, which covers an optional field (`Secret | None`). An array whose `items` are marked has every element redacted. `null` values stay `null`. The algorithm is [A13 `redact_sensitive`](../spec/algorithms.md#a13-redact_sensitive-sensitive-data-redaction).
 
 ```json
 {

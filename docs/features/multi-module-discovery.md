@@ -31,17 +31,14 @@ Opt-in is **per class** — there is no file-level or configuration toggle (D-10
 
 A file is in multi-class mode when at least one qualifying class carries the marker. What counts as a qualifying class differs by SDK:
 
-- **Python** enumerates only the classes that carry `@multi_class` (and look like a Module: `input_schema`, `output_schema`, callable `execute`, defined in that file). Undecorated classes are ignored.
-- **TypeScript and Rust** qualify every class whose descriptor says it implements Module (`implementsModule` / `implements_module`). Once any of them carries the marker, **every** qualifying class in the file receives an ID; with no marker, the file is single-class and only the first qualifying class is used.
-
-To keep a helper class out of the result, do not mark it (Python) or do not describe it as implementing Module (TypeScript, Rust).
+Once a file is in multi-class mode, only the classes that carry the marker receive IDs; a class without it is not registered, even when it implements Module (D-147). A helper class beside the modules is therefore simply left unmarked. In Python a class qualifies when it carries `@multi_class` and looks like a Module (`input_schema`, `output_schema`, callable `execute`, defined in that file); in TypeScript and Rust when its descriptor carries the marker and says it implements Module (`implementsModule` / `implements_module`).
 
 ## ID derivation
 
 For a file in multi-class mode:
 
 1. **Base ID** — apply Algorithm A01 (`directory_to_canonical_id`): take the path components after the `extensions_root` directory, strip the file extension, join with `.`. If `extensions_root` does not appear in the path, the base ID is the bare file stem.
-2. **Single-class identity** — if exactly one class qualifies, its ID is the base ID unchanged (no segment appended). This keeps existing single-class IDs stable.
+2. **Single-class identity** — if the file has exactly one Module class, its ID is the base ID unchanged (no segment appended). This keeps existing single-class IDs stable. Any other marked class gets `base_id + "." + segment`, including one marked class beside an unmarked Module class, so marking a second class never renames the first (D-147).
 3. **Class segment** — for each qualifying class, convert the class name with the snake_case algorithm below.
 4. **Segment grammar** — the segment must match `^[a-z][a-z0-9_]*$`; otherwise `INVALID_SEGMENT`.
 5. **Conflict check** — if the segment was already produced by another class in the same file, `MODULE_ID_CONFLICT`.

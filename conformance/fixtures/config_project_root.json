@@ -207,7 +207,7 @@
         "APCORE_CONFIG_FILE": "elsewhere/apcore.yaml"
       },
       "fs": {
-        "elsewhere/apcore.yaml": "project: {name: fixture}\nextensions: {root: /abs/extensions}\nschema: {root: /abs/schemas}\nacl: {root: /abs/acl}\nbindings: {dir: /abs/bindings}\n"
+        "elsewhere/apcore.yaml": "project: {name: fixture}\nextensions: {root: /abs/extensions}\nschema: {root: /abs/schemas}\nacl: {root: /abs/acl}\nbindings: {dir: /abs/bindings}\nid_map: {overrides: /abs/id-map.yaml}\nsys_modules: {control: {overrides_path: /abs/overrides.yaml}}\n"
       },
       "expected": {
         "project_root": "elsewhere",

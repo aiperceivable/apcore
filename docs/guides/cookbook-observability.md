@@ -214,12 +214,6 @@ Full key reference: [PROTOCOL_SPEC §10.1.1](../spec/protocol-spec.md#1011-traci
     }
     ```
 
-!!! warning "Python: put `x-sensitive` on the outer type of optional fields"
-    `Secret | None` wraps the marker inside an `anyOf` branch, and the field is then **not** redacted as `x-sensitive`. Write `Annotated[str | None, Field(json_schema_extra={"x-sensitive": True})] = None` instead.
-
-!!! warning "Rust: `ObsLoggingMiddleware` applies the `obs.redaction.*` rules only"
-    The Rust middleware logs the raw inputs with the `RedactionConfig` applied; it does not consult `x-sensitive`. In the Rust run of this recipe `password` is redacted (it matches `sensitive_keys`) but `pin` is not. Name sensitive fields so a `sensitive_keys` entry covers them, or log `ctx.redacted_inputs` from your own middleware.
-
 ## 3. What the log shows
 
 The `inputs` of the start record from the Python run above:

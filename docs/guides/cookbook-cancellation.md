@@ -189,7 +189,7 @@ All three print a `Cancelled` line after roughly 100 ms: the token is set at 80 
 | Reusing a cancelled token | Every later call with it fails immediately with `EXECUTION_CANCELLED` | Create a fresh `CancelToken` per call, or call `token.reset()` before reuse |
 | Catching every error | Cancellation looks like an ordinary failure to upstream callers | Catch `ExecutionCancelledError` (Rust: `ErrorCode::ExecutionCancelled`) separately |
 | Retrying a cancelled call with the same token | The retry is cancelled again at once | `EXECUTION_CANCELLED` is retryable only with a new token; decide in your retry logic whether the cancellation should end the request |
-| Expecting a timeout to cancel the token | Module keeps running after `MODULE_TIMEOUT` | Timeouts do not call `cancel()`; see [features/cancellation.md § Integration with Executor Timeout](../features/cancellation.md#integration-with-executor-timeout) for what each SDK does to the running module |
+| Expecting a timeout to undo completed work or LLM charges | The caller sees `MODULE_TIMEOUT` and the call's token is cancelled, but completed work and consumed tokens remain | Check the cancellation signal before more work; decide retry, compensation, and accounting in application code. See [Cancellation and timeouts](../features/cancellation.md#integration-with-executor-timeout) |
 
 ---
 

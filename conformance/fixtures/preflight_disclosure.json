@@ -7,7 +7,7 @@
     "hooks_invoked": "MUST be observed by recording invocations inside the module's own preflight()/preview() bodies. Asserting only on the absent check entries is weaker: an implementation that calls the hooks and then drops their results still ran module code for a denied caller, which is the side-effect half of the requirement.",
     "checks_absent": "MUST assert the named check is not present in `checks` AT ALL. A present-but-empty `module_preflight` entry does not satisfy it — the presence of the entry is itself the disclosure that the module implements the hook.",
     "checks_present": "A SUBSET assertion: each named check MUST appear in `checks`. The full list varies with the SDK's execution strategy (context / call_chain / module_lookup / approval entries) and is deliberately not pinned here.",
-    "failed_checks": "The EXACT set of checks whose `passed` is false, order-insensitive. Exactness matters: `acl` alone is what a denied caller may learn, and a driver asserting only 'acl is among the failures' would not notice a second failure carrying module detail."
+    "failed_checks": "The EXACT set of checks whose `passed` is false, order-insensitive. The dry run reports every evaluable pure check (D-134), including schema failures after ACL denial. Module-authored preflight/preview output remains withheld: a driver MUST also assert the absent hook checks, empty predictions, uninvoked hooks and absent disclosure sentinel."
   },
   "module_contract": {
     "module_id": "demo.destructive",
@@ -115,7 +115,7 @@
     },
     {
       "id": "schema_failure_does_not_withhold_module_introspection",
-      "description": "The rule is scoped to authorization. `confirm` is required and missing, so the schema check fails — and the permitted caller still gets the module's account of what would happen, which is what it needs in order to fix the call. `acl` is deliberately not asserted present here: SDKs differ on whether the checks that passed before a raising step survive in the list, which is a separate question from this one.",
+      "description": "The rule is scoped to authorization. `confirm` is required and missing, so the schema check fails — and the permitted caller still gets the module's account of what would happen. The passed ACL check remains present when the later schema check fails (D-134).",
       "input": {
         "acl_rules": [
           {
@@ -135,6 +135,7 @@
       "expected": {
         "valid": false,
         "checks_present": [
+          "acl",
           "schema",
           "module_preflight",
           "module_preview"
@@ -153,7 +154,7 @@
     },
     {
       "id": "acl_denied_with_invalid_inputs_still_withholds",
-      "description": "Denial wins over every other outcome. An implementation that ordered the two rules the other way round — introspect unless the schema failed — would pass the first case by accident and leak here.",
+      "description": "ACL denial withholds module-authored introspection even when the dry run also reports invalid inputs (D-134). Reporting a schema failure does not authorize preflight/preview hooks or disclose their output.",
       "input": {
         "acl_rules": [
           {
@@ -173,10 +174,12 @@
       "expected": {
         "valid": false,
         "checks_present": [
-          "acl"
+          "acl",
+          "schema"
         ],
         "failed_checks": [
-          "acl"
+          "acl",
+          "schema"
         ],
         "checks_absent": [
           "module_preflight",

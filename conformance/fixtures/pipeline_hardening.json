@@ -30,6 +30,18 @@
       "description": "Pipeline step resolution uses O(1) lookup (verified by implementation)",
       "input": { "step_count": 11 },
       "expected": { "lookup_complexity": "O(1)" }
+    },
+    {
+      "id": "step_timeout_raises_module_timeout",
+      "description": "D-142 (PROTOCOL_SPEC 5.16.1): a step that runs past its `timeout_ms` fails with MODULE_TIMEOUT, and that is the code the caller of call() receives — the same code a module timeout carries. Driver: insert a custom step named `slow_step` after `module_lookup` whose body waits `sleep_ms` (the language's ordinary non-blocking wait), configure it with `timeout_ms`, register a trivial module and call it through Executor.call. apcore-typescript's step timer rejected with a plain Error, which reached the caller as MODULE_EXECUTE_ERROR.",
+      "input": {"custom_step": {"name": "slow_step", "after": "module_lookup", "sleep_ms": 1000}, "timeout_ms": 50},
+      "expected": {"call_error_code": "MODULE_TIMEOUT"}
+    },
+    {
+      "id": "step_within_its_timeout_runs",
+      "description": "The control for the case above: the same step finishing inside its `timeout_ms` does not fail the call.",
+      "input": {"custom_step": {"name": "slow_step", "after": "module_lookup", "sleep_ms": 10}, "timeout_ms": 2000},
+      "expected": {"call_succeeds": true}
     }
   ]
 }

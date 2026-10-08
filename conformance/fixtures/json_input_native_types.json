@@ -1,0 +1,83 @@
+{
+  "description": "Input validation accepts the JSON the contract describes (type-mapping 17.3 R6, decision D-136). Inputs arrive as JSON, so a date-time, UUID or enum field receives a string, and the module-invocation boundary MUST accept every string the contract's schema accepts — also when the module's contract comes from native types (a date-time class, a UUID class, an enum class) rather than from a JSON Schema document. R5 (no coercion) still holds for what the schema rejects. Measured before D-136: apcore-python validated a natively typed model in pydantic's strict PYTHON mode, which rejects an ISO string for a datetime field, a string for a UUID field and a plain string for an Enum field, so a contract-valid JSON call failed with SCHEMA_VALIDATION_ERROR. Modules declared with a JSON Schema document were unaffected, in all three SDKs.",
+  "spec_sections": [
+    "type-mapping 17.3",
+    "type-mapping 5",
+    "type-mapping 7"
+  ],
+  "module_contract": {
+    "module_id": "demo.schedule",
+    "fields": {
+      "when": "date-time (Python datetime, TypeScript Type.String({format: 'date-time'}), Rust chrono::DateTime<Utc>)",
+      "request_id": "UUID (Python uuid.UUID, TypeScript Type.String({format: 'uuid'}), Rust uuid::Uuid)",
+      "level": "enum of \"low\" | \"high\" (Python an Enum class with string values, TypeScript a union of the two literals, Rust a serde enum renamed to lowercase)"
+    },
+    "returns": {
+      "accepted": true
+    }
+  },
+  "driver_contract": {
+    "path": "Declare the module from NATIVE types in the SDK's own idiom — as listed in `module_contract.fields`; a JSON Schema document is the path that already works and does not exercise the decision — register it with a real Executor, and call it through the public call path with `input.inputs` as parsed JSON.",
+    "outcome": "`expected.output` is the result when the call succeeds; `expected.error_code` the wire code of the error it raises."
+  },
+  "test_cases": [
+    {
+      "id": "date_time_uuid_and_enum_strings_are_accepted",
+      "input": {
+        "inputs": {
+          "when": "2026-01-01T09:30:00Z",
+          "request_id": "123e4567-e89b-12d3-a456-426614174000",
+          "level": "high"
+        }
+      },
+      "expected": {
+        "output": {
+          "accepted": true
+        }
+      }
+    },
+    {
+      "id": "date_time_with_offset_is_accepted",
+      "input": {
+        "inputs": {
+          "when": "2026-01-01T09:30:00+08:00",
+          "request_id": "123e4567-e89b-12d3-a456-426614174000",
+          "level": "high"
+        }
+      },
+      "expected": {
+        "output": {
+          "accepted": true
+        }
+      }
+    },
+    {
+      "id": "enum_string_outside_the_set_is_rejected",
+      "description": "R5 still applies: a string the schema does not accept is rejected.",
+      "input": {
+        "inputs": {
+          "when": "2026-01-01T09:30:00Z",
+          "request_id": "123e4567-e89b-12d3-a456-426614174000",
+          "level": "urgent"
+        }
+      },
+      "expected": {
+        "error_code": "SCHEMA_VALIDATION_ERROR"
+      }
+    },
+    {
+      "id": "number_for_a_date_time_is_rejected",
+      "description": "The over-correction guard: switching to lax validation would accept a Unix timestamp for a date-time field. The contract says string.",
+      "input": {
+        "inputs": {
+          "when": 1767259800,
+          "request_id": "123e4567-e89b-12d3-a456-426614174000",
+          "level": "high"
+        }
+      },
+      "expected": {
+        "error_code": "SCHEMA_VALIDATION_ERROR"
+      }
+    }
+  ]
+}

@@ -52,12 +52,70 @@
           "executor.explicit.mod"
         ]
       }
+    },
+    {
+      "id": "file_is_relative_to_the_extension_root",
+      "description": "D-138: an entry's `file` is resolved against the extension root the file is discovered under, in every implementation. The map names the same module twice: once relative to the extension root (the right reading) and once relative to the working directory, under a different ID. An implementation that resolves against the working directory registers `executor.cwd_relative.mod`; one that matches the entry against the file's absolute path matches neither and keeps `executor.orig.mod`.",
+      "input": {
+        "declare_override": true,
+        "explicit_argument": false,
+        "config_map_entries": [
+          {
+            "file": "executor/orig/mod.py",
+            "id": "executor.renamed.mod"
+          },
+          {
+            "file": "ext/executor/orig/mod.py",
+            "id": "executor.cwd_relative.mod"
+          }
+        ]
+      },
+      "expected": {
+        "module_ids": [
+          "executor.renamed.mod"
+        ]
+      }
+    },
+    {
+      "id": "an_empty_env_value_falls_through_to_the_file",
+      "description": "D-138 / §9.2.1 requirement 5: `id_map.overrides` is path-typed, so a set-but-empty `APCORE_ID__MAP_OVERRIDES` is discarded and the file's value applies. Before D-138 the empty string overrode the file and was then read as 'no map', so the configured map was silently dropped in all three SDKs.",
+      "input": {
+        "declare_override": true,
+        "explicit_argument": false,
+        "env": {
+          "APCORE_ID__MAP_OVERRIDES": ""
+        }
+      },
+      "expected": {
+        "module_ids": [
+          "executor.renamed.mod"
+        ]
+      }
+    },
+    {
+      "id": "a_non_empty_env_value_still_overrides_the_file",
+      "description": "The control for the case above: the fall-through applies to an EMPTY value only. An implementation that stops reading the variable altogether passes the empty case and fails this one.",
+      "input": {
+        "declare_override": true,
+        "explicit_argument": false,
+        "env": {
+          "APCORE_ID__MAP_OVERRIDES": "./explicit.yaml"
+        }
+      },
+      "expected": {
+        "module_ids": [
+          "executor.explicit.mod"
+        ]
+      }
     }
   ],
   "driver_contract": {
     "tree": "One module file at `<root>/ext/executor/orig/mod.py` (or the SDK's equivalent extension), discovered under `extensions.root: ./ext`, deriving the ID `executor.orig.mod`.",
     "config_map": "`<root>/map.yaml` maps the file `executor/orig/mod.py` to the ID `executor.renamed.mod`. Declared as `id_map.overrides: ./map.yaml` when `input.declare_override` is true.",
     "explicit_map": "`<root>/explicit.yaml` maps the same file to `executor.explicit.mod`, passed through the SDK's constructor argument when `input.explicit_argument` is true.",
-    "relative_paths": "`id_map.overrides` is used AS DECLARED — a relative value resolves against the process working directory, exactly as `extensions.root` does. PROTOCOL_SPEC §9.2.1 states that the resolution base for path-typed keys is deliberately unspecified and tracked in #113 (`acl.root` uses the config file's directory, `schema.root` the CWD); this key does not settle that, it follows its SIBLING. `id_map.overrides` and `extensions.root` are two halves of one discovery configuration and are always read together, so a split base between them would be worse than either. An input to #113, not an answer."
+    "relative_paths": "`id_map.overrides` is used AS DECLARED — a relative value resolves against the process working directory, exactly as `extensions.root` does. PROTOCOL_SPEC §9.2.1 states that the resolution base for path-typed keys is deliberately unspecified and tracked in #113 (`acl.root` uses the config file's directory, `schema.root` the CWD); this key does not settle that, it follows its SIBLING. `id_map.overrides` and `extensions.root` are two halves of one discovery configuration and are always read together, so a split base between them would be worse than either. An input to #113, not an answer.",
+    "config_map_entries": "When `input.config_map_entries` is present it replaces the `mappings` list of `<root>/map.yaml`; each `file` is written with the SDK's own module extension in place of `.py` (`mod.ts`, `mod.rs`). Without it, map.yaml holds the single entry described under `config_map`.",
+    "env": "`input.env` lists the environment variables set for the case; `APCORE_ID__MAP_OVERRIDES` MUST be unset in every case that does not list it. The process working directory is `<root>` while configuration loads and discovery runs.",
+    "real_discovery": "Every case MUST run real discovery over the tree and read the registered module IDs. Asserting that a discoverer holds the map path proves nothing about which file an entry matches, which is where file_is_relative_to_the_extension_root discriminates."
   }
 }
