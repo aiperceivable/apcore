@@ -8517,6 +8517,17 @@ Implementations **MUST** redact fields marked as `x-sensitive` in logs and trace
 
 A field is marked when its schema carries `x-sensitive: true`, or when any branch of an `anyOf`, `oneOf` or `allOf` in its schema does — which is where an optional field (`Secret | None`) puts the marker. Properties declared inside a combinator branch are fields of the object like those declared directly, and a value described by several branches is redacted when any of them marks it sensitive. The walk does not decide which branch the value matched (D-152).
 
+
+Local `$ref` pointers, plain-name anchors supported by the effective draft, and
+in-document resource `$id` scopes participate in this walk. Index only actual
+schema positions for the declared or inherited draft; an unknown keyword or
+literal `default`/`const`/`examples` value must not introduce a resource or shadow
+an anchor. Cyclic references terminate without schema expansion or network/file
+retrieval. The object root is a container, preserving the public object-return
+contract; a marker describing a nested field can replace that entire field.
+Modern positional arrays and declared legacy tuples apply sensitivity only at
+the positions their item schemas describe, including their respective tails.
+
 ```text
 Algorithm: redact_sensitive(data, schema)
 
@@ -8525,36 +8536,48 @@ Input:
   schema — Corresponding JSON Schema (contains x-sensitive marking)
 
 Output:
-  redacted_data — Redacted data copy
+  redacted_data — Redacted object copy
 
 Steps:
   1. redacted ← deep_copy(data)
-  2. For each (field_name, field_schema) in all_properties(schema):
-     a. If is_sensitive(field_schema):
-        - If redacted[field_name] exists and is not null:
-          redacted[field_name] ← "***REDACTED***"
-     b. Else if all_properties(field_schema) is not empty and redacted[field_name] is an object:
-        - Recurse: redacted[field_name] ← redact_sensitive(redacted[field_name], field_schema)
-     c. Else if is_sensitive(s) for some s in item_schemas(field_schema)
-        and redacted[field_name] is an array:
-        - Redact each element in array
+  2. redact_fields(redacted, schema)
   3. Return redacted
 
-is_sensitive(s):
-  s["x-sensitive"] == true, or is_sensitive(b) for any branch b of
-  s.anyOf, s.oneOf or s.allOf
+redact_fields(object, schema):
+  For each view in schema_views(schema):
+    For each (name, field_schema) in view.properties:
+      If name exists in object:
+        object[name] ← redact_value(object[name], field_schema)
 
-all_properties(s):
-  the (name, schema) pairs of s.properties, followed by all_properties(b)
-  for each branch b of s.anyOf, s.oneOf and s.allOf. A field named in
-  several branches is visited once per schema that names it, so it is
-  redacted when any of them marks it sensitive.
+redact_value(value, schema):
+  If value is null: return null
+  views ← schema_views(schema)
+  If any view carries x-sensitive: true: return "***REDACTED***"
+  If value is an object: redact_fields(value, schema)
+  If value is an array:
+    For each view in views and each element index:
+      item_schema ← item_schema_at(view, index)
+      If item_schema exists:
+        value[index] ← redact_value(value[index], item_schema)
+  Return value
 
-item_schemas(s):
-  s.items, followed by item_schemas(b) for each branch b of s.anyOf,
-  s.oneOf and s.allOf
+schema_views(schema):
+  Follow local $ref targets and all anyOf/oneOf/allOf branches.
+  Carry each schema's resource base and declared/inherited dialect.
+  Visit each schema node at most once for the current data node.
+  Reset that visited set for every child data node, so recursive data
+  receives redaction independently. Never retrieve an external resource.
 
-Complexity: O(n), where n is number of data fields
+item_schema_at(schema, index):
+  Draft 2020-12: prefixItems[index] within the prefix; dictionary items
+  beyond the prefix. Draft-07/2019-09: tuple items[index] within the tuple;
+  dictionary additionalItems beyond the tuple. Dictionary items without
+  positional schemas applies to every element. Ignore keywords outside
+  the effective dialect and opaque default/const/examples data.
+
+Complexity: O(s + n*g), where s is indexed schema size, n is data size,
+and g bounds the schema views visited per data node
+
 ```
 
 #### 10.6.1 Configured Redaction Rules (`obs.redaction.*`)

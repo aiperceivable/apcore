@@ -18,6 +18,14 @@ The same rules apply to structured logs and to the inputs and outputs the execut
 
 ## Schema annotation: `x-sensitive`
 
+Local `$ref` pointers and in-document resource IDs/anchors retain their sensitivity
+under the effective schema draft. Reference cycles terminate per data node without
+fetching network or file schemas. Literal values and unknown vocabulary cannot
+declare resources or shadow schema anchors. Draft 2020-12 positional `prefixItems`
+and Draft-07/2019-09 tuple `items` use their own positions and tails. The public
+redaction utility preserves its object root while replacing sensitive nested
+fields, and does not mutate the data or schema passed by the caller.
+
 Mark a field in the module's schema and its value is redacted wherever the executor captures that schema's data. Nested objects are followed, and so are the branches of `anyOf` / `oneOf` / `allOf`: a field is redacted when any branch of its schema marks it, which covers an optional field (`Secret | None`). An array whose `items` are marked has every element redacted. `null` values stay `null`. The algorithm is [A13 `redact_sensitive`](../spec/algorithms.md#a13-redact_sensitive-sensitive-data-redaction).
 
 ```json

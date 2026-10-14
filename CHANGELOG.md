@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.32.1] - 2026-10-14
+
+### Fixed
+
+- Align the three SDKs on local JSON Schema reference traversal for sensitive-value redaction. Scoped identifiers and anchors resolve within their resource, the declared schema dialect controls schema and array positions, opaque literal data cannot shadow schema anchors, and object-root shape is preserved. External resources are never fetched.
+
 ## [0.32.0] - 2026-10-08
 
 > Ships `PROTOCOL_SPEC` **v1.60.0 → v1.64.0**. v1.60.0 is editorial (no behaviour change); v1.61.0

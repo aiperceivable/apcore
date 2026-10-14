@@ -1024,40 +1024,57 @@ Steps:
 ```text
 Algorithm: redact_sensitive(data, schema)
 
+Input:
+  data   — Data object to redact
+  schema — Corresponding JSON Schema (contains x-sensitive marking)
+
+Output:
+  redacted_data — Redacted object copy
+
 Steps:
   1. redacted ← deep_copy(data)
-  2. For each (field_name, field_schema) in all_properties(schema):
-     a. If is_sensitive(field_schema):
-        - If redacted[field_name] exists and is not null:
-          redacted[field_name] ← "***REDACTED***"
-     b. Else if all_properties(field_schema) is not empty and redacted[field_name] is an object:
-        - Recurse: redacted[field_name] ← redact_sensitive(redacted[field_name], field_schema)
-     c. Else if is_sensitive(s) for some s in item_schemas(field_schema)
-        and redacted[field_name] is an array:
-        - Execute redaction on each element in array
+  2. redact_fields(redacted, schema)
   3. Return redacted
 
-is_sensitive(s):
-  s["x-sensitive"] == true, or is_sensitive(b) for any branch b of
-  s.anyOf, s.oneOf or s.allOf
+redact_fields(object, schema):
+  For each view in schema_views(schema):
+    For each (name, field_schema) in view.properties:
+      If name exists in object:
+        object[name] ← redact_value(object[name], field_schema)
 
-all_properties(s):
-  the (name, schema) pairs of s.properties, followed by all_properties(b)
-  for each branch b of s.anyOf, s.oneOf and s.allOf. A field named in
-  several branches is visited once per schema that names it, so it is
-  redacted when any of them marks it sensitive.
+redact_value(value, schema):
+  If value is null: return null
+  views ← schema_views(schema)
+  If any view carries x-sensitive: true: return "***REDACTED***"
+  If value is an object: redact_fields(value, schema)
+  If value is an array:
+    For each view in views and each element index:
+      item_schema ← item_schema_at(view, index)
+      If item_schema exists:
+        value[index] ← redact_value(value[index], item_schema)
+  Return value
 
-item_schemas(s):
-  s.items, followed by item_schemas(b) for each branch b of s.anyOf,
-  s.oneOf and s.allOf
+schema_views(schema):
+  Follow local $ref targets and all anyOf/oneOf/allOf branches.
+  Carry each schema's resource base and declared/inherited dialect.
+  Visit each schema node at most once for the current data node.
+  Reset that visited set for every child data node, so recursive data
+  receives redaction independently. Never retrieve an external resource.
+
+item_schema_at(schema, index):
+  Draft 2020-12: prefixItems[index] within the prefix; dictionary items
+  beyond the prefix. Draft-07/2019-09: tuple items[index] within the tuple;
+  dictionary additionalItems beyond the tuple. Dictionary items without
+  positional schemas applies to every element. Ignore keywords outside
+  the effective dialect and opaque default/const/examples data.
 ```
 
 **Complexity Analysis:**
 
 | Dimension | Complexity | Description |
 |------|--------|------|
-| Time | O(n) | n is total number of data fields (including nested) |
-| Space | O(n) | deep_copy space overhead |
+| Time | O(s + n*g) | s is indexed schema size; n is data size; g bounds schema views per data node |
+| Space | O(s + n*g) | copied data, local resource index, and bounded traversal state |
 
 **Implementation Notes:**
 
@@ -1067,7 +1084,10 @@ item_schemas(s):
 - The walk descends into `anyOf` / `oneOf` / `allOf` branches: a field is sensitive when any branch of its schema marks it, and properties declared inside a branch are visited like direct properties. A non-sensitive sibling branch does not un-mark a field, and a field no branch marks stays visible (D-152)
 - Each element in array needs independent redaction (if items schema contains `x-sensitive`)
 - If `data` contains fields not defined in Schema, A13 does not redact them; the configured rules below may
-- `schema` is the **resolved** schema. A05 preserves `x-sensitive` written beside a `$ref` (D-98) and never binds an external document's pointer to the caller's definitions (D-124); either defect turns a sensitive field into plaintext here
+- `schema` may retain local `$ref` targets. Follow pointers, draft-supported anchors and in-document resource IDs without external retrieval; index only the effective draft's schema positions. Unknown vocabulary and literal values cannot shadow real anchors. External resources must be resolved by the schema-loading layer before this local-only walk.
+- Reference cycles terminate per data node; reset the schema visited set for each child data node. Redaction operates on the object root's fields and preserves the public object return shape.
+- Positional `prefixItems` applies in Draft 2020-12; legacy tuple `items` and `additionalItems` apply in Draft-07/2019-09. Each position and tail uses its own schema; unknown positional keywords do not displace dictionary `items`.
+- A05 preserves `x-sensitive` beside a `$ref` (D-98) and never binds external pointers to the caller's definitions (D-124). Local reference redaction does not replace external schema resolution.
 - A13 is one of three rules applied as a union: `x-sensitive` (A13), `obs.redaction.sensitive_keys` against field names, and `obs.redaction.regex_patterns` against string values. The union applies at log emission **and** at the executor's input/output capture point; with no configuration the default `sensitive_keys` list still applies. The correlation fields `trace_id`, `span_id`, `caller_id`, `module_id` and `target_id` are never redacted (§10.6.1)
 - Setting `obs.redaction.sensitive_keys` replaces the default list rather than extending it
 
