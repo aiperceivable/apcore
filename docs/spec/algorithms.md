@@ -1803,12 +1803,15 @@ Steps:
      d. optional_names ← all_property_names - existing_required
      e. For each name ∈ optional_names:
         prop ← node.properties[name]
-        If prop.type is string (single type):
+        If prop has no type OR contains any of
+           [enum, const, $ref, allOf, anyOf, oneOf, not, if]:
+          node.properties[name] ← { anyOf: [prop, { type: "null" }] }
+          # Preserve every original constraint; changing type alone cannot
+          # make an enum, const, reference or applicator accept null.
+        Else if prop.type is string and is not "null":
           prop.type ← [prop.type, "null"]
-        If prop.type is array and does not contain "null":
+        Else if prop.type is array and does not contain "null":
           prop.type ← prop.type ∪ ["null"]
-        If prop does not contain type (e.g., pure $ref or a composition):
-          prop ← { anyOf: [prop, { type: "null" }] }  # Wrap as anyOf, never oneOf
      f. node.required ← sort(all_property_names)   # ALL fields, lexicographically
         # Sorted, not insertion-ordered: the output has to be byte-identical
         # across SDKs whose object types iterate in different orders.
@@ -1853,6 +1856,7 @@ Steps:
 - `object` inside `items` also need recursive processing, and so does an `object` at a `prefixItems` tuple position — the Draft 2020-12 tuple form is not an exception
 - `default` values are invalid in Strict Mode (AI won't auto-fill), so remove them as well
 - **`required` is emitted sorted, and array order is significant.** Step 2f replaces `required` wholesale with every property name in lexicographic order, discarding the author's original ordering. Insertion order would make the output depend on each language's object-iteration order, so the fixture below could not assert equality. Sort by Unicode **code point**: JavaScript's default `Array.prototype.sort()` compares UTF-16 code units and orders supplementary-plane names differently from Python's `sorted()` and Rust's `Vec<String>::sort()`, so a JS implementation needs an explicit code-point comparator
+- Constraints such as `enum` and `const` remain intact inside the nullable wrapper. Already-required properties are not widened. The string type `"null"` remains unchanged.
 - Conformance to this algorithm is asserted by `conformance/fixtures/schema_strict_conversion.json`, which pins the exact strict schema all three SDKs must emit for each input
 
 **Example — Complex Conversion:**

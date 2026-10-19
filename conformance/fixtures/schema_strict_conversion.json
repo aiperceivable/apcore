@@ -5,10 +5,314 @@
     "assertion": "Compare the returned schema to `expected` by deep structural equality of the parsed JSON. Object key order is NOT significant; array order IS (a `required` list is emitted sorted, and a nullable wrapper always puts the original sub-schema first and `{\"type\": \"null\"}` second).",
     "no_mutation": "`to_strict_schema()` MUST deep-copy: after the call, `schema` MUST still equal the fixture value. Drivers SHOULD assert this.",
     "object_detection": "A node is an object schema when it carries `properties` AND either has no `type` keyword at all or has a `type` that declares \"object\" (string form `\"object\"`, or array form containing `\"object\"`). `properties` alone is sufficient — a missing `type` does not make the node any less of an object, and leaving it unhardened produces a schema OpenAI structured outputs rejects. Conversely `properties` sitting next to a non-object `type` is inert (type-mapping §17.1 R2) and MUST NOT be hardened.",
-    "nullable_wrapping": "An optional property gains exactly one nullable spelling. With a `type` keyword: `\"null\"` is added to it (string form becomes a two-member array; an array form that already contains `\"null\"` is left alone). Without a `type` keyword (pure `$ref`, `allOf`, `oneOf`, `anyOf`, or a bare `properties` object): the whole sub-schema is wrapped as `{\"anyOf\": [<original>, {\"type\": \"null\"}]}`. `anyOf`, never `oneOf` — OpenAI structured outputs accepts only `anyOf` as the nullable-union spelling. An author-written `oneOf`/`anyOf` is wrapped, never appended to: pushing a `null` branch into their union rewrites the contract they declared, and for `oneOf` it changes the exclusivity count apcore's own validator counts branches against.",
+    "nullable_wrapping": "Optional properties without type or with enum, const, $ref, allOf, anyOf, oneOf, not or if are wrapped whole as anyOf: [original, {type: null}]. Other optional properties add null to type without duplicating it; the null-only string type remains unchanged. Required properties are not widened. Original constraints are preserved inside the wrapper.",
+    "validation": "When validation_cases are present, drivers validate each data value against the converted schema and compare validity to valid. Null placeholders must be accepted while invalid non-null values and missing required keys remain rejected.",
     "recursion": "convert_to_strict recurses into `properties` values, `items`, every `prefixItems` entry, every `oneOf`/`anyOf`/`allOf` branch, and every `definitions`/`$defs` entry. `prefixItems` is not optional: an object at a tuple position is still an object."
   },
   "test_cases": [
+    {
+      "id": "optional_typed_enum_accepts_null",
+      "description": "Preserve non-null constraints while representing optional values with null.",
+      "schema": {
+        "type": "object",
+        "properties": {"value": {"type": "string", "enum": ["pending", "done"]}}
+      },
+      "expected": {
+        "type": "object",
+        "properties": {
+          "value": {"anyOf": [{"type": "string", "enum": ["pending", "done"]}, {"type": "null"}]}
+        },
+        "required": ["value"],
+        "additionalProperties": false
+      },
+      "validation_cases": [
+        {"data": {}, "valid": false},
+        {"data": {"value": null}, "valid": true},
+        {"data": {"value": "pending"}, "valid": true},
+        {"data": {"value": "done"}, "valid": true},
+        {"data": {"value": "other"}, "valid": false},
+        {"data": {"value": 3}, "valid": false}
+      ]
+    },
+    {
+      "id": "optional_nullable_type_with_nonnullable_enum",
+      "description": "Preserve non-null constraints while representing optional values with null.",
+      "schema": {
+        "type": "object",
+        "properties": {"value": {"type": ["string", "null"], "enum": ["pending"]}}
+      },
+      "expected": {
+        "type": "object",
+        "properties": {
+          "value": {"anyOf": [{"type": ["string", "null"], "enum": ["pending"]}, {"type": "null"}]}
+        },
+        "required": ["value"],
+        "additionalProperties": false
+      },
+      "validation_cases": [
+        {"data": {}, "valid": false},
+        {"data": {"value": null}, "valid": true},
+        {"data": {"value": "pending"}, "valid": true},
+        {"data": {"value": "other"}, "valid": false}
+      ]
+    },
+    {
+      "id": "optional_enum_already_containing_null",
+      "description": "Preserve non-null constraints while representing optional values with null.",
+      "schema": {
+        "type": "object",
+        "properties": {"value": {"type": ["string", "null"], "enum": ["pending", null]}}
+      },
+      "expected": {
+        "type": "object",
+        "properties": {
+          "value": {
+            "anyOf": [{"type": ["string", "null"], "enum": ["pending", null]}, {"type": "null"}]
+          }
+        },
+        "required": ["value"],
+        "additionalProperties": false
+      },
+      "validation_cases": [
+        {"data": {}, "valid": false},
+        {"data": {"value": null}, "valid": true},
+        {"data": {"value": "pending"}, "valid": true},
+        {"data": {"value": "other"}, "valid": false}
+      ]
+    },
+    {
+      "id": "required_typed_enum_is_not_widened",
+      "description": "Preserve non-null constraints while representing optional values with null.",
+      "schema": {
+        "type": "object",
+        "properties": {"value": {"type": "string", "enum": ["pending"]}},
+        "required": ["value"]
+      },
+      "expected": {
+        "type": "object",
+        "properties": {"value": {"type": "string", "enum": ["pending"]}},
+        "required": ["value"],
+        "additionalProperties": false
+      },
+      "validation_cases": [
+        {"data": {}, "valid": false},
+        {"data": {"value": null}, "valid": false},
+        {"data": {"value": "pending"}, "valid": true},
+        {"data": {"value": "other"}, "valid": false}
+      ]
+    },
+    {
+      "id": "optional_typed_const_accepts_null",
+      "description": "Preserve non-null constraints while representing optional values with null.",
+      "schema": {"type": "object", "properties": {"value": {"type": "integer", "const": 7}}},
+      "expected": {
+        "type": "object",
+        "properties": {"value": {"anyOf": [{"type": "integer", "const": 7}, {"type": "null"}]}},
+        "required": ["value"],
+        "additionalProperties": false
+      },
+      "validation_cases": [
+        {"data": {}, "valid": false},
+        {"data": {"value": null}, "valid": true},
+        {"data": {"value": 7}, "valid": true},
+        {"data": {"value": 8}, "valid": false},
+        {"data": {"value": "7"}, "valid": false}
+      ]
+    },
+    {
+      "id": "optional_null_const_accepts_null",
+      "description": "Preserve non-null constraints while representing optional values with null.",
+      "schema": {"type": "object", "properties": {"value": {"type": "null", "const": null}}},
+      "expected": {
+        "type": "object",
+        "properties": {"value": {"anyOf": [{"type": "null", "const": null}, {"type": "null"}]}},
+        "required": ["value"],
+        "additionalProperties": false
+      },
+      "validation_cases": [
+        {"data": {}, "valid": false},
+        {"data": {"value": null}, "valid": true},
+        {"data": {"value": "other"}, "valid": false}
+      ]
+    },
+    {
+      "id": "optional_typed_anyof_preserves_constraints",
+      "description": "Preserve non-null constraints while representing optional values with null.",
+      "schema": {
+        "type": "object",
+        "properties": {"value": {"type": "string", "anyOf": [{"const": "pending"}, {"const": "done"}]}}
+      },
+      "expected": {
+        "type": "object",
+        "properties": {
+          "value": {
+            "anyOf": [
+              {"type": "string", "anyOf": [{"const": "pending"}, {"const": "done"}]},
+              {"type": "null"}
+            ]
+          }
+        },
+        "required": ["value"],
+        "additionalProperties": false
+      },
+      "validation_cases": [
+        {"data": {}, "valid": false},
+        {"data": {"value": null}, "valid": true},
+        {"data": {"value": "pending"}, "valid": true},
+        {"data": {"value": "done"}, "valid": true},
+        {"data": {"value": "other"}, "valid": false}
+      ]
+    },
+    {
+      "id": "optional_null_type_is_not_duplicated",
+      "description": "Preserve non-null constraints while representing optional values with null.",
+      "schema": {"type": "object", "properties": {"value": {"type": "null"}}},
+      "expected": {
+        "type": "object",
+        "properties": {"value": {"type": "null"}},
+        "required": ["value"],
+        "additionalProperties": false
+      },
+      "validation_cases": [
+        {"data": {}, "valid": false},
+        {"data": {"value": null}, "valid": true},
+        {"data": {"value": "other"}, "valid": false}
+      ]
+    },
+    {
+      "id": "nested_array_optional_enum_accepts_null",
+      "schema": {
+        "type": "array",
+        "items": {"type": "object", "properties": {"status": {"type": "string", "enum": ["pending"]}}}
+      },
+      "expected": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {"status": {"anyOf": [{"type": "string", "enum": ["pending"]}, {"type": "null"}]}},
+          "required": ["status"],
+          "additionalProperties": false
+        }
+      },
+      "validation_cases": [
+        {"data": [{"status": null}], "valid": true},
+        {"data": [{"status": "pending"}], "valid": true},
+        {"data": [{"status": "other"}], "valid": false},
+        {"data": [{}], "valid": false}
+      ]
+    },
+    {
+      "id": "optional_typed_ref",
+      "schema": {
+        "type": "object",
+        "properties": {"value": {"type": "string", "$ref": "#/$defs/State"}},
+        "$defs": {"State": {"type": "string", "enum": ["pending"]}}
+      },
+      "expected": {
+        "type": "object",
+        "properties": {"value": {"anyOf": [{"type": "string", "$ref": "#/$defs/State"}, {"type": "null"}]}},
+        "required": ["value"],
+        "additionalProperties": false,
+        "$defs": {"State": {"type": "string", "enum": ["pending"]}}
+      },
+      "validation_cases": [
+        {"data": {"value": null}, "valid": true},
+        {"data": {"value": "pending"}, "valid": true},
+        {"data": {"value": "other"}, "valid": false},
+        {"data": {}, "valid": false}
+      ]
+    },
+    {
+      "id": "optional_typed_conditional",
+      "schema": {
+        "type": "object",
+        "properties": {"value": {"type": "string", "if": {"type": "null"}, "then": {"not": {}}}}
+      },
+      "expected": {
+        "type": "object",
+        "properties": {
+          "value": {
+            "anyOf": [{"type": "string", "if": {"type": "null"}, "then": {"not": {}}}, {"type": "null"}]
+          }
+        },
+        "required": ["value"],
+        "additionalProperties": false
+      },
+      "validation_cases": [
+        {"data": {"value": null}, "valid": true},
+        {"data": {"value": "pending"}, "valid": true},
+        {"data": {"value": 7}, "valid": false},
+        {"data": {}, "valid": false}
+      ]
+    },
+    {
+      "id": "optional_typed_not",
+      "schema": {
+        "type": "object",
+        "properties": {"value": {"type": "string", "not": {"enum": ["blocked"]}}}
+      },
+      "expected": {
+        "type": "object",
+        "properties": {
+          "value": {"anyOf": [{"type": "string", "not": {"enum": ["blocked"]}}, {"type": "null"}]}
+        },
+        "required": ["value"],
+        "additionalProperties": false
+      },
+      "validation_cases": [
+        {"data": {"value": null}, "valid": true},
+        {"data": {"value": "pending"}, "valid": true},
+        {"data": {"value": "blocked"}, "valid": false},
+        {"data": {}, "valid": false}
+      ]
+    },
+    {
+      "id": "optional_typed_oneof",
+      "schema": {
+        "type": "object",
+        "properties": {"value": {"type": "string", "oneOf": [{"const": "pending"}, {"const": "done"}]}}
+      },
+      "expected": {
+        "type": "object",
+        "properties": {
+          "value": {
+            "anyOf": [
+              {"type": "string", "oneOf": [{"const": "pending"}, {"const": "done"}]},
+              {"type": "null"}
+            ]
+          }
+        },
+        "required": ["value"],
+        "additionalProperties": false
+      },
+      "validation_cases": [
+        {"data": {"value": null}, "valid": true},
+        {"data": {"value": "pending"}, "valid": true},
+        {"data": {"value": "other"}, "valid": false},
+        {"data": {}, "valid": false}
+      ]
+    },
+    {
+      "id": "optional_typed_allof",
+      "schema": {
+        "type": "object",
+        "properties": {"value": {"type": "string", "allOf": [{"enum": ["pending"]}]}}
+      },
+      "expected": {
+        "type": "object",
+        "properties": {
+          "value": {"anyOf": [{"type": "string", "allOf": [{"enum": ["pending"]}]}, {"type": "null"}]}
+        },
+        "required": ["value"],
+        "additionalProperties": false
+      },
+      "validation_cases": [
+        {"data": {"value": null}, "valid": true},
+        {"data": {"value": "pending"}, "valid": true},
+        {"data": {"value": "other"}, "valid": false},
+        {"data": {}, "valid": false}
+      ]
+    },
     {
       "id": "object_without_type_keyword_is_hardened",
       "description": "`properties` alone makes this an object schema; A23 must add additionalProperties:false and a complete required list.",

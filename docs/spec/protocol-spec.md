@@ -1,14 +1,14 @@
 ---
-description: "The canonical, normative apcore protocol specification (RFC 2119, v1.65.0): module, schema, naming, ACL, approval, error, config, and observability requirements for all conforming SDKs."
+description: "The canonical, normative apcore protocol specification (RFC 2119, v1.66.0): module, schema, naming, ACL, approval, error, config, and observability requirements for all conforming SDKs."
 ---
 
 # apcore — AI-Perceivable Core Standard Specification
 
 > **Canonical specification.** This document is the single normative source for the apcore protocol. Where any other document disagrees with it, this document wins.
 
-> Version: 1.65.0
+> Version: 1.66.0
 > Status: Active — the 1.x line adds requirements compatibly; breaking changes are reserved for 2.0
-> Last Updated: 2026-10-08
+> Last Updated: 2026-10-19
 
 ---
 
@@ -1876,7 +1876,7 @@ OpenAI and Anthropic's `strict: true` mode requires JSON Schema to satisfy addit
 |------|------|
 | `additionalProperties: false` | All nested `object` schemas **MUST** set this. A node counts as an `object` schema when it carries `properties` and either has no `type` keyword or has a `type` declaring `"object"` — see the object-detection rule below |
 | All fields `required` | All fields in `properties` **MUST** appear in `required` array |
-| Optional fields expressed with nullable | Originally optional fields become `required` + `type: ["original_type", "null"]`; a field with no `type` keyword is wrapped as `{anyOf: [<original>, {type: "null"}]}` instead |
+| Optional fields expressed with nullable | Originally optional fields become `required` + `type: ["original_type", "null"]`; a field with no `type` keyword or with constraints that can independently reject `null` is wrapped as `{anyOf: [<original>, {type: "null"}]}` instead |
 | No `x-*` extension fields | All `x-*` fields **MUST** be stripped |
 | No `default` values | `default` fields **MUST** be removed |
 
@@ -1896,8 +1896,10 @@ Rules:
         point (not insertion order — the output must be byte-identical across
         SDKs whose object types iterate differently)
      c. For newly added required fields, change their type to [original_type, "null"];
-        a field with no `type` keyword (pure $ref, allOf/oneOf/anyOf, or a bare
-        `properties` object) is wrapped as {anyOf: [<original>, {type: "null"}]}
+        a field with no `type` keyword or with enum, const, $ref, allOf, anyOf,
+        oneOf, not or if is wrapped as {anyOf: [<original>, {type: "null"}]}.
+        Preserve every constraint inside the original branch. Required fields
+        are not widened; a type already equal to "null" is not duplicated.
   2. Remove all fields starting with "x-" (x-llm-description, x-examples, x-sensitive, x-constraints, etc.)
   3. Remove all default fields
   4. Recursively process nested schemas: `properties` values, `items`, every
@@ -10260,6 +10262,7 @@ The specification is versioned independently of the SDK release line (`0.x`); `C
 
 | Version | Date | Summary | Records |
 |---|---|---|---|
+| 1.66.0 | 2026-10-19 | A23 preserves optional enum, const, reference and applicator constraints inside an anyOf-null wrapper; required fields remain unchanged. | [#124](https://github.com/aiperceivable/apcore/issues/124) |
 | 1.65.0 | 2026-10-08 | Add public bare-name canonicalization with structured, non-throwing results in all SDKs; preserve A02, ASCII-only case conversion and existing underscores, and reject non-ASCII, invalid starts and overlong output (§2.2.1). | [Rust #40](https://github.com/aiperceivable/apcore-rust/issues/40) |
 | 1.64.0 | 2026-10-08 | Algorithm A02 is exhaustive and ASCII-scoped: it preserves existing underscores and non-ASCII characters through case conversion, then rejects a result outside the Canonical ID grammar; it never repairs arbitrary identifiers (§2.2). The repairing class-name conversion is named `snake_case_name` and is distinct from A02's `snake_case_identifier` (§2.1.1). | #122 |
 | 1.63.0 | 2026-09-30 | The three SDKs aligned: a timeout cancels the call's own child token and returns at once (§12.7.5); `validate()` reports every check (§12.8); explicit retryable defaults (§8.6); JSON-mode input validation (type-mapping §17.3); `id_map.overrides` is path-typed (§2.2, §9.2.1); binding files reject unknown keys and inference failures (§5.12); export profiles (§4.17); preflight reporting (§12.8.5.1); per-step `MODULE_TIMEOUT` (§5.16.1); built-in namespaces (§9.15); subscriber circuit events (§9.16.2); env-var dispatch (§9.8.2); marked-class discovery (§2.1.1); the ephemeral contract (§2.5.1); error details shape (§8.1); `x-sensitive` inside combinators (§10.6, A13); `middleware.disabled` and `extensions.auto_discover` deprecated (§9.2.4). Removed what no implementation has: the validate span, config-file extension registration and chaining (§10.1, §11.3, §11.7). | D-133 – D-152 |

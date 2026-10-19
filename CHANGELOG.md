@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.32.2] - 2026-10-19
+
+### Fixed
+
+- Preserve optional enum, const and composed-schema constraints during A23 strict conversion by wrapping the complete schema in a nullable union. Required fields remain unchanged, null-only types are not duplicated, and shared conformance cases verify both schema parity and value validation. Tracked in [apcore#124](https://github.com/aiperceivable/apcore/issues/124).
+
+### Changed — specification
+
+- Protocol revision 1.66.0 clarifies nullable conversion for constrained optional fields in §4.16 and Algorithm A23.
+
 ## [0.32.1] - 2026-10-14
 
 ### Fixed
