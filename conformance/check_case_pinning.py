@@ -434,7 +434,13 @@ def batch_probe(
         )
 
     mutated = json.loads(backup.read_text())
+    remaining_ids = set(ids)
     for case in mutated["test_cases"]:
+        # Later strategies probe only cases not attributed by earlier ones.
+        # Re-mutating an attributed case makes aggregate drivers stop there
+        # again, hiding the remaining cases behind the same first failure.
+        if case.get("id") not in remaining_ids:
+            continue
         for target in expectation_keys(case):
             case[target] = mutate(case[target], sibling_values(cases, target), strategy)
     path.write_text(json.dumps(mutated, indent=2, ensure_ascii=False) + "\n")

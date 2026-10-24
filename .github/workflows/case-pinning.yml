@@ -73,6 +73,10 @@ jobs:
           cache-dependency-path: apcore-typescript/pnpm-lock.yaml
       - uses: dtolnay/rust-toolchain@stable
 
+      - name: Test the mutation checker
+        working-directory: apcore
+        run: python3 -m unittest conformance.test_check_case_pinning -v
+
       - name: Install SDKs
         run: |
           python3 -m pip install --quiet -e apcore-python[dev]
