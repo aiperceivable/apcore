@@ -120,14 +120,15 @@
       "expected": {
         "both_succeed": true,
         "post_register_count": 2,
-        "wall_clock_ms_less_than": 90,
-        "_note": "If callbacks were globally serialized the wall clock would be >= 100ms; the assertion confirms per-module parallelism."
+        "_note": "Both on_load callbacks enter before either is allowed to finish. Observe callback overlap through synchronization, not a wall-clock performance budget; thread startup and sleep scheduling do not determine conformance.",
+        "callbacks_overlap": true
       }
     }
   ],
   "driver_contract": {
     "assert_the_wire_code": "`*_raises` values are apcore WIRE CODES, not class names. An earlier revision used `ModuleNotFoundError` / `InvalidInputError`, which are Python/TypeScript class names — apcore-rust has neither type, only `ErrorCode` variants — and no driver read the keys at all, so they asserted nothing in any SDK. `registration_raises` is the exception: it names the HOST exception the on_load callback itself throws, which is user code and carries no apcore code.",
     "get_returns_empty_it_does_not_raise": "`Registry.get()` returns the empty value when a module is not visible — None / null / None per features/registry-system.md 'On success (not found)'. Two cases here declared `*_get_raises: \"MODULE_NOT_FOUND\"`, which contradicts that and which no SDK does, so no driver in any language could read the key: it asserted a behaviour that exists nowhere. They now declare `*_get_returns: null`, which is the observable thing.",
-    "one_error_code_per_failure": "`concurrent_same_id_rejects_duplicate` declared BOTH `one_raises: GENERAL_INVALID_INPUT` and `raised_error_code: DUPLICATE_MODULE_ID` for the same failure. Only the second is right, and the first parsed only under apcore-python's class hierarchy, where DuplicateModuleId is carried by an InvalidInputError whose DEFAULT code is GENERAL_INVALID_INPUT. apcore-typescript raises DuplicateModuleIdError directly and apcore-rust has only ErrorCode::DuplicateModuleId — neither has an invalid-input family, so the extra key was a Python implementation detail promoted to a cross-language expectation."
+    "one_error_code_per_failure": "`concurrent_same_id_rejects_duplicate` declared BOTH `one_raises: GENERAL_INVALID_INPUT` and `raised_error_code: DUPLICATE_MODULE_ID` for the same failure. Only the second is right, and the first parsed only under apcore-python's class hierarchy, where DuplicateModuleId is carried by an InvalidInputError whose DEFAULT code is GENERAL_INVALID_INPUT. apcore-typescript raises DuplicateModuleIdError directly and apcore-rust has only ErrorCode::DuplicateModuleId — neither has an invalid-input family, so the extra key was a Python implementation detail promoted to a cross-language expectation.",
+    "parallelism_observation": "For concurrent_distinct_ids_run_in_parallel, hold the first callback until the second enters, then release both. A generous watchdog prevents a serialized implementation from hanging the test; watchdog expiry is never evidence of overlap. Assert callbacks_overlap, registration success and visibility. Do not infer concurrency from total elapsed milliseconds."
   }
 }
