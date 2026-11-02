@@ -55,4 +55,4 @@ Use a protocol SDK directly when a protocol server is all you need. Use apcore w
 
 ## Project
 
-[Scope](https://github.com/aiperceivable/apcore/blob/main/SCOPE.md) · [Roadmap](https://github.com/aiperceivable/apcore/blob/main/ROADMAP.md) · [Adopters](https://github.com/aiperceivable/apcore/blob/main/ADOPTERS.md) · [Changelog](https://github.com/aiperceivable/apcore/blob/main/CHANGELOG.md) · [Governance](https://github.com/aiperceivable/apcore/blob/main/GOVERNANCE.md)
+[Scope](SCOPE.md) · [Roadmap](https://github.com/aiperceivable/apcore/blob/main/ROADMAP.md) · [Adopters](https://github.com/aiperceivable/apcore/blob/main/ADOPTERS.md) · [Changelog](https://github.com/aiperceivable/apcore/blob/main/CHANGELOG.md) · [Governance](https://github.com/aiperceivable/apcore/blob/main/GOVERNANCE.md)

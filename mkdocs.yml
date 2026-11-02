@@ -49,7 +49,6 @@ plugins:
         'spec/rfc-preview-method.md': 'features/module-interface.md'
         'spec/design-context-annotations-acl.md': 'features/context-object.md'
         'site-map.md': 'index.md'
-        'SCOPE.md': 'https://github.com/aiperceivable/apcore/blob/main/SCOPE.md'
 
 markdown_extensions:
   - tables
@@ -73,6 +72,7 @@ nav:
       - Core Concepts: concepts.md
       - Architecture: architecture.md
       - Positioning: POSITIONING.md
+      - Scope: SCOPE.md
       - Glossary: glossary.md
   - Guides:
       - guides/index.md
