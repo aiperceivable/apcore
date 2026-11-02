@@ -1066,7 +1066,7 @@ TypeScript SDK adds `OverridesStore` interface, `FileOverridesStore` (YAML-backe
 
 **Cross-refs**:
 - Stage 1 of the apcore frontier-alignment plan.
-- Literature: RouteLLM (ICLR 2025); xRouter (arXiv 2510.08439); Cost-Aware Model Orchestration (Smirnova, arXiv 2512.01099); Budget-Aware Tool-Use (arXiv 2511.17006); ToolMaker (ACL 2025, arXiv 2502.11705) — see `docs/spec/rfc-ephemeral-modules.md` and `docs/spec/rfc-preview-method.md` for adjacent RFCs.
+- Literature: RouteLLM (ICLR 2025); xRouter (arXiv 2510.08439); Cost-Aware Model Orchestration (Smirnova, arXiv 2512.01099); Budget-Aware Tool-Use (arXiv 2511.17006); ToolMaker (ACL 2025, arXiv 2502.11705) — the standalone `rfc-ephemeral-modules.md` and `rfc-preview-method.md` were merged into `protocol-spec.md` and removed in the spec 1.60.0 docs rewrite.
 
 ---
 

@@ -24,7 +24,7 @@ jobs:
         with:
           python-version: "3.x"
 
-      - run: pip install mkdocs-material  # brings PyYAML, used by gen_llms_full.py
+      - run: pip install mkdocs-material mkdocs-redirects  # material brings PyYAML, used by gen_llms_full.py
 
       - name: Generate LLM discovery files
         run: |

@@ -43,6 +43,13 @@ validation:
 
 plugins:
   - search
+  - redirects:
+      redirect_maps:
+        'spec/design-execution-pipeline.md': 'features/execution-pipeline.md'
+        'spec/rfc-preview-method.md': 'features/module-interface.md'
+        'spec/design-context-annotations-acl.md': 'features/context-object.md'
+        'site-map.md': 'index.md'
+        'SCOPE.md': 'https://github.com/aiperceivable/apcore/blob/main/SCOPE.md'
 
 markdown_extensions:
   - tables
