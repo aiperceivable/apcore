@@ -23,6 +23,27 @@
   },
   "additionalProperties": false,
   "$defs": {
+    "ResourceLimits": {
+      "type": "object",
+      "description": "Resource limits for module execution (used for sandboxing and isolation).",
+      "additionalProperties": false,
+      "properties": {
+        "timeout": {
+          "type": "integer",
+          "description": "Execution timeout in milliseconds.",
+          "minimum": 1,
+          "maximum": 3600000,
+          "default": 30000,
+          "examples": [30000, 60000]
+        },
+        "memory_limit": {
+          "type": ["integer", "null"],
+          "description": "Memory limit in bytes. null means no limit.",
+          "minimum": 1,
+          "default": null
+        }
+      }
+    },
     "BindingEntry": {
       "type": "object",
       "description": "A single module binding entry",
@@ -64,6 +85,9 @@
         },
         "annotations": {
           "$ref": "#/$defs/Annotations"
+        },
+        "resources": {
+          "$ref": "#/$defs/ResourceLimits"
         },
         "tags": {
           "type": "array",

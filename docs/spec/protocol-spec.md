@@ -5961,6 +5961,8 @@ Implementations **MUST NOT** default retry failed module invocations. Retry beha
 
 Implementations **SHOULD** use this table as the default `retryable` value for each error subclass. Callers may override the default on a per-instance basis.
 
+**Module timeouts and retries.** When `MODULE_TIMEOUT` is raised by a module *call*, implementations **MUST** set `retryable` from the module's `annotations.idempotent`: `true` only when the module declares that repeating the call produces no additional side effects, `false` otherwise. The table default still applies to timeouts raised without module context (for example a pipeline step budget). A non-idempotent call that timed out may already have applied side effects, so retrying it is not safe by default.
+
 For `EXECUTION_CANCELLED`, `APPROVAL_TIMEOUT`, `CIRCUIT_BREAKER_OPEN` and `PIPELINE_CONFIGURATION_ERROR` the default is a **MUST**: an error of one of these codes constructed without an explicit `retryable` **MUST** carry the value in the table above — `true` for the first three, `false` for `PIPELINE_CONFIGURATION_ERROR` — and **MUST NOT** leave it unset (D-135). Retry middleware still never retries a cancelled call on its own: a cancellation does not reach the `on_error` chain.
 
 > **Note:** `GENERAL_NOT_IMPLEMENTED` and `DEPENDENCY_NOT_FOUND` are defined in §8.2 and appear in the §8.7 hierarchy. Both are non-retryable by default.

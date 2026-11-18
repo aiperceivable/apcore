@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.33.0] - 2026-11-18
+
+### Added
+
+- Binding files accept a `resources` block (`timeout` in milliseconds, `memory_limit` in bytes), matching the module descriptor's `ResourceLimits`. This is the first way for a YAML binding to declare a per-module execution budget.
+- `resources.timeout` is documented as the per-module override of `executor.default_timeout` across the high-level module APIs (`APCore.module()` / `FunctionModule` / `@module`), so a declared budget no longer has to be threaded through `annotations.extra`.
+
+### Changed
+
+- §8.6: a `MODULE_TIMEOUT` raised by a module *call* is retryable only when the module declares `annotations.idempotent: true`. The table default still applies to timeouts raised without module context (for example a pipeline step budget). Retrying a timed-out non-idempotent call can repeat side effects that already happened.
+
 ## [0.32.2] - 2026-10-19
 
 ### Fixed
