@@ -581,7 +581,8 @@ pub fn is_sync_resolvable(key: &str) -> bool {
 /// on both paths.
 #[must_use]
 pub fn is_async_resolvable(key: &str) -> bool {
-    ASYNC_CONDITION_HANDLERS.read().contains_key(key) || is_sync_resolvable(key)
+    let has_async_handler = ASYNC_CONDITION_HANDLERS.read().contains_key(key);
+    has_async_handler || is_sync_resolvable(key)
 }
 
 // ---------------------------------------------------------------------------
@@ -615,8 +616,7 @@ pub async fn evaluate_conditions_async<S: ::std::hash::BuildHasher>(
 /// first (async-only overrides), then falling back to [`CONDITION_HANDLERS`]
 /// (the sync registry). A key with no handler in either registry is
 /// **unevaluable**, not unsatisfied; so is a handler that panics. Handlers are
-/// cloned out of the registries before any `.await` so no `parking_lot` read
-/// guard is held across await points.
+/// cloned out of the registries one lock at a time, before any `.await`.
 ///
 /// **Every** child is evaluated — no short-circuit. §6.1.1 permits
 /// short-circuiting AND on the first `Unsatisfied`, but explicitly allows an
@@ -636,13 +636,19 @@ pub async fn evaluate_conditions_async_outcome<S: ::std::hash::BuildHasher>(
     let mut to_evaluate: Vec<ResolvedCondition> = Vec::with_capacity(conditions.len());
     {
         let async_handlers = ASYNC_CONDITION_HANDLERS.read();
-        let sync_handlers = CONDITION_HANDLERS.read();
         for (key, value) in conditions {
-            let handler = async_handlers
-                .get(key.as_str())
-                .or_else(|| sync_handlers.get(key.as_str()))
-                .cloned();
+            let handler = async_handlers.get(key.as_str()).cloned();
             to_evaluate.push((key.clone(), handler, value.clone()));
+        }
+    }
+    if to_evaluate.iter().any(|(_, handler, _)| handler.is_none()) {
+        // A queued writer can block new readers. Release the async read
+        // guard before acquiring the sync lock to avoid cyclic waits.
+        let sync_handlers = CONDITION_HANDLERS.read();
+        for (key, handler, _) in &mut to_evaluate {
+            if handler.is_none() {
+                *handler = sync_handlers.get(key.as_str()).cloned();
+            }
         }
     }
 
@@ -1694,11 +1700,35 @@ mod tests {
         let ctx = anon_ctx();
         assert!(evaluate_conditions_async(&conditions, &ctx).await);
 
-        // Sync registry still contains the deny handler.
-        let sync_map = CONDITION_HANDLERS.read();
-        assert!(sync_map.contains_key(key));
-        let async_map = ASYNC_CONDITION_HANDLERS.read();
-        assert!(async_map.contains_key(key));
+        assert_eq!(
+            crate::acl::ACL::evaluate_conditions(&conditions, &ctx),
+            ConditionOutcome::Unsatisfied
+        );
+    }
+
+    #[test]
+    fn test_async_evaluation_completes_while_sync_registry_is_locked() {
+        use futures_util::FutureExt;
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let key = "_test_async_without_sync_lookup";
+        register_async_condition(key, Arc::new(AsyncOnlyTrue));
+
+        let sync_guard = CONDITION_HANDLERS.write();
+        let (sender, receiver) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let conditions = HashMap::from([(key.to_string(), Value::Null)]);
+            let ctx = anon_ctx();
+            let outcome = evaluate_conditions_async_outcome(&conditions, &ctx).now_or_never();
+            sender.send(outcome).unwrap();
+        });
+        // Use a separate thread so a blocked registry read cannot also block
+        // the timeout. Release the guard before joining even on failure.
+        let outcome = receiver.recv_timeout(Duration::from_secs(2));
+        drop(sync_guard);
+        worker.join().unwrap();
+        assert_eq!(outcome, Ok(Some(ConditionOutcome::Satisfied)));
     }
 
     #[tokio::test]
