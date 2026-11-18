@@ -487,10 +487,7 @@ fn is_email(value: &str) -> bool {
     let Some(dot_idx) = domain.find('.') else {
         return false;
     };
-    if dot_idx == 0 || dot_idx == domain.len() - 1 {
-        return false;
-    }
-    true
+    dot_idx != 0 && dot_idx != domain.len() - 1
 }
 
 fn is_uri(value: &str) -> bool {

@@ -58,11 +58,7 @@ pub fn match_pattern(pattern: &str, value: &str) -> bool {
     }
 
     // If pattern does not end with '*', value must end with the last segment.
-    if !pattern.ends_with('*') && !value.ends_with(segments[segments.len() - 1]) {
-        return false;
-    }
-
-    true
+    pattern.ends_with('*') || value.ends_with(segments[segments.len() - 1])
 }
 
 /// Match `value` against a glob-dialect `pattern` (Algorithm A25).
