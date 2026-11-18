@@ -182,6 +182,28 @@ describe('nested retry: block — parsing semantics', () => {
   });
 });
 
+describe('subscriber factory defaults and validation', () => {
+  it.each([
+    { type: 'file', path: tmpPath('defaults') },
+    { type: 'filter', delegate_type: 'stdout' },
+  ])('keeps the default retry policy for $type', (config) => {
+    expect(resolveRetry(createSubscriberFromConfig(config).retry)).toEqual(DEFAULT_RETRY);
+  });
+
+  it.each([
+    { config: {}, message: /missing "type"/ },
+    { config: { type: 'unknown' }, message: /Unknown subscriber type 'unknown'/ },
+    { config: { type: 'file', path: '' }, message: /non-empty "path"/ },
+    { config: { type: 'filter' }, message: /requires a "delegate_type"/ },
+    {
+      config: { type: 'filter', delegate_type: 'unknown' },
+      message: /Unknown delegate subscriber type 'unknown'/,
+    },
+  ])('rejects invalid subscriber config $config', ({ config, message }) => {
+    expect(() => createSubscriberFromConfig(config)).toThrow(message);
+  });
+});
+
 describe('the declared policy actually governs delivery', () => {
   it('emitter honours a config-declared maxAttempts', async () => {
     let attempts = 0;

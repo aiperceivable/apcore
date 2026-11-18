@@ -6,7 +6,7 @@
  * when present, further clamps the effective timeout — it never extends it.
  */
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { Type } from '@sinclair/typebox';
 import { Executor } from '../src/executor.js';
 import { Registry } from '../src/registry/registry.js';
@@ -97,6 +97,50 @@ describe('BuiltinExecute per-module timeout (D-11)', () => {
     });
     const exec = new Executor({ registry: reg, config });
     await expect(exec.call('slow.global', {})).rejects.toBeInstanceOf(ModuleTimeoutError);
+  });
+
+  it.each([Number.POSITIVE_INFINITY, '20'])(
+    'falls back to the annotation budget for a non-finite or non-numeric timeout (%s)',
+    async (timeout) => {
+      const registry = new Registry();
+      registry.register('slow.invalid_budget', {
+        description: 'uses the annotation budget',
+        inputSchema: Type.Object({}),
+        outputSchema: Type.Object({}),
+        resources: { timeout },
+        annotations: { extra: { resources: { timeout: 15 } } },
+        execute: async () => {
+          await sleep(100);
+          return {};
+        },
+      });
+      const executor = new Executor({ registry });
+      await expect(executor.call('slow.invalid_budget', {})).rejects.toMatchObject({
+        code: 'MODULE_TIMEOUT',
+        details: { timeoutMs: 15 },
+      });
+    },
+  );
+
+  it('lets a zero module timeout disable the executor default', async () => {
+    const registry = new Registry();
+    const execute = vi.fn(async () => {
+      await sleep(20);
+      return {};
+    });
+    registry.register('slow.unlimited', {
+      description: 'has no per-module time limit',
+      inputSchema: Type.Object({}),
+      outputSchema: Type.Object({}),
+      resources: { timeout: 0 },
+      execute,
+    });
+    const executor = new Executor({
+      registry,
+      config: new Config({ executor: { default_timeout: 5 } }),
+    });
+    await expect(executor.call('slow.unlimited', {})).resolves.toEqual({});
+    expect(execute).toHaveBeenCalledOnce();
   });
 
   it('raises GENERAL_INVALID_INPUT for a negative declared timeout (A-D-W1)', async () => {

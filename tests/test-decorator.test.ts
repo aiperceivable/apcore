@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { Type } from '@sinclair/typebox';
 import { FunctionModule, module, normalizeResult, makeAutoId } from '../src/decorator.js';
 import { Context, createIdentity } from '../src/context.js';
@@ -143,6 +143,33 @@ describe('module() factory', () => {
     expect(fm.tags).toEqual(['t1']);
     expect(fm.version).toBe('3.0.0');
     expect(fm.metadata).toEqual({ key: 'val' });
+  });
+
+  it('warns about and ignores an unknown option', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const options = {
+        id: 'opts.unknown',
+        inputSchema,
+        outputSchema,
+        execute: () => ({}),
+        customOption: true,
+      };
+      expect(module(options)).not.toHaveProperty('customOption');
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining("unknown option 'customOption'"));
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it.each([-1, Number.POSITIVE_INFINITY])('warns about an invalid timeout of %s', (timeout) => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      module({ id: 'opts.budget', inputSchema, outputSchema, execute: () => ({}), resources: { timeout } });
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('invalid resources.timeout'));
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('auto-registers with registry', () => {

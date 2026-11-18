@@ -1266,6 +1266,51 @@ describe('jsonSchemaToTypeBox — applicator keywords (JSON Schema 2020-12 §10.
     expect(Value.Check(schema, { a: 'x', z: 1 })).toBe(false);
   });
 
+  it('counts pattern matches toward unevaluatedProperties', () => {
+    const schema = jsonSchemaToTypeBox({
+      type: 'object',
+      patternProperties: { '^x-': { type: 'string' } },
+      unevaluatedProperties: false,
+    });
+    expect(Value.Check(schema, { 'x-label': 'blue' })).toBe(true);
+    expect(Value.Check(schema, { 'x-label': 'blue', stray: 'red' })).toBe(false);
+  });
+
+  it('counts properties only from triggered dependent schemas', () => {
+    const schema = jsonSchemaToTypeBox({
+      type: 'object',
+      properties: { trigger: { type: 'boolean' } },
+      dependentSchemas: {
+        trigger: { properties: { detail: { type: 'string' } } },
+        unused: true,
+      },
+      unevaluatedProperties: false,
+    });
+    expect(Value.Check(schema, { trigger: true, detail: 'blue' })).toBe(true);
+    expect(Value.Check(schema, { detail: 'blue' })).toBe(false);
+  });
+
+  it('counts properties already checked by additionalProperties', () => {
+    const schema = jsonSchemaToTypeBox({
+      type: 'object',
+      additionalProperties: { type: 'string' },
+      unevaluatedProperties: false,
+    });
+    expect(Value.Check(schema, { extra: 'blue' })).toBe(true);
+    expect(Value.Check(schema, { extra: 5 })).toBe(false);
+  });
+
+  it('counts the array tail already checked by items', () => {
+    const schema = jsonSchemaToTypeBox({
+      type: 'array',
+      prefixItems: [{ type: 'string' }],
+      items: { type: 'number' },
+      unevaluatedItems: false,
+    });
+    expect(Value.Check(schema, ['a', 2, 3])).toBe(true);
+    expect(Value.Check(schema, ['a', 'b'])).toBe(false);
+  });
+
   it('subtracts prefixItems positions before applying unevaluatedItems', () => {
     const schema = jsonSchemaToTypeBox({
       type: 'array',

@@ -71,50 +71,6 @@ function validateSchema(schema: TSchema, data: Record<string, unknown>, directio
   throw new SchemaValidationError(`${direction} validation failed`, result.errors as unknown as Array<Record<string, unknown>>);
 }
 
-/**
- * Read `requiresApproval` from a module's annotations.
- *
- * Exported so `Executor.governanceState()` reads the annotation through the
- * SAME predicate the approval gate uses (PROTOCOL_SPEC 6.6.5.1.1). A second
- * reading here would be a second way for the accessor to disagree with the
- * pipeline it describes.
- */
-export function needsApproval(mod: Record<string, unknown> | null): boolean {
-  const annotations = mod?.['annotations'];
-  if (annotations == null) return false;
-  if (typeof annotations !== 'object') return false;
-  if ('requiresApproval' in annotations) {
-    return Boolean((annotations as ModuleAnnotations).requiresApproval);
-  }
-  if ('requires_approval' in annotations) {
-    return Boolean((annotations as Record<string, unknown>)['requires_approval']);
-  }
-  return false;
-}
-
-function moduleIsDestructive(mod: Record<string, unknown> | null): boolean {
-  const annotations = mod?.['annotations'];
-  if (annotations == null || typeof annotations !== 'object') return false;
-  return Boolean((annotations as Record<string, unknown>)['destructive']);
-}
-
-function dictToAnnotations(dict: Record<string, unknown>): ModuleAnnotations {
-  return {
-    readonly: Boolean(dict['readonly'] ?? false),
-    destructive: Boolean(dict['destructive'] ?? false),
-    idempotent: Boolean(dict['idempotent'] ?? false),
-    requiresApproval: Boolean(dict['requiresApproval'] ?? dict['requires_approval'] ?? false),
-    openWorld: Boolean(dict['openWorld'] ?? dict['open_world'] ?? true),
-    streaming: Boolean(dict['streaming'] ?? false),
-    cacheable: Boolean(dict['cacheable'] ?? false),
-    cacheTtl: Number(dict['cacheTtl'] ?? dict['cache_ttl'] ?? 0),
-    cacheKeyFields: (dict['cacheKeyFields'] ?? dict['cache_key_fields'] ?? null) as string[] | null,
-    paginated: Boolean(dict['paginated'] ?? false),
-    paginationStyle: (dict['paginationStyle'] ?? dict['pagination_style'] ?? 'cursor') as string,
-    extra: Object.freeze((dict['extra'] as Record<string, unknown>) ?? {}),
-  };
-}
-
 // ---------------------------------------------------------------------------
 // 1. BuiltinContextCreation
 // ---------------------------------------------------------------------------

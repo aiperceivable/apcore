@@ -2,6 +2,8 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { dump } from 'js-yaml';
+import { Config } from '../src/config.js';
 import { BindingLoader } from '../src/bindings.js';
 import { Registry } from '../src/registry/registry.js';
 import {
@@ -258,6 +260,46 @@ describe('BindingLoader', () => {
       expect(results).toHaveLength(2);
       expect(registry.has('test.multi.a')).toBe(true);
       expect(registry.has('test.multi.b')).toBe(true);
+    });
+  });
+
+  describe('configured binding limits', () => {
+    const limits = {
+      description_max_length: 5,
+      documentation_max_length: 8,
+      tags_pattern: '^[a-z]+$',
+    };
+
+    function writeBinding(fields: Record<string, unknown>): string {
+      const target = writeTempModule('limited.mjs', 'export function run() { return {}; }');
+      return writeTempYaml('limited.binding.yaml', dump({
+        spec_version: '1.0',
+        bindings: [{ module_id: 'test.limited', target: `${target}:run`, ...fields }],
+      }));
+    }
+
+    it('accepts values at the length limits and matching tags', async () => {
+      const path = writeBinding({ description: 'Hello', documentation: 'See docs', tags: ['blue'] });
+      const config = new Config({ validation: { binding: limits } });
+      await expect(loader.loadBindings(path, registry, config)).resolves.toHaveLength(1);
+      expect(registry.has('test.limited')).toBe(true);
+    });
+
+    it('accepts an omitted optional documentation field and tags', async () => {
+      const path = writeBinding({ description: 'Hello' });
+      const config = new Config({ validation: { binding: limits } });
+      await expect(loader.loadBindings(path, registry, config)).resolves.toHaveLength(1);
+    });
+
+    it.each([
+      { fields: { description: 'Longer' }, message: /description.*6 characters/ },
+      { fields: { documentation: 'More docs' }, message: /documentation.*9 characters/ },
+      { fields: { tags: ['Blue'] }, message: /tag "Blue" does not match/ },
+    ])('rejects a binding with $fields outside the configured limits', async ({ fields, message }) => {
+      const path = writeBinding(fields);
+      const config = new Config({ validation: { binding: limits } });
+      await expect(loader.loadBindings(path, registry, config)).rejects.toThrow(message);
+      expect(registry.has('test.limited')).toBe(false);
     });
   });
 

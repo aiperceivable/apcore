@@ -11,8 +11,8 @@
  * through to the toggle module.
  */
 
-import { describe, it, expect, afterAll } from 'vitest';
-import { mkdtempSync, rmSync, existsSync, readFileSync } from 'node:fs';
+import { describe, it, expect, afterAll, vi } from 'vitest';
+import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import * as yaml from 'js-yaml';
@@ -119,5 +119,51 @@ describe('sys_modules.control.overrides_path round trip (SYS-2)', () => {
     expect(saved[0]['toggle.executor.email.send']).toBe(false);
     // The synthesized file store must not also have been wired.
     expect(existsSync(overridesPath)).toBe(false);
+  });
+});
+
+describe('restoring file overrides with an explicit store', () => {
+  it('loads file defaults and applies the explicit store last', () => {
+    const path = join(tmp, 'merge.yaml');
+    writeFileSync(path, 'toggle.app.first: false\ntoggle.app.second: false\n');
+    const toggleState = new ToggleState();
+    const registry = new Registry();
+
+    registerSysModules(registry, new Executor({ registry }), new Config({
+      sys_modules: { enabled: true, control: { overrides_path: path } },
+    }), undefined, {
+      toggleState,
+      overridesStore: { load: () => ({ 'toggle.app.second': true }), save: () => {} },
+    });
+
+    expect(toggleState.isDisabled('app.first')).toBe(true);
+    expect(toggleState.isDisabled('app.second')).toBe(false);
+  });
+
+  it.each([
+    { name: 'scalar', content: 'scalar', warning: false },
+    { name: 'malformed', content: 'broken: [', warning: true },
+  ])('restores the explicit store when the override file is $name', ({ name, content, warning }) => {
+    const path = join(tmp, `${name}.yaml`);
+    writeFileSync(path, content);
+    const toggleState = new ToggleState();
+    const registry = new Registry();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      registerSysModules(registry, new Executor({ registry }), new Config({
+        sys_modules: { enabled: true, control: { overrides_path: path } },
+      }), undefined, {
+        toggleState,
+        overridesStore: { load: () => ({ 'toggle.app.first': false }), save: () => {} },
+      });
+
+      expect(toggleState.isDisabled('app.first')).toBe(true);
+      const reportedInvalidFile = warn.mock.calls.some(([message]) =>
+        String(message).includes('Failed to load overrides file'),
+      );
+      expect(reportedInvalidFile).toBe(warning);
+    } finally {
+      warn.mockRestore();
+    }
   });
 });

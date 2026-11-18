@@ -7,10 +7,13 @@ import {
   ConfigurationError,
   _resolveStep,
   buildStrategyFromConfig,
+  buildStrategyFromConfigSync,
   registerStepType,
   registeredStepTypes,
   unregisterStepType,
 } from '../src/pipeline-config.js';
+import { fileURLToPath } from 'node:url';
+import { Config } from '../src/config.js';
 import { ExecutionStrategy, PipelineDependencyError } from '../src/pipeline.js';
 import type { Step, StepResult } from '../src/pipeline.js';
 
@@ -175,6 +178,25 @@ describe('_resolveStep', () => {
     );
   });
 
+  it.each([
+    ['node:path:missingExport', /Export 'missingExport' not found/],
+    ['node:path:sep', /resolved to a non-callable/],
+  ])('reports an unusable handler export in %s', async (handler, error) => {
+    await expect(_resolveStep({ handler })).rejects.toThrow(error);
+  });
+
+  it.each(['createStep', 'createArrowStep', 'ConfiguredTestStep'])(
+    'passes config to the handler export %s',
+    async (exportName) => {
+      const fixture = fileURLToPath(new URL('./fixtures/pipeline-step-handlers.ts', import.meta.url));
+      const step = await _resolveStep({
+        handler: `${fixture}:${exportName}`,
+        config: { label: 'from handler' },
+      });
+      expect(step.name).toBe('from handler');
+    },
+  );
+
   it('throws when type is unknown', async () => {
     await expect(_resolveStep({ type: uniqueType('not-registered') })).rejects.toThrow(
       /not registered/,
@@ -245,6 +267,64 @@ describe('buildStrategyFromConfig', () => {
         deps,
       ),
     ).rejects.toThrow(/neither 'after' nor 'before'/);
+  });
+
+  describe('configured validation limits', () => {
+    const deps = {
+      ...makeFakeDeps(),
+      config: new Config({
+        validation: { pipeline: { step_name_max_length: 5, timeout_ms_max: 50 } },
+      }),
+    };
+
+    it('accepts name and timeout values at the configured limits', () => {
+      const { strategy } = buildStrategyFromConfigSync(
+        {
+          configure: { execute: { timeout_ms: 50 }, input_validation: { pure: true } },
+          steps: [
+            { type: CUSTOM_TYPE, name: 'probe', after: 'execute', timeout_ms: 50 },
+            { type: CUSTOM_TYPE, after: 'probe' },
+          ],
+        },
+        deps,
+      );
+      expect(strategy.steps.find((step) => step.name === 'probe')?.timeoutMs).toBe(50);
+      expect(strategy.steps.find((step) => step.name === 'execute')?.timeoutMs).toBe(50);
+      expect(strategy.stepNames()).toContain('custom-step');
+    });
+
+    it('rejects a custom step name above the configured limit', () => {
+      expect(() => buildStrategyFromConfigSync(
+        { steps: [{ type: CUSTOM_TYPE, name: 'longer', after: 'execute' }] },
+        deps,
+      )).toThrow(/name is 6 characters, over the 5 configured/);
+    });
+
+    it('rejects a custom step timeout above the configured limit', () => {
+      expect(() => buildStrategyFromConfigSync(
+        { steps: [{ type: CUSTOM_TYPE, name: 'probe', after: 'execute', timeout_ms: 51 }] },
+        deps,
+      )).toThrow(/Step 'probe': timeout_ms 51 is over the 50 configured/);
+    });
+
+    it('rejects an existing step timeout override above the configured limit', () => {
+      expect(() => buildStrategyFromConfigSync(
+        { configure: { execute: { timeout_ms: 51 } } },
+        deps,
+      )).toThrow(/Step 'execute': timeout_ms 51 is over the 50 configured/);
+    });
+
+    it('enforces the name limit when no timeout limit is configured', () => {
+      const nameOnlyDeps = {
+        ...deps,
+        config: new Config({ validation: { pipeline: { step_name_max_length: 5 } } }),
+      };
+      const { strategy } = buildStrategyFromConfigSync(
+        { steps: [{ type: CUSTOM_TYPE, name: 'probe', after: 'execute', timeout_ms: 500 }] },
+        nameOnlyDeps,
+      );
+      expect(strategy.steps.find((step) => step.name === 'probe')?.timeoutMs).toBe(500);
+    });
   });
 
   it('inserts a custom step after a named standard step', async () => {

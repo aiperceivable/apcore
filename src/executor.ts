@@ -16,7 +16,6 @@ import type { ExecutionPolicy } from './policy.js';
 import {
   BuiltinACLCheck,
   BuiltinApprovalGate,
-  needsApproval,
   buildInternalStrategy,
   buildMinimalStrategy,
   buildPerformanceStrategy,
@@ -51,7 +50,6 @@ import { MiddlewareChainError, MiddlewareManager } from './middleware/manager.js
 import type {
   Change,
   Module,
-  ModuleAnnotations,
   PreflightCheckResult,
   PreflightResult,
   PreviewResult,
@@ -1579,19 +1577,5 @@ export class Executor {
         ErrorCodes.INVALID_MODULE_ID,
       );
     }
-  }
-
-  /** Check if a module requires approval, handling both interface and dict annotations. */
-  private _needsApproval(mod: Record<string, unknown>): boolean {
-    const annotations = mod['annotations'];
-    if (annotations == null) return false;
-    if (typeof annotations !== 'object') return false;
-    if ('requiresApproval' in annotations) {
-      return Boolean((annotations as ModuleAnnotations).requiresApproval);
-    }
-    if ('requires_approval' in annotations) {
-      return Boolean((annotations as Record<string, unknown>)['requires_approval']);
-    }
-    return false;
   }
 }
