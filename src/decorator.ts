@@ -7,7 +7,7 @@
 import type { TSchema } from '@sinclair/typebox';
 import type { Context } from './context.js';
 import { InvalidInputError } from './errors.js';
-import type { ModuleAnnotations, ModuleExample } from './module.js';
+import type { ModuleAnnotations, ModuleExample, ResourceLimits } from './module.js';
 
 export function normalizeResult(result: unknown): Record<string, unknown> {
   if (result === null || result === undefined) return {};
@@ -27,6 +27,11 @@ export class FunctionModule {
   readonly metadata: Record<string, unknown> | null;
   readonly examples: ModuleExample[] | null;
   readonly display: Record<string, unknown> | null;
+  /**
+   * Declared execution budget (PROTOCOL_SPEC §5.2 / D-11). `timeout` is in
+   * milliseconds and overrides `executor.default_timeout` for this module.
+   */
+  readonly resources: ResourceLimits | null;
 
   private _executeFn: (inputs: Record<string, unknown>, context: Context) => Promise<Record<string, unknown>> | Record<string, unknown>;
 
@@ -43,6 +48,7 @@ export class FunctionModule {
     metadata?: Record<string, unknown> | null;
     examples?: ModuleExample[] | null;
     display?: Record<string, unknown> | null;
+    resources?: ResourceLimits | null;
   }) {
     this.moduleId = options.moduleId;
     this.inputSchema = options.inputSchema;
@@ -55,6 +61,7 @@ export class FunctionModule {
     this.metadata = options.metadata ?? null;
     this.examples = options.examples ?? null;
     this.display = options.display ?? null;
+    this.resources = options.resources ?? null;
     this._executeFn = options.execute;
   }
 
@@ -74,6 +81,56 @@ export function makeAutoId(name: string): string {
 }
 
 /**
+ * Keys `module()` understands. Anything else is dropped by the factory, which
+ * is how a host's `timeoutSec: 300` used to disappear without a trace while
+ * the executor fell back to its 30-second default.
+ */
+const KNOWN_MODULE_OPTION_KEYS = new Set([
+  'id',
+  'inputSchema',
+  'outputSchema',
+  'description',
+  'documentation',
+  'annotations',
+  'tags',
+  'version',
+  'metadata',
+  'examples',
+  'display',
+  'resources',
+  'execute',
+  'registry',
+]);
+
+function warnOnUnknownModuleOptions(moduleId: string, options: Record<string, unknown>): void {
+  for (const key of Object.keys(options)) {
+    if (KNOWN_MODULE_OPTION_KEYS.has(key)) continue;
+    if (/timeout/i.test(key)) {
+      console.warn(
+        `[apcore] Module '${moduleId}' declares '${key}', which apcore does not read; ` +
+          `the executor falls back to executor.default_timeout (30000 ms by default). ` +
+          `Declare { resources: { timeout: <milliseconds> } } for a per-module budget.`,
+      );
+    } else {
+      console.warn(
+        `[apcore] Module '${moduleId}' has unknown option '${key}'; it is ignored.`,
+      );
+    }
+  }
+
+  const resources = options['resources'];
+  if (resources !== null && typeof resources === 'object') {
+    const timeout = (resources as Record<string, unknown>)['timeout'];
+    if (timeout !== undefined && (typeof timeout !== 'number' || !Number.isFinite(timeout) || timeout < 0)) {
+      console.warn(
+        `[apcore] Module '${moduleId}' has an invalid resources.timeout (${String(timeout)}); ` +
+          `expected a non-negative number of milliseconds.`,
+      );
+    }
+  }
+}
+
+/**
  * Create a FunctionModule from options. TypeScript version requires explicit schemas.
  */
 export function module(options: {
@@ -88,6 +145,7 @@ export function module(options: {
   metadata?: Record<string, unknown> | null;
   examples?: ModuleExample[] | null;
   display?: Record<string, unknown> | null;
+  resources?: ResourceLimits | null;
   execute: (inputs: Record<string, unknown>, context: Context) => Promise<Record<string, unknown>> | Record<string, unknown>;
   registry?: { register(moduleId: string, module: unknown): void } | null;
 }): FunctionModule {
@@ -107,6 +165,8 @@ export function module(options: {
   }
   const moduleId = options.id;
 
+  warnOnUnknownModuleOptions(moduleId, options);
+
   const fm = new FunctionModule({
     execute: options.execute,
     moduleId,
@@ -120,6 +180,7 @@ export function module(options: {
     metadata: options.metadata,
     examples: options.examples,
     display: options.display,
+    resources: options.resources,
   });
 
   if (options.registry) {

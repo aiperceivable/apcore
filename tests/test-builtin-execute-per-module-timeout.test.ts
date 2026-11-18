@@ -13,6 +13,7 @@ import { Registry } from '../src/registry/registry.js';
 import { Config } from '../src/config.js';
 import { Context } from '../src/context.js';
 import { ModuleTimeoutError, InvalidInputError } from '../src/errors.js';
+import { DEFAULT_ANNOTATIONS } from '../src/module.js';
 
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
@@ -115,5 +116,103 @@ describe('BuiltinExecute per-module timeout (D-11)', () => {
     const error = await exec.call('neg.mod', {}).catch((e: unknown) => e);
     expect(error).toBeInstanceOf(InvalidInputError);
     expect((error as InvalidInputError).code).toBe('GENERAL_INVALID_INPUT');
+  });
+});
+
+describe('module() resources budget (D-11 / high-level API)', () => {
+  it('reads the budget from annotations.extra.resources', async () => {
+    const { APCore } = await import('../src/client.js');
+    const client = new APCore({ config: new Config({ executor: { default_timeout: 5000 } }) });
+    client.module({
+      id: 'slow.annotated',
+      inputSchema: Type.Object({}),
+      outputSchema: Type.Object({}),
+      annotations: { ...DEFAULT_ANNOTATIONS, extra: { resources: { timeout: 20 } } },
+      execute: async () => {
+        await sleep(100);
+        return {};
+      },
+    });
+    await expect(client.call('slow.annotated', {})).rejects.toMatchObject({
+      code: 'MODULE_TIMEOUT',
+      details: { timeoutMs: 20, moduleId: 'slow.annotated' },
+    });
+  });
+
+  it('carries resources.timeout through the APCore.module() factory', async () => {
+    const { APCore } = await import('../src/client.js');
+    const config = new Config({ executor: { default_timeout: 5000 } });
+    const client = new APCore({ config });
+    client.module({
+      id: 'slow.high',
+      inputSchema: Type.Object({}),
+      outputSchema: Type.Object({ ok: Type.Boolean() }),
+      resources: { timeout: 30 },
+      execute: async () => {
+        await sleep(200);
+        return { ok: true };
+      },
+    });
+    await expect(client.call('slow.high', {})).rejects.toBeInstanceOf(ModuleTimeoutError);
+  });
+
+  it('warns when a host declares timeoutSec instead of resources.timeout', async () => {
+    const { APCore } = await import('../src/client.js');
+    const { vi } = await import('vitest');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const client = new APCore();
+    client.module({
+      id: 'slow.misdeclared',
+      inputSchema: Type.Object({}),
+      outputSchema: Type.Object({}),
+      // Deliberately unsupported: the old silent-drop path.
+      // @ts-expect-error unknown option
+      timeoutSec: 300,
+      execute: () => ({}),
+    });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("'timeoutSec'"));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('resources'));
+    warn.mockRestore();
+  });
+});
+
+describe('MODULE_TIMEOUT retry safety', () => {
+  it('is not retryable by default (non-idempotent module)', async () => {
+    const reg = new Registry();
+    reg.register('slow.side_effect', {
+      id: 'slow.side_effect',
+      description: 'writes then hangs',
+      inputSchema: Type.Object({}),
+      outputSchema: Type.Object({ ok: Type.Boolean() }),
+      resources: { timeout: 30 },
+      execute: async () => {
+        await sleep(200);
+        return { ok: true };
+      },
+    });
+    const exec = new Executor({ registry: reg, config: new Config({ executor: { default_timeout: 5000 } }) });
+    const failure: unknown = await exec.call('slow.side_effect', {}).catch((e: unknown) => e);
+    expect(failure).toBeInstanceOf(ModuleTimeoutError);
+    expect((failure as ModuleTimeoutError).retryable).toBe(false);
+  });
+
+  it('is retryable when the module declares annotations.idempotent', async () => {
+    const reg = new Registry();
+    reg.register('slow.idempotent', {
+      id: 'slow.idempotent',
+      description: 'safe to repeat',
+      inputSchema: Type.Object({}),
+      outputSchema: Type.Object({ ok: Type.Boolean() }),
+      resources: { timeout: 30 },
+      annotations: { idempotent: true },
+      execute: async () => {
+        await sleep(200);
+        return { ok: true };
+      },
+    });
+    const exec = new Executor({ registry: reg, config: new Config({ executor: { default_timeout: 5000 } }) });
+    const failure: unknown = await exec.call('slow.idempotent', {}).catch((e: unknown) => e);
+    expect(failure).toBeInstanceOf(ModuleTimeoutError);
+    expect((failure as ModuleTimeoutError).retryable).toBe(true);
   });
 });

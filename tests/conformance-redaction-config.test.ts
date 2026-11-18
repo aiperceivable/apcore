@@ -79,7 +79,7 @@
  * than xfailed as a deficiency.
  */
 
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
@@ -282,7 +282,7 @@ function legacyValueFor(tc: RedactionCase, replacement: string): readonly string
 }
 
 /** Deprecation notices about the legacy redaction keys, in emission order. */
-function legacyDeprecationWarnings(spy: ReturnType<typeof vi.spyOn>): string[] {
+function legacyDeprecationWarnings(spy: MockInstance<typeof console.warn>): string[] {
   return spy.mock.calls
     .map((call) => String(call[0] ?? ''))
     .filter((message) => message.includes('observability.redaction'));
@@ -312,7 +312,7 @@ const configKeyCases = fixture.test_cases.filter(
 );
 
 describe('Conformance: redaction configuration (redaction_config.json)', () => {
-  let warnSpy: ReturnType<typeof vi.spyOn>;
+  let warnSpy: MockInstance<typeof console.warn>;
 
   beforeEach(() => {
     // A legacy-key deprecation warning is possible; keep suite output clean.

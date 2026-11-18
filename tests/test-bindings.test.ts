@@ -211,6 +211,20 @@ describe('BindingLoader', () => {
       expect(results[0].version).toBe('2.0.0');
     });
 
+    it('carries a resources budget from the binding onto the module', async () => {
+      const modPath = writeTempModule(
+        'resources_mod.mjs',
+        'export function process(inputs) { return { result: inputs.name }; }\n',
+      );
+      const yamlPath = writeTempYaml(
+        'resources.binding.yaml',
+        `bindings:\n  - module_id: "test.resources"\n    target: "${modPath}:process"\n    resources:\n      timeout: 1234\n    input_schema:\n      type: object\n    output_schema:\n      type: object\n`,
+      );
+      const results = await loader.loadBindings(yamlPath, registry);
+      expect(results).toHaveLength(1);
+      expect(results[0].resources).toEqual({ timeout: 1234 });
+    });
+
     it('rejects implicit inference without a schema source (D-139)', async () => {
       const modPath = writeTempModule('permissive_mod.mjs', 'export function loose(inputs) { return { ok: true }; }\n', false);
       const yamlPath = writeTempYaml(

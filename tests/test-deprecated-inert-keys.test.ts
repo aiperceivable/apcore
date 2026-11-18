@@ -24,7 +24,7 @@
  * every other unrecognised root key must keep being ignored without a word.
  */
 
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -150,7 +150,7 @@ describe('the §9.2.4 inert-configuration-key notice (apcore#118)', () => {
    * §9.2.2 project-root notice fires from the same method for a config loaded
    * out of a temp directory, and the ACL notice below shares the issue number.
    */
-  function noticesFrom(spy: ReturnType<typeof vi.spyOn>): string[] {
+  function noticesFrom(spy: MockInstance<typeof console.warn>): string[] {
     return spy.mock.calls
       .map((call) => String(call[0]))
       .filter((line) => line.startsWith('[apcore:config] DEPRECATION (apcore#118'));
@@ -329,7 +329,7 @@ describe('the §9.2.4 inert-configuration-key notice (apcore#118)', () => {
 describe("the §9.2.4.1 ACL-file `audit:` notice (apcore#118)", () => {
   const RULES = 'rules:\n  - callers: ["api.*"]\n    targets: ["executor.*"]\n    effect: allow\n';
 
-  function aclNoticesFrom(spy: ReturnType<typeof vi.spyOn>): string[] {
+  function aclNoticesFrom(spy: MockInstance<typeof console.warn>): string[] {
     return spy.mock.calls
       .map((call) => String(call[0]))
       .filter((line) => line.startsWith('[apcore:acl] DEPRECATION (apcore#118'));

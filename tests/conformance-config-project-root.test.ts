@@ -63,7 +63,7 @@
  * §9.2.1 key absolutely and the case is now driven green.
  */
 
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
@@ -282,13 +282,13 @@ function assertTierCase(id: string): void {
 // ---------------------------------------------------------------------------
 
 /** Only this notice's lines, ignoring every other console.warn. */
-function noticesFrom(spy: ReturnType<typeof vi.spyOn>): string[] {
+function noticesFrom(spy: MockInstance<typeof console.warn>): string[] {
   return spy.mock.calls
     .map((call) => String(call[0]))
     .filter((line) => line.includes('PROTOCOL_SPEC §9.2.2'));
 }
 
-function spyOnWarn(): ReturnType<typeof vi.spyOn> {
+function spyOnWarn(): MockInstance<typeof console.warn> {
   return vi.spyOn(console, 'warn').mockImplementation(() => {});
 }
 

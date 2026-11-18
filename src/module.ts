@@ -5,6 +5,34 @@
 import { Kind, type TSchema, Type, TypeRegistry } from '@sinclair/typebox';
 import type { Context } from './context.js';
 
+/**
+ * Declared execution budget for one module (PROTOCOL_SPEC §5.2, decision D-11).
+ *
+ * The executor reads `timeout` (milliseconds) and uses it instead of
+ * `executor.default_timeout` for this module. It can be declared here or under
+ * `annotations.extra.resources` for parity with the other SDKs.
+ */
+export interface ResourceLimits {
+  /** Execution timeout in milliseconds. */
+  timeout?: number;
+  /** Memory limit in bytes, or null for no limit. */
+  memory_limit?: number | null;
+}
+
+/**
+ * Whether a module declares itself idempotent (`annotations.idempotent`).
+ *
+ * Used when a `MODULE_TIMEOUT` is raised: retrying a non-idempotent call after
+ * a timeout may repeat side effects that already happened, so the executor
+ * only marks the error retryable when the module opts in.
+ */
+export function isModuleIdempotent(module: unknown): boolean {
+  if (module === null || typeof module !== 'object') return false;
+  const annotations = (module as Record<string, unknown>)['annotations'];
+  if (annotations === null || typeof annotations !== 'object') return false;
+  return (annotations as Record<string, unknown>)['idempotent'] === true;
+}
+
 export interface ModuleAnnotations {
   readonly readonly: boolean;
   readonly destructive: boolean;

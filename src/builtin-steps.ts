@@ -37,7 +37,7 @@ import type { ExecutionPolicy, PolicyDecision } from './policy.js';
 import { applyDecisionToAnnotations } from './policy.js';
 import { MiddlewareChainError, type MiddlewareManager } from './middleware/manager.js';
 import type { ModuleAnnotations } from './module.js';
-import { DEFAULT_ANNOTATIONS } from './module.js';
+import { DEFAULT_ANNOTATIONS, isModuleIdempotent } from './module.js';
 import type { GovernanceGateMarker, PipelineContext, Step, StepResult } from './pipeline.js';
 import { ExecutionStrategy, GOVERNANCE_GATE } from './pipeline.js';
 import type { Registry } from './registry/registry.js';
@@ -915,7 +915,9 @@ export class BuiltinExecute implements Step {
       const remaining = globalDeadline * 1000 - Date.now();
       if (remaining <= 0) {
         ctx.context.cancelToken?.cancel();
-        throw new ModuleTimeoutError(ctx.moduleId, 0);
+        throw new ModuleTimeoutError(ctx.moduleId, 0, {
+          retryable: isModuleIdempotent(mod),
+        });
       }
       if (timeoutMs === 0 || remaining < timeoutMs) {
         timeoutMs = remaining;
@@ -936,7 +938,12 @@ export class BuiltinExecute implements Step {
       ).call(mod, ctx.inputs, ctx.context),
     );
 
-    ctx.output = await this._awaitExecution(executionPromise, ctx, timeoutMs);
+    ctx.output = await this._awaitExecution(
+      executionPromise,
+      ctx,
+      timeoutMs,
+      isModuleIdempotent(mod),
+    );
 
     // MW-001: record that the module actually ran. `output == null` alone
     // cannot tell "the module returned nothing" from "this step never ran",
@@ -970,24 +977,22 @@ export class BuiltinExecute implements Step {
       return val;
     };
 
-    const directResources = mod['resources'];
-    if (directResources != null && typeof directResources === 'object') {
-      const t = readNumber((directResources as Record<string, unknown>)['timeout']);
-      if (t !== null) return t;
-    }
-    const ann = mod['annotations'];
-    if (ann != null && typeof ann === 'object') {
-      const annResources = (ann as Record<string, unknown>)['resources'];
-      if (annResources != null && typeof annResources === 'object') {
-        const t = readNumber((annResources as Record<string, unknown>)['timeout']);
-        if (t !== null) return t;
-      }
-    }
-    return null;
+    const readResources = (value: unknown) =>
+      value !== null && typeof value === 'object'
+        ? readNumber((value as Record<string, unknown>)['timeout'])
+        : null;
+    const annotations = mod['annotations'] as Record<string, unknown> | null | undefined;
+    const extra = annotations?.['extra'] as Record<string, unknown> | null | undefined;
+    return readResources(mod['resources']) ??
+      readResources(annotations?.['resources']) ??
+      readResources(extra?.['resources']);
   }
 
   private async _awaitExecution(
-    execution: Promise<Record<string, unknown>>, ctx: PipelineContext, timeoutMs: number,
+    execution: Promise<Record<string, unknown>>,
+    ctx: PipelineContext,
+    timeoutMs: number,
+    retryable = false,
   ): Promise<Record<string, unknown>> {
     const token = ctx.context.cancelToken;
     if (token) trackExecution(token, execution);
@@ -1005,15 +1010,15 @@ export class BuiltinExecute implements Step {
         // Abort listeners and module rejection must not win the timeout race.
         timedOut = true;
         token?.cancel();
-        reject(new ModuleTimeoutError(ctx.moduleId, timeoutMs));
+        reject(new ModuleTimeoutError(ctx.moduleId, timeoutMs, { retryable }));
       }, timeoutMs);
     });
     try {
       const output = await Promise.race([execution, interruption]);
-      if (timedOut) throw new ModuleTimeoutError(ctx.moduleId, timeoutMs);
+      if (timedOut) throw new ModuleTimeoutError(ctx.moduleId, timeoutMs, { retryable });
       return output;
     } catch (error) {
-      if (timedOut) throw new ModuleTimeoutError(ctx.moduleId, timeoutMs);
+      if (timedOut) throw new ModuleTimeoutError(ctx.moduleId, timeoutMs, { retryable });
       throw error;
     }
     finally {

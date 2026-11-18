@@ -6,6 +6,37 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [0.33.0] - 2026-11-18
+
+### Added
+
+- `APCore.module()` / `FunctionModule` / `module()` accept a first-class
+  `resources` block (`ResourceLimits`), with `timeout` in milliseconds. The
+  executor already read `resources.timeout`; the high-level factory used to
+  drop it, so a declared budget silently fell back to
+  `executor.default_timeout` (30 s by default).
+- Unknown module options now warn at registration. Timeout-like keys
+  (`timeoutSec`, `timeout_ms`, …) get a message naming the supported
+  `resources.timeout` field instead of disappearing silently.
+
+### Security
+
+- Upgrade the runtime dependencies `js-yaml` to `^4.3.2` and `uuid` to `^11.1.1`.
+
+### Fixed
+
+- Read a module's budget from `annotations.extra.resources.timeout` as well as the
+  first-class resources field, matching Python and Rust.
+- `MODULE_TIMEOUT` raised by a module call is no longer retryable by default.
+  It carries `retryable: true` only when the module declares
+  `annotations.idempotent: true`. This includes deadlines that expire after a
+  stream has emitted chunks. Step-budget timeouts keep the spec default.
+
+### Changed
+
+- Refresh the development toolchain to `vitest` / `@vitest/coverage-v8` 5.1.0.
+  No other runtime API changes.
+
 ## [0.32.3] - 2026-10-25
 
 ### Added

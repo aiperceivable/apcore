@@ -74,6 +74,7 @@ export type {
   ModuleAnnotations,
   ModuleExample,
   ModuleDescription,
+  ResourceLimits,
   ValidationResult,
   PreflightCheckResult,
   PreflightResult,

@@ -9,12 +9,12 @@
  * Legacy keys must still work, but reading them must emit a one-shot
  * deprecation warning so consumers know to migrate.
  */
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
 import { Config } from '../../src/config.js';
 import { RedactionConfig } from '../../src/observability/context-logger.js';
 
 describe('RedactionConfig key alignment (CRITICAL #4)', () => {
-  let warnSpy: ReturnType<typeof vi.spyOn>;
+  let warnSpy: MockInstance<typeof console.warn>;
 
   beforeEach(() => {
     warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});

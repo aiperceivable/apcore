@@ -23,13 +23,13 @@ import { matchGlob } from './utils/pattern.js';
 import { jsonSchemaToTypeBox } from './schema/loader.js';
 import { assertOpenAiStrictCompatible } from './schema/openai-strict.js';
 
-import type { ModuleAnnotations } from './module.js';
+import type { ModuleAnnotations, ResourceLimits } from './module.js';
 import { DEFAULT_ANNOTATIONS } from './module.js';
 
 const SUPPORTED_SPEC_VERSIONS = new Set(['1.0']);
 const BINDING_KEYS = new Set(['module_id', 'target', 'description', 'documentation',
   'input_schema', 'output_schema', 'schema_ref', 'auto_schema', 'tags', 'version',
-  'annotations', 'metadata']);
+  'annotations', 'resources', 'metadata']);
 
 /** D-139: reject malformed declarations before importing any target code. */
 function validateBindingEntry(entry: unknown, filePath: string): asserts entry is Record<string, unknown> {
@@ -537,6 +537,7 @@ export class BindingLoader {
         ? parseAnnotations(binding['annotations'] as Record<string, unknown>)
         : undefined,
       metadata: binding['metadata'] as Record<string, unknown> | undefined,
+      resources: binding['resources'] as ResourceLimits | undefined,
     });
   }
 }

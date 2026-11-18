@@ -10,7 +10,7 @@
  * condition it is supposed to fire under.
  */
 
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -150,7 +150,7 @@ describe('Config.projectRoot — one case per §9.14 discovery tier', () => {
 
 describe('the §13.2 project-root deprecation notice', () => {
   /** Warning lines this notice emitted, ignoring every other console.warn. */
-  function noticesFrom(spy: ReturnType<typeof vi.spyOn>): string[] {
+  function noticesFrom(spy: MockInstance<typeof console.warn>): string[] {
     return spy.mock.calls
       .map((call) => String(call[0]))
       .filter((line) => line.includes('PROTOCOL_SPEC §9.2.2'));

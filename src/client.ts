@@ -14,7 +14,7 @@ import { Executor } from './executor.js';
 import type { StepMiddleware } from './pipeline.js';
 import type { ExecutionPolicy } from './policy.js';
 import type { Middleware } from './middleware/index.js';
-import type { ModuleAnnotations, ModuleExample, PreflightResult } from './module.js';
+import type { ModuleAnnotations, ModuleExample, PreflightResult, ResourceLimits } from './module.js';
 import type { MetricsCollector } from './observability/metrics.js';
 import { buildTracingMiddleware } from './observability/tracing-config.js';
 import { Registry } from './registry/registry.js';
@@ -79,6 +79,11 @@ export interface ModuleOptions {
   metadata?: Record<string, unknown> | null;
   examples?: ModuleExample[] | null;
   display?: Record<string, unknown> | null;
+  /**
+   * Declared execution budget (PROTOCOL_SPEC §5.2 / D-11). `timeout` is in
+   * milliseconds and overrides `executor.default_timeout` for this module.
+   */
+  resources?: ResourceLimits | null;
   execute: (inputs: Record<string, unknown>, context: Context) => Promise<Record<string, unknown>> | Record<string, unknown>;
 }
 

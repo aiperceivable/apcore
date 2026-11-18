@@ -7,7 +7,7 @@
  *   - protocol-spec §2.5.1 (the `ephemeral.*` namespace)
  */
 
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi, type MockInstance } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -61,7 +61,7 @@ describe('v0.21.0 — EPHEMERAL_NAMESPACE_PREFIX constant', () => {
 });
 
 describe('v0.21.0 — Registry.register accepts ephemeral.* IDs', () => {
-  let warnSpy: ReturnType<typeof vi.spyOn>;
+  let warnSpy: MockInstance<typeof console.warn>;
   beforeEach(() => {
     warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
   });

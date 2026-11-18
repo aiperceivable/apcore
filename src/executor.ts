@@ -56,7 +56,7 @@ import type {
   PreflightResult,
   PreviewResult,
 } from './module.js';
-import { createPreflightResult } from './module.js';
+import { createPreflightResult, isModuleIdempotent } from './module.js';
 import type {
   GovernanceState,
   PipelineContext,
@@ -1160,7 +1160,9 @@ export class Executor {
           // deadline being read as milliseconds.
           if (globalDeadline !== null && Date.now() / 1000 > globalDeadline) {
             pipeCtx.context.cancelToken?.cancel();
-            throw new ModuleTimeoutError(moduleId, 0);
+            throw new ModuleTimeoutError(moduleId, 0, {
+              retryable: isModuleIdempotent(pipeCtx.module),
+            });
           }
           // Enforce stream-chunk shape BEFORE merge and BEFORE yield (D10-001 /
           // apcore-rust deep_merge_chunks_checked, D-58). A non-object chunk is

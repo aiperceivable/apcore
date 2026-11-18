@@ -5,7 +5,7 @@
  * The free function is preserved as `_discoverMultiClass` (internal).
  */
 
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi, type MockInstance } from 'vitest';
 import {
   Registry,
   _resetMultiClassEnabledDeprecationWarned,
@@ -87,7 +87,7 @@ describe('Registry.discoverMultiClass', () => {
 });
 
 describe('Registry.discoverMultiClass — deprecated 4-arg overload (D-06)', () => {
-  let warnSpy: ReturnType<typeof vi.spyOn>;
+  let warnSpy: MockInstance<typeof console.warn>;
 
   beforeEach(() => {
     _resetMultiClassEnabledDeprecationWarned();

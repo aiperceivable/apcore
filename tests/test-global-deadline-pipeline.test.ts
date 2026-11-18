@@ -23,7 +23,7 @@
  *   no test standing on it.
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { Type } from '@sinclair/typebox';
 import { Context } from '../src/context.js';
 import { Config } from '../src/config.js';
@@ -204,6 +204,31 @@ describe('a Context off the wire recomputes the deadline (D-102)', () => {
 });
 
 describe('global_deadline is enforced between stream chunks on the same clock', () => {
+  it.each([false, true])('sets retryable=%s after emitting a chunk', async (idempotent) => {
+    const { registry, executor } = build(600_000);
+    const ctx = Context.create(null, null, null, undefined, null, nowSeconds() + 30);
+    registry.registerInternal('executor.probe.stream_retry', {
+      inputSchema: Type.Object({}),
+      outputSchema: Type.Object({ n: Type.Number() }),
+      description: 'streams across a deadline',
+      annotations: { streaming: true, idempotent },
+      stream: async function* () {
+        yield { n: 1 };
+        yield { n: 2 };
+      },
+      execute: () => ({ n: 0 }),
+    });
+
+    const chunks = executor.stream('executor.probe.stream_retry', {}, ctx);
+    expect(await chunks.next()).toMatchObject({ value: { n: 1 }, done: false });
+    const clock = vi.spyOn(Date, 'now').mockReturnValue((nowSeconds() + 60) * 1000);
+    try {
+      await expect(chunks.next()).rejects.toMatchObject({ code: 'MODULE_TIMEOUT', retryable: idempotent });
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
   it('a passed caller deadline aborts the stream', async () => {
     const { registry, executor } = build(600_000);
     registry.registerInternal('executor.probe.stream', {
