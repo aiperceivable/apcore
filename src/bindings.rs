@@ -336,6 +336,10 @@ pub struct BindingEntry {
     pub schema_ref: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub annotations: Option<serde_json::Value>,
+    /// Declared execution budget (protocol-spec §5.2 / D-11). `timeout` is in
+    /// milliseconds and overrides `executor.default_timeout` for this module.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resources: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
@@ -808,7 +812,7 @@ impl BindingLoader {
                     output: serde_json::json!({"type": "object"}),
                 });
 
-            let annotations = annotations_from_value(module_id, entry.annotations.as_ref())?;
+            let annotations = annotations_with_resources(entry, module_id)?;
 
             let display_meta = display_into_metadata(entry.display.as_ref());
             let mut metadata = entry.metadata.clone();
@@ -917,7 +921,7 @@ impl BindingLoader {
                 )?;
             }
 
-            let annotations = annotations_from_value(module_id, entry.annotations.as_ref())?;
+            let annotations = annotations_with_resources(entry, module_id)?;
             let display_meta = display_into_metadata(entry.display.as_ref());
             let mut metadata = entry.metadata.clone();
             for (k, v) in display_meta {
@@ -1098,6 +1102,21 @@ fn detect_modes(entry: &BindingEntry) -> Vec<String> {
 ///
 /// `BINDING_FILE_INVALID` when the block is not an object or a declared key
 /// carries the wrong type (e.g. `cache_ttl: "soon"`).
+/// Parse a binding's annotations and merge its declared `resources` block into
+/// `annotations.extra`, where the executor reads it (D-11). Keeping the budget
+/// in `extra` matches the canonical wire form (§4.4.1): extension keys are not
+/// flattened onto the annotations root.
+fn annotations_with_resources(
+    entry: &BindingEntry,
+    module_id: &str,
+) -> Result<ModuleAnnotations, ModuleError> {
+    let mut annotations = annotations_from_value(module_id, entry.annotations.as_ref())?;
+    if let Some(resources) = entry.resources.clone() {
+        annotations.extra.insert("resources".to_string(), resources);
+    }
+    Ok(annotations)
+}
+
 fn annotations_from_value(
     module_id: &str,
     value: Option<&serde_json::Value>,
@@ -1488,6 +1507,27 @@ bindings:
         assert!(AutoSchemaValue::Mode("invalid".to_string())
             .normalize()
             .is_err());
+    }
+
+    #[test]
+    fn binding_resources_are_folded_into_annotations_extra() {
+        // A binding can declare the per-module budget (D-11). It must survive
+        // `deny_unknown_fields` and land where BuiltinExecute reads it.
+        let yaml = r#"
+spec_version: "1.0"
+bindings:
+  - module_id: slow.mod
+    target: "m:f"
+    resources:
+      timeout: 1234
+"#;
+        let file: BindingsFile = serde_yaml_ng::from_str(yaml).unwrap();
+        let entry = &file.bindings[0];
+        let annotations = annotations_with_resources(entry, &entry.module_id).unwrap();
+        assert_eq!(
+            annotations.extra.get("resources"),
+            Some(&serde_json::json!({"timeout": 1234}))
+        );
     }
 
     #[test]

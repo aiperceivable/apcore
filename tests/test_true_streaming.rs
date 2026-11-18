@@ -11,7 +11,7 @@
 use std::time::{Duration, Instant};
 
 use apcore::context::Context;
-use apcore::module::Module;
+use apcore::module::{Module, ModuleAnnotations};
 use apcore::{APCore, ChunkStream, ModuleError};
 use async_stream::stream;
 use async_trait::async_trait;
@@ -25,7 +25,10 @@ use tokio::time::{sleep, timeout};
 
 /// Yields 5 chunks, sleeping 100ms between each. Total runtime ~500ms.
 /// Used to prove that the first chunk arrives well before the stream ends.
-struct SlowStreamingModule;
+#[derive(Default)]
+struct SlowStreamingModule {
+    idempotent: bool,
+}
 
 #[async_trait]
 impl Module for SlowStreamingModule {
@@ -37,6 +40,12 @@ impl Module for SlowStreamingModule {
     }
     fn description(&self) -> &'static str {
         "slow streaming test module"
+    }
+    fn annotations(&self) -> ModuleAnnotations {
+        ModuleAnnotations {
+            idempotent: self.idempotent,
+            ..ModuleAnnotations::default()
+        }
     }
     async fn execute(&self, _inputs: Value, _ctx: &Context<Value>) -> Result<Value, ModuleError> {
         Ok(json!({}))
@@ -113,7 +122,7 @@ impl Module for BadSchemaStreamingModule {
 async fn first_chunk_arrives_before_stream_completes() {
     let apcore = APCore::new();
     apcore
-        .register("slow.stream", Box::new(SlowStreamingModule))
+        .register("slow.stream", Box::<SlowStreamingModule>::default())
         .unwrap();
 
     let start = Instant::now();
@@ -142,7 +151,7 @@ async fn first_chunk_arrives_before_stream_completes() {
 async fn all_chunks_arrive_in_order() {
     let apcore = APCore::new();
     apcore
-        .register("slow.stream", Box::new(SlowStreamingModule))
+        .register("slow.stream", Box::<SlowStreamingModule>::default())
         .unwrap();
 
     let mut s = apcore
@@ -184,11 +193,16 @@ async fn streaming_falls_back_to_execute_when_module_does_not_support_streaming(
 /// error and stops yielding further chunks.
 #[tokio::test]
 async fn streaming_global_deadline_aborts_between_chunks() {
+    assert_streaming_deadline(false).await;
+    assert_streaming_deadline(true).await;
+}
+
+async fn assert_streaming_deadline(idempotent: bool) {
     use apcore::context::Identity;
 
     let apcore = APCore::new();
     apcore
-        .register("slow.stream", Box::new(SlowStreamingModule))
+        .register("slow.stream", Box::new(SlowStreamingModule { idempotent }))
         .unwrap();
 
     // Set a global_deadline 150ms from now. SlowStreamingModule yields one
@@ -223,6 +237,7 @@ async fn streaming_global_deadline_aborts_between_chunks() {
                     apcore::errors::ErrorCode::ModuleTimeout,
                     "deadline-exceeded error must be ModuleTimeout"
                 );
+                assert_eq!(e.retryable, Some(idempotent));
                 got_timeout = true;
                 break;
             }
@@ -233,8 +248,8 @@ async fn streaming_global_deadline_aborts_between_chunks() {
         "stream must surface a ModuleTimeout once the global deadline elapses"
     );
     assert!(
-        ok_count < 5,
-        "stream must abort before all 5 chunks are delivered (saw {ok_count})"
+        (1..5).contains(&ok_count),
+        "stream must yield at least one chunk before aborting (saw {ok_count})"
     );
 }
 
@@ -332,7 +347,7 @@ async fn streaming_pre_cancelled_token_aborts_before_first_chunk() {
 
     let apcore = APCore::new();
     apcore
-        .register("slow.stream", Box::new(SlowStreamingModule))
+        .register("slow.stream", Box::<SlowStreamingModule>::default())
         .unwrap();
 
     let token = CancelToken::new();

@@ -421,7 +421,11 @@ pub fn validate_against_schema(
 /// (`Date.now() > globalDeadline`). The unit here is internal epoch-seconds
 /// (set+compared consistently via `as_secs_f64`); the cross-SDK clocks differ
 /// but each is self-consistent — only the comparator is normalized.
-fn stream_deadline_exceeded(deadline: Option<f64>, module_id: &str) -> Option<ModuleError> {
+fn stream_deadline_exceeded(
+    deadline: Option<f64>,
+    module_id: &str,
+    idempotent: bool,
+) -> Option<ModuleError> {
     let deadline = deadline?;
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -430,7 +434,7 @@ fn stream_deadline_exceeded(deadline: Option<f64>, module_id: &str) -> Option<Mo
     if now > deadline {
         // ERR-004: guidance-bearing builder, then the streaming-specific
         // message — the deadline, not a per-module timeout, is what elapsed.
-        let mut err = ModuleError::module_timeout(module_id, 0);
+        let mut err = ModuleError::module_timeout(module_id, 0).with_retryable(idempotent);
         err.message = format!("Module '{module_id}' streaming aborted: global deadline exceeded");
         err.details.remove("timeout_ms");
         return Some(err);
@@ -1645,10 +1649,11 @@ impl Executor {
             let mut accumulated: Vec<Value> = Vec::new();
 
             if let Some(mut inner) = stream_handle {
+                let idempotent = setup.module.annotations().idempotent;
                 while let Some(chunk_result) = inner.next().await {
                     // STREAM-003 (sync): enforce global_deadline between chunks.
                     if let Some(err) =
-                        stream_deadline_exceeded(setup.context().global_deadline, &module_id_owned)
+                        stream_deadline_exceeded(setup.context().global_deadline, &module_id_owned, idempotent)
                     {
                         Err(err)?;
                         return;

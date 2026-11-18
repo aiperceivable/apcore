@@ -12,6 +12,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.33.0] - 2026-11-18
+
+### Added
+
+- Binding files accept a `resources` block (`timeout` in milliseconds). The
+  loader merges it into `annotations.extra["resources"]`, where `BuiltinExecute`
+  already reads the per-module budget; previously a `resources:` key was
+  rejected by `BindingEntry`'s `deny_unknown_fields` and a budget could not be
+  declared from YAML at all.
+
+### Fixed
+
+- `MODULE_TIMEOUT` raised by a module call is no longer retryable by default.
+  It carries `retryable: true` only when the module declares
+  `annotations.idempotent`. This includes deadlines that expire after a stream
+  has emitted chunks. Step-budget timeouts keep the spec default.
+
+### Changed
+
+- Refresh `Cargo.lock` (`tokio` 1.54.1, `openssl` 0.10.82,
+  `rustls-webpki` 0.103.17, `mio` 1.2.5, `libc` 0.2.191, and other patch
+  updates). No other crate API changes.
+
 ## [0.32.3] - 2026-10-25
 
 ### Fixed

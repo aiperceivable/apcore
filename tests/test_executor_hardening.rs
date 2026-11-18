@@ -273,10 +273,61 @@ async fn per_module_timeout_overrides_default() {
     assert!(result.is_err(), "expected timeout error, got {result:?}");
     let err = result.unwrap_err();
     assert_eq!(err.code, ErrorCode::ModuleTimeout);
+    assert_eq!(
+        err.retryable,
+        Some(false),
+        "a timed-out non-idempotent module must not be marked retryable"
+    );
     assert!(
         elapsed < Duration::from_millis(180),
         "per-module timeout (50 ms) was not honored; took {elapsed:?}"
     );
+}
+
+/// Same as [`SleepModule`], but declares `annotations.idempotent: true`.
+struct IdempotentSleepModule {
+    delay_ms: u64,
+}
+
+#[async_trait]
+impl Module for IdempotentSleepModule {
+    fn input_schema(&self) -> Value {
+        json!({"type": "object"})
+    }
+    fn output_schema(&self) -> Value {
+        json!({"type": "object"})
+    }
+    fn description(&self) -> &'static str {
+        "Idempotent module that sleeps for a configured duration"
+    }
+    fn annotations(&self) -> ModuleAnnotations {
+        ModuleAnnotations {
+            idempotent: true,
+            ..ModuleAnnotations::default()
+        }
+    }
+    async fn execute(&self, _inputs: Value, _ctx: &Context<Value>) -> Result<Value, ModuleError> {
+        tokio::time::sleep(Duration::from_millis(self.delay_ms)).await;
+        Ok(json!({"ok": true}))
+    }
+}
+
+#[tokio::test]
+async fn per_module_timeout_is_retryable_when_idempotent() {
+    let client = APCore::new();
+    register_with_timeout(
+        client.registry(),
+        "slow.idempotent",
+        Box::new(IdempotentSleepModule { delay_ms: 200 }),
+        50,
+    );
+
+    let err = client
+        .call("slow.idempotent", json!({}), None, None)
+        .await
+        .expect_err("expected timeout error");
+    assert_eq!(err.code, ErrorCode::ModuleTimeout);
+    assert_eq!(err.retryable, Some(true));
 }
 
 /// Register `module` with a raw JSON `resources.timeout` value (allows

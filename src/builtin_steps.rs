@@ -1169,10 +1169,15 @@ pub(crate) fn resolve_effective_timeout_ms(
         // intentional: remaining_ms is non-negative and fits in u64 for any reasonable deadline
         let remaining_ms = ((deadline - now) * 1000.0) as u64;
         if remaining_ms == 0 {
+            let retryable = registry
+                .and_then(|reg| reg.get_definition(module_id).ok().flatten())
+                .and_then(|desc| desc.annotations)
+                .is_some_and(|ann| ann.idempotent);
             return Err(ModuleError::new(
                 ErrorCode::ModuleTimeout,
                 format!("Module '{module_id}' execution aborted: global deadline already exceeded"),
-            ));
+            )
+            .with_retryable(retryable));
         }
         if timeout_ms == 0 || remaining_ms < timeout_ms {
             timeout_ms = remaining_ms;
@@ -1246,6 +1251,8 @@ impl Step for BuiltinExecute {
             let inputs = ctx.inputs.clone();
             let context = ctx.context.clone();
             let token = context.cancel_token.clone();
+            // Read the retry-safety flag before `module` moves into the task.
+            let retryable = module.annotations().idempotent;
             let execution = async move {
                 let result = module.execute(inputs, &context).await;
                 if let Err(error) = &result {
@@ -1271,7 +1278,8 @@ impl Step for BuiltinExecute {
                     if let Some(token) = &ctx.context.cancel_token {
                         token.cancel();
                     }
-                    Err(ModuleError::module_timeout(&ctx.module_id, timeout_ms))
+                    Err(ModuleError::module_timeout(&ctx.module_id, timeout_ms)
+                        .with_retryable(retryable))
                 }
             }
         } else {
