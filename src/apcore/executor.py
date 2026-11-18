@@ -19,6 +19,7 @@ from typing import Any, Callable
 
 from apcore.acl import ACL
 from apcore.approval import ApprovalHandler
+from apcore.builtin_steps import _is_idempotent
 from apcore.cancel import ExecutionCancelledError
 from apcore.config import Config
 from apcore.context import Context
@@ -1295,6 +1296,7 @@ class Executor:
                     raise ModuleTimeoutError(
                         module_id=module_id,
                         timeout_ms=self._global_timeout,
+                        retryable=_is_idempotent(pipe_ctx.module),
                     )
                 # Cross-SDK contract (Rust ``deep_merge_chunks_checked``):
                 # a stream chunk is valid iff it is a JSON object (dict).

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 import pytest
@@ -11,7 +12,7 @@ from apcore.client import APCore
 from apcore.config import Config
 from apcore.context import Context
 from apcore.decorator import FunctionModule
-from apcore.errors import ModuleNotFoundError, SysModulesDisabledError
+from apcore.errors import ModuleNotFoundError, ModuleTimeoutError, SysModulesDisabledError
 from apcore.events.emitter import ApCoreEvent
 from apcore.executor import Executor
 from apcore.middleware import Middleware
@@ -24,6 +25,30 @@ from apcore.registry import Registry
 
 
 class TestModuleDecorator:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("entrypoint", ["client", "global", "explicit_registry"])
+    async def test_public_decorators_apply_module_timeout(self, entrypoint, monkeypatch) -> None:
+        import apcore
+
+        client = APCore()
+        module_id = "test.module_budget"
+        if entrypoint == "client":
+            decorator = client.module(id=module_id, resources={"timeout": 10})
+        elif entrypoint == "global":
+            monkeypatch.setattr(apcore, "_get_default_client", lambda: client)
+            decorator = apcore.module(id=module_id, resources={"timeout": 10})
+        else:
+            decorator = apcore.module(id=module_id, resources={"timeout": 10}, registry=client.registry)
+
+        @decorator
+        async def slow() -> dict:
+            await asyncio.sleep(0.1)
+            return {}
+
+        with pytest.raises(ModuleTimeoutError) as exc:
+            await client.call_async(module_id, {})
+        assert exc.value.details["timeout_ms"] == 10
+
     def test_returns_original_function(self) -> None:
         client = APCore()
 

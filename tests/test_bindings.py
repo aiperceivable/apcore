@@ -48,6 +48,21 @@ class TestYamlParsing:
         assert len(result) == 1
         assert isinstance(result[0], FunctionModule)
 
+    def test_resources_budget_is_carried_onto_the_module(self, loader, registry, tmp_path):
+        """A binding can declare a per-module execution budget (D-11)."""
+        f = tmp_path / "test.binding.yaml"
+        f.write_text(
+            "bindings:\n"
+            "  - module_id: email.send\n"
+            "    target: binding_helpers:typed_function\n"
+            "    auto_schema: true\n"
+            "    resources:\n"
+            "      timeout: 1234\n"
+        )
+        result = loader.load_bindings(str(f), registry)
+        assert len(result) == 1
+        assert result[0].resources == {"timeout": 1234}
+
     def test_multiple_bindings_parsed(self, loader, registry, tmp_path):
         """Valid YAML with two binding entries."""
         f = tmp_path / "test.binding.yaml"

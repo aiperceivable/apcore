@@ -686,6 +686,25 @@ class TestPerModuleResourceTimeout:
             await self._run(module)
         assert exc_info.value.timeout_ms == 10
 
+    async def test_timeout_is_not_retryable_for_a_non_idempotent_module(self) -> None:
+        from apcore.errors import ModuleTimeoutError
+
+        module = self.SlowModule(resources={"timeout": 10})
+        with pytest.raises(ModuleTimeoutError) as exc_info:
+            await self._run(module)
+        assert exc_info.value.retryable is False
+
+    async def test_timeout_is_retryable_when_module_declares_idempotent(self) -> None:
+        from apcore.errors import ModuleTimeoutError
+
+        module = self.SlowModule(
+            resources={"timeout": 10},
+            annotations={"idempotent": True},
+        )
+        with pytest.raises(ModuleTimeoutError) as exc_info:
+            await self._run(module)
+        assert exc_info.value.retryable is True
+
     async def test_annotations_extra_resources_is_honoured(self) -> None:
         from apcore.errors import ModuleTimeoutError
 

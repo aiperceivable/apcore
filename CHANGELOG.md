@@ -6,6 +6,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [0.33.0] - 2026-11-18
+
+### Added
+
+- `APCore.module()`, the package-level `@module` decorator, `FunctionModule`,
+  and binding files accept a
+  first-class `resources` block (`timeout` in milliseconds). The executor
+  already read `module.resources`; the factory dropped it, so a declared budget
+  silently fell back to `executor.default_timeout` (30 s by default). Binding
+  files needed the matching `resources` key in the binding schema.
+
+### Changed
+
+- Regenerate `uv.lock` against the current dependency graph (`jsonschema`
+  4.26.0, `referencing` 0.37.0, `rpds-py` 2026.9.1, `pydantic` 2.14.3, and
+  other patch updates). Runtime dependency constraints stay the same.
+
+### Fixed
+
+- `MODULE_TIMEOUT` raised by a module call is no longer retryable by default.
+  It carries `retryable: True` only when the module declares
+  `annotations.idempotent`. This includes deadlines that expire after a stream
+  has emitted chunks. Step-budget timeouts keep the spec default.
+
 ## [0.32.2] - 2026-10-19
 
 ### Fixed

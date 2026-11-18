@@ -13,6 +13,7 @@ from apcore.context import Context
 from apcore.errors import InvalidInputError, ModuleNotFoundError, ModuleTimeoutError
 from apcore.executor import Executor
 from apcore.middleware import Middleware
+from apcore.module import ModuleAnnotations
 from apcore.registry import Registry
 
 
@@ -363,32 +364,35 @@ class TestStreamChunkShapeValidation:
 class SlowStreamingModule:
     """Emits chunks with a sleep between each, enough to cross a short deadline."""
 
-    def __init__(self) -> None:
+    def __init__(self, idempotent: bool) -> None:
         self.input_schema = None
         self.output_schema = None
+        self.annotations = ModuleAnnotations(idempotent=idempotent)
 
     def execute(self, inputs: dict[str, Any], context: Context) -> dict[str, Any]:
         return {}
 
     async def stream(self, inputs: dict[str, Any], context: Context) -> AsyncIterator[dict[str, Any]]:
         for i in range(10):
-            await asyncio.sleep(0.05)
             yield {"chunk": i}
+            await asyncio.sleep(0.05)
 
 
 class TestStreamGlobalDeadline:
     """Executor.stream() must raise ModuleTimeoutError when global_deadline elapses mid-iteration."""
 
     @pytest.mark.asyncio
-    async def test_stream_raises_on_deadline_elapsed(self) -> None:
-        ex = _make_executor(module=SlowStreamingModule(), module_id="slow")
+    @pytest.mark.parametrize("idempotent", [False, True])
+    async def test_stream_raises_on_deadline_elapsed(self, idempotent: bool) -> None:
+        ex = _make_executor(module=SlowStreamingModule(idempotent), module_id="slow")
         ctx = Context.create()
         ctx.global_deadline = time.time() + 0.1  # 100ms budget (D-99: epoch seconds)
 
         collected: list[dict[str, Any]] = []
-        with pytest.raises(ModuleTimeoutError):
+        with pytest.raises(ModuleTimeoutError) as exc:
             async for chunk in ex.stream("slow", {}, context=ctx):
                 collected.append(chunk)
         # At least one chunk produced before deadline hit.
         assert len(collected) >= 1
         assert len(collected) < 10  # Did not run to completion.
+        assert exc.value.retryable is idempotent

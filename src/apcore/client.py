@@ -185,8 +185,12 @@ class APCore:
         metadata: dict[str, Any] | None = None,
         display: dict[str, Any] | None = None,
         examples: list[Any] | None = None,
+        *,
+        resources: dict[str, Any] | None = None,
     ) -> Callable:
         """Decorator to register a function as a module in this client's registry.
+
+        ``resources["timeout"]`` sets the module's execution budget in milliseconds.
 
         Usage:
             @client.module(id="math.add")
@@ -206,6 +210,7 @@ class APCore:
                 display=display,
                 examples=examples,
                 registry=self.registry,
+                resources=resources,
             )
             return inner(func)
 

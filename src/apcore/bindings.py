@@ -319,6 +319,7 @@ class BindingLoader:
                 "tags",
                 "version",
                 "annotations",
+                "resources",
                 "metadata",
             }
             if unknown:
@@ -632,4 +633,5 @@ class BindingLoader:
             display=binding.get("display"),
             input_schema=input_schema,
             output_schema=output_schema,
+            resources=binding.get("resources"),
         )

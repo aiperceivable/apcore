@@ -467,6 +467,8 @@ def module(
     display: dict[str, Any] | None = None,
     examples: list[Any] | None = None,
     registry: Any = None,
+    *,
+    resources: dict[str, Any] | None = None,
 ) -> Any:
     """Register a module on the default APCore instance.
 
@@ -488,6 +490,7 @@ def module(
             display=display,
             examples=examples,
             registry=registry,
+            resources=resources,
         )
     return _get_default_client().module(
         id=id,
@@ -499,6 +502,7 @@ def module(
         metadata=metadata,
         display=display,
         examples=examples,
+        resources=resources,
     )
 
 

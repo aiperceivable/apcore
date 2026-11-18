@@ -186,6 +186,7 @@ class FunctionModule:
         examples: list[ModuleExample] | None = None,
         input_schema: type[BaseModel] | None = None,
         output_schema: type[BaseModel] | None = None,
+        resources: dict[str, Any] | None = None,
     ) -> None:
         self._func = func
         self.module_id = module_id
@@ -220,6 +221,10 @@ class FunctionModule:
         self.metadata = metadata
         self.display = display
         self.examples = examples
+        # Declared execution budget (PROTOCOL_SPEC §5.2 / D-11). The executor
+        # reads ``resources["timeout"]`` in milliseconds and uses it instead of
+        # ``executor.default_timeout`` for this module.
+        self.resources = resources
 
         # Create execute closures — two separate defs required so that
         # inspect.iscoroutinefunction returns the correct value.
@@ -300,6 +305,7 @@ def module(
     metadata: dict[str, Any] | None = None,
     display: dict[str, Any] | None = None,
     examples: list[ModuleExample] | None = None,
+    resources: dict[str, Any] | None = None,
     registry: Any = None,
 ) -> Any:
     """Wrap a Python function as an apcore module.
@@ -320,6 +326,7 @@ def module(
             metadata=metadata,
             display=display,
             examples=examples,
+            resources=resources,
         )
         # Resolved before registering: a bound method refuses attribute
         # assignment, and failing after `register` would leave the module

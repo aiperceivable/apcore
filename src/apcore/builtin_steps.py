@@ -989,6 +989,22 @@ def _module_is_destructive(module: Any) -> bool:
     return _is_destructive(getattr(module, "annotations", None))
 
 
+def _is_idempotent(module: Any) -> bool:
+    """Whether a module declares itself safe to retry (``annotations.idempotent``).
+
+    A timed-out call may already have applied side effects. Marking
+    ``MODULE_TIMEOUT`` retryable is only safe when the module opts in, so the
+    executor passes this to :class:`ModuleTimeoutError` instead of leaving the
+    class default in place.
+    """
+    annotations = getattr(module, "annotations", None)
+    if annotations is None:
+        return False
+    if isinstance(annotations, dict):
+        return annotations.get("idempotent") is True
+    return getattr(annotations, "idempotent", False) is True
+
+
 def _read_module_timeout_ms(module: Any, module_id: str) -> int | None:
     """Read a module's declared per-module timeout in milliseconds, or None.
 
@@ -1269,7 +1285,11 @@ class BuiltinExecute(BaseStep):
             if token is not None:
                 token.cancel()
             timeout_ms = int(self._default_timeout)
-            raise ModuleTimeoutError(module_id=ctx.module_id, timeout_ms=timeout_ms)
+            raise ModuleTimeoutError(
+                module_id=ctx.module_id,
+                timeout_ms=timeout_ms,
+                retryable=_is_idempotent(module),
+            )
 
         inputs = ctx.validated_inputs if ctx.validated_inputs is not None else ctx.inputs
 
@@ -1295,7 +1315,11 @@ class BuiltinExecute(BaseStep):
                 token = getattr(ctx.context, "cancel_token", None)
                 if token is not None:
                     token.cancel()
-                raise ModuleTimeoutError(module_id=ctx.module_id, timeout_ms=int(self._default_timeout))
+                raise ModuleTimeoutError(
+                    module_id=ctx.module_id,
+                    timeout_ms=int(self._default_timeout),
+                    retryable=_is_idempotent(module),
+                )
             if timeout_s is None or remaining < timeout_s:
                 timeout_s = remaining
 
@@ -1317,7 +1341,11 @@ class BuiltinExecute(BaseStep):
                     # forcibly cancel the module's coroutine. Consume a late
                     # exception so a discarded result cannot become a warning.
                     task.add_done_callback(_discard_late_execution)
-                    raise ModuleTimeoutError(module_id=ctx.module_id, timeout_ms=int(timeout_s * 1000))
+                    raise ModuleTimeoutError(
+                        module_id=ctx.module_id,
+                        timeout_ms=int(timeout_s * 1000),
+                        retryable=_is_idempotent(module),
+                    )
                 output = task.result()
             else:
                 output = await coro
@@ -1327,6 +1355,7 @@ class BuiltinExecute(BaseStep):
             raise ModuleTimeoutError(
                 module_id=ctx.module_id,
                 timeout_ms=timeout_ms,
+                retryable=_is_idempotent(module),
             ) from None
 
         return StepResult(action="continue")
