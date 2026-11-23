@@ -50,11 +50,12 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/aiperceivable/apcore-typescript.git"
+    "url": "https://github.com/aiperceivable/apcore.git",
+    "directory": "typescript"
   },
   "homepage": "https://aiperceivable.com",
   "bugs": {
-    "url": "https://github.com/aiperceivable/apcore-typescript/issues"
+    "url": "https://github.com/aiperceivable/apcore/issues"
   },
   "keywords": [
     "apcore",

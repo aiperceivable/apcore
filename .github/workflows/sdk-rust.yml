@@ -1,4 +1,4 @@
-name: CI
+name: Core SDK (rust)
 
 permissions:
   contents: read
@@ -13,6 +13,9 @@ jobs:
   test:
     name: Test on Rust ${{ matrix.rust }}
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: rust
     strategy:
       fail-fast: false
       matrix:
@@ -29,12 +32,6 @@ jobs:
 
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
-      - name: Checkout apcore spec repo (conformance fixtures)
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          repository: aiperceivable/apcore
-          path: .apcore-spec
-
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -47,7 +44,7 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target
+            rust/target
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-
@@ -72,7 +69,7 @@ jobs:
       - name: Run tests
         run: cargo test --all-features
         env:
-          CONFORMANCE_SPEC_REPO: ${{ github.workspace }}/.apcore-spec
+          CONFORMANCE_SPEC_REPO: ${{ github.workspace }}
 
       - name: Build examples
         run: cargo build --examples

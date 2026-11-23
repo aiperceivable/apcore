@@ -68,6 +68,11 @@ import re
 import sys
 from pathlib import Path
 
+if __package__:
+    from .sdk_layout import sdk_dir
+else:
+    from sdk_layout import sdk_dir
+
 REPO = Path(__file__).resolve().parent.parent
 BASELINE = REPO / "conformance" / "skip_asymmetry_baseline.json"
 
@@ -262,7 +267,7 @@ def self_test() -> list[str]:
 
 
 def asymmetries(sdk_root: Path) -> dict[str, dict[str, str]]:
-    seen = {sdk: scan(sdk_root / d / "tests", SDK_EXT[sdk]) for sdk, d in SDK_DIRS.items()}
+    seen = {sdk: scan(sdk_dir(sdk_root, d) / "tests", SDK_EXT[sdk]) for sdk, d in SDK_DIRS.items()}
     every_id = set().union(*(s.keys() for s in seen.values()))
     out: dict[str, dict[str, str]] = {}
     for cid in sorted(every_id):
@@ -275,7 +280,7 @@ def asymmetries(sdk_root: Path) -> dict[str, dict[str, str]]:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--sdk-root", type=Path, default=REPO.parent)
+    ap.add_argument("--sdk-root", type=Path, default=REPO)
     ap.add_argument("--strict", action="store_true", help="exit 1 on any asymmetry")
     ap.add_argument(
         "--self-test",

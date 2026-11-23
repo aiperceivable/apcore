@@ -5,22 +5,19 @@ from pathlib import Path
 import yaml
 
 
-def test_ci_checks_out_spec_main_independently_of_sdk_branch() -> None:
-    workflow = yaml.safe_load((Path(__file__).resolve().parents[1] / ".github/workflows/ci.yml").read_text())
-    checkouts = [
-        step
-        for step in workflow["jobs"]["test"]["steps"]
-        if step.get("with", {}).get("repository") == "aiperceivable/apcore"
-    ]
+def test_ci_uses_fixtures_from_the_same_checkout() -> None:
+    workflow = yaml.safe_load((Path(__file__).resolve().parents[2] / ".github/workflows/sdk-python.yml").read_text())
+    job = workflow["jobs"]["test"]
+    assert job["defaults"]["run"]["working-directory"] == "python"
+    checkouts = [step for step in job["steps"] if step.get("uses", "").startswith("actions/checkout@")]
     assert len(checkouts) == 1
-    assert checkouts[0]["with"]["ref"] == "main"
-    assert checkouts[0]["with"]["path"] == ".apcore-spec"
+    assert not checkouts[0].get("with", {}).get("repository")
 
 
 def test_ci_verifies_fixture_checkout_before_running_tests() -> None:
-    workflow = yaml.safe_load((Path(__file__).resolve().parents[1] / ".github/workflows/ci.yml").read_text())
+    workflow = yaml.safe_load((Path(__file__).resolve().parents[2] / ".github/workflows/sdk-python.yml").read_text())
     job = workflow["jobs"]["test"]
-    assert job["env"]["CONFORMANCE_SPEC_REPO"] == "${{ github.workspace }}/.apcore-spec"
+    assert job["env"]["CONFORMANCE_SPEC_REPO"] == "${{ github.workspace }}"
     steps = job["steps"]
     probes = [
         index

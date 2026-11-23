@@ -45,6 +45,11 @@ import re
 import sys
 from pathlib import Path
 
+if __package__:
+    from .sdk_layout import sdk_dir
+else:
+    from sdk_layout import sdk_dir
+
 REPO = Path(__file__).resolve().parent.parent
 FIXTURES = REPO / "conformance" / "fixtures"
 MAP = REPO / "conformance" / "decision_coverage.json"
@@ -102,7 +107,7 @@ def unmeasurable_cases() -> dict[str, set[str]]:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--sdk-root", type=Path, default=REPO.parent)
+    ap.add_argument("--sdk-root", type=Path, default=REPO)
     ap.add_argument("--strict", action="store_true",
                     help="exit 1 while any behavioural decision is unpinned")
     ap.add_argument("--write-ratchet", action="store_true",
@@ -166,7 +171,7 @@ def main() -> int:
                 # checking the file: a test function renamed out from under the
                 # map goes red here instead of quietly reading as coverage.
                 path, _, node = rel.partition("::")
-                target = args.sdk_root / SDK_DIRS[sdk] / path
+                target = sdk_dir(args.sdk_root, SDK_DIRS[sdk]) / path
                 if not target.exists():
                     rot.append(f"{key}: {sdk} test {path!r} does not exist")
                 elif node and node.rsplit("::", 1)[-1] not in target.read_text(

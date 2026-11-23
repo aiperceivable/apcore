@@ -1,4 +1,4 @@
-name: CI
+name: Core SDK (typescript)
 
 on:
   push:
@@ -9,18 +9,14 @@ on:
 jobs:
   build-and-test:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: typescript
     env:
-      CONFORMANCE_SPEC_REPO: ${{ github.workspace }}/.apcore-spec
+      CONFORMANCE_SPEC_REPO: ${{ github.workspace }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-
-      - name: Checkout apcore spec repo (conformance fixtures)
-        uses: actions/checkout@v4
-        with:
-          repository: aiperceivable/apcore
-          ref: main
-          path: .apcore-spec
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -38,19 +34,13 @@ jobs:
       - name: Verify canonical conformance fixture checkout
         run: pnpm exec vitest run tests/test-conformance-checkout.test.ts
 
-      - name: Set up Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.11'
+      - name: Check characters and imports
+        run: |
+          pnpm exec apdev-js check-chars src tests examples
+          pnpm exec apdev-js check-imports --package apcore-js
 
-      - name: Install pre-commit
-        run: pip install pre-commit
-
-      - name: Run pre-commit checks
-        run: pre-commit run --all-files
-
-      - name: Typecheck examples
-        run: pnpm run typecheck:examples
+      - name: Typecheck library and examples
+        run: pnpm run typecheck
 
       - name: Build
         run: pnpm build

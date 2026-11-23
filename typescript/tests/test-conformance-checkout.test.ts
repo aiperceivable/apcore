@@ -8,6 +8,7 @@ import { findFixturesRoot } from './spec-repo.js';
 
 interface CiStep {
   name?: string;
+  uses?: string;
   run?: string;
   with?: { repository?: string; ref?: string; path?: string };
 }
@@ -18,7 +19,7 @@ interface CiJob {
 }
 
 function readCiJob(): CiJob {
-  const workflow = yaml.load(readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8')) as {
+  const workflow = yaml.load(readFileSync(new URL('../../.github/workflows/sdk-typescript.yml', import.meta.url), 'utf8')) as {
     jobs: { 'build-and-test': CiJob };
   };
   return workflow.jobs['build-and-test'];
@@ -44,15 +45,15 @@ afterEach(() => {
 });
 
 describe('canonical conformance checkout', () => {
-  it('checks out spec main independently of SDK branches', () => {
-    const checkouts = readCiJob().steps.filter((step) => step.with?.repository === 'aiperceivable/apcore');
+  it('uses fixtures from the same checkout', () => {
+    const checkouts = readCiJob().steps.filter((step) => step.uses?.startsWith('actions/checkout@'));
     expect(checkouts).toHaveLength(1);
-    expect(checkouts[0].with).toMatchObject({ ref: 'main', path: '.apcore-spec' });
+    expect(checkouts[0].with?.repository).toBeUndefined();
   });
 
   it('runs the fixture preflight after dependency installation and before full tests', () => {
     const job = readCiJob();
-    expect(job.env?.CONFORMANCE_SPEC_REPO).toBe('${{ github.workspace }}/.apcore-spec');
+    expect(job.env?.CONFORMANCE_SPEC_REPO).toBe('${{ github.workspace }}');
     const probes = job.steps.flatMap((step, index) =>
       step.run === 'pnpm exec vitest run tests/test-conformance-checkout.test.ts' ? [index] : []);
     expect(probes).toHaveLength(1);

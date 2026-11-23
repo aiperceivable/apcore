@@ -96,6 +96,9 @@ export function findSchemasRoot(): string {
   }
 
   const repoRoot = path.resolve(__dirname, '..');
+  const monorepo = path.resolve(repoRoot, '..', 'schemas');
+  if (fs.existsSync(monorepo)) return monorepo;
+
   const sibling = path.resolve(repoRoot, '..', 'apcore', 'schemas');
   if (fs.existsSync(sibling)) return sibling;
 
@@ -135,6 +138,9 @@ export function findFixturesRoot(): string {
   }
 
   const repoRoot = path.resolve(__dirname, '..'); // apcore-typescript/
+  const monorepo = path.resolve(repoRoot, '..', 'conformance', 'fixtures');
+  if (fs.existsSync(monorepo)) return monorepo;
+
   const sibling = path.resolve(repoRoot, '..', 'apcore', 'conformance', 'fixtures');
   if (fs.existsSync(sibling)) return sibling;
 

@@ -92,7 +92,14 @@ fn spec_repo_subdir(relative: &[&str], what: &str) -> PathBuf {
     }
 
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let apcore = manifest_dir.parent().unwrap().join("apcore");
+    let checkout_root = manifest_dir.parent().unwrap();
+    let monorepo = relative
+        .iter()
+        .fold(checkout_root.to_path_buf(), |acc, part| acc.join(part));
+    if monorepo.is_dir() {
+        return monorepo;
+    }
+    let apcore = checkout_root.join("apcore");
     let sibling = relative
         .iter()
         .fold(apcore.clone(), |acc, part| acc.join(part));

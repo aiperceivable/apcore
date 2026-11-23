@@ -10,9 +10,9 @@
 
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/12294/badge)](https://www.bestpractices.dev/projects/12294)
-[![Python Version](https://img.shields.io/badge/python-3.11%2B-blue)](https://github.com/aiperceivable/apcore-python)
-[![TypeScript Version](https://img.shields.io/badge/TypeScript-Node_18%2B-blue)](https://github.com/aiperceivable/apcore-typescript)
-[![Rust Version](https://img.shields.io/badge/Rust-1.75%2B-blue)](https://github.com/aiperceivable/apcore-rust)
+[![Python Version](https://img.shields.io/badge/python-3.11%2B-blue)](./python/)
+[![TypeScript Version](https://img.shields.io/badge/TypeScript-Node_18%2B-blue)](./typescript/)
+[![Rust Version](https://img.shields.io/badge/Rust-1.75%2B-blue)](./rust/)
 
 apcore is a **governed, protocol-neutral runtime and module standard** for application capabilities that agents or code can call.
 
@@ -24,9 +24,9 @@ This repository holds the **protocol specification**, JSON Schemas and cross-lan
 
 | SDK | Language | Install | Repository |
 |-----|----------|---------|------------|
-| `apcore` | Python 3.11+ | `pip install apcore` | [apcore-python](https://github.com/aiperceivable/apcore-python) |
-| `apcore-js` | TypeScript (Node 18+) | `npm install apcore-js` | [apcore-typescript](https://github.com/aiperceivable/apcore-typescript) |
-| `apcore` | Rust 1.75+ | `cargo add apcore` | [apcore-rust](https://github.com/aiperceivable/apcore-rust) |
+| `apcore` | Python 3.11+ | `pip install apcore` | [python SDK](./python/) |
+| `apcore-js` | TypeScript (Node 18+) | `npm install apcore-js` | [typescript SDK](./typescript/) |
+| `apcore` | Rust 1.75+ | `cargo add apcore` | [rust SDK](./rust/) |
 
 Current versions are listed on the [documentation home](./docs/index.md).
 
@@ -154,10 +154,10 @@ Adapters are independently versioned and available for Python, TypeScript and Ru
 
 | Adapter | Projects modules as | Repository |
 |---|---|---|
-| `apcore-mcp` | MCP tools (with a Tool Explorer UI) | [apcore-mcp](https://github.com/aiperceivable/apcore-mcp) |
-| `apcore-a2a` | A2A skills and Agent Card metadata | [apcore-a2a](https://github.com/aiperceivable/apcore-a2a) |
-| `apcore-cli` | CLI commands and arguments | [apcore-cli](https://github.com/aiperceivable/apcore-cli) |
-| `apcore-toolkit` | Shared scanners, schema extraction and output writers for adapter authors | [apcore-toolkit](https://github.com/aiperceivable/apcore-toolkit) |
+| `apcore-mcp` | MCP tools (with a Tool Explorer UI) | [apcore-mcp](https://github.com/aiperceivable/apcore-surfaces/tree/main/mcp) |
+| `apcore-a2a` | A2A skills and Agent Card metadata | [apcore-a2a](https://github.com/aiperceivable/apcore-surfaces/tree/main/a2a) |
+| `apcore-cli` | CLI commands and arguments | [apcore-cli](https://github.com/aiperceivable/apcore-surfaces/tree/main/cli) |
+| `apcore-toolkit` | Shared scanners, schema extraction and output writers for adapter authors | [apcore-toolkit](https://github.com/aiperceivable/apcore-surfaces/tree/main/toolkit) |
 
 Framework integrations bind HTTP endpoints to modules: `fastapi-apcore`, `django-apcore`, `flask-apcore`, `nestjs-apcore`, `express-apcore`, `hono-apcore`, `axum-apcore`. To write your own, see the [Adapter Development guide](./docs/guides/adapter-development.md).
 

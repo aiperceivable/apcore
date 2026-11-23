@@ -55,6 +55,11 @@ import sys
 import warnings
 from collections.abc import Iterator
 from pathlib import Path
+
+if __package__:
+    from .sdk_layout import sdk_dir
+else:
+    from sdk_layout import sdk_dir
 from typing import Callable
 
 HERE = Path(__file__).resolve().parent
@@ -2210,7 +2215,7 @@ def _extensions_ignore_patterns() -> str | None:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--sdk-root", default="..", help="directory holding the sibling SDK checkouts")
+    ap.add_argument("--sdk-root", default=str(HERE.parent), help="directory holding the sibling SDK checkouts")
     ap.add_argument(
         "--self-test",
         action="store_true",
@@ -2243,7 +2248,7 @@ def main() -> int:
         problems.append(f"{key}: listed here but no longer a declared configuration key")
 
     # 2. Shape, and probes.
-    python_src = Path(args.sdk_root).resolve() / "apcore-python" / "src"
+    python_src = sdk_dir(Path(args.sdk_root).resolve(), "apcore-python") / "src"
     have_python = python_src.is_dir()
     if have_python:
         sys.path.insert(0, str(python_src))

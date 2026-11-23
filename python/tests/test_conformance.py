@@ -83,6 +83,10 @@ def _find_apcore_fixtures() -> Path:
 
     # 2. Sibling directory (standard workspace layout & CI checkout)
     repo_root = Path(__file__).resolve().parent.parent  # apcore-python/
+    monorepo = repo_root.parent / "conformance" / "fixtures"
+    if monorepo.is_dir():
+        return monorepo
+
     sibling = repo_root.parent / "apcore" / "conformance" / "fixtures"
     if sibling.is_dir():
         return sibling

@@ -37,6 +37,11 @@ import re
 import sys
 from pathlib import Path
 
+if __package__:
+    from .sdk_layout import sdk_dir
+else:
+    from sdk_layout import sdk_dir
+
 REPO = Path(__file__).resolve().parent.parent
 
 # ---------------------------------------------------------------- extraction
@@ -324,13 +329,13 @@ def check_rust(blocks, exports: set[str], variants: set[str], out: list[Violatio
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--sdk-root", type=Path, default=REPO.parent,
+    ap.add_argument("--sdk-root", type=Path, default=REPO,
                     help="directory holding apcore-python / apcore-typescript / apcore-rust")
     args = ap.parse_args()
 
-    py_sdk = args.sdk_root / "apcore-python"
-    ts_sdk = args.sdk_root / "apcore-typescript"
-    rs_sdk = args.sdk_root / "apcore-rust"
+    py_sdk = sdk_dir(args.sdk_root, "apcore-python")
+    ts_sdk = sdk_dir(args.sdk_root, "apcore-typescript")
+    rs_sdk = sdk_dir(args.sdk_root, "apcore-rust")
     present = [p.name for p in (py_sdk, ts_sdk, rs_sdk) if p.is_dir()]
     if not present:
         print(f"No SDK checkouts under {args.sdk_root} — skipping. "

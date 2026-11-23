@@ -59,6 +59,11 @@ import sys
 import tempfile
 from pathlib import Path
 
+if __package__:
+    from .sdk_layout import sdk_dir
+else:
+    from sdk_layout import sdk_dir
+
 REPO = Path(__file__).resolve().parent.parent
 FIXTURES = REPO / "conformance" / "fixtures"
 BASELINE = REPO / "conformance" / "case_pinning_baseline.json"
@@ -203,7 +208,7 @@ def driver_files(sdk_root: Path) -> dict[str, dict[str, list[Path]]]:
     stems = [p.stem for p in FIXTURES.glob("*.json")]
     out: dict[str, dict[str, list[Path]]] = {s: {} for s in stems}
     for sdk, repo, suffix in SDKS:
-        base = sdk_root / repo / "tests"
+        base = sdk_dir(sdk_root, repo) / "tests"
         if not base.is_dir():
             continue
         for path in base.rglob(f"*{suffix}"):
@@ -255,7 +260,7 @@ def run_drivers_verbose(sdk: str, sdk_root: Path, files: list[Path]) -> tuple[bo
     target is named after its file, so every Rust verdict in the first per-SDK
     sweep was manufactured by this bug rather than measured.
     """
-    repo = sdk_root / dict((s, r) for s, r, _ in SDKS)[sdk]
+    repo = sdk_dir(sdk_root, dict((s, r) for s, r, _ in SDKS)[sdk])
     # The drivers must exercise the CHECKOUT, not whatever `apcore` happens to be
     # installed. CI gets that from `pip install -e`, but a developer with a stale
     # non-editable wheel in site-packages runs the whole sweep against it: the
@@ -482,7 +487,7 @@ def load_allowlist() -> dict[tuple[str, str], set[str]]:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--sdk-root", type=Path, default=REPO.parent)
+    ap.add_argument("--sdk-root", type=Path, default=REPO)
     ap.add_argument("--fixture", help="limit to one fixture (stem, no .json)")
     ap.add_argument("--sdk", choices=[s[0] for s in SDKS],
                     help="ask the question of ONE SDK: which cases does it not run? "

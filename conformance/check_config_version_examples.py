@@ -27,6 +27,11 @@ import re
 import sys
 from pathlib import Path
 
+if __package__:
+    from .sdk_layout import sdk_dir
+else:
+    from sdk_layout import sdk_dir
+
 REPO = Path(__file__).resolve().parent.parent
 SCHEMA = REPO / "schemas" / "apcore-config.schema.json"
 
@@ -101,7 +106,7 @@ def scan(path: Path, allowed: set[str]) -> list[str]:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--sdk-root", type=Path, default=REPO.parent)
+    parser.add_argument("--sdk-root", type=Path, default=REPO)
     args = parser.parse_args()
 
     allowed = sanctioned_versions()
@@ -109,7 +114,7 @@ def main() -> int:
     for pattern in DOC_GLOBS:
         files.extend(sorted(REPO.glob(pattern)))
     for sdk in ("apcore-python", "apcore-typescript", "apcore-rust"):
-        readme = args.sdk_root / sdk / "README.md"
+        readme = sdk_dir(args.sdk_root, sdk) / "README.md"
         if readme.is_file():
             files.append(readme)
 

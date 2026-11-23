@@ -110,6 +110,10 @@ def fixtures_dir() -> Path:
 
     # apcore-python/tests/conformance/ → apcore-python/ → workspace root
     repo_root = Path(__file__).resolve().parent.parent.parent
+    monorepo = repo_root.parent / "conformance" / "fixtures"
+    if monorepo.is_dir():
+        return monorepo
+
     sibling = repo_root.parent / "apcore" / "conformance" / "fixtures"
     if sibling.is_dir():
         return sibling
@@ -144,6 +148,10 @@ def schemas_dir() -> Path:
         pytest.fail(f"${name}={value} does not contain schemas/.")
 
     repo_root = Path(__file__).resolve().parent.parent.parent
+    monorepo = repo_root.parent / "schemas"
+    if monorepo.is_dir():
+        return monorepo
+
     sibling = repo_root.parent / "apcore" / "schemas"
     if sibling.is_dir():
         return sibling

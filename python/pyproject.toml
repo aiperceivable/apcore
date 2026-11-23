@@ -53,9 +53,9 @@ dependencies = [
 [project.urls]
 Homepage = "https://aiperceivable.com"
 Documentation = "https://github.com/aiperceivable/apcore"
-Repository = "https://github.com/aiperceivable/apcore-python"
-Issues = "https://github.com/aiperceivable/apcore-python/issues"
-Changelog = "https://github.com/aiperceivable/apcore-python/blob/main/CHANGELOG.md"
+Repository = "https://github.com/aiperceivable/apcore/tree/main/python"
+Issues = "https://github.com/aiperceivable/apcore/issues"
+Changelog = "https://github.com/aiperceivable/apcore/blob/main/python/CHANGELOG.md"
 
 [project.optional-dependencies]
 events = [

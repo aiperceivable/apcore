@@ -37,6 +37,11 @@ import re
 import sys
 from pathlib import Path
 
+if __package__:
+    from .sdk_layout import sdk_dir
+else:
+    from sdk_layout import sdk_dir
+
 REPO = Path(__file__).resolve().parent.parent
 FIXTURES = REPO / "conformance" / "fixtures"
 BASELINE = REPO / "conformance" / "expected_keys_baseline.json"
@@ -73,7 +78,7 @@ def drivers_for(sdk_root: Path, fixture_stem: str) -> dict[str, str]:
     out: dict[str, str] = {}
     pattern = _fixture_pattern(fixture_stem)
     for sdk, (repo, suffix) in SDKS.items():
-        base = sdk_root / repo / "tests"
+        base = sdk_dir(sdk_root, repo) / "tests"
         if not base.is_dir():
             continue
         chunks = []
@@ -90,7 +95,7 @@ def drivers_for(sdk_root: Path, fixture_stem: str) -> dict[str, str]:
 
 def available_sdks(sdk_root: Path) -> list[str]:
     """Which SDK checkouts are present — the script needs all three to be honest."""
-    return [sdk for sdk, (repo, _) in SDKS.items() if (sdk_root / repo / "tests").is_dir()]
+    return [sdk for sdk, (repo, _) in SDKS.items() if (sdk_dir(sdk_root, repo) / "tests").is_dir()]
 
 
 #: How a driver asserts EVERY key of `expected` without naming any of them.
@@ -154,7 +159,7 @@ def load_allowlist() -> dict[str, set[str]]:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--sdk-root", type=Path, default=REPO.parent)
+    ap.add_argument("--sdk-root", type=Path, default=REPO)
     ap.add_argument("--strict", action="store_true", help="exit 1 on any unread key")
     ap.add_argument("--baseline", action="store_true",
                     help="exit 1 only on keys not in expected_keys_baseline.json")
