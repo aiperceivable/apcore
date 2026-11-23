@@ -1,0 +1,21 @@
+# Canonical YAML binding definition.
+#
+# `target` is "<module path>:<exported symbol>". The module path is handed to
+# Node's `import()` verbatim — exactly as apcore-python hands it to
+# `importlib.import_module()`. Node therefore resolves it as a *package
+# specifier* or an *absolute path*; a bare name like `format-date` only works
+# if it is on the module resolution path.
+#
+# `run.ts` in this directory rewrites the module path to the absolute path of
+# the co-located `format-date.ts` before loading, which is what you would do in
+# an application that ships binding files next to their targets.
+spec_version: "1.0"
+bindings:
+  - module_id: "utils.format_date"
+    target: "format-date:formatDateString"
+    description: "Format a date string into a specified format"
+    tags:
+      - "utility"
+      - "date"
+    version: "1.0.0"
+    auto_schema: true

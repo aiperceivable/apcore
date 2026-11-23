@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    env:
+      CONFORMANCE_SPEC_REPO: ${{ github.workspace }}/.apcore-spec
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Checkout apcore spec repo (conformance fixtures)
+        uses: actions/checkout@v4
+        with:
+          repository: aiperceivable/apcore
+          ref: main
+          path: .apcore-spec
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Install dependencies
+        run: pnpm install
+
+      - name: Verify canonical conformance fixture checkout
+        run: pnpm exec vitest run tests/test-conformance-checkout.test.ts
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install pre-commit
+        run: pip install pre-commit
+
+      - name: Run pre-commit checks
+        run: pre-commit run --all-files
+
+      - name: Typecheck examples
+        run: pnpm run typecheck:examples
+
+      - name: Build
+        run: pnpm build
+
+      - name: Run tests
+        run: pnpm test:coverage

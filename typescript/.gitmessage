@@ -1,0 +1,60 @@
+# <type>(<scope>): <subject>
+#
+# <body>
+#
+# <footer>
+
+# Type must be one of the following:
+#   feat:     A new feature
+#   fix:      A bug fix
+#   docs:     Documentation only changes
+#   style:    Changes that do not affect the meaning of the code
+#   refactor: A code change that neither fixes a bug nor adds a feature
+#   perf:     A code change that improves performance
+#   test:     Adding missing tests or correcting existing tests
+#   chore:    Changes to the build process or auxiliary tools
+#   ci:       Changes to CI configuration files and scripts
+
+# Scope is optional and can be anything specifying the place of the commit change.
+# Examples: api, core, storage, cli, stdio, etc.
+
+# Subject should be:
+#   - Use imperative, present tense: "change" not "changed" nor "changes"
+#   - Don't capitalize first letter
+#   - No dot (.) at the end
+#   - Maximum 72 characters
+
+# Body should include:
+#   - Motivation for the change and contrast with previous behavior
+#   - What changed and why
+#   - Any breaking changes
+
+# Footer should contain:
+#   - Breaking changes (start with BREAKING CHANGE:)
+#   - Issue references (Closes #123, Fixes #456)
+
+# Examples:
+#   feat(stdio): add stdio executor for process execution
+#
+#   Implement a new stdio executor that allows executing system commands
+#   and processes via stdin/stdout communication, similar to MCP stdio
+#   transport mode. This enables flexible task execution through shell
+#   commands and Python scripts.
+#
+#   - Add StdioExecutor class with command execution support
+#   - Add system resource monitoring (CPU, memory, disk)
+#   - Support async process communication
+#   - Add comprehensive error handling and logging
+#
+#   Closes #123
+
+#   refactor(core): extract shared types to core.types module
+#
+#   Move common type definitions from various modules to a centralized
+#   core.types module to avoid circular dependencies and improve code
+#   organization.
+#
+#   - Add TaskPreHook and TaskPostHook type aliases
+#   - Move TaskStatus enum to core.types
+#   - Update imports across affected modules
+

@@ -1,0 +1,16 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    // Examples import the package by its public name. Map it to `src/` so the
+    // check runs without a prior `pnpm build` (and so it validates the current
+    // sources, not a stale `dist/`).
+    "baseUrl": ".",
+    "paths": {
+      "apcore-js": ["./src/index.ts"],
+      "apcore-js/context-keys": ["./src/context-keys.ts"]
+    }
+  },
+  "include": ["examples/**/*.ts"],
+  "exclude": ["node_modules", "dist"]
+}

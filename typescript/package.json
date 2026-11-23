@@ -1,0 +1,89 @@
+{
+  "name": "apcore-js",
+  "version": "0.33.0",
+  "description": "Build once, invoke by code or AI — with schema, ACL, approval, and audit enforced at every call",
+  "type": "module",
+  "main": "./dist/index.js",
+  "browser": "./dist/browser/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": {
+        "browser": "./dist/browser/index.d.ts",
+        "default": "./dist/index.d.ts"
+      },
+      "browser": "./dist/browser/index.js",
+      "node": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./context-keys": {
+      "types": "./dist/context-keys.d.ts",
+      "default": "./dist/context-keys.js"
+    }
+  },
+  "sideEffects": [
+    "./dist/index.js",
+    "./dist/acl-file.js",
+    "./dist/sys-modules/install.js",
+    "./dist/sys-modules/overrides-file.js"
+  ],
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "generate:version": "node scripts/generate-version.js",
+    "prepare": "node scripts/generate-version.js",
+    "build": "node scripts/generate-version.js && tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit && pnpm run typecheck:examples",
+    "typecheck:examples": "tsc -p tsconfig.examples.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "lint": "biome lint src tests",
+    "lint:fix": "biome lint --write src tests",
+    "format": "biome format --write src tests",
+    "prepublishOnly": "pnpm run build"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/aiperceivable/apcore-typescript.git"
+  },
+  "homepage": "https://aiperceivable.com",
+  "bugs": {
+    "url": "https://github.com/aiperceivable/apcore-typescript/issues"
+  },
+  "keywords": [
+    "apcore",
+    "ai",
+    "module",
+    "schema",
+    "framework",
+    "orchestration",
+    "llm",
+    "agent",
+    "json-schema",
+    "error-handling",
+    "middleware",
+    "approval",
+    "acl"
+  ],
+  "license": "Apache-2.0",
+  "dependencies": {
+    "@sinclair/typebox": "^0.34.0",
+    "js-yaml": "^4.3.2",
+    "uuid": "^11.1.1"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^1.9.4",
+    "@types/js-yaml": "^4.0.9",
+    "@types/node": "^20.0.0",
+    "@vitest/coverage-v8": "^5.1.0",
+    "apdev-js": "0.2.4",
+    "typescript": "^5.5.0",
+    "vitest": "^5.1.0"
+  }
+}
