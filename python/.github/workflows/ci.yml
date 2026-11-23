@@ -1,0 +1,63 @@
+name: CI
+
+permissions:
+  contents: read
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  test:
+    name: Test on Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    env:
+      CONFORMANCE_SPEC_REPO: ${{ github.workspace }}/.apcore-spec
+    # container:
+    #   image: python:${{ matrix.python-version }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # Pin CI to a single, consistent Python version to reduce version-related
+        # test flakiness. Use 3.12 for CI stability; expand matrix later if desired.
+        python-version: ["3.12"]
+
+    steps:
+    - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+    - name: Checkout apcore spec repo (conformance fixtures)
+      uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      with:
+        repository: aiperceivable/apcore
+        # SDK branch names do not select branches in the canonical spec repository.
+        ref: main
+        path: .apcore-spec
+
+    - name: Set up Python
+      uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+      with:
+        python-version: ${{ matrix.python-version }}
+        cache: pip
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        # If a constraints.txt file is present, use it to pin critical dependency versions.
+        if [ -f constraints.txt ]; then
+          pip install -e ".[dev]" -c constraints.txt
+        else
+          pip install -e ".[dev]"
+        fi
+
+    - name: Verify canonical conformance fixture checkout
+      run: pytest tests/conformance/test_fixture_checkout.py -q
+
+    - name: Lint with Ruff
+      run: |
+        ruff check src/ tests/
+
+    - name: Run tests
+      run: |
+        pytest

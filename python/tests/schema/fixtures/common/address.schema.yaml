@@ -1,0 +1,18 @@
+definitions:
+  Address:
+    type: object
+    properties:
+      street:
+        type: string
+      city:
+        type: string
+      state:
+        type: string
+      zip_code:
+        type: string
+        pattern: "^\\d{5}$"
+    required:
+      - street
+      - city
+      - state
+      - zip_code

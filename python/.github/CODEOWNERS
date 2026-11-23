@@ -1,0 +1,3 @@
+# all workflow and CODEOWNERS itself modification must be approved by repository owner or core maintainer
+.github/workflows/ @tercel
+.github/CODEOWNERS @tercel

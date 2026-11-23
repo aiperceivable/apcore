@@ -1,0 +1,10 @@
+spec_version: "1.0"
+bindings:
+  - module_id: "utils.format_date"
+    target: "format_date:format_date_string"
+    description: "Format a date string into a specified format"
+    tags:
+      - "utility"
+      - "date"
+    version: "1.0.0"
+    auto_schema: true

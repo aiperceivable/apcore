@@ -1,0 +1,21 @@
+module_id: test.simple
+description: A simple test schema with basic field types
+version: "1.0.0"
+
+input_schema:
+  type: object
+  properties:
+    name:
+      type: string
+    count:
+      type: integer
+    enabled:
+      type: boolean
+  required:
+    - name
+
+output_schema:
+  type: object
+  properties:
+    result:
+      type: string
