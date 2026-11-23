@@ -1,0 +1,5 @@
+error[E0616]: field `roles` of struct `Identity` is private
+  --> tests/compile_fail/identity_immutable.rs:13:14
+   |
+13 |     identity.roles = vec![]; // ERROR: field `roles` is private
+   |              ^^^^^ private field

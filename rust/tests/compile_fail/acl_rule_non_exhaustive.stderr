@@ -1,0 +1,12 @@
+error[E0639]: cannot create non-exhaustive struct using struct expression
+  --> tests/compile_fail/acl_rule_non_exhaustive.rs:12:17
+   |
+12 |       let _rule = ACLRule {
+   |  _________________^
+13 | |         callers: vec!["admin".to_string()],
+14 | |         targets: vec!["admin.*".to_string()],
+15 | |         effect: "allow".to_string(),
+...  |
+18 | |         conditions: None,
+19 | |     }; // ERROR: cannot create non-exhaustive struct using struct expression
+   | |_____^
