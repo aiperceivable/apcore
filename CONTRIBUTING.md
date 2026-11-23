@@ -18,13 +18,15 @@ Spec changes must be reviewed and approved by at least 2 maintainers — **or by
 
 ## Language SDKs
 
-Each SDK has its own repository with language-specific setup instructions:
+Clone this repository once. Each SDK has its own setup and test commands.
 
-| SDK | Repository | Setup |
+| SDK | Directory | Setup |
 |-----|-----------|-------|
-| Python | [apcore-python](https://github.com/aiperceivable/apcore-python) | Python 3.11+, `pip install -e .` |
-| TypeScript | [apcore-typescript](https://github.com/aiperceivable/apcore-typescript) | Node 18+, `npm install` |
-| Rust | [apcore-rust](https://github.com/aiperceivable/apcore-rust) | Rust 1.75+, `cargo build` |
+| Python | [`python/`](./python/) | `python -m pip install -e '.[dev]'` |
+| TypeScript | [`typescript/`](./typescript/) | `pnpm install --frozen-lockfile` |
+| Rust | [`rust/`](./rust/) | `cargo build` |
+
+Run the commands from the corresponding SDK directory. The test suites read the shared fixtures in `conformance/` at the repository root.
 
 ## Pull Request Process
 
@@ -48,16 +50,15 @@ the project's license. See [developercertificate.org](https://developercertifica
 
 ## Coding Guidelines
 
-- Follow the existing code style in each repository
+- Follow the existing code style in each SDK
 - Write tests for new functionality
 - Keep PRs focused — one logical change per PR
 - Update documentation when changing user-facing behavior
 
 ## Cross-Language Consistency
 
-When making changes that affect the protocol or module behavior, consider
-the impact across all three language implementations. Ideally, changes to
-the spec should be accompanied by PRs to all affected SDK repositories.
+When a change affects the protocol or module behavior, include the affected
+SDKs and their conformance drivers in the same pull request.
 
 ## Reporting Security Issues
 

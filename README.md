@@ -10,23 +10,19 @@
 
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/12294/badge)](https://www.bestpractices.dev/projects/12294)
-[![Python Version](https://img.shields.io/badge/python-3.11%2B-blue)](./python/)
-[![TypeScript Version](https://img.shields.io/badge/TypeScript-Node_18%2B-blue)](./typescript/)
-[![Rust Version](https://img.shields.io/badge/Rust-1.75%2B-blue)](./rust/)
-
 apcore is a **governed, protocol-neutral runtime and module standard** for application capabilities that agents or code can call.
 
 You define a capability once — a description, an input schema, an output schema and behavioral annotations. The runtime then applies identity, access control, approval, validation, middleware, execution, structured errors and trace context on every call. Surface adapters project the same capability to MCP, A2A, CLI, HTTP or direct code.
 
 MCP tells an agent what it *can* call. apcore decides whether *this* call — with these arguments, by this identity — should run at all, and leaves evidence that it did.
 
-This repository holds the **protocol specification**, JSON Schemas and cross-language conformance fixtures. The runtimes live in separate repositories:
+This repository holds the **protocol specification**, JSON Schemas, cross-language conformance fixtures and three independently published runtime SDKs.
 
-| SDK | Language | Install | Repository |
-|-----|----------|---------|------------|
-| `apcore` | Python 3.11+ | `pip install apcore` | [python SDK](./python/) |
-| `apcore-js` | TypeScript (Node 18+) | `npm install apcore-js` | [typescript SDK](./typescript/) |
-| `apcore` | Rust 1.75+ | `cargo add apcore` | [rust SDK](./rust/) |
+| Language | Install | Source |
+|----------|---------|--------|
+| Python | `pip install apcore` | [Python SDK](./python/) |
+| TypeScript | `npm install apcore-js` | [TypeScript SDK](./typescript/) |
+| Rust | `cargo add apcore` | [Rust SDK](./rust/) |
 
 Current versions are listed on the [documentation home](./docs/index.md).
 
