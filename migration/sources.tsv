@@ -1,0 +1,5 @@
+Path	Source	Imported commit
+.	https://github.com/aiperceivable/apcore	6530227e5de58f3988810eed38e15f66ecc7ee18
+python	https://github.com/aiperceivable/apcore-python	958e79da54ce15907c8eeeb743dcb62e1ee3e3a9
+rust	https://github.com/aiperceivable/apcore-rust	3fd2244a4702e5117c48426d2099227a0af09657
+typescript	https://github.com/aiperceivable/apcore-typescript	8f94d9e3a653ab4111bc4089a5537ed50d63e0ea
