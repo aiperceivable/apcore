@@ -21,7 +21,7 @@ use apcore::async_task::{
 };
 use apcore::config::Config;
 use apcore::context::{Context, Identity};
-use apcore::errors::ModuleError;
+use apcore::errors::{ErrorCode, ModuleError};
 use apcore::module::Module;
 use apcore::registry::registry::Registry;
 use apcore::Executor;
@@ -56,9 +56,7 @@ fn parse_task_info(value: &Value) -> TaskInfo {
 // Test fixtures: a fake `RedisTaskStore` and a controllable failing module.
 // ---------------------------------------------------------------------------
 
-/// In-test stub that satisfies [`TaskStore`] purely for the
-/// `custom_store_injected` conformance case. It is not a real Redis client —
-/// only its `store_type_name` is observed by the fixture.
+/// In-test store that uses timers to simulate pending I/O.
 struct RedisTaskStore {
     inner: InMemoryTaskStore,
 }
@@ -77,12 +75,15 @@ impl TaskStore for RedisTaskStore {
         self.inner.save(task).await
     }
     async fn get(&self, id: &str) -> Result<Option<TaskInfo>, ModuleError> {
+        tokio::time::sleep(Duration::from_millis(1)).await;
         self.inner.get(id).await
     }
     async fn list(&self, status: Option<TaskStatus>) -> Result<Vec<TaskInfo>, ModuleError> {
+        tokio::time::sleep(Duration::from_millis(1)).await;
         self.inner.list(status).await
     }
     async fn delete(&self, id: &str) -> Result<(), ModuleError> {
+        tokio::time::sleep(Duration::from_millis(1)).await;
         self.inner.delete(id).await
     }
     async fn list_expired(&self, before: f64) -> Result<Vec<TaskInfo>, ModuleError> {
@@ -177,6 +178,83 @@ async fn case_custom_store_injected() {
     let store: Arc<dyn TaskStore> = Arc::new(RedisTaskStore::new());
     let mgr = AsyncTaskManager::with_store(make_bare_executor(), 4, 100, store);
     assert_eq!(mgr.store_type_name(), expected_type);
+}
+
+fn completed_task() -> TaskInfo {
+    parse_task_info(&serde_json::json!({
+        "task_id": "done",
+        "module_id": "test.x",
+        "status": "completed",
+        "submitted_at": 0.0,
+        "completed_at": 1.0,
+        "result": {"ok": true}
+    }))
+}
+
+#[test]
+fn custom_store_sync_accessors_work_outside_runtime() {
+    let store = Arc::new(RedisTaskStore::new());
+    let task = completed_task();
+    tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap()
+        .block_on(store.save(&task))
+        .unwrap();
+    let mgr = AsyncTaskManager::with_store(make_bare_executor(), 4, 100, store);
+
+    assert_eq!(mgr.get_status("done").unwrap().unwrap().task_id, "done");
+    assert_eq!(
+        mgr.get_result("done").unwrap(),
+        serde_json::json!({"ok": true})
+    );
+    assert_eq!(
+        mgr.list_tasks(Some(TaskStatus::Completed)).unwrap().len(),
+        1
+    );
+    assert_eq!(mgr.task_count().unwrap(), 1);
+    assert_eq!(mgr.cleanup(0.0).unwrap(), 1);
+    assert!(mgr.get_status("done").unwrap().is_none());
+}
+
+#[tokio::test]
+async fn custom_store_sync_accessors_return_typed_error_within_runtime() {
+    let store = Arc::new(RedisTaskStore::new());
+    store.save(&completed_task()).await.unwrap();
+    let mgr = AsyncTaskManager::with_store(make_bare_executor(), 4, 100, store);
+
+    for (err, method) in [
+        (mgr.get_status("done").unwrap_err(), "get_status_async"),
+        (mgr.get_result("done").unwrap_err(), "get_result_async"),
+        (mgr.list_tasks(None).unwrap_err(), "list_tasks_async"),
+        (mgr.task_count().unwrap_err(), "task_count_async"),
+        (mgr.cleanup(0.0).unwrap_err(), "cleanup_async"),
+    ] {
+        assert_eq!(err.code, ErrorCode::GeneralInvalidInput);
+        assert!(err.message.contains(method), "{err}");
+    }
+    assert_eq!(
+        mgr.get_status_async("done").await.unwrap().unwrap().task_id,
+        "done"
+    );
+    assert_eq!(mgr.cleanup_async(0.0).await.unwrap(), 1);
+}
+
+#[test]
+fn custom_store_sync_accessors_do_not_require_a_timer_in_the_callers_runtime() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
+    let _entered = runtime.enter();
+    let mgr = AsyncTaskManager::with_store(
+        make_bare_executor(),
+        4,
+        100,
+        Arc::new(RedisTaskStore::new()),
+    );
+
+    let error = mgr.get_status("done").unwrap_err();
+    assert_eq!(error.code, ErrorCode::GeneralInvalidInput);
+    assert!(error.message.contains("get_status_async"), "{error}");
 }
 
 // ---------------------------------------------------------------------------

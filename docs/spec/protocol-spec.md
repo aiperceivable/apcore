@@ -6,8 +6,8 @@ description: "The canonical, normative apcore protocol specification (RFC 2119, 
 
 > **Canonical specification.** This document is the single normative source for the apcore protocol. Where any other document disagrees with it, this document wins.
 
-> Version: 1.66.0
-> Status: Active — the 1.x line adds requirements compatibly; breaking changes are reserved for 2.0
+> Version: 2.0.0
+> Status: Draft
 > Last Updated: 2026-10-19
 
 ---
@@ -3728,7 +3728,7 @@ Implementations **MUST** enforce the following control flow invariants on the ex
 
 7. **Removing a security step MUST warn.** When applying `remove`, an implementation
    **MUST** emit a diagnostic naming each removed step that belongs to the security set —
-   `acl_check` and `approval_gate` — once per configuration load, following §9.2.2's cadence.
+   `acl_check` and `approval_gate` — once for each configuration load that removes them.
    Removing either step withdraws a protection rather than a convenience, so the operator is
    told. The diagnostic is a load-time notice, not a refusal: the configuration is valid, the
    operator wrote it deliberately, and an implementation **MUST NOT** reject it.
@@ -4595,16 +4595,16 @@ is the only code that parses the document the block lives in.
    needs to do asynchronous work **SHOULD** enqueue the entry and return.
 
 5. **Diagnostics for a failing sink are suppressed after the first**, scoped to **one
-   ACL instance and one effective sink configuration**. A sink that is down otherwise
-   produces one diagnostic per `check()` — the flood §9.2.2 rejects. Replacing the sink
+   ACL instance and one effective sink configuration**. This keeps diagnostic volume independent
+   of the `check()` rate while a sink is down. Replacing the sink
    or reloading a configuration that changes it starts a new scope, so a new failure is
    never hidden behind an old one.
 
 6. **`include_denied` filters the default sink's deliveries.** `true` (the default)
    delivers every entry; `false` withholds entries whose `decision` is `deny`. Because
    that withholds the security-relevant half, an ACL file setting it to `false`
-   **MUST** emit a diagnostic once per configuration load, following §9.2.2's cadence
-   and §5.16 requirement 7's reasoning. It is a notice, not a refusal.
+   **MUST** emit a diagnostic once for each configuration load that sets it to `false`,
+   for the same reason as §5.16 requirement 7. The setting remains valid.
 
 7. **Reload refreshes the block and preserves the callback.** `reload()` re-reads the
    ACL file and **MUST** apply the new `audit:` configuration to the default sink. It
@@ -6412,86 +6412,25 @@ A **path-typed** key is a configuration key whose value is a filesystem path. Th
 
 #### 9.2.2 Path Resolution Base
 
-!!! warning "Deprecation phase — no v1.x behaviour changes here"
-    This section declares the **target** semantics, which take effect at **v2.0** — the
-    earliest §13.2 permits, since §13.2 requires "at least 2 minor versions for deprecation
-    period". It changes **no** behaviour required of a v1.x implementation: the current
-    semantics are recorded below and remain in force for the whole 1.x line.
+Every `Config` **MUST** capture one absolute project root at construction or load. Implementations **MUST** expose it through a public, readable accessor.
 
-**The project root.** Every `Config` **MUST** have exactly **one** project root, determined once, when the configuration is loaded:
-
-```text
-Algorithm: project_root(config)
-
-project_root =
-  the directory containing the configuration file
-      when that file was selected by §9.14 discovery tier 1-5:
-        1. $APCORE_CONFIG_FILE          (explicit, arbitrary path)
-        2. ./project.yaml
-        3. ./project.yml
-        4. ./apcore.yaml
-        5. ./apcore.yml
-
-  the process current working directory
-      when the file was selected by §9.14 tier 6-7:
-        6. ~/.config/apcore/config.yaml  (user-level, XDG)
-        7. ~/.apcore/config.yaml         (legacy user-level)
-      or when no configuration file was found at all
-      or when the Config was built without a backing file
-        (Config.from_defaults(), or construction from an in-memory mapping)
-```
-
-**The tier is what selects the base, and it has to be.** For tiers 2-5 the config file's directory *is* the process CWD, so the two candidate rules are indistinguishable — that is the overwhelmingly common case and it is unaffected either way. Tier 1 is where a config file can sit outside CWD, and there the file's own directory is the better answer: a path written next to a config file that was explicitly pointed at means "next to that file". Tiers 6-7 are where the file's directory is the **wrong** answer: `extensions.root: "./extensions"` in `~/.config/apcore/config.yaml` does not mean `~/.config/apcore/extensions`. A user-level configuration's relative paths are per-project by intent; they cannot mean "beside the config file", because the config file is shared by every project that user runs.
-
-**Target semantics (v2.0).** Every **relative** path-typed value — the closed set declared in §9.2.1 — **MUST** be resolved against the project root. This holds regardless of which tier supplied the *value*: file-declared, environment-sourced (`APCORE_*`), API-supplied at construction, and the §9.1.1 defaults alike. An absolute value is used as given and is never re-rooted.
-
-1. There is **one** base per `Config`. An implementation **MUST NOT** be required to record which precedence tier produced a given value in order to resolve it, and **MUST NOT** resolve two path-typed keys of the same `Config` against different bases.
-2. A relative default (`"./extensions"`, `"./schemas"`, `"./acl"`, `"./bindings"`) resolves against the project root exactly as an explicitly written value does. A default has the same home as everything else.
-3. `APCORE_ACL_ROOT=./x` set for a project run means "relative to this project", which is the project root — not the operator's working directory at the moment of launch, and not the directory of a configuration file the operator may never have seen.
-4. Resolution **SHOULD** be performed once, at load, rather than at each point of consumption. A `chdir()` between load and consumption otherwise leaves two consumers of one `Config` looking at two different directories.
-
-**Current semantics (v1.x).** Through the 1.x line, relative path-typed values resolve as follows:
-
-| Key | Base in effect through v1.x | Where it is specified |
-|---|---|---|
-| `acl.root` | The configuration file's directory when the `Config` knows its source path, else CWD — **including for environment-sourced values, and including the user-level tiers 6-7** | [features/acl-system.md](../features/acl-system.md) § *Contract: ACL.discover*, decision D-64 |
-| `schema.root` | Process CWD, unconditionally | Nothing normative; implementation behaviour only |
-| `extensions.root` | Process CWD, unconditionally | Nothing normative; implementation behaviour only |
-| `bindings.dir` | Process CWD, unconditionally | Nothing normative; the loader contract is §5.12.6 |
-| `id_map.overrides` | Process CWD, unconditionally | Nothing normative; implementation behaviour only |
-| `sys_modules.control.overrides_path` | Process CWD, unconditionally | Nothing normative; implementation behaviour only |
-
-Sibling keys with identical relative values and identical override syntax therefore resolve against different bases; the target semantics give every path-typed key of a `Config` the same one.
-
-**The user-level tiers.** Under the current semantics `acl.root` is the one key that resolves file-relative, so in tiers 6-7 a user-level configuration supplies an ACL policy — loaded from `~/.config/apcore/acl/` — to every project that user runs, while the project's own `./acl/` is ignored; the same load resolves `extensions.root` against CWD, so one configuration document produces two bases. For a default-deny, explicitly-granted authorization system that is the inverse of the intent. The target semantics resolve tiers 6-7 against CWD, which corrects this key rather than regressing it.
-
-**Requirements for v1.x implementations:**
-
-1. Implementations **MUST** expose the project root through a public, readable accessor (`Config.project_root` / `config.projectRoot()` / `Config::project_root()`, or the language's equivalent), computed by the algorithm above. This is additive and carries no resolution behaviour: it lets an application, a CLI, or a conformance driver ask what the base *will* be before anything depends on it.
-2. Implementations **SHOULD** emit a deprecation warning when — and **only** when — **both** hold: the project root differs from the process CWD, **and** at least one path-typed value in the merged configuration is relative. A blanket warning is explicitly **NOT** wanted: it would fire for every project in tiers 2-5, where nothing changes at v2.0, which trains operators to ignore the one warning that matters.
-
-    **Cadence: once per configuration load, not once per process.** The warning is a
-    property of *the document being loaded*, so every load that satisfies both conditions
-    emits it, and a load that does not satisfy them emits nothing. Implementations
-    **MUST NOT** suppress it with process-global state. Two reasons. First, a
-    once-per-process flag makes emission **order-dependent**: in a process that loads
-    several configurations, whichever load runs first consumes the warning, so a later
-    affected configuration is silent and the operator cannot tell which document
-    triggered it. Second, that same global is a test-isolation hazard — one test consumes
-    the warning another test needed. De-duplication for log volume is the host logging
-    layer's job, not the SDK's; a reload that re-reads an edited file **SHOULD**
-    re-evaluate and may legitimately warn again.
-3. Implementations **MUST NOT** adopt the target semantics in a 1.x release. The 1.x line keeps the behaviour in the table above; changing it early would be exactly the silent re-rooting this section is written to prevent.
-
-**Migration, by discovery tier:**
-
-| §9.14 tier | Change at v2.0 |
+| How the configuration was selected | Project root |
 |---|---|
-| 2-5 (project-local; most projects) | **None.** `project_root` already equals CWD. |
-| 6-7 (user-level) | `acl.root` moves from the user-level directory to CWD — the correction described above. `schema.root`, `extensions.root` and `bindings.dir` are unaffected; they already resolve against CWD. |
-| 1 (`$APCORE_CONFIG_FILE` pointing outside CWD) | The one genuine break: `schema.root`, `extensions.root` and `bindings.dir` move from CWD to the config file's directory. This is the population the clause-2 warning is scoped to reach. |
+| An explicit path passed to the loader, or `$APCORE_CONFIG_FILE` (discovery tier 1) | The directory of the selected file entry, including when it has the same path as a user-level configuration |
+| A project-local configuration (discovery tiers 2–5) | The directory of the selected file entry |
+| A user-level configuration (discovery tiers 6–7) | The process working directory at load |
+| No file found, defaults, or an in-memory mapping | The process working directory at load or construction |
 
-**Interaction with `include:` composition.** A single project root settles open question #1 of [rfc-config-include.md](./rfc-config-include.md) — whether a path value declared *inside* an included fragment resolves relative to that fragment's directory or to the root file's. Under §9.2.2 the question does not arise: resolution has one base for the whole `Config`, so a fragment-relative reading would reintroduce exactly the per-value origin tracking clause 1 forbids. That RFC's Status is **Proposed**; this section constrains the answer it may give, it does not adopt the RFC.
+A configuration-file symlink **MUST** use the directory containing the selected entry as its base. Implementations **MUST** keep the captured root for the lifetime of that `Config`, including when reloading its source. Subsequent changes to the process working directory **MUST NOT** change the root or the meaning of a relative path in that configuration.
+
+1. Resolve value precedence first. Every relative path-typed value declared in §9.2.1 **MUST** be interpreted against the captured project root. This covers values supplied through the file, environment, API, defaults, and both supported forms of `extensions.roots` entries.
+2. Implementations **MUST** use an absolute path-typed value as supplied. Resolving a relative path **MUST** preserve the filesystem meaning of its path segments, including `..` after a symbolic link. A missing value continues to use the precedence and fallback rules of its key, and an empty value follows §9.2.1.
+3. All consumers **MUST** use this rule, including filesystem checks during configuration validation. An implementation **MAY** resolve a path on read using the captured root, so the stored configuration can retain its original spelling. Implementations **SHOULD** expose the same resolver to callers handling values from a `Config`.
+4. This rule applies to values supplied by a `Config`. The contract of each consumer governs an explicit path argument passed directly to that consumer.
+
+`conformance/fixtures/config_project_root.json` covers discovery tiers, explicit loading, path sources, and consumer behavior. See [Config Bus](../features/config-bus.md#project-root-and-relative-paths) for the SDK accessors.
+
+**Interaction with `include:` composition.** If [the proposed `include:` RFC](./rfc-config-include.md) is adopted, paths supplied by its merged configuration use this same project root.
 
 #### 9.2.3 Pattern-Valued Values
 
@@ -6672,11 +6611,10 @@ authoritative list.
 1. When a **loaded configuration document declares** any key in the table above,
    implementations **MUST** emit a deprecation warning naming every such key present.
    The table is the whole list: a key not in it **MUST NOT** produce this warning.
-   Emission follows §9.2.2's cadence exactly — **once per configuration load, never once per
-   process** — for the reasons given there.
+   Emit the warning **once per configuration load**. Each load evaluates the condition independently.
 2. The warning **MUST** be driven by the *declared* document, not the merged view. Every one
-   of these keys has a default, so a merged-view check would fire for every configuration
-   ever loaded — the blanket warning §9.2.2 rejects.
+   of these keys has a default. Checking the declared document keeps the warning specific to
+   configurations that actually set a deprecated key.
 3. Deprecation does not change behaviour. The keys parse, validate, appear in `get()`, and
    remain accepted under `_config.strict`. Nothing may start rejecting them in the 1.x line.
 4. Removal is **not before v2.0**, and not before the two-minor window §13.2 requires and
@@ -7090,9 +7028,7 @@ _config:
 3. **`allow_unknown: true` warns.** The namespace is stored and readable, and
    the implementation **MUST** emit one diagnostic per configuration load naming
    every unregistered namespace it retained, stating that they are not
-   validated. The notice is a property of *this document*, never of every
-   configuration — it fires only when an unregistered namespace is present —
-   which is what keeps it out of the blanket-warning failure §9.2.2 rejects.
+   validated. The presence of an unregistered namespace in the loaded document triggers the notice.
 
 4. **An absent `_config` takes the defaults.** The matrix describes the default
    pair (`strict: false`, `allow_unknown: true`), so a document that declares an
@@ -10264,6 +10200,7 @@ The specification is versioned independently of the SDK release line (`0.x`); `C
 
 | Version | Date | Summary | Records |
 |---|---|---|---|
+| 2.0.0 | Unreleased | Resolve every path-typed configuration value against one project root (§9.2.2). | [#113](https://github.com/aiperceivable/apcore/issues/113) |
 | 1.66.0 | 2026-10-19 | A23 preserves optional enum, const, reference and applicator constraints inside an anyOf-null wrapper; required fields remain unchanged. | [#124](https://github.com/aiperceivable/apcore/issues/124) |
 | 1.65.0 | 2026-10-08 | Add public bare-name canonicalization with structured, non-throwing results in all SDKs; preserve A02, ASCII-only case conversion and existing underscores, and reject non-ASCII, invalid starts and overlong output (§2.2.1). | [Rust #40](https://github.com/aiperceivable/apcore-rust/issues/40) |
 | 1.64.0 | 2026-10-08 | Algorithm A02 is exhaustive and ASCII-scoped: it preserves existing underscores and non-ASCII characters through case conversion, then rejects a result outside the Canonical ID grammar; it never repairs arbitrary identifiers (§2.2). The repairing class-name conversion is named `snake_case_name` and is distinct from A02's `snake_case_identifier` (§2.1.1). | #122 |

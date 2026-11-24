@@ -30,6 +30,7 @@ from apcore.errors import (
     ApprovalTimeoutError,
     InvalidInputError,
     ModuleDisabledError,
+    ModuleExecuteError,
     ModuleNotFoundError,
     ModuleTimeoutError,
     SchemaValidationError,
@@ -47,6 +48,7 @@ from apcore.schema.annotations import governance_union
 from apcore.schema.hardening import warn_format_violations
 from apcore.config import Config
 from apcore.utils.call_chain import guard_call_chain
+from apcore.utils.module_output import normalize_module_output
 
 __all__ = [
     "BuiltinContextCreation",
@@ -68,6 +70,22 @@ __all__ = [
 ]
 
 _logger = logging.getLogger(__name__)
+
+
+def _validate_module_payload(schema: type[pydantic.BaseModel], data: dict[str, Any]) -> None:
+    """Apply strict validation to a JSON value or an existing native value."""
+    validate_json = getattr(schema, "model_validate_json", None)
+    if callable(validate_json):
+        try:
+            encoded = json.dumps(data)
+        except (TypeError, ValueError):
+            # Native values that have no standard JSON representation still
+            # use Pydantic's strict native validation path.
+            pass
+        else:
+            validate_json(encoded, strict=True)
+            return
+    schema.model_validate(data, strict=True)
 
 
 def _convert_validation_errors(error: pydantic.ValidationError) -> list[dict[str, Any]]:
@@ -235,6 +253,11 @@ class BuiltinContextCreation(BaseStep):
             self._global_timeout: int = val if val is not None else Config.get_default("executor.global_timeout")
         else:
             self._global_timeout = Config.get_default("executor.global_timeout")
+
+    @property
+    def global_timeout_ms(self) -> int:
+        """Return the budget used when the caller supplies no deadline."""
+        return self._global_timeout
 
     async def execute(self, ctx: PipelineContext) -> StepResult:
         if ctx.context is None:
@@ -500,6 +523,10 @@ class BuiltinACLCheck(_GovernanceGateFields):
         """Replace the ACL provider used by this step at runtime."""
         self._acl = acl
 
+    def set_event_emitter(self, event_emitter: Any | None) -> None:
+        """Set the event emitter for ACL denials."""
+        self._event_emitter = event_emitter
+
     @property
     def acl(self) -> Any | None:
         """The ACL provider this gate enforces (read by ``governance_state()``, §6.6.5.5)."""
@@ -646,6 +673,10 @@ class BuiltinApprovalGate(_GovernanceGateFields):
     def set_policy(self, policy: ExecutionPolicy | None) -> None:
         """Replace the execution policy used by this step at runtime."""
         self._policy = policy
+
+    def set_event_emitter(self, event_emitter: Any | None) -> None:
+        """Set the event emitter for approval decisions and policy overrides."""
+        self._event_emitter = event_emitter
 
     @property
     def handler(self) -> Any | None:
@@ -1198,18 +1229,7 @@ class BuiltinInputValidation(BaseStep):
             # configurable (TYPE_MAPPING §17.3). ``SchemaValidator`` still
             # exposes ``coerce_types`` as a library-level knob for callers
             # doing their own validation; it has no effect on this path.
-            try:
-                json_inputs = json.dumps(ctx.inputs)
-            except (TypeError, ValueError):
-                # Native Python callers may already supply datetime/UUID/Enum
-                # instances. Keep their strict native validation path.
-                input_schema.model_validate(ctx.inputs, strict=True)
-            else:
-                validate_json = getattr(input_schema, "model_validate_json", None)
-                if callable(validate_json):
-                    validate_json(json_inputs, strict=True)
-                else:
-                    input_schema.model_validate(ctx.inputs, strict=True)
+            _validate_module_payload(input_schema, ctx.inputs)
         except pydantic.ValidationError as exc:
             errors = _convert_validation_errors(exc)
             raise SchemaValidationError(
@@ -1349,6 +1369,9 @@ class BuiltinExecute(BaseStep):
                 output = task.result()
             else:
                 output = await coro
+            output = normalize_module_output(output)
+            if output is not None and not isinstance(output, dict):
+                raise ModuleExecuteError(module_id=ctx.module_id, message="Return value must be Map")
             ctx.output = output
         except asyncio.TimeoutError:
             timeout_ms = int((timeout_s or 0) * 1000)
@@ -1412,7 +1435,7 @@ class BuiltinOutputValidation(BaseStep):
         try:
             # ``strict=True`` — symmetric with input validation above: the
             # module boundary never coerces (TYPE_MAPPING §17.3).
-            output_schema.model_validate(ctx.output, strict=True)
+            _validate_module_payload(output_schema, ctx.output)
         except pydantic.ValidationError as exc:
             errors = _convert_validation_errors(exc)
             raise SchemaValidationError(

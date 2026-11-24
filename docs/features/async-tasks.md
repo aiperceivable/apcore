@@ -266,12 +266,14 @@ A task waiting for its next retry attempt is `pending` with `retry_count > 0`; t
 | Status | `get_status(task_id) -> TaskInfo \| None`; `await get_status_async(task_id)` | `await getStatus(taskId): Promise<TaskInfo \| null>` | `get_status(task_id) -> Result<Option<TaskInfo>>`; `get_status_async(task_id).await` |
 | Result | `get_result(task_id) -> Any`; `await get_result_async(task_id)` | `await getResult(taskId)` | `get_result(task_id) -> Result<Value>`; `get_result_async(task_id).await` |
 | Cancel | `await cancel(task_id) -> bool` | `await cancel(taskId): Promise<boolean>` | `cancel(task_id).await -> Result<bool>` |
-| List | `list_tasks(status=None) -> list[TaskInfo]`; `await list_tasks_async(status=None)` | `await listTasks(status?): Promise<TaskInfo[]>` | `list_tasks(status: Option<TaskStatus>) -> Result<Vec<TaskInfo>>` |
-| Cleanup | `await cleanup(max_age_seconds=3600.0) -> int` | `await cleanup(maxAgeSeconds = 3600): Promise<number>` | `cleanup(max_age_seconds) -> Result<usize>` |
+| List | `list_tasks(status=None) -> list[TaskInfo]`; `await list_tasks_async(status=None)` | `await listTasks(status?): Promise<TaskInfo[]>` | `list_tasks(status: Option<TaskStatus>) -> Result<Vec<TaskInfo>>`; `list_tasks_async(status).await` |
+| Cleanup | `await cleanup(max_age_seconds=3600.0) -> int` | `await cleanup(maxAgeSeconds = 3600): Promise<number>` | `cleanup(max_age_seconds) -> Result<usize>`; `cleanup_async(max_age_seconds).await` |
 | Reaper | `start_reaper(*, ttl_seconds=3600.0, sweep_interval_ms=300_000) -> ReaperHandle`; `await stop_reaper()` | `startReaper({ ttlSeconds?, sweepIntervalMs? }): Promise<ReaperHandle>` | `start_reaper(ReaperConfig) -> Result<ReaperHandle>`; `stop_reaper() -> bool` |
 | Shutdown | `await shutdown()` | `await shutdown()` | `shutdown().await -> Result<()>` |
 
-In TypeScript every accessor is asynchronous, because the store is. In Python and Rust the synchronous accessors (`get_status`, `get_result`, `list_tasks`, and in Rust `cleanup`) drive the store call without an event loop; that works for `InMemoryTaskStore` and any store that completes without suspending. With an I/O-backed store use the async variants: a suspending store makes the synchronous accessor raise `RuntimeError` in Python and panic in Rust. Rust has no async `list_tasks` / `cleanup`; with an I/O-backed store read the record through `get_status_async()` or the store itself.
+TypeScript awaits the store in every accessor. In Python and Rust, synchronous accessors called from synchronous code run the store operation on a temporary asyncio event loop or Tokio runtime. This supports I/O that can run on that temporary runtime. Use the async accessors for stores with resources bound to a specific event loop or runtime, and for I/O-backed stores when calling from async code.
+
+Inside a running Python event loop, synchronous accessors support the bundled in-memory implementation and legacy store methods that return a value synchronously. A custom async method raises `InvalidInputError` before its coroutine runs. Inside Tokio, synchronous accessors support `InMemoryTaskStore` and stores that opt in through `supports_inline_sync()`. This opt-in requires every accessor to complete immediately without using runtime services. Other stores receive `GENERAL_INVALID_INPUT` before the operation starts. Both SDKs name the async accessor to await. Rust also exposes `task_count_async()` for `task_count()`.
 
 ### Concurrency Model
 
@@ -587,7 +589,7 @@ The reaper is an opt-in background task that periodically deletes terminal tasks
 - On success: `TaskInfo | None` — a snapshot of the task record. The snapshot is a copy in every SDK: mutating it never affects the store, and later store changes are not visible through it (D-23).
 
 ### Properties
-- async: TypeScript `getStatus` is async. Python and Rust `get_status` are synchronous (in-memory store); `get_status_async` is the async form for I/O-backed stores.
+- async: TypeScript `getStatus` is async. Python and Rust provide synchronous `get_status` and asynchronous `get_status_async`.
 - thread_safe: true
 - pure: false (reads mutable task state)
 - idempotent: true
@@ -606,7 +608,7 @@ The reaper is an opt-in background task that periodically deletes terminal tasks
 - On success: the task's `result` (module output)
 
 ### Properties
-- async: TypeScript `getResult` is async. Python `get_result` is synchronous; Rust has `get_result` and `get_result_async`.
+- async: TypeScript `getResult` is async. Python and Rust provide synchronous `get_result` and asynchronous `get_result_async`.
 - thread_safe: true
 - pure: false (reads mutable task state)
 - idempotent: true
@@ -640,7 +642,7 @@ The reaper is an opt-in background task that periodically deletes terminal tasks
 - On success: a list of `TaskInfo` snapshots (copies, as for `get_status`), in submission order (D-82); empty if nothing matches
 
 ### Properties
-- async: TypeScript `listTasks` is async. Python `list_tasks` is synchronous with `list_tasks_async` for I/O-backed stores; Rust `list_tasks` is synchronous.
+- async: TypeScript `listTasks` is async. Python and Rust provide synchronous `list_tasks` and asynchronous `list_tasks_async`.
 - thread_safe: true
 - pure: false (reads mutable task state)
 - idempotent: true
@@ -663,7 +665,7 @@ Only terminal tasks (`completed`, `failed`, `cancelled`) are removed; `pending` 
 - On success: the number of tasks removed (`0` if none were eligible)
 
 ### Properties
-- async: true in Python and TypeScript; synchronous in Rust (`Result<usize>`)
+- async: Python and TypeScript `cleanup` are async. Rust provides synchronous `cleanup` and asynchronous `cleanup_async`.
 - thread_safe: true
 - pure: false (mutates the task store)
 - idempotent: false

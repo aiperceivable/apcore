@@ -111,6 +111,14 @@ pub trait TaskStore: Send + Sync {
     /// NOT be returned by this method.
     async fn list_expired(&self, before_timestamp: f64) -> Result<Vec<TaskInfo>, ModuleError>;
 
+    /// Whether accessors can safely poll this store inline inside Tokio.
+    ///
+    /// Opt in only if `get`, `list`, `list_expired`, and `delete` always
+    /// complete without suspending or using runtime services such as timers.
+    fn supports_inline_sync(&self) -> bool {
+        false
+    }
+
     /// Identifier of the concrete store type, used by tooling to expose the
     /// active backend (matches the type name; e.g. `"InMemoryTaskStore"`).
     ///
@@ -214,6 +222,10 @@ impl TaskStore for InMemoryTaskStore {
 
     fn store_type_name(&self) -> &'static str {
         "InMemoryTaskStore"
+    }
+
+    fn supports_inline_sync(&self) -> bool {
+        true
     }
 }
 
@@ -412,6 +424,12 @@ impl From<JoinHandle<()>> for TaskHandle {
 /// Bounds concurrency with a semaphore, persists task state through a
 /// pluggable [`TaskStore`], and supports retry with exponential backoff and
 /// an opt-in [`ReaperHandle`] for TTL-based cleanup.
+///
+/// Synchronous accessors drive store operations on a temporary runtime when
+/// called outside Tokio. Within Tokio, synchronous accessors require a store
+/// supporting inline synchronous calls, such as [`InMemoryTaskStore`]. Use
+/// the `_async` methods for I/O-backed stores inside a runtime and for stores
+/// with resources bound to a specific runtime.
 pub struct AsyncTaskManager {
     executor: Arc<Executor>,
     max_tasks: usize,
@@ -423,9 +441,6 @@ pub struct AsyncTaskManager {
     // Serialises the capacity-check + save sequence in `submit_with_retry`.
     // Without this guard, two concurrent submits can both observe
     // `store.list().len() < max_tasks` and both `save()` — exceeding the cap.
-    // The lock is held only for the synchronous `block_on_local` poll; we never
-    // hold it across a real .await (the in-memory store resolves immediately,
-    // and a yielding store would already panic in `block_on_local`).
     /// Async-aware admission lock — held across `check_capacity_and_save.await`
     /// so concurrent submitters serialize through the capacity check + save.
     /// `tokio::sync::Mutex` (rather than `parking_lot::Mutex`) because the
@@ -630,16 +645,14 @@ impl AsyncTaskManager {
 
     /// Return the current snapshot of a task, or `None` if unknown.
     ///
-    /// This is the synchronous wrapper used by the existing public API. For
-    /// network-backed stores, prefer [`Self::get_status_async`].
-    ///
     /// # Errors
     ///
     /// Propagates the store's error (D-81). `Ok(None)` means the store
     /// answered and has no such task; a store outage is an `Err`, never a
-    /// "not found".
+    /// "not found". Returns [`ErrorCode::GeneralInvalidInput`] when the store
+    /// requires async access inside Tokio. Await [`Self::get_status_async`].
     pub fn get_status(&self, task_id: &str) -> Result<Option<TaskInfo>, ModuleError> {
-        block_on_local(self.store.get(task_id))
+        self.run_store_sync(self.get_status_async(task_id), "get_status_async")
     }
 
     /// Async variant of [`Self::get_status`] for network-backed stores.
@@ -658,9 +671,11 @@ impl AsyncTaskManager {
     ///
     /// The store's own error is propagated unchanged (D-81); a task that is
     /// absent or not yet complete is reported as
-    /// [`ErrorCode::GeneralInternalError`].
+    /// [`ErrorCode::GeneralInternalError`]. Returns
+    /// [`ErrorCode::GeneralInvalidInput`] when the store requires async access inside Tokio.
+    /// In that case await [`Self::get_result_async`].
     pub fn get_result(&self, task_id: &str) -> Result<serde_json::Value, ModuleError> {
-        block_on_local(self.get_result_async(task_id))
+        self.run_store_sync(self.get_result_async(task_id), "get_result_async")
     }
 
     /// Async variant of [`Self::get_result`] for network-backed stores.
@@ -842,9 +857,11 @@ impl AsyncTaskManager {
     /// # Errors
     ///
     /// Propagates the store's error (D-81) rather than reporting "no tasks"
-    /// for a store that is merely unreachable.
+    /// for a store that is merely unreachable. Returns
+    /// [`ErrorCode::GeneralInvalidInput`] when the store requires async access inside Tokio.
+    /// In that case await [`Self::list_tasks_async`].
     pub fn list_tasks(&self, status: Option<TaskStatus>) -> Result<Vec<TaskInfo>, ModuleError> {
-        block_on_local(self.list_tasks_async(status))
+        self.run_store_sync(self.list_tasks_async(status), "list_tasks_async")
     }
 
     /// Async variant of [`Self::list_tasks`] for network-backed stores.
@@ -865,9 +882,11 @@ impl AsyncTaskManager {
     /// # Errors
     ///
     /// Propagates the store's error (D-81). A failed `delete` aborts the sweep
-    /// rather than being counted as a removal that never happened.
+    /// rather than being counted as a removal that never happened. Returns
+    /// [`ErrorCode::GeneralInvalidInput`] when the store requires async access inside Tokio.
+    /// In that case await [`Self::cleanup_async`].
     pub fn cleanup(&self, max_age_seconds: f64) -> Result<usize, ModuleError> {
-        block_on_local(self.cleanup_async(max_age_seconds))
+        self.run_store_sync(self.cleanup_async(max_age_seconds), "cleanup_async")
     }
 
     /// Async variant of [`Self::cleanup`] for network-backed stores.
@@ -908,9 +927,56 @@ impl AsyncTaskManager {
     /// # Errors
     ///
     /// Propagates the store's error (D-81) rather than reporting `0` for a
-    /// store that is merely unreachable.
+    /// store that is merely unreachable. Returns
+    /// [`ErrorCode::GeneralInvalidInput`] when the store requires async access inside Tokio.
+    /// In that case await [`Self::task_count_async`].
     pub fn task_count(&self) -> Result<usize, ModuleError> {
-        Ok(block_on_local(self.store.list(None))?.len())
+        self.run_store_sync(self.task_count_async(), "task_count_async")
+    }
+
+    /// Count all tracked tasks on the caller's runtime.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the store's error (D-81).
+    pub async fn task_count_async(&self) -> Result<usize, ModuleError> {
+        Ok(self.store.list(None).await?.len())
+    }
+
+    fn run_store_sync<T>(
+        &self,
+        operation: impl std::future::Future<Output = Result<T, ModuleError>>,
+        async_method: &str,
+    ) -> Result<T, ModuleError> {
+        use std::pin::pin;
+        use std::task::{Context, Poll, Waker};
+
+        if tokio::runtime::Handle::try_current().is_err() {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|error| {
+                    ModuleError::new(
+                        ErrorCode::GeneralInternalError,
+                        format!("Failed to start a runtime for TaskStore: {error}"),
+                    )
+                })?;
+            return runtime.block_on(operation);
+        }
+
+        // Poll only stores that declare their operations can run inline.
+        // Starting I/O here could require services the host runtime lacks.
+        if self.store.supports_inline_sync() {
+            let mut context = Context::from_waker(Waker::noop());
+            if let Poll::Ready(result) = pin!(operation).poll(&mut context) {
+                return result;
+            }
+        }
+
+        let guidance = format!(
+            "Await {async_method}() inside Tokio with a TaskStore that cannot complete inline."
+        );
+        Err(ModuleError::invalid_input(&guidance).with_ai_guidance(guidance))
     }
 
     /// Start the opt-in background reaper. Returns a [`ReaperHandle`] used to
@@ -1160,44 +1226,6 @@ async fn mark_cancelled(store: &Arc<dyn TaskStore>, task_id: &str) {
                 warn!(task_id = %task_id, "cancelled state save failed: {e}");
             }
         }
-    }
-}
-
-/// Drive a future to completion synchronously by polling it once with a
-/// no-op waker. This is intentional: the manager exposes a synchronous
-/// facade on top of an async [`TaskStore`], and the supported in-process
-/// stores ([`InMemoryTaskStore`]) resolve without yielding so a single poll
-/// is sufficient. For network-backed stores callers MUST use the `_async`
-/// variants instead.
-///
-/// If a custom store actually yields, this panics — surfacing the misuse
-/// rather than silently deadlocking the calling thread.
-fn block_on_local<F, T>(fut: F) -> T
-where
-    F: std::future::Future<Output = T>,
-{
-    use std::pin::pin;
-    use std::ptr;
-    use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
-
-    // No-op waker: synchronous stores never wake themselves; if they did, we
-    // would not be in this code path.
-    const VTABLE: RawWakerVTable = RawWakerVTable::new(
-        |_| RawWaker::new(ptr::null(), &VTABLE),
-        |_| {},
-        |_| {},
-        |_| {},
-    );
-    // SAFETY: the vtable above performs no operations on the data pointer,
-    // so a null pointer is safe for every callback.
-    let waker = unsafe { Waker::from_raw(RawWaker::new(ptr::null(), &VTABLE)) };
-    let mut cx = Context::from_waker(&waker);
-    let mut fut = pin!(fut);
-    match fut.as_mut().poll(&mut cx) {
-        Poll::Ready(v) => v,
-        Poll::Pending => panic!(
-            "block_on_local: TaskStore future yielded — use the _async variants for non-blocking stores"
-        ),
     }
 }
 

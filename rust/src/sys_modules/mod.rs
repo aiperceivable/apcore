@@ -346,6 +346,13 @@ pub struct SysModulesContext {
     pub audit_store: Option<Arc<dyn AuditStore>>,
 }
 
+/// Startup results for the client, alongside the public registration context.
+#[derive(Default)]
+pub(crate) struct SysModulesStartup {
+    pub(crate) events_enabled: bool,
+    pub(crate) errors: Vec<SysModuleError>,
+}
+
 // ---------------------------------------------------------------------------
 // SysModulesOptions — optional inputs for hardening features (§1.1, §1.2, §1.5)
 // ---------------------------------------------------------------------------
@@ -424,14 +431,32 @@ pub fn register_sys_modules(
 
 /// Variant of [`register_sys_modules`] accepting hardening options. See
 /// [`SysModulesOptions`] for details.
-#[allow(clippy::too_many_lines)] // complex orchestration; extraction would obscure the registration flow
-#[allow(clippy::needless_pass_by_value)] // public API: Arc<Registry> and Option<MetricsCollector> consumed by sub-modules
 pub fn register_sys_modules_with_options(
     registry: Arc<Registry>,
     executor: &Executor,
     config: &Config,
     metrics_collector: Option<MetricsCollector>,
     options: SysModulesOptions,
+) -> Result<SysModulesContext, SysModuleError> {
+    register_sys_modules_for_client(
+        registry,
+        executor,
+        config,
+        metrics_collector,
+        options,
+        &mut SysModulesStartup::default(),
+    )
+}
+
+#[allow(clippy::too_many_lines)] // complex orchestration; extraction would obscure the registration flow
+#[allow(clippy::needless_pass_by_value)] // Arc<Registry> and Option<MetricsCollector> consumed by sub-modules
+pub(crate) fn register_sys_modules_for_client(
+    registry: Arc<Registry>,
+    executor: &Executor,
+    config: &Config,
+    metrics_collector: Option<MetricsCollector>,
+    options: SysModulesOptions,
+    startup: &mut SysModulesStartup,
 ) -> Result<SysModulesContext, SysModuleError> {
     let SysModulesOptions {
         overrides_path,
@@ -474,11 +499,9 @@ pub fn register_sys_modules_with_options(
     // (registration.py:382). Reading `SysModulesOptions` alone meant a project
     // that declared the key in apcore.yaml got neither persistence nor restore
     // (sync finding A-D-015).
-    let resolved_overrides_path: Option<PathBuf> = overrides_path.clone().or_else(|| {
-        config
-            .get("sys_modules.control.overrides_path")
-            .and_then(|v| v.as_str().map(PathBuf::from))
-    });
+    let resolved_overrides_path = overrides_path
+        .clone()
+        .or_else(|| config.get_path("sys_modules.control.overrides_path"));
     if let Some(path) = resolved_overrides_path.as_deref() {
         overrides::load_overrides(path, &mut effective_config, Some(&toggle_state));
     } else if overrides_store.is_some() {
@@ -531,6 +554,7 @@ pub fn register_sys_modules_with_options(
         .get("sys_modules.events.enabled")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
+    startup.events_enabled = events_enabled;
 
     // §1.1 + §1.2 wire `overrides_path` / `overrides_store` / `audit_store`
     // through the control modules — but control modules are only registered
@@ -785,13 +809,15 @@ pub fn register_sys_modules_with_options(
                 registered.insert(id.to_string(), info);
             }
             Err(e) => {
+                let error = SysModuleError::RegistrationFailed {
+                    module_id: id.to_string(),
+                    source: e,
+                };
                 if fail_on_error {
-                    return Err(SysModuleError::RegistrationFailed {
-                        module_id: id.to_string(),
-                        source: e,
-                    });
+                    return Err(error);
                 }
-                tracing::error!(module_id = %id, error = %e, "System module failed to register; continuing");
+                tracing::error!(module_id = %id, error = %error, "System module failed to register; continuing");
+                startup.errors.push(error);
             }
         }
     }

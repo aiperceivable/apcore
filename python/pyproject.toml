@@ -75,6 +75,9 @@ dev = [
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+apcore = ["py.typed"]
+
 [tool.ruff]
 line-length = 120
 target-version = "py311"

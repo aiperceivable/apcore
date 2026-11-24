@@ -26,6 +26,7 @@ import {
   ApprovalTimeoutError,
   InvalidInputError,
   ModuleDisabledError,
+  ModuleExecuteError,
   ModuleNotFoundError,
   ModuleTimeoutError,
   SchemaValidationError,
@@ -44,6 +45,7 @@ import type { Registry } from './registry/registry.js';
 import { jsonSchemaToTypeBox } from './schema/loader-pure.js';
 import { SchemaValidator } from './schema/validator.js';
 import { guardCallChain } from './utils/call-chain.js';
+import { normalizeModuleObject } from './utils/module-output.js';
 
 // ---------------------------------------------------------------------------
 // Helpers (shared with executor, kept minimal)
@@ -303,6 +305,11 @@ export class BuiltinACLCheck implements Step {
     this._acl = acl;
   }
 
+  /** Set the event emitter for ACL denials. */
+  setEventEmitter(emitter: EventEmitter | null): void {
+    this._eventEmitter = emitter;
+  }
+
   /**
    * The ACL this gate enforces, or `null` when it enforces none.
    *
@@ -451,6 +458,11 @@ export class BuiltinApprovalGate implements Step {
   /** Update the execution policy at runtime. */
   setPolicy(policy: ExecutionPolicy | null): void {
     this._policy = policy;
+  }
+
+  /** Set the event emitter for approval decisions and policy overrides. */
+  setEventEmitter(emitter: EventEmitter | null): void {
+    this._eventEmitter = emitter;
   }
 
   /** The approval handler this gate consults (PROTOCOL_SPEC 6.6.5.5, D-129). */
@@ -894,12 +906,17 @@ export class BuiltinExecute implements Step {
       ).call(mod, ctx.inputs, ctx.context),
     );
 
-    ctx.output = await this._awaitExecution(
+    const output = await this._awaitExecution(
       executionPromise,
       ctx,
       timeoutMs,
       isModuleIdempotent(mod),
     );
+    const normalized = normalizeModuleObject(output);
+    if (output != null && normalized === null) {
+      throw new ModuleExecuteError(ctx.moduleId, 'Return value must be Map');
+    }
+    ctx.output = normalized;
 
     // MW-001: record that the module actually ran. `output == null` alone
     // cannot tell "the module returned nothing" from "this step never ran",

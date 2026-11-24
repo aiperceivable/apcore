@@ -375,7 +375,7 @@ Config-driven activation of the `acl.root` key (D-64). `discover()` resolves `ac
 ### Side Effects (ordered)
 
 1. Read `acl.root` from `config` (apply the `"./acl"` default if unset).
-2. Resolve the path: relative to the config file's directory when the `Config` knows its source path, else relative to the current working directory. (This makes `acl.root` the one path-typed key whose base differs from `schema.root` and `extensions.root`, which resolve against the CWD; [PROTOCOL_SPEC §9.2.2](../spec/protocol-spec.md#922-path-resolution-base) defines the single project-root rule planned for 2.0.)
+2. Resolve a relative path from the project's captured root. Use an absolute path as supplied. [Protocol §9.2.2](../spec/protocol-spec.md#922-path-resolution-base)
 3. If the resolved path is a **directory**, target `<root>/global_acl.yaml` (the `acl/{scope}_acl.yaml` convention, PROTOCOL_SPEC §3.1); if it is a **file**, target it directly.
 4. If the target file exists, load it via `ACL.load()` and return the new `ACL`.
 5. If the resolved path / target file does not exist, return "no ACL" and attach nothing.

@@ -12,6 +12,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Added
+
+- Expose `APCore::try_with_options` and `sys_modules_errors()` for system-module startup, and `Executor::ungated_approval_modules()` for approval readiness. ([#230](https://github.com/aiperceivable/apcore/issues/230), [#231](https://github.com/aiperceivable/apcore/issues/231))
+
+### Changed
+
+- Resolve relative configuration paths against one captured project root across ACL discovery, schemas, bindings, module discovery, ID maps, and system-module overrides. ([#113](https://github.com/aiperceivable/apcore/issues/113))
+
+### Fixed
+
+- Attach system governance events only when the event bus is enabled. ([#125](https://github.com/aiperceivable/apcore/issues/125))
+- Enforce object output at the module boundary for calls and streaming chunks. ([#126](https://github.com/aiperceivable/apcore/issues/126))
+- Support I/O-backed task stores in synchronous task-manager calls outside Tokio. Within a runtime, return a typed error before starting operations on stores that require async access. ([#127](https://github.com/aiperceivable/apcore/issues/127))
+
 ## [0.33.0] - 2026-11-18
 
 ### Added

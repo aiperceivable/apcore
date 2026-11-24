@@ -1,20 +1,12 @@
-/**
- * `Config.projectRoot` and its §13.2 deprecation notice (apcore#113,
- * PROTOCOL_SPEC §9.2.2).
- *
- * `projectRoot` reports the base a relative path-typed value (§9.2.1) is
- * *about*. It applies nothing: `SchemaLoader` still resolves `schema.root`
- * against the CWD and `ACL.discover` still resolves `acl.root` against the
- * config file's directory, unchanged. This suite pins the reported base for
- * one case per §9.14 discovery tier, and pins the warning to the narrow
- * condition it is supposed to fire under.
- */
+/** Unit coverage for stable project roots and configuration consumers. */
 
-import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { ACL } from '../src/acl.js';
 import { Config, discoverConfigFile, userLevelConfigPaths } from '../src/config.js';
+import { SchemaLoader } from '../src/schema/loader.js';
 
 const MINIMAL_YAML = 'version: "0.29.0"\nproject:\n  name: project-root-test\n';
 
@@ -25,7 +17,7 @@ let fakeHome: string;
 let originalCwd: string;
 
 beforeEach(() => {
-  tmpDir = mkdtempSync(join(tmpdir(), 'apcore-project-root-'));
+  tmpDir = realpathSync(mkdtempSync(join(tmpdir(), 'apcore-project-root-')));
   projectDir = join(tmpDir, 'project');
   elsewhereDir = join(tmpDir, 'elsewhere');
   fakeHome = join(tmpDir, 'home');
@@ -97,9 +89,7 @@ describe('Config.projectRoot — one case per §9.14 discovery tier', () => {
   );
 
   it('tier 6: a user-level XDG config roots at the CWD, not next to the config file', () => {
-    // The live defect in apcore#113: `acl.root: ./acl` written in
-    // ~/.config/apcore/config.yaml means "this project's acl/", never
-    // "~/.config/apcore/acl/".
+    // User-level discovery applies paths to the project running the SDK.
     const configPath = write(xdgConfigPath(fakeHome));
     process.chdir(projectDir);
 
@@ -118,11 +108,42 @@ describe('Config.projectRoot — one case per §9.14 discovery tier', () => {
     expect(config.projectRoot).toBe(process.cwd());
   });
 
-  it('a user-level path loaded explicitly is still recognised as user-level', () => {
+  it('loads a home configuration as an explicit file when selected by its path', () => {
     const configPath = write(xdgConfigPath(fakeHome));
     process.chdir(projectDir);
 
-    expect(Config.load(configPath).projectRoot).toBe(process.cwd());
+    expect(Config.load(configPath).projectRoot).toBe(dirname(configPath));
+    vi.stubEnv('APCORE_CONFIG_FILE', configPath);
+    expect(Config.discover().projectRoot).toBe(dirname(configPath));
+  });
+
+  it('keeps the project root and YAML source stable across chdir and reload', () => {
+    write(join(projectDir, 'apcore.yaml'));
+    process.chdir(projectDir);
+    const config = Config.load('apcore.yaml');
+
+    process.chdir(elsewhereDir);
+    expect(config.projectRoot).toBe(projectDir);
+    write(join(projectDir, 'apcore.yaml'), `${MINIMAL_YAML}schema: {root: ./updated}\n`);
+    config.reload();
+
+    expect(config.sourcePath).toBe('apcore.yaml');
+    expect(config.projectRoot).toBe(projectDir);
+    expect(config.get('schema.root')).toBe('./updated');
+  });
+
+  it('reloads a selected symlink using the link directory as project root', () => {
+    const target = write(join(elsewhereDir, 'target.yaml'));
+    symlinkSync(target, join(projectDir, 'apcore.yaml'), 'file');
+    process.chdir(projectDir);
+    const config = Config.discover();
+
+    write(target, `${MINIMAL_YAML}schema: {root: ./updated}\n`);
+    process.chdir(elsewhereDir);
+    config.reload();
+
+    expect(config.projectRoot).toBe(projectDir);
+    expect(config.resolvePath(config.get('schema.root') as string)).toBe(join(projectDir, 'updated'));
   });
 
   it('no config file: fromDefaults and a bare Config root at the CWD', () => {
@@ -148,178 +169,38 @@ describe('Config.projectRoot — one case per §9.14 discovery tier', () => {
   });
 });
 
-describe('the §13.2 project-root deprecation notice', () => {
-  /** Warning lines this notice emitted, ignoring every other console.warn. */
-  function noticesFrom(spy: MockInstance<typeof console.warn>): string[] {
-    return spy.mock.calls
-      .map((call) => String(call[0]))
-      .filter((line) => line.includes('PROTOCOL_SPEC §9.2.2'));
-  }
-
-  function spyOnWarn() {
-    return vi.spyOn(console, 'warn').mockImplementation(() => {});
-  }
-
-  it('fires when the project root differs from the CWD and a relative value is present', () => {
-    write(join(elsewhereDir, 'custom.yaml'));
+describe('project-root path resolution', () => {
+  it.each(['relative', 'absolute'])('uses filesystem traversal for %s paths containing a symlink and parent segment', (kind) => {
+    const deep = join(elsewhereDir, 'deep');
+    mkdirSync(deep);
+    symlinkSync(deep, join(projectDir, 'link'), 'dir');
+    for (const [base, marker] of [[projectDir, 'project'], [elsewhereDir, 'physical']]) {
+      write(join(base, 'probe', 'global_acl.yaml'), [
+        'default_effect: deny',
+        'audit: {enabled: false, include_denied: true}',
+        'rules:',
+        '  - effect: deny',
+        '    callers: ["@external"]',
+        '    targets: [probe]',
+        `    description: ${marker}`,
+      ].join('\n'));
+      write(join(base, 'probe', 'probe.schema.yaml'), `description: ${marker}\ninput_schema: {}\noutput_schema: {}\n`);
+    }
     process.chdir(projectDir);
-    const warn = spyOnWarn();
+    const relative = 'link/../probe';
+    const absolute = `${projectDir}/${relative}`;
+    const path = kind === 'absolute' ? absolute : relative;
+    const config = new Config({ acl: { root: path }, schema: { root: path } });
 
-    const config = Config.load(join(elsewhereDir, 'custom.yaml'));
-
-    expect(config.projectRoot).not.toBe(process.cwd());
-    const notices = noticesFrom(warn);
-    expect(notices).toHaveLength(1);
-    // The DEFAULTS table supplies these three as relative values, and every
-    // one of them re-roots if the base moves.
-    expect(notices[0]).toContain('acl.root');
-    expect(notices[0]).toContain('schema.root');
-    expect(notices[0]).toContain('extensions.root');
-    expect(notices[0]).toContain(elsewhereDir);
+    expect(config.resolvePath(path)).toBe(absolute);
+    expect(ACL.discover(config)?.rules[0]?.description).toBe('physical');
+    expect(new SchemaLoader(config).load('probe').description).toBe('physical');
   });
 
-  it('does NOT fire in the ordinary tier 2-5 case, where the roots coincide', () => {
-    write(join(projectDir, 'apcore.yaml'));
-    process.chdir(projectDir);
-    const warn = spyOnWarn();
-
-    const config = Config.discover();
-
-    expect(config.projectRoot).toBe(process.cwd());
-    expect(noticesFrom(warn)).toEqual([]);
-  });
-
-  it('does NOT fire for a user-level config, whose project root is already the CWD', () => {
-    write(xdgConfigPath(fakeHome));
-    process.chdir(projectDir);
-    const warn = spyOnWarn();
-
-    Config.discover();
-
-    expect(noticesFrom(warn)).toEqual([]);
-  });
-
-  it('does NOT fire when the project root differs but every path-typed value is absolute', () => {
-    // The second half of the condition, on its own. Without it this would be a
-    // blanket warning on every out-of-tree config, which apcore#113 explicitly
-    // rules out.
-    // EVERY §9.2.1 key has to be spelled absolutely, `bindings.dir` included:
-    // the DEFAULTS table now supplies `./bindings` (spec v1.36.0), so leaving
-    // it unstated leaves a relative value standing and the notice correctly
-    // fires.
-    write(
-      join(elsewhereDir, 'custom.yaml'),
-      `${MINIMAL_YAML}extensions:\n  root: "${join(tmpDir, 'ext')}"\nschema:\n  root: "${join(tmpDir, 'sch')}"\nacl:\n  root: "${join(tmpDir, 'acl')}"\nbindings:\n  dir: "${join(tmpDir, 'bnd')}"\n`,
-    );
-    process.chdir(projectDir);
-    const warn = spyOnWarn();
-
-    const config = Config.load(join(elsewhereDir, 'custom.yaml'), { validate: false });
-
-    expect(config.projectRoot).not.toBe(process.cwd());
-    expect(noticesFrom(warn)).toEqual([]);
-  });
-
-  it('counts a relative element of the list-valued extensions.roots', () => {
-    // §9.2.1 reports this key as `extensions.roots[]`; one relative element in
-    // either accepted form is enough.
-    write(
-      join(elsewhereDir, 'custom.yaml'),
-      `${MINIMAL_YAML}extensions:\n  root: "${join(tmpDir, 'ext')}"\n  roots:\n    - root: "./plugins"\n      namespace: "plugins"\nschema:\n  root: "${join(tmpDir, 'sch')}"\nacl:\n  root: "${join(tmpDir, 'acl')}"\nbindings:\n  dir: "${join(tmpDir, 'bnd')}"\n`,
-    );
-    process.chdir(projectDir);
-    const warn = spyOnWarn();
-
-    Config.load(join(elsewhereDir, 'custom.yaml'), { validate: false });
-
-    const notices = noticesFrom(warn);
-    expect(notices).toHaveLength(1);
-    expect(notices[0]).toContain('extensions.roots[]');
-    expect(notices[0]).not.toContain('schema.root');
-  });
-
-  it('counts a bindings.dir the config file declares relative', () => {
-    write(
-      join(elsewhereDir, 'custom.yaml'),
-      `${MINIMAL_YAML}extensions:\n  root: "${join(tmpDir, 'ext')}"\nschema:\n  root: "${join(tmpDir, 'sch')}"\nacl:\n  root: "${join(tmpDir, 'acl')}"\nbindings:\n  dir: "./bindings"\n`,
-    );
-    process.chdir(projectDir);
-    const warn = spyOnWarn();
-
-    Config.load(join(elsewhereDir, 'custom.yaml'), { validate: false });
-
-    const notices = noticesFrom(warn);
-    expect(notices).toHaveLength(1);
-    expect(notices[0]).toContain('bindings.dir');
-  });
-
-  it('fires once per LOAD, not once per process — a reload warns again', () => {
-    // PROTOCOL_SPEC §9.2.2 requirement 2: "once per configuration load, not
-    // once per process ... implementations MUST NOT suppress it with
-    // process-global state". This SDK used to carry exactly that flag.
-    const configPath = write(join(elsewhereDir, 'custom.yaml'));
-    process.chdir(projectDir);
-    const warn = spyOnWarn();
-
-    Config.load(configPath);
-    Config.load(configPath);
-    Config.load(configPath);
-
-    expect(noticesFrom(warn)).toHaveLength(3);
-  });
-
-  it('warns for BOTH of two different affected configurations in one process', () => {
-    // The case the once-per-process flag made impossible, and the reason
-    // §9.2.2 forbids it: whichever load ran first consumed the warning, so the
-    // second affected document was silent and the operator could not tell which
-    // one triggered it. Each document leaves a DIFFERENT single key relative,
-    // so the two notices are told apart by content, not by count alone.
-    // (`acl.root` is unusable as a discriminator: the notice's own prose names
-    // it when explaining today's inconsistent bases.)
-    const first = write(
-      join(elsewhereDir, 'first.yaml'),
-      `${MINIMAL_YAML}extensions:\n  root: "${join(tmpDir, 'ext')}"\nschema:\n  root: "./schemas-first"\nacl:\n  root: "${join(tmpDir, 'acl')}"\nbindings:\n  dir: "${join(tmpDir, 'bnd')}"\n`,
-    );
-    const secondDir = join(tmpDir, 'second-elsewhere');
-    const second = write(
-      join(secondDir, 'second.yaml'),
-      `${MINIMAL_YAML}extensions:\n  root: "./ext-second"\nschema:\n  root: "${join(tmpDir, 'sch')}"\nacl:\n  root: "${join(tmpDir, 'acl')}"\nbindings:\n  dir: "${join(tmpDir, 'bnd')}"\n`,
-    );
-    process.chdir(projectDir);
-    const warn = spyOnWarn();
-
-    Config.load(first, { validate: false });
-    Config.load(second, { validate: false });
-
-    const notices = noticesFrom(warn);
-    expect(notices).toHaveLength(2);
-    // The FIRST document's notice names its own key and its own directory...
-    expect(notices[0]).toContain('schema.root');
-    expect(notices[0]).not.toContain('extensions.root');
-    expect(notices[0]).toContain(elsewhereDir);
-    // ...and so does the SECOND's. Under the old flag this notice never existed.
-    expect(notices[1]).toContain('extensions.root');
-    expect(notices[1]).not.toContain('schema.root');
-    expect(notices[1]).toContain(secondDir);
-  });
-
-  it('says nothing for a config that never touched the filesystem', () => {
-    process.chdir(projectDir);
-    const warn = spyOnWarn();
-
-    Config.fromDefaults();
-    new Config({ acl: { root: './acl' } });
-
-    expect(noticesFrom(warn)).toEqual([]);
-  });
-});
-
-describe('projectRoot changes no resolution behaviour', () => {
-  it('SchemaLoader still resolves schema.root against the CWD', async () => {
-    // The §13.2 phase is a notice, not a move. Pinned here so a premature
-    // adoption of the new base cannot land silently.
-    const { SchemaLoader } = await import('../src/schema/loader.js');
+  it('loads SchemaLoader input from the config project outside CWD', () => {
     write(join(elsewhereDir, 'custom.yaml'), `${MINIMAL_YAML}schema:\n  root: "./schemas"\n`);
+    write(join(elsewhereDir, 'schemas', 'probe.schema.yaml'), 'description: config root\ninput_schema: {}\noutput_schema: {}\n');
+    write(join(projectDir, 'schemas', 'probe.schema.yaml'), 'description: CWD\ninput_schema: {}\noutput_schema: {}\n');
     process.chdir(projectDir);
     vi.spyOn(console, 'warn').mockImplementation(() => {});
 
@@ -327,8 +208,25 @@ describe('projectRoot changes no resolution behaviour', () => {
     const loader = new SchemaLoader(config);
 
     expect(config.projectRoot).toBe(elsewhereDir);
-    expect((loader as unknown as { _schemasDir: string })._schemasDir).toBe(
-      join(process.cwd(), 'schemas'),
-    );
+    expect(loader.load('probe').description).toBe('config root');
+  });
+
+  it('uses the default directories for empty programmatic path values', () => {
+    process.chdir(projectDir);
+    const config = new Config({ acl: { root: '' }, schema: { root: '' } });
+    write(join(projectDir, 'global_acl.yaml'), 'default_effect: deny\nrules: []\n');
+    write(join(projectDir, 'acl', 'global_acl.yaml'), [
+      'default_effect: deny',
+      'rules:',
+      '  - effect: deny',
+      '    callers: ["@external"]',
+      '    targets: [probe]',
+      '    description: default directory',
+    ].join('\n'));
+    write(join(projectDir, 'probe.schema.yaml'), 'description: project root\ninput_schema: {}\noutput_schema: {}\n');
+    write(join(projectDir, 'schemas', 'probe.schema.yaml'), 'description: default directory\ninput_schema: {}\noutput_schema: {}\n');
+
+    expect(ACL.discover(config)?.rules[0]?.description).toBe('default directory');
+    expect(new SchemaLoader(config).load('probe').description).toBe('default directory');
   });
 });

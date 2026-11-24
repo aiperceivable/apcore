@@ -3,19 +3,29 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from typing import Any
 
 import pytest
 from pydantic import BaseModel
 
+from apcore.acl import ACL
+from apcore.approval import AutoApproveHandler
 from apcore.client import APCore
 from apcore.config import Config
 from apcore.context import Context
 from apcore.decorator import FunctionModule
-from apcore.errors import ModuleNotFoundError, ModuleTimeoutError, SysModulesDisabledError
-from apcore.events.emitter import ApCoreEvent
+from apcore.errors import (
+    ACLDeniedError,
+    ModuleNotFoundError,
+    ModuleTimeoutError,
+    SysModuleRegistrationError,
+    SysModulesDisabledError,
+)
+from apcore.events.emitter import ApCoreEvent, EventEmitter
 from apcore.executor import Executor
 from apcore.middleware import Middleware
+from apcore.policy import ExecutionPolicy, PolicyRule
 from apcore.registry import Registry
 
 
@@ -407,7 +417,109 @@ def _sys_config() -> Config:
     )
 
 
+@pytest.mark.parametrize("fail_on_error", [False, True])
+def test_client_reports_system_module_registration_failures(
+    monkeypatch: pytest.MonkeyPatch, fail_on_error: bool
+) -> None:
+    registry = Registry()
+    register_internal = registry.register_internal
+
+    def register(module_id: str, module: object) -> None:
+        if module_id == "system.health.summary":
+            raise ValueError("test registration failure")
+        register_internal(module_id, module)
+
+    monkeypatch.setattr(registry, "register_internal", register)
+    if fail_on_error:
+        with pytest.raises(SysModuleRegistrationError) as raised:
+            APCore(registry=registry, config=_sys_config(), fail_on_error=True)
+        errors = (raised.value,)
+    else:
+        client = APCore(registry=registry, config=_sys_config())
+        errors = client.sys_modules_errors
+
+    assert len(errors) == 1
+    assert isinstance(errors[0], SysModuleRegistrationError)
+    assert errors[0].code == "SYS_MODULE_REGISTRATION_FAILED"
+    assert errors[0].details["module_id"] == "system.health.summary"
+    assert registry.has("system.health.module") is (not fail_on_error)
+
+
 class TestEvents:
+    def test_client_receives_executor_governance_events(self) -> None:
+        policy = ExecutionPolicy([PolicyRule("test.governed", requires_approval=True)])
+        client = APCore(config=_sys_config(), policy=policy)
+        client.executor.set_approval_handler(AutoApproveHandler())
+        received: list[ApCoreEvent] = []
+        for event_type in ("apcore.policy.override", "apcore.approval.decision", "apcore.acl.denied"):
+            client.on(event_type, received.append)
+
+        @client.module(id="test.governed")
+        def governed() -> dict:
+            return {"executed": True}
+
+        assert client.call("test.governed", {}) == {"executed": True}
+        client.executor.set_acl(ACL())
+        with pytest.raises(ACLDeniedError):
+            client.call("test.governed", {})
+
+        assert client.events is not None
+        client.events.flush()
+        assert sorted((event.event_type, event.module_id) for event in received) == [
+            ("apcore.acl.denied", "test.governed"),
+            ("apcore.approval.decision", "test.governed"),
+            ("apcore.policy.override", "test.governed"),
+        ]
+
+    def test_client_preserves_supplied_executor_emitter(self) -> None:
+        emitter = EventEmitter()
+        executor = Executor(Registry(), acl=ACL(), event_emitter=emitter)
+        client = APCore(executor=executor, config=_sys_config())
+        received: list[ApCoreEvent] = []
+
+        class Subscriber:
+            async def on_event(self, event: ApCoreEvent) -> None:
+                received.append(event)
+
+        emitter.subscribe(Subscriber())
+        client_events: list[ApCoreEvent] = []
+        client.on("apcore.acl.denied", client_events.append)
+
+        @client.module(id="test.denied")
+        def denied() -> dict:
+            return {}
+
+        with pytest.raises(ACLDeniedError):
+            client.call("test.denied", {})
+
+        emitter.flush()
+        assert client.events is not None
+        client.events.flush()
+        assert [event.event_type for event in received] == ["apcore.acl.denied"]
+        assert client_events == []
+
+    def test_client_exposes_no_event_bus_when_events_are_disabled(self) -> None:
+        client = APCore(config=Config({"sys_modules": {"enabled": True, "events": {"enabled": False}}}))
+        assert client.events is None
+        with pytest.raises(SysModulesDisabledError):
+            client.on("apcore.acl.denied", lambda _event: None)
+
+    @pytest.mark.parametrize("enabled", [False, True])
+    def test_namespace_event_bus_uses_the_persisted_setting(self, tmp_path: Path, enabled: bool) -> None:
+        root = tmp_path / "config"
+        root.mkdir()
+        (root / "overrides.yaml").write_text(f"sys_modules.events.enabled: {str(enabled).lower()}\n", encoding="utf-8")
+        path = root / "apcore.yaml"
+        path.write_text(
+            'apcore:\n  version: "1.0.0"\n  project: {name: client-test}\n'
+            "sys_modules:\n  enabled: true\n"
+            f"  events: {{enabled: {str(not enabled).lower()}}}\n"
+            "  control: {overrides_path: ./overrides.yaml}\n",
+            encoding="utf-8",
+        )
+        client = APCore(config=Config.load(str(path)))
+        assert (client.events is not None) is enabled
+
     def test_events_none_without_config(self) -> None:
         client = APCore()
         assert client.events is None

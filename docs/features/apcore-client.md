@@ -62,19 +62,55 @@ When a Config is supplied and the client built the Executor itself:
 1. **ACL discovery** — the ACL file at `acl.root` is loaded and attached. A missing file attaches **no** ACL; it does not synthesize a default-deny one (D-64).
 2. **Tracing** — when `observability.tracing.enabled: true`, a `TracingMiddleware` built from `observability.tracing.*` is installed ([§10.1.1](../spec/protocol-spec.md#1011-tracing-from-configuration-observabilitytracing)).
 
-Both steps are skipped for a caller-supplied Executor, whose wiring is respected as-is. Python and TypeScript also accept a `policy` (`ExecutionPolicy`) that is applied only to an Executor the client builds.
+The client applies these settings and any supplied `ExecutionPolicy` only to an Executor it builds. Rust accepts the policy and an `ApprovalHandler` through `APCoreOptions`.
 
 Then, when `sys_modules.enabled: true`:
 
 1. The read-only system modules are registered: `system.health.*`, `system.manifest.*`, `system.usage.*`.
 2. `ErrorHistoryMiddleware` and `UsageMiddleware` are added. The supplied `metrics_collector` is handed to the system modules (Python creates one when none is supplied).
 3. When `sys_modules.events.enabled: true`:
-    - an `EventEmitter` is created and exposed as `client.events`;
+    - one `EventEmitter` serves client subscribers, the registry, system modules, and the Executor the client builds. It carries ACL denials, policy overrides, approval decisions, and post-stream validation failures. A supplied Executor uses its own configured emitter.
     - `PlatformNotifyMiddleware` is added (threshold events from `sys_modules.events.thresholds.*`);
     - subscribers are instantiated from `sys_modules.events.subscribers` (see [Event System](./event-system.md));
     - the `system.control.*` modules are registered unless `sys_modules.control.enabled: false`. `disable()` / `enable()` depend on them.
 
-System-module registration failures are logged and do not fail construction.
+By default, startup logs system-module registration failures and returns the client so callers can inspect the errors through `sys_modules_errors`, `sysModulesErrors`, or `sys_modules_errors()` in Python, TypeScript, or Rust respectively. Enable `fail_on_error` (TypeScript `failOnError`) to fail construction at the first registration error. The `SYS_MODULE_REGISTRATION_FAILED` error identifies the affected module.
+
+A supplied Registry or Executor can retain modules and middleware installed before a startup failure. Use fresh components when retrying startup. Override loading and subscriber setup follow their respective recovery rules. See [System Modules](./system-modules.md).
+
+=== "Python"
+    ```python
+    from apcore import APCore, Config
+
+    config = Config({"sys_modules": {"enabled": True}})
+    client = APCore(config=config, fail_on_error=True)
+    ```
+
+=== "TypeScript"
+    ```typescript
+    import { APCore, Config } from 'apcore-js';
+
+    const config = new Config({ sys_modules: { enabled: true } });
+    const client = new APCore({ config, failOnError: true });
+    ```
+
+=== "Rust"
+    ```rust
+    use apcore::config::Config;
+    use apcore::{APCore, APCoreOptions};
+    use serde_json::json;
+
+    fn main() -> Result<(), apcore::sys_modules::SysModuleError> {
+        let mut config = Config::default();
+        config.set("sys_modules.enabled", json!(true));
+        let _client = APCore::try_with_options(APCoreOptions {
+            config: Some(config),
+            fail_on_error: true,
+            ..Default::default()
+        })?;
+        Ok(())
+    }
+    ```
 
 ### Method Summary
 
@@ -139,16 +175,17 @@ System-module registration failures are logged and do not fail construction.
 | `validate()` | `validate()` | Returns `Result<PreflightResult, ModuleError>` |
 | `disable()` / `enable()` | `async fn disable(&self, &str, Option<&str>)` | Returns `Result<Value, ModuleError>` |
 | `module()` | `module(module_id, description, input_schema, output_schema, documentation, tags, version, metadata, examples, display, handler)` | Builds a `FunctionModule` from explicit metadata and a handler closure; `impl Module` + `register()` covers anything more |
-| `policy` constructor input | not accepted | Attach the policy to an `Executor` and pass it via `APCore::with_options(None, Some(executor), …)` |
+| `policy` constructor input | `APCoreOptions::policy` | Applied to the Executor the client builds |
 | `events` / `registry` / `executor` | `events()` / `registry()` / `executor()` | Accessor methods |
-| Constructors | `new()`, `with_config(config)`, `from_path(path)?`, `with_components(registry, config)`, `with_options(registry, executor, config, metrics_collector)` | `from_path` is the only fallible one |
+| Constructors | `new()`, `with_config(config)`, `from_path(path)?`, `with_components(registry, config)`, `with_options(registry, executor, config, metrics_collector)`, `try_with_options(options)` | `try_with_options` supports strict system-module startup |
 
 **Rust-only methods:**
 
 | Method | Purpose |
 |--------|---------|
 | `with_components(registry, config)` | Build a client around a pre-configured Registry |
-| `with_options(registry, executor, config, metrics_collector)` | Full constructor with every optional component |
+| `with_options(registry, executor, config, metrics_collector)` | Construct a client from optional components with lenient system-module startup |
+| `try_with_options(APCoreOptions)` | Construct a client with explicit startup and governance settings |
 | `reload()` | Re-read the `Config` from its source file. Does **not** re-discover modules — call `discover()` for that |
 
 ## Usage
@@ -472,13 +509,14 @@ Python `call_async()` is a coroutine distinct from the blocking `call()`. TypeSc
 
 ### Inputs
 - `registry` (Registry, optional) — ignored when `executor` is supplied; a Registry built from `config` otherwise
-- `executor` (Executor, optional) — used as-is; config-driven ACL discovery and tracing are skipped for it
+- `executor` (Executor, optional) — uses its own ACL, tracing, approval, policy, and event-emitter wiring
 - `config` (Config, optional) — when absent the client runs zero-config, with no system modules
 - `metrics_collector` (MetricsCollector, optional) — handed to the system modules
-- `policy` (ExecutionPolicy, optional; Python and TypeScript) — applied to an Executor the client builds
+- `policy` (ExecutionPolicy, optional) — applied to an Executor the client builds
+- `fail_on_error` (bool, optional, default `false`; `failOnError` in TypeScript) — stop construction on the first system-module registration failure
 
 ### Errors
-- None from construction itself. ACL discovery and system-module registration failures are logged and the client continues without that component.
+- `SYS_MODULE_REGISTRATION_FAILED` when a module cannot register and strict startup is enabled. Lenient startup records recovered registration errors on the client.
 
 ### Returns
 - A fully initialized `APCore` instance.
@@ -688,7 +726,7 @@ An SDK that cannot take the middleware object back **MUST** issue a token at reg
 - `metrics_collector` (`Option<MetricsCollector>`) — used when system modules are enabled
 
 ### Errors
-- None — ACL-discovery, tracing and system-module failures are logged and the component is left out.
+- System-module registration errors are logged and available through `sys_modules_errors()`.
 
 ### Returns
 - A fully initialized `APCore`.

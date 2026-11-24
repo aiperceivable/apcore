@@ -285,6 +285,33 @@ describe('AsyncTaskManager.getStatus', () => {
     await manager.shutdown();
   });
 
+  it('awaits a custom store that suspends before returning a task record', async () => {
+    class TimerTaskStore extends InMemoryTaskStore {
+      override async get(taskId: string): Promise<TaskInfo | null> {
+        await wait(1);
+        return super.get(taskId);
+      }
+    }
+    const store = new TimerTaskStore();
+    const executor = new Executor({ registry: createRegistry() });
+    const manager = new AsyncTaskManager({ executor, store });
+    await store.save({
+      taskId: 'done',
+      moduleId: 'test.echo',
+      status: TaskStatus.COMPLETED,
+      submittedAt: 0,
+      startedAt: 0,
+      completedAt: 1,
+      result: { value: 1 },
+      error: null,
+      retryCount: 0,
+      maxRetries: 0,
+    });
+
+    expect((await manager.getStatus('done'))?.taskId).toBe('done');
+    await expect(manager.getResult('done')).resolves.toEqual({ value: 1 });
+  });
+
   it('async_tasks.get_status.return.shallow_copy: mutating the returned snapshot does not propagate to the store (D-23)', async () => {
     const { manager } = createManager();
     const taskId = await manager.submit('test.echo', { x: 1 });

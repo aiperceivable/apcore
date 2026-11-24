@@ -40,7 +40,7 @@ from apcore.errors import (
 # Registry isolation helpers (the namespace registry is class-global)
 # ---------------------------------------------------------------------------
 
-_BUILTIN_NAMES = {"observability", "obs", "sys_modules"}
+_BUILTIN_NAMES = {"observability", "obs", "sys_modules", "apcore-python"}
 
 
 def _reset_registry() -> None:

@@ -9,8 +9,11 @@ from typing import Any, AsyncIterator
 import pytest
 from pydantic import BaseModel
 
+from apcore.client import APCore
+from apcore.config import Config
 from apcore.context import Context
 from apcore.errors import InvalidInputError, ModuleNotFoundError, ModuleTimeoutError
+from apcore.events.emitter import ApCoreEvent
 from apcore.executor import Executor
 from apcore.middleware import Middleware
 from apcore.module import ModuleAnnotations
@@ -239,26 +242,22 @@ class TestStreamPostValidationFailure:
 
     @pytest.mark.asyncio
     async def test_post_stream_failure_emits_event(self) -> None:
-        from unittest.mock import MagicMock
-
-        from apcore.events.emitter import ApCoreEvent
-
-        emitter = MagicMock()
-        ex = _make_executor(
-            module=SchemaFailStreamingModule(),
-            module_id="failstream",
-        )
-        ex._event_emitter = emitter  # inject for the test
+        config = Config({"sys_modules": {"enabled": True, "events": {"enabled": True}}})
+        client = APCore(config=config)
+        client.register("failstream", SchemaFailStreamingModule())
+        received: list[ApCoreEvent] = []
+        client.on("apcore.stream.post_validation_failed", received.append)
 
         chunks: list[dict[str, Any]] = []
-        async for chunk in ex.stream("failstream", {}):
+        async for chunk in client.stream("failstream", {}):
             chunks.append(chunk)
 
         assert len(chunks) == 2  # All chunks still yielded
 
-        # Emitter received a failure event.
-        assert emitter.emit.call_count == 1
-        event: ApCoreEvent = emitter.emit.call_args[0][0]
+        assert client.events is not None
+        client.events.flush()
+        assert len(received) == 1
+        event = received[0]
         assert event.event_type == "apcore.stream.post_validation_failed"
         assert event.module_id == "failstream"
         assert event.severity == "error"

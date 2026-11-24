@@ -50,6 +50,7 @@ import { MiddlewareChainError, MiddlewareManager } from './middleware/manager.js
 import type {
   Change,
   Module,
+  ModuleAnnotations,
   PreflightCheckResult,
   PreflightResult,
   PreviewResult,
@@ -73,6 +74,7 @@ import { MAX_MODULE_ID_LENGTH, MODULE_ID_PATTERN } from './registry/registry.js'
 import type { Registry } from './registry/registry.js';
 import type { ToggleState } from './sys-modules/toggle.js';
 import { propagateError } from './utils/error-propagation.js';
+import { normalizeModuleObject } from './utils/module-output.js';
 
 export const REDACTED_VALUE: string = '***REDACTED***';
 
@@ -330,17 +332,10 @@ export function deepMergeChunk(
   depth = 0,
   maxDepth: number = MAX_MERGE_DEPTH,
 ): void {
-  if (depth >= maxDepth) {
-    // At the depth cap, replace rather than recurse to avoid stack overflow.
-    // Spec mandates right-value-wins, so shallow-assign each overlay key onto base.
-    for (const [key, value] of Object.entries(overlay)) {
-      base[key] = value;
-    }
-    return;
-  }
   for (const [key, value] of Object.entries(overlay)) {
     if (
-      key in base &&
+      depth < maxDepth &&
+      Object.hasOwn(base, key) &&
       base[key] != null &&
       typeof base[key] === 'object' &&
       !Array.isArray(base[key]) &&
@@ -355,7 +350,9 @@ export function deepMergeChunk(
         maxDepth,
       );
     } else {
-      base[key] = value;
+      // At the depth cap, replace rather than recurse. Define own data keys
+      // directly so JSON properties cannot invoke inherited setters.
+      Object.defineProperty(base, key, { value, writable: true, enumerable: true, configurable: true });
     }
   }
 }
@@ -382,14 +379,6 @@ function jsonTypeName(value: unknown): string {
 }
 
 /**
- * A valid stream chunk is a plain JSON object (not null, not an array, not a
- * scalar). Mirrors apcore-rust `Value::is_object()`.
- */
-function isPlainObjectChunk(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === 'object' && !Array.isArray(value);
-}
-
-/**
  * Bind the Executor to a Context, tolerating both the current public method
  * (`withExecutor`) and the deprecated alias (`_withExecutor`). This keeps the
  * Executor robust against foreign Context implementations (e.g. the duck-typed
@@ -412,6 +401,7 @@ export class Executor {
   private _policy: ExecutionPolicy | null;
   private _toggleState: ToggleState | null;
   private _eventEmitter: EventEmitter | null;
+  private _eventEmitterConfigured: boolean;
   private _strategy: ExecutionStrategy;
   private _pipelineEngine: PipelineEngine;
 
@@ -437,6 +427,7 @@ export class Executor {
     this._policy = options.policy ?? null;
     this._toggleState = options.toggleState ?? null;
     this._eventEmitter = options.eventEmitter ?? null;
+    this._eventEmitterConfigured = this._eventEmitter !== null;
 
     if (options.middlewares) {
       for (const mw of options.middlewares) {
@@ -535,6 +526,9 @@ export class Executor {
    */
   private _bindProviders(strategy: ExecutionStrategy = this._strategy): void {
     for (const step of strategy.steps) {
+      if (this._eventEmitterConfigured && (step instanceof BuiltinACLCheck || step instanceof BuiltinApprovalGate)) {
+        step.setEventEmitter(this._eventEmitter);
+      }
       if (step instanceof BuiltinACLCheck) {
         if (this._acl !== null) step.setAcl(this._acl);
       } else if (step instanceof BuiltinApprovalGate) {
@@ -626,6 +620,34 @@ export class Executor {
     return this._strategy;
   }
 
+  private _moduleGovernanceAnnotations(moduleId: string): ModuleAnnotations | null {
+    return governanceUnion(
+      (this._registry.get(moduleId) as Record<string, unknown> | null)?.['annotations'],
+      this._registry.getDeclaredAnnotations(moduleId),
+    );
+  }
+
+  /**
+   * List registered module IDs with an approval declaration the built-in gate would skip.
+   * Use after registration to report the default strategy's approval posture.
+   * Includes hidden modules and evaluates policy without a call site. Caller-specific
+   * ACL requirements are evaluated during each invocation.
+   */
+  ungatedApprovalModules(): string[] {
+    const enforcingGates = this._strategy.steps.filter(
+      (step): step is BuiltinApprovalGate =>
+        step instanceof BuiltinApprovalGate &&
+        (step.approvalHandler !== null || step.policy?.strict === true),
+    );
+    return this._registry.list({ visibility: ['public', 'hidden'] }).filter((id) => {
+      const annotations = this._moduleGovernanceAnnotations(id);
+      if (!annotations?.requiresApproval) return false;
+      return !enforcingGates.some(
+        (gate) => gate.policy === null || gate.policy.resolve(id, annotations).needsApproval,
+      );
+    });
+  }
+
   /**
    * Return what is actually gating this executor (PROTOCOL_SPEC 6.6.5).
    *
@@ -675,14 +697,7 @@ export class Executor {
     // serve-time adapter may act on by refusing to start.
     const allControlModulesRequireApproval =
       controlIds.length > 0 &&
-      controlIds.every((id) =>
-        Boolean(
-          governanceUnion(
-            (this._registry.get(id) as Record<string, unknown> | null)?.['annotations'],
-            this._registry.getDeclaredAnnotations(id),
-          )?.requiresApproval,
-        ),
-      );
+      controlIds.every((id) => Boolean(this._moduleGovernanceAnnotations(id)?.requiresApproval));
 
     // PROTOCOL_SPEC 6.6.5.5 requirement 3 (D-129): when a built-in gate is
     // wired, report what that running gate HOLDS — not what the executor was
@@ -777,6 +792,17 @@ export class Executor {
       console.warn(
         '[apcore:executor] setApprovalHandler() called but current strategy has no BuiltinApprovalGate step — approval will not be enforced',
       );
+    }
+  }
+
+  /** Set the emitter for governance and post-stream validation events. */
+  setEventEmitter(emitter: EventEmitter | null): void {
+    this._eventEmitter = emitter;
+    this._eventEmitterConfigured = true;
+    for (const step of this._strategy.steps) {
+      if (step instanceof BuiltinACLCheck || step instanceof BuiltinApprovalGate) {
+        step.setEventEmitter(emitter);
+      }
     }
   }
 
@@ -1167,7 +1193,8 @@ export class Executor {
           // rejected so it is never delivered to the consumer; deep_merge can
           // only accumulate objects. The throw routes through the catch below
           // (propagateError / onError) like other stream errors.
-          if (!isPlainObjectChunk(chunk)) {
+          const normalized = normalizeModuleObject(chunk);
+          if (normalized === null) {
             const actualType = jsonTypeName(chunk);
             throw new InvalidInputError(
               `Streaming chunk at index ${chunkIndex} is not a JSON object ` +
@@ -1182,8 +1209,8 @@ export class Executor {
               },
             );
           }
-          deepMergeChunk(accumulated, chunk, 0, mergeDepthCap);
-          yield chunk;
+          deepMergeChunk(accumulated, normalized, 0, mergeDepthCap);
+          yield normalized;
           chunkIndex += 1;
         }
       } catch (exc) {

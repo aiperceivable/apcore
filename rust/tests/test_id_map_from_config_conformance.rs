@@ -126,14 +126,29 @@ fn discovered_ids(case: &Value) -> HashSet<String> {
 
     let result = {
         let config = Config::load(Path::new("apcore.json")).expect("config loads");
+        let explicit = case["input"]["explicit_argument"]
+            .as_bool()
+            .expect("explicit_argument");
+        if !explicit {
+            // Use a second working directory containing a different map for
+            // the same module. The stored Config root selects the original.
+            let runtime_dir = dir.path().join("runtime");
+            std::fs::create_dir_all(runtime_dir.join("ext/executor/orig")).unwrap();
+            std::fs::write(runtime_dir.join("ext/executor/orig/mod.rs"), "// probe").unwrap();
+            std::fs::write(
+                runtime_dir.join("map.yaml"),
+                map_document(&[
+                    json!({"file": "executor/orig/mod.py", "id": "executor.decoy.mod"}),
+                ]),
+            )
+            .unwrap();
+            std::env::set_current_dir(runtime_dir).expect("enter the runtime directory");
+        }
         let mut discoverer = apcore::registry::DefaultDiscoverer::from_config(&config)
             .with_factory(Arc::new(|_file, _entry| {
                 Ok(Some(Arc::new(Probe) as Arc<dyn Module>))
             }));
-        if case["input"]["explicit_argument"]
-            .as_bool()
-            .expect("explicit_argument")
-        {
+        if explicit {
             discoverer = discoverer.with_id_map(Some("./explicit.yaml"));
         }
         let registry = Registry::new();

@@ -1,0 +1,24 @@
+{
+  "description": "Typed module results are delivered as JSON objects through calls, fallback streaming, and native streaming.",
+  "test_cases": [
+    {
+      "id": "typed_object_with_nested_value",
+      "input": {
+        "item": {"id": "alpha"},
+        "updated_at": "2026-11-24T12:00:00.123Z"
+      },
+      "expected": {
+        "output": {
+          "item": {"id": "alpha"},
+          "updated_at": "2026-11-24T12:00:00.123Z"
+        },
+        "chunks": [
+          {
+            "item": {"id": "alpha"},
+            "updated_at": "2026-11-24T12:00:00.123Z"
+          }
+        ]
+      }
+    }
+  ]
+}

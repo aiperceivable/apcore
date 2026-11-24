@@ -14,6 +14,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as yaml from 'js-yaml';
+import { appendFilesystemPath } from '../utils/filesystem-path.js';
 
 /**
  * Pluggable persistence for runtime config & toggle overrides.
@@ -116,7 +117,7 @@ export class FileOverridesStore implements OverridesStore {
     const yamlText = yaml.dump(ordered, { sortKeys: true });
 
     const base = path.basename(this._path);
-    const tmp = path.join(dir, `.${base}.${process.pid}.${Date.now()}.tmp`);
+    const tmp = appendFilesystemPath(dir, `.${base}.${process.pid}.${Date.now()}.tmp`);
     try {
       fs.writeFileSync(tmp, yamlText, 'utf-8');
       fs.renameSync(tmp, this._path);

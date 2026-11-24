@@ -3,9 +3,9 @@
  * Supports legacy mode (flat YAML) and namespace mode (apcore top-level key).
  */
 
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { dirname, isAbsolute, join, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import process from 'node:process';
 import yaml from 'js-yaml';
 import {
@@ -18,6 +18,7 @@ import {
   ConfigNamespaceReservedError,
   ConfigNotFoundError,
 } from './errors.js';
+import { appendFilesystemPath } from './utils/filesystem-path.js';
 import { jsonSchemaToTypeBox } from './schema/loader-pure.js';
 import { SchemaValidator } from './schema/validator.js';
 import { DEFAULTS, getDefault } from './config-defaults.js';
@@ -635,18 +636,22 @@ function resolveNamespacePath(key: string): { namespace: string; subPath: string
  * never becomes the `config.file` override (apcore#88).
  */
 export function discoverConfigFile(): string | null {
+  return discoverConfigSource()?.path ?? null;
+}
+
+function discoverConfigSource(): { path: string; userLevel: boolean } | null {
   const env = process.env;
 
   const envPath = env[ENV_CONFIG_FILE];
-  if (envPath) return envPath;
+  if (envPath) return { path: envPath, userLevel: false };
 
   const cwdCandidates = ['project.yaml', 'project.yml', 'apcore.yaml', 'apcore.yml'];
   for (const name of cwdCandidates) {
-    if (existsSync(name)) return name;
+    if (existsSync(name)) return { path: name, userLevel: false };
   }
 
   for (const candidate of userLevelConfigPaths()) {
-    if (existsSync(candidate)) return candidate;
+    if (existsSync(candidate)) return { path: candidate, userLevel: true };
   }
 
   return null;
@@ -656,12 +661,6 @@ export function discoverConfigFile(): string | null {
  * The §9.14 **user-level** configuration paths — discovery tiers 6 and 7 — in
  * discovery order: the XDG location (`~/Library/Application Support/apcore/`
  * on macOS, `~/.config/apcore/` elsewhere), then legacy `~/.apcore/`.
- *
- * Split out of {@link discoverConfigFile} because {@link Config.projectRoot}
- * needs the same two paths for the opposite purpose: to *recognise* a config
- * that came from one of these tiers, which is the case where the config file's
- * directory is the wrong project root (apcore#113). Keeping one definition
- * keeps the two answers from drifting apart.
  */
 export function userLevelConfigPaths(): string[] {
   const home = homedir();
@@ -703,48 +702,6 @@ const DEPRECATED_INERT_KEYS: readonly string[] = [
   'extensions.auto_discover',
 ];
 
-// Project root (§9.2.2 deprecation phase — apcore#113)
-// ---------------------------------------------------------------------------
-
-/**
- * NOTE ON CADENCE — there is deliberately no `_projectRootDeprecationWarned`
- * flag here, and no test hook to reset one.
- *
- * PROTOCOL_SPEC §9.2.2 requirement 2 fixes the cadence at **once per
- * configuration load, never once per process**, and says implementations
- * **MUST NOT** suppress the notice with process-global state. This SDK had
- * exactly that flag. It made emission order-dependent: in a process that loads
- * several configurations, whichever load ran first consumed the warning, so a
- * later affected document was silent and the operator could not tell which one
- * triggered it. The same global was a test-isolation hazard — one test consumed
- * the warning another test needed — which is why the hook below it existed at
- * all. De-duplication for log volume is the host logging layer's job.
- *
- * See {@link Config._warnProjectRootDeprecation}.
- */
-
-/**
- * Whether `value` is a path-typed value that a change of resolution base would
- * move: a non-empty relative string. An absolute path is already anchored, and
- * a missing or non-string value is not a path at all.
- */
-function isRelativePathValue(value: unknown): boolean {
-  return typeof value === 'string' && value !== '' && !isAbsolute(value);
-}
-
-/**
- * The path carried by one `extensions.roots` element, which §9.2.1 allows in
- * either the bare-string form or the `{ root, namespace }` form.
- */
-function extractRootPath(element: unknown): unknown {
-  if (typeof element === 'string') return element;
-  if (element !== null && typeof element === 'object' && !Array.isArray(element)) {
-    return (element as Record<string, unknown>)['root'];
-  }
-  return undefined;
-}
-
-// ---------------------------------------------------------------------------
 // Config class
 // ---------------------------------------------------------------------------
 
@@ -864,6 +821,8 @@ export class Config {
    */
   private _declared: Record<string, unknown>;
   private _yamlPath: string | null = null;
+  private _sourceFile: string | null = null;
+  private _projectRoot = process.cwd();
   private _mode: 'legacy' | 'namespace' = 'legacy';
   private _mounts: Map<string, Record<string, unknown>> = new Map();
   /**
@@ -910,11 +869,7 @@ export class Config {
    *
    * `extensions.roots` is reported as `extensions.roots[]` because it is
    * list-valued and every element carries a path.
-   *
-   * Note what this does NOT tell you: what a *relative* value in one of these
-   * keys resolves against. That base is unspecified as of spec v1.34.0 and
-   * currently differs between keys — `acl.root` resolves against the config
-   * file's directory, `schema.root` against the process CWD.
+   * Resolve their values against {@link Config.projectRoot}.
    */
   static pathTypedKeys(): readonly string[] {
     return PATH_TYPED_CONFIG_KEYS;
@@ -1041,19 +996,27 @@ export class Config {
    * - Legacy mode: otherwise (backward compatible).
    */
   static load(yamlPath?: string, options?: { validate?: boolean }): Config {
-    if (yamlPath === undefined || yamlPath === null) {
-      const found = discoverConfigFile();
-      if (found === null) return Config.fromDefaults();
-      yamlPath = found;
-    }
+    const source = yamlPath == null ? discoverConfigSource() : { path: yamlPath, userLevel: false };
+    if (source === null) return Config.fromDefaults();
+    return Config._loadFromFile(source.path, options, source.userLevel ? process.cwd() : undefined);
+  }
 
+  private static _loadFromFile(
+    yamlPath: string,
+    options?: { validate?: boolean },
+    projectRoot?: string,
+  ): Config {
     if (!existsSync(yamlPath)) {
       throw new ConfigNotFoundError(yamlPath);
     }
 
+    let sourceFile: string;
     let fileData: unknown;
     try {
-      const content = readFileSync(yamlPath, 'utf-8');
+      // Normalize the containing directory while retaining a final file
+      // symlink as the selected entry for project-root selection and reload.
+      sourceFile = join(realpathSync.native(dirname(yamlPath)), basename(yamlPath));
+      const content = readFileSync(sourceFile, 'utf-8');
       fileData = yaml.load(content);
     } catch (e) {
       if (e instanceof ConfigNotFoundError) throw e;
@@ -1123,18 +1086,14 @@ export class Config {
 
     config._declared = declared;
     config._yamlPath = yamlPath;
+    config._sourceFile = sourceFile;
+    config._projectRoot = projectRoot ?? dirname(sourceFile);
     config._validateOnLoad = options?.validate !== false;
 
     if (config._validateOnLoad) {
       config.validate();
     }
 
-    // §13.2 deprecation phase for apcore#113. After validation, so a config
-    // that is rejected outright does not also lecture about path resolution.
-    config._warnProjectRootDeprecation();
-    // §9.2.4 deprecation phase for apcore#118 — the ten keys that reach no
-    // consumer. Emitted alongside the §9.2.2 notice, on the same once-per-load
-    // cadence, and equally behaviour-free.
     config._warnDeprecatedInertKeys();
 
     return config;
@@ -1174,9 +1133,7 @@ export class Config {
    * `Config.load(path=None)` no-arg form (sync finding A-004).
    */
   static discover(options?: { validate?: boolean }): Config {
-    const path = discoverConfigFile();
-    if (path === null) return Config.fromDefaults();
-    return Config.load(path, options);
+    return Config.load(undefined, options);
   }
 
   // -------------------------------------------------------------------------
@@ -1275,8 +1232,6 @@ export class Config {
    * or `null` when the config was built from defaults / a raw object (e.g.
    * `Config.fromDefaults()` or `new Config({...})`).
    *
-   * Used by `ACL.discover()` to resolve `acl.root` relative to the config
-   * file's directory rather than the process CWD when the source is known.
    * Mirrors apcore-python's `Config.source_path` and apcore-rust's
    * `Config::source_path()` (D-64 / issue #74).
    */
@@ -1284,116 +1239,21 @@ export class Config {
     return this._yamlPath;
   }
 
-  /**
-   * The directory a relative path-typed value (§9.2.1) is *about* — the
-   * project this configuration configures.
-   *
-   * ```
-   * projectRoot =
-   *     directory of the config file   when it came from §9.14 tier 1-5
-   *                                    (explicitly pointed at, or project-local)
-   *     process CWD                    when it came from tier 6-7 (user-level),
-   *                                    or when no config file was found
-   * ```
-   *
-   * The tier split is the whole point. For tiers 2-5 — `./project.yaml`,
-   * `./apcore.yaml` and friends — the config file's directory *is* the CWD, so
-   * the two candidate bases coincide and this is the overwhelmingly common
-   * case. They diverge only for a config explicitly pointed at from elsewhere
-   * (`$APCORE_CONFIG_FILE`, or a path passed to {@link Config.load}), where the
-   * file's directory is the better answer, and for a **user-level** config,
-   * where it is the wrong one: `extensions.root: ./extensions` written in
-   * `~/.config/apcore/config.yaml` means "this project's extensions", not
-   * `~/.config/apcore/extensions`.
-   *
-   * **This accessor changes nothing.** It reports a base; it does not apply
-   * one. `SchemaLoader` still resolves `schema.root` against the CWD and
-   * `ACL.discover` still resolves `acl.root` against the config file's
-   * directory for every tier, exactly as before. Adopting this as *the* base
-   * for every path-typed key is a behaviour change to deployed configurations
-   * and therefore a major-version move; this is the §13.2 deprecation phase of
-   * it (apcore#113, PROTOCOL_SPEC §9.2.2).
-   *
-   * Always an absolute path.
-   */
+  /** Absolute project root selected at construction or configuration load. */
   get projectRoot(): string {
-    const source = this._yamlPath;
-    if (source === null) return process.cwd();
-
-    const resolvedSource = resolve(source);
-    // Tiers 6-7: a per-user default's relative paths are per-project by
-    // intent, so they cannot mean "next to the config file".
-    for (const candidate of userLevelConfigPaths()) {
-      if (resolve(candidate) === resolvedSource) return process.cwd();
-    }
-    return dirname(resolvedSource);
+    return this._projectRoot;
   }
 
-  /**
-   * The path-typed keys (§9.2.1) this configuration resolves to a **relative**
-   * value — the ones whose meaning would move if the resolution base moved.
-   *
-   * Reads the merged view, so a key left to its `DEFAULTS` entry counts:
-   * `schema.root` is `'./schemas'` in a file that never mentions it, and that
-   * default re-roots under a new base just as a written value does.
-   *
-   * `extensions.roots` is list-valued and reported under the `[]` element key
-   * §9.2.1 gives it; one relative element is enough to list it.
-   */
-  private _relativePathTypedKeys(): string[] {
-    const affected: string[] = [];
-    for (const key of Config.pathTypedKeys()) {
-      if (key.endsWith('[]')) {
-        const elements = this.get(key.slice(0, -'[]'.length));
-        if (!Array.isArray(elements)) continue;
-        if (elements.some((element) => isRelativePathValue(extractRootPath(element)))) {
-          affected.push(key);
-        }
-        continue;
-      }
-      if (isRelativePathValue(this.get(key))) affected.push(key);
-    }
-    return affected;
-  }
-
-  /**
-   * Emit the §13.2 deprecation notice for apcore#113, **once per configuration
-   * load** (PROTOCOL_SPEC §9.2.2 requirement 2).
-   *
-   * Deliberately narrow: it fires only when {@link Config.projectRoot} differs
-   * from the CWD *and* this configuration actually carries a relative
-   * path-typed value. Both conditions have to hold for the coming base change
-   * to move anything, and a blanket warning on every load would train everyone
-   * to ignore it. In the ordinary tier 2-5 project the first condition is
-   * false and nothing is printed.
-   *
-   * The cadence is the load, not the process. The notice is a property of *the
-   * document being loaded*, so every load that satisfies both conditions emits
-   * it and a load that does not emits nothing — including a `reload()` that
-   * re-reads an edited file. §9.2.2 forbids the process-global suppression this
-   * method used to carry, because it made the warning order-dependent: the
-   * first affected load consumed it and every later one was silent.
-   */
-  private _warnProjectRootDeprecation(): void {
-    const root = this.projectRoot;
-    const cwd = process.cwd();
-    if (resolve(root) === resolve(cwd)) return;
-
-    const affected = this._relativePathTypedKeys();
-    if (affected.length === 0) return;
-
-    console.warn(
-      '[apcore:config] DEPRECATION: this configuration resolves from ' +
-        `'${this._yamlPath}', whose project root ('${root}') is not the ` +
-        `working directory ('${cwd}'), and it carries relative path-typed ` +
-        `values (${affected.join(', ')}). Those values resolve against ` +
-        'inconsistent bases today — the directory of the config file for ' +
-        'acl.root, the working directory for the rest — and a future major ' +
-        'will resolve every one of them against the project root ' +
-        '(PROTOCOL_SPEC §9.2.2, apcore#113). Nothing changes yet. Make ' +
-        'these values absolute, or run from the project root, to be ' +
-        'unaffected.',
-    );
+  /** Resolve a configured filesystem path against this configuration's project root. */
+  resolvePath(value: string): string {
+    if (value === '') throw new ConfigError('Cannot resolve an empty filesystem path');
+    if (isAbsolute(value)) return value;
+    // Collapsing a parent segment before traversing a symlink can select
+    // a different file than the same path opened by the operating system.
+    const separators = process.platform === 'win32' ? /[\\/]/ : /\//;
+    return value.split(separators).includes('..')
+      ? appendFilesystemPath(this._projectRoot, value)
+      : resolve(this._projectRoot, value);
   }
 
   /**
@@ -1401,8 +1261,7 @@ export class Config {
    *
    * Driven by the **declared** document, never the merged view (requirement 2).
    * Every one of these keys has a default, so a merged-view check would fire for
-   * every configuration ever loaded — the blanket warning §9.2.2 rejects, which
-   * trains operators to ignore the one that matters.
+   * every configuration ever loaded.
    *
    * Behaviour is unchanged (requirement 3): the keys still parse, still
    * validate, still answer `get()`, and are still accepted under
@@ -1782,13 +1641,13 @@ export class Config {
    * loaded with an explicit `{ validate: false }` keeps that opt-out.
    */
   reload(): void {
-    if (this._yamlPath === null) {
+    if (this._sourceFile === null) {
       throw new ConfigError('Cannot reload: Config was not loaded from a YAML file');
     }
     const previousMounts = new Map(this._mounts);
     // Load unvalidated: validation must run after mounts and env overrides are
     // re-applied, otherwise it would judge an incomplete tree.
-    const reloaded = Config.load(this._yamlPath, { validate: false });
+    const reloaded = Config._loadFromFile(this._sourceFile, { validate: false }, this._projectRoot);
     this._data = reloaded._data;
     this._declared = reloaded._declared;
     this._mode = reloaded._mode;

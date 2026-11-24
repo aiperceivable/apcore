@@ -109,20 +109,13 @@ class TestBindingsDirFromConfig:
         assert registry.get("real.func") is not None
         assert "decoy.func" not in registry.list()
 
-    def test_relative_config_dir_resolves_against_cwd(
+    def test_relative_config_dir_resolves_against_project_root(
         self,
         loader: BindingLoader,
         registry: Registry,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """A relative ``bindings.dir`` keeps v1.x semantics: CWD-relative.
-
-        §9.2.2 records ``bindings.dir`` as having had no consumer before
-        v1.35.0, and its requirement 3 forbids adopting the project-root base in
-        a 1.x release. So this must NOT consult ``config.project_root``, even
-        though the config file lives elsewhere.
-        """
         project = tmp_path / "project"
         project.mkdir()
         monkeypatch.chdir(project)
@@ -135,7 +128,7 @@ class TestBindingsDirFromConfig:
 
         result = loader.load_binding_dir(registry=registry, config=config)
 
-        assert [fm.module_id for fm in result] == ["cwd.func"]
+        assert [fm.module_id for fm in result] == ["configdir.func"]
 
     def test_missing_configured_dir_raises(
         self,
@@ -194,7 +187,7 @@ class TestMissingResolvedDirRaisesForEveryProvenance:
             loader.load_binding_dir(registry=registry, config=config)
 
         # The value as resolved, which is what clause 5 asks the message to name.
-        assert "./absent_from_file" in str(exc.value)
+        assert str(tmp_path.resolve() / "absent_from_file") in str(exc.value)
         assert exc.value.code == "BINDING_FILE_INVALID"
 
     def test_bindings_dir_from_the_environment(
@@ -211,10 +204,8 @@ class TestMissingResolvedDirRaisesForEveryProvenance:
         with pytest.raises(BindingFileInvalidError) as exc:
             loader.load_binding_dir(registry=registry, config=config)
 
-        assert "./absent_from_env" in str(exc.value)
-        assert "./absent_from_file" not in str(
-            exc.value
-        ), "the message named the file tier, so the env tier never reached the loader"
+        assert str(tmp_path.resolve() / "absent_from_env") in str(exc.value)
+        assert "absent_from_file" not in str(exc.value)
 
     def test_the_bindings_default(
         self,
@@ -256,7 +247,7 @@ class TestMissingResolvedDirRaisesForEveryProvenance:
         with pytest.raises(BindingFileInvalidError) as exc:
             loader.load_binding_dir(registry=registry, config=config)
 
-        assert "./bindings" in str(exc.value)
+        assert str(tmp_path.resolve() / "bindings") in str(exc.value)
 
 
 class TestBindingsPatternFromConfig:

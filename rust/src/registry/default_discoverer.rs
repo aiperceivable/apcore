@@ -211,51 +211,40 @@ impl DefaultDiscoverer {
         }) {
             for item in items {
                 match item {
-                    serde_json::Value::String(root) if !root.trim().is_empty() => {
+                    serde_json::Value::String(root) if !root.is_empty() => {
                         // A bare path: the namespace is the last path segment,
                         // which `scan_multi_root` derives itself.
-                        let derived = Path::new(&root)
-                            .file_name()
-                            .map(|n| n.to_string_lossy().into_owned());
+                        let root = config.resolve_path(&root);
+                        let derived = root.file_name().map(|n| n.to_string_lossy().into_owned());
                         if let Some(ns) = derived {
-                            me.root_namespaces.insert(root, ns);
+                            me.root_namespaces
+                                .insert(root.to_string_lossy().into_owned(), ns);
                         }
                     }
                     serde_json::Value::Object(obj) => {
-                        let Some(root) = obj.get("root").and_then(|r| r.as_str()) else {
+                        let Some(root) = obj
+                            .get("root")
+                            .and_then(serde_json::Value::as_str)
+                            .filter(|path| !path.is_empty())
+                        else {
                             continue;
                         };
+                        let root = config.resolve_path(root);
                         let ns = obj
                             .get("namespace")
                             .and_then(|n| n.as_str())
                             .map(str::to_owned)
-                            .or_else(|| {
-                                Path::new(root)
-                                    .file_name()
-                                    .map(|n| n.to_string_lossy().into_owned())
-                            });
+                            .or_else(|| root.file_name().map(|n| n.to_string_lossy().into_owned()));
                         if let Some(ns) = ns {
-                            me.root_namespaces.insert(root.to_string(), ns);
+                            me.root_namespaces
+                                .insert(root.to_string_lossy().into_owned(), ns);
                         }
                     }
                     _ => {}
                 }
             }
         }
-        if let Some(declared) = config
-            .get("id_map.overrides")
-            .and_then(|v| v.as_str().map(str::to_owned))
-            .filter(|s| !s.trim().is_empty())
-        {
-            // Used AS DECLARED: a relative value resolves against the process
-            // working directory, exactly as `extensions.root` does. §9.2.1
-            // leaves the base for path-typed keys deliberately unspecified
-            // (#113) — `acl.root` uses the config file's directory,
-            // `schema.root` the CWD — and this key follows its SIBLING rather
-            // than settling that: the two are halves of one discovery
-            // configuration, so a split base between them is worse than either.
-            me.id_map_path = Some(PathBuf::from(declared));
-        }
+        me.id_map_path = config.get_path("id_map.overrides");
         me
     }
 

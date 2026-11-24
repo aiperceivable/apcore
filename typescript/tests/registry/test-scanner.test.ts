@@ -6,6 +6,7 @@ import {
   rmSync,
   chmodSync,
   realpathSync,
+  symlinkSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, sep, isAbsolute } from 'node:path';
@@ -31,6 +32,18 @@ function touch(relativePath: string, content = ''): string {
 }
 
 describe('scanExtensions', () => {
+  it('traverses a configured absolute root containing a directory symlink and parent segment', () => {
+    const physical = touch('other/modules/physical.ts');
+    touch('project/modules/decoy.ts');
+    const deep = join(tempDir, 'other', 'deep');
+    mkdirSync(deep);
+    const project = join(tempDir, 'project');
+    symlinkSync(deep, join(project, 'link'), 'dir');
+
+    const results = scanExtensions(`${project}${sep}link${sep}..${sep}modules`);
+    expect(results.map((mod) => mod.filePath)).toEqual([realpathSync(physical)]);
+  });
+
   it('discovers .ts and .js files and returns correct DiscoveredModule shape', () => {
     touch('alpha.ts');
     touch('beta.js');

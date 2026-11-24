@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
+from functools import partial
 from typing import Any, Callable, TypedDict
 
 
@@ -338,6 +339,8 @@ def register_sys_modules(
     audit_store: AuditStore | None = None,
     overrides_store: OverridesStore | None = None,
     toggle_state: ToggleState | None = None,
+    *,
+    on_registration_error: Callable[[SysModuleRegistrationError], None] | None = None,
 ) -> dict[str, Any]:
     """Auto-register all sys.* modules and middleware based on config.
 
@@ -349,6 +352,8 @@ def register_sys_modules(
         fail_on_error: When True, any registration failure raises
             SysModuleRegistrationError immediately. When False (default),
             failures are logged at ERROR level and execution continues.
+        on_registration_error: Called for each module registration failure
+            recovered in lenient mode.
         audit_store: Optional audit store for control module audit trails.
         toggle_state: Optional per-instance :class:`ToggleState` (#71). When
             provided, ``ToggleFeatureModule`` writes to this instance (the
@@ -381,6 +386,8 @@ def register_sys_modules(
     # FileOverridesStore. ``overrides_path`` is also retained for
     # downstream callers that still want the bare path (logging, audit).
     overrides_path: str | None = _cfg_get(sys_cfg, config, "control.overrides_path", None)
+    if overrides_path:
+        overrides_path = config.resolve_path(overrides_path)
     effective_store: OverridesStore | None = overrides_store
     if effective_store is None and overrides_path:
         effective_store = FileOverridesStore(overrides_path)
@@ -393,6 +400,8 @@ def register_sys_modules(
     # created in ``_setup_events`` (and only when events are enabled).
     if effective_store is not None:
         _load_overrides_from_store(config, effective_store, toggle_state=None)
+        # namespace() returns a snapshot. Apply the effective settings at registration.
+        sys_cfg = _resolve_sys_cfg(config)
 
     error_history = _create_error_history(config, sys_cfg)
     result["error_history"] = error_history
@@ -408,6 +417,7 @@ def register_sys_modules(
     executor.use(usage_middleware)
     result["usage_middleware"] = usage_middleware
 
+    register_module = partial(_register_sys_module, registry, fail_on_error, on_registration_error)
     _register_sys_modules(
         registry,
         config,
@@ -415,7 +425,7 @@ def register_sys_modules(
         metrics_collector,
         error_history,
         usage_collector,
-        fail_on_error=fail_on_error,
+        register_module=register_module,
     )
 
     if _cfg_get(sys_cfg, config, "events.enabled", False):
@@ -431,7 +441,7 @@ def register_sys_modules(
             overrides_path=overrides_path,
             overrides_store=effective_store,
             audit_store=audit_store,
-            fail_on_error=fail_on_error,
+            register_module=register_module,
             toggle_state=toggle_state,
         )
 
@@ -450,9 +460,10 @@ def _create_error_history(config: Config, sys_cfg: dict[str, Any] | None) -> Err
 
 def _register_sys_module(
     registry: Registry,
+    fail_on_error: bool,
+    on_registration_error: Callable[[SysModuleRegistrationError], None] | None,
     module_id: str,
     module: Any,
-    fail_on_error: bool = False,
 ) -> None:
     """Register a sys module, bypassing reserved word checks.
 
@@ -462,8 +473,12 @@ def _register_sys_module(
     try:
         registry.register_internal(module_id, module)
     except Exception as exc:
+        error = SysModuleRegistrationError(module_id=module_id, reason=str(exc))
         if fail_on_error:
-            raise SysModuleRegistrationError(module_id=module_id, reason=str(exc)) from exc
+            raise error from exc
+        if on_registration_error is not None:
+            error.__cause__ = exc
+            on_registration_error(error)
         logger.error("System module '%s' failed to register: %s. Continuing.", module_id, exc)
 
 
@@ -474,7 +489,8 @@ def _register_sys_modules(
     metrics_collector: MetricsCollector | None,
     error_history: ErrorHistory,
     usage_collector: UsageCollector,
-    fail_on_error: bool = False,
+    *,
+    register_module: Callable[[str, Any], None],
 ) -> None:
     """Register the sys.* module groups the configuration selects.
 
@@ -496,8 +512,7 @@ def _register_sys_modules(
     effective_metrics = metrics_collector if metrics_collector is not None else MetricsCollector()
 
     if _cfg_get(sys_cfg, config, "health.enabled", True):
-        _register_sys_module(
-            registry,
+        register_module(
             "system.health.summary",
             HealthSummaryModule(
                 registry=registry,
@@ -505,48 +520,26 @@ def _register_sys_modules(
                 error_history=error_history,
                 config=config,
             ),
-            fail_on_error=fail_on_error,
         )
 
-        _register_sys_module(
-            registry,
+        register_module(
             "system.health.module",
             HealthModule(
                 registry=registry,
                 metrics_collector=effective_metrics,
                 error_history=error_history,
             ),
-            fail_on_error=fail_on_error,
         )
 
     if _cfg_get(sys_cfg, config, "manifest.enabled", True):
-        _register_sys_module(
-            registry,
-            "system.manifest.module",
-            ManifestModule(registry=registry, config=config),
-            fail_on_error=fail_on_error,
-        )
-
-        _register_sys_module(
-            registry,
-            "system.manifest.full",
-            ManifestFullModule(registry=registry, config=config),
-            fail_on_error=fail_on_error,
-        )
+        register_module("system.manifest.module", ManifestModule(registry=registry, config=config))
+        register_module("system.manifest.full", ManifestFullModule(registry=registry, config=config))
 
     if _cfg_get(sys_cfg, config, "usage.enabled", True):
-        _register_sys_module(
-            registry,
-            "system.usage.summary",
-            UsageSummaryModule(collector=usage_collector),
-            fail_on_error=fail_on_error,
-        )
-
-        _register_sys_module(
-            registry,
+        register_module("system.usage.summary", UsageSummaryModule(collector=usage_collector))
+        register_module(
             "system.usage.module",
             UsageModule(registry=registry, usage_collector=usage_collector),
-            fail_on_error=fail_on_error,
         )
 
 
@@ -559,10 +552,11 @@ def _setup_events(
     error_history: ErrorHistory,
     usage_collector: UsageCollector,
     result: dict[str, Any],
+    *,
+    register_module: Callable[[str, Any], None],
     overrides_path: str | None = None,
     overrides_store: OverridesStore | None = None,
     audit_store: AuditStore | None = None,
-    fail_on_error: bool = False,
     toggle_state: ToggleState | None = None,
 ) -> None:
     """Set up event emitter, subscribers, PlatformNotifyMiddleware, control modules, and registry bridge."""
@@ -598,7 +592,7 @@ def _setup_events(
             overrides_path=overrides_path,
             overrides_store=overrides_store,
             audit_store=audit_store,
-            fail_on_error=fail_on_error,
+            register_module=register_module,
             toggle_state=toggle_state,
         )
     else:
@@ -619,10 +613,11 @@ def _register_control_modules(
     registry: Registry,
     config: Config,
     event_emitter: EventEmitter,
+    *,
+    register_module: Callable[[str, Any], None],
     overrides_path: str | None = None,
     overrides_store: OverridesStore | None = None,
     audit_store: AuditStore | None = None,
-    fail_on_error: bool = False,
     toggle_state: ToggleState | None = None,
 ) -> ToggleState:
     """Register control sys modules that require an EventEmitter.
@@ -641,8 +636,7 @@ def _register_control_modules(
     """
     effective_toggle_state = toggle_state if toggle_state is not None else _default_toggle_state
 
-    _register_sys_module(
-        registry,
+    register_module(
         "system.control.update_config",
         UpdateConfigModule(
             config=config,
@@ -651,22 +645,18 @@ def _register_control_modules(
             audit_store=audit_store,
             overrides_store=overrides_store,
         ),
-        fail_on_error=fail_on_error,
     )
 
-    _register_sys_module(
-        registry,
+    register_module(
         "system.control.reload_module",
         ReloadModule(
             registry=registry,
             event_emitter=event_emitter,
             audit_store=audit_store,
         ),
-        fail_on_error=fail_on_error,
     )
 
-    _register_sys_module(
-        registry,
+    register_module(
         "system.control.toggle_feature",
         ToggleFeatureModule(
             registry=registry,
@@ -676,7 +666,6 @@ def _register_control_modules(
             audit_store=audit_store,
             overrides_store=overrides_store,
         ),
-        fail_on_error=fail_on_error,
     )
 
     return effective_toggle_state

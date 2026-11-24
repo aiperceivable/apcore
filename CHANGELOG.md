@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Added
+
+- Expose system-module startup errors and an opt-in fail-fast startup mode on the APCore client. ([#230](https://github.com/aiperceivable/apcore/issues/230))
+- Add an Executor diagnostic that lists modules with a declared approval requirement and no effective approval enforcement. ([#231](https://github.com/aiperceivable/apcore/issues/231))
+
+### Changed
+
+- **Protocol 2.0.0 draft, §9.2.2.** All path-typed configuration values use the project root captured when the `Config` was created or loaded. For an explicitly selected configuration outside the working directory, relative values such as `schema.root`, `extensions.root`, and `bindings.dir` now resolve beside that configuration. For a user-level configuration found by discovery, relative `acl.root` resolves from the working directory. Use the previous absolute paths when migrating a deployment that relies on its existing directories, and verify that the expected ACL loads. ([#113](https://github.com/aiperceivable/apcore/issues/113))
+
+### Fixed
+
+- Connect enabled system event buses to client-created executors so governance events reach APCore subscribers. ([#125](https://github.com/aiperceivable/apcore/issues/125))
+- Normalize typed module results to plain JSON object data for calls and streams. ([#126](https://github.com/aiperceivable/apcore/issues/126))
+- Run custom I/O-backed task-store operations through a runtime from synchronous Python and Rust callers. ([#127](https://github.com/aiperceivable/apcore/issues/127))
+- Honor the Python call deadline in the synchronous thread bridge and protect the cached executor event loop from concurrent callers. ([#229](https://github.com/aiperceivable/apcore/issues/229), [#232](https://github.com/aiperceivable/apcore/issues/232))
+- Include the inline typing marker in the Python wheel and check installed type artifacts in distribution CI. ([#233](https://github.com/aiperceivable/apcore/issues/233))
+
 ## [0.33.0] - 2026-11-18
 
 ### Added

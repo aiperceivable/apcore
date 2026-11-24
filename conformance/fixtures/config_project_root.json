@@ -1,5 +1,5 @@
 {
-  "description": "PROTOCOL_SPEC §9.2.2 — the project root: the single base every relative path-typed value (§9.2.1) will resolve against from v2.0. project_root is the directory containing the configuration file when that file was selected by §9.14 discovery tiers 1-5 ($APCORE_CONFIG_FILE, or a project-local ./project.yaml|.yml|apcore.yaml|.yml), and the process CWD when it was selected by the user-level tiers 6-7 (~/.config/apcore/config.yaml, ~/.apcore/config.yaml), when no configuration file was found, or when the Config has no backing file at all. The DISCOVERY TIER is what selects the base, which is why this fixture carries one case per tier: tiers 2-5 are indistinguishable from CWD and prove nothing on their own, tier 1 is where a config file can sit outside CWD, and tiers 6-7 are where a file-relative base would be wrong — a user-level config's relative paths are per-project by intent and cannot mean 'beside the config file'. SCOPE, and it is narrow on purpose: v1.35.0 is the DEPRECATION phase. This fixture asserts the project_root ACCESSOR (required now, §9.2.2 requirement 1) and the deprecation-warning CONDITION (SHOULD, requirement 2). It MUST NOT be extended with assertions that relative path-typed values resolve against project_root — that is v2.0 behaviour, forbidden in the 1.x line by requirement 3, and the `v1x_current_bases_unchanged` case pins the opposite. Tracking issue #113.",
+  "description": "PROTOCOL_SPEC §9.2.2 — discovery fixes one project root per Config for all relative path-typed configuration values. Exercises all discovery tiers, direct loading, a symlinked configuration, defaults, file, environment and mapping values, both extension list forms, absolute paths, and a working-directory change after load.",
   "spec_sections": [
     "PROTOCOL_SPEC §9.2.2",
     "PROTOCOL_SPEC §9.2.1",
@@ -7,29 +7,30 @@
     "PROTOCOL_SPEC §13.2"
   ],
   "driver_contract": {
-    "accessor": "Each driver supplies its SDK's public project-root accessor (apcore-python `Config.project_root`, apcore-typescript `Config.projectRoot()`, apcore-rust `Config::project_root()`). It MUST be public API: the consumers this value exists for — a CLI building a subprocess environment, a supervisor composing a container — live in other repositories, and a private field holding the right value satisfies nothing.",
-    "discovery_required": "Every tier case MUST reach the SDK through DISCOVERY — `Config.load()` with no path argument — not by handing the loader an explicit path. The tier is the input under test. An SDK that does not implement §9.14 discovery (a MAY-level feature) reports these cases as SKIPPED, never as passed.",
-    "cwd_must_differ": "For every case, the process CWD MUST be a directory that is NOT the configuration file's directory, and both MUST exist. When the two coincide, every candidate rule returns the same answer and the case proves nothing — the same discriminating-case requirement as issue #112.",
-    "home_isolation": "Tier 6/7 cases MUST run against a redirected home directory (HOME / XDG_CONFIG_HOME / USERPROFILE pointing at a fixture-owned temporary tree). A driver that reads the real user's home is testing the machine it runs on.",
-    "env_isolation": "APCORE_CONFIG_FILE MUST be explicitly unset for every case except `tier_1_explicit_env_config_file`. An inherited value silently converts every other case into tier 1.",
-    "comparison": "Compare project_root as a resolved absolute path, after symlink normalisation on both sides (macOS temporary directories are symlinked through /private, which produces spurious inequality).",
-    "warning_observation": "`deprecation_warning` cases MUST observe the SDK's real warning channel (logging / console / tracing), not a return value. Assert the warning's PRESENCE only — its text is not normative. Requirement 2 is a SHOULD: an SDK that emits no warning at all reports these cases as SKIPPED with a reason, but an SDK that emits one MUST match the condition, because a warning that fires outside it is the blanket warning §9.2.2 explicitly rejects.",
-    "home_relative_tokens": "`<tier6_config>` / `<tier7_config>` in `fs`, and `<tier6_dir>` / `<tier7_dir>` in `expected`, are TOKENS, not paths. The driver MUST redirect HOME (or the platform equivalent) into the case workspace and materialise the file at the running platform's tier-6 / tier-7 location as 9.14 defines it, then compare against that same resolved location. Asserting a literal spelling is wrong: tier 6 is XDG on Linux and ~/Library/Application Support on macOS."
+    "accessor": "Assert the public project-root accessor and resolve each path under resolved_config_paths through the SDK Config. The extension list contains both bare strings and objects with a root field.",
+    "discovery": "Use normal discovery when config_from_mapping and config_path are absent. Use the mapping constructor or explicit loader when the respective field is present. Redirect home into the fixture tree and clear inherited APCORE overrides.",
+    "layout_tokens": "A path can start with <tier6_dir> or <tier7_dir>. Replace the token with the running platform’s user-config directory under the redirected home. The <tier6_config> and <tier7_config> tokens represent the respective files.",
+    "absolute_env": "Join each absolute_env value to the absolute layout root without removing its dot segments. Pass this spelling to the environment and assert that Config preserves it verbatim.",
+    "consumers": "When resolved_acl_root or resolved_schema_root is present, invoke its public loader. Every candidate contains an ACL defaulting to deny and a schema named probe. The first ACL rule and the schema describe their directory. A driver may alternatively identify the ACL by removing the expected file and observing that discovery returns no ACL while other candidates still exist.",
+    "consume_from": "When present, change to this layout directory after loading Config and before asserting resolved paths or using the consumers.",
+    "comparison": "Compare project-root and effective relative paths as absolute paths after normalizing the platform’s temporary-directory spelling. Separately compare absolute_env paths verbatim.",
+    "symlinks": "Materialize each symlinks entry after writing fs. Both sides are layout paths. Use the file entry’s parent as the project root, even if the target is in another directory."
   },
   "layout": {
-    "comment": "The directory tree shared by the tier cases. `project/` is the process CWD throughout; `elsewhere/` and the redirected home are the non-CWD locations a configuration file can come from. `home` names the directory the driver MUST redirect HOME (or the platform equivalent) to; the tier-6 and tier-7 subdirectories underneath it are NOT listed here on purpose, because tier 6's location is platform-varying per 9.14 — the driver creates them at the running platform's location when it materialises `<tier6_config>` / `<tier7_config>`.",
+    "comment": "Entries are relative to the fixture workspace. For discovery tiers 2–5 the source directory is the working directory by definition.",
     "cwd": "project",
     "dirs": [
       "project",
       "elsewhere",
-      "fakehome"
+      "fakehome",
+      "moved"
     ],
     "home": "fakehome"
   },
   "test_cases": [
     {
       "id": "tier_1_explicit_env_config_file",
-      "comment": "§9.14 tier 1, and the tier where the two candidate rules genuinely differ. $APCORE_CONFIG_FILE points at a file outside CWD; project_root is that file's directory. A path written next to a configuration file the operator explicitly pointed at means 'next to that file'.",
+      "comment": "The explicit environment setting selects a configuration outside the working directory.",
       "tier": 1,
       "cwd": "project",
       "env": {
@@ -41,12 +42,16 @@
       "expected": {
         "config_source_dir": "elsewhere",
         "project_root": "elsewhere",
-        "project_root_equals_cwd": false
+        "project_root_equals_cwd": false,
+        "resolved_config_paths": {
+          "acl.root": "elsewhere/acl",
+          "schema.root": "elsewhere/schemas"
+        }
       }
     },
     {
       "id": "tier_2_project_yaml",
-      "comment": "§9.14 tier 2. Project-local ./project.yaml. project_root is the file's directory, which here IS CWD — tiers 2-5 are the overwhelmingly common case and nothing changes for them at v2.0.",
+      "comment": "Discovery selects project.yaml.",
       "tier": 2,
       "cwd": "project",
       "env": {},
@@ -56,12 +61,16 @@
       "expected": {
         "config_source_dir": "project",
         "project_root": "project",
-        "project_root_equals_cwd": true
+        "project_root_equals_cwd": true,
+        "resolved_config_paths": {
+          "acl.root": "project/acl",
+          "schema.root": "project/schemas"
+        }
       }
     },
     {
       "id": "tier_3_project_yml",
-      "comment": "§9.14 tier 3. The .yml spelling of tier 2; same base.",
+      "comment": "Discovery selects project.yml.",
       "tier": 3,
       "cwd": "project",
       "env": {},
@@ -71,12 +80,16 @@
       "expected": {
         "config_source_dir": "project",
         "project_root": "project",
-        "project_root_equals_cwd": true
+        "project_root_equals_cwd": true,
+        "resolved_config_paths": {
+          "acl.root": "project/acl",
+          "schema.root": "project/schemas"
+        }
       }
     },
     {
       "id": "tier_4_apcore_yaml",
-      "comment": "§9.14 tier 4. Project-local ./apcore.yaml; same base as tiers 2-3.",
+      "comment": "Discovery selects apcore.yaml.",
       "tier": 4,
       "cwd": "project",
       "env": {},
@@ -86,12 +99,16 @@
       "expected": {
         "config_source_dir": "project",
         "project_root": "project",
-        "project_root_equals_cwd": true
+        "project_root_equals_cwd": true,
+        "resolved_config_paths": {
+          "acl.root": "project/acl",
+          "schema.root": "project/schemas"
+        }
       }
     },
     {
       "id": "tier_5_apcore_yml",
-      "comment": "§9.14 tier 5. The .yml spelling of tier 4; the last tier whose base is the configuration file's directory.",
+      "comment": "Discovery selects apcore.yml.",
       "tier": 5,
       "cwd": "project",
       "env": {},
@@ -101,42 +118,66 @@
       "expected": {
         "config_source_dir": "project",
         "project_root": "project",
-        "project_root_equals_cwd": true
+        "project_root_equals_cwd": true,
+        "resolved_config_paths": {
+          "acl.root": "project/acl",
+          "schema.root": "project/schemas"
+        }
       }
     },
     {
       "id": "tier_6_user_level_xdg",
-      "comment": "§9.14 tier 6, and the case that makes the tier split necessary. The configuration file is the user's ~/.config/apcore/config.yaml, shared by every project that user runs, so project_root is CWD and NOT the file's directory. `extensions.root: ./extensions` in this file cannot mean ~/.config/apcore/extensions. Note that config_source_dir and project_root differ here — the driver MUST assert both, since asserting only the source directory passes an implementation that never applies the tier split. PLATFORM NOTE: 9.14 tier 6 is explicitly platform-varying — XDG (~/.config/apcore/config.yaml) on Linux, ~/Library/Application Support/apcore/config.yaml on macOS. This case therefore names the TIER, not a spelling: `<tier6_config>` is materialised by the driver at the running platform's tier-6 location. A fixture that hardcoded the POSIX path made every driver fail on macOS while asserting nothing extra on Linux.",
+      "comment": "Discovery selects the platform user-level configuration and uses the project working directory.",
       "tier": 6,
       "cwd": "project",
       "env": {},
       "fs": {
-        "<tier6_config>": "project: {name: fixture}"
+        "<tier6_config>": "project: {name: fixture}\nacl: {root: ./probe}\nschema: {root: ./probe}\n",
+        "project/probe/global_acl.yaml": "default_effect: deny\naudit: {enabled: false}\nrules:\n  - effect: deny\n    callers: [\"@external\"]\n    targets: [probe]\n    description: \"project/probe\"\n",
+        "project/probe/probe.schema.yaml": "module_id: probe\ndescription: \"project/probe\"\ninput_schema: {type: object}\noutput_schema: {type: object}\n",
+        "<tier6_dir>/probe/global_acl.yaml": "default_effect: deny\naudit: {enabled: false}\nrules:\n  - effect: deny\n    callers: [\"@external\"]\n    targets: [probe]\n    description: \"<tier6_dir>/probe\"\n",
+        "<tier6_dir>/probe/probe.schema.yaml": "module_id: probe\ndescription: \"<tier6_dir>/probe\"\ninput_schema: {type: object}\noutput_schema: {type: object}\n"
       },
       "expected": {
         "config_source_dir": "<tier6_dir>",
         "project_root": "project",
-        "project_root_equals_cwd": true
+        "project_root_equals_cwd": true,
+        "resolved_config_paths": {
+          "acl.root": "project/probe",
+          "schema.root": "project/probe"
+        },
+        "resolved_acl_root": "project/probe",
+        "resolved_schema_root": "project/probe"
       }
     },
     {
       "id": "tier_7_legacy_user_level",
-      "comment": "§9.14 tier 7. The legacy ~/.apcore/config.yaml is user-level on the same terms as tier 6: project_root is CWD. Tier 7 (~/.apcore/config.yaml) is not platform-varying, but it is HOME-relative, so it uses the same token treatment as tier 6 rather than a literal path under the case workspace.",
+      "comment": "Discovery selects the legacy user-level configuration and uses the project working directory.",
       "tier": 7,
       "cwd": "project",
       "env": {},
       "fs": {
-        "<tier7_config>": "project: {name: fixture}"
+        "<tier7_config>": "project: {name: fixture}\nacl: {root: ./probe}\nschema: {root: ./probe}\n",
+        "project/probe/global_acl.yaml": "default_effect: deny\naudit: {enabled: false}\nrules:\n  - effect: deny\n    callers: [\"@external\"]\n    targets: [probe]\n    description: \"project/probe\"\n",
+        "project/probe/probe.schema.yaml": "module_id: probe\ndescription: \"project/probe\"\ninput_schema: {type: object}\noutput_schema: {type: object}\n",
+        "<tier7_dir>/probe/global_acl.yaml": "default_effect: deny\naudit: {enabled: false}\nrules:\n  - effect: deny\n    callers: [\"@external\"]\n    targets: [probe]\n    description: \"<tier7_dir>/probe\"\n",
+        "<tier7_dir>/probe/probe.schema.yaml": "module_id: probe\ndescription: \"<tier7_dir>/probe\"\ninput_schema: {type: object}\noutput_schema: {type: object}\n"
       },
       "expected": {
         "config_source_dir": "<tier7_dir>",
         "project_root": "project",
-        "project_root_equals_cwd": true
+        "project_root_equals_cwd": true,
+        "resolved_config_paths": {
+          "acl.root": "project/probe",
+          "schema.root": "project/probe"
+        },
+        "resolved_acl_root": "project/probe",
+        "resolved_schema_root": "project/probe"
       }
     },
     {
       "id": "no_config_file_found",
-      "comment": "Discovery found nothing, so Config.from_defaults() applies (§9.14). There is no file to be relative to; project_root is CWD.",
+      "comment": "Discovery finds no file and uses the working directory for default paths.",
       "tier": null,
       "cwd": "project",
       "env": {},
@@ -144,116 +185,171 @@
       "expected": {
         "config_source_dir": null,
         "project_root": "project",
-        "project_root_equals_cwd": true
+        "project_root_equals_cwd": true,
+        "resolved_config_paths": {
+          "acl.root": "project/acl",
+          "schema.root": "project/schemas"
+        }
       }
     },
     {
       "id": "config_without_backing_file",
-      "comment": "A Config constructed from an in-memory mapping, or from_defaults() called directly — no discovery ran and there is no source path. project_root is CWD.",
+      "comment": "Construction from a mapping captures the working directory before consumption.",
       "tier": null,
       "cwd": "project",
       "env": {},
       "config_from_mapping": {
         "project": {
           "name": "fixture"
+        },
+        "acl": {
+          "root": "./acl"
+        },
+        "schema": {
+          "root": "./schemas"
         }
       },
       "expected": {
         "config_source_dir": null,
         "project_root": "project",
-        "project_root_equals_cwd": true
-      }
-    },
-    {
-      "id": "deprecation_warning_fires_when_root_differs_and_value_is_relative",
-      "comment": "§9.2.2 requirement 2, the positive half. Tier 1 config outside CWD (project_root != CWD) AND a relative path-typed value present. This is the population whose resolution changes at v2.0 and the only population the warning is for.",
-      "tier": 1,
-      "cwd": "project",
-      "env": {
-        "APCORE_CONFIG_FILE": "elsewhere/apcore.yaml"
-      },
-      "fs": {
-        "elsewhere/apcore.yaml": "project: {name: fixture}\nschema: {root: ./schemas}"
-      },
-      "expected": {
-        "project_root": "elsewhere",
-        "project_root_equals_cwd": false,
-        "relative_path_typed_values_present": true,
-        "deprecation_warning": true
-      }
-    },
-    {
-      "id": "no_warning_when_root_equals_cwd",
-      "comment": "§9.2.2 requirement 2, first negative half. A project-local config with a relative schema.root: project_root == CWD, so nothing changes at v2.0 and warning here would fire for nearly every apcore project — the blanket warning the section explicitly rejects.",
-      "tier": 4,
-      "cwd": "project",
-      "env": {},
-      "fs": {
-        "project/apcore.yaml": "project: {name: fixture}\nschema: {root: ./schemas}"
-      },
-      "expected": {
-        "project_root": "project",
         "project_root_equals_cwd": true,
-        "relative_path_typed_values_present": true,
-        "deprecation_warning": false
-      }
+        "resolved_config_paths": {
+          "acl.root": "project/acl",
+          "schema.root": "project/schemas"
+        }
+      },
+      "consume_from": "moved"
     },
     {
-      "id": "no_warning_when_all_path_values_absolute",
-      "comment": "9.2.2 requirement 2's SECOND condition, in isolation: the project root differs from CWD, yet no warning fires because no path-typed value is relative. EVERY key in 9.2.1's set must be spelled absolutely for this to hold — 9.2.2's target semantics count the 9.1.1 DEFAULTS as well as declared values, so leaving extensions.root or bindings.dir unstated leaves a relative value standing and the warning correctly fires. The first published form of this case set only schema.root and acl.root, and was unsatisfiable for that reason: all three SDKs reported it independently.",
+      "id": "explicit_env_paths_ignore_subsequent_chdir",
+      "comment": "In namespace mode, environment overrides take precedence and share the explicit configuration’s project root after the process changes directory.",
       "tier": 1,
       "cwd": "project",
-      "env": {
-        "APCORE_CONFIG_FILE": "elsewhere/apcore.yaml"
-      },
-      "fs": {
-        "elsewhere/apcore.yaml": "project: {name: fixture}\nextensions: {root: /abs/extensions}\nschema: {root: /abs/schemas}\nacl: {root: /abs/acl}\nbindings: {dir: /abs/bindings}\nid_map: {overrides: /abs/id-map.yaml}\nsys_modules: {control: {overrides_path: /abs/overrides.yaml}}\n"
-      },
-      "expected": {
-        "project_root": "elsewhere",
-        "project_root_equals_cwd": false,
-        "relative_path_typed_values_present": false,
-        "deprecation_warning": false
-      }
-    },
-    {
-      "id": "env_sourced_relative_value_counts_toward_the_warning",
-      "comment": "The warning condition asks whether a relative path-typed value is PRESENT in the merged configuration, not which tier supplied it. An APCORE_* override is exactly the population §9.2.2 changes — under the target rule APCORE_ACL_ROOT=./x resolves against the project root rather than CWD — so an implementation that inspects only file-declared values misses the operators most likely to be affected.",
-      "tier": 1,
-      "cwd": "project",
+      "consume_from": "moved",
       "env": {
         "APCORE_CONFIG_FILE": "elsewhere/apcore.yaml",
-        "APCORE_ACL_ROOT": "./x"
+        "APCORE_ACL_ROOT": "./probe",
+        "APCORE_SCHEMA_ROOT": "./probe"
       },
       "fs": {
-        "elsewhere/apcore.yaml": "project: {name: fixture}"
+        "elsewhere/apcore.yaml": "apcore:\n  version: '1.0.0'\n  project: {name: fixture}\n  acl: {root: ./fallback-acl}\n  schema: {root: ./fallback-schema}\n  extensions:\n    roots: [./modules, {root: ./addons, namespace: extra}]\n  id_map: {overrides: ./ids.yaml}\nsys_modules: {control: {overrides_path: ./overrides.yaml}}\n",
+        "project/probe/global_acl.yaml": "default_effect: deny\naudit: {enabled: false}\nrules:\n  - effect: deny\n    callers: [\"@external\"]\n    targets: [probe]\n    description: \"project/probe\"\n",
+        "project/probe/probe.schema.yaml": "module_id: probe\ndescription: \"project/probe\"\ninput_schema: {type: object}\noutput_schema: {type: object}\n",
+        "elsewhere/probe/global_acl.yaml": "default_effect: deny\naudit: {enabled: false}\nrules:\n  - effect: deny\n    callers: [\"@external\"]\n    targets: [probe]\n    description: \"elsewhere/probe\"\n",
+        "elsewhere/probe/probe.schema.yaml": "module_id: probe\ndescription: \"elsewhere/probe\"\ninput_schema: {type: object}\noutput_schema: {type: object}\n",
+        "moved/probe/global_acl.yaml": "default_effect: deny\naudit: {enabled: false}\nrules:\n  - effect: deny\n    callers: [\"@external\"]\n    targets: [probe]\n    description: \"moved/probe\"\n",
+        "moved/probe/probe.schema.yaml": "module_id: probe\ndescription: \"moved/probe\"\ninput_schema: {type: object}\noutput_schema: {type: object}\n"
       },
       "expected": {
+        "config_source_dir": "elsewhere",
         "project_root": "elsewhere",
         "project_root_equals_cwd": false,
-        "relative_path_typed_values_present": true,
-        "deprecation_warning": true
+        "resolved_acl_root": "elsewhere/probe",
+        "resolved_schema_root": "elsewhere/probe",
+        "resolved_config_paths": {
+          "acl.root": "elsewhere/probe",
+          "schema.root": "elsewhere/probe",
+          "bindings.dir": "elsewhere/bindings",
+          "extensions.roots[]": [
+            "elsewhere/modules",
+            "elsewhere/addons"
+          ],
+          "id_map.overrides": "elsewhere/ids.yaml",
+          "sys_modules.control.overrides_path": "elsewhere/overrides.yaml"
+        }
       }
     },
     {
-      "id": "v1x_current_bases_unchanged",
-      "comment": "§9.2.2 requirement 3 — the deprecation phase changes NO behaviour, and this case pins that. Under a tier-1 config outside CWD, acl.root still resolves against the configuration file's directory (D-64) and schema.root still resolves against CWD, exactly as through v1.34.0. `acl/` and `schemas/` exist under BOTH `project/` and `elsewhere/`, so exactly one semantics passes and an implementation that adopted the v2.0 rule early fails here. Delete this case at v2.0, not before; until then an SDK that passes the accessor cases and fails this one has shipped the migration ahead of its window.",
+      "id": "explicit_load_of_user_file",
+      "comment": "Loading a user configuration file by explicit path uses its directory, even though discovery of the same filename uses the working directory.",
+      "tier": null,
+      "cwd": "project",
+      "config_path": "<tier6_config>",
+      "env": {},
+      "fs": {
+        "<tier6_config>": "project: {name: fixture}\nacl: {root: ./probe}\nschema: {root: ./probe}\nextensions: {root: ./modules}\n",
+        "project/probe/global_acl.yaml": "default_effect: deny\naudit: {enabled: false}\nrules:\n  - effect: deny\n    callers: [\"@external\"]\n    targets: [probe]\n    description: \"project/probe\"\n",
+        "project/probe/probe.schema.yaml": "module_id: probe\ndescription: \"project/probe\"\ninput_schema: {type: object}\noutput_schema: {type: object}\n",
+        "<tier6_dir>/probe/global_acl.yaml": "default_effect: deny\naudit: {enabled: false}\nrules:\n  - effect: deny\n    callers: [\"@external\"]\n    targets: [probe]\n    description: \"<tier6_dir>/probe\"\n",
+        "<tier6_dir>/probe/probe.schema.yaml": "module_id: probe\ndescription: \"<tier6_dir>/probe\"\ninput_schema: {type: object}\noutput_schema: {type: object}\n"
+      },
+      "expected": {
+        "config_source_dir": "<tier6_dir>",
+        "project_root": "<tier6_dir>",
+        "project_root_equals_cwd": false,
+        "resolved_acl_root": "<tier6_dir>/probe",
+        "resolved_schema_root": "<tier6_dir>/probe",
+        "resolved_config_paths": {
+          "acl.root": "<tier6_dir>/probe",
+          "schema.root": "<tier6_dir>/probe",
+          "extensions.root": "<tier6_dir>/modules"
+        }
+      }
+    },
+    {
+      "id": "absolute_env_path_preserves_spelling",
+      "comment": "An absolute environment path retains its spelling. A directory symlink followed by a parent segment reaches the physical target instead of the project-root decoy.",
       "tier": 1,
       "cwd": "project",
       "env": {
         "APCORE_CONFIG_FILE": "elsewhere/apcore.yaml"
       },
+      "absolute_env": {
+        "APCORE_ACL_ROOT": "project/link/../probe",
+        "APCORE_SCHEMA_ROOT": "project/link/../probe"
+      },
       "fs": {
-        "elsewhere/apcore.yaml": "project: {name: fixture}\nacl: {root: ./acl}\nschema: {root: ./schemas}",
-        "elsewhere/acl/global_acl.yaml": "default_effect: deny\nrules: []",
-        "elsewhere/schemas/.keep": "",
-        "project/acl/global_acl.yaml": "default_effect: deny\nrules: []",
-        "project/schemas/.keep": ""
+        "elsewhere/apcore.yaml": "project: {name: fixture}\nacl: {root: ./probe}\nschema: {root: ./probe}\n",
+        "project/probe/global_acl.yaml": "default_effect: deny\naudit: {enabled: false}\nrules:\n  - effect: deny\n    callers: [\"@external\"]\n    targets: [probe]\n    description: \"project/probe\"\n",
+        "project/probe/probe.schema.yaml": "module_id: probe\ndescription: \"project/probe\"\ninput_schema: {type: object}\noutput_schema: {type: object}\n",
+        "elsewhere/probe/global_acl.yaml": "default_effect: deny\naudit: {enabled: false}\nrules:\n  - effect: deny\n    callers: [\"@external\"]\n    targets: [probe]\n    description: \"elsewhere/probe\"\n",
+        "elsewhere/probe/probe.schema.yaml": "module_id: probe\ndescription: \"elsewhere/probe\"\ninput_schema: {type: object}\noutput_schema: {type: object}\n",
+        "elsewhere/deep/.keep": ""
       },
       "expected": {
+        "config_source_dir": "elsewhere",
         "project_root": "elsewhere",
-        "resolved_acl_root": "elsewhere/acl",
-        "resolved_schema_root": "project/schemas"
+        "project_root_equals_cwd": false,
+        "resolved_acl_root": "elsewhere/probe",
+        "resolved_schema_root": "elsewhere/probe",
+        "resolved_config_paths": {
+          "acl.root": "project/link/../probe",
+          "schema.root": "project/link/../probe"
+        }
+      },
+      "symlinks": {
+        "project/link": "elsewhere/deep"
+      }
+    },
+    {
+      "id": "symlinked_project_config_uses_link_directory",
+      "comment": "A configuration discovered through a symlink uses the directory of the selected link. Its target and the process working directory after load contain decoy resources.",
+      "tier": 4,
+      "cwd": "project",
+      "consume_from": "moved",
+      "env": {},
+      "symlinks": {
+        "project/apcore.yaml": "elsewhere/target.yaml"
+      },
+      "fs": {
+        "elsewhere/target.yaml": "project: {name: fixture}\nacl: {root: ./probe}\nschema: {root: ./probe}\n",
+        "project/probe/global_acl.yaml": "default_effect: deny\naudit: {enabled: false}\nrules:\n  - effect: deny\n    callers: [\"@external\"]\n    targets: [probe]\n    description: \"project/probe\"\n",
+        "project/probe/probe.schema.yaml": "module_id: probe\ndescription: \"project/probe\"\ninput_schema: {type: object}\noutput_schema: {type: object}\n",
+        "elsewhere/probe/global_acl.yaml": "default_effect: deny\naudit: {enabled: false}\nrules:\n  - effect: deny\n    callers: [\"@external\"]\n    targets: [probe]\n    description: \"elsewhere/probe\"\n",
+        "elsewhere/probe/probe.schema.yaml": "module_id: probe\ndescription: \"elsewhere/probe\"\ninput_schema: {type: object}\noutput_schema: {type: object}\n",
+        "moved/probe/global_acl.yaml": "default_effect: deny\naudit: {enabled: false}\nrules:\n  - effect: deny\n    callers: [\"@external\"]\n    targets: [probe]\n    description: \"moved/probe\"\n",
+        "moved/probe/probe.schema.yaml": "module_id: probe\ndescription: \"moved/probe\"\ninput_schema: {type: object}\noutput_schema: {type: object}\n"
+      },
+      "expected": {
+        "config_source_dir": "project",
+        "project_root": "project",
+        "project_root_equals_cwd": true,
+        "resolved_acl_root": "project/probe",
+        "resolved_schema_root": "project/probe",
+        "resolved_config_paths": {
+          "acl.root": "project/probe",
+          "schema.root": "project/probe"
+        }
       }
     }
   ]

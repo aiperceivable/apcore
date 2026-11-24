@@ -265,8 +265,7 @@ _DEFAULTS: dict[str, Any] = {
 #: bare-string and the ``{root, namespace}`` form, which is why it is reported
 #: under the element key ``extensions.roots[]``.
 #:
-#: This set says *which* keys carry paths. It says nothing about what a relative
-#: value resolves against — that base is unspecified as of spec v1.34.0.
+#: Config.resolve_path applies the project root (§9.2.2) to those values.
 _PATH_TYPED_CONFIG_KEYS: tuple[str, ...] = (
     "acl.root",
     "bindings.dir",
@@ -1067,64 +1066,14 @@ def _project_root_for(config_file: str | None, tier: int | None) -> str:
     6-7 and for a ``Config`` with no backing file.
     """
     if config_file is not None and tier in _PROJECT_SCOPED_TIERS:
-        return str(Path(config_file).resolve().parent)
+        return str(Path(config_file).parent.resolve())
     return _cwd()
 
 
-def _relative_path_typed_keys(config: Config) -> list[str]:
-    """Path-typed keys (§9.2.1) whose *merged* value is a relative path.
-
-    Reads the merged view, not the declared one, because §9.2.2's target rule
-    covers "file-declared, environment-sourced, API-supplied, and the §9.1.1
-    defaults alike" — a relative default re-roots at v2.0 exactly as a written
-    value does, so a document that declares nothing is still affected.
-    """
-    found: list[str] = []
-    for key in Config.path_typed_keys():
-        if key.endswith("[]"):
-            elements = config.get(key[:-2])
-            if not isinstance(elements, list):
-                continue
-            for element in elements:
-                candidate = element.get("root") if isinstance(element, dict) else element
-                if isinstance(candidate, str) and candidate and not Path(candidate).is_absolute():
-                    found.append(key)
-                    break
-            continue
-        value = config.get(key)
-        if isinstance(value, str) and value and not Path(value).is_absolute():
-            found.append(key)
-    return found
-
-
 def _emit_per_load(message: str, category: type[Warning], *, stacklevel: int) -> None:
-    """Emit *message* once per call, never once per process.
+    """Emit a warning for each affected load using the host's warning filters.
 
-    PROTOCOL_SPEC §9.2.2 requirement 2, "Cadence": the warning is a property of
-    *the document being loaded*, so every load satisfying the condition emits and
-    implementations **MUST NOT** suppress it with process-global state. A
-    once-per-process flag makes emission order-dependent — whichever load runs
-    first consumes the warning, and a later affected configuration is silent, so
-    the operator cannot tell which document triggered it — and is a
-    test-isolation hazard besides.
-
-    ``warnings.warn`` carries exactly such state, and not by anyone's choice:
-    under the ``"default"`` action it records ``(message text, category, lineno)``
-    in the calling frame's ``__warningregistry__`` and suppresses a repeat. Two
-    *different* affected configurations still both warn, because the message text
-    embeds the project root — which is why the obvious two-config test does not
-    detect this. What is suppressed is the case §9.2.2 names explicitly: the same
-    document loaded again from the same call site, "a reload that re-reads an
-    edited file", which SHOULD re-evaluate and may legitimately warn again.
-
-    ``warn_explicit`` with no registry is the narrow fix. Passing ``registry=None``
-    makes the machinery allocate a throwaway dict for this one call, so no
-    de-duplication state survives it, while every *filter* the host set still
-    applies exactly as before: ``-W error`` still raises, ``-W ignore`` still
-    ignores, ``catch_warnings(record=True)`` still records. The alternative —
-    ``simplefilter`` inside a ``catch_warnings`` block — would mutate the host's
-    filters for the duration of a load and override the choice they made, which
-    is worse than the defect. Nothing is mutated at import time.
+    A fresh warning registry keeps one load from suppressing another.
 
     *stacklevel* is counted from this function's caller exactly as
     ``warnings.warn``'s is, so the reported filename and line are unchanged.
@@ -1224,39 +1173,6 @@ def _warn_deprecated_inert_keys(config: Config) -> None:
     )
 
 
-def _warn_if_project_root_diverges(config: Config) -> None:
-    """PROTOCOL_SPEC §9.2.2 requirement 2 — the *narrow* deprecation warning.
-
-    Fires only when both hold: the project root differs from the process CWD,
-    **and** at least one path-typed value is relative. A blanket warning is
-    explicitly not wanted — it would fire for every tier 2-5 project, where
-    nothing changes at v2.0, and train operators to ignore the one warning that
-    does matter.
-
-    Cadence is once per configuration load; see :func:`_emit_per_load`.
-    """
-    project_root = config.project_root
-    cwd = _cwd()
-    if project_root == cwd:
-        return
-
-    relative_keys = _relative_path_typed_keys(config)
-    if not relative_keys:
-        return
-
-    _emit_per_load(
-        f"apcore#113 (PROTOCOL_SPEC §9.2.2): project root {project_root!r} differs from the "
-        f"working directory {cwd!r}, and these path-typed keys hold relative values: "
-        f"{', '.join(relative_keys)}. Through 1.x they keep resolving as they do today "
-        "(against the working directory, except acl.root which already resolves against the "
-        "config file's directory). From 2.0 every relative path-typed value resolves against "
-        "the project root, so these will point somewhere else. Make them absolute, or run "
-        "from the project root, to pin today's behaviour. Nothing has changed in this release.",
-        DeprecationWarning,
-        stacklevel=3,
-    )
-
-
 def _collect_uncompilable_regex_patterns(data: dict[str, Any]) -> list[str]:
     """Report every ``obs.redaction.regex_patterns`` entry that does not compile.
 
@@ -1321,11 +1237,10 @@ class Config:
         self._yaml_path: str | None = None
         # PROTOCOL_SPEC §9.2.2: one project root per Config, determined once.
         # A Config built from an in-memory mapping has no backing file, so the
-        # root is CWD; ``load()`` overwrites both fields once the §9.14 tier is
-        # known. Captured eagerly rather than read at each access because §9.2.2
-        # clause 4 exists to stop a chdir() between load and consumption leaving
-        # two consumers of one Config looking at two directories.
-        self._config_file_tier: int | None = None
+        # root is CWD; ``load()`` replaces it before validating against the
+        # file’s project root. Captured eagerly because a later chdir()
+        # must not send consumers of one Config to different directories.
+        self._reload_path: str | None = None
         self._project_root: str = _cwd()
         self._lock = threading.Lock()
         self._mode: str = "legacy"
@@ -1368,10 +1283,7 @@ class Config:
         ``extensions.roots`` is reported as ``extensions.roots[]`` because it is
         list-valued and every element carries a path.
 
-        Note what this does NOT tell you: what a *relative* value in one of these
-        keys is resolved against. That base is unspecified as of spec v1.34.0 and
-        currently differs between keys — ``acl.root`` resolves against the config
-        file's directory, ``schema.root`` against the process CWD.
+        Relative values resolve against :attr:`project_root` (§9.2.2).
         """
         return _PATH_TYPED_CONFIG_KEYS
 
@@ -1551,29 +1463,20 @@ class Config:
             # ``$APCORE_CONFIG_FILE`` does it. Its directory is the project root.
             tier = _TIER_ENV_CONFIG_FILE
 
-        config = cls._load_document(yaml_path, validate=validate)
-        config._config_file_tier = tier
-        config._project_root = _project_root_for(config._yaml_path, tier)
-        _warn_if_project_root_diverges(config)
+        project_root = _project_root_for(yaml_path, tier)
+        config = cls._load_document(yaml_path, project_root=project_root, validate=validate)
         _warn_deprecated_inert_keys(config)
         return config
 
     @classmethod
-    def _load_document(cls, yaml_path: str, *, validate: bool) -> Config:
-        """Parse and merge one config file, without deciding a project root.
-
-        Split out of :meth:`load` so that :meth:`reload` can re-read the same
-        document without re-deriving the §9.14 tier. Reload passes an explicit
-        path, which :meth:`load` would read as tier 1 — moving the project root
-        of a config that had been discovered at tier 6-7 onto the user-level
-        directory, and emitting §9.2.2's deprecation warning for a config the
-        warning is not about.
-        """
+    def _load_document(cls, yaml_path: str, *, project_root: str, validate: bool) -> Config:
+        """Parse a document and validate it using its established project root."""
         path = Path(yaml_path)
-        if not path.is_file():
+        absolute_path = path.absolute()
+        if not absolute_path.is_file():
             raise ConfigNotFoundError(config_path=str(path))
 
-        with open(path, encoding="utf-8") as f:
+        with open(absolute_path, encoding="utf-8") as f:
             try:
                 file_data = yaml.safe_load(f)
             except yaml.YAMLError as e:
@@ -1587,11 +1490,18 @@ class Config:
         # Namespace mode requires "apcore" key to be a dict, not null/scalar/list.
         apcore_val = file_data.get("apcore")
         if isinstance(apcore_val, dict):
-            config = cls._load_namespace_mode(file_data, validate=validate)
+            config = cls._load_namespace_mode(file_data)
         else:
-            config = cls._load_legacy_mode(file_data, validate=validate)
+            config = cls._load_legacy_mode(file_data)
 
         config._yaml_path = str(path)
+        config._reload_path = str(absolute_path)
+        config._project_root = project_root
+        if validate:
+            if config._mode == "namespace":
+                config._validate_namespace_mode()
+            else:
+                config.validate()
         # PROTOCOL_SPEC §9.11 step 5: reload() re-validates only if the
         # originating load() did. Silently re-imposing validation on a config
         # the caller deliberately loaded with validate=False is a behaviour
@@ -1600,7 +1510,7 @@ class Config:
         return config
 
     @classmethod
-    def _load_legacy_mode(cls, file_data: dict[str, Any], *, validate: bool) -> Config:
+    def _load_legacy_mode(cls, file_data: dict[str, Any]) -> Config:
         """Load in legacy (flat) mode: defaults < file < env."""
         # Snapshot the declared document — everything supplied by *someone*
         # (the file, then env overrides), excluding only the default table.
@@ -1621,12 +1531,10 @@ class Config:
         config = cls(data=merged)
         config._declared = declared
         config._mode = "legacy"
-        if validate:
-            config.validate()
         return config
 
     @classmethod
-    def _load_namespace_mode(cls, file_data: dict[str, Any], *, validate: bool) -> Config:
+    def _load_namespace_mode(cls, file_data: dict[str, Any]) -> Config:
         """Load in namespace mode: namespace defaults < file < env overrides."""
         with _GLOBAL_NS_REGISTRY_LOCK:
             registrations = list(_GLOBAL_NS_REGISTRY.values())
@@ -1667,8 +1575,6 @@ class Config:
             declared_ns["apcore"] = declared_apcore
         config._declared = _apply_namespace_env_overrides(declared_ns, registrations)
         config._mode = "namespace"
-        if validate:
-            config._validate_namespace_mode()
         return config
 
     @classmethod
@@ -1774,6 +1680,9 @@ class Config:
         ``my`` -> ``app`` where get() reads the whole ``my.app`` key.
         """
         with self._lock:
+            path_key = key.removeprefix("apcore.") if self._mode == "namespace" else key
+            if path_key in _SCALAR_PATH_TYPED_CONFIG_KEYS and _is_empty_path_value(value):
+                return
             if self._mode == "namespace":
                 namespace, remainder = self._split_namespace_key(key)
                 if namespace is not None:
@@ -1815,49 +1724,27 @@ class Config:
 
     @property
     def source_path(self) -> str | None:
-        """Return the filesystem path the config was loaded from, if any.
-
-        Returns the YAML path passed to (or discovered by) :meth:`load`, or
-        ``None`` for in-memory configs (``Config(data=...)``) and configs
-        produced by :meth:`from_defaults`. Consumers that resolve relative
-        paths (e.g. ``acl.root``) use this to anchor resolution at the config
-        file's directory rather than the current working directory.
-        """
+        """Return the path passed to or discovered by :meth:`load`, if any."""
         with self._lock:
             return self._yaml_path
 
     @property
     def project_root(self) -> str:
-        """Return this config's project root (PROTOCOL_SPEC §9.2.2), absolute.
+        """Return the fixed absolute base for paths in this configuration (§9.2.2)."""
+        return self._project_root
 
-        The directory containing the configuration file when that file was
-        selected by §9.14 discovery tiers 1-5 — ``$APCORE_CONFIG_FILE``, a path
-        passed to :meth:`load`, or a project-local
-        ``./project.yaml|.yml|apcore.yaml|.yml``. The process working directory
-        when the file came from the user-level tiers 6-7
-        (``~/.config/apcore/config.yaml``, ``~/.apcore/config.yaml``), when no
-        file was found, or when the ``Config`` was built from an in-memory
-        mapping. The tier is what selects the base: in tiers 2-5 the file's
-        directory *is* CWD, in tier 1 it is the better answer, and in tiers 6-7
-        it is the wrong one, since a user-level config is shared by every project
-        its owner runs.
+    def resolve_path(self, value: str | os.PathLike[str]) -> str:
+        """Return an absolute path using the fixed project root (§9.2.2).
 
-        Determined once, when the config is loaded, and never re-read from the
-        process afterwards — a ``chdir()`` between load and consumption would
-        otherwise leave two consumers of one ``Config`` looking at two
-        directories (§9.2.2 clause 4).
-
-        **This accessor carries no resolution behaviour.** Through the whole 1.x
-        line it is purely informational: ``ACL.discover`` still anchors
-        ``acl.root`` at ``source_path``'s directory, and ``SchemaLoader``,
-        ``Registry`` and ``BindingLoader`` still resolve their roots against the
-        working directory. §9.2.2's requirement 3 forbids adopting the target
-        semantics before 2.0; this exists so an application, a CLI, or a
-        conformance driver can ask what the base *will* be before anything
-        depends on it.
+        Raises ``ValueError`` for an empty path. The caller supplies the effective
+        value after applying configuration precedence (§9.2.1).
         """
-        with self._lock:
-            return self._project_root
+        raw_path = os.fspath(value)
+        if not raw_path:
+            raise ValueError("An empty configuration value is not a path")
+        if Path(raw_path).is_absolute():
+            return raw_path
+        return str(Path(self._project_root) / raw_path)
 
     # ------------------------------------------------------------------
     # Namespace-mode instance methods
@@ -2014,18 +1901,7 @@ class Config:
                     f"Set exporter to 'otlp', or remove the endpoint."
                 )
 
-        ext_root = _get_nested(self._data, "extensions.root")
-        auto_discover = _get_nested(self._data, "extensions.auto_discover", False)
-        if auto_discover and ext_root and not Path(str(ext_root)).exists():
-            _logger.warning(
-                "extensions.auto_discover=true but extensions.root '%s' does not exist",
-                ext_root,
-            )
-
-        schema_strategy = _get_nested(self._data, "schema.strategy")
-        schema_root = _get_nested(self._data, "schema.root")
-        if schema_strategy == "yaml_only" and schema_root and not Path(str(schema_root)).exists():
-            errors.append(f"schema.strategy='yaml_only' but schema.root '{schema_root}' does not exist")
+        self._validate_path_availability(self._data, errors)
 
         # 4. §9.14 reject_unknown_framework_keys — step 1 runs it in LEGACY mode
         #    too, where the whole document *is* the ``apcore`` namespace. The
@@ -2049,6 +1925,20 @@ class Config:
                 + "\n".join(f"  - {e}" for e in errors),
                 details={"errors": errors},
             )
+
+    def _validate_path_availability(self, data: dict[str, Any], errors: list[str]) -> None:
+        ext_root = _get_nested(data, "extensions.root")
+        auto_discover = _get_nested(data, "extensions.auto_discover", False)
+        if auto_discover and ext_root and not Path(self.resolve_path(str(ext_root))).exists():
+            _logger.warning(
+                "extensions.auto_discover=true but extensions.root '%s' does not exist",
+                ext_root,
+            )
+
+        schema_strategy = _get_nested(data, "schema.strategy")
+        schema_root = _get_nested(data, "schema.root")
+        if schema_strategy == "yaml_only" and schema_root and not Path(self.resolve_path(str(schema_root))).exists():
+            errors.append(f"schema.strategy='yaml_only' but schema.root '{schema_root}' does not exist")
 
     def _validate_namespace_mode(self) -> None:
         """Run A12-NS validation for namespace mode (§9.14).
@@ -2078,6 +1968,7 @@ class Config:
         # are governed by its registered schema, not by apcore-config.schema.json.
         if strict:
             errors.extend(_collect_unknown_framework_keys(apcore_data, prefix="apcore."))
+        self._validate_path_availability(apcore_data, errors)
         if errors:
             raise ConfigError(
                 message=f"Configuration validation failed ({len(errors)} error(s)):\n"
@@ -2119,18 +2010,12 @@ class Config:
             ConfigError: If no YAML path was stored or reload fails.
         """
         with self._lock:
-            yaml_path = self._yaml_path
+            yaml_path = self._reload_path
             if yaml_path is None:
                 raise ConfigError(message="Cannot reload: Config was not loaded from a YAML file")
             stored_mounts = copy.deepcopy(self._mounts)
 
-        # ``_load_document``, not ``load``: the project root belongs to how this
-        # config file was *found*, which reload does not redo (§9.2.2 — the root
-        # is determined once, at load). Going through ``load()`` here would read
-        # the stored path as tier 1 and re-root a tier 6-7 config onto the
-        # user-level directory. ``_project_root`` and ``_config_file_tier`` are
-        # deliberately left untouched below for the same reason.
-        reloaded = Config._load_document(yaml_path, validate=self._validate_on_load)
+        reloaded = Config._load_document(yaml_path, project_root=self._project_root, validate=self._validate_on_load)
 
         with self._lock:
             self._data = reloaded._data
@@ -2271,6 +2156,32 @@ Config.register_namespace(
             "enabled": False,
             "subscribers": [],
             "thresholds": {"error_rate": 0.1, "latency_p99_ms": 5000.0},
+        },
+    },
+)
+
+# Python's synchronous executor bridge is an SDK setting. Keep it in a
+# Config Bus namespace so shared protocol configuration stays portable.
+Config.register_namespace(
+    "apcore-python",
+    env_prefix="APCORE_PYTHON",
+    schema={
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "executor": {
+                "description": "Python executor settings.",
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "sync_bridge_timeout": {
+                        "description": "Worker thread wait in milliseconds. Null derives the wait and zero disables the bound.",
+                        "type": ["integer", "null"],
+                        "minimum": 0,
+                    },
+                },
+            },
         },
     },
 )

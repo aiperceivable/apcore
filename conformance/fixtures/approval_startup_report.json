@@ -1,0 +1,45 @@
+{
+  "description": "Executor startup diagnostic for registered modules whose requires_approval declaration has no effective built-in approval gate.",
+  "modules": [
+    {"module_id": "orders.metadata", "live_approval": false, "declared_approval": true, "discoverable": false},
+    {"module_id": "orders.view", "live_approval": false, "declared_approval": false, "discoverable": true},
+    {"module_id": "orders.confirm", "live_approval": true, "declared_approval": false, "discoverable": true}
+  ],
+  "test_cases": [
+    {
+      "id": "standard_without_provider",
+      "strategy": "standard",
+      "handler_attached": false,
+      "policy": {},
+      "expected": {"ungated_modules": ["orders.confirm", "orders.metadata"]}
+    },
+    {
+      "id": "standard_with_handler",
+      "strategy": "standard",
+      "handler_attached": true,
+      "policy": {},
+      "expected": {"ungated_modules": []}
+    },
+    {
+      "id": "strict_fails_closed_without_a_handler",
+      "strategy": "standard",
+      "handler_attached": false,
+      "policy": {"strict": true},
+      "expected": {"ungated_modules": []}
+    },
+    {
+      "id": "provider_attached_but_gate_removed",
+      "strategy": "internal",
+      "handler_attached": true,
+      "policy": {"strict": true},
+      "expected": {"ungated_modules": ["orders.confirm", "orders.metadata"]}
+    },
+    {
+      "id": "effective_policy_waives_one_declaration",
+      "strategy": "standard",
+      "handler_attached": true,
+      "policy": {"rules": [{"pattern": "orders.confirm", "requires_approval": false}]},
+      "expected": {"ungated_modules": ["orders.confirm"]}
+    }
+  ]
+}

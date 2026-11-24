@@ -1081,6 +1081,20 @@ impl Registry {
         Ok(self.core.read().modules.get(name).cloned())
     }
 
+    /// Read the governance annotation union without triggering descriptor access warnings.
+    pub(crate) fn governance_annotations(&self, name: &str) -> Option<ModuleAnnotations> {
+        let (module, declared) = {
+            let core = self.core.read();
+            let module = core.modules.get(name)?.clone();
+            let declared = core
+                .descriptors
+                .get(name)
+                .and_then(|descriptor| descriptor.annotations.clone());
+            (module, declared)
+        };
+        ModuleAnnotations::governance_union(Some(&module.annotations()), declared.as_ref())
+    }
+
     /// Get the definition (descriptor) for a module by name.
     ///
     /// Returns a cloned `ModuleDescriptor` because the underlying storage
@@ -2545,9 +2559,9 @@ impl Registry {
     ///    must never have them overwritten by a config file.
     /// 2. Otherwise `extensions.roots` (multi-root mode) is read, accepting both
     ///    element forms — a bare path string and a `{ root, namespace }` object.
-    /// 3. Otherwise `extensions.root` is read. `Config::get` already falls back
-    ///    to the canonical `./extensions` default, so the default tier needs no
-    ///    separate branch here.
+    /// 3. Otherwise `extensions.root` is read, with `./extensions` as default.
+    ///
+    /// Configured paths are resolved against the project root (§9.2.2).
     ///
     /// Before this existed, `extension_roots` initialised empty and was written
     /// only by `set_extension_roots`, so a client built from a `Config` that set
@@ -2563,12 +2577,14 @@ impl Registry {
             let roots: Vec<String> = items
                 .iter()
                 .filter_map(|item| match item {
-                    serde_json::Value::String(s) => Some(s.clone()),
+                    serde_json::Value::String(s) => Some(s.as_str()),
                     serde_json::Value::Object(o) => {
-                        o.get("root").and_then(|r| r.as_str()).map(str::to_string)
+                        o.get("root").and_then(serde_json::Value::as_str)
                     }
                     _ => None,
                 })
+                .filter(|root| !root.is_empty())
+                .map(|root| config.resolve_path(root).to_string_lossy().into_owned())
                 .collect();
             if !roots.is_empty() {
                 *self.extension_roots.write() = roots;
@@ -2576,12 +2592,8 @@ impl Registry {
             }
         }
 
-        if let Some(root) = config.get("extensions.root").and_then(|v| {
-            v.as_str()
-                .filter(|s| !s.is_empty())
-                .map(std::string::ToString::to_string)
-        }) {
-            *self.extension_roots.write() = vec![root];
+        if let Some(root) = config.get_path("extensions.root") {
+            *self.extension_roots.write() = vec![root.to_string_lossy().into_owned()];
         }
     }
 
@@ -2744,6 +2756,14 @@ mod extension_roots_from_config_tests {
         serde_json::from_value(json).expect("config fixture must deserialize")
     }
 
+    fn resolved_roots(config: &Config, names: &[&str]) -> Vec<String> {
+        let root = config.project_root();
+        names
+            .iter()
+            .map(|name| root.join(name).to_string_lossy().into_owned())
+            .collect()
+    }
+
     #[test]
     fn config_extensions_root_reaches_the_registry() {
         // The #39 case. Before `set_extension_roots_from_config` existed this
@@ -2758,7 +2778,10 @@ mod extension_roots_from_config_tests {
         }));
         registry.set_extension_roots_from_config(&config);
 
-        assert_eq!(registry.extension_roots(), vec!["./my-modules".to_string()]);
+        assert_eq!(
+            registry.extension_roots(),
+            resolved_roots(&config, &["./my-modules"])
+        );
     }
 
     #[test]
@@ -2773,7 +2796,10 @@ mod extension_roots_from_config_tests {
         }));
         registry.set_extension_roots_from_config(&config);
 
-        assert_eq!(registry.extension_roots(), vec!["./extensions".to_string()]);
+        assert_eq!(
+            registry.extension_roots(),
+            resolved_roots(&config, &["./extensions"])
+        );
     }
 
     #[test]
@@ -2809,7 +2835,7 @@ mod extension_roots_from_config_tests {
 
         assert_eq!(
             registry.extension_roots(),
-            vec!["./extensions".to_string(), "./plugins".to_string()]
+            resolved_roots(&config, &["./extensions", "./plugins"])
         );
     }
 
@@ -2825,7 +2851,7 @@ mod extension_roots_from_config_tests {
 
         assert_eq!(
             registry.extension_roots(),
-            vec!["./a".to_string(), "./b".to_string()]
+            resolved_roots(&config, &["./a", "./b"])
         );
     }
 }

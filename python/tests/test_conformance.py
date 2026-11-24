@@ -177,10 +177,22 @@ def _assert_wire_code(exc: BaseException, wire_code: str, fixture: str, case_id:
 @pytest.fixture(autouse=True)
 def _cleanup_globals() -> Any:
     with _GLOBAL_NS_REGISTRY_LOCK:
+        namespaces = _GLOBAL_NS_REGISTRY.copy()
+        env_map = _GLOBAL_ENV_MAP.copy()
+        env_claims = _GLOBAL_ENV_MAP_CLAIMED.copy()
         _GLOBAL_NS_REGISTRY.clear()
         _GLOBAL_ENV_MAP.clear()
         _GLOBAL_ENV_MAP_CLAIMED.clear()
-    yield
+    try:
+        yield
+    finally:
+        with _GLOBAL_NS_REGISTRY_LOCK:
+            _GLOBAL_NS_REGISTRY.clear()
+            _GLOBAL_NS_REGISTRY.update(namespaces)
+            _GLOBAL_ENV_MAP.clear()
+            _GLOBAL_ENV_MAP.update(env_map)
+            _GLOBAL_ENV_MAP_CLAIMED.clear()
+            _GLOBAL_ENV_MAP_CLAIMED.update(env_claims)
 
 
 # ---------------------------------------------------------------------------
@@ -809,10 +821,6 @@ _SCHEMA_XFAIL_IDS: set[str] = set()
 @pytest.fixture(scope="module")
 def _schema_tools() -> tuple[SchemaLoader, SchemaValidator]:
     """Shared SchemaLoader and SchemaValidator for schema validation tests."""
-    with _GLOBAL_NS_REGISTRY_LOCK:
-        _GLOBAL_NS_REGISTRY.clear()
-        _GLOBAL_ENV_MAP.clear()
-        _GLOBAL_ENV_MAP_CLAIMED.clear()
     config = Config(data={})
     # `coerce_types=True` explicitly: this fixture's `expected_valid_coerce` half
     # documents the opt-in library-level coercing mode, which is NOT what the

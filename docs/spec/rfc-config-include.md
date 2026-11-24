@@ -174,7 +174,7 @@ A `conformance/fixtures/config_include.json` decision table covering:
 
 ## Open questions
 
-1. **Base for path-typed values.** The draft's "root file's directory" conflicts with §9.2.2. Through v1.x, `extensions.root`, `schema.root` and `bindings.dir` resolve against the process working directory and only `acl.root` resolves against the configuration file's directory. From v2.0 every path-typed value resolves against the project root, which is the working directory for a user-level configuration file (§9.14 tiers 6–7). Ratifying this RFC should mean adopting §9.2.2's base unchanged, and the conformance plan needs a case pinning it.
+1. **Base for path-typed values.** Ratification should apply §9.2.2 to filesystem path values in the merged configuration and pin the behavior with a fixture. A user-level configuration found by discovery uses the working directory captured at load. An `include` entry itself selects a fragment using the declaring file's directory.
 2. **`CONFIG_INCLUDE_CYCLE` registration.** Confirm the new code fits the canonical `CONFIG_` error-code set and the reserved-prefix rules (`conformance/fixtures/error_codes.json`).
 3. **Depth cap.** Is a maximum include depth needed as a configurable policy limit, or is cycle detection enough? Proposed: cycle detection only.
 

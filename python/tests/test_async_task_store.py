@@ -27,6 +27,7 @@ from apcore.async_task import (
     TaskStatus,
     TaskStore,
 )
+from apcore.errors import InvalidInputError
 
 
 class _StubExecutor:
@@ -150,7 +151,7 @@ class TestRetryPolicyOptInDefault:
             RetryPolicy(max_retries=1)
         deprecations = [w for w in caught if issubclass(w.category, DeprecationWarning)]
         assert deprecations, (
-            "Constructing RetryPolicy must emit a DeprecationWarning steering " "callers to RetryConfig (A-D-AT-09)"
+            "Constructing RetryPolicy must emit a DeprecationWarning steering callers to RetryConfig (A-D-AT-09)"
         )
 
 
@@ -163,11 +164,12 @@ class _AsyncOnlyStore:
     """Custom store whose methods perform a real await — proves the manager
     no longer relies on synchronous fall-through for store I/O."""
 
-    def __init__(self) -> None:
+    def __init__(self, delay: float = 0) -> None:
         self._data: dict[str, TaskInfo] = {}
+        self._delay = delay
 
     async def get(self, task_id: str) -> TaskInfo | None:
-        await asyncio.sleep(0)
+        await asyncio.sleep(self._delay)
         return self._data.get(task_id)
 
     async def save(self, info: TaskInfo) -> None:
@@ -179,7 +181,7 @@ class _AsyncOnlyStore:
         self._data.pop(task_id, None)
 
     async def list(self, status: TaskStatus | None = None) -> list[TaskInfo]:
-        await asyncio.sleep(0)
+        await asyncio.sleep(self._delay)
         if status is None:
             return list(self._data.values())
         return [t for t in self._data.values() if t.status == status]
@@ -190,6 +192,25 @@ class _AsyncOnlyStore:
 
 
 class TestManagerWithAsyncStore:
+    def test_sync_accessors_run_async_store_outside_an_event_loop(self) -> None:
+        store = _AsyncOnlyStore(delay=0.001)
+        mgr = AsyncTaskManager(executor=_StubExecutor(), store=store)
+        task = TaskInfo(
+            task_id="t1", module_id="test.x", status=TaskStatus.COMPLETED, submitted_at=0.0, result={"ok": True}
+        )
+        asyncio.run(store.save(task))
+
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            assert mgr.get_status(task.task_id) == task
+            assert mgr.get_result(task.task_id) == {"ok": True}
+            assert mgr.list_tasks(TaskStatus.COMPLETED) == [task]
+            assert asyncio.get_event_loop() is loop
+        finally:
+            asyncio.set_event_loop(None)
+            loop.close()
+
     @pytest.mark.asyncio
     async def test_submit_and_inspect_works_against_async_store(self) -> None:
         mgr = AsyncTaskManager(executor=_StubExecutor(), store=_AsyncOnlyStore())
@@ -212,8 +233,12 @@ class TestGetResultAsync:
         task_id = await mgr.submit("test.x", {})
         await asyncio.sleep(0.05)
 
-        with pytest.raises(RuntimeError, match="suspended"):
+        with pytest.raises(InvalidInputError, match="get_status_async"):
+            mgr.get_status(task_id)
+        with pytest.raises(InvalidInputError, match="get_result_async"):
             mgr.get_result(task_id)
+        with pytest.raises(InvalidInputError, match="list_tasks_async"):
+            mgr.list_tasks()
         assert await mgr.get_result_async(task_id) == {"ok": True}
 
     @pytest.mark.asyncio
@@ -229,3 +254,23 @@ class TestGetResultAsync:
         await store.save(TaskInfo(task_id="t1", module_id="test.x", status=TaskStatus.PENDING, submitted_at=0.0))
         with pytest.raises(RuntimeError, match="not completed"):
             await mgr.get_result_async("t1")
+
+    @pytest.mark.asyncio
+    async def test_sync_rejection_does_not_start_store_with_async_cleanup(self) -> None:
+        observed: list[str] = []
+
+        class Store(_AsyncOnlyStore):
+            async def get(self, task_id: str) -> TaskInfo | None:
+                observed.append("start")
+                try:
+                    return await super().get(task_id)
+                finally:
+                    await asyncio.sleep(0)
+                    observed.append("cleanup")
+
+        mgr = AsyncTaskManager(executor=_StubExecutor(), store=Store())
+        with pytest.raises(InvalidInputError, match="get_status_async"):
+            mgr.get_status("missing")
+        assert observed == []
+        assert await mgr.get_status_async("missing") is None
+        assert observed == ["start", "cleanup"]

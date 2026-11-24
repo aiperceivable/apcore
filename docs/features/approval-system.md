@@ -12,14 +12,7 @@ description: "Approval gate at Executor Step 5: fires on the governance union, p
 
 The Approval System decides whether a particular invocation needs sign-off before it runs, and asks an `ApprovalHandler` for that sign-off at **Step 5** of the execution pipeline — after ACL enforcement (Step 4) and before the Middleware Before Chain (Step 6).
 
-An invocation needs approval when **any** of these governance sources says so (the governance union):
-
-1. the module's own annotation `requires_approval: true`;
-2. the registry's declared annotations for the module — a `*.binding.yaml`, `*_meta.yaml` or `metadata=` declaration, or a Rust `ModuleDescriptor` (D-96, D-125);
-3. the matching ACL rule carries `approval: required` ([ACL System](./acl-system.md), §6.1.6);
-4. an [`ExecutionPolicy`](#execution-policy) makes it required — a rule override of `requires_approval`, or `gate_destructive` with an effective `destructive: true` (§7.9.2).
-
-No source can cancel another: a `false` in one place never removes a `true` from another.
+The gate considers the module's own flags, the registry's declared annotations, the platform's execution policy, and the [ACL decision](./acl-system.md) for the invocation. [Execution Policy](#execution-policy) defines how these sources combine.
 
 The Approval System is architecturally separate from the ACL System. ACL answers "who is allowed to call this module?" while Approval answers "does this particular invocation need sign-off before proceeding?"
 
@@ -27,7 +20,7 @@ The Approval System is architecturally separate from the ACL System. ACL answers
 
 - Provide a pluggable `ApprovalHandler` protocol that SDK implementations can satisfy with custom logic.
 - Enforce the approval gate at Executor Step 5, after ACL (Step 4) and before Middleware Before Chain (Step 6).
-- Fire the gate on the governance union above.
+- Fire the gate when approval is required under the execution policy and ACL rules below.
 - When approval is needed but no `ApprovalHandler` is configured, skip the gate with a warning (once per module), or fail closed with `ApprovalDeniedError` when `ExecutionPolicy(strict=true)`.
 - Support synchronous approval flows (Phase A) where `request_approval()` resolves to a decision.
 - Optionally support asynchronous approval flows (Phase B) where a `pending` status is returned with an `approval_id`, and execution resumes when the client retries with an `_approval_token`.
@@ -40,7 +33,7 @@ The Approval System is architecturally separate from the ACL System. ACL answers
 
 0. The gate runs only if the running `ExecutionStrategy` **contains** the `approval_gate` step. The `internal`, `testing` and `minimal` presets remove it, so on those the gate never runs no matter what is configured ([PROTOCOL_SPEC §6.6.3.2](../spec/protocol-spec.md#6632-a-configured-layer-is-not-necessarily-an-enforced-one)).
 1. Remove `_approval_token` from the inputs, on every path, so it never reaches input validation or the module. A non-string token raises `InvalidInputError` (`GENERAL_INVALID_INPUT`).
-2. Compute whether approval is needed from the governance union. With an `ExecutionPolicy`, the policy resolves the effective `requires_approval` / `destructive` first and emits `apcore.policy.override` if it changed either.
+2. Compute whether approval is needed from the module's declarations, the execution policy, and the ACL decision for the call. An `ExecutionPolicy` emits `apcore.policy.override` if it changed the effective `requires_approval` or `destructive` annotation. See [Execution Policy](#execution-policy) for the order of evaluation.
 3. If approval is not needed, continue to Step 6. (A module whose effective `destructive` is true but that nothing gates is logged as a warning, once per module.)
 4. If no `ApprovalHandler` is configured: with `ExecutionPolicy(strict=true)` raise `ApprovalDeniedError` (and emit `apcore.approval.decision` with status `rejected`); otherwise log a warning once per module and continue to Step 6.
 5. If the inputs carried an `_approval_token`, call `approval_handler.check_approval(token)` (Phase B resume). Otherwise build an `ApprovalRequest` and call `approval_handler.request_approval(request)`.
@@ -54,6 +47,20 @@ The Approval System is architecturally separate from the ACL System. ACL answers
 An exception raised by the handler itself propagates unchanged; it is not converted into a denial.
 
 To observe which parts of the gate are live on an executor, read [`governance_state()`](./core-executor.md#governance-state-api) — `builtin_approval_gate_wired`, `approval_handler_configured` and `policy_strict` are reported separately ([PROTOCOL_SPEC §6.6.5](../spec/protocol-spec.md#665-governance-state-query)). `Executor.validate()` reports the governance-effective `requires_approval` for a call, the same verdict the gate will enforce (§7.9.5).
+
+### Startup Approval Report
+
+After registering modules and configuring the executor, call its startup report to list module IDs that declare `requires_approval` without an effective built-in approval gate.
+
+| SDK | Method |
+|---|---|
+| Python | `executor.ungated_approval_modules()` |
+| TypeScript | `executor.ungatedApprovalModules()` |
+| Rust | `executor.ungated_approval_modules()` |
+
+The report includes hidden modules and returns IDs in sorted order. It lists a module if the default strategy omits the gate, the running gate has neither a handler nor strict policy, or the policy waives the module's approval requirement. A wired gate with strict policy protects a call that requires approval by denying it when the handler is absent.
+
+The report reads current configuration without executing modules or calling an approval handler. It describes module-level declarations. Caller-specific ACL rules, call arguments, and per-call strategies are evaluated during invocation. Run the report again if registrations or the executor's governance configuration change.
 
 ### Approval Lifecycle State Machine
 
@@ -228,7 +235,14 @@ An `ExecutionPolicy` is an execution-time governance layer attached to the Execu
 - **`gate_destructive`** — when true, a module whose effective `destructive` is true needs approval even if `requires_approval` is false.
 - **`strict`** — when true, a call that needs approval but has no `ApprovalHandler` fails closed with `ApprovalDeniedError` instead of being skipped with a warning.
 
-A policy can only **add** an approval requirement relative to the ACL: the gate ORs the policy verdict with the ACL rule's `approval: required`. Rules match on the module ID only; the call's arguments reach policy resolution (for the audit trail) but no built-in rule consults them, and `_approval_token` is stripped before resolution (§7.9.6).
+The gate applies these sources in order.
+
+1. Combine the live module's `requires_approval` and `destructive` flags with the corresponding declared metadata flags. A true value from either source counts. The registry can receive those declarations from `*.binding.yaml`, `*_meta.yaml`, `metadata=`, or a Rust `ModuleDescriptor` (D-96, D-125).
+2. Resolve the module-scoped requirement using the winning policy rule, if any, then add the requirement from `gate_destructive` when it applies. A policy rule can override a module annotation.
+3. Combine that result with the ACL's `approval: required` decision for this invocation. If either requires approval, the gate requires approval. A policy override cannot clear the ACL's requirement.
+4. Enforce the resulting requirement using the `ApprovalHandler`, or deny it under strict policy if the handler is absent. With neither configured, the gate warns and continues.
+
+Built-in policy rules match on the module ID. The invocation arguments reach policy resolution for the audit trail after `_approval_token` is stripped (§7.9.6).
 
 A policy is passed programmatically — there are no `policy.*` config keys. To load one from a YAML/JSON document, use `ExecutionPolicy.from_dict()` (Python), `ExecutionPolicy.fromObject()` (TypeScript) or `ExecutionPolicy::from_value()` (Rust); unknown keys and a missing `pattern` are rejected. The document shape is:
 

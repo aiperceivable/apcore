@@ -10,7 +10,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { BindingLoader } from '../src/bindings.js';
@@ -35,9 +35,6 @@ beforeEach(() => {
   vi.stubEnv('APCORE_CONFIG_FILE', undefined);
   vi.stubEnv('APCORE_BINDINGS_DIR', undefined);
   vi.stubEnv('HOME', join(tmpDir, 'nonexistent-home'));
-  // The project-root deprecation notice (apcore#113) is expected in most of
-  // these cases — the config files live outside the CWD — and is not what this
-  // suite is testing.
   vi.spyOn(console, 'warn').mockImplementation(() => {});
 });
 
@@ -77,22 +74,61 @@ function writeConfig(dir: string, fileName: string, extra: string): string {
 }
 
 describe('loadBindingDir resolves the directory from bindings.dir', () => {
-  it('scans the directory a config FILE declares, with APCORE_BINDINGS_DIR unset', async () => {
-    // The discriminating case from apcore#114 and apcore-typescript#36. Before
-    // the fix this threw: no explicit argument and no environment variable.
+  it('opens binding files from the same symlinked directory it scans', async () => {
+    const actual = join(tmpDir, 'other', 'bindings');
+    const decoy = join(tmpDir, 'bindings');
+    const deep = join(tmpDir, 'other', 'deep');
+    mkdirSync(actual, { recursive: true });
+    mkdirSync(decoy);
+    mkdirSync(deep);
+    symlinkSync(deep, join(tmpDir, 'link'), 'dir');
+    const modPath = writeModule('path_probe.mjs', ['alpha', 'decoy']);
+    writeBinding(actual, 'probe.binding.yaml', 'cfgfile.actual', `${modPath}:alpha`);
+    writeBinding(decoy, 'probe.binding.yaml', 'cfgfile.decoy', `${modPath}:decoy`);
+    const config = Config.load(writeConfig(tmpDir, 'apcore.yaml', 'bindings: {dir: link/../bindings}\n'));
+
+    await loader.loadBindingDir(undefined, registry, undefined, config);
+
+    expect(registry.list()).toEqual(['cfgfile.actual']);
+  });
+
+  it('scans the project-relative directory a config file declares after chdir', async () => {
     const bindDir = join(tmpDir, 'declared-bindings');
     mkdirSync(bindDir);
-    const modPath = writeModule('file_mod.mjs', ['alpha']);
+    const elsewhere = join(tmpDir, 'elsewhere');
+    const decoy = join(elsewhere, 'declared-bindings');
+    mkdirSync(decoy, { recursive: true });
+    const modPath = writeModule('file_mod.mjs', ['alpha', 'decoy']);
     writeBinding(bindDir, 'alpha.binding.yaml', 'cfgfile.alpha', `${modPath}:alpha`);
+    writeBinding(decoy, 'decoy.binding.yaml', 'cfgfile.decoy', `${modPath}:decoy`);
 
-    const configPath = writeConfig(tmpDir, 'apcore.yaml', `bindings:\n  dir: "${bindDir}"\n`);
+    const configPath = writeConfig(tmpDir, 'apcore.yaml', 'bindings:\n  dir: ./declared-bindings\n');
     const config = Config.load(configPath);
-    expect(config.get('bindings.dir')).toBe(bindDir);
+    expect(config.get('bindings.dir')).toBe('./declared-bindings');
+    process.chdir(elsewhere);
 
     const results = await loader.loadBindingDir(undefined, registry, undefined, config);
 
     expect(results).toHaveLength(1);
     expect(registry.has('cfgfile.alpha')).toBe(true);
+    expect(registry.has('cfgfile.decoy')).toBe(false);
+  });
+
+  it('anchors the canonical binding directory when a namespaced config omits it', async () => {
+    const configPath = join(tmpDir, 'apcore.yaml');
+    writeFileSync(configPath, 'apcore:\n  project: {name: namespace-bindings}\n');
+    const bindDir = join(tmpDir, 'bindings');
+    mkdirSync(bindDir);
+    const target = writeModule('default_binding.mjs', ['main']);
+    writeBinding(bindDir, 'default.binding.yaml', 'ns.default_binding', `${target}:main`);
+
+    const config = Config.load(configPath, { validate: false });
+    const other = join(tmpDir, 'other');
+    mkdirSync(other);
+    process.chdir(other);
+    await loader.loadBindingDir(undefined, registry, undefined, config);
+
+    expect(registry.has('ns.default_binding')).toBe(true);
   });
 
   it('keeps APCORE_BINDINGS_DIR working, through the §9.2 merge rather than a raw read', async () => {

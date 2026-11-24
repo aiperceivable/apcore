@@ -14,9 +14,8 @@
  * answers for one of them in legacy mode and two in namespace mode, because
  * `DEFAULTS` and the `observability` namespace registration supply values for
  * them. An implementation driven off `get()` would therefore warn for every
- * configuration ever loaded — the blanket warning §9.2.2 requirement 2 and
- * §9.2.4 requirement 2 both reject, and which trains an operator to ignore the
- * notice that does apply to them. A test that only checked "it warns" would
+ * configuration ever loaded — the blanket warning §9.2.4 requirement 2
+ * rejects. A test that only checked "it warns" would
  * pass such an implementation, so every case below pins the quiet side too.
  *
  * The ACL half has a second silent axis: the notice is scoped to `audit` on
@@ -145,11 +144,7 @@ function spyOnWarn() {
 }
 
 describe('the §9.2.4 inert-configuration-key notice (apcore#118)', () => {
-  /**
-   * Lines this notice emitted, ignoring every other `console.warn` — the
-   * §9.2.2 project-root notice fires from the same method for a config loaded
-   * out of a temp directory, and the ACL notice below shares the issue number.
-   */
+  /** Lines emitted by this notice, distinct from the ACL notice. */
   function noticesFrom(spy: MockInstance<typeof console.warn>): string[] {
     return spy.mock.calls
       .map((call) => String(call[0]))
@@ -292,9 +287,7 @@ describe('the §9.2.4 inert-configuration-key notice (apcore#118)', () => {
   });
 
   it('fires once per LOAD, not once per process', () => {
-    // Same cadence as the §9.2.2 notice beside it: §9.2.2 requirement 2 forbids
-    // suppressing a deprecation notice with process-global state, which makes
-    // emission order-dependent and leaves the second affected document silent.
+    // The notice belongs to the document loaded, regardless of prior loads.
     const configPath = write('apcore.yaml', MINIMAL_YAML + declare('logging.level', '"info"'));
     const warn = spyOnWarn();
 

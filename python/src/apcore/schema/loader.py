@@ -500,7 +500,11 @@ class SchemaLoader:
         if schemas_dir is not None:
             self._schemas_dir = Path(schemas_dir).resolve()
         else:
-            self._schemas_dir = Path(config.get("schema.root", Config.get_default("schema.root"))).resolve()
+            default_root = Config.get_default("schema.root")
+            root = config.get("schema.root", default_root)
+            if root == "":
+                root = default_root
+            self._schemas_dir = Path(config.resolve_path(root)).resolve()
         max_depth = config.get("schema.max_ref_depth", 32)
         self._resolver = RefResolver(self._schemas_dir, max_depth=max_depth)
         self._schema_cache: dict[str, SchemaDefinition] = {}

@@ -10,7 +10,7 @@
  */
 
 import { existsSync, readFileSync, statSync } from 'node:fs';
-import { dirname, isAbsolute, join, resolve } from 'node:path';
+import { appendFilesystemPath } from './utils/filesystem-path.js';
 import yaml from 'js-yaml';
 import {
   ACL,
@@ -188,15 +188,7 @@ _setAclDiscoverer((config: AclConfigLike): ACL | null => {
     return null;
   }
 
-  let rootPath = String(rawRoot);
-  if (!isAbsolute(rootPath)) {
-    // Anchor a relative root at the config file's directory when known,
-    // otherwise at the process CWD. Parity with apcore-python
-    // (Config.source_path) and apcore-rust (D-64).
-    const sourcePath = config.sourcePath;
-    const base = sourcePath !== null ? dirname(resolve(sourcePath)) : process.cwd();
-    rootPath = resolve(base, rootPath);
-  }
+  const rootPath = config.resolvePath(String(rawRoot === '' ? getDefault('acl.root') : rawRoot));
 
   // Missing path => no enforcement. CRITICAL: do NOT synthesize an empty
   // default-deny ACL — that would silently deny every inter-module call in
@@ -211,7 +203,7 @@ _setAclDiscoverer((config: AclConfigLike): ACL | null => {
   // A directory without that file is a no-op. acl.root MAY also point directly
   // at a YAML file. Parity with apcore-python and apcore-rust.
   if (statSync(rootPath).isDirectory()) {
-    const globalAcl = join(rootPath, 'global_acl.yaml');
+    const globalAcl = appendFilesystemPath(rootPath, 'global_acl.yaml');
     if (!existsSync(globalAcl)) {
       return null;
     }

@@ -199,6 +199,8 @@ A module is supplied to the framework either as a class implementing the module 
 - The return value MUST validate against `output_schema`.
 - The return value MUST NOT contain non-serializable objects (functions, open connections, etc.).
 
+The executor validates and passes the JSON object representation to after-middleware and callers. Python converts Pydantic models using their JSON field aliases. TypeScript uses the own enumerable data fields of class instances and serializes nested dates as strings. Rust modules provide JSON objects through `serde_json::Value`.
+
 ### Errors
 
 The protocol defines no dedicated error class per conformance violation:

@@ -65,6 +65,8 @@ export interface APCoreOptions {
    * policy on that Executor directly (parity with config-driven ACL discovery).
    */
   policy?: ExecutionPolicy;
+  /** Throw on system-module registration failures during startup. Defaults to false. */
+  failOnError?: boolean;
 }
 
 export interface ModuleOptions {
@@ -105,6 +107,7 @@ export class APCore {
    */
   private readonly _toggleState: ToggleState;
   private _sysModulesContext: SysModulesContext = {};
+  private readonly _sysModulesErrors: Error[] = [];
 
   constructor(options?: APCoreOptions) {
     this.config = options?.config ?? null;
@@ -189,16 +192,33 @@ export class APCore {
     // `node:fs`/`node:path` (sys-modules/registration.ts and friends)
     // out of the browser closure.
     if (this.config && _sysModulesInstaller) {
-      this._sysModulesContext = _sysModulesInstaller(
-        this.registry,
-        this.executor,
-        this.config,
-        options?.metricsCollector,
-        // Write path: ToggleFeatureModule mutates this same ToggleState
-        // instance (Issue #71).
-        { toggleState: this._toggleState },
-      );
+      try {
+        this._sysModulesContext = _sysModulesInstaller(
+          this.registry,
+          this.executor,
+          this.config,
+          options?.metricsCollector,
+          {
+            toggleState: this._toggleState,
+            failOnError: options?.failOnError ?? false,
+            onRegistrationError: (error) => { this._sysModulesErrors.push(error); },
+          },
+        );
+      } catch (err) {
+        if (options?.failOnError) throw err;
+        this._sysModulesErrors.push(err instanceof Error ? err : new Error(String(err)));
+        console.warn('[apcore:client] Failed to register system modules:', err);
+      }
+      const emitter = this.events;
+      if (prebuiltExecutor === undefined && emitter !== null) {
+        this.executor.setEventEmitter(emitter);
+      }
     }
+  }
+
+  /** System-module registration errors recovered during startup. */
+  get sysModulesErrors(): readonly Error[] {
+    return this._sysModulesErrors.slice();
   }
 
   /**

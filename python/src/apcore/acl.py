@@ -1766,9 +1766,8 @@ class ACL:
         """Activate ``acl.root`` config-driven ACL discovery (D-64, Recommendation A).
 
         Resolves the ``acl.root`` config key (default ``"./acl"``) and loads an
-        ACL from it when the path exists. The path is resolved relative to the
-        directory of the config's source file when known (``config.source_path``),
-        otherwise relative to the current working directory.
+        ACL from it when the path exists. Relative values use the configuration's
+        project root (§9.2.2).
 
         ``acl.root`` is a directory by spec convention (``acl/{scope}_acl.yaml``,
         PROTOCOL_SPEC §3.1). When the resolved path is a directory, the
@@ -1801,15 +1800,10 @@ class ACL:
         root = config.get("acl.root", Config.get_default("acl.root"))
         if root is None:
             return None
+        if root == "":
+            root = Config.get_default("acl.root")
 
-        root_path = Path(str(root))
-        if not root_path.is_absolute():
-            source_path = config.source_path
-            if source_path is not None:
-                base = Path(source_path).resolve().parent
-            else:
-                base = Path.cwd()
-            root_path = base / root_path
+        root_path = Path(config.resolve_path(str(root)))
 
         if not root_path.exists():
             # Missing path -> no enforcement. Do NOT synthesize an ACL.

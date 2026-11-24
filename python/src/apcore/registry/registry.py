@@ -558,21 +558,12 @@ class Registry:
         # The precedence is D-73's, and the same one `extensions.root` follows
         # above: an API argument beats `Config`.
         #
-        # A relative value is used AS DECLARED — resolved against the process
-        # working directory, exactly as `extensions.root` two blocks up is.
-        # PROTOCOL_SPEC §9.2.1 states that the resolution base for path-typed
-        # keys is deliberately unspecified and tracked in #113: `acl.root`
-        # resolves against the config file's directory, `schema.root` against
-        # the CWD. This key is not the place to settle that — but it does have
-        # to pick, and it picks the base its SIBLING uses. `id_map.overrides`
-        # and `extensions.root` are two halves of one discovery configuration
-        # and are always read together, so a split base between them would be
-        # worse than either base. Recorded as an input to #113, not an answer.
+        # Config paths share the project root (§9.2.2).
         resolved_id_map = id_map_path
         if resolved_id_map is None and config is not None:
             from_config = config.get("id_map.overrides")
             if isinstance(from_config, str) and from_config.strip():
-                resolved_id_map = from_config
+                resolved_id_map = config.resolve_path(from_config)
         if resolved_id_map is not None:
             self._id_map = load_id_map(Path(resolved_id_map))
 
@@ -603,12 +594,12 @@ class Registry:
             entries: list[dict[str, Any]] = []
             for item in declared:
                 if isinstance(item, str) and item.strip():
-                    entries.append({"root": item, "namespace": Path(item).name})
+                    entries.append({"root": config.resolve_path(item), "namespace": Path(item).name})
                 elif isinstance(item, dict) and item.get("root"):
                     root_value = item["root"]
                     entries.append(
                         {
-                            "root": root_value,
+                            "root": config.resolve_path(str(root_value)),
                             "namespace": item.get("namespace") or Path(str(root_value)).name,
                         }
                     )
@@ -622,10 +613,8 @@ class Registry:
                     len(declared),
                 )
 
-        ext_root = config.get("extensions.root")
-        if ext_root:
-            return [{"root": ext_root}]
-        return [{"root": Config.get_default("extensions.root")}]
+        ext_root = config.get("extensions.root") or Config.get_default("extensions.root")
+        return [{"root": config.resolve_path(ext_root)}]
 
     # ----- Custom Discoverer / Validator -----
 

@@ -2062,6 +2062,37 @@ impl Executor {
         &self.strategy
     }
 
+    /// List registered module IDs with an approval declaration the built-in gate would skip.
+    ///
+    /// Use after registration to report the default strategy's approval posture.
+    /// Includes hidden modules and evaluates policy without a call site. Caller-specific
+    /// ACL requirements are evaluated during each invocation.
+    #[must_use]
+    pub fn ungated_approval_modules(&self) -> Vec<String> {
+        let enforcing_gate = (self.approval_handler.is_some()
+            || self.policy.as_ref().is_some_and(|policy| policy.strict))
+            && self
+                .strategy
+                .steps()
+                .iter()
+                .any(|step| step.builtin_gate() == Some(BuiltinGate::Approval));
+
+        self.registry
+            .module_ids_full(true)
+            .into_iter()
+            .filter(|id| {
+                let Some(annotations) = self.registry.governance_annotations(id) else {
+                    return false;
+                };
+                annotations.requires_approval
+                    && !(enforcing_gate
+                        && self.policy.as_ref().is_none_or(|policy| {
+                            policy.resolve(id, Some(&annotations)).needs_approval
+                        }))
+            })
+            .collect()
+    }
+
     /// Return what is actually gating this executor (PROTOCOL_SPEC 6.6.5).
     ///
     /// A **pure read**: it never enforces, warns, panics or mutates. What to do
@@ -2114,21 +2145,9 @@ impl Executor {
         // is gated by the pipeline and was reported here as ungated.
         let all_control_modules_require_approval = !control_ids.is_empty()
             && control_ids.iter().all(|id| {
-                crate::module::ModuleAnnotations::governance_union(
-                    self.registry
-                        .get(id)
-                        .ok()
-                        .flatten()
-                        .map(|m| m.annotations())
-                        .as_ref(),
-                    self.registry
-                        .get_definition(id)
-                        .ok()
-                        .flatten()
-                        .and_then(|d| d.annotations)
-                        .as_ref(),
-                )
-                .is_some_and(|a| a.requires_approval)
+                self.registry
+                    .governance_annotations(id)
+                    .is_some_and(|a| a.requires_approval)
             });
 
         // PROTOCOL_SPEC 6.6.5.5 (D-129) requires these to report what the

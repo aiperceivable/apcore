@@ -37,7 +37,7 @@ def _clear_ns_registry_except_builtins() -> None:
     from apcore.config import _GLOBAL_ENV_MAP, _GLOBAL_ENV_MAP_CLAIMED
 
     with _GLOBAL_NS_REGISTRY_LOCK:
-        builtin_names = {"observability", "sys_modules", "obs"}
+        builtin_names = {"observability", "sys_modules", "obs", "apcore-python"}
         keys_to_remove = [k for k in _GLOBAL_NS_REGISTRY if k not in builtin_names]
         for k in keys_to_remove:
             del _GLOBAL_NS_REGISTRY[k]

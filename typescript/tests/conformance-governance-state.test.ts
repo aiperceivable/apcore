@@ -46,6 +46,24 @@ const fixture: { test_cases: Case[] } = JSON.parse(
   fs.readFileSync(path.join(findFixturesRoot(), 'governance_state.json'), 'utf-8'),
 );
 
+const startupReportFixture: {
+  modules: {
+    module_id: string;
+    live_approval: boolean;
+    declared_approval: boolean;
+    discoverable: boolean;
+  }[];
+  test_cases: {
+    id: string;
+    strategy: string;
+    handler_attached: boolean;
+    policy: Record<string, unknown>;
+    expected: { ungated_modules: string[] };
+  }[];
+} = JSON.parse(
+  fs.readFileSync(path.join(findFixturesRoot(), 'approval_startup_report.json'), 'utf-8'),
+);
+
 /** 6.6.5.3 — the accessor reports a handler is attached; it must never consult it. */
 const neverCalledHandler = {
   requestApproval: () => {
@@ -155,4 +173,38 @@ describe('conformance: governance_state.json', () => {
     expect(before.aclConfigured).toBe(false);
     expect(after.aclConfigured).toBe(true);
   });
+});
+
+describe('conformance: approval_startup_report.json', () => {
+  for (const testCase of startupReportFixture.test_cases) {
+    it(testCase.id, async () => {
+      const registry = new Registry();
+      for (const entry of startupReportFixture.modules) {
+        await registry.register(
+          entry.module_id,
+          {
+            description: 'conformance approval module',
+            inputSchema: { type: 'object' },
+            outputSchema: { type: 'object' },
+            annotations: { requiresApproval: entry.live_approval },
+            execute: () => {
+              throw new Error('approval startup report must not execute the module');
+            },
+          },
+          null,
+          {
+            annotations: {
+              requires_approval: entry.declared_approval,
+              discoverable: entry.discoverable,
+            },
+          },
+        );
+      }
+      const executor = new Executor({ registry, strategy: testCase.strategy });
+      if (testCase.handler_attached) executor.setApprovalHandler(neverCalledHandler);
+      executor.setPolicy(ExecutionPolicy.fromObject(testCase.policy));
+
+      expect(executor.ungatedApprovalModules()).toEqual(testCase.expected.ungated_modules);
+    });
+  }
 });

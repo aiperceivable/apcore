@@ -288,7 +288,7 @@ The annotation lets AI agents discover streamable modules and lets schema export
 
 ### Errors
 - An error raised by the module mid-stream ends the stream and is propagated to the consumer.
-- A non-object chunk (array, string, number, boolean, null) is rejected before it is delivered, with `InvalidInputError` (`GENERAL_INVALID_INPUT`) whose `details.code` is `STREAM_CHUNK_NOT_OBJECT`, plus `details.chunk_index` and `details.actual_type` (the JSON type name) (D-58).
+- Native stream chunks use the same JSON object representation as [module return values](./module-interface.md#return-value-constraints). The executor projects each chunk before merging or delivering it. A non-object chunk (array, string, number, boolean, null) raises `InvalidInputError` (`GENERAL_INVALID_INPUT`) with `details.code` set to `STREAM_CHUNK_NOT_OBJECT`, plus `details.chunk_index` and `details.actual_type` (the JSON type name) (D-58).
 
 ### Returns
 - `AsyncIterator[dict]` / `AsyncGenerator<Record<string, unknown>>` / `ChunkStream` (a `Stream` of `Result<Value, ModuleError>`) — a lazy sequence of partial output objects.

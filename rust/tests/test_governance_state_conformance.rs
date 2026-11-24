@@ -207,6 +207,81 @@ fn conformance_governance_state() {
 }
 
 #[test]
+fn conformance_approval_startup_report() {
+    struct Dummy(bool);
+    #[async_trait::async_trait]
+    impl Module for Dummy {
+        fn description(&self) -> &'static str {
+            "conformance approval module"
+        }
+        fn input_schema(&self) -> Value {
+            json!({"type": "object"})
+        }
+        fn output_schema(&self) -> Value {
+            json!({"type": "object"})
+        }
+        fn annotations(&self) -> ModuleAnnotations {
+            let mut annotations = ModuleAnnotations::default();
+            annotations.requires_approval = self.0;
+            annotations
+        }
+        async fn execute(
+            &self,
+            _inputs: Value,
+            _ctx: &Context<Value>,
+        ) -> Result<Value, apcore::errors::ModuleError> {
+            panic!("approval startup report must not execute the module");
+        }
+    }
+
+    let fixture = load_fixture("approval_startup_report");
+    let registry = Arc::new(Registry::new());
+    for entry in fixture["modules"].as_array().unwrap() {
+        let id = entry["module_id"].as_str().unwrap();
+        let descriptor: ModuleDescriptor = serde_json::from_value(json!({
+            "module_id": id,
+            "description": "conformance approval module",
+            "input_schema": {"type": "object"},
+            "output_schema": {"type": "object"},
+            "annotations": {
+                "requires_approval": entry["declared_approval"],
+                "discoverable": entry["discoverable"]
+            }
+        }))
+        .unwrap();
+        registry
+            .register_internal(
+                id,
+                Box::new(Dummy(entry["live_approval"].as_bool().unwrap())),
+                descriptor,
+            )
+            .unwrap();
+    }
+
+    for case in fixture["test_cases"].as_array().unwrap() {
+        let mut executor = Executor::with_strategy_name(
+            Arc::clone(&registry),
+            Arc::new(Config::default()),
+            case["strategy"].as_str().unwrap(),
+        )
+        .unwrap();
+        if case["handler_attached"].as_bool().unwrap() {
+            executor.set_approval_handler(Box::new(NeverCalledHandler));
+        }
+        executor.set_policy(Some(
+            ExecutionPolicy::from_value(case["policy"].clone()).unwrap(),
+        ));
+
+        assert_eq!(
+            json!(executor.ungated_approval_modules()),
+            case["expected"]["ungated_modules"],
+            "{}",
+            case["id"]
+        );
+    }
+}
+
+#[test]
 fn driver_contract_purity() {
     // Two reads are equal and the handler is never invoked (it panics if it is).
     let setup = json!({

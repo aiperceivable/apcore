@@ -3,10 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import time
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+from threading import Event, current_thread
 from typing import Any
 
 import pytest
 
+from apcore.builtin_steps import build_standard_strategy
 from apcore.config import Config
 from apcore.context import Context
 from apcore.errors import ModuleTimeoutError
@@ -151,6 +156,150 @@ class TestCallSyncWithAsyncModule:
             assert result == {"greeting": "Hello, Eve"}
         finally:
             loop.close()
+
+    def test_concurrent_callers_cannot_both_start_the_cached_loop(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        first_at_run = Event()
+        second_executing = Event()
+        release_second = Event()
+
+        class CoordinatedModule(AsyncModule):
+            async def execute(self, inputs: dict[str, Any], context: Context) -> dict[str, Any]:
+                if inputs.get("name") == "second":
+                    second_executing.set()
+                    assert release_second.wait(5)
+                return await super().execute(inputs, context)
+
+        with _make_executor(module=CoordinatedModule()) as ex:
+            ex.call("test.module", {})
+            loop = ex._sync_loop
+            assert loop is not None
+            run = loop.run_until_complete
+
+            def pause_first(coro: Any) -> Any:
+                if current_thread().name.startswith("first-caller"):
+                    first_at_run.set()
+                    assert second_executing.wait(5)
+                try:
+                    return run(coro)
+                except RuntimeError:
+                    coro.close()
+                    raise
+
+            monkeypatch.setattr(loop, "run_until_complete", pause_first)
+            with (
+                ThreadPoolExecutor(1, thread_name_prefix="first-caller") as first,
+                ThreadPoolExecutor(1) as second,
+            ):
+                first_result = first.submit(ex.call, "test.module", {"name": "first"})
+                try:
+                    assert first_at_run.wait(5)
+                    second_result = second.submit(ex.call, "test.module", {"name": "second"})
+                    assert first_result.result(timeout=5) == {"greeting": "Hello, first"}
+                finally:
+                    release_second.set()
+                assert second_result.result(timeout=5) == {"greeting": "Hello, second"}
+
+    def test_shared_executor_handles_repeated_sync_calls_from_worker_threads(self) -> None:
+        with _make_executor(module=AsyncModule()) as ex, ThreadPoolExecutor(8) as workers:
+            calls = [workers.submit(ex.call, "test.module", {"name": str(index)}) for index in range(64)]
+            assert [call.result(timeout=5) for call in calls] == [
+                {"greeting": f"Hello, {index}"} for index in range(len(calls))
+            ]
+
+    @pytest.mark.parametrize("global_timeout", [0, 10])
+    async def test_bridge_does_not_truncate_the_pipeline_budget(self, global_timeout: int) -> None:
+        class LongBudgetModule(AsyncModule):
+            resources = {"timeout": 2000}
+
+            async def execute(self, inputs: dict[str, Any], context: Context) -> dict[str, Any]:
+                await asyncio.sleep(1.05)
+                return await super().execute(inputs, context)
+
+        registry = Registry()
+        registry.register("test.module", LongBudgetModule())
+        config = Config(data={"executor": {"default_timeout": 10, "global_timeout": global_timeout}})
+        with Executor(registry, config=config) as ex:
+            context = Context.create(global_deadline=time.time() + 3) if global_timeout else None
+            wait = ex._sync_bridge_wait(context, None)
+            assert wait is None or wait * 1000 >= LongBudgetModule.resources["timeout"]
+            assert ex.call("test.module", {"name": "bridge"}, context) == {"greeting": "Hello, bridge"}
+
+    @pytest.mark.parametrize("trace", [False, True])
+    async def test_bridge_uses_the_selected_strategy_budget(self, trace: bool) -> None:
+        class LongBudgetModule(AsyncModule):
+            resources = {"timeout": 2000}
+
+            async def execute(self, inputs: dict[str, Any], context: Context) -> dict[str, Any]:
+                await asyncio.sleep(1.05)
+                return await super().execute(inputs, context)
+
+        registry = Registry()
+        registry.register("test.module", LongBudgetModule())
+        executor_config = Config(data={"executor": {"global_timeout": 10}})
+        strategy_config = Config(data={"executor": {"global_timeout": 3000}})
+        strategy = build_standard_strategy(registry=registry, config=strategy_config)
+        with Executor(registry, config=executor_config, strategy=None if trace else strategy) as ex:
+            if trace:
+                result, _ = ex.call_with_trace("test.module", {}, strategy=strategy)
+            else:
+                result = ex.call("test.module", {})
+            assert result == {"greeting": "Hello, World"}
+
+    async def test_per_call_bridge_wait_overrides_constructor(self) -> None:
+        class BrieflyWaitingModule(AsyncModule):
+            async def execute(self, inputs: dict[str, Any], context: Context) -> dict[str, Any]:
+                await asyncio.sleep(0.05)
+                return await super().execute(inputs, context)
+
+        registry = Registry()
+        registry.register("test.module", BrieflyWaitingModule())
+        with Executor(registry, sync_bridge_timeout_ms=5) as ex:
+            with pytest.raises(ModuleTimeoutError):
+                ex.call("test.module", {})
+            assert ex.call("test.module", {}, timeout_ms=600_000) == {"greeting": "Hello, World"}
+            assert ex.call("test.module", {}, timeout_ms=0) == {"greeting": "Hello, World"}
+
+    @pytest.mark.parametrize("source", ["yaml", "environment", "mapping"])
+    async def test_bridge_wait_can_be_configured_and_overridden(
+        self, source: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        class BrieflyWaitingModule(AsyncModule):
+            async def execute(self, inputs: dict[str, Any], context: Context) -> dict[str, Any]:
+                await asyncio.sleep(0.05)
+                return await super().execute(inputs, context)
+
+        if source == "mapping":
+            config = Config(data={"apcore-python": {"executor": {"sync_bridge_timeout": 5}}})
+        else:
+            timeout = 1000 if source == "environment" else 5
+            path = tmp_path / "apcore.yaml"
+            path.write_text(
+                f"apcore: {{}}\n_config: {{strict: true}}\n"
+                f"apcore-python:\n  executor: {{sync_bridge_timeout: {timeout}}}\n",
+                encoding="utf-8",
+            )
+            if source == "environment":
+                monkeypatch.setenv("APCORE_PYTHON_EXECUTOR_SYNC__BRIDGE__TIMEOUT", "5")
+            config = Config.load(str(path))
+
+        registry = Registry()
+        registry.register("test.module", BrieflyWaitingModule())
+        with Executor(registry, config=config) as ex:
+            with pytest.raises(ModuleTimeoutError) as caught:
+                ex.call("test.module", {})
+            assert caught.value.details["timeout_ms"] == 5
+            assert ex.call("test.module", {}, timeout_ms=600_000) == {"greeting": "Hello, World"}
+        with Executor(registry, config=config, sync_bridge_timeout_ms=0) as ex:
+            assert ex.call("test.module", {}) == {"greeting": "Hello, World"}
+
+    async def test_unbounded_constructor_bridge_wait_preserves_pipeline_timeout(self) -> None:
+        registry = Registry()
+        registry.register("test.module", SlowAsyncModule())
+        config = Config(data={"executor": {"default_timeout": 10}})
+        with Executor(registry, config=config, sync_bridge_timeout_ms=0) as ex:
+            with pytest.raises(ModuleTimeoutError) as raised:
+                ex.call("test.module", {})
+            assert raised.value.details["timeout_ms"] == 10
 
 
 # === Async middleware ===

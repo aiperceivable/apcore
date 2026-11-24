@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Expose `APCore(fail_on_error=True)` and `sys_modules_errors` for system-module startup, and `Executor.ungated_approval_modules()` for approval readiness. ([#230](https://github.com/aiperceivable/apcore/issues/230), [#231](https://github.com/aiperceivable/apcore/issues/231))
+
+### Changed
+
+- Resolve relative filesystem configuration values against `Config.project_root`. The root stays fixed across configuration reloads and working-directory changes. `Config.resolve_path()` exposes the same resolution to consumers. ([#113](https://github.com/aiperceivable/apcore/issues/113))
+
+### Fixed
+
+- Send governance events through the enabled APCore event bus and normalize typed module results consistently across calls and streams. ([#125](https://github.com/aiperceivable/apcore/issues/125), [#126](https://github.com/aiperceivable/apcore/issues/126))
+- Support I/O-backed task stores in synchronous task-manager calls made outside a running event loop. ([#127](https://github.com/aiperceivable/apcore/issues/127))
+- Concurrent sync executor calls reserve the cached event loop atomically and use independent bridge loops when it is busy. ([#232](https://github.com/aiperceivable/apcore/issues/232))
+- Derive the sync thread-bridge wait from the call deadline and support explicit per-call, executor, and Python Config Bus overrides. The pipeline still enforces its own timeouts. ([#229](https://github.com/aiperceivable/apcore/issues/229))
+- Ship `py.typed` with the wheel so downstream type checkers can use APCore's inline annotations. ([#233](https://github.com/aiperceivable/apcore/issues/233))
+
 
 ## [0.33.0] - 2026-11-18
 

@@ -620,6 +620,18 @@ The discovery entry point differs by SDK: Python exposes the search as the modul
     Config::discover()?;                                          // auto-discovery
     ```
 
+### Project Root and Relative Paths
+
+Each `Config` captures an absolute project root at load or construction. An explicit path or a discovered project-local configuration uses the directory of the selected file entry. Discovery of a user-level configuration, loading defaults, and construction from a mapping use the working directory at that time. A configuration reload uses the same root. [Protocol §9.2.2](../spec/protocol-spec.md#922-path-resolution-base)
+
+Relative filesystem paths supplied by the `Config` use that root. This includes `acl.root`, `schema.root`, `extensions.root`, both forms of `extensions.roots` entries, `bindings.dir`, `id_map.overrides`, and `sys_modules.control.overrides_path`. Absolute paths retain their supplied spelling. `Config.get` supplies the merged value and the path resolver supplies its filesystem location.
+
+| SDK | Project root accessor | Resolve a configuration path value |
+|---|---|---|
+| Python | `config.project_root` | `config.resolve_path(value)` |
+| TypeScript | `config.projectRoot` | `config.resolvePath(value)` |
+| Rust | `config.project_root()` | `config.resolve_path(value)` |
+
 ## YAML File Format
 
 ### Legacy Mode

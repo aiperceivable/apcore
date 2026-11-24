@@ -1239,6 +1239,9 @@ impl TaskStore for FlakyStore {
         self.outage()?;
         self.inner.list_expired(before).await
     }
+    fn supports_inline_sync(&self) -> bool {
+        self.inner.supports_inline_sync()
+    }
     fn store_type_name(&self) -> &'static str {
         "FlakyStore"
     }

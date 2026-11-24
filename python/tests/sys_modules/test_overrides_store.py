@@ -411,15 +411,22 @@ class TestRegisterSysModulesWithStore:
         loaded = store.load()
         assert loaded["toggle.system.health.module"] is False
 
-    def test_overrides_path_kwarg_back_compat_constructs_file_store(self, tmp_path: Path) -> None:
-        """The legacy ``overrides_path`` kwarg still loads + persists via FileOverridesStore."""
-        path = tmp_path / "overrides.yaml"
+    def test_configured_overrides_path_loads_and_persists_under_project_root(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+        path = project_dir / "overrides.yaml"
         # Pre-seed: existing override applied on startup.
         path.write_text(yaml.safe_dump({"executor.default_timeout": 7777}), encoding="utf-8")
+        decoy = tmp_path / path.name
+        decoy.write_text(yaml.safe_dump({"executor.default_timeout": 6666}), encoding="utf-8")
 
+        monkeypatch.chdir(project_dir)
         config = Config.from_defaults()
         _enable_sys_modules(config)
-        config.set("sys_modules.control.overrides_path", str(path))
+        config.set("sys_modules.control.overrides_path", "./overrides.yaml")
+        monkeypatch.chdir(tmp_path)
         registry = Registry()
         executor = Executor(registry=registry)
 
@@ -441,6 +448,7 @@ class TestRegisterSysModulesWithStore:
         with path.open() as f:
             written = yaml.safe_load(f)
         assert written["executor.default_timeout"] == 8888
+        assert yaml.safe_load(decoy.read_text(encoding="utf-8"))["executor.default_timeout"] == 6666
 
 
 # ---------------------------------------------------------------------------

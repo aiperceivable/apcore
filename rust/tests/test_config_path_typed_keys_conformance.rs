@@ -345,9 +345,19 @@ fn conformance_config_path_typed_keys() {
 
                 let registry = Registry::new();
                 registry.set_extension_roots_from_config(&config);
+                let expected_roots: Vec<String> = declared_roots
+                    .iter()
+                    .map(|path| {
+                        config
+                            .project_root()
+                            .join(path)
+                            .to_string_lossy()
+                            .into_owned()
+                    })
+                    .collect();
                 assert_eq!(
                     registry.extension_roots(),
-                    declared_roots,
+                    expected_roots,
                     "[{id}] the resolved roots must keep both element forms"
                 );
 

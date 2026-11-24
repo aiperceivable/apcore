@@ -9,12 +9,14 @@ import logging
 import time
 import uuid
 import warnings
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Protocol, runtime_checkable
+from functools import partial
+from typing import Any, Protocol, TypeVar, cast, runtime_checkable
 
 from apcore.context import Context
-from apcore.errors import ErrorCodes, ModuleError, TaskLimitExceededError
+from apcore.errors import ErrorCodes, InvalidInputError, ModuleError, TaskLimitExceededError
 
 __all__ = [
     "TaskStatus",
@@ -206,6 +208,9 @@ class InMemoryTaskStore:
         self._data: dict[str, TaskInfo] = {}
 
     async def get(self, task_id: str) -> TaskInfo | None:
+        return self._get(task_id)
+
+    def _get(self, task_id: str) -> TaskInfo | None:
         return self._data.get(task_id)
 
     async def save(self, info: TaskInfo) -> None:
@@ -228,10 +233,13 @@ class InMemoryTaskStore:
     async def delete(self, task_id: str) -> None:
         self._data.pop(task_id, None)
 
-    async def list(self, status: TaskStatus | None = None) -> list[TaskInfo]:
+    def _list(self, status: TaskStatus | None) -> list[TaskInfo]:
         if status is None:
             return list(self._data.values())
         return [t for t in self._data.values() if t.status == status]
+
+    async def list(self, status: TaskStatus | None = None) -> list[TaskInfo]:
+        return self._list(status)
 
     async def list_expired(self, before_timestamp: float) -> list[TaskInfo]:
         """Return terminal-state tasks whose ``completed_at`` precedes
@@ -376,6 +384,40 @@ def _completed_result(task_id: str, info: TaskInfo | None) -> Any:
     return info.result
 
 
+_T = TypeVar("_T")
+
+
+def _run_store_sync(operation: Callable[[], Awaitable[_T]], async_method: str) -> _T:
+    """Drive custom store operations outside a caller's running event loop."""
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+
+    if loop is None:
+
+        async def run() -> _T:
+            result = operation()
+            return await result if inspect.isawaitable(result) else cast(_T, result)
+
+        # A custom factory keeps the temporary loop out of the thread's
+        # event-loop policy. The host might have set a loop that is idle.
+        with asyncio.Runner(loop_factory=asyncio.new_event_loop) as runner:
+            return runner.run(run())
+
+    # Legacy synchronous methods may return a value immediately. Never
+    # advance a custom coroutine and then interrupt its async cleanup.
+    if not inspect.iscoroutinefunction(operation):
+        result = operation()
+        if not inspect.isawaitable(result):
+            return cast(_T, result)
+        if inspect.iscoroutine(result) and inspect.getcoroutinestate(result) == inspect.CORO_CREATED:
+            result.close()
+
+    guidance = f"Await {async_method}() for asynchronous TaskStore operations inside an event loop."
+    raise InvalidInputError(guidance, ai_guidance=guidance)
+
+
 class AsyncTaskManager:
     """Manages background execution of modules via asyncio tasks.
 
@@ -502,33 +544,22 @@ class AsyncTaskManager:
 
         The returned object is a shallow copy (A-D-AT-06): callers MUST
         treat it as a read-only snapshot. Mutating the copy never affects
-        the live store. The store's ``get`` is read synchronously for the
-        in-memory default; async-backed stores SHOULD await
-        :meth:`get_status_async` instead.
+        the live store. A store operation can await I/O when called from
+        synchronous code. Inside a running event loop, use :meth:`get_status_async`
+        for a custom async store. This method raises :class:`InvalidInputError`
+        in that case. Use the async variant on the owning loop if the store is
+        bound to one.
         """
-        # For the default in-memory store the coroutine completes
-        # synchronously on the first send; we drive it directly to keep
-        # the legacy sync surface working. Custom async-only stores
-        # should use ``get_status_async``.
-        get = self._store.get(task_id)
-        if inspect.isawaitable(get):
-            try:
-                # Pump the coroutine without an event loop. This works for
-                # the bundled InMemoryTaskStore (whose body is pure CPU)
-                # and for any custom store whose ``get`` returns without
-                # actually awaiting external I/O. Stores that perform
-                # real awaits MUST call ``get_status_async`` instead.
-                try:
-                    get.send(None)  # type: ignore[union-attr]
-                except StopIteration as stop:  # noqa: PERF203 — coroutine return value
-                    return _snapshot(stop.value)
-                raise RuntimeError("TaskStore.get() suspended; call get_status_async() for I/O-backed stores")
-            finally:
-                get.close()  # type: ignore[union-attr]
-        return _snapshot(get)
+        return _snapshot(self._get_store_sync(task_id, "get_status_async"))
+
+    def _get_store_sync(self, task_id: str, async_method: str) -> TaskInfo | None:
+        store = self._store
+        if isinstance(store, InMemoryTaskStore) and getattr(store.get, "__func__", None) is InMemoryTaskStore.get:
+            return store._get(task_id)
+        return _run_store_sync(partial(store.get, task_id), async_method)
 
     async def get_status_async(self, task_id: str) -> TaskInfo | None:
-        """Async variant of :meth:`get_status` for I/O-backed stores (D-17)."""
+        """Read a task snapshot on the caller's event loop (D-17)."""
         return _snapshot(await self._store_get(task_id))
 
     def get_result(self, task_id: str) -> Any:
@@ -537,8 +568,10 @@ class AsyncTaskManager:
         Raises:
             KeyError: If the task_id is not found.
             RuntimeError: If the task is not in COMPLETED status.
+            InvalidInputError: If a custom asynchronous store is called inside a running event loop.
+                In that case await :meth:`get_result_async`.
         """
-        return _completed_result(task_id, self.get_status(task_id))
+        return _completed_result(task_id, self._get_store_sync(task_id, "get_result_async"))
 
     async def get_result_async(self, task_id: str) -> Any:
         """Async variant of :meth:`get_result` for I/O-backed stores (D-17).
@@ -641,23 +674,19 @@ class AsyncTaskManager:
 
         Each entry is a shallow copy of the live :class:`TaskInfo` — see
         :meth:`get_status` for the mutation-safety contract (A-D-AT-06).
-        I/O-backed stores SHOULD use :meth:`list_tasks_async` instead.
+        Inside a running event loop, use :meth:`list_tasks_async` for a custom
+        asynchronous store. This method raises :class:`InvalidInputError` in
+        that case.
         """
-        result = self._store.list(status)
-        if inspect.isawaitable(result):
-            try:
-                try:
-                    result.send(None)  # type: ignore[union-attr]
-                except StopIteration as stop:  # noqa: PERF203
-                    items: list[TaskInfo] = list(stop.value or [])
-                    return [info for info in (_snapshot(it) for it in items) if info is not None]
-                raise RuntimeError("TaskStore.list() suspended; call list_tasks_async() for I/O-backed stores")
-            finally:
-                result.close()  # type: ignore[union-attr]
-        return [info for info in (_snapshot(it) for it in result) if info is not None]
+        store = self._store
+        if isinstance(store, InMemoryTaskStore) and getattr(store.list, "__func__", None) is InMemoryTaskStore.list:
+            items = store._list(status)
+        else:
+            items = _run_store_sync(partial(store.list, status), "list_tasks_async")
+        return [info for info in (_snapshot(it) for it in items or []) if info is not None]
 
     async def list_tasks_async(self, status: TaskStatus | None = None) -> list[TaskInfo]:
-        """Async variant of :meth:`list_tasks` for I/O-backed stores (D-17)."""
+        """List task snapshots on the caller's event loop (D-17)."""
         items = await self._store_list(status)
         return [info for info in (_snapshot(it) for it in items) if info is not None]
 

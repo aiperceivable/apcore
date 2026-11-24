@@ -74,6 +74,8 @@ describe('multi_root_discovery.json', () => {
       const root = tree(testCase.input.extensions);
       process.chdir(root);
       const config = Config.load(path.join(root, 'apcore.yaml'));
+      const elsewhere = fs.mkdtempSync(path.join(root, 'other-'));
+      process.chdir(elsewhere);
       const registry = new Registry({ config });
 
       if (testCase.expected.raises === true) {

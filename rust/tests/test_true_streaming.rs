@@ -310,13 +310,15 @@ async fn phase3_validation_failure_emits_post_validation_event() {
         })
         .expect("events enabled");
 
-    let mut s = apcore
-        .executor()
-        .stream("bad.stream", json!({}), None, None);
-    while s.next().await.is_some() {}
+    let mut s = apcore.stream("bad.stream", json!({}), None, None);
+    let mut chunks = 0;
+    while let Some(chunk) = s.next().await {
+        chunk.expect("the chunk should still reach the caller");
+        chunks += 1;
+    }
+    assert_eq!(chunks, 2);
 
-    // emit() dispatches on a spawned task; give it a moment to drain.
-    sleep(Duration::from_millis(100)).await;
+    apcore.events().unwrap().flush_default().await.unwrap();
 
     let events = captured.lock();
     assert_eq!(

@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Expose `APCore({ failOnError: true })` and `sysModulesErrors` for system-module startup, and `Executor.ungatedApprovalModules()` for approval readiness. ([#230](https://github.com/aiperceivable/apcore/issues/230), [#231](https://github.com/aiperceivable/apcore/issues/231))
+
+### Changed
+
+- Resolve relative configuration paths against the `Config` project root across all filesystem consumers. The root stays stable across working-directory changes and reloads. ([#113](https://github.com/aiperceivable/apcore/issues/113))
+
+### Fixed
+
+- Send governance events through the enabled APCore event bus and normalize typed module results consistently across calls and streams. ([#125](https://github.com/aiperceivable/apcore/issues/125), [#126](https://github.com/aiperceivable/apcore/issues/126))
+
 
 ## [0.33.0] - 2026-11-18
 

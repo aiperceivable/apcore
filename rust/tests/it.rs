@@ -130,6 +130,8 @@ mod test_approval_decision_event;
 mod test_approval_gate_decides_from_live_module;
 #[path = "test_canonicalize_name.rs"]
 mod test_canonicalize_name;
+#[path = "test_module_output_normalization.rs"]
+mod test_module_output_normalization;
 
 #[path = "test_approval_request_caller_id_action.rs"]
 mod test_approval_request_caller_id_action;

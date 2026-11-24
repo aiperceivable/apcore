@@ -6,11 +6,19 @@
 //! APIs that neither of those cover: plain construction, register + call, error
 //! propagation for unknown modules, and `list_modules` filtering.
 
+use std::sync::{Arc, Mutex};
+
+use apcore::acl::ACL;
+use apcore::approval::AutoApproveHandler;
 use apcore::config::Config;
 use apcore::context::Context;
 use apcore::errors::{ErrorCode, ModuleError};
+use apcore::events::emitter::EventEmitter;
+use apcore::executor::Executor;
 use apcore::module::Module;
-use apcore::APCore;
+use apcore::policy::{ExecutionPolicy, PolicyRule};
+use apcore::registry::Registry;
+use apcore::{APCore, APCoreOptions};
 use async_trait::async_trait;
 use serde_json::{json, Value};
 
@@ -153,4 +161,136 @@ async fn test_apcore_disable_enable_signature_takes_reason() {
     // Returned payload should be an object (concrete shape is set by
     // sys_modules.control.toggle_feature; we just verify it's structured).
     assert!(res.is_object(), "enable should return an object payload");
+}
+
+fn event_config(enabled: bool) -> Config {
+    let mut config = Config::default();
+    config.set("sys_modules.enabled", json!(true));
+    config.set("sys_modules.events.enabled", json!(enabled));
+    config
+}
+
+#[tokio::test]
+async fn test_apcore_receives_auto_created_executor_governance_events() {
+    let dir = tempfile::tempdir().expect("ACL directory");
+    let acl_file = dir.path().join("global_acl.yaml");
+    std::fs::write(
+        &acl_file,
+        "default_effect: deny\nrules:\n  - callers: ['*']\n    targets: ['demo.approval']\n    effect: allow\naudit:\n  enabled: false\n",
+    )
+    .expect("ACL configuration");
+    let mut config = event_config(true);
+    config.set("acl.root", json!(acl_file));
+    let policy_rule = PolicyRule::new("demo.approval")
+        .unwrap()
+        .with_requires_approval(true);
+    let mut client = APCore::try_with_options(APCoreOptions {
+        config: Some(config),
+        approval_handler: Some(Box::new(AutoApproveHandler)),
+        policy: Some(ExecutionPolicy::new(vec![policy_rule])),
+        ..Default::default()
+    })
+    .unwrap();
+    client.register("demo.approval", Box::new(Echo)).unwrap();
+    client.register("demo.denied", Box::new(Echo)).unwrap();
+
+    let received = Arc::new(Mutex::new(Vec::new()));
+    for event_type in [
+        "apcore.policy.override",
+        "apcore.approval.decision",
+        "apcore.acl.denied",
+    ] {
+        let subscriber = Arc::clone(&received);
+        client
+            .on(event_type, move |event| {
+                subscriber
+                    .lock()
+                    .unwrap()
+                    .push((event.event_type.clone(), event.module_id.clone().unwrap()));
+            })
+            .unwrap();
+    }
+
+    let result = client
+        .call("demo.approval", json!({}), None, None)
+        .await
+        .unwrap();
+    assert_eq!(result, json!({"echoed": {}}));
+    let error = client
+        .call("demo.denied", json!({}), None, None)
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, ErrorCode::ACLDenied);
+    client.events().unwrap().flush_default().await.unwrap();
+    let mut events = received.lock().unwrap();
+    events.sort();
+    assert_eq!(
+        *events,
+        [
+            ("apcore.acl.denied".into(), "demo.denied".into()),
+            ("apcore.approval.decision".into(), "demo.approval".into()),
+            ("apcore.policy.override".into(), "demo.approval".into()),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn test_apcore_preserves_supplied_executor_emitter() {
+    let config = event_config(true);
+    let emitter = Arc::new(EventEmitter::new());
+    let mut executor = Executor::new(Arc::new(Registry::default()), Arc::new(config.clone()));
+    executor.set_acl(ACL::new(Vec::new(), "deny", None));
+    executor.set_event_emitter(Some(Arc::clone(&emitter)));
+    let mut client = APCore::with_options(None, Some(executor), Some(config), None);
+    client.register("demo.denied", Box::new(Echo)).unwrap();
+
+    let received = Arc::new(Mutex::new(Vec::new()));
+    let subscriber = Arc::clone(&received);
+    client
+        .on("apcore.acl.denied", move |event| {
+            subscriber.lock().unwrap().push(event.data.clone());
+        })
+        .unwrap();
+
+    let error = client
+        .call("demo.denied", json!({}), None, None)
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, ErrorCode::ACLDenied);
+    assert!(Arc::ptr_eq(
+        client.executor().event_emitter.as_ref().unwrap(),
+        &emitter
+    ));
+    client.events().unwrap().flush_default().await.unwrap();
+    assert!(received.lock().unwrap().is_empty());
+}
+
+#[test]
+fn test_apcore_disables_event_bus_with_system_modules_still_enabled() {
+    let mut client = APCore::with_config(event_config(false));
+    assert!(client.registry().has("system.health.summary"));
+    assert!(client.events().is_none());
+    assert!(client.executor().event_emitter.is_none());
+    let error = client.on("apcore.acl.denied", |_| {}).unwrap_err();
+    assert_eq!(error.code, ErrorCode::SysModulesDisabled);
+}
+
+#[test]
+fn test_apcore_uses_event_setting_from_persisted_overrides() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("overrides.yaml"),
+        "sys_modules.events.enabled: false\n",
+    )
+    .unwrap();
+    let source = dir.path().join("apcore.yaml");
+    std::fs::write(
+        &source,
+        "version: '1.0.0'\nproject: {name: fixture}\nsys_modules:\n  enabled: true\n  events: {enabled: true}\n  control: {overrides_path: ./overrides.yaml}\n",
+    ).unwrap();
+    let config = Config::load(&source).unwrap();
+
+    let client = APCore::with_config(config);
+    assert!(client.events().is_none());
+    assert!(client.executor().event_emitter.is_none());
 }

@@ -1287,10 +1287,14 @@ impl Step for BuiltinExecute {
         };
 
         match execute_result {
-            Ok(output) => {
+            Ok(output) if output.is_object() || output.is_null() => {
                 ctx.output = Some(output);
                 Ok(StepResult::continue_step())
             }
+            Ok(_) => Err(ModuleError::new(
+                ErrorCode::ModuleExecuteError,
+                "Return value must be Map",
+            )),
             Err(e) => {
                 // Cancellation short-circuit (D-20): an ExecutionCancelled
                 // error MUST bypass the on_error middleware chain even at the

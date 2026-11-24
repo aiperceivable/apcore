@@ -128,15 +128,18 @@ describe('id_map_from_config.json', () => {
     ]);
   });
 
-  it('uses the same resolution base as extensions.root', async () => {
-    // §9.2.1 leaves the base for path-typed keys deliberately unspecified
-    // (#113): `acl.root` uses the config file's directory, `schema.root` the
-    // CWD. This key follows its SIBLING rather than settling that, because the
-    // two are halves of one discovery configuration. Driven from a different
-    // working directory: both halves miss together, which is the property.
+  it('loads relative extension and ID-map paths from the same project root', async () => {
     const root = tree(true);
-    process.chdir(fs.mkdtempSync(path.join(os.tmpdir(), 'apcore-elsewhere-')));
-    const config = Config.load(path.join(root, 'apcore.yaml'));
-    await expect(new Registry({ config }).discover()).rejects.toThrow();
+    try {
+      const elsewhere = fs.mkdtempSync(path.join(root, 'other-'));
+      process.chdir(elsewhere);
+      const config = Config.load(path.join(root, 'apcore.yaml'));
+      const registry = new Registry({ config });
+      await registry.discover();
+      expect([...registry.moduleIds]).toEqual(['executor.renamed.mod']);
+    } finally {
+      process.chdir(cwd);
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 });

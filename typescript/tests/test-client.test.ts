@@ -7,12 +7,16 @@ import os from 'node:os';
 import path from 'node:path';
 import { describe, it, expect, vi } from 'vitest';
 import { Type } from '@sinclair/typebox';
+import { ACL } from '../src/acl.js';
+import { AutoApproveHandler } from '../src/approval.js';
 import { APCore } from '../src/client.js';
 import { Config } from '../src/config.js';
 import { FunctionModule } from '../src/decorator.js';
 import { Executor } from '../src/executor.js';
-import { ModuleNotFoundError } from '../src/errors.js';
+import { ACLDeniedError, ModuleNotFoundError, SysModuleRegistrationError, SysModulesDisabledError } from '../src/errors.js';
+import { EventEmitter, type ApCoreEvent } from '../src/events/emitter.js';
 import { Middleware } from '../src/middleware/index.js';
+import { ExecutionPolicy, PolicyRule } from '../src/policy.js';
 import { Registry } from '../src/registry/registry.js';
 import type { Context } from '../src/context.js';
 import type { PipelineState, StepMiddleware } from '../src/pipeline.js';
@@ -63,6 +67,29 @@ class TrackingMiddleware extends Middleware {
 // ---------------------------------------------------------------------------
 
 describe('APCore construction', () => {
+  it.each([false, true])('reports registration failures with failOnError=%s', (failOnError) => {
+    const config = new Config({ sys_modules: { enabled: true } });
+    const registry = new Registry();
+    const registerInternal = registry.registerInternal.bind(registry);
+    vi.spyOn(registry, 'registerInternal').mockImplementation((moduleId, module) => {
+      if (moduleId === 'system.health.summary') throw new Error('test registration failure');
+      registerInternal(moduleId, module);
+    });
+
+    if (failOnError) {
+      expect(() => new APCore({ registry, config, failOnError })).toThrow(SysModuleRegistrationError);
+    } else {
+      const client = new APCore({ registry, config });
+      expect(client.sysModulesErrors).toHaveLength(1);
+      expect(client.sysModulesErrors[0]).toBeInstanceOf(SysModuleRegistrationError);
+      expect(client.sysModulesErrors[0]).toMatchObject({
+        code: 'SYS_MODULE_REGISTRATION_FAILED',
+        details: { moduleId: 'system.health.summary' },
+      });
+    }
+    expect(registry.has('system.health.module')).toBe(!failOnError);
+  });
+
   it('creates default Registry and Executor', () => {
     const client = new APCore();
     expect(client.registry).toBeInstanceOf(Registry);
@@ -555,6 +582,74 @@ describe('APCore.callAsync()', () => {
 // ---------------------------------------------------------------------------
 
 describe('APCore.on() / off()', () => {
+  it('receives governance events from the executor built by the client', async () => {
+    const config = new Config({ sys_modules: { enabled: true, events: { enabled: true } } });
+    const policy = new ExecutionPolicy([new PolicyRule('math.add', { requiresApproval: true })]);
+    const client = new APCore({ config, policy });
+    client.executor.setApprovalHandler(new AutoApproveHandler());
+    registerAdd(client);
+
+    const received: ApCoreEvent[] = [];
+    for (const eventType of ['apcore.policy.override', 'apcore.approval.decision', 'apcore.acl.denied']) {
+      client.on(eventType, (event) => { received.push(event); });
+    }
+
+    await expect(client.call('math.add', { a: 1, b: 2 })).resolves.toEqual({ result: 3 });
+    client.executor.setAcl(new ACL([]));
+    await expect(client.call('math.add', { a: 1, b: 2 })).rejects.toBeInstanceOf(ACLDeniedError);
+
+    await client.events?.flush();
+    expect(received.map((event) => [event.eventType, event.moduleId])).toEqual([
+      ['apcore.policy.override', 'math.add'],
+      ['apcore.approval.decision', 'math.add'],
+      ['apcore.acl.denied', 'math.add'],
+    ]);
+  });
+
+  it('preserves the emitter of a caller-supplied executor', async () => {
+    const config = new Config({ sys_modules: { enabled: true, events: { enabled: true } } });
+    const eventEmitter = new EventEmitter();
+    const executor = new Executor({ registry: new Registry(), acl: new ACL([]), eventEmitter });
+    const client = new APCore({ config, executor });
+    registerAdd(client);
+
+    const executorEvents: string[] = [];
+    eventEmitter.subscribe({ onEvent(event) { executorEvents.push(event.eventType); } });
+    const clientEvents: ApCoreEvent[] = [];
+    client.on('apcore.acl.denied', (event) => { clientEvents.push(event); });
+
+    await expect(client.call('math.add', { a: 1, b: 2 })).rejects.toBeInstanceOf(ACLDeniedError);
+    await eventEmitter.flush();
+    await client.events?.flush();
+    expect(executorEvents).toEqual(['apcore.acl.denied']);
+    expect(clientEvents).toEqual([]);
+  });
+
+  it('exposes no event bus when events are disabled', () => {
+    const config = new Config({ sys_modules: { enabled: true, events: { enabled: false } } });
+    const client = new APCore({ config });
+    expect(client.events).toBeNull();
+    expect(() => client.on('apcore.acl.denied', () => {})).toThrow(SysModulesDisabledError);
+  });
+
+  it.each([false, true])('uses the persisted event setting %s in namespace mode', (enabled) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'apcore-events-'));
+    try {
+      fs.writeFileSync(path.join(dir, 'overrides.yaml'), `sys_modules.events.enabled: ${enabled}\n`);
+      const source = path.join(dir, 'apcore.yaml');
+      fs.writeFileSync(source,
+        'apcore:\n  version: "1.0.0"\n  project: {name: client-test}\n' +
+        'sys_modules:\n  enabled: true\n' +
+        `  events: {enabled: ${!enabled}}\n` +
+        '  control: {overrides_path: ./overrides.yaml}\n',
+      );
+      const client = new APCore({ config: Config.load(source) });
+      expect(client.events !== null).toBe(enabled);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('throws when events are not enabled', () => {
     const client = new APCore();
     expect(() => client.on('test', () => {})).toThrow('Events are not enabled');

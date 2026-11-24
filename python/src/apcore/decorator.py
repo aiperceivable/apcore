@@ -17,6 +17,7 @@ from apcore._docstrings import parse_docstring
 from apcore.context import Context
 from apcore.errors import ErrorCodes, FuncMissingReturnTypeError, FuncMissingTypeHintError, InvalidInputError
 from apcore.module import ModuleAnnotations, ModuleExample
+from apcore.utils.module_output import normalize_module_output
 
 _logger = logging.getLogger(__name__)
 
@@ -157,10 +158,9 @@ def _normalize_result(result: Any) -> dict[str, Any]:
     """Normalize a function's return value to a dict for the executor pipeline."""
     if result is None:
         return {}
+    result = normalize_module_output(result)
     if isinstance(result, dict):
         return result
-    if isinstance(result, BaseModel):
-        return result.model_dump()
     return {"result": result}
 
 

@@ -258,24 +258,12 @@ function _pickDependencies(meta: Record<string, unknown>): Array<Record<string, 
   return [];
 }
 
-/**
- * `id_map.overrides` as declared, or `null`.
- *
- * A relative value is used AS-IS — resolved against the process working
- * directory, exactly as `extensions.root` is. PROTOCOL_SPEC §9.2.1 states that
- * the resolution base for path-typed keys is deliberately unspecified and
- * tracked in #113: `acl.root` resolves against the config file's directory,
- * `schema.root` against the CWD. This key is not the place to settle that — but
- * it does have to pick, and it picks the base its SIBLING uses.
- * `id_map.overrides` and `extensions.root` are two halves of one discovery
- * configuration and are always read together, so a split base between them
- * would be worse than either. An input to #113, not an answer.
- */
+/** `id_map.overrides` resolved against the project root, or `null`. */
 function idMapFromConfig(config: Config | null): string | null {
   if (config === null) return null;
   const declared = config.get('id_map.overrides');
   if (typeof declared !== 'string' || declared.trim() === '') return null;
-  return declared;
+  return config.resolvePath(declared);
 }
 
 
@@ -312,17 +300,19 @@ function rootsFromConfig(config: Config): Array<Record<string, unknown>> {
     const entries: Array<Record<string, unknown>> = [];
     for (const item of declared) {
       if (typeof item === 'string' && item.trim() !== '') {
-        entries.push({ root: item, namespace: lastSegment(item) });
+        const root = config.resolvePath(item);
+        entries.push({ root, namespace: lastSegment(root) });
       } else if (item !== null && typeof item === 'object') {
         const record = item as Record<string, unknown>;
         if (typeof record['root'] === 'string' && record['root'] !== '') {
+          const root = config.resolvePath(record['root']);
           const explicit = record['namespace'];
           entries.push({
-            root: record['root'],
+            root,
             namespace:
               typeof explicit === 'string' && explicit !== ''
                 ? explicit
-                : lastSegment(record['root']),
+                : lastSegment(root),
           });
         }
       }
@@ -337,8 +327,11 @@ function rootsFromConfig(config: Config): Array<Record<string, unknown>> {
       );
     }
   }
-  const extRoot = config.get('extensions.root') as string | undefined;
-  return [{ root: extRoot ?? (getDefault('extensions.root') as string) }];
+  const extRoot = config.get('extensions.root');
+  const root = typeof extRoot === 'string' && extRoot !== ''
+    ? extRoot
+    : (getDefault('extensions.root') as string);
+  return [{ root: config.resolvePath(root) }];
 }
 
 
@@ -451,8 +444,7 @@ export class Registry {
     // `executor/orig/mod.py`, discovery still registered `executor.orig.mod`.
     //
     // The precedence is D-73's, and the same one `extensions.root` follows
-    // above: an API argument beats `Config`. See `idMapFromConfig` for why a
-    // relative value follows `extensions.root`'s base rather than `acl.root`'s.
+    // above: an API argument beats `Config`.
     this._idMapPath = options?.idMapPath ?? idMapFromConfig(config);
   }
 
@@ -639,7 +631,10 @@ export class Registry {
     if (Object.keys(this._idMap).length === 0) return;
 
     const { fs: nodeFs, path: nodePath } = await ensureNodeModules();
-    const resolvedRoots = this._extensionRoots.map((r) => nodePath.resolve(r['root'] as string));
+    const resolvedRoots = this._extensionRoots.map((entry) => {
+      const root = entry['root'] as string;
+      return nodePath.isAbsolute(root) ? root : nodePath.resolve(root);
+    });
     for (const dm of discovered) {
       for (const root of resolvedRoots) {
         try {
@@ -657,7 +652,7 @@ export class Registry {
           // guard catches that, which is how this comment came to exist.
           let rootReal: string;
           try {
-            rootReal = nodeFs.realpathSync(root);
+            rootReal = nodeFs.realpathSync.native(root);
           } catch {
             rootReal = root;
           }
@@ -1743,11 +1738,12 @@ export class Registry {
       if (!rootPath) continue;
 
       try {
-        const watcher = fs.watch(rootPath, { recursive: true }, (eventType: string, filename: string | null) => {
+        const watchedDir = fs.realpathSync.native(rootPath);
+        const watcher = fs.watch(watchedDir, { recursive: true }, (eventType: string, filename: string | null) => {
           if (!filename) return;
           if (!filename.endsWith(".ts") && !filename.endsWith(".js")) return;
 
-          const fullPath = join(rootPath, filename);
+          const fullPath = join(watchedDir, filename);
           const now = Date.now();
           const last = this._debounceTimers?.get(fullPath) ?? 0;
           if (now - last < 300) return;

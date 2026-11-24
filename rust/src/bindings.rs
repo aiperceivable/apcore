@@ -645,8 +645,8 @@ impl BindingLoader {
     /// The env tier arrives for free: `APCORE_BINDINGS_DIR` and
     /// `APCORE_BINDINGS_PATTERN` are applied to the `Config` by
     /// `apply_env_overrides` like every other `APCORE_*` variable, so reading
-    /// through [`Config::get`] here is what implements §9.2's precedence chain.
-    /// This SDK deliberately does not read the environment directly.
+    /// through `Config` implements §9.2's precedence chain and resolves a
+    /// relative configured directory against the project root (§9.2.2).
     ///
     /// The default tier is `Config`'s as of spec v1.36.0: that release added the
     /// `bindings` section to `schemas/defaults.schema.json`, which
@@ -687,13 +687,10 @@ impl BindingLoader {
             self.limits = ValidationLimits::from_config(cfg)?;
         }
 
-        let dir: PathBuf = match dir {
-            Some(explicit) => explicit.to_path_buf(),
-            None => PathBuf::from(
-                from_config(CONFIG_KEY_BINDINGS_DIR)
-                    .unwrap_or_else(|| DEFAULT_BINDING_DIR.to_string()),
-            ),
-        };
+        let dir = dir
+            .map(Path::to_path_buf)
+            .or_else(|| config.and_then(|c| c.get_path(CONFIG_KEY_BINDINGS_DIR)))
+            .unwrap_or_else(|| PathBuf::from(DEFAULT_BINDING_DIR));
         let pattern: String = match pattern {
             Some(explicit) => explicit.to_string(),
             None => from_config(CONFIG_KEY_BINDINGS_PATTERN)
@@ -1634,16 +1631,13 @@ mod bindings_dir_from_config_tests {
         write_binding(&bindings_dir, "a.binding.yaml", "alpha");
         write_binding(&bindings_dir, "b.binding.yaml", "beta");
 
-        let config_path = write_config(
-            workspace.path(),
-            &format!("bindings:\n  dir: {}\n", bindings_dir.to_str().unwrap()),
-        );
+        let config_path = write_config(workspace.path(), "bindings:\n  dir: ./my-bindings\n");
         let config = Config::load(&config_path).unwrap();
         assert_eq!(
             config
                 .get("bindings.dir")
                 .and_then(|v| v.as_str().map(str::to_string)),
-            Some(bindings_dir.to_string_lossy().into_owned()),
+            Some("./my-bindings".to_string()),
             "precondition: the key must survive the load"
         );
 

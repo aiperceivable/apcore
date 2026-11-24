@@ -6,7 +6,7 @@ use serde::de::{DeserializeOwned, Error as DeError};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_yaml_ng as serde_yaml;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use crate::errors::{ErrorCode, ModuleError};
@@ -405,8 +405,7 @@ pub fn config_default_keys() -> Vec<&'static str> {
 /// the bare-string and the `{ root, namespace }` form — hence the element key
 /// `extensions.roots[]`.
 ///
-/// This set says *which* keys carry paths. It says nothing about what a relative
-/// value resolves against; that base is unspecified as of spec v1.34.0.
+/// Relative values use the configuration's project root (§9.2.2).
 const PATH_TYPED_CONFIG_KEYS: &[&str] = &[
     "acl.root",
     "bindings.dir",
@@ -713,7 +712,7 @@ pub struct MetricsConfig {
 /// answers `Some(32)` for a document that declares nothing. A container fetch
 /// answering `None` while its own leaf answers `Some` is the contradiction
 /// this issue is about, one level up.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct Config {
     pub modules_path: Option<PathBuf>,
     pub executor: ExecutorConfig,
@@ -727,6 +726,13 @@ pub struct Config {
     /// names should follow `[a-z][a-z0-9-]*`.
     pub user_namespaces: HashMap<String, serde_json::Value>,
     pub yaml_path: Option<PathBuf>,
+    /// Internal load metadata exposed for struct-update construction.
+    /// Use [`Config::project_root`] to read the project's path base.
+    #[doc(hidden)]
+    pub project_root_path: PathBuf,
+    /// Internal absolute reload source. `yaml_path` keeps its supplied spelling.
+    #[doc(hidden)]
+    pub absolute_source_path: Option<PathBuf>,
     pub mode: ConfigMode,
     /// Atomic-style generation counter to detect concurrent modifications.
     /// Incremented on every mutation (set, mount, reload). Aligned with D-20.
@@ -743,6 +749,23 @@ pub struct Config {
     /// (`..Config::default()`) across the workspace; treat it as internal and
     /// mutate it through [`Config::mount`].
     pub mounts: Vec<(String, serde_json::Value)>,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            modules_path: None,
+            executor: ExecutorConfig::default(),
+            observability: ObservabilityConfig::default(),
+            user_namespaces: HashMap::new(),
+            yaml_path: None,
+            project_root_path: current_project_directory(),
+            absolute_source_path: None,
+            mode: ConfigMode::default(),
+            generation: 0,
+            mounts: Vec::new(),
+        }
+    }
 }
 
 /// Hand-written to keep the `observability` wire object consistent with
@@ -961,10 +984,8 @@ impl<'de> Deserialize<'de> for Config {
             executor: helper.executor,
             observability: helper.observability,
             user_namespaces,
-            yaml_path: None,
             mode,
-            generation: 0,
-            mounts: Vec::new(),
+            ..Config::default()
         })
     }
 }
@@ -995,9 +1016,8 @@ fn apply_allow_unknown(
     // An ABSENT `_config` is the default pair `strict: false, allow_unknown:
     // true`, not an exemption: §9.6.3's matrix describes the defaults, so a
     // document that declares an unregistered namespace and no `_config` at all
-    // is the row that warns. This is not the blanket warning §9.2.2 rejects —
-    // it fires on a condition specific to the document (there IS an
-    // unregistered namespace), never on every configuration ever loaded.
+    // is the row that warns. The warning applies to documents that declare
+    // an unregistered namespace.
     let meta = raw.get("_config").and_then(|v| v.as_object());
     let strict = meta
         .and_then(|m| m.get("strict"))
@@ -1053,65 +1073,67 @@ fn apply_allow_unknown(
 
 impl Config {
     /// Load config from a JSON file, apply env overrides, and validate.
-    pub fn from_json_file(path: &std::path::Path) -> Result<Self, ModuleError> {
-        let file = std::fs::File::open(path).map_err(|e| {
-            ModuleError::new(
-                ErrorCode::ConfigNotFound,
-                format!("Config file not found: {}: {}", path.display(), e),
-            )
-        })?;
-        let reader = std::io::BufReader::new(file);
-        let mut config: Config = serde_json::from_reader(reader).map_err(|e| {
-            ModuleError::new(
-                ErrorCode::ConfigInvalid,
-                format!("Failed to parse JSON config: {}: {}", path.display(), e),
-            )
-        })?;
-        config.yaml_path = Some(path.to_path_buf());
-        config.detect_mode();
-        init_builtin_namespaces();
-        config.apply_env_overrides();
-        config.validate()?;
-        config.warn_if_path_resolution_will_change();
-        config.warn_deprecated_inert_keys();
-        Ok(config)
+    pub fn from_json_file(path: &Path) -> Result<Self, ModuleError> {
+        Self::load_file(path, true, None)
     }
 
     /// Load config from a YAML file, apply env overrides, and validate.
-    pub fn from_yaml_file(path: &std::path::Path) -> Result<Self, ModuleError> {
-        let file = std::fs::File::open(path).map_err(|e| {
+    pub fn from_yaml_file(path: &Path) -> Result<Self, ModuleError> {
+        Self::load_file(path, false, None)
+    }
+
+    fn load_file(
+        source: &Path,
+        json: bool,
+        project_root: Option<PathBuf>,
+    ) -> Result<Self, ModuleError> {
+        let cwd = current_project_directory();
+        let path = cwd.join(source);
+        let file = std::fs::File::open(&path).map_err(|e| {
             ModuleError::new(
                 ErrorCode::ConfigNotFound,
                 format!("Config file not found: {}: {}", path.display(), e),
             )
         })?;
         let reader = std::io::BufReader::new(file);
-        let mut config: Config = serde_yaml::from_reader(reader).map_err(|e| {
+        let parsed = if json {
+            serde_json::from_reader(reader).map_err(|e| e.to_string())
+        } else {
+            serde_yaml::from_reader(reader).map_err(|e| e.to_string())
+        };
+        let mut config: Config = parsed.map_err(|e| {
+            let format = if json { "JSON" } else { "YAML" };
             ModuleError::new(
                 ErrorCode::ConfigInvalid,
-                format!("Failed to parse YAML config: {}: {}", path.display(), e),
+                format!("Failed to parse {format} config: {}: {e}", path.display()),
             )
         })?;
-        config.yaml_path = Some(path.to_path_buf());
+        config.project_root_path = project_root.unwrap_or_else(|| {
+            let parent = path.parent().unwrap_or(&cwd);
+            parent
+                .canonicalize()
+                .unwrap_or_else(|_| parent.to_path_buf())
+        });
+        config.yaml_path = Some(source.to_path_buf());
+        config.absolute_source_path = Some(path);
         config.detect_mode();
         init_builtin_namespaces();
         config.apply_env_overrides();
         config.validate()?;
-        config.warn_if_path_resolution_will_change();
         config.warn_deprecated_inert_keys();
         Ok(config)
     }
 
     /// Auto-detect format by file extension and load.
-    pub fn load(path: &std::path::Path) -> Result<Self, ModuleError> {
-        match path.extension().and_then(|e| e.to_str()) {
-            Some("json") => Self::from_json_file(path),
-            Some("yaml" | "yml") => Self::from_yaml_file(path),
-            _ => {
-                // Default to YAML
-                Self::from_yaml_file(path)
-            }
-        }
+    pub fn load(path: &Path) -> Result<Self, ModuleError> {
+        Self::load_with_root(path, None)
+    }
+
+    fn load_with_root(path: &Path, project_root: Option<PathBuf>) -> Result<Self, ModuleError> {
+        let json = path
+            .extension()
+            .is_some_and(|extension| extension == "json");
+        Self::load_file(path, json, project_root)
     }
 
     /// No-arg load: discover the config file via the canonical search order
@@ -1125,10 +1147,7 @@ impl Config {
     /// cross-language code without changing the strict-typed `load(&Path)`
     /// signature for callers that already know the path.
     pub fn load_or_discover() -> Result<Self, ModuleError> {
-        match discover_config_file() {
-            Some(path) => Self::load(&path),
-            None => Ok(Self::from_defaults()),
-        }
+        Self::discover()
     }
 
     /// Validate a single config key against its registered constraint, if any.
@@ -1597,166 +1616,47 @@ impl Config {
         config
     }
 
-    /// Return the filesystem path the config was loaded from, if any.
-    ///
-    /// Returns the path passed to (or discovered by) [`Config::load`] /
-    /// [`Config::from_yaml_file`] / [`Config::from_json_file`], or `None` for
-    /// in-memory configs (deserialized directly) and those produced by
-    /// [`Config::from_defaults`]. Consumers that resolve relative paths (e.g.
-    /// `acl.root` via [`crate::acl::ACL::discover`]) use this to anchor
-    /// resolution at the config file's directory rather than the current
-    /// working directory. Mirrors apcore-python's `Config.source_path`.
+    /// Return the filesystem entry the config was loaded from, if any.
+    /// The path retains the spelling supplied to loading or found by discovery.
     #[must_use]
-    pub fn source_path(&self) -> Option<&std::path::Path> {
+    pub fn source_path(&self) -> Option<&Path> {
         self.yaml_path.as_deref()
     }
 
-    /// The directory relative path-typed configuration values are *about*
-    /// (aiperceivable/apcore#113, spec §9.2.2):
-    ///
-    /// ```text
-    /// project_root =
-    ///     directory of the config file   when it came from §9.14 tier 1-5
-    ///                                    (explicitly pointed at, or project-local)
-    ///     CWD                            when it came from tier 6-7 (user-level),
-    ///                                    or when no config file was found
-    /// ```
-    ///
-    /// Tiers 6-7 anchor at CWD because a per-user config's relative paths are
-    /// per-*project* by intent: `extensions.root: ./extensions` in
-    /// `~/.config/apcore/config.yaml` cannot sensibly mean
-    /// `~/.config/apcore/extensions`. Tiers 2-5 — the overwhelmingly common
-    /// case — are the ones where the config file's directory already *is* CWD,
-    /// so the two candidate bases are indistinguishable there.
-    ///
-    /// The returned path is absolute, and canonicalized when the config file
-    /// exists. `Config`s with no source path — [`Self::from_defaults`] and
-    /// those deserialized in memory — report CWD.
-    ///
-    /// **This accessor changes nothing.** As of this release
-    /// [`crate::acl::ACL::discover`] still resolves `acl.root` against the
-    /// config file's directory for every tier including 6-7, and
-    /// [`crate::schema::loader::SchemaLoader::with_config`] still resolves
-    /// `schema.root` against CWD. Publishing the base is the §13.2 deprecation
-    /// phase of unifying them; see
-    /// [`Self::path_typed_keys`] for which keys it will apply to.
+    /// Return the project root captured when this configuration was created (§9.2.2).
+    /// Explicit and project-local files use their containing directory. User-level
+    /// discovery and in-memory configuration use the working directory at load time.
     #[must_use]
-    pub fn project_root(&self) -> std::path::PathBuf {
-        let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-        match self.source_path() {
-            Some(source) if !is_user_level_config_path(source) => source
-                .canonicalize()
-                .unwrap_or_else(|_| cwd.join(source))
-                .parent()
-                .map_or_else(|| cwd.clone(), std::path::Path::to_path_buf),
-            _ => cwd,
+    pub fn project_root(&self) -> PathBuf {
+        self.project_root_path.clone()
+    }
+
+    /// Resolve a filesystem value from this configuration against its project root.
+    /// Absolute paths retain their original spelling.
+    #[must_use]
+    pub fn resolve_path(&self, path: impl AsRef<Path>) -> PathBuf {
+        let path = path.as_ref();
+        if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            self.project_root_path.join(path)
         }
     }
 
-    /// Path-typed keys (§9.2.1) whose currently-resolved value is a **relative**
-    /// path, reported using the [`Self::path_typed_keys`] spelling.
-    ///
-    /// Read through [`Self::get`], so a key left undeclared but carrying a
-    /// canonical default counts — `schema.root`'s `./schemas` re-roots under a
-    /// unified base exactly as a hand-written `./schemas` would. A config that
-    /// spells every path-typed key absolutely yields an empty list, which is
-    /// what makes it a usable guard rather than a restatement of
-    /// `project_root != cwd`.
-    ///
-    /// `extensions.roots` is list-valued; it counts when *any* element is
-    /// relative, in either the bare-string or the `{ root, namespace }` form.
-    fn relative_path_typed_keys(&self) -> Vec<&'static str> {
-        fn is_relative(value: Option<&str>) -> bool {
-            value.is_some_and(|s| !s.is_empty() && std::path::Path::new(s).is_relative())
-        }
-
-        let mut relative = Vec::new();
-        for key in Self::path_typed_keys() {
-            let hit = match key.strip_suffix("[]") {
-                Some(list_key) => matches!(
-                    self.get(list_key),
-                    Some(serde_json::Value::Array(ref items))
-                        if items.iter().any(|item| is_relative(match item {
-                            serde_json::Value::String(s) => Some(s.as_str()),
-                            serde_json::Value::Object(o) =>
-                                o.get("root").and_then(serde_json::Value::as_str),
-                            _ => None,
-                        }))
-                ),
-                None => is_relative(self.get(key).as_ref().and_then(serde_json::Value::as_str)),
-            };
-            if hit {
-                relative.push(*key);
-            }
-        }
-        relative
-    }
-
-    /// Warn that this config's relative path-typed values will re-root when
-    /// §9.2.2's single base lands (aiperceivable/apcore#113).
-    ///
-    /// Deliberately **narrow**: it fires only when both halves of the condition
-    /// hold — [`Self::project_root`] differs from CWD *and*
-    /// [`Self::relative_path_typed_keys`] is non-empty. A blanket warning on
-    /// every load would train operators to ignore it, and would be wrong for
-    /// the tier 2-5 majority, whose project root already is CWD and for whom
-    /// nothing changes at all.
-    ///
-    /// **Cadence: once per configuration load, never once per process.** This is
-    /// normative — §9.2.2 requirement 2 states it outright and forbids
-    /// suppressing the warning with process-global state — so it is not a local
-    /// judgement call: an implementation holding a once-per-process flag is
-    /// non-conforming as of spec v1.36.0.
-    ///
-    /// v1.35.0 required the warning and its two narrowing conditions but said
-    /// nothing about cadence, and the three SDKs immediately invented three
-    /// (Python deduplicating through the `warnings` filter, TypeScript holding
-    /// a module-global once-flag, Rust warning per load). v1.36.0 adopts this
-    /// SDK's reading and gives the two reasons for it. The warning is a
-    /// property of *the document being loaded*, so every load meeting both
-    /// conditions emits and a load meeting neither is silent. A once-per-process
-    /// flag makes emission **order-dependent** — whichever configuration loads
-    /// first consumes the warning, so a later affected document is silent and
-    /// the operator cannot tell which one triggered it — and that same global is
-    /// a test-isolation hazard, one test consuming the warning another needed.
-    /// De-duplication for log volume belongs to the host logging layer.
-    ///
-    /// It follows that [`Self::reload`], which genuinely re-reads the file,
-    /// warns again: §9.2.2 says a reload SHOULD re-evaluate, and an operator who
-    /// has just edited the document should see the notice against the version
-    /// they just wrote. This is the opposite cadence to the
-    /// `observability.redaction.*` legacy-key warning, which guards a key read
-    /// on a hot path rather than a document.
-    fn warn_if_path_resolution_will_change(&self) {
-        let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-        let root = self.project_root();
-        if root == cwd {
-            return;
-        }
-        let relative = self.relative_path_typed_keys();
-        if relative.is_empty() {
-            return;
-        }
-        tracing::warn!(
-            project_root = %root.display(),
-            cwd = %cwd.display(),
-            keys = %relative.join(", "),
-            "[apcore] DEPRECATION (spec §13.2): this config file's directory is not the \
-             process working directory, and the path-typed keys listed above hold relative \
-             values. Today they resolve against different bases per key — acl.root against \
-             the config file's directory, schema.root and extensions.root against the \
-             working directory. A future major version resolves all of them against the \
-             single project root shown above. Nothing changes in this release; write \
-             absolute paths to pin today's behaviour. See aiperceivable/apcore#113"
-        );
+    /// Read an effective scalar path-typed setting and resolve it for filesystem use.
+    pub(crate) fn get_path(&self, key: &str) -> Option<PathBuf> {
+        let value = self
+            .get(key)
+            .filter(|value| value.as_str() != Some(""))
+            .or_else(|| Self::default_for(key))?;
+        value.as_str().map(|path| self.resolve_path(path))
     }
 
     /// PROTOCOL_SPEC §9.2.4 — warn for declared keys that reach no consumer.
     ///
     /// Driven by the **declared** document, never the merged view (requirement
     /// 2). Every one of these keys has a default, so a merged-view check would
-    /// fire for every configuration ever loaded — the blanket warning §9.2.2
-    /// rejects, which trains operators to ignore the one that matters.
+    /// warn for configurations that never declared the key.
     ///
     /// Behaviour is unchanged (requirement 3): the keys still parse, still
     /// validate, still answer `get()`, and are still accepted under
@@ -1767,8 +1667,8 @@ impl Config {
         // `observability` is a typed struct field, so both of those always carry
         // every leaf: `get_declared("observability.tracing.enabled")` answers
         // `Some(false)` for a document that never mentions it, and this warning
-        // would then fire for every configuration ever loaded — the blanket
-        // warning §9.2.2 rejects and §9.2.4 requirement 2 forbids.
+        // would then fire for every configuration ever loaded, contrary to
+        // §9.2.4 requirement 2.
         //
         // `user_namespaces` is the right source because it retains the RAW
         // object of every typed section exactly as the file wrote it (see the
@@ -1833,7 +1733,7 @@ impl Config {
     /// If no file is found, returns `Config::from_defaults()`.
     pub fn discover() -> Result<Self, ModuleError> {
         match discover_config_file() {
-            Some(path) => Self::load(&path),
+            Some((path, project_root)) => Self::load_with_root(&path, project_root),
             None => Ok(Self::from_defaults()),
         }
     }
@@ -1848,10 +1748,7 @@ impl Config {
     /// `extensions.roots` is reported as `extensions.roots[]` because it is
     /// list-valued and every element carries a path.
     ///
-    /// Note what this does NOT tell you: what a *relative* value in one of these
-    /// keys resolves against. That base is unspecified as of spec v1.34.0 and
-    /// currently differs between keys — `acl.root` resolves against the config
-    /// file's directory, `schema.root` against the process CWD.
+    /// Use [`Self::resolve_path`] for each relative filesystem value.
     #[must_use]
     pub fn path_typed_keys() -> &'static [&'static str] {
         PATH_TYPED_CONFIG_KEYS
@@ -2180,6 +2077,12 @@ impl Config {
     /// name (the two only diverge for a namespace whose *name* contains a dot,
     /// which `register_namespace` does not permit). See decision log.
     pub fn set(&mut self, key: &str, value: serde_json::Value) {
+        let bare_key = key.strip_prefix("apcore.").unwrap_or(key);
+        let path_typed = Self::is_path_typed_key(bare_key);
+        if path_typed && value.as_str() == Some("") {
+            // An empty path is absent at this tier (§9.2.1).
+            return;
+        }
         self.generation += 1;
         if let Some(framework_key) = key.strip_prefix("apcore.") {
             // Qualified framework writes also update fields read by runtime consumers.
@@ -2193,7 +2096,20 @@ impl Config {
             return;
         }
 
-        // Fall back to user namespaces.
+        // ConfigHelper mirrors the `apcore` section into framework namespaces
+        // when reading a namespace-mode file. Keep both spellings effective
+        // when a path is overridden by an environment variable or API call.
+        if path_typed && self.mode == ConfigMode::Namespace {
+            if bare_key == key {
+                self.set_as_written(&format!("apcore.{key}"), value.clone());
+            } else {
+                self.set_as_written(bare_key, value.clone());
+            }
+        }
+        self.set_as_written(key, value);
+    }
+
+    fn set_as_written(&mut self, key: &str, value: serde_json::Value) {
         let parts: Vec<&str> = key.split('.').collect();
         if parts.is_empty() {
             return;
@@ -2237,7 +2153,12 @@ impl Config {
                 "Cannot reload: no yaml_path stored (config was not loaded from a file)",
             )
         })?;
-        let mut reloaded = Self::load(&path)?;
+        let source = self
+            .absolute_source_path
+            .as_deref()
+            .filter(|absolute| absolute.ends_with(&path))
+            .unwrap_or(&path);
+        let mut reloaded = Self::load_with_root(source, Some(self.project_root()))?;
 
         if self.generation != start_gen {
             return Err(ModuleError::new(
@@ -3136,10 +3057,10 @@ fn init_builtin_namespaces() {
 
 /// `$APCORE_CONFIG_FILE` is *consumed* here: both env-override passes skip it
 /// so it never becomes the `config.file` override (apcore#88).
-fn discover_config_file() -> Option<std::path::PathBuf> {
+fn discover_config_file() -> Option<(PathBuf, Option<PathBuf>)> {
     if let Ok(env_path) = std::env::var(ENV_CONFIG_FILE) {
         if !env_path.is_empty() {
-            return Some(std::path::PathBuf::from(env_path));
+            return Some((PathBuf::from(env_path), None));
         }
     }
 
@@ -3147,13 +3068,14 @@ fn discover_config_file() -> Option<std::path::PathBuf> {
     for name in &cwd_candidates {
         let p = std::path::Path::new(name);
         if p.exists() {
-            return Some(p.to_path_buf());
+            return Some((p.to_path_buf(), None));
         }
     }
 
     user_level_config_candidates()
         .into_iter()
         .find(|candidate| candidate.exists())
+        .map(|path| (path, Some(current_project_directory())))
 }
 
 /// The §9.14 **tier 6-7** candidates, in search order: the user-level config
@@ -3162,10 +3084,6 @@ fn discover_config_file() -> Option<std::path::PathBuf> {
 /// Tier 6 is the XDG-style path — `~/Library/Application Support/apcore/` on
 /// macOS, `~/.config/apcore/` elsewhere — and tier 7 the legacy `~/.apcore/`.
 ///
-/// Split out of [`discover_config_file`] so [`is_user_level_config_path`] can
-/// answer "did this config come from a user-level tier?" against exactly the
-/// set discovery searches, rather than a second hand-maintained copy that could
-/// drift from it.
 fn user_level_config_candidates() -> Vec<std::path::PathBuf> {
     let Some(home) = dirs_home() else {
         return Vec::new();
@@ -3183,26 +3101,8 @@ fn user_level_config_candidates() -> Vec<std::path::PathBuf> {
     vec![xdg, home.join(".apcore").join("config.yaml")]
 }
 
-/// Whether `path` names one of the §9.14 tier 6-7 user-level config locations.
-///
-/// This is the tier test [`Config::project_root`] needs, and it is answered by
-/// **location** rather than by recording which discovery branch fired. The two
-/// differ in exactly one case: `$APCORE_CONFIG_FILE` (tier 1) pointing straight
-/// at the user-level file, which this reports as user-level. That is the
-/// answer #113 wants either way — the reason tiers 6-7 anchor at CWD is that a
-/// per-user config's relative paths are per-*project* by intent, and that is a
-/// property of where the document lives, not of how it was found.
-///
-/// Paths are compared after canonicalization where possible, so `~/.apcore/`
-/// reached through a symlink still matches.
-fn is_user_level_config_path(path: &std::path::Path) -> bool {
-    let canonical = path.canonicalize();
-    let target = canonical.as_deref().unwrap_or(path);
-    user_level_config_candidates().iter().any(|candidate| {
-        candidate
-            .canonicalize()
-            .map_or_else(|_| candidate == path, |c| c == target)
-    })
+fn current_project_directory() -> PathBuf {
+    std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
 }
 
 fn dirs_home() -> Option<std::path::PathBuf> {
@@ -3862,300 +3762,5 @@ mod tests {
         ] {
             assert!(!Config::path_typed_keys().contains(&key), "{key}");
         }
-    }
-}
-
-#[cfg(test)]
-mod path_base_deprecation_tests {
-    //! The §13.2 deprecation notice for §9.2.2's single path base
-    //! (aiperceivable/apcore#113, Option B-prime).
-    //!
-    //! Only the *warning* is under test here; the tier matrix behind
-    //! [`Config::project_root`] needs the process working directory and `$HOME`
-    //! and therefore lives in `tests/config_discovery.rs`, which serialises
-    //! those. Nothing in this file changes CWD: every case puts the config file
-    //! in a temp directory, which is already not the CWD the test binary runs
-    //! under.
-
-    use super::Config;
-    use std::io::Write;
-    use std::path::Path;
-    use std::sync::{Arc, Mutex};
-
-    #[derive(Clone, Default)]
-    struct CaptureWriter(Arc<Mutex<Vec<u8>>>);
-
-    impl std::io::Write for CaptureWriter {
-        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-            self.0.lock().unwrap().extend_from_slice(buf);
-            Ok(buf.len())
-        }
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
-    }
-
-    impl tracing_subscriber::fmt::MakeWriter<'_> for CaptureWriter {
-        type Writer = Self;
-        fn make_writer(&self) -> Self::Writer {
-            self.clone()
-        }
-    }
-
-    fn capture_logs(f: impl FnOnce()) -> String {
-        let buf = CaptureWriter::default();
-        let subscriber = tracing_subscriber::fmt()
-            .with_writer(buf.clone())
-            .with_ansi(false)
-            .with_max_level(tracing::Level::TRACE)
-            .finish();
-        tracing::subscriber::with_default(subscriber, f);
-        let bytes = buf.0.lock().unwrap().clone();
-        String::from_utf8_lossy(&bytes).into_owned()
-    }
-
-    /// A §9.1-valid config whose scalar path-typed keys take the given values.
-    ///
-    /// `bindings.dir` is written like its three siblings rather than left out:
-    /// since spec v1.36.0 it carries the canonical default `./bindings`, so an
-    /// omitted key is a RELATIVE path-typed value in the merged configuration,
-    /// not an absent one.
-    fn write_config(
-        dir: &Path,
-        extensions: &str,
-        schema: &str,
-        acl: &str,
-        bindings: &str,
-    ) -> std::path::PathBuf {
-        let path = dir.join("apcore.yaml");
-        let mut f = std::fs::File::create(&path).unwrap();
-        writeln!(f, "version: '0.15.0'").unwrap();
-        writeln!(f, "project:").unwrap();
-        writeln!(f, "  name: demo").unwrap();
-        writeln!(f, "extensions:").unwrap();
-        writeln!(f, "  root: {extensions}").unwrap();
-        writeln!(f, "schema:").unwrap();
-        writeln!(f, "  root: {schema}").unwrap();
-        writeln!(f, "acl:").unwrap();
-        writeln!(f, "  root: {acl}").unwrap();
-        // `acl.default_effect` deliberately NOT written. It joined §9.2.4's
-        // deprecation table in spec v1.47.0 (§9.1.3's first application — the
-        // `apcore.yaml` twin reaches nothing, the ACL file's own key does the
-        // work), so declaring it here would make every case in this module
-        // carry a §9.2.4 notice. These cases are about §9.2.2's path-base
-        // notice, and the "stays silent" ones assert on the absence of a
-        // DEPRECATION line: a test about one notice must not be made to pass or
-        // fail by another.
-        writeln!(f, "bindings:").unwrap();
-        writeln!(f, "  dir: {bindings}").unwrap();
-        path
-    }
-
-    #[test]
-    fn warns_when_the_project_root_differs_from_cwd_and_a_relative_path_key_is_present() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = write_config(
-            dir.path(),
-            "./extensions",
-            "./schemas",
-            "./acl",
-            "./bindings",
-        );
-
-        let logs = capture_logs(|| {
-            let config = Config::load(&path).unwrap();
-            assert_ne!(
-                config.project_root(),
-                std::env::current_dir().unwrap(),
-                "precondition: a temp-dir config must not sit in the test CWD"
-            );
-        });
-
-        assert!(
-            logs.contains("DEPRECATION"),
-            "a config whose relative path keys will re-root must say so: {logs}"
-        );
-        assert!(
-            logs.contains("aiperceivable/apcore#113"),
-            "the warning must name the issue that explains the change: {logs}"
-        );
-        for key in ["extensions.root", "schema.root", "acl.root", "bindings.dir"] {
-            assert!(
-                logs.contains(key),
-                "the warning must name the affected key {key}: {logs}"
-            );
-        }
-    }
-
-    #[test]
-    fn stays_silent_when_every_path_typed_value_is_absolute() {
-        // The half of the condition that stops this being a restatement of
-        // `project_root != cwd`. An operator who already writes absolute paths
-        // is unaffected by §9.2.2 and must not be warned.
-        let dir = tempfile::tempdir().unwrap();
-        let abs = dir.path().to_str().unwrap().to_string();
-        let path = write_config(
-            dir.path(),
-            &format!("{abs}/extensions"),
-            &format!("{abs}/schemas"),
-            &format!("{abs}/acl"),
-            &format!("{abs}/bindings"),
-        );
-
-        let logs = capture_logs(|| {
-            let config = Config::load(&path).unwrap();
-            assert_ne!(config.project_root(), std::env::current_dir().unwrap());
-            assert!(
-                config.relative_path_typed_keys().is_empty(),
-                "precondition: no relative path-typed value should remain"
-            );
-        });
-
-        assert!(
-            !logs.contains("DEPRECATION"),
-            "absolute paths pin today's behaviour, so there is nothing to warn about: {logs}"
-        );
-    }
-
-    #[test]
-    fn two_affected_configurations_in_one_process_both_warn() {
-        // §9.2.2 requirement 2's cadence clause, which spec v1.36.0 states
-        // normatively: ONCE PER CONFIGURATION LOAD, never once per process.
-        // Implementations MUST NOT suppress the warning with process-global
-        // state.
-        //
-        // The failure the clause forbids is invisible to a one-config test. A
-        // once-per-process flag passes every single-load assertion in this
-        // module: the first load warns, which is all any of them observe. It is
-        // only the SECOND affected document that goes silent, and by then the
-        // operator has two candidate configurations and one warning naming
-        // neither of them in particular.
-        //
-        // The two documents differ, and each warning must name its OWN project
-        // root, so a second warning that were somehow a replay of the first
-        // fails here too.
-        let first_dir = tempfile::tempdir().unwrap();
-        let second_dir = tempfile::tempdir().unwrap();
-        let first = write_config(
-            first_dir.path(),
-            "./extensions",
-            "./schemas",
-            "./acl",
-            "./bindings",
-        );
-        let second = write_config(
-            second_dir.path(),
-            "./ext2",
-            "./schemas2",
-            "./acl2",
-            "./bindings2",
-        );
-
-        let first_logs = capture_logs(|| {
-            Config::load(&first).unwrap();
-        });
-        let second_logs = capture_logs(|| {
-            Config::load(&second).unwrap();
-        });
-
-        for (which, logs, dir) in [
-            ("first", &first_logs, first_dir.path()),
-            ("second", &second_logs, second_dir.path()),
-        ] {
-            assert!(
-                logs.contains("DEPRECATION"),
-                "the {which} affected configuration must warn — a warning \
-                 consumed by an earlier load is the process-global suppression \
-                 §9.2.2 forbids: {logs}"
-            );
-            let root = dir.canonicalize().unwrap();
-            assert!(
-                logs.contains(&root.display().to_string()),
-                "the {which} warning must name that document's own project \
-                 root {}: {logs}",
-                root.display()
-            );
-        }
-    }
-
-    #[test]
-    fn an_unaffected_configuration_between_two_affected_ones_stays_silent() {
-        // The other half of "a property of the document being loaded": a load
-        // that meets neither condition emits nothing, and does not disturb the
-        // loads on either side of it. Together with the test above this pins
-        // the cadence to the DOCUMENT rather than to the process in both
-        // directions.
-        let affected_dir = tempfile::tempdir().unwrap();
-        let clean_dir = tempfile::tempdir().unwrap();
-        let affected = write_config(
-            affected_dir.path(),
-            "./extensions",
-            "./schemas",
-            "./acl",
-            "./bindings",
-        );
-        let abs = clean_dir.path().to_str().unwrap().to_string();
-        let clean = write_config(
-            clean_dir.path(),
-            &format!("{abs}/extensions"),
-            &format!("{abs}/schemas"),
-            &format!("{abs}/acl"),
-            &format!("{abs}/bindings"),
-        );
-
-        let before = capture_logs(|| {
-            Config::load(&affected).unwrap();
-        });
-        let middle = capture_logs(|| {
-            Config::load(&clean).unwrap();
-        });
-        let after = capture_logs(|| {
-            Config::load(&affected).unwrap();
-        });
-
-        assert!(before.contains("DEPRECATION"), "{before}");
-        assert!(
-            !middle.contains("DEPRECATION"),
-            "every path-typed value is absolute, so this document cannot \
-             re-root and must be silent: {middle}"
-        );
-        assert!(
-            after.contains("DEPRECATION"),
-            "re-reading the same affected document warns again — §9.2.2: a \
-             reload SHOULD re-evaluate, and an operator who has just edited the \
-             file should see the notice against what they wrote: {after}"
-        );
-    }
-
-    #[test]
-    fn relative_path_typed_keys_reports_the_list_form() {
-        // `extensions.roots` is list-valued and both element shapes carry a
-        // path; an implementation modelling only the bare-string form would
-        // under-report and silently skip the warning.
-        let config: Config = serde_json::from_value(serde_json::json!({
-            "version": "1.0.0",
-            "project": { "name": "demo" },
-            "extensions": { "root": "/abs/extensions", "roots": [
-                { "root": "./plugins", "namespace": "plugins" }
-            ]},
-            "schema": { "root": "/abs/schemas" },
-            "acl": { "root": "/abs/acl", "default_effect": "deny" },
-            "bindings": { "dir": "/abs/bindings" }
-        }))
-        .unwrap();
-
-        assert_eq!(
-            config.relative_path_typed_keys(),
-            vec!["extensions.roots[]"]
-        );
-    }
-
-    #[test]
-    fn a_config_with_no_source_path_reports_cwd_as_its_project_root() {
-        // Tier "no config file found": `from_defaults` has no source path, so
-        // there is no directory to prefer over CWD.
-        let config = Config::from_defaults();
-        assert_eq!(config.source_path(), None);
-        assert_eq!(config.project_root(), std::env::current_dir().unwrap());
     }
 }

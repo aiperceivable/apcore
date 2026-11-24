@@ -320,7 +320,7 @@ The following requirements are not met by the current SDK releases (apcore-pytho
 
 ## 8. Conformance Test Fixtures
 
-The repository ships **91 cross-language fixture files** under `conformance/fixtures/` covering **1121 test cases**. `conformance-integrity` checks these two numbers, §8.1's per-fixture counts and its Total row against the fixtures themselves. Each fixture is consumed by all three SDK test runners (§5.2). An SDK declaring a conformance level **MUST** pass every fixture whose tested feature is required at that level (§5.3).
+The repository ships **93 cross-language fixture files** under `conformance/fixtures/` covering **1126 test cases**. `conformance-integrity` checks these two numbers, §8.1's per-fixture counts and its Total row against the fixtures themselves. Each fixture is consumed by all three SDK test runners (§5.2). An SDK declaring a conformance level **MUST** pass every fixture whose tested feature is required at that level (§5.3).
 
 ### 8.1 Fixture Inventory
 
@@ -340,6 +340,7 @@ The repository ships **91 cross-language fixture files** under `conformance/fixt
 | [`annotations_extra_round_trip`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/annotations_extra_round_trip.json) | 12 | `ModuleAnnotations.extra` wire-format round-trip (spec §4.4.1) |
 | [`approval_gate`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/approval_gate.json) | 8 | Approval gate enforcement at Executor Step 5 (spec §7.4) |
 | [`approval_request_fields`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/approval_request_fields.json) | 2 | `ApprovalRequest` carries `caller_id` (read straight off `Context.caller_id` — null on a top-level call, never the `@external` ACL sentinel) and `action` (= `module_id`), populated by the approval gate at Executor Step 5 (spec §7.3.1, D-03) |
+| [`approval_startup_report`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/approval_startup_report.json) | 5 | Startup reporting for modules that declare approval requirements |
 | [`async_task_cancellation`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/async_task_cancellation.json) | 2 | `AsyncTaskManager.cancel()` real abort via CancelToken (D-18) |
 | [`async_task_evolution`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/async_task_evolution.json) | 10 | Pluggable `TaskStore`, retry with backoff |
 | [`bindings_dir_resolution`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/bindings_dir_resolution.json) | 13 | Binding-directory resolution: a loader invoked without an explicit directory resolves `bindings.dir` / `bindings.pattern` under §9.2 precedence, an explicit argument wins, and no scan happens at client initialisation (spec §5.12.6) |
@@ -351,7 +352,7 @@ The repository ships **91 cross-language fixture files** under `conformance/fixt
 | [`env_prefix_dispatch`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/env_prefix_dispatch.json) | 4 | Namespace-mode env dispatch: `APCORE` reserved for `apcore`, one namespace per variable by longest prefix, unmatched `APCORE_` variables belong to `apcore` (spec §9.8.2, D-146) |
 | [`config_key_governance`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/config_key_governance.json) | 8 | Configuration key surface governance (§9.1 / §9.3 / §9.15.3) |
 | [`config_path_typed_keys`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/config_path_typed_keys.json) | 8 | Closed set of path-typed configuration keys (§9.2.1) |
-| [`config_project_root`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/config_project_root.json) | 14 | The project root that path-typed values resolve against from v2.0 — config-file directory for §9.14 tiers 1-5, CWD for the user-level tiers 6-7 and when no file is found; one case per tier, plus the deprecation-warning condition (spec §9.2.2) |
+| [`config_project_root`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/config_project_root.json) | 13 | Project-root path resolution across discovery tiers and explicit loads, including user-level configurations, a symlinked file entry, absolute paths, and working-directory changes after load (§9.2.2) |
 | [`context_create`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/context_create.json) | 15 | `Context.create()` canonical 6-parameter factory and executor binding |
 | [`context_serialization`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/context_serialization.json) | 8 | Context JSON round-trip (spec §5.7) |
 | [`context_trace_parent`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/context_trace_parent.json) | 10 | `Context.create` trace_parent input handling (spec §10.5) |
@@ -375,6 +376,7 @@ The repository ships **91 cross-language fixture files** under `conformance/fixt
 | [`multi_root_discovery`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/multi_root_discovery.json) | 6 | `extensions.roots` multi-root discovery with namespace isolation (§9.1.1, D-70) |
 | [`middleware_hardening`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/middleware_hardening.json) | 11 | Context namespacing, CircuitBreaker |
 | [`middleware_on_error_recovery`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/middleware_on_error_recovery.json) | 4 | Middleware after-chain error recovery |
+| [`module_output_normalization`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/module_output_normalization.json) | 1 | Typed module results through calls, streaming fallback, and native streaming |
 | [`multi_module_discovery`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/multi_module_discovery.json) | 10 | Multi-class discovery, snake_case conversion, conflict detection; only marked classes receive IDs (spec §2.1.1, D-147) |
 | [`normalize_id`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/normalize_id.json) | 23 | ID normalization (Algorithm A02): ASCII case conversion preserves existing underscores and rejects invalid source identifiers without repair (#122) |
 | [`id_map_from_config`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/id_map_from_config.json) | 7 | `id_map.overrides` reaches the ID-map mechanism (§9.1.1, D-71); `file` is relative to the extension root, an empty env value falls through (§2.2, D-138) |
@@ -417,7 +419,7 @@ The repository ships **91 cross-language fixture files** under `conformance/fixt
 | [`usage_contract`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/usage_contract.json) | 11 | `system.usage.*` value semantics no schema can assert (spec §6.7.1) |
 | [`usage_exporter`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/usage_exporter.json) | 3 | `UsageExporter` push interface (D-55) |
 | [`version_negotiation`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/version_negotiation.json) | 10 | Version negotiation (Algorithm A14) |
-| **Total** | **1121** | **91 fixtures** |
+| **Total** | **1126** | **93 fixtures** |
 
 ### 8.2 Loading Fixtures from a Test Runner
 

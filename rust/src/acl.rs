@@ -2162,10 +2162,8 @@ impl ACL {
     /// Activate `acl.root` config-driven ACL discovery (D-64, Recommendation A).
     ///
     /// Resolves the `acl.root` config key (default `"./acl"`) and loads an ACL
-    /// from it when the path exists. The path is resolved relative to the
-    /// directory of the config's source file when known
-    /// ([`Config::source_path`]), otherwise relative to the current working
-    /// directory.
+    /// from it when the path exists. Relative values use the project root
+    /// captured by [`crate::config::Config::project_root`].
     ///
     /// `acl.root` is a directory by spec convention (`acl/{scope}_acl.yaml`,
     /// PROTOCOL_SPEC §3.1). When the resolved path is a directory, the
@@ -2178,9 +2176,7 @@ impl ACL {
     /// NOTHING. It MUST NOT synthesize an empty default-deny ACL — doing so
     /// would silently deny every inter-module call in every project that lacks
     /// an `acl` dir. Missing path means "no enforcement", identical to pre-D-64
-    /// behavior. The `acl.default_effect` config key only takes effect once a
-    /// real ACL file is loaded (it is read by [`ACL::load`] from the ACL file
-    /// itself); it never feeds a synthesized ACL here.
+    /// behavior. [`ACL::load`] reads `default_effect` from the ACL file itself.
     ///
     /// # Errors
     /// Returns [`ModuleError`] only when a resolved ACL file exists but is
@@ -2188,28 +2184,9 @@ impl ACL {
     /// `ErrorCode::ACLRuleError`). A missing root is never an error — it yields
     /// `Ok(None)`.
     pub fn discover(config: &crate::config::Config) -> Result<Option<Self>, ModuleError> {
-        let Some(root) = config
-            .get("acl.root")
-            .and_then(|v| v.as_str().map(std::string::ToString::to_string))
-        else {
+        let Some(root_path) = config.get_path("acl.root") else {
             return Ok(None);
         };
-
-        let mut root_path = std::path::PathBuf::from(&root);
-        if !root_path.is_absolute() {
-            let base = match config.source_path() {
-                Some(source) => source
-                    .canonicalize()
-                    .unwrap_or_else(|_| source.to_path_buf())
-                    .parent()
-                    .map_or_else(
-                        || std::path::PathBuf::from("."),
-                        std::path::Path::to_path_buf,
-                    ),
-                None => std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
-            };
-            root_path = base.join(&root_path);
-        }
 
         if !root_path.exists() {
             // Missing path -> no enforcement. Do NOT synthesize an ACL.

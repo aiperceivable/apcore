@@ -48,12 +48,11 @@ export function _setAclFileLoader(fn: AclFileLoader | null): void {
  *
  * Declared structurally (rather than importing the concrete `Config`
  * class) so `acl.ts` stays free of the `node:fs`-bearing `config.ts`
- * module and the browser closure remains clean. The real `Config`
- * satisfies this shape via its `get()` method and `sourcePath` getter.
+ * module and the browser closure remains clean.
  */
 export interface AclConfigLike {
   get(key: string, defaultValue?: unknown): unknown;
-  readonly sourcePath: string | null;
+  resolvePath(value: string): string;
 }
 
 /**
@@ -1693,9 +1692,8 @@ export class ACL {
    * Config-driven ACL discovery (D-64 / issue #74).
    *
    * Reads `acl.root` from `config` (defaulting to `"./acl"` when unset),
-   * resolves it relative to the directory of the config's source file when
-   * `config.sourcePath` is known — otherwise relative to the process CWD —
-   * and loads the ACL from that directory if it exists.
+   * resolves it against the configuration's project root and loads the ACL
+   * from that directory if it exists.
    *
    * Returns `null` when the resolved path does NOT exist. A missing path
    * MUST NOT synthesize an empty default-deny ACL: an empty ACL would deny

@@ -40,6 +40,7 @@ jobs:
           "$temporary/venv/bin/python" -m pip install "${wheel[0]}"
           "$temporary/venv/bin/python" -m pip check
           "$temporary/venv/bin/python" -c 'from apcore import APCore, Registry'
+          "$temporary/venv/bin/python" -c 'from importlib.resources import files; assert files("apcore").joinpath("py.typed").is_file(), "installed wheel is missing apcore/py.typed"'
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: core-python-distributions
@@ -86,6 +87,7 @@ jobs:
           npm install --ignore-scripts "${archive[0]}"
           node --input-type=module -e 'import {APCore} from "apcore-js"; import "apcore-js/context-keys"; if (!APCore) throw new Error("APCore is missing");'
           node --conditions=browser --input-type=module -e 'if (!import.meta.resolve("apcore-js").endsWith("/dist/browser/index.js")) throw new Error("browser entry did not resolve"); await import("apcore-js");'
+          node --input-type=module -e 'import {accessSync} from "node:fs"; for (const entry of ["index", "browser/index", "context-keys"]) accessSync(`node_modules/apcore-js/dist/${entry}.d.ts`);'
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: core-npm-distribution

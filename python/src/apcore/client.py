@@ -46,6 +46,8 @@ class APCore:
         config: Config | None = None,
         metrics_collector: MetricsCollector | None = None,
         policy: ExecutionPolicy | None = None,
+        *,
+        fail_on_error: bool = False,
     ) -> None:
         """Initialize the APCore client.
 
@@ -60,6 +62,9 @@ class APCore:
                 approval gate. Ignored when the caller supplies their own
                 ``executor`` — wire the policy on that Executor directly
                 (parity with config-driven ACL discovery).
+            fail_on_error: Raise the first system-module registration failure.
+                By default, startup continues and exposes failures through
+                ``sys_modules_errors``.
         """
         self.config = config
 
@@ -148,6 +153,7 @@ class APCore:
 
         # Auto-register sys.* modules and middleware from config
         self._sys_modules_context: dict[str, Any] = {}
+        self._sys_modules_errors: list[Exception] = []
         if self.config is not None:
             from apcore.sys_modules.registration import register_sys_modules
 
@@ -162,17 +168,30 @@ class APCore:
                     executor=self.executor,
                     config=self.config,
                     metrics_collector=self.metrics_collector,
+                    fail_on_error=fail_on_error,
                     toggle_state=self.toggle_state,
+                    on_registration_error=self._sys_modules_errors.append,
                 )
-            except Exception:
+            except Exception as exc:
+                if fail_on_error:
+                    raise
+                self._sys_modules_errors.append(exc)
                 import logging
 
                 logging.getLogger(__name__).warning(
                     "Failed to register sys modules",
                     exc_info=True,
                 )
+            emitter = self.events
+            if not executor_supplied and emitter is not None:
+                self.executor.set_event_emitter(emitter)
         else:
             self.metrics_collector = metrics_collector
+
+    @property
+    def sys_modules_errors(self) -> tuple[Exception, ...]:
+        """Return system-module registration errors recovered during startup."""
+        return tuple(self._sys_modules_errors)
 
     def module(
         self,
@@ -231,6 +250,8 @@ class APCore:
         inputs: dict[str, Any] | None = None,
         context: Context | None = None,
         version_hint: str | None = None,
+        *,
+        timeout_ms: int | None = None,
     ) -> dict[str, Any]:
         """Execute a module call.
 
@@ -239,6 +260,7 @@ class APCore:
             inputs: Input arguments for the module.
             context: Optional execution context.
             version_hint: Optional semver hint for version negotiation.
+            timeout_ms: Optional per-call wait limit for the sync thread bridge.
 
         Returns:
             The module output.
@@ -248,7 +270,9 @@ class APCore:
             Python keeps it synchronous using the sync-in-thread model; do not ``await`` it.
             Use ``call_async()`` instead when calling from an async context.
         """
-        return self.executor.call(module_id, inputs, context, version_hint=version_hint)
+        if timeout_ms is None:
+            return self.executor.call(module_id, inputs, context, version_hint=version_hint)
+        return self.executor.call(module_id, inputs, context, version_hint=version_hint, timeout_ms=timeout_ms)
 
     async def call_async(
         self,
@@ -296,6 +320,8 @@ class APCore:
         module_id: str,
         inputs: dict[str, Any] | None = None,
         context: Context | None = None,
+        *,
+        timeout_ms: int | None = None,
     ) -> PreflightResult:
         """Non-destructive preflight check without execution.
 
@@ -303,6 +329,7 @@ class APCore:
             module_id: The module to validate against.
             inputs: Input data to validate.
             context: Optional context for call-chain checks.
+            timeout_ms: Optional per-call wait limit for the sync thread bridge.
 
         Returns:
             PreflightResult with per-check status.
@@ -311,7 +338,9 @@ class APCore:
             TypeScript and Rust expose this as an async method.
             Python keeps it synchronous; do not ``await`` it.
         """
-        return self.executor.validate(module_id, inputs, context)
+        if timeout_ms is None:
+            return self.executor.validate(module_id, inputs, context)
+        return self.executor.validate(module_id, inputs, context, timeout_ms=timeout_ms)
 
     def describe(self, module_id: str) -> str:
         """Get module description info (for AI/LLM use).

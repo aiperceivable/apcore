@@ -941,6 +941,41 @@ fn case_startup_fail_on_error_true_raises() {
 }
 
 #[test]
+fn apcore_reports_registration_failures_with_strict_and_lenient_startup() {
+    for fail_on_error in [false, true] {
+        let registry = Arc::new(Registry::new());
+        let module_id = "system.health.summary";
+        register_dummy_module(&registry, module_id);
+        let mut config = Config::default();
+        config.set("sys_modules.enabled", json!(true));
+        let executor = Executor::new(Arc::clone(&registry), config.clone());
+
+        if fail_on_error {
+            let error = apcore::APCore::try_with_options(apcore::APCoreOptions {
+                executor: Some(executor),
+                config: Some(config),
+                fail_on_error,
+                ..Default::default()
+            })
+            .unwrap_err();
+            assert_eq!(error.error_code(), ErrorCode::SysModuleRegistrationFailed);
+            assert_eq!(error.module_id(), module_id);
+        } else {
+            let client = apcore::APCore::with_options(None, Some(executor), Some(config), None);
+            let errors = client.sys_modules_errors();
+            assert_eq!(errors.len(), 1);
+            assert_eq!(
+                errors[0].error_code(),
+                ErrorCode::SysModuleRegistrationFailed
+            );
+            assert_eq!(errors[0].module_id(), module_id);
+        }
+
+        assert_eq!(registry.has("system.health.module"), !fail_on_error);
+    }
+}
+
+#[test]
 fn case_startup_fail_on_error_false_continues() {
     let fixture = load_fixture();
     let case = fixture_case(&fixture, "startup_fail_on_error_false_continues");

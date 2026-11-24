@@ -97,20 +97,8 @@ def test_id_map_from_config(case_id: str, monkeypatch: pytest.MonkeyPatch) -> No
         os.chdir(cwd)
 
 
-def test_the_override_path_uses_the_same_base_as_extensions_root() -> None:
-    """`driver_contract.relative_paths`.
-
-    PROTOCOL_SPEC §9.2.1 leaves the resolution base for path-typed keys
-    deliberately unspecified (tracked in #113): `acl.root` resolves against the
-    config file's directory, `schema.root` against the process CWD. This key
-    does not settle that — it follows its SIBLING, because `id_map.overrides`
-    and `extensions.root` are two halves of one discovery configuration and a
-    split base between them would be worse than either.
-
-    Driven from a different working directory: both halves fail together, which
-    is the property being pinned. If `extensions.root` ever moves to the config
-    directory, this case fails and takes the map with it — deliberately.
-    """
+def test_the_override_path_uses_the_same_project_root_as_extensions_root() -> None:
+    """Discovery loads extension files and the ID map from the same project."""
     root = _tree(declare_override=True)
     elsewhere = Path(tempfile.mkdtemp())
     cwd = os.getcwd()
@@ -121,11 +109,34 @@ def test_the_override_path_uses_the_same_base_as_extensions_root() -> None:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", DeprecationWarning)
             config = Config.load(str(root / "apcore.yaml"))
-        with pytest.raises(Exception):  # noqa: B017,PT011 — `extensions.root` misses first
-            Registry(config=config).discover()
+        registry = Registry(config=config)
+        registry.discover()
+        assert registry.module_ids == ["executor.renamed.mod"]
     finally:
         logging.disable(previous)
         os.chdir(cwd)
+
+
+def test_extensions_root_list_uses_the_project_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    project = tmp_path / "project"
+    elsewhere = tmp_path / "elsewhere"
+    for base, module in ((project, "sample"), (elsewhere, "decoy")):
+        for root in ("modules", "addons"):
+            source = base / root / "executor"
+            source.mkdir(parents=True)
+            (source / f"{module}.py").write_text(_MODULE, encoding="utf-8")
+    config_file = project / "apcore.yaml"
+    config_file.write_text(
+        "project: {name: fixture}\nextensions:\n  roots: [./modules, {root: ./addons, namespace: extras}]\n",
+        encoding="utf-8",
+    )
+    config = Config.load(str(config_file), validate=False)
+    monkeypatch.chdir(elsewhere)
+
+    registry = Registry(config=config)
+    registry.discover()
+
+    assert sorted(registry.module_ids) == ["extras.executor.sample", "modules.executor.sample"]
 
 
 def test_every_fixture_case_is_driven() -> None:

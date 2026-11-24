@@ -158,6 +158,10 @@ The `on_error` chain runs over the middlewares whose `before()` was entered; a r
 
 The per-module timeout applies to Step 8 and is clamped to the time left before the global deadline, so a nested call tree cannot outlive its root's budget. `0` disables the per-module limit (the global deadline still applies); a negative timeout raises `GENERAL_INVALID_INPUT`.
 
+Python's synchronous `call()`, `validate()`, and `call_with_trace()` use a worker thread when the calling thread has an active event loop or another sync caller is using the cached loop. The worker wait defaults to the time remaining on the supplied Context deadline or the selected strategy's known global budget, plus one second of grace. Without a known deadline, the worker waits for the pipeline to finish. The pipeline applies its own execution timeouts in either case. TypeScript and Rust call APIs are async and use the pipeline deadlines directly.
+
+To change the Python worker wait, use per-call `timeout_ms`, `Executor(sync_bridge_timeout_ms=...)`, or `apcore-python.executor.sync_bridge_timeout` in Config Bus namespace mode, in that order. The environment override is `APCORE_PYTHON_EXECUTOR_SYNC__BRIDGE__TIMEOUT`. All three use milliseconds. Set the value to `0` for an unbounded worker wait.
+
 **On timeout** the Executor cancels the call's own `cancel_token` and raises `MODULE_TIMEOUT` immediately, without waiting for module cleanup. Each call has a child token linked to its caller's token, so the timeout signals cancellation to work beneath that call, never to its caller. There is no forced termination or guarantee that a remote request stops; module code handles cancellation cooperatively ([Cancellation](./cancellation.md#integration-with-executor-timeout)).
 
 A module that wants to stop early on caller-driven cancellation checks its cancel token ([Cancellation](./cancellation.md)):

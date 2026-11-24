@@ -12,8 +12,9 @@
  */
 
 import { createHash } from 'node:crypto';
-import { join, resolve } from 'node:path';
-import { existsSync, readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { existsSync, readFileSync, realpathSync } from 'node:fs';
+import { appendFilesystemPath } from '../utils/filesystem-path.js';
 import type { TSchema } from '@sinclair/typebox';
 import yaml from 'js-yaml';
 import type { Config } from '../config.js';
@@ -42,7 +43,9 @@ export class SchemaLoader {
     if (schemasDir != null) {
       this._schemasDir = resolve(schemasDir);
     } else {
-      this._schemasDir = resolve(config.get('schema.root', './schemas') as string);
+      const schemaRoot = config.get('schema.root', './schemas') as string;
+      const configured = config.resolvePath(schemaRoot || './schemas');
+      this._schemasDir = existsSync(configured) ? realpathSync.native(configured) : configured;
     }
     const maxDepth = config.get('schema.max_ref_depth', 32) as number;
     this._resolver = new RefResolver(this._schemasDir, maxDepth);
@@ -52,7 +55,7 @@ export class SchemaLoader {
     const cached = this._schemaCache.get(moduleId);
     if (cached) return cached;
 
-    const filePath = join(this._schemasDir, moduleId.replace(/\./g, '/') + '.schema.yaml');
+    const filePath = appendFilesystemPath(this._schemasDir, moduleId.replace(/\./g, '/') + '.schema.yaml');
     if (!existsSync(filePath)) {
       throw new SchemaNotFoundError(moduleId);
     }

@@ -369,10 +369,8 @@ class BindingLoader:
         ``bindings.dir`` take effect; before this, the key was registered in the
         §9.1.1 key surface and read by nothing.
 
-        A relative directory is resolved against the process working directory,
-        which is the v1.x behaviour §9.2.2 records for path-typed keys. This
-        method does **not** consult ``config.project_root``; that base takes
-        effect at v2.0.
+        Relative directory values from configuration, including its default,
+        resolve against the configuration's project root (§9.2.2).
 
         Nothing calls this during client or framework initialisation, and §5.12.6
         clause 3 forbids adding such a call: loading bindings is an action the
@@ -396,10 +394,13 @@ class BindingLoader:
             raise TypeError("load_binding_dir() missing required argument: 'registry'")
 
         resolved_dir: Any = dir_path
-        if resolved_dir is None and config is not None:
-            resolved_dir = config.get(_DEFAULT_BINDING_DIR_KEY)
         if resolved_dir is None:
-            resolved_dir = Config.get_default(_DEFAULT_BINDING_DIR_KEY)
+            default_dir = Config.get_default(_DEFAULT_BINDING_DIR_KEY)
+            if config is None:
+                resolved_dir = default_dir
+            else:
+                config_dir = config.get(_DEFAULT_BINDING_DIR_KEY)
+                resolved_dir = config.resolve_path(default_dir if config_dir in (None, "") else config_dir)
 
         resolved_pattern: Any = pattern
         if resolved_pattern is None and config is not None:

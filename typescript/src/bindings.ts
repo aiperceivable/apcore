@@ -2,7 +2,7 @@
  * YAML binding loader for zero-code-modification module integration.
  */
 
-import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import type { TSchema } from '@sinclair/typebox';
 import yaml from 'js-yaml';
@@ -100,12 +100,12 @@ const DEFAULT_BINDING_PATTERN = '*.binding.yaml';
 /**
  * The slice of {@link Config} {@link BindingLoader.loadBindingDir} needs.
  *
- * Structural rather than a `Config` import so a caller can supply any
- * configuration source, and so `bindings.ts` keeps no runtime dependency on
- * `config.ts`. Same shape and motive as `AclConfigLike` in `./acl.ts`.
+ * A source with a project root can supply its path resolver. A source that
+ * only provides values uses ordinary working-directory-relative paths.
  */
 export interface BindingConfigLike {
   get(key: string, defaultValue?: unknown): unknown;
+  resolvePath?(value: string): string;
 }
 
 /**
@@ -330,8 +330,11 @@ export class BindingLoader {
     pattern?: string,
     config?: BindingConfigLike | null,
   ): Promise<FunctionModule[]> {
-    const actualPath =
-      dirPath ?? asConfiguredString(config?.get('bindings.dir')) ?? DEFAULT_BINDING_DIR;
+    let actualPath = dirPath;
+    if (actualPath == null) {
+      const configuredPath = asConfiguredString(config?.get('bindings.dir')) ?? DEFAULT_BINDING_DIR;
+      actualPath = config?.resolvePath?.(configuredPath) ?? configuredPath;
+    }
     const actualPattern =
       pattern ?? asConfiguredString(config?.get('bindings.pattern')) ?? DEFAULT_BINDING_PATTERN;
 
@@ -339,7 +342,9 @@ export class BindingLoader {
       throw new BindingFileInvalidError(actualPath, 'Directory does not exist');
     }
 
-    const files = readdirSync(actualPath)
+    // Child paths must use the same directory that the existence check read.
+    const scanPath = dirPath == null && config?.resolvePath ? realpathSync.native(actualPath) : actualPath;
+    const files = readdirSync(scanPath)
       .filter((f) => {
         // PROTOCOL_SPEC 5.12.6 clause 1 / 9.2.3: the pattern is matched with
         // Algorithm A25 against the FILENAME. The suffix comparison this
@@ -352,7 +357,7 @@ export class BindingLoader {
       .sort();
     const results: FunctionModule[] = [];
     for (const f of files) {
-      results.push(...(await this.loadBindings(join(actualPath, f), registry, config)));
+      results.push(...(await this.loadBindings(join(scanPath, f), registry, config)));
     }
     return results;
   }

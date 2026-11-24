@@ -3,9 +3,10 @@
  */
 
 import { statSync, readdirSync, lstatSync, realpathSync } from 'node:fs';
-import { resolve, relative, join, extname, basename, sep } from 'node:path';
+import { resolve, relative, extname, basename, isAbsolute, sep } from 'node:path';
 import { ConfigError, ConfigNotFoundError } from '../errors.js';
 import type { DiscoveredModule } from './types.js';
+import { appendFilesystemPath } from '../utils/filesystem-path.js';
 import { matchGlob } from '../utils/pattern.js';
 
 const SKIP_DIR_NAMES = new Set(['node_modules', '__pycache__']);
@@ -38,7 +39,7 @@ export function scanExtensions(
   followSymlinks: boolean = false,
   ignorePatterns: readonly string[] = [],
 ): DiscoveredModule[] {
-  const rootResolved = resolve(root);
+  const rootResolved = isAbsolute(root) ? root : resolve(root);
   if (!existsAndIsDir(rootResolved)) {
     throw new ConfigNotFoundError(rootResolved);
   }
@@ -57,7 +58,7 @@ export function scanExtensions(
   // a root. apcore-python (`root.resolve()`) and apcore-rust (`canonicalize()`)
   // both canonicalise the root; this SDK canonicalised it for the visited set
   // and not for the comparison.
-  const rootReal = realpathSync(rootResolved);
+  const rootReal = realpathSync.native(rootResolved);
   const visitedRealPaths = new Set([rootReal]);
   const results: DiscoveredModule[] = [];
   const seenIds = new Map<string, string>();
@@ -82,7 +83,7 @@ export function scanExtensions(
       if (SKIP_DIR_NAMES.has(name)) continue;
       if (patterns.some((pattern) => matchGlob(pattern, name))) continue;
 
-      const entryPath = join(dirPath, name);
+      const entryPath = appendFilesystemPath(dirPath, name);
       let lstat;
       try {
         lstat = lstatSync(entryPath);
@@ -97,7 +98,7 @@ export function scanExtensions(
 
       if (isSymlink) {
         if (!followSymlinks) continue;
-        const real = realpathSync(entryPath);
+        const real = realpathSync.native(entryPath);
         if (visitedRealPaths.has(real)) continue;
         // Confinement check — reject symlinks that escape the extension root
         if (!real.startsWith(rootReal + sep) && real !== rootReal) {
@@ -130,7 +131,7 @@ export function scanExtensions(
         // terminates a directory cycle.
         let realDir: string;
         try {
-          realDir = realpathSync(entryPath);
+          realDir = realpathSync.native(entryPath);
         } catch {
           console.warn(`[apcore:scanner] Cannot resolve directory: ${entryPath}`);
           continue;
@@ -149,7 +150,7 @@ export function scanExtensions(
         // iteration order, which is not stable across filesystems or platforms.
         let realFile: string;
         try {
-          realFile = realpathSync(entryPath);
+          realFile = realpathSync.native(entryPath);
         } catch {
           console.warn(`[apcore:scanner] Cannot resolve file: ${entryPath}`);
           continue;
@@ -179,7 +180,7 @@ export function scanExtensions(
 
         // Check for companion metadata file
         const stem = basename(entryPath, ext);
-        const metaPath = join(dirPath, stem + '_meta.yaml');
+        const metaPath = appendFilesystemPath(dirPath, stem + '_meta.yaml');
         let metaPathResult: string | null = null;
         try {
           if (statSync(metaPath).isFile()) metaPathResult = metaPath;

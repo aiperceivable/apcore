@@ -89,9 +89,43 @@ def test_governance_state(case: dict[str, Any]) -> None:
 
     for field, expected in case["expected"].items():
         actual = getattr(state, field)
-        assert actual == expected, (
-            f"{case['id']}: {field} is {actual}, fixture expects {expected}\n" f"  {case['note']}"
+        assert actual == expected, f"{case['id']}: {field} is {actual}, fixture expects {expected}\n  {case['note']}"
+
+
+_STARTUP_REPORT_FIXTURE = load_fixture("approval_startup_report.json")
+
+
+@pytest.mark.parametrize("case", _STARTUP_REPORT_FIXTURE["test_cases"], ids=case_ids("approval_startup_report.json"))
+def test_approval_startup_report(case: dict[str, Any]) -> None:
+    class Dummy:
+        description = "conformance approval module"
+        input_schema = {"type": "object"}
+        output_schema = {"type": "object"}
+
+        def __init__(self, requires_approval: bool) -> None:
+            self.annotations = ModuleAnnotations(requires_approval=requires_approval)
+
+        def execute(self, inputs: dict[str, Any], context: Any) -> dict[str, Any]:
+            raise AssertionError("approval startup report must not execute the module")
+
+    registry = Registry()
+    for entry in _STARTUP_REPORT_FIXTURE["modules"]:
+        registry.register(
+            entry["module_id"],
+            Dummy(entry["live_approval"]),
+            metadata={
+                "annotations": {
+                    "requires_approval": entry["declared_approval"],
+                    "discoverable": entry["discoverable"],
+                }
+            },
         )
+    executor = Executor(registry, strategy=case["strategy"])
+    if case["handler_attached"]:
+        executor.set_approval_handler(_NeverCalledHandler())
+    executor.set_policy(ExecutionPolicy.from_dict(case["policy"]))
+
+    assert executor.ungated_approval_modules() == case["expected"]["ungated_modules"]
 
 
 def test_accessor_is_a_pure_read() -> None:

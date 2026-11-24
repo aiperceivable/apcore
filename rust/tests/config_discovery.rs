@@ -275,12 +275,6 @@ fn write_valid_yaml_at(path: &std::path::Path) {
     writeln!(f, "  root: ./schemas").unwrap();
     writeln!(f, "acl:").unwrap();
     writeln!(f, "  root: ./acl").unwrap();
-    // `acl.default_effect` deliberately NOT written. It joined §9.2.4's
-    // deprecation table in spec v1.47.0 (§9.1.3's first application), so
-    // declaring it here would give every config in this file a §9.2.4 notice —
-    // and the cases here assert on the ABSENCE of a DEPRECATION line for
-    // §9.2.2's project-root notice. A test about one notice must not be made to
-    // pass or fail by another.
 }
 
 #[derive(Clone, Default)]
@@ -330,7 +324,7 @@ fn project_root_tier_1_explicit_config_file_anchors_at_the_config_directory() {
 
     std::env::set_current_dir(run_dir.path()).unwrap();
     std::env::set_var("APCORE_CONFIG_FILE", config_path.to_str().unwrap());
-    let (config, logs) = capture_logs(|| apcore::Config::discover().unwrap());
+    let config = apcore::Config::discover().unwrap();
     std::env::remove_var("APCORE_CONFIG_FILE");
 
     assert_eq!(
@@ -342,10 +336,6 @@ fn project_root_tier_1_explicit_config_file_anchors_at_the_config_directory() {
         canonical(&config.project_root()),
         canonical(run_dir.path()),
         "and not at the process working directory"
-    );
-    assert!(
-        logs.contains("DEPRECATION"),
-        "this is the tier whose relative paths re-root, so it must warn: {logs}"
     );
 }
 
@@ -374,28 +364,6 @@ fn project_root_tiers_2_to_5_project_local_config_anchors_at_cwd() {
             "tier for {name} must anchor at CWD"
         );
     }
-}
-
-/// Tiers 2-5 are the majority case and nothing changes for them, so the
-/// deprecation notice must stay quiet. A warning fired here would be the
-/// blanket warning #113 rules out.
-#[test]
-fn project_root_tier_2_config_emits_no_deprecation_warning() {
-    let _guard = env_guard();
-    let _state = ProcessStateGuard::capture();
-    std::env::remove_var("APCORE_CONFIG_FILE");
-
-    let project = TempDir::new().unwrap();
-    write_valid_yaml_at(&project.path().join("apcore.yaml"));
-    std::env::set_current_dir(project.path()).unwrap();
-
-    let (config, logs) = capture_logs(|| apcore::Config::discover().unwrap());
-
-    assert_eq!(config.project_root(), std::env::current_dir().unwrap());
-    assert!(
-        !logs.contains("DEPRECATION"),
-        "the ordinary project-local case must not be warned about: {logs}"
-    );
 }
 
 /// Tier 6 — the user-level config, and the case #113 shows is wrong today.
@@ -482,12 +450,8 @@ fn project_root_with_no_config_file_found_anchors_at_cwd() {
     assert_eq!(config.project_root(), std::env::current_dir().unwrap());
 }
 
-/// Behaviour, as opposed to the accessor, MUST NOT move in this phase (§13.2).
-/// `SchemaLoader::with_config` still resolves `schema.root` against CWD and
-/// `ACL::discover` still resolves `acl.root` against the config file's
-/// directory, including for the user-level tier where #113 calls that wrong.
 #[test]
-fn tier_1_resolution_behaviour_is_unchanged_by_the_project_root_accessor() {
+fn tier_1_schema_and_acl_consume_the_same_project_root() {
     let _guard = env_guard();
     let _state = ProcessStateGuard::capture();
 
@@ -502,12 +466,12 @@ fn tier_1_resolution_behaviour_is_unchanged_by_the_project_root_accessor() {
     std::fs::create_dir_all(run_dir.path().join("acl")).unwrap();
     std::fs::write(
         config_dir.path().join("acl").join("global_acl.yaml"),
-        "version: '1.0'\ndefault_effect: deny\nrules: []\n",
+        "version: '1.0'\ndefault_effect: deny\naudit: {enabled: false}\nrules: []\n",
     )
     .unwrap();
     std::fs::write(
         run_dir.path().join("acl").join("global_acl.yaml"),
-        "version: '1.0'\ndefault_effect: allow\nrules: []\n",
+        "version: '1.0'\ndefault_effect: deny\naudit: {enabled: false}\nrules: []\n",
     )
     .unwrap();
 
@@ -536,16 +500,131 @@ fn tier_1_resolution_behaviour_is_unchanged_by_the_project_root_accessor() {
     let raw = loader.get("probe").unwrap();
     assert!(
         raw["input_schema"]["properties"]
-            .get("run_dir_marker")
+            .get("config_dir_marker")
             .is_some(),
-        "schema.root must still resolve against the process working directory: {raw}"
+        "schema.root must resolve against the project root: {raw}"
     );
 
     let acl = apcore::ACL::discover(&config).unwrap();
     assert!(
         acl.is_some(),
-        "acl.root must still resolve against the config file's directory"
+        "acl.root must resolve against the project root"
     );
+    std::fs::remove_file(config_dir.path().join("acl/global_acl.yaml")).unwrap();
+    assert!(apcore::ACL::discover(&config).unwrap().is_none());
+}
+
+#[test]
+fn explicitly_loading_the_user_config_uses_its_own_directory() {
+    let _guard = env_guard();
+    let _state = ProcessStateGuard::capture();
+    let fake_home = TempDir::new().unwrap();
+    let project = TempDir::new().unwrap();
+    let user_config = tier_6_config_path(fake_home.path());
+    write_valid_yaml_at(&user_config);
+    std::env::set_var("HOME", fake_home.path());
+    std::env::set_current_dir(project.path()).unwrap();
+
+    let explicitly_loaded = apcore::Config::load(&user_config).unwrap();
+    assert_eq!(
+        canonical(&explicitly_loaded.project_root()),
+        canonical(user_config.parent().unwrap())
+    );
+
+    std::env::set_var("APCORE_CONFIG_FILE", &user_config);
+    let env_selected = apcore::Config::load_or_discover().unwrap();
+    std::env::remove_var("APCORE_CONFIG_FILE");
+    assert_eq!(
+        canonical(&env_selected.project_root()),
+        canonical(user_config.parent().unwrap())
+    );
+}
+
+#[test]
+fn a_discovered_user_config_keeps_its_project_root_after_chdir_and_reload() {
+    let _guard = env_guard();
+    let _state = ProcessStateGuard::capture();
+    std::env::remove_var("APCORE_CONFIG_FILE");
+    let fake_home = TempDir::new().unwrap();
+    let project = TempDir::new().unwrap();
+    let other = TempDir::new().unwrap();
+    let user_config = tier_6_config_path(fake_home.path());
+    write_valid_yaml_at(&user_config);
+    std::env::set_var("HOME", fake_home.path());
+    std::env::set_current_dir(project.path()).unwrap();
+
+    let mut config = apcore::Config::discover().unwrap();
+    let memory = apcore::Config::default();
+    std::env::set_current_dir(other.path()).unwrap();
+    assert_eq!(canonical(&config.project_root()), canonical(project.path()));
+    assert_eq!(canonical(&memory.project_root()), canonical(project.path()));
+    config.reload().unwrap();
+    assert_eq!(canonical(&config.project_root()), canonical(project.path()));
+}
+
+#[test]
+fn reload_reads_the_original_relative_config_after_chdir() {
+    let _guard = env_guard();
+    let _state = ProcessStateGuard::capture();
+    let original = TempDir::new().unwrap();
+    let moved = TempDir::new().unwrap();
+    let source = std::path::Path::new("sub/apcore.yaml");
+    write_valid_yaml_at(&original.path().join(source));
+    write_valid_yaml_at(&moved.path().join(source));
+    std::env::set_current_dir(original.path()).unwrap();
+    let mut config = apcore::Config::load(source).unwrap();
+    assert_eq!(config.source_path(), Some(source));
+
+    std::fs::write(
+        original.path().join(source),
+        "version: '1.0.0'\nproject: {name: original-file}\n",
+    )
+    .unwrap();
+    std::env::set_current_dir(moved.path()).unwrap();
+    config.reload().unwrap();
+    assert_eq!(config.source_path(), Some(source));
+    assert_eq!(
+        config.get("project.name"),
+        Some(serde_json::json!("original-file"))
+    );
+    assert_eq!(
+        canonical(&config.project_root()),
+        canonical(&original.path().join("sub"))
+    );
+}
+
+#[test]
+fn namespace_mode_path_overrides_are_consumed_with_the_file_project_root() {
+    let _guard = env_guard();
+    let original = std::env::var_os("APCORE_ACL_ROOT");
+    let dir = TempDir::new().unwrap();
+    let path = write_minimal_yaml(
+        &dir,
+        "config.yaml",
+        "apcore:\n  version: '1.0.0'\n  project: {name: demo}\n  acl: {root: ./file-acl}\n",
+    );
+    std::fs::create_dir(dir.path().join("from-env")).unwrap();
+    std::fs::write(
+        dir.path().join("from-env/global_acl.yaml"),
+        "default_effect: deny\naudit: {enabled: false}\nrules: []\n",
+    )
+    .unwrap();
+    std::env::set_var("APCORE_ACL_ROOT", "./from-env");
+    let loaded = apcore::Config::load(&path);
+    match original {
+        Some(value) => std::env::set_var("APCORE_ACL_ROOT", value),
+        None => std::env::remove_var("APCORE_ACL_ROOT"),
+    }
+    let mut config = loaded.unwrap();
+    assert_eq!(
+        config.get("acl.root"),
+        Some(serde_json::json!("./from-env"))
+    );
+    assert!(apcore::ACL::discover(&config).unwrap().is_some());
+    config.set("apcore.acl.root", serde_json::json!(""));
+    assert!(apcore::ACL::discover(&config).unwrap().is_some());
+    config.set("apcore.acl.root", serde_json::json!("./missing"));
+    assert!(apcore::ACL::discover(&config).unwrap().is_none());
 }
 
 // ---------------------------------------------------------------------------

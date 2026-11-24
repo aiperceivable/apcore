@@ -12,7 +12,7 @@
  */
 
 import { describe, it, expect, afterAll, vi } from 'vitest';
-import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import * as yaml from 'js-yaml';
@@ -49,6 +49,32 @@ function boot(overridesPath: string, toggleState: ToggleState) {
 }
 
 describe('sys_modules.control.overrides_path round trip (SYS-2)', () => {
+  it('restores project overrides when a different directory contains a decoy', () => {
+    const project = join(tmp, 'relative-config');
+    const elsewhere = join(tmp, 'elsewhere');
+    mkdirSync(project);
+    mkdirSync(elsewhere);
+    writeFileSync(join(project, 'apcore.yaml'), [
+      'project: {name: project-relative}',
+      'sys_modules:',
+      '  enabled: true',
+      '  control: {overrides_path: ./overrides.yaml}',
+    ].join('\n'));
+    writeFileSync(join(project, 'overrides.yaml'), 'toggle.executor.email.send: false\n');
+    writeFileSync(join(elsewhere, 'overrides.yaml'), 'toggle.executor.email.send: true\n');
+    const config = Config.load(join(project, 'apcore.yaml'), { validate: false });
+    const originalCwd = process.cwd();
+    process.chdir(elsewhere);
+    try {
+      const registry = new Registry();
+      const toggleState = new ToggleState();
+      registerSysModules(registry, new Executor({ registry }), config, undefined, { toggleState });
+      expect(toggleState.isDisabled('executor.email.send')).toBe(true);
+    } finally {
+      process.chdir(originalCwd);
+    }
+  });
+
   it('a toggle_feature disable is written to the configured overrides file', async () => {
     const overridesPath = join(tmp, 'write.yaml');
     const { executor } = boot(overridesPath, new ToggleState());

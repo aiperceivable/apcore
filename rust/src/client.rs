@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use serde_json::Value;
 
+use crate::approval::ApprovalHandler;
 use crate::config::Config;
 use crate::context::Context;
 use crate::decorator::FunctionModule;
@@ -17,8 +18,24 @@ use crate::middleware::base::Middleware;
 use crate::middleware::manager::MiddlewareHandle;
 use crate::module::ModuleAnnotations;
 use crate::observability::metrics::MetricsCollector;
+use crate::policy::ExecutionPolicy;
 use crate::registry::registry::{ModuleDescriptor, Registry, DEFAULT_MODULE_VERSION};
-use crate::sys_modules::{SysModulesContext, ToggleState};
+use crate::sys_modules::{SysModuleError, SysModulesContext, SysModulesStartup, ToggleState};
+
+/// Options for [`APCore::try_with_options`].
+#[derive(Default)]
+pub struct APCoreOptions {
+    pub registry: Option<Registry>,
+    pub executor: Option<Executor>,
+    pub config: Option<Config>,
+    pub metrics_collector: Option<MetricsCollector>,
+    /// Return the first system-module registration failure during startup.
+    pub fail_on_error: bool,
+    /// Approval handler for the Executor built by the client.
+    pub approval_handler: Option<Box<dyn ApprovalHandler>>,
+    /// Execution policy for the Executor built by the client.
+    pub policy: Option<ExecutionPolicy>,
+}
 
 /// Main entry point for interacting with the `APCore` system.
 pub struct APCore {
@@ -30,16 +47,12 @@ pub struct APCore {
     /// all sys modules. Interior mutability on `Registry` removes the need
     /// for `Arc::get_mut` or an external `Mutex`.
     registry: Arc<Registry>,
-    // The event bus (D1-011). When sys_modules is enabled this is the SAME
-    // `Arc<EventEmitter>` the sys modules + registry callbacks emit to, so
-    // `on()`/`events()` receive system events. When sys_modules is disabled it
-    // is `None` until `on()` lazily creates a standalone local bus (matching the
-    // Python/TS contract that the emitter is surfaced only once events exist).
-    // EventEmitter is interior-mutable, so subscribe/emit both work through the
-    // shared `Arc` without an external lock.
+    // The enabled system event bus shared by the client, registry callbacks,
+    // system modules, and the Executor the client builds.
     event_emitter: Option<Arc<EventEmitter>>,
     metrics_collector: Option<MetricsCollector>,
     sys_modules_context: Option<SysModulesContext>,
+    sys_modules_errors: Vec<SysModuleError>,
     /// Per-instance toggle store (issue #71). Each `APCore` owns one
     /// `Arc<ToggleState>`, injected into BOTH the pipeline `module_lookup` step
     /// (read path, via `Executor::set_toggle_state`) and `ToggleFeatureModule`
@@ -60,6 +73,7 @@ impl std::fmt::Debug for APCore {
                 "sys_modules_registered",
                 &self.sys_modules_context.is_some(),
             )
+            .field("sys_modules_errors", &self.sys_modules_errors.len())
             .field("toggle_state", &self.toggle_state)
             .finish()
     }
@@ -88,17 +102,53 @@ impl APCore {
     /// registered into the executor pipeline.
     /// This registration is now fully synchronous and runtime-agnostic because
     /// `Registry` uses `parking_lot::RwLock` for interior mutability.
-    ///
-    /// **Cross-language note:** Python and TypeScript accept 4 options
-    /// (registry, executor, config, metricsCollector) and use `Config.load(path)`
-    /// separately — Rust's `from_path` constructor is a Rust-only convenience
-    /// that does not correspond to a 5th constructor parameter in other SDKs.
     pub fn with_options(
         registry: Option<Registry>,
         executor: Option<Executor>,
         config: Option<Config>,
         metrics_collector: Option<MetricsCollector>,
     ) -> Self {
+        Self::build(APCoreOptions {
+            registry,
+            executor,
+            config,
+            metrics_collector,
+            ..Default::default()
+        })
+    }
+
+    /// Create a client with explicit startup and governance options.
+    ///
+    /// An approval handler and execution policy apply to a client-created
+    /// Executor. A supplied Executor keeps its own governance configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first system-module registration failure when
+    /// [`APCoreOptions::fail_on_error`] is set. Otherwise startup continues and
+    /// recovered errors are available through [`Self::sys_modules_errors`].
+    /// A supplied Registry can retain modules registered before the failure.
+    pub fn try_with_options(options: APCoreOptions) -> Result<Self, SysModuleError> {
+        let fail_on_error = options.fail_on_error;
+        let mut client = Self::build(options);
+        if fail_on_error {
+            if let Some(error) = client.sys_modules_errors.pop() {
+                return Err(error);
+            }
+        }
+        Ok(client)
+    }
+
+    fn build(options: APCoreOptions) -> Self {
+        let APCoreOptions {
+            registry,
+            executor,
+            config,
+            metrics_collector,
+            fail_on_error,
+            approval_handler,
+            policy,
+        } = options;
         let config = config.unwrap_or_default();
 
         // Resolve the shared registry: use the executor's if provided,
@@ -123,6 +173,12 @@ impl APCore {
         let executor_supplied = executor.is_some();
         let mut executor = executor
             .unwrap_or_else(|| Executor::new(Arc::clone(&registry), Arc::new(config.clone())));
+        if !executor_supplied {
+            if let Some(handler) = approval_handler {
+                executor.set_approval_handler(handler);
+            }
+            executor.set_policy(policy);
+        }
 
         // Issue #71: this instance owns exactly one toggle store. Bind it to the
         // executor so the pipeline `module_lookup` step (read path) consults it,
@@ -179,23 +235,26 @@ impl APCore {
             }
         }
 
+        let mut startup = SysModulesStartup::default();
         let sys_modules_context = if Self::sys_modules_enabled(&config) {
-            match crate::sys_modules::register_sys_modules_with_options(
+            match crate::sys_modules::register_sys_modules_for_client(
                 Arc::clone(&registry),
                 &executor,
                 &config,
                 metrics_collector.clone(),
                 crate::sys_modules::SysModulesOptions {
                     toggle_state: Some(Arc::clone(&toggle_state)),
+                    fail_on_error,
                     ..Default::default()
                 },
+                &mut startup,
             ) {
                 Ok(ctx) => Some(ctx),
                 Err(e) => {
-                    // Lenient default: log and continue. Callers wanting
-                    // strict failure should use `register_sys_modules_with_options`
-                    // with `fail_on_error: true` directly.
-                    tracing::error!(error = %e, "System modules registration failed");
+                    if !fail_on_error {
+                        tracing::error!(error = %e, "System modules registration failed");
+                    }
+                    startup.errors.push(e);
                     None
                 }
             }
@@ -203,11 +262,10 @@ impl APCore {
             None
         };
 
-        // Share ONE event bus across the client, registry callbacks, and sys
-        // modules (D1-011). When sys_modules is enabled, reuse its emitter so
-        // `on()`/`events()` receive module-registration and toggle events; when
-        // disabled, leave it `None` (a standalone bus is created lazily on `on()`).
-        let event_emitter = sys_modules_context.as_ref().map(|c| Arc::clone(&c.emitter));
+        let event_emitter = sys_modules_context
+            .as_ref()
+            .filter(|_| startup.events_enabled)
+            .map(|context| Arc::clone(&context.emitter));
 
         // Thread the shared event bus into the auto-created executor so the
         // pipeline publishes governance events (apcore#77:
@@ -228,8 +286,15 @@ impl APCore {
             event_emitter,
             metrics_collector,
             sys_modules_context,
+            sys_modules_errors: startup.errors,
             toggle_state,
         }
+    }
+
+    /// System-module registration failures recovered during startup.
+    #[must_use]
+    pub fn sys_modules_errors(&self) -> &[SysModuleError] {
+        &self.sys_modules_errors
     }
 
     /// Shared handle to this instance's per-instance toggle store (issue #71).

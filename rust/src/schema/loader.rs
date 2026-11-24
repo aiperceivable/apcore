@@ -61,14 +61,11 @@ impl SchemaLoader {
     /// `schemas_dir` overrides the directory used by [`Self::load`] to resolve schema files.
     /// When `schemas_dir` is `None` the loader falls back to `config.schema.root`, then
     /// `config.modules_path`, and finally to the current working directory.
+    /// `schema.root` uses the project's path base (§9.2.2).
     pub fn with_config(config: &Config, schemas_dir: Option<&Path>) -> Self {
         let resolved_dir = schemas_dir
             .map(std::path::Path::to_path_buf)
-            .or_else(|| {
-                config
-                    .get("schema.root")
-                    .and_then(|v| v.as_str().map(PathBuf::from))
-            })
+            .or_else(|| config.get_path("schema.root"))
             .or_else(|| config.modules_path.clone());
         let max_ref_depth = config
             .get("schema.max_ref_depth")

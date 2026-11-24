@@ -279,6 +279,8 @@ export interface SysModulesContext {
 
 export interface RegisterSysModulesOptions {
   failOnError?: boolean;
+  /** Called for each module registration failure recovered in lenient mode. */
+  onRegistrationError?: (error: SysModuleRegistrationError) => void;
   overridesPath?: string;
   /** Pluggable persistent override store (Issue #45.1). */
   overridesStore?: OverridesStore;
@@ -375,7 +377,7 @@ export function registerSysModules(
   const toggleState = options?.toggleState ?? undefined;
 
   // §9.15.3: prefer config.namespace('sys_modules') in namespace mode
-  const sysCfg = _resolveSysCfg(config);
+  let sysCfg = _resolveSysCfg(config);
 
   if (!_cfgGet(sysCfg, config, 'enabled', false)) {
     return result;
@@ -387,9 +389,13 @@ export function registerSysModules(
   // got neither persistence nor restore — and APCore never passes the option
   // (client.ts installs sys modules with `{ toggleState }` only), so the config
   // key was the ONLY way a real deployment could reach it (finding A-D-015).
-  const overridesPath =
-    options?.overridesPath ??
-    (_cfgGet(sysCfg, config, 'control.overrides_path', null) as string | null);
+  let overridesPath = options?.overridesPath ?? null;
+  if (overridesPath === null) {
+    const configuredPath = _cfgGet(sysCfg, config, 'control.overrides_path', null);
+    if (typeof configuredPath === 'string' && configuredPath !== '') {
+      overridesPath = config.resolvePath(configuredPath);
+    }
+  }
 
   // SYS-2: the path must reach the WRITE side too, not only the restore.
   // `ToggleFeatureModule` has no path field — it persists a decision only
@@ -448,6 +454,8 @@ export function registerSysModules(
     } catch (err) {
       console.warn('[apcore:sys-modules] Failed to load overrides from OverridesStore:', err);
     }
+    // Namespace lookup returns a copy. Read the effective settings after overrides.
+    sysCfg = _resolveSysCfg(config);
   }
 
   // Error history
@@ -473,9 +481,9 @@ export function registerSysModules(
       registry.registerInternal(id, mod);
     } catch (err) {
       const cause = err instanceof Error ? err : new Error(String(err));
-      if (failOnError) {
-        throw new SysModuleRegistrationError(id, cause);
-      }
+      const error = new SysModuleRegistrationError(id, cause);
+      if (failOnError) throw error;
+      options?.onRegistrationError?.(error);
       console.error(`[apcore:sys-modules] Failed to register system module '${id}':`, err);
     }
   };
