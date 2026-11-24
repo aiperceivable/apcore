@@ -6,6 +6,32 @@ This repository contains the language-agnostic protocol specification, docs, JSO
 
 Tech stack: **MkDocs Material** + GitHub Pages + JSON Schema Draft 2020-12.
 
+## Development Guidelines
+
+### Project Boundaries
+
+- Use [SCOPE.md](SCOPE.md) to determine ownership before designing a feature or fix. APCore owns the module standard, canonical schemas, shared conformance fixtures, and the protocol-neutral runtime that discovers, validates, governs, and executes modules.
+- [apcore-surfaces](https://github.com/aiperceivable/apcore-surfaces) owns Toolkit and the MCP, A2A, and CLI adapters. Workflow orchestration, agent logic, and framework integrations belong to their ecosystem projects. For a request that spans repositories, trace the ownership of the behavior and keep the APCore change at the core contract or extension point it owns.
+- Follow this file for repository-wide scope and shared behavior. Also read the local `CLAUDE.md` for each affected SDK ([Python](python/CLAUDE.md), [TypeScript](typescript/CLAUDE.md), [Rust](rust/CLAUDE.md)) for language-specific implementation and checks.
+
+### Before Implementing Any Change
+
+1. Define the required observable behavior and acceptance criteria, including who relies on the current behavior and which compatibility guarantees apply.
+2. Read the applicable [protocol specification](docs/spec/protocol-spec.md), [decision records](docs/spec/decision-register.md), and feature docs. Trace the actual entry point, call path, and tests in the relevant SDKs to understand the current architecture, the design intent, and the invariants the change must preserve.
+3. Compare plausible fixes or designs against correctness, compatibility, cross-language impact, and maintenance cost. Reuse existing mechanisms where they fit, and choose the simplest solution that fully meets the requirement at the layer that owns it.
+
+### New Features and Behavior Changes
+
+- Check the impact on all three SDKs. When a change affects the shared protocol or observable module behavior, align the affected implementations and conformance drivers in the same change. Keep shared expectations in the root [conformance fixtures](conformance/README.md) and have the drivers assert observable results. Use the existing spec change checklist when the contract itself needs to change.
+- SDK-specific changes can stay local when the shared contract is preserved. Use each language's idioms while preserving the shared semantics, including validation, wire errors, and execution order where relevant.
+- Verify the behavior through the normal public entry point. Run the affected SDK checks and the relevant conformance cases and guards. Update the applicable docs, schemas, and fixtures when the behavior they describe changes.
+
+### Bug Fixes
+
+1. Reproduce the reported behavior before editing production code. Establish the expected result from the protocol, an applicable design decision, or the public API contract.
+2. Trace the failure to its root cause. Identify the first point where the implementation diverges from the expected behavior, the conditions that trigger it, and whether the other SDKs share the cause. Use the specification to resolve differences between SDKs.
+3. Fix the cause at the layer that owns the behavior. Where practical, capture the reproducer in a regression test and confirm it fails before the fix and passes after it. Use a shared fixture for a shared contract and an SDK-local test for a language-specific defect.
+
 ## Directory Conventions
 
 ```
