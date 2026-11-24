@@ -522,9 +522,9 @@ export class ExecutionStrategy {
    * with a confusing runtime error. Throwing at construction surfaces the
    * problem immediately and tells the caller which step / field is missing.
    */
-  private _validateDependencies(): void {
+  private _validateDependencies(steps: readonly Step[] = this._steps): void {
     const provided = new Set<string>(this._seedProvides);
-    for (const step of this._steps) {
+    for (const step of steps) {
       const requires = step.requires ?? [];
       const missing: string[] = [];
       for (const req of requires) {
@@ -552,21 +552,15 @@ export class ExecutionStrategy {
 
   /** Insert a step after the named anchor step. */
   insertAfter(anchor: string, step: Step): void {
-    assertGateNotWeakened(step);
-    if (this._nameToIdx.has(step.name)) {
-      throw new StepNameDuplicateError(`Step '${step.name}' already exists`);
-    }
-    const anchorIdx = this._nameToIdx.get(anchor);
-    if (anchorIdx === undefined) {
-      throw new StepNotFoundError(`Anchor step '${anchor}' not found`);
-    }
-    this._steps.splice(anchorIdx + 1, 0, step);
-    this._rebuildIndex();
-    this._validateDependencies();
+    this._insert(anchor, step, 1);
   }
 
   /** Insert a step before the named anchor step. */
   insertBefore(anchor: string, step: Step): void {
+    this._insert(anchor, step, 0);
+  }
+
+  private _insert(anchor: string, step: Step, offset: number): void {
     assertGateNotWeakened(step);
     if (this._nameToIdx.has(step.name)) {
       throw new StepNameDuplicateError(`Step '${step.name}' already exists`);
@@ -575,9 +569,11 @@ export class ExecutionStrategy {
     if (anchorIdx === undefined) {
       throw new StepNotFoundError(`Anchor step '${anchor}' not found`);
     }
-    this._steps.splice(anchorIdx, 0, step);
+    const candidate = [...this._steps];
+    candidate.splice(anchorIdx + offset, 0, step);
+    this._validateDependencies(candidate);
+    this._steps = candidate;
     this._rebuildIndex();
-    this._validateDependencies();
   }
 
   /** Remove a step by name. Raises if the step is not removable. */
@@ -955,7 +951,7 @@ export class PipelineEngine {
    * Invoke `onStepError` on `middlewares` in REVERSE registration order for
    * OBSERVATION AND CLEANUP ONLY, discarding every return value.
    *
-   * This is the `beforeStep`-failure unwind. It is deliberately NOT
+   * This unwinds beforeStep and governance gate failures. It is deliberately NOT
    * `_runStepErrorHooks`: that method stops at the first non-null return
    * because it is shopping for a recovery value, and there is no recovery to
    * be had here (docs/features/middleware-system.md → "A `before_step` failure
@@ -982,8 +978,7 @@ export class PipelineEngine {
         await _maybeAwait(mw.onStepError(stepName, state, error));
       } catch (e) {
         console.warn(
-          `[apcore:pipeline] StepMiddleware.onStepError threw while unwinding a ` +
-            `failed beforeStep for step '${stepName}':`,
+          `[apcore:pipeline] StepMiddleware.onStepError threw while unwinding step '${stepName}':`,
           e,
         );
       }
@@ -1038,6 +1033,13 @@ export class PipelineEngine {
 
     const stepOutputs: Record<string, unknown> = {};
     const failedProvides = new Set<string>();
+    const completedStep = (stepName: string): boolean => {
+      stepOutputs[stepName] = ctx.output != null ? { ...ctx.output } : null;
+      if (!ctx.runUntil?.({ stepName, outputs: stepOutputs, context: ctx })) return false;
+      trace.totalDurationMs = performance.now() - pipelineStart;
+      trace.success = true;
+      return true;
+    };
 
     let idx = 0;
     while (idx < steps.length) {
@@ -1110,7 +1112,7 @@ export class PipelineEngine {
       //     middlewares only, in reverse order.
       const executedStepMws: StepMiddleware[] = [];
       let chainError: MiddlewareChainError | null = null;
-      for (const mw of this._stepMiddlewares) {
+      for (const mw of ctx.dryRun ? [] : this._stepMiddlewares) {
         executedStepMws.push(mw);
         if (!mw.beforeStep) continue;
         try {
@@ -1205,12 +1207,13 @@ export class PipelineEngine {
 
         // 3 b onStepError hooks: reverse registration order (onion model),
         //     first non-null recovery wins and short-circuits the rest (§2.2).
-        const recovery = await this._runStepErrorHooks(
-          step.name,
-          stepState,
-          cause,
-          executedStepMws,
-        );
+        const isGovernanceGate = governanceGateOf(step) !== null;
+        let recovery: unknown;
+        if (isGovernanceGate) {
+          await this._runStepCleanupHooks(step.name, stepState, cause, executedStepMws);
+        } else {
+          recovery = await this._runStepErrorHooks(step.name, stepState, cause, executedStepMws);
+        }
 
         if (recovery != null) {
           // The recovery value BECOMES the step's output (Normative Rules;
@@ -1242,13 +1245,13 @@ export class PipelineEngine {
           // the rule — the conformance fixture recovers from nothing and
           // cannot reach it, so it is pinned by
           // tests/test-pipeline-step-middleware.test.ts instead.
-          stepOutputs[step.name] = ctx.output != null ? { ...ctx.output } : null;
+          if (completedStep(step.name)) return [ctx.output ?? null, trace];
           idx += 1;
           continue;
         }
 
         // 4 ignore_errors: log and continue
-        if (stepIgnoreErrors) {
+        if (stepIgnoreErrors && !isGovernanceGate) {
           console.warn(`[apcore:pipeline] Step '${step.name}' failed (ignored):`, cause.message);
           trace.steps.push({
             name: step.name,
@@ -1311,23 +1314,7 @@ export class PipelineEngine {
 
       // 6 Handle abort / skip_to / continue
       if (result.action === 'continue') {
-        // Snapshot output for run_until predicates (protocol-spec §5.16 requirement 4)
-        stepOutputs[step.name] = ctx.output != null ? { ...ctx.output } : null;
-
-        // 7 run_until: evaluate predicate after each successful continue (protocol-spec §5.16 requirement 4)
-        if (ctx.runUntil != null) {
-          const state: PipelineState = {
-            stepName: step.name,
-            outputs: stepOutputs,
-            context: ctx,
-          };
-          if (ctx.runUntil(state)) {
-            trace.totalDurationMs = performance.now() - pipelineStart;
-            trace.success = true;
-            return [ctx.output ?? null, trace];
-          }
-        }
-
+        if (completedStep(step.name)) return [ctx.output ?? null, trace];
         idx += 1;
       } else if (result.action === 'abort') {
         trace.totalDurationMs = performance.now() - pipelineStart;

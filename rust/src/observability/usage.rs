@@ -168,7 +168,11 @@ impl UsageCollector {
         if let Some(backend) = self.storage_backend.clone() {
             if let Ok(handle) = tokio::runtime::Handle::try_current() {
                 let module_id = module_id.to_string();
-                let key = format!("{module_id}:{}", at.timestamp_nanos_opt().unwrap_or(0));
+                let key = format!(
+                    "{module_id}:{}:{}",
+                    at.timestamp_nanos_opt().unwrap_or(0),
+                    uuid::Uuid::new_v4()
+                );
                 handle.spawn(async move {
                     if let Ok(value) = serde_json::to_value(&record) {
                         let _ = backend.save("usage", &key, value).await;

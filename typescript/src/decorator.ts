@@ -1,13 +1,14 @@
 /**
  * Module factory, FunctionModule wrapper.
  *
- * TypeScript version uses explicit TypeBox schemas instead of runtime type inference.
+ * Accepts explicit TypeBox schemas and schemas emitted by the APCore transformer.
  */
 
-import type { TSchema } from '@sinclair/typebox';
+import { Kind, type TSchema } from '@sinclair/typebox';
 import type { Context } from './context.js';
-import { InvalidInputError } from './errors.js';
+import { FuncMissingReturnTypeError, FuncMissingTypeHintError, InvalidInputError } from './errors.js';
 import type { ModuleAnnotations, ModuleExample, ResourceLimits } from './module.js';
+import { jsonSchemaToTypeBox } from './schema/loader-pure.js';
 
 export function normalizeResult(result: unknown): Record<string, unknown> {
   if (result === null || result === undefined) return {};
@@ -33,10 +34,10 @@ export class FunctionModule {
    */
   readonly resources: ResourceLimits | null;
 
-  private _executeFn: (inputs: Record<string, unknown>, context: Context) => Promise<Record<string, unknown>> | Record<string, unknown>;
+  private _executeFn: (inputs: Record<string, unknown>, context: Context) => unknown;
 
   constructor(options: {
-    execute: (inputs: Record<string, unknown>, context: Context) => Promise<Record<string, unknown>> | Record<string, unknown>;
+    execute: (inputs: Record<string, unknown>, context: Context) => unknown;
     moduleId: string;
     inputSchema: TSchema;
     outputSchema: TSchema;
@@ -131,12 +132,12 @@ function warnOnUnknownModuleOptions(moduleId: string, options: Record<string, un
 }
 
 /**
- * Create a FunctionModule from options. TypeScript version requires explicit schemas.
+ * Create a FunctionModule using explicit schemas or the build-time transformer.
  */
-export function module(options: {
+export function module<Input extends object = Record<string, unknown>>(options: {
   id?: string;
-  inputSchema: TSchema;
-  outputSchema: TSchema;
+  inputSchema?: TSchema | Record<string, unknown>;
+  outputSchema?: TSchema | Record<string, unknown>;
   description?: string;
   documentation?: string | null;
   annotations?: ModuleAnnotations | null;
@@ -146,7 +147,7 @@ export function module(options: {
   examples?: ModuleExample[] | null;
   display?: Record<string, unknown> | null;
   resources?: ResourceLimits | null;
-  execute: (inputs: Record<string, unknown>, context: Context) => Promise<Record<string, unknown>> | Record<string, unknown>;
+  execute: (inputs: Input, context: Context) => unknown;
   registry?: { register(moduleId: string, module: unknown): void } | null;
 }): FunctionModule {
   // Spec PROTOCOL_SPEC.md §5.11.6 mandates auto-generated module IDs follow
@@ -166,12 +167,14 @@ export function module(options: {
   const moduleId = options.id;
 
   warnOnUnknownModuleOptions(moduleId, options);
+  if (options.inputSchema === undefined) throw new FuncMissingTypeHintError(moduleId, 'input');
+  if (options.outputSchema === undefined) throw new FuncMissingReturnTypeError(moduleId);
 
   const fm = new FunctionModule({
-    execute: options.execute,
+    execute: options.execute as (inputs: Record<string, unknown>, context: Context) => unknown,
     moduleId,
-    inputSchema: options.inputSchema,
-    outputSchema: options.outputSchema,
+    inputSchema: compiledSchema(options.inputSchema),
+    outputSchema: compiledSchema(options.outputSchema),
     description: options.description,
     documentation: options.documentation,
     tags: options.tags,
@@ -188,4 +191,8 @@ export function module(options: {
   }
 
   return fm;
+}
+
+function compiledSchema(schema: TSchema | Record<string, unknown>): TSchema {
+  return Kind in schema ? schema as TSchema : jsonSchemaToTypeBox(schema as Record<string, unknown>);
 }

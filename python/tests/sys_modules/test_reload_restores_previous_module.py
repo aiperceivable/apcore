@@ -62,6 +62,22 @@ def _reload_module(registry: Registry) -> ReloadModule:
 
 
 class TestFailedReloadRestoresThePreviousModule:
+    def test_failed_rediscovery_preserves_all_versions_and_metadata(self, tmp_path) -> None:
+        calls: list[str] = []
+        registry = Registry(extensions_dir=str(tmp_path))
+        original = _HookRecordingModule("original", calls)
+        latest = _HookRecordingModule("latest", calls)
+        registry.register("executor.probe", original, version="1.0.0", metadata={"tags": ["first"]})
+        registry.register("executor.probe", latest, version="2.0.0", metadata={"tags": ["second"]})
+
+        with pytest.raises(ReloadFailedError):
+            _reload_module(registry).execute({"module_id": "executor.probe", "reason": "hot-fix"}, None)
+
+        assert registry.get("executor.probe") is latest
+        assert registry.get("executor.probe", version_hint="1.0.0") is original
+        assert registry.get_definition("executor.probe").tags == ["second"]
+        assert registry.get_definition("executor.probe", version_hint="1.0.0").tags == ["first"]
+
     def test_the_original_instance_is_back_after_a_failed_rediscovery(self) -> None:
         calls: list[str] = []
         original = _HookRecordingModule("original", calls)

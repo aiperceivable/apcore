@@ -8,7 +8,8 @@ from typing import Any
 
 import pytest
 
-from apcore.errors import CircuitBreakerOpenError, CircuitOpenError
+from apcore.cancel import ExecutionCancelledError
+from apcore.errors import CircuitBreakerOpenError, CircuitOpenError, ModuleError
 from apcore.middleware.circuit_breaker import (
     CTX_CIRCUIT_STATE,
     CircuitBreakerMiddleware,
@@ -269,6 +270,33 @@ def test_probe_success_closes_circuit() -> None:
     assert len(closed) == 1
     assert closed[0].data["module_id"] == "m1"
     assert closed[0].data["caller_id"] == "c1"
+
+
+@pytest.mark.asyncio
+async def test_cancelled_probe_releases_the_next_probe() -> None:
+    from apcore.client import APCore
+
+    clock = _MutableClock()
+    breaker = CircuitBreakerMiddleware(min_samples=1, recovery_window_ms=10, clock=clock)
+    client = APCore()
+    client.use(breaker)
+    outcomes = iter((ModuleError(code="TEMPORARY", message="failed"), ExecutionCancelledError(), None))
+
+    @client.module(id="test.probe")
+    async def probe() -> dict:
+        error = next(outcomes)
+        if error is not None:
+            raise error
+        return {"healthy": True}
+
+    with pytest.raises(ModuleError, match="TEMPORARY"):
+        await client.call_async("test.probe")
+    clock.advance_ms(10)
+    with pytest.raises(ExecutionCancelledError):
+        await client.call_async("test.probe")
+
+    assert await client.call_async("test.probe") == {"healthy": True}
+    assert breaker.get_state("test.probe") == CircuitBreakerState.CLOSED
 
 
 def test_probe_failure_reopens_circuit() -> None:

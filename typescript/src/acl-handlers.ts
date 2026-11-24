@@ -271,14 +271,18 @@ export class ArgumentsHandler implements ACLOutcomeConditionHandler {
     this._projection = projection;
   }
 
-  evaluateOutcome(value: unknown, _context: Context, path = 'arguments'): ConditionOutcome {
+  evaluateOutcome(
+    value: unknown,
+    _context: Context,
+    path = 'arguments',
+    projection = this._projection(),
+  ): ConditionOutcome {
     // Structure first, so a malformed predicate is UNEVALUABLE whether or not
     // a projection happens to be available. §6.1.4's precheck normally reports
     // this before evaluation begins; the guard stays because
     // `_evaluateConditions` is reachable directly.
     if (describeArgumentsFaults(value, path).length > 0) return 'unevaluable';
 
-    const projection = this._projection();
     if (projection === null) {
       // No projection was supplied for this evaluation — a bare `check()` from
       // tooling, or an ACL consulted outside the pipeline. The condition asks
@@ -441,6 +445,7 @@ export class OrHandlerAsync implements ACLOutcomeConditionHandler {
     value: unknown,
     context: Context,
     path = '$or',
+    evaluate = this._evaluate,
   ): Promise<ConditionOutcome> {
     if (!Array.isArray(value)) return 'unevaluable';
     let sawUnevaluable = false;
@@ -450,7 +455,7 @@ export class OrHandlerAsync implements ACLOutcomeConditionHandler {
         sawUnevaluable = true;
         continue;
       }
-      const outcome = await this._evaluate(sub, context, `${path}[${i}]`);
+      const outcome = await evaluate(sub, context, `${path}[${i}]`);
       if (outcome === 'satisfied') return 'satisfied';
       if (outcome === 'unevaluable') sawUnevaluable = true;
     }
@@ -474,9 +479,10 @@ export class NotHandlerAsync implements ACLOutcomeConditionHandler {
     value: unknown,
     context: Context,
     path = '$not',
+    evaluate = this._evaluate,
   ): Promise<ConditionOutcome> {
     if (!isPlainObject(value)) return 'unevaluable';
-    const outcome = await this._evaluate(value, context, path);
+    const outcome = await evaluate(value, context, path);
     if (outcome === 'unevaluable') return 'unevaluable';
     return outcome === 'satisfied' ? 'unsatisfied' : 'satisfied';
   }

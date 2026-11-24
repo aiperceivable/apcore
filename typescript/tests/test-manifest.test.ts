@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { Type } from '@sinclair/typebox';
 import { Registry } from '../src/registry/registry.js';
 import { Config } from '../src/config.js';
+import { Executor } from '../src/executor.js';
 import { InvalidInputError, ModuleNotFoundError } from '../src/errors.js';
 import { ManifestModule, ManifestFullModule } from '../src/sys-modules/manifest.js';
 
@@ -39,6 +40,17 @@ describe('ManifestModule', () => {
       'system.test_mod',
       createDummyModule({ description: 'Test module description' }),
     );
+  });
+
+  it('returns nullable fields through executor output validation', async () => {
+    registry.registerInternal('system.manifest.module', new ManifestModule(registry));
+    const executor = new Executor({ registry });
+
+    await expect(executor.call('system.manifest.module', { module_id: 'system.test_mod' })).resolves.toMatchObject({
+      module_id: 'system.test_mod',
+      documentation: null,
+      source_path: null,
+    });
   });
 
   it('throws InvalidInputError when module_id is missing', () => {

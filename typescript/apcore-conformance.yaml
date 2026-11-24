@@ -37,10 +37,6 @@ conformance:
       spec: Conformance §5.3
       reason: Only the eight issue-123 fixtures and the bare-name fixture are counted; full Level 1 and Level 2 fixture verification is not certified.
       severity: major
-    - feature: Version negotiation on load
-      spec: §13.3
-      reason: The version negotiation helper is not invoked when loading configuration or schema files.
-      severity: major
     - feature: Schema migration
       spec: §13.4
       reason: Schema migration is not implemented.

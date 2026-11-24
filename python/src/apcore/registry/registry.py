@@ -9,6 +9,7 @@ import re
 import threading
 import time
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Iterator, Protocol, runtime_checkable
 
@@ -41,6 +42,20 @@ if TYPE_CHECKING:
     from apcore.config import Config
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class _ModuleRegistration:
+    module: Any
+    metadata: dict[str, Any]
+    descriptor_metadata: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class _RegistrationSnapshot:
+    module: Any
+    metadata: dict[str, Any]
+    versions: dict[str, _ModuleRegistration]
 
 
 def _canonical_deprecation(deprecation: dict[str, Any]) -> str:
@@ -496,8 +511,7 @@ class Registry:
         self._module_meta: dict[str, dict[str, Any]] = {}
         self._lowercase_map: dict[str, str] = {}
         # Versioned storage for multi-version module support (F18)
-        self._versioned_modules: VersionedStore[Any] = VersionedStore()
-        self._versioned_meta: VersionedStore[dict[str, Any]] = VersionedStore()
+        self._versioned_modules: VersionedStore[_ModuleRegistration] = VersionedStore()
         self._callbacks: dict[str, list[Callable[..., Any]]] = {
             REGISTRY_EVENTS["REGISTER"]: [],
             REGISTRY_EVENTS["UNREGISTER"]: [],
@@ -538,6 +552,7 @@ class Registry:
 
         # Safe hot-reload state (F09 / Algorithm A21)
         self._ref_counts: dict[str, int] = {}
+        self._lease_generations: dict[str, object] = {}
         self._draining: set[str] = set()
         self._drain_events: dict[str, threading.Event] = {}
 
@@ -565,7 +580,7 @@ class Registry:
             if isinstance(from_config, str) and from_config.strip():
                 resolved_id_map = config.resolve_path(from_config)
         if resolved_id_map is not None:
-            self._id_map = load_id_map(Path(resolved_id_map))
+            self._id_map = load_id_map(resolved_id_map)
 
     @staticmethod
     def _roots_from_config(config: Config) -> list[dict[str, Any]]:
@@ -868,9 +883,8 @@ class Registry:
                 ignore_patterns=ignore_patterns,
             )
         else:
-            root_path = Path(self._extension_roots[0]["root"])
             discovered = scan_extensions(
-                root=root_path,
+                root=self._extension_roots[0]["root"],
                 max_depth=max_depth,
                 follow_symlinks=follow_symlinks,
                 ignore_patterns=ignore_patterns,
@@ -1146,7 +1160,7 @@ class Registry:
         """Stage 8 — instantiate, register, and run on_load() for each module.
 
         Populates both the primary ``_modules`` map AND the multi-version
-        ``_versioned_modules`` / ``_versioned_meta`` stores so that
+        ``_versioned_modules`` store so that
         ``Registry.get(id, version_hint=...)`` resolves discovered modules
         identically to manually-registered ones. Prior revisions only wrote
         to ``_modules``, leaving version-hint queries unable to see
@@ -1199,9 +1213,7 @@ class Registry:
             # Phase 3: atomic publish.
             with self._lock:
                 self._in_flight.discard(mod_id)
-                self._versioned_modules.add(mod_id, effective_version, module)
-                if meta:
-                    self._versioned_meta.add(mod_id, effective_version, meta)
+                self._versioned_modules.add(mod_id, effective_version, _ModuleRegistration(module, merged_meta, meta))
                 self._modules[mod_id] = module
                 self._module_meta[mod_id] = merged_meta
                 self._lowercase_map[mod_id.lower()] = mod_id
@@ -1359,7 +1371,7 @@ class Registry:
         with self._lock:
             # Check the in-flight set FIRST so concurrent same-ID registrations are
             # rejected even when on_load is running (module not yet in _modules).
-            if not is_versioned and module_id in self._in_flight:
+            if module_id in self._in_flight:
                 raise InvalidInputError(
                     message=f"Module '{module_id}' is already being registered (in-flight)",
                     code=ErrorCodes.DUPLICATE_MODULE_ID,
@@ -1408,15 +1420,14 @@ class Registry:
             self._in_flight.discard(module_id)
 
             # Store in versioned store
-            self._versioned_modules.add(module_id, effective_version, module)
-            if metadata:
-                self._versioned_meta.add(module_id, effective_version, metadata)
+            registration = _ModuleRegistration(module, merged_meta, dict(metadata or {}))
+            self._versioned_modules.add(module_id, effective_version, registration)
 
             # Always point the primary map to the latest version
             latest = self._versioned_modules.get_latest(module_id)
             if latest is not None:
-                self._modules[module_id] = latest
-            self._module_meta[module_id] = merged_meta
+                self._modules[module_id] = latest.module
+                self._module_meta[module_id] = latest.metadata
             self._lowercase_map[module_id.lower()] = module_id
 
         self._trigger_event("register", module_id, module)
@@ -1435,31 +1446,17 @@ class Registry:
         Returns False if module was not registered.
         """
         with self._lock:
-            if module_id not in self._modules:
-                return False
-            module = self._modules.pop(module_id)
-            self._module_meta.pop(module_id, None)
-            self._schema_cache.pop(module_id, None)
-            self._lowercase_map.pop(module_id.lower(), None)
-            self._versioned_modules.remove_all(module_id)
-            self._versioned_meta.remove_all(module_id)
-            # Clear hot-reload tracking state to avoid stale entries if
-            # unregister() is called directly (not via safe_unregister()).
-            self._draining.discard(module_id)
-            self._drain_events.pop(module_id, None)
-            self._ref_counts.pop(module_id, None)
+            module = self._inline_unregister(module_id)
+        if module is None:
+            return False
+        self._notify_unregistered(module_id, module, context)
+        return True
 
-        # Call on_unload if available
-        if hasattr(module, "on_unload") and callable(module.on_unload):
-            try:
-                module.on_unload()
-            except Exception as e:
-                logger.error("on_unload() failed for module '%s': %s", module_id, e)
-
+    def _notify_unregistered(self, module_id: str, module: Any, context: Any = None) -> None:
+        self._call_on_unload(module_id, module)
         self._trigger_event("unregister", module_id, module)
         if _is_ephemeral(module_id):
             self._emit_ephemeral_audit("apcore.registry.module_unregistered", module_id, context)
-        return True
 
     # ----- Query Methods -----
 
@@ -1473,45 +1470,33 @@ class Registry:
             ModuleNotFoundError: If module_id is empty string, or if a
                 ``version_hint`` is supplied but ``module_id`` was registered
                 via :meth:`register_internal` (which deliberately skips
-                ``_versioned_modules`` / ``_versioned_meta`` — D11-001).
+                ``_versioned_modules`` — D11-001).
                 Sys/internal modules are not version-tracked; callers asking
                 for version resolution on one get a clear error rather than
                 a silent ``None``.
         """
+        registration = self._resolve_registration(module_id, version_hint)
+        return registration.module if registration else None
+
+    def _resolve_registration(self, module_id: str, version_hint: str | None) -> _ModuleRegistration | None:
+        """Select a module and its descriptor from one registry snapshot."""
         if module_id == "":
             raise ModuleNotFoundError(module_id="")
         with self._lock:
-            if version_hint is not None:
-                resolved = self._versioned_modules.resolve(module_id, version_hint)
-                if resolved is not None:
-                    return resolved
-                # Distinguish two "no match in versioned store" cases:
-                # 1. Module was registered via the public register() path —
-                #    appears in BOTH _modules AND _versioned_modules — the
-                #    hint just didn't match any registered version. Return
-                #    None to preserve "no-match returns None" semantics
-                #    expected by version-negotiation callers.
-                # 2. Module was registered via register_internal() — appears
-                #    in _modules but NOT in _versioned_modules. Sys/internal
-                #    modules deliberately opt out of version tracking
-                #    (D11-001). Raising a clear error beats silently
-                #    returning None which masks the asymmetry.
-                if module_id in self._modules and not self._versioned_modules.has(module_id):
-                    raise ModuleNotFoundError(
-                        module_id=module_id,
-                        message=(
-                            f"Module '{module_id}' is registered as a sys/internal "
-                            "module (via register_internal) and is not version-tracked; "
-                            "drop the version_hint argument to look it up by ID alone."
-                        ),
-                    )
+            if self._versioned_modules.has(module_id):
+                return self._versioned_modules.resolve(module_id, version_hint)
+            if module_id not in self._modules:
                 return None
-            # No hint: return latest from versioned store if available,
-            # otherwise fall back to primary map (covers register_internal).
-            latest = self._versioned_modules.get_latest(module_id)
-            if latest is not None:
-                return latest
-            return self._modules.get(module_id)
+            if version_hint is not None:
+                raise ModuleNotFoundError(
+                    module_id=module_id,
+                    message=(
+                        f"Module '{module_id}' is registered as a sys/internal "
+                        "module (via register_internal) and is not version-tracked; "
+                        "drop the version_hint argument to look it up by ID alone."
+                    ),
+                )
+            return _ModuleRegistration(self._modules[module_id], self._module_meta[module_id], {})
 
     def has(self, module_id: str) -> bool:
         """Check whether a module is registered."""
@@ -1663,22 +1648,12 @@ class Registry:
             module_id: The module ID.
             version_hint: Optional version hint for selecting a specific version.
         """
-        module = self.get(module_id, version_hint=version_hint)
-        if module is None:
+        registration = self._resolve_registration(module_id, version_hint)
+        if registration is None:
             return None
-
-        with self._lock:
-            meta = dict(self._module_meta.get(module_id, {}))
-            # Resolve versioned metadata under the version the module was
-            # REGISTERED with, which `_module_meta` now carries. Keying off
-            # `getattr(module, "version")` missed the versioned store whenever
-            # `register(..., version=...)` supplied a version the module object
-            # does not carry itself — so the caller's metadata silently vanished
-            # from the descriptor alongside the version (sync finding A-D-002).
-            version_str = meta.get("version") or getattr(module, "version", None) or DEFAULT_MODULE_VERSION
-            versioned_meta = self._versioned_meta.get(module_id, version_str)
-            if versioned_meta:
-                meta["metadata"] = {**meta.get("metadata", {}), **versioned_meta}
+        module = registration.module
+        meta = registration.metadata
+        version_str = meta.get("version") or getattr(module, "version", None) or DEFAULT_MODULE_VERSION
 
         cls = type(module)
 
@@ -1707,7 +1682,7 @@ class Registry:
             else {}
         )
 
-        effective_metadata = meta.get("metadata", {})
+        effective_metadata = {**meta.get("metadata", {}), **registration.descriptor_metadata}
 
         # Log deprecation warning if x-deprecation is present
         deprecation = effective_metadata.get("x-deprecation")
@@ -2128,54 +2103,37 @@ class Registry:
 
     @contextmanager
     def acquire(self, module_id: str) -> Iterator[Any]:
-        """Context manager to track in-flight executions for safe hot-reload.
+        """Hold a lease on the latest module while it is in use."""
+        with self._acquire_registration(module_id, None) as registration:
+            yield registration.module
 
-        Increments the reference count for the module on entry and decrements
-        it on exit.  If the module is draining (marked for unload), raises
-        ``ModuleNotFoundError`` to prevent new executions.
-
-        Yields:
-            The module instance.
-
-        Raises:
-            ModuleNotFoundError: If the module is currently draining.
-        """
+    @contextmanager
+    def _acquire_registration(self, module_id: str, version_hint: str | None) -> Iterator[_ModuleRegistration]:
         with self._lock:
             if module_id in self._draining:
                 raise ModuleNotFoundError(module_id=module_id)
-            if module_id not in self._modules:
+            registration = self._resolve_registration(module_id, version_hint)
+            if registration is None:
                 raise ModuleNotFoundError(module_id=module_id)
+            generation = self._lease_generations.setdefault(module_id, object())
             self._ref_counts[module_id] = self._ref_counts.get(module_id, 0) + 1
-            module = self._modules[module_id]
         try:
-            yield module
+            yield registration
         finally:
             with self._lock:
-                count = self._ref_counts.get(module_id, 1) - 1
-                self._ref_counts[module_id] = count
-                if count <= 0:
-                    self._ref_counts.pop(module_id, None)
-                    event = self._drain_events.get(module_id)
-                    if event:
-                        event.set()
+                if self._lease_generations.get(module_id) is generation:
+                    self.release(module_id)
 
     def release(self, module_id: str) -> None:
-        """Decrement the reference count for a module.
-
-        Standalone counterpart to the ``acquire()`` context manager for
-        cases where the caller cannot use a ``with`` block (e.g. async
-        streams that span multiple await points).
-
-        If the ref count reaches zero and the module is draining, the
-        drain event is signalled.
-        """
+        """Release one reference to the current module and notify a waiting unload."""
         with self._lock:
-            count = self._ref_counts.get(module_id, 1) - 1
-            self._ref_counts[module_id] = count
-            if count <= 0:
+            count = self._ref_counts.get(module_id, 0)
+            if count > 1:
+                self._ref_counts[module_id] = count - 1
+            elif count == 1:
                 self._ref_counts.pop(module_id, None)
                 event = self._drain_events.get(module_id)
-                if event:
+                if event is not None:
                     event.set()
 
     def is_draining(self, module_id: str) -> bool:
@@ -2204,34 +2162,25 @@ class Registry:
             remaining), False if it was force-unloaded after timeout.
         """
         with self._lock:
-            if module_id not in self._modules:
+            if module_id not in self._modules or module_id in self._draining:
                 return False
             self._draining.add(module_id)
-            ref_count = self._ref_counts.get(module_id, 0)
-            if ref_count > 0:
-                event = threading.Event()
-                self._drain_events[module_id] = event
-            else:
-                event = None
+            event = self._drain_events[module_id] = threading.Event()
+            if self._ref_counts.get(module_id, 0) == 0:
+                event.set()
 
-        clean = True
-        if event is not None:
-            if not event.wait(timeout=timeout_ms / 1000.0):
-                logger.warning(
-                    "Force-unloading module %s after %dms timeout (%d in-flight executions)",
-                    module_id,
-                    timeout_ms,
-                    self._ref_counts.get(module_id, 0),
-                )
-                clean = False
-
-        # Perform actual unregistration
+        clean = event.wait(timeout=timeout_ms / 1000.0)
         with self._lock:
-            self._draining.discard(module_id)
-            self._drain_events.pop(module_id, None)
-            self._ref_counts.pop(module_id, None)
-
-        self.unregister(module_id)
+            if self._drain_events.get(module_id) is not event:
+                return False
+            ref_count = self._ref_counts.get(module_id, 0)
+            module = self._inline_unregister(module_id)
+        if not clean:
+            logger.warning(
+                "Force-unloading module %s after %dms timeout (%d in-flight executions)",
+                module_id, timeout_ms, ref_count,
+            )
+        self._notify_unregistered(module_id, module)
         return clean
 
     # ----- Hot Reload -----
@@ -2276,7 +2225,44 @@ class Registry:
         self._module_meta.pop(mid, None)
         self._schema_cache.pop(mid, None)
         self._lowercase_map.pop(mid.lower(), None)
+        self._versioned_modules.remove_all(mid)
+        self._draining.discard(mid)
+        event = self._drain_events.pop(mid, None)
+        if event is not None:
+            event.set()
+        self._ref_counts.pop(mid, None)
+        self._lease_generations.pop(mid, None)
         return module
+
+    def _snapshot_registration(self, module_id: str) -> _RegistrationSnapshot | None:
+        with self._lock:
+            if module_id not in self._modules:
+                return None
+            return _RegistrationSnapshot(
+                self._modules[module_id], self._module_meta[module_id], self._versioned_modules.snapshot(module_id)
+            )
+
+    def _restore_registration(self, module_id: str, registration: _RegistrationSnapshot | None) -> bool:
+        """Restore a detached registration after reinitializing its unloaded instance."""
+        if registration is None:
+            return False
+        with self._lock:
+            if module_id in self._modules or module_id in self._in_flight:
+                return False
+            self._in_flight.add(module_id)
+        module = registration.module
+        version = registration.metadata.get("version") or DEFAULT_MODULE_VERSION
+        if not self._invoke_on_load(module_id, module, version):
+            return False
+        with self._lock:
+            self._modules[module_id] = module
+            self._module_meta[module_id] = registration.metadata
+            self._lowercase_map[module_id.lower()] = module_id
+            for version, entry in registration.versions.items():
+                self._versioned_modules.add(module_id, version, entry)
+            self._in_flight.discard(module_id)
+        self._trigger_event("register", module_id, module)
+        return True
 
     def _handle_file_change(self, path: str) -> None:
         """Handle a file modification or creation event.
@@ -2288,7 +2274,7 @@ class Registry:
         registry. Lock is acquired only for the two short atomic sections:
         capturing the old module's snapshot + state maps, and inserting the
         new instance into all internal maps (``_modules``, ``_module_meta``,
-        ``_lowercase_map``, ``_versioned_modules``, ``_versioned_meta``).
+        ``_lowercase_map``, ``_versioned_modules``).
         """
         # Phase 1 (outside lock): compile + instantiate + validate new module.
         try:
@@ -2313,13 +2299,16 @@ class Registry:
             return
         if self._custom_validator is not None:
             try:
-                self._custom_validator.validate(instance)
+                errors = self._custom_validator.validate(instance)
             except Exception as e:
                 logger.warning(
                     "Hot reload rejected module from %s: custom validator raised: %s",
                     path,
                     e,
                 )
+                return
+            if errors:
+                logger.warning("Hot reload rejected module from %s: %s", path, "; ".join(errors))
                 return
 
         # Phase 2 (under lock): snapshot old module + inline unregister from
@@ -2330,13 +2319,12 @@ class Registry:
                 or self._path_to_module_id(path)
                 or os.path.splitext(os.path.basename(path))[0]
             )
-            old_module = self._modules.get(new_id)
+            old_registration = self._snapshot_registration(new_id)
             self._inline_unregister(new_id)
-            self._versioned_modules.remove_all(new_id)
-            self._versioned_meta.remove_all(new_id)
 
         # Phase 3 (outside lock): user hooks on the old module + unregister event.
         suspended_state: dict[str, Any] | None = None
+        old_module = old_registration.module if old_registration is not None else None
         if old_module is not None:
             suspended_state = self._call_on_suspend(new_id, old_module)
             self._call_on_unload(new_id, old_module)
@@ -2364,7 +2352,7 @@ class Registry:
             # D-112 rules 2-4, applied here via D-123: restore the previous
             # instance rather than leaving the module gone. A failed hot reload
             # must not make a working module disappear.
-            self._restore_after_failed_hot_reload(new_id, old_module, suspended_state)
+            self._restore_after_failed_hot_reload(new_id, old_registration, suspended_state)
             return
 
         # Phase 4b (under lock): insert the new instance into every store.
@@ -2372,8 +2360,8 @@ class Registry:
             self._modules[new_id] = instance
             self._module_meta[new_id] = merged_meta
             self._lowercase_map[new_id.lower()] = new_id
-            self._versioned_modules.add(new_id, effective_version, instance)
-            self._versioned_meta.add(new_id, effective_version, {"version": effective_version})
+            registration = _ModuleRegistration(instance, merged_meta, {"version": effective_version})
+            self._versioned_modules.add(new_id, effective_version, registration)
 
         # Phase 5 (outside lock): register event + on_resume hook on new module.
         self._trigger_event("register", new_id, instance)
@@ -2390,7 +2378,7 @@ class Registry:
     def _restore_after_failed_hot_reload(
         self,
         module_id: str,
-        old_module: Any | None,
+        registration: _RegistrationSnapshot | None,
         suspended_state: dict[str, Any] | None,
     ) -> None:
         """Republish the previous instance after a hot reload failed to load.
@@ -2408,7 +2396,7 @@ class Registry:
         that did not previously exist — there is no previous instance to return
         to, and the file simply failed to load.
         """
-        if old_module is None:
+        if registration is None:
             logger.error(
                 "Hot reload of '%s' failed its on_load() and there was no previous "
                 "instance to restore; the module is not registered.",
@@ -2416,8 +2404,7 @@ class Registry:
             )
             return
 
-        old_version = getattr(old_module, "version", None) or "1.0.0"
-        if not self._invoke_on_load(module_id, old_module, old_version):
+        if not self._restore_registration(module_id, registration):
             logger.error(
                 "Hot reload of '%s' failed its on_load(), and re-loading the previous "
                 "instance failed as well; the module stays unavailable (D-112 rule 3).",
@@ -2425,15 +2412,7 @@ class Registry:
             )
             return
 
-        merged_meta = merge_module_metadata(old_module, {})
-        with self._lock:
-            self._modules[module_id] = old_module
-            self._module_meta[module_id] = merged_meta
-            self._lowercase_map[module_id.lower()] = module_id
-            self._versioned_modules.add(module_id, old_version, old_module)
-            self._versioned_meta.add(module_id, old_version, {"version": old_version})
-
-        self._trigger_event("register", module_id, old_module)
+        old_module = registration.module
         if suspended_state is not None and hasattr(old_module, "on_resume") and callable(old_module.on_resume):
             try:
                 old_module.on_resume(suspended_state)
@@ -2475,8 +2454,8 @@ class Registry:
         try:
             module.on_unload()
         except Exception as e:
-            logger.warning(
-                "on_unload() failed for module '%s' during hot reload: %s",
+            logger.error(
+                "on_unload() failed for module '%s': %s",
                 module_id,
                 e,
             )
@@ -2496,8 +2475,6 @@ class Registry:
                 return
             module = self._modules.get(module_id)
             self._inline_unregister(module_id)
-            self._versioned_modules.remove_all(module_id)
-            self._versioned_meta.remove_all(module_id)
 
         if module is not None:
             self._call_on_unload(module_id, module)

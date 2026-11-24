@@ -303,7 +303,7 @@ export interface RegisterSysModulesOptions {
 type OverridesLoader = (path: string) => Record<string, unknown> | null;
 /**
  * Prefix under which `system.control.toggle_feature` persists its decisions.
- * Must match `toggle.ts` `_persistToggleOverride`, which writes
+ * Must match the toggle module, which writes
  * `toggle.${moduleId}`.
  */
 const TOGGLE_OVERRIDE_PREFIX = 'toggle.';
@@ -312,7 +312,7 @@ const TOGGLE_OVERRIDE_PREFIX = 'toggle.';
  * Apply a loaded overrides map.
  *
  * `toggle.<module_id>` keys are the persisted form of an approval-gated
- * `system.control.toggle_feature` call (toggle.ts `_persistToggleOverride`).
+ * `system.control.toggle_feature` call.
  * They are STATE, not configuration: routing them through `config.set()` — as
  * every override key used to be — turned the restore into an inert config
  * entry, so a module disabled before a restart came back enabled. apcore-python
@@ -448,6 +448,9 @@ export function registerSysModules(
         console.warn(
           '[apcore:sys-modules] OverridesStore.load() returned a Promise; async stores cannot be applied during synchronous registerSysModules. Pre-load and inject into Config directly.',
         );
+        void Promise.resolve(loaded).catch((error: unknown) => {
+          console.warn('[apcore:sys-modules] Failed to load overrides from OverridesStore:', error);
+        });
       } else {
         _applyOverrides(loaded as Record<string, unknown>, config, toggleState);
       }

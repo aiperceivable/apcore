@@ -709,6 +709,17 @@ describe('APCore.on() / off()', () => {
 // ---------------------------------------------------------------------------
 
 describe('APCore.enable() / disable()', () => {
+  it('updates the state used by the supplied executor when disabling a module', async () => {
+    const config = new Config({ sys_modules: { enabled: true, events: { enabled: true } } });
+    const executor = new Executor({ registry: new Registry(), config });
+    const client = new APCore({ config, executor });
+    registerAdd(client);
+
+    await client.disable('math.add', 'test');
+
+    await expect(client.call('math.add', { a: 1, b: 2 })).rejects.toMatchObject({ code: 'MODULE_DISABLED' });
+  });
+
   it('throws when sys_modules with events not enabled', async () => {
     const client = new APCore();
     await expect(client.disable('mod.a')).rejects.toThrow('sys_modules');

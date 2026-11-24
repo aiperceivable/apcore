@@ -119,8 +119,31 @@ where
     I: schemars::JsonSchema + serde::de::DeserializeOwned + Send + 'static,
     O: schemars::JsonSchema + serde::Serialize + Send + 'static,
 {
+    let (handler, input_schema, output_schema) =
+        typed_async_handler(move |input, _ctx| Box::pin(std::future::ready(f(input))));
+    TypedBindingHandler {
+        handler,
+        input_schema: Some(input_schema),
+        output_schema: Some(output_schema),
+    }
+}
+
+pub(crate) fn typed_async_handler<I, O>(
+    f: impl for<'a> Fn(
+            I,
+            &'a Context<serde_json::Value>,
+        )
+            -> Pin<Box<dyn std::future::Future<Output = Result<O, ModuleError>> + Send + 'a>>
+        + Send
+        + Sync
+        + 'static,
+) -> (BindingHandlerFn, serde_json::Value, serde_json::Value)
+where
+    I: schemars::JsonSchema + serde::de::DeserializeOwned + Send + 'static,
+    O: schemars::JsonSchema + serde::Serialize + Send + 'static,
+{
     let f = Arc::new(f);
-    let handler: BindingHandlerFn = Arc::new(move |input: serde_json::Value, _ctx| {
+    let handler: BindingHandlerFn = Arc::new(move |input: serde_json::Value, ctx| {
         let f = Arc::clone(&f);
         Box::pin(async move {
             let typed: I = serde_json::from_value(input).map_err(|e| {
@@ -129,7 +152,7 @@ where
                     format!("Failed to deserialize input: {e}"),
                 )
             })?;
-            let result = f(typed)?;
+            let result = f(typed, ctx).await?;
             serde_json::to_value(result).map_err(|e| {
                 ModuleError::new(
                     ErrorCode::GeneralInternalError,
@@ -139,14 +162,11 @@ where
         })
     });
 
-    let input_schema = Some(serde_json::to_value(schemars::schema_for!(I)).unwrap_or_default());
-    let output_schema = Some(serde_json::to_value(schemars::schema_for!(O)).unwrap_or_default());
-
-    TypedBindingHandler {
+    (
         handler,
-        input_schema,
-        output_schema,
-    }
+        serde_json::to_value(schemars::schema_for!(I)).unwrap_or_default(),
+        serde_json::to_value(schemars::schema_for!(O)).unwrap_or_default(),
+    )
 }
 
 /// `auto_schema` field accepts either a boolean or a mode string.
@@ -1598,7 +1618,7 @@ mod bindings_dir_from_config_tests {
         std::fs::write(
             &path,
             format!(
-                "version: '0.15.0'\n\
+                "version: '1.0.0'\n\
                  project:\n  name: demo\n\
                  extensions:\n  root: ./extensions\n\
                  schema:\n  root: ./schemas\n\

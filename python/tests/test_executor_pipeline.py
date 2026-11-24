@@ -13,6 +13,7 @@ from apcore.builtin_steps import (
     build_testing_strategy,
 )
 from apcore.context import Context
+from apcore.errors import InvalidInputError
 from apcore.executor import Executor
 from apcore.pipeline import (
     BaseStep,
@@ -174,6 +175,15 @@ class TestPresetStrategies:
 
 class TestCallWithTrace:
     """Tests for call_with_trace and call_async_with_trace."""
+
+    @pytest.mark.asyncio
+    async def test_call_async_with_trace_rejects_invalid_module_id(self) -> None:
+        executor = Executor(registry=Registry(), strategy="testing")
+
+        with pytest.raises(InvalidInputError) as exc_info:
+            await executor.call_async_with_trace("Invalid Module", {})
+
+        assert exc_info.value.code == "INVALID_MODULE_ID"
 
     def test_call_with_trace_returns_tuple(self) -> None:
         """call_with_trace returns (result, trace)."""

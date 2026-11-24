@@ -412,6 +412,24 @@ describe('PipelineEngine.run - dryRun', () => {
     const [, trace] = await engine.run(s, ctx);
     expect(trace.steps[0].skipped).toBe(false);
   });
+
+  it('runs pure checks without executing step middleware during a dry run', async () => {
+    const hookCalls: string[] = [];
+    const engine = new PipelineEngine();
+    engine.addStepMiddleware({
+      beforeStep: () => { hookCalls.push('before'); },
+      afterStep: () => { hookCalls.push('after'); },
+      onStepError: () => { hookCalls.push('error'); },
+    });
+    const ctx = makeContext();
+    ctx.dryRun = true;
+    const strategy = new ExecutionStrategy('validation', [makeStep('check', { pure: true })]);
+
+    const [, trace] = await engine.run(strategy, ctx);
+
+    expect(trace.steps.map((step) => [step.name, step.skipped])).toEqual([['check', false]]);
+    expect(hookCalls).toEqual([]);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -733,6 +751,25 @@ describe('Pipeline Hardening §1.2 — Replace Semantic (configureStep)', () => 
 });
 
 describe('Pipeline Hardening §1.4 — run_until', () => {
+  it('evaluates the stop predicate with the recovered step output', async () => {
+    const engine = new PipelineEngine();
+    engine.addStepMiddleware({
+      onStepError: () => ({ recovered: true }),
+    });
+    const ctx = makeContext();
+    ctx.runUntil = ({ stepName, outputs }) => stepName === 'recoverable' &&
+      (outputs.recoverable as { recovered?: boolean })?.recovered === true;
+    const strategy = new ExecutionStrategy('recovery', [
+      makeStep('recoverable', { throws: true }),
+      makeStep('next'),
+    ]);
+
+    const [output, trace] = await engine.run(strategy, ctx);
+
+    expect(output).toEqual({ recovered: true });
+    expect(trace.steps.map((step) => step.name)).toEqual(['recoverable']);
+  });
+
   it('halts pipeline after step where predicate returns true', async () => {
     const executed: string[] = [];
     const trackStep = (name: string): Step => ({

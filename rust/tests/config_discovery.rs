@@ -34,7 +34,7 @@ fn write_valid_yaml(dir: &TempDir, filename: &str) -> std::path::PathBuf {
     // Includes the spec-mandated required fields (A-D-03) so legacy-mode
     // validate() passes: version, project.name, extensions.root, schema.root,
     // acl.root, acl.default_effect.
-    writeln!(f, "version: '0.15.0'").unwrap();
+    writeln!(f, "version: '1.0.0'").unwrap();
     writeln!(f, "project:").unwrap();
     writeln!(f, "  name: demo").unwrap();
     writeln!(f, "extensions:").unwrap();
@@ -266,7 +266,7 @@ fn tier_6_config_path(home: &std::path::Path) -> std::path::PathBuf {
 fn write_valid_yaml_at(path: &std::path::Path) {
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     let mut f = std::fs::File::create(path).unwrap();
-    writeln!(f, "version: '0.15.0'").unwrap();
+    writeln!(f, "version: '1.0.0'").unwrap();
     writeln!(f, "project:").unwrap();
     writeln!(f, "  name: demo").unwrap();
     writeln!(f, "extensions:").unwrap();

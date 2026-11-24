@@ -86,7 +86,7 @@ fn write_config(dir: &Path, acl_root: Option<&str>, default_effect: &str) -> Pat
     }
     acl.insert("default_effect".to_string(), json!(default_effect));
     let config = json!({
-        "version": "0.26.0",
+        "version": "1.0.0",
         "project": { "name": "acl-root-discovery-conformance" },
         "extensions": { "root": "./extensions" },
         "schema": { "root": "./schemas" },

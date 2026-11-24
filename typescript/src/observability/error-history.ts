@@ -65,33 +65,69 @@ function heapCompare(a: HeapItem, b: HeapItem): number {
 }
 
 class MinHeap {
-  private _data: HeapItem[] = [];
+  private readonly _data: HeapItem[] = [];
+  private readonly _positions = new Map<ErrorEntry, number>();
 
   get size(): number {
     return this._data.length;
   }
 
-  push(item: HeapItem): void {
-    this._data.push(item);
-    this._siftUp(this._data.length - 1);
+  update(item: HeapItem): void {
+    const entry = item[2];
+    const position = this._positions.get(entry);
+    if (position === undefined) {
+      this._positions.set(entry, this._data.length);
+      this._data.push(item);
+      this._siftUp(this._data.length - 1);
+    } else {
+      const previous = this._data[position];
+      this._data[position] = item;
+      if (heapCompare(item, previous) < 0) this._siftUp(position);
+      else this._siftDown(position);
+    }
   }
 
-  pop(): HeapItem | undefined {
-    if (this._data.length === 0) return undefined;
+  pop(): ErrorEntry | undefined {
     const top = this._data[0];
+    if (top === undefined) return undefined;
+    this.remove(top[2]);
+    return top[2];
+  }
+
+  remove(entry: ErrorEntry): void {
+    const idx = this._positions.get(entry);
+    if (idx === undefined) return;
+    this._positions.delete(entry);
     const last = this._data.pop()!;
-    if (this._data.length > 0) {
-      this._data[0] = last;
-      this._siftDown(0);
+    if (idx < this._data.length) {
+      this._data[idx] = last;
+      this._positions.set(last[2], idx);
+      const parent = Math.floor((idx - 1) / 2);
+      if (idx > 0 && heapCompare(last, this._data[parent]) < 0) this._siftUp(idx);
+      else this._siftDown(idx);
     }
-    return top;
+  }
+
+  sequence(entry: ErrorEntry): number {
+    return this._data[this._positions.get(entry)!][1];
+  }
+
+  clear(): void {
+    this._data.length = 0;
+    this._positions.clear();
+  }
+
+  private _swap(a: number, b: number): void {
+    [this._data[a], this._data[b]] = [this._data[b], this._data[a]];
+    this._positions.set(this._data[a][2], a);
+    this._positions.set(this._data[b][2], b);
   }
 
   private _siftUp(idx: number): void {
     while (idx > 0) {
       const parent = Math.floor((idx - 1) / 2);
       if (heapCompare(this._data[idx], this._data[parent]) < 0) {
-        [this._data[idx], this._data[parent]] = [this._data[parent], this._data[idx]];
+        this._swap(idx, parent);
         idx = parent;
       } else break;
     }
@@ -110,7 +146,7 @@ class MinHeap {
         smallest = right;
       }
       if (smallest === idx) break;
-      [this._data[idx], this._data[smallest]] = [this._data[smallest], this._data[idx]];
+      this._swap(idx, smallest);
       idx = smallest;
     }
   }
@@ -136,7 +172,7 @@ export interface ErrorHistoryOptions {
  *   _moduleIndex: module_id → ErrorEntry[]      O(1) module lookup
  *   _heap: min-heap keyed on (lastOccurred, seq) O(log N) eviction of oldest
  *
- * Lazy deletion: stale heap items (from dedup timestamp refreshes) are skipped on pop.
+ * The heap keeps one node per live entry and updates it in place on repeats.
  */
 export class ErrorHistory {
   private readonly _maxEntriesPerModule: number;
@@ -146,6 +182,7 @@ export class ErrorHistory {
   private readonly _fpIndex: Map<string, ErrorEntry> = new Map();
   private readonly _moduleIndex: Map<string, ErrorEntry[]> = new Map();
   private readonly _heap: MinHeap = new MinHeap();
+  private readonly _pendingWrites = new Map<string, Record<string, unknown> | undefined>();
   private _seq = 0;
 
   constructor(options: ErrorHistoryOptions = {}) {
@@ -173,8 +210,8 @@ export class ErrorHistory {
       existing.count++;
       existing.lastOccurred = now;
       this._seq++;
-      this._heap.push([now, this._seq, existing]);
-      this._store.recordError(existing);
+      this._heap.update([now, this._seq, existing]);
+      this._recordEntry(existing);
       return;
     }
 
@@ -199,18 +236,20 @@ export class ErrorHistory {
     }
 
     this._seq++;
-    this._heap.push([now, this._seq, entry]);
+    this._heap.update([now, this._seq, entry]);
     this._evictModule(moduleId);
     this._evictTotal();
-    this._store.recordError(entry);
+    this._recordEntry(entry);
+  }
 
-    // D-113: persist under the canonical `error_history` namespace. The
-    // `storage` option was accepted here and read by nothing — one of the five
-    // collector/SDK combinations of nine where the MUST reached no mechanism.
-    // `save` is async and `record` is not, so the result is deliberately not
-    // awaited; a backend failure must not break the in-memory path, which is
-    // the authoritative one for `get`/`getAll`.
-    void this._storage.save(STORAGE_NAMESPACE_ERROR_HISTORY, fp, {
+  private _recordEntry(entry: ErrorEntry): void {
+    try {
+      this._store.recordError(entry);
+    } catch (error) {
+      console.warn('[apcore:error-history] Store notification failed', error);
+    }
+    const key = entry.fingerprint;
+    const snapshot = {
       module_id: entry.moduleId,
       code: entry.code,
       message: entry.message,
@@ -219,6 +258,31 @@ export class ErrorHistory {
       first_occurred: entry.firstOccurred,
       last_occurred: entry.lastOccurred,
       fingerprint: entry.fingerprint,
+    };
+    if (this._pendingWrites.has(key)) {
+      // Only the latest snapshot needs to be written after the active write.
+      this._pendingWrites.set(key, snapshot);
+      return;
+    }
+    this._save(key, snapshot);
+  }
+
+  private _save(key: string, snapshot: Record<string, unknown>): void {
+    let write: Promise<void> | void;
+    try {
+      write = this._storage.save(STORAGE_NAMESPACE_ERROR_HISTORY, key, snapshot);
+    } catch (error) {
+      console.warn('[apcore:error-history] Storage write failed', error);
+      return;
+    }
+    if (write === undefined) return;
+    this._pendingWrites.set(key, undefined);
+    void Promise.resolve(write).catch(error => {
+      console.warn('[apcore:error-history] Storage write failed', error);
+    }).then(() => {
+      const pending = this._pendingWrites.get(key);
+      this._pendingWrites.delete(key);
+      if (pending !== undefined) this._save(key, pending);
     });
   }
 
@@ -230,13 +294,14 @@ export class ErrorHistory {
 
   getAll(limit?: number): ErrorEntry[] {
     const all = [...this._fpIndex.values()];
-    all.sort((a, b) => (a.lastOccurred > b.lastOccurred ? -1 : 1));
+    all.sort((a, b) => b.lastOccurred.localeCompare(a.lastOccurred) || this._heap.sequence(b) - this._heap.sequence(a));
     return limit !== undefined ? all.slice(0, limit) : all;
   }
 
   clear(): void {
     this._fpIndex.clear();
     this._moduleIndex.clear();
+    this._heap.clear();
     this._store.clear();
   }
 
@@ -245,6 +310,7 @@ export class ErrorHistory {
     if (entries !== undefined) {
       for (const entry of entries) {
         this._fpIndex.delete(entry.fingerprint);
+        this._heap.remove(entry);
       }
       this._moduleIndex.delete(moduleId);
     }
@@ -256,6 +322,7 @@ export class ErrorHistory {
     while (entries.length > this._maxEntriesPerModule) {
       const evicted = entries.shift()!;
       this._fpIndex.delete(evicted.fingerprint);
+      this._heap.remove(evicted);
     }
     if (entries.length === 0) {
       this._moduleIndex.delete(moduleId);
@@ -269,22 +336,12 @@ export class ErrorHistory {
   }
 
   private _popOldest(): void {
-    while (this._heap.size > 0) {
-      const item = this._heap.pop()!;
-      const [ts, , entry] = item;
-      // Lazy deletion: skip if already evicted OR if entry was updated by dedup
-      if (this._fpIndex.has(entry.fingerprint) && entry.lastOccurred === ts) {
-        this._fpIndex.delete(entry.fingerprint);
-        const moduleEntries = this._moduleIndex.get(entry.moduleId);
-        if (moduleEntries !== undefined) {
-          const idx = moduleEntries.indexOf(entry);
-          if (idx >= 0) moduleEntries.splice(idx, 1);
-          if (moduleEntries.length === 0) {
-            this._moduleIndex.delete(entry.moduleId);
-          }
-        }
-        return;
-      }
+    const entry = this._heap.pop()!;
+    this._fpIndex.delete(entry.fingerprint);
+    const moduleEntries = this._moduleIndex.get(entry.moduleId)!;
+    moduleEntries.splice(moduleEntries.indexOf(entry), 1);
+    if (moduleEntries.length === 0) {
+      this._moduleIndex.delete(entry.moduleId);
     }
   }
 }

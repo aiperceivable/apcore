@@ -50,10 +50,11 @@ import { Registry } from '../src/registry/registry.js';
 // Minimal module + registry/executor helpers
 // ---------------------------------------------------------------------------
 
-/** Schema-less module: accepts any input, echoes a deterministic dict. */
+/** Accepts arbitrary object input and echoes a deterministic object. */
 const echoModule = {
-  inputSchema: null,
-  outputSchema: null,
+  description: 'Echo input',
+  inputSchema: { type: 'object' },
+  outputSchema: { type: 'object' },
   annotations: null,
   async execute(inputs: Record<string, unknown>): Promise<Record<string, unknown>> {
     return { echo: inputs['name'] ?? 'anon' };

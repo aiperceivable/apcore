@@ -345,8 +345,19 @@ export class Context<T = null> {
     // not the canonical implementation.
     const filteredData: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(this.data)) {
-      if (!key.startsWith('_')) {
-        filteredData[key] = value;
+      if (key.startsWith('_')) continue;
+      try {
+        const json = JSON.stringify(value, (_key, item) => {
+          if (item === undefined || typeof item === 'function' || typeof item === 'symbol') {
+            throw new TypeError('Value cannot be represented in JSON');
+          }
+          return item;
+        });
+        Object.defineProperty(filteredData, key, {
+          value: JSON.parse(json), enumerable: true, configurable: true, writable: true,
+        });
+      } catch {
+        console.warn(`[apcore:context] Skipping nonserializable Context.data key '${key}'`);
       }
     }
     const result: Record<string, unknown> = {

@@ -227,6 +227,11 @@ class VersionedStore(Generic[T]):
         with self._lock:
             return self._data.pop(module_id, {})
 
+    def snapshot(self, module_id: str) -> dict[str, T]:
+        """Copy the current version entries for a module."""
+        with self._lock:
+            return dict(self._data.get(module_id, {}))
+
     def has(self, module_id: str) -> bool:
         """Check if any version of a module_id is registered."""
         with self._lock:

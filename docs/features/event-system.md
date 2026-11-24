@@ -162,6 +162,7 @@ Python's `EventEmitter.subscribe()` raises `TypeError` when `on_event` is not a 
         subscribe(subscriber: EventSubscriber): void;
         unsubscribe(subscriber: EventSubscriber): void;
         emit(event: ApCoreEvent): void;
+        tryEmit(event: ApCoreEvent): boolean;
         flush(timeoutMs?: number): Promise<void>;        // default 5000; 0 waits indefinitely
         shutdown(timeoutMs?: number): Promise<void>;
     }
@@ -609,7 +610,7 @@ When a subscriber's attempts are exhausted, the emitter emits `apcore.event.deli
 - `subscriber_type` is the subscriber's declared type (`webhook`, `a2a`, …); the circuit events report the same value (D-116).
 - The dead-letter event is delivered once, without retry, and only to subscribers whose non-wildcard `event_pattern` matches it. A dead-letter subscriber that fails is logged and discarded — there is no second-order dead letter.
 - It is emitted through the same emitter as the original event, so any subscriber can opt in by name — for example a `filter` around a `file` subscriber with `include_events: ["apcore.event.delivery_failed"]`.
-- TypeScript's emitter bounds its pending deliveries (`maxPending`, default 1000); a delivery that overflows the buffer is failed through this path with an extra `"reason": "pending_overflow"` field rather than dropped.
+- TypeScript bounds normal deliveries with `maxPending` (default 1000) and reserves one slot to route an overflowing event's deliveries through the dead-letter path with `"reason": "pending_overflow"`. If an event would overflow and the reserve is busy, `tryEmit()` returns `false` before accepting any of its deliveries. `emit()` logs a warning in that case.
 
 ### `on_failure` Callback
 
@@ -744,7 +745,7 @@ Python wraps every subscriber created from `sys_modules.events.subscribers` in a
 
 ### Overflow
 - An event accepted by `emit()` **MUST** eventually be delivered to each matching subscriber or routed through the dead-letter path; it **MUST NOT** be silently discarded.
-- An implementation **MAY** bound its pending-delivery buffer. On overflow it **MUST** either apply backpressure or fail the delivery through the dead-letter path with `reason: "pending_overflow"` (TypeScript does the latter).
+- An implementation **MAY** bound its pending-delivery buffer. On overflow it **MUST** either apply backpressure or fail the delivery through the dead-letter path with `reason: "pending_overflow"`. TypeScript reserves capacity for one overflowing event and exposes the admission result through `tryEmit()`.
 - Events for a subscriber whose circuit is `OPEN` are discarded by design; that is not overflow.
 
 ### Errors

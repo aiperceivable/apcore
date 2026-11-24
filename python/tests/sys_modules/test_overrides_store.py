@@ -18,11 +18,15 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from typing import Any
 
 import pytest
 import yaml
 
+from apcore import APCore
 from apcore.sys_modules import overrides as overrides_module
 
 from apcore.config import Config
@@ -145,10 +149,10 @@ class TestFileStoreLoadDegradation:
         path = tmp_path / "overrides.yaml"
         path.write_text("a.b: 1", encoding="utf-8")
 
-        def _boom(self: Path, *args: object, **kwargs: object) -> str:
+        def _boom(*args: object, **kwargs: object) -> str:
             raise OSError("permission denied")
 
-        monkeypatch.setattr(Path, "read_text", _boom)
+        monkeypatch.setattr(overrides_module, "open", _boom, raising=False)
         store = FileOverridesStore(path)
 
         with caplog.at_level(logging.WARNING):
@@ -323,6 +327,72 @@ def _enable_sys_modules(config: Config) -> None:
 
 
 class TestRegisterSysModulesWithStore:
+    @pytest.mark.parametrize("invalid_contents", ["prior.value: [", "- old entry\n"])
+    def test_control_preserves_existing_file_when_load_fails(
+        self, tmp_path: Path, invalid_contents: str
+    ) -> None:
+        path = tmp_path / "overrides.yaml"
+        path.write_text(invalid_contents, encoding="utf-8")
+        config = Config.from_defaults()
+        _enable_sys_modules(config)
+        config.set("sys_modules.control.overrides_path", str(path))
+        client = APCore(config=config)
+        try:
+            result = client.call(
+                "system.control.update_config",
+                {"key": "executor.default_timeout", "value": 101, "reason": "test update"},
+            )
+        finally:
+            client.close()
+        assert result["success"] is True
+        assert path.read_text(encoding="utf-8") == invalid_contents
+
+    def test_control_serializes_updates_across_both_modules(self) -> None:
+        first_loaded = threading.Event()
+        second_loaded = threading.Event()
+
+        class DelayedStore(InMemoryOverridesStore):
+            active = False
+
+            def load(self) -> dict[str, Any]:
+                data = super().load()
+                if self.active:
+                    if first_loaded.is_set():
+                        second_loaded.set()
+                    else:
+                        first_loaded.set()
+                        second_loaded.wait(timeout=0.2)
+                return data
+
+        store = DelayedStore({"executor.max_call_depth": 50})
+        config = Config.from_defaults()
+        _enable_sys_modules(config)
+        registry = Registry()
+        executor = Executor(registry=registry)
+        register_sys_modules(registry, executor, config, overrides_store=store)
+        store.active = True
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            update = pool.submit(
+                executor.call,
+                "system.control.update_config",
+                {"key": "executor.default_timeout", "value": 101, "reason": "test update"},
+            )
+            assert first_loaded.wait(timeout=2)
+            toggle = pool.submit(
+                executor.call,
+                "system.control.toggle_feature",
+                {"module_id": "system.health.module", "enabled": False, "reason": "test toggle"},
+            )
+            assert update.result(timeout=2)["success"] is True
+            assert toggle.result(timeout=2)["success"] is True
+
+        store.active = False
+        assert store.load() == {
+            "executor.default_timeout": 101,
+            "executor.max_call_depth": 50,
+            "toggle.system.health.module": False,
+        }
+
     def test_overrides_store_kwarg_loads_existing_overrides_on_startup(self) -> None:
         """Pre-existing overrides in the store are applied to Config + ToggleState."""
         store = InMemoryOverridesStore()

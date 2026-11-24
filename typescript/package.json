@@ -19,11 +19,16 @@
     "./context-keys": {
       "types": "./dist/context-keys.d.ts",
       "default": "./dist/context-keys.js"
+    },
+    "./compiler": {
+      "types": "./dist/compiler.d.ts",
+      "node": "./dist/compiler.js"
     }
   },
   "sideEffects": [
     "./dist/index.js",
     "./dist/acl-file.js",
+    "./dist/registry/install-filesystem.js",
     "./dist/sys-modules/install.js",
     "./dist/sys-modules/overrides-file.js"
   ],
@@ -77,6 +82,14 @@
     "@sinclair/typebox": "^0.34.0",
     "js-yaml": "^4.3.2",
     "uuid": "^11.1.1"
+  },
+  "peerDependencies": {
+    "typescript": "^5.5.0"
+  },
+  "peerDependenciesMeta": {
+    "typescript": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "@biomejs/biome": "^1.9.4",

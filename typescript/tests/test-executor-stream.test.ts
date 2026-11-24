@@ -49,6 +49,36 @@ async function collectChunks(gen: AsyncGenerator<Record<string, unknown>>): Prom
 }
 
 describe('Executor.stream()', () => {
+  it('uses execute for a nonstreaming module with an unrelated stream method', async () => {
+    const registry = new Registry();
+    const mod = Object.assign(createSimpleModule('greet'), { stream: vi.fn(() => 'descriptor') });
+    registry.register('greet', mod);
+    const executor = new Executor({ registry });
+
+    await expect(collectChunks(executor.stream('greet', { name: 'Alice' }))).resolves.toEqual([
+      { greeting: 'Hello, Alice!' },
+    ]);
+    expect(mod.stream).not.toHaveBeenCalled();
+  });
+
+  it('keeps accumulated output independent of previously delivered chunks', async () => {
+    const registry = new Registry();
+    registry.register('test.accumulate', {
+      description: 'Emit nested stream chunks',
+      inputSchema: Type.Object({}),
+      outputSchema: Type.Object({ nested: Type.Any() }),
+      execute: () => ({}),
+      async *stream() {
+        yield { nested: { first: true } };
+        yield { nested: { second: true } };
+      },
+    });
+    const executor = new Executor({ registry });
+    const chunks = await collectChunks(executor.stream('test.accumulate'));
+
+    expect(chunks).toEqual([{ nested: { first: true } }, { nested: { second: true } }]);
+  });
+
   it('falls back to single chunk when module has no stream()', async () => {
     const registry = new Registry();
     const mod = createSimpleModule('greet');

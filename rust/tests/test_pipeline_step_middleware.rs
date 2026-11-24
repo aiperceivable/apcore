@@ -246,6 +246,31 @@ async fn step_middleware_on_step_error_can_recover_with_value() {
 }
 
 #[tokio::test]
+async fn run_until_observes_a_recovered_step() {
+    let mut strategy = ExecutionStrategy::new(
+        "test",
+        vec![
+            FailingStep::boxed("parse"),
+            OkStep::boxed("format", serde_json::json!("later")),
+        ],
+    )
+    .unwrap();
+    strategy.add_step_middleware(Arc::new(RecordingMiddleware {
+        recovery: Some(serde_json::json!("default")),
+        ..Default::default()
+    }));
+
+    let (output, trace) = PipelineEngine::run_until(&strategy, &mut ctx(), |state| {
+        state.outputs.get("parse") == Some(&Some(serde_json::json!("default")))
+    })
+    .await
+    .unwrap();
+    assert_eq!(output, Some(serde_json::json!("default")));
+    assert!(trace.success);
+    assert_eq!(trace.steps.len(), 1);
+}
+
+#[tokio::test]
 async fn step_middleware_multiple_run_in_registration_order() {
     let mw1 = Arc::new(RecordingMiddleware::default());
     let mw2 = Arc::new(RecordingMiddleware::default());

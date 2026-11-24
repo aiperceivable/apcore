@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 import time
 
 
@@ -102,6 +103,33 @@ class TestBatchSpanProcessorQueueFull:
 
 
 class TestBatchSpanProcessorShutdown:
+    def test_force_flush_timeout_covers_an_in_flight_export(self) -> None:
+        release = threading.Event()
+        finished = threading.Event()
+
+        class BlockingExporter(InMemoryExporter):
+            def export(self, span):
+                release.wait(timeout=2)
+                super().export(span)
+
+        proc = BatchSpanProcessor(exporter=BlockingExporter(), schedule_delay_ms=60_000)
+        proc.on_span_end(_span())
+        result = []
+
+        def flush():
+            result.append(proc.force_flush(timeout_ms=10))
+            finished.set()
+
+        thread = threading.Thread(target=flush)
+        thread.start()
+        try:
+            assert finished.wait(timeout=0.5)
+            assert result == [False]
+        finally:
+            release.set()
+            thread.join(timeout=2)
+            proc.shutdown()
+
     def test_background_flush_exports_within_delay(self) -> None:
         exporter = InMemoryExporter()
         proc = BatchSpanProcessor(
@@ -125,11 +153,14 @@ class TestBatchSpanProcessorShutdown:
             exporter=exporter,
             max_queue_size=10,
             schedule_delay_ms=60_000,
+            max_export_batch_size=1,
         )
-        proc.on_span_end(_span())
-        proc.on_span_end(_span())
+        for index in range(5):
+            proc.on_span_end(_span(str(index)))
         proc.shutdown()
-        assert len(exporter.get_spans()) == 2
+        assert [span.name for span in exporter.get_spans()] == [str(index) for index in range(5)]
+        proc.on_span_end(_span("after shutdown"))
+        assert proc.queue_size == 0
 
     def test_shutdown_idempotent(self) -> None:
         exporter = InMemoryExporter()

@@ -8,7 +8,7 @@ import { ACL } from '../src/acl.js';
 import { Config, discoverConfigFile, userLevelConfigPaths } from '../src/config.js';
 import { SchemaLoader } from '../src/schema/loader.js';
 
-const MINIMAL_YAML = 'version: "0.29.0"\nproject:\n  name: project-root-test\n';
+const MINIMAL_YAML = 'version: "1.0.0"\nproject:\n  name: project-root-test\n';
 
 let tmpDir: string;
 let projectDir: string;
@@ -170,6 +170,59 @@ describe('Config.projectRoot — one case per §9.14 discovery tier', () => {
 });
 
 describe('project-root path resolution', () => {
+  it.each([false, true])('keeps numeric path env names in namespace mode %s', (namespace) => {
+    const yaml = namespace ? 'apcore:\n  version: "1.0.0"\n  project: {name: probe}\n' : MINIMAL_YAML;
+    write(join(projectDir, 'config.yaml'), yaml);
+    write(join(projectDir, '123', 'probe.schema.yaml'), 'description: numeric path\ninput_schema: {}\noutput_schema: {}\n');
+    vi.stubEnv('APCORE_SCHEMA_ROOT', '123');
+
+    const config = Config.load(join(projectDir, 'config.yaml'));
+    expect(config.get('schema.root')).toBe('123');
+    expect(new SchemaLoader(config).load('probe').description).toBe('numeric path');
+  });
+
+  it.each(['ids.yaml/', 'ids.yaml/.'])('retains a directory qualifier in %s', (relative) => {
+    write(join(projectDir, 'ids.yaml'));
+    const config = Config.load(write(join(projectDir, 'config.yaml')));
+    expect(config.resolvePath(relative)).toBe(`${projectDir}/${relative}`);
+  });
+
+  it('rejects a missing yaml_only schema root relative to the config file', () => {
+    const file = write(join(projectDir, 'config.yaml'), `${MINIMAL_YAML}schema: {strategy: yaml_only, root: ./missing}\n`);
+    mkdirSync(join(elsewhereDir, 'missing'));
+    process.chdir(elsewhereDir);
+    expect(() => Config.load(file)).toThrow('schema.root');
+  });
+
+  it('keeps validated state when a reload fails', () => {
+    const file = write(join(projectDir, 'config.yaml'), `${MINIMAL_YAML}executor: {default_timeout: 50}\n`);
+    const config = Config.load(file);
+    write(file, `${MINIMAL_YAML}executor: {default_timeout: -1}\n`);
+
+    expect(() => config.reload()).toThrow('executor.default_timeout');
+    expect(config.get('executor.default_timeout')).toBe(50);
+    expect(config.getDeclared('executor.default_timeout')).toBe(50);
+  });
+
+  it('updates the same unqualified apcore key it reads in namespace mode', () => {
+    const file = write(join(projectDir, 'config.yaml'),
+      'apcore:\n  version: "1.0.0"\n  project: {name: probe}\n  executor: {default_timeout: 50}\n_config: {strict: true}\n');
+    const config = Config.load(file);
+    expect(config.get('executor.default_timeout')).toBe(50);
+    config.set('executor.default_timeout', 75);
+
+    expect(config.get('apcore.executor.default_timeout')).toBe(75);
+    expect(config.getDeclared('apcore.executor.default_timeout')).toBe(75);
+    expect(() => config.validate()).not.toThrow();
+  });
+
+  it('checks explicit field types and namespace redaction regexes', () => {
+    const file = write(join(projectDir, 'config.yaml'), 'version: 1\nproject: {name: [one]}\n');
+    expect(() => Config.load(file)).toThrow(/version.*string/s);
+    write(file, 'apcore:\n  version: "1.0.0"\n  project: {name: probe}\nobs:\n  redaction: {regex_patterns: ["["]}\n');
+    expect(() => Config.load(file)).toThrow('regex_patterns');
+  });
+
   it.each(['relative', 'absolute'])('uses filesystem traversal for %s paths containing a symlink and parent segment', (kind) => {
     const deep = join(elsewhereDir, 'deep');
     mkdirSync(deep);

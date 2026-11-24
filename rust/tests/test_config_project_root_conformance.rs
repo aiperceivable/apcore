@@ -288,6 +288,17 @@ fn conformance_config_project_root() {
                         "[{id}] schema root"
                     );
                 }
+                "config_path_file_readable" => {
+                    for (key, readable) in want.as_object().expect("file readability mapping") {
+                        let value = config.get(key).expect("configured file path");
+                        let path = config.resolve_path(value.as_str().expect("path string"));
+                        assert_eq!(
+                            std::fs::read(path).is_ok(),
+                            readable.as_bool().expect("readability flag"),
+                            "[{id}] {key} file readability"
+                        );
+                    }
+                }
                 other => panic!("[{id}] unhandled expected field {other}"),
             }
         }

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 import logging
+import os
 from pathlib import Path
 from typing import Any
 
@@ -171,17 +172,16 @@ def merge_module_metadata(module: Any, meta: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def load_id_map(id_map_path: Path) -> dict[str, dict[str, Any]]:
+def load_id_map(id_map_path: str | os.PathLike[str]) -> dict[str, dict[str, Any]]:
     """Load an ID Map YAML file for canonical ID overrides.
 
     Raises ConfigNotFoundError if file does not exist (ID map is explicitly requested).
     """
-    if not id_map_path.exists():
-        raise ConfigNotFoundError(config_path=str(id_map_path))
-
-    content = id_map_path.read_text(encoding="utf-8")
     try:
-        parsed = yaml.safe_load(content)
+        with open(id_map_path, encoding="utf-8") as source:
+            parsed = yaml.safe_load(source)
+    except (FileNotFoundError, NotADirectoryError) as exc:
+        raise ConfigNotFoundError(config_path=os.fspath(id_map_path)) from exc
     except yaml.YAMLError as e:
         raise ConfigError(message=f"Invalid YAML in ID map file: {id_map_path}") from e
 

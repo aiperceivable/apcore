@@ -47,12 +47,17 @@ export class BatchSpanProcessor implements SpanProcessor {
   private _queue: Span[] = [];
   private _spansDropped = 0;
   private _timer: ReturnType<typeof setInterval> | null = null;
+  private _draining: Promise<void> | null = null;
+  private _stopping: Promise<void> | null = null;
 
   constructor(options: BatchSpanProcessorOptions) {
     this._exporter = options.exporter;
     this._maxQueueSize = options.maxQueueSize ?? 2048;
     this._scheduleDelayMs = options.scheduleDelayMs ?? 5000;
     this._maxExportBatchSize = options.maxExportBatchSize ?? 512;
+    if (!Number.isInteger(this._maxExportBatchSize) || this._maxExportBatchSize < 1) {
+      throw new RangeError('maxExportBatchSize must be a positive integer');
+    }
     this._exportTimeoutMs = options.exportTimeoutMs ?? 30000;
     this._startTimer();
   }
@@ -66,6 +71,7 @@ export class BatchSpanProcessor implements SpanProcessor {
   }
 
   onSpan(span: Span): void {
+    if (this._stopping !== null) return;
     if (this._queue.length >= this._maxQueueSize) {
       this._spansDropped++;
       return;
@@ -74,23 +80,13 @@ export class BatchSpanProcessor implements SpanProcessor {
   }
 
   async shutdown(): Promise<void> {
+    if (this._stopping !== null) return this._stopping;
     if (this._timer !== null) {
       clearInterval(this._timer);
       this._timer = null;
     }
-
-    let timeoutId: ReturnType<typeof setTimeout> | null = null;
-    const timeoutPromise = new Promise<void>((_, reject) => {
-      timeoutId = setTimeout(() => reject(new Error('Export timeout')), this._exportTimeoutMs);
-    });
-
-    try {
-      await Promise.race([this._flush(), timeoutPromise]);
-    } catch {
-      this._queue = [];
-    } finally {
-      if (timeoutId !== null) clearTimeout(timeoutId);
-    }
+    this._stopping = this.forceFlush(this._exportTimeoutMs).then(() => {});
+    return this._stopping;
   }
 
   /**
@@ -99,24 +95,22 @@ export class BatchSpanProcessor implements SpanProcessor {
    *
    * Unlike `shutdown()`, the processor stays alive after this call; new
    * spans can continue to be enqueued. Resolves `true` once the queue is
-   * empty, or `false` if `timeoutMs` elapses first. Safe to call on an
-   * already-shut-down processor — `_flush()` only touches the queue and the
-   * exporter, neither of which `shutdown()` tears down.
+   * empty and in-flight exports settle, or `false` if `timeoutMs` elapses
+   * first. A later flush can continue waiting for the same drain.
    *
    * Mirrors apcore-python's `BatchSpanProcessor.force_flush`.
    */
   async forceFlush(timeoutMs = 30000): Promise<boolean> {
     let timeoutId: ReturnType<typeof setTimeout> | null = null;
-    const timeoutPromise = new Promise<void>((resolve) => {
-      timeoutId = setTimeout(resolve, timeoutMs);
+    const timeoutPromise = new Promise<boolean>((resolve) => {
+      timeoutId = setTimeout(() => resolve(false), timeoutMs);
     });
 
     try {
-      await Promise.race([this._flush(), timeoutPromise]);
+      return await Promise.race([this._flush().then(() => true), timeoutPromise]);
     } finally {
       if (timeoutId !== null) clearTimeout(timeoutId);
     }
-    return this._queue.length === 0;
   }
 
   private _startTimer(): void {
@@ -129,12 +123,25 @@ export class BatchSpanProcessor implements SpanProcessor {
     }
   }
 
-  private async _flush(): Promise<void> {
+  private _flush(): Promise<void> {
+    if (this._draining === null) {
+      this._draining = Promise.resolve().then(() => this._drain()).finally(() => {
+        this._draining = null;
+      });
+    }
+    return this._draining;
+  }
+
+  private async _drain(): Promise<void> {
     while (this._queue.length > 0) {
       const batch = this._queue.splice(0, this._maxExportBatchSize);
-      for (const span of batch) {
-        this._exporter.export(span);
-      }
+      await Promise.all(batch.map(async span => {
+        try {
+          await this._exporter.export(span);
+        } catch (error) {
+          console.warn('[apcore:tracing] Span export failed:', error);
+        }
+      }));
     }
   }
 }

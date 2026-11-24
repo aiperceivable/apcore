@@ -67,7 +67,7 @@ function writeConfig(dir: string, fileName: string, extra: string): string {
   const filePath = join(dir, fileName);
   writeFileSync(
     filePath,
-    `version: "0.29.0"\nproject:\n  name: bindings-config-test\n${extra}`,
+    `version: "1.0.0"\nproject:\n  name: bindings-config-test\n${extra}`,
     'utf-8',
   );
   return filePath;

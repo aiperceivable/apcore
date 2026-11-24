@@ -122,13 +122,13 @@ obs:
 
 /// Namespace-mode document: the §9.6 `apcore:` block plus every section.
 fn namespace_mode_yaml() -> String {
-    format!("apcore:\n  version: \"9.9.9-fixture\"\n{SECTIONS_YAML}")
+    format!("apcore:\n  version: \"1.0.0-fixture\"\n{SECTIONS_YAML}")
 }
 
 /// Legacy-mode document: no `apcore:` block, so the §9.1 required fields have
 /// to be declared at the root for `validate()` to pass.
 fn legacy_mode_yaml() -> String {
-    format!("version: \"9.9.9-fixture\"\nproject:\n  name: framework-sections\n{SECTIONS_YAML}")
+    format!("version: \"1.0.0-fixture\"\nproject:\n  name: framework-sections\n{SECTIONS_YAML}")
 }
 
 /// Write `body` to `<tmp>/<name>` and load it the way a deployment does.
@@ -594,7 +594,7 @@ fn data_round_trip_is_stable_for_every_section() {
 #[test]
 fn strict_mode_accepts_every_declared_key() {
     let body =
-        format!("apcore:\n  version: \"9.9.9-fixture\"\n_config:\n  strict: true\n{SECTIONS_YAML}");
+        format!("apcore:\n  version: \"1.0.0-fixture\"\n_config:\n  strict: true\n{SECTIONS_YAML}");
     let (_dir, config) = load_file("apcore.yaml", &body);
     for (key, expected) in declared_pairs() {
         assert_get(&config, key, &expected);
@@ -608,7 +608,7 @@ fn strict_mode_accepts_every_declared_key() {
 fn strict_mode_rejects_an_undeclared_key_in_each_section() {
     for section in SECTIONS {
         let body = format!(
-            "apcore:\n  version: \"9.9.9-fixture\"\n_config:\n  strict: true\n\
+            "apcore:\n  version: \"1.0.0-fixture\"\n_config:\n  strict: true\n\
              {section}:\n  definitely_not_a_declared_key: 1\n"
         );
         let dir = tempfile::tempdir().expect("tempdir");

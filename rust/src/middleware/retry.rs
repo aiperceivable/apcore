@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use super::base::Middleware;
+use super::base::{Middleware, OnErrorOutcome, RetrySignal};
 use crate::context::Context;
 use crate::context_keys::RETRY_COUNT_BASE;
 use crate::errors::ModuleError;
@@ -64,10 +64,9 @@ impl Default for RetryConfig {
 
 /// Middleware that retries failed executions according to `RetryConfig`.
 ///
-/// When `on_error` is called with a retryable error (`error.retryable == Some(true)`),
-/// this middleware sleeps for a calculated delay and returns `Some(inputs)` to signal
-/// the pipeline to retry execution. After `max_retries` attempts or for non-retryable
-/// errors, it returns `None` so the error propagates.
+/// When an error is retryable, the middleware waits for the configured delay
+/// and requests another pipeline execution with the same inputs. Errors
+/// propagate once the retry budget is exhausted.
 ///
 /// Retry state is tracked per-call in `context.data` under the
 /// `_apcore.mw.retry.count.{module_id}` key (see [`RETRY_COUNT_BASE`]),
@@ -210,6 +209,19 @@ impl Middleware for RetryMiddleware {
 
         // Return the original inputs to signal retry.
         Ok(Some(inputs))
+    }
+
+    async fn on_error_outcome(
+        &self,
+        module_id: &str,
+        inputs: serde_json::Value,
+        error: &ModuleError,
+        ctx: &Context<serde_json::Value>,
+    ) -> Result<Option<OnErrorOutcome>, ModuleError> {
+        Ok(self
+            .on_error(module_id, inputs, error, ctx)
+            .await?
+            .map(|inputs| OnErrorOutcome::Retry(RetrySignal::new(inputs))))
     }
 }
 

@@ -26,7 +26,7 @@ import { BindingLoader } from '../src/bindings.js';
 import { Config } from '../src/config.js';
 import { Registry } from '../src/registry/registry.js';
 
-const MINIMAL_YAML = 'version: "0.29.0"\nproject:\n  name: empty-path-override-test\n';
+const MINIMAL_YAML = 'version: "1.0.0"\nproject:\n  name: empty-path-override-test\n';
 
 let tmpDir: string;
 let originalCwd: string;

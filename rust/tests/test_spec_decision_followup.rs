@@ -618,7 +618,7 @@ fn t8_reload_revalidates_after_mount_replay() {
     let path = dir.path().join("apcore.yaml");
     std::fs::write(
         &path,
-        "version: \"0.26.0\"\nproject:\n  name: demo\nacl:\n  default_effect: deny\n",
+        "version: \"1.0.0\"\nproject:\n  name: demo\nacl:\n  default_effect: deny\n",
     )
     .expect("write config");
 
@@ -643,7 +643,7 @@ fn t8_reload_revalidates_after_mount_replay() {
 fn t8_reload_with_a_valid_mount_still_succeeds() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("apcore.yaml");
-    std::fs::write(&path, "version: \"0.26.0\"\nproject:\n  name: demo\n").expect("write config");
+    std::fs::write(&path, "version: \"1.0.0\"\nproject:\n  name: demo\n").expect("write config");
 
     let mut cfg = apcore::config::Config::load(&path).expect("initial load is valid");
     cfg.mount(
@@ -699,7 +699,7 @@ fn t9_env_override_counts_as_declared_and_satisfies_requiredness() {
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("apcore.yaml");
     // File declares `version` but NOT `project.name`.
-    std::fs::write(&path, "version: \"0.26.0\"\n").unwrap();
+    std::fs::write(&path, "version: \"1.0.0\"\n").unwrap();
 
     std::env::set_var("APCORE_PROJECT_NAME", "from-env");
     let loaded = apcore::config::Config::load(&path);
@@ -728,7 +728,7 @@ fn t9_missing_from_both_file_and_env_is_still_rejected() {
     let dir = std::env::temp_dir().join(format!("apcore-declared-noenv-{ts}"));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("apcore.yaml");
-    std::fs::write(&path, "version: \"0.26.0\"\n").unwrap();
+    std::fs::write(&path, "version: \"1.0.0\"\n").unwrap();
 
     std::env::remove_var("APCORE_PROJECT_NAME");
     let err = apcore::config::Config::load(&path)

@@ -145,11 +145,15 @@ describe('D-131: built-in logging middleware logs the captured (redacted) values
 
   it('a module with no output schema still has its output redacted by the configured rules', async () => {
     const reg = new Registry();
-    await reg.register('demo.schemaless', {
-      description: 'no output schema',
+    const module = {
+      description: 'Redaction fallback fixture',
       inputSchema: { type: 'object' },
+      outputSchema: { type: 'object' },
       execute: () => ({ password: 'hunter2-VALUE', visible: 'out-plain' }),
-    });
+    };
+    await reg.register('demo.schemaless', module);
+    // Simulate a module whose runtime schema disappeared after registration.
+    Reflect.deleteProperty(module, 'outputSchema');
     const { logger, lines } = captureLegacyLogger();
     const executor = new Executor({ registry: reg });
     executor.use(new LoggingMiddleware({ logger }));

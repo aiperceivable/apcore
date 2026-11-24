@@ -155,6 +155,21 @@ class TestVersionedStore:
 class TestRegistryVersionNegotiation:
     """Tests for version negotiation integrated into the Registry."""
 
+    def test_descriptors_use_the_selected_version_metadata(self) -> None:
+        reg = Registry()
+        latest = _VersionedModule("2.0.0")
+        older = _VersionedModule("1.0.0")
+        reg.register("mod.versioned", latest, version="2.0.0", metadata={"tags": ["latest"]})
+        reg.register("mod.versioned", older, version="1.0.0", metadata={"tags": ["older"]})
+
+        assert reg.get("mod.versioned") is latest
+        current = reg.get_definition("mod.versioned")
+        old = reg.get_definition("mod.versioned", version_hint="<2.0.0")
+        assert current is not None and old is not None
+        assert (current.version, current.description, current.tags) == ("2.0.0", latest.description, ["latest"])
+        assert (old.version, old.description, old.tags) == ("1.0.0", older.description, ["older"])
+        assert reg.get_module_metadata("mod.versioned")["version"] == "2.0.0"
+
     def test_module_declares_version(self) -> None:
         reg = Registry(extensions_dir="/tmp/fake_ext")
         mod = _VersionedModule(version="1.2.0")

@@ -28,6 +28,8 @@ _SEMVER_RE = re.compile(
 #: Deprecation warning threshold: if SDK minor exceeds declared minor by more
 #: than this, emit a warning.
 _DEPRECATION_THRESHOLD = 2
+_CURRENT_DOCUMENT_VERSION = "2.0.0"
+_LEGACY_DOCUMENT_VERSION = "1.66.0"
 
 
 @dataclass(frozen=True)
@@ -168,3 +170,16 @@ def negotiate_version(declared_version: str, sdk_version: str) -> str:
     # Step 6: Same minor → effective = max(declared, sdk)
     effective = max(declared, sdk)
     return str(effective)
+
+
+def _negotiate_document_version(declared: str) -> None:
+    """Check file compatibility while preserving the declared version on the document."""
+    normalized = declared.strip()
+    # Early configuration examples used a short major.minor version.
+    if re.fullmatch(r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)", normalized):
+        normalized += ".0"
+    supported = _LEGACY_DOCUMENT_VERSION if normalized.startswith("1.") else _CURRENT_DOCUMENT_VERSION
+    try:
+        negotiate_version(normalized, supported)
+    except ValueError as exc:
+        raise VersionIncompatibleError(declared, supported, "Invalid semantic version") from exc

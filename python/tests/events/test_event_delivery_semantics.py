@@ -7,6 +7,7 @@ import re
 import pytest
 
 from apcore.events.emitter import ApCoreEvent, EventEmitter, _DLQ_EVENT_TYPE
+from apcore.events.circuit_breaker import CircuitBreakerWrapper
 from apcore.events.retry import EventRetryConfig
 from apcore.events.subscribers import A2ASubscriber, FileSubscriber, StdoutSubscriber
 
@@ -87,6 +88,25 @@ def test_retry_config_compute_delay_ms() -> None:
 # ---------------------------------------------------------------------------
 # Delivery tests
 # ---------------------------------------------------------------------------
+
+
+def test_circuit_breaker_preserves_retry_and_dead_letter_delivery() -> None:
+    emitter = EventEmitter()
+    subscriber = _CountingSubscriber(
+        fail_count=3, retry=EventRetryConfig(max_attempts=2, initial_backoff_ms=1)
+    )
+    dead_letters = _DLQRecorder()
+    emitter.subscribe(CircuitBreakerWrapper(subscriber, emitter, open_threshold=3))
+    emitter.subscribe(dead_letters)
+    try:
+        emitter.emit(_make_event())
+        emitter.flush()
+
+        assert len(subscriber.attempts) == 2
+        assert len(subscriber.failures) == 1
+        assert dead_letters.received[0].data["attempt_count"] == 2
+    finally:
+        emitter.shutdown()
 
 
 def test_successful_delivery_on_first_attempt() -> None:

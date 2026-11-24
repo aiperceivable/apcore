@@ -1,7 +1,7 @@
 //! Tests for SchemaLoader — loading schemas from files and inline values.
 
 use apcore::schema::{SchemaLoader, SchemaStrategy};
-use apcore::Config;
+use apcore::{Config, ErrorCode};
 use serde_json::json;
 use std::io::Write;
 
@@ -311,6 +311,45 @@ fn test_schema_loader_load_missing_module_returns_error() {
     assert!(result.is_err());
     let err = result.unwrap_err();
     assert_eq!(err.code, apcore::errors::ErrorCode::SchemaNotFound);
+}
+
+#[test]
+fn test_schema_loader_repeated_load_keeps_resolved_document() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("note.schema.yaml"),
+        "type: object\nproperties:\n  label:\n    $ref: ./label.yaml\n",
+    )
+    .unwrap();
+    std::fs::write(dir.path().join("label.yaml"), "type: string\n").unwrap();
+    let mut loader = SchemaLoader::with_config(&apcore::Config::default(), Some(dir.path()));
+
+    for _ in 0..2 {
+        let definition = loader.load("note").unwrap();
+        assert_eq!(
+            definition.input_schema["properties"]["label"],
+            json!({"type": "string"})
+        );
+    }
+}
+
+#[test]
+fn test_schema_loader_caches_only_successful_resolution() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("note.schema.yaml"),
+        "$ref: ./missing.yaml\n",
+    )
+    .unwrap();
+    let mut loader = SchemaLoader::with_config(&apcore::Config::default(), Some(dir.path()));
+
+    for _ in 0..2 {
+        assert_eq!(
+            loader.load("note").unwrap_err().code,
+            ErrorCode::SchemaNotFound
+        );
+    }
+    assert!(loader.get("note").is_none());
 }
 
 #[test]

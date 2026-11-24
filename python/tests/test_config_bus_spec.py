@@ -65,7 +65,7 @@ def _write_yaml(path: Path, body: str) -> str:
 #: get / reload *properties*, not required-field validation, so they carry
 #: these two keys to stay valid.
 _PROJECT_BLOCK = "project:\n  name: spec_fixture\n"
-_REQUIRED_HEADER = "version: '0.15.0'\n" + _PROJECT_BLOCK
+_REQUIRED_HEADER = "version: '1.0.0'\n" + _PROJECT_BLOCK
 
 
 @dataclasses.dataclass
@@ -230,9 +230,9 @@ class TestLoadContract:
         Contract declares pure: false — the result reflects on-disk content,
         proving it reads the filesystem rather than returning a constant.
         """
-        path = _write_yaml(tmp_path / "fs.yaml", "version: '9.9.9'\n" + _PROJECT_BLOCK)
+        path = _write_yaml(tmp_path / "fs.yaml", "version: '1.0.1'\n" + _PROJECT_BLOCK)
         config = Config.load(path)
-        assert config.get("version") == "9.9.9"
+        assert config.get("version") == "1.0.1"
 
 
 # ===========================================================================
@@ -312,7 +312,7 @@ class TestGetContract:
         distinct keys; assert no exception and every result is correct.
         """
         Config.register_namespace("concur_ns")
-        body = "apcore:\n  version: '0.15.0'\nconcur_ns:\n" + "".join(f"  k{i}: {i}\n" for i in range(8))
+        body = "apcore:\n  version: '1.0.0'\nconcur_ns:\n" + "".join(f"  k{i}: {i}\n" for i in range(8))
         path = _write_yaml(tmp_path / "c.yaml", body)
         config = Config.load(path)
 
@@ -349,7 +349,7 @@ class TestNamespaceContract:
         Returns all values under the namespace (defaults + YAML merged).
         """
         Config.register_namespace("nsret", defaults={"retries": 3})
-        path = _write_yaml(tmp_path / "n.yaml", "apcore:\n  version: '0.15.0'\nnsret:\n  timeout: 10000\n")
+        path = _write_yaml(tmp_path / "n.yaml", "apcore:\n  version: '1.0.0'\nnsret:\n  timeout: 10000\n")
         config = Config.load(path)
         result = config.namespace("nsret")
         assert result.get("timeout") == 10000
@@ -368,7 +368,7 @@ class TestNamespaceContract:
         namespace() returns a copy: mutating the result must not affect config.
         """
         Config.register_namespace("nspure", defaults={"a": 1})
-        path = _write_yaml(tmp_path / "np.yaml", "apcore:\n  version: '0.15.0'\n")
+        path = _write_yaml(tmp_path / "np.yaml", "apcore:\n  version: '1.0.0'\n")
         config = Config.load(path)
         result = config.namespace("nspure")
         result["a"] = 999
@@ -383,7 +383,7 @@ class TestNamespaceContract:
         thread_safe: true — concurrent namespace() calls stay consistent.
         """
         Config.register_namespace("nsconcur", defaults={"v": 42})
-        path = _write_yaml(tmp_path / "nc.yaml", "apcore:\n  version: '0.15.0'\n")
+        path = _write_yaml(tmp_path / "nc.yaml", "apcore:\n  version: '1.0.0'\n")
         config = Config.load(path)
 
         async def read() -> dict:
@@ -414,7 +414,7 @@ class TestBindContract:
         Config.register_namespace("bindbad")
         path = _write_yaml(
             tmp_path / "bb.yaml",
-            "apcore:\n  version: '0.15.0'\nbindbad:\n  not_a_field: 1\n",
+            "apcore:\n  version: '1.0.0'\nbindbad:\n  not_a_field: 1\n",
         )
         config = Config.load(path)
         with pytest.raises(ConfigBindError) as exc:
@@ -427,7 +427,7 @@ class TestBindContract:
         Successful bind returns a populated instance of the target type.
         """
         Config.register_namespace("bindok", defaults={"timeout": 5000, "retries": 3})
-        path = _write_yaml(tmp_path / "bo.yaml", "apcore:\n  version: '0.15.0'\nbindok:\n  timeout: 8000\n")
+        path = _write_yaml(tmp_path / "bo.yaml", "apcore:\n  version: '1.0.0'\nbindok:\n  timeout: 8000\n")
         config = Config.load(path)
         result = config.bind("bindok", _PluginCfg)
         assert isinstance(result, _PluginCfg)
@@ -437,7 +437,7 @@ class TestBindContract:
     def test_property_async_false(self, tmp_path: Path) -> None:
         """config_bus.bind.property.async"""
         Config.register_namespace("bindasync", defaults={"timeout": 1, "retries": 1})
-        path = _write_yaml(tmp_path / "ba.yaml", "apcore:\n  version: '0.15.0'\n")
+        path = _write_yaml(tmp_path / "ba.yaml", "apcore:\n  version: '1.0.0'\n")
         config = Config.load(path)
         result = config.bind("bindasync", _PluginCfg)
         assert not inspect.iscoroutine(result)
@@ -449,7 +449,7 @@ class TestBindContract:
         bind reads a snapshot and does not mutate config state.
         """
         Config.register_namespace("bindpure", defaults={"timeout": 1, "retries": 1})
-        path = _write_yaml(tmp_path / "bp.yaml", "apcore:\n  version: '0.15.0'\n")
+        path = _write_yaml(tmp_path / "bp.yaml", "apcore:\n  version: '1.0.0'\n")
         config = Config.load(path)
         snapshot = config.data
         config.bind("bindpure", _PluginCfg)
@@ -461,7 +461,7 @@ class TestBindContract:
         thread_safe: true — concurrent binds succeed and agree.
         """
         Config.register_namespace("bindconcur", defaults={"timeout": 5000, "retries": 3})
-        path = _write_yaml(tmp_path / "bc.yaml", "apcore:\n  version: '0.15.0'\n")
+        path = _write_yaml(tmp_path / "bc.yaml", "apcore:\n  version: '1.0.0'\n")
         config = Config.load(path)
 
         async def do_bind() -> _PluginCfg:
@@ -489,7 +489,7 @@ class TestMountContract:
         Mounting into the reserved `_config` namespace raises
         ConfigMountError(code=CONFIG_MOUNT_ERROR).
         """
-        path = _write_yaml(tmp_path / "m.yaml", "apcore:\n  version: '0.15.0'\n")
+        path = _write_yaml(tmp_path / "m.yaml", "apcore:\n  version: '1.0.0'\n")
         config = Config.load(path)
         with pytest.raises(ConfigMountError) as exc:
             config.mount("_config", from_dict={"strict": True})
@@ -498,7 +498,7 @@ class TestMountContract:
     def test_error_mount_missing_file(self, tmp_path: Path) -> None:
         """config_bus.mount.error.CONFIG_MOUNT_ERROR.missing_file"""
         Config.register_namespace("mountmiss")
-        path = _write_yaml(tmp_path / "mm.yaml", "apcore:\n  version: '0.15.0'\n")
+        path = _write_yaml(tmp_path / "mm.yaml", "apcore:\n  version: '1.0.0'\n")
         config = Config.load(path)
         with pytest.raises(ConfigMountError) as exc:
             config.mount("mountmiss", from_file=str(tmp_path / "nope.yaml"))
@@ -508,7 +508,7 @@ class TestMountContract:
         """config_bus.mount.error.CONFIG_MOUNT_ERROR.not_a_mapping"""
         Config.register_namespace("mountlist")
         bad = _write_yaml(tmp_path / "list.yaml", "- a\n- b\n")
-        path = _write_yaml(tmp_path / "ml.yaml", "apcore:\n  version: '0.15.0'\n")
+        path = _write_yaml(tmp_path / "ml.yaml", "apcore:\n  version: '1.0.0'\n")
         config = Config.load(path)
         with pytest.raises(ConfigMountError) as exc:
             config.mount("mountlist", from_file=bad)
@@ -520,7 +520,7 @@ class TestMountContract:
         Mounted dict data is merged into the namespace, observable via get().
         """
         Config.register_namespace("mountmerge", defaults={"timeout": 1})
-        path = _write_yaml(tmp_path / "mg.yaml", "apcore:\n  version: '0.15.0'\n")
+        path = _write_yaml(tmp_path / "mg.yaml", "apcore:\n  version: '1.0.0'\n")
         config = Config.load(path)
         config.mount("mountmerge", from_dict={"timeout": 10000})
         assert config.get("mountmerge.timeout") == 10000
@@ -528,7 +528,7 @@ class TestMountContract:
     def test_property_async_false(self, tmp_path: Path) -> None:
         """config_bus.mount.property.async"""
         Config.register_namespace("mountasync")
-        path = _write_yaml(tmp_path / "ma.yaml", "apcore:\n  version: '0.15.0'\n")
+        path = _write_yaml(tmp_path / "ma.yaml", "apcore:\n  version: '1.0.0'\n")
         config = Config.load(path)
         result = config.mount("mountasync", from_dict={"x": 1})
         assert result is None
@@ -541,7 +541,7 @@ class TestMountContract:
         stacks rather than producing identical state.
         """
         Config.register_namespace("mountstack", defaults={"items": []})
-        path = _write_yaml(tmp_path / "ms.yaml", "apcore:\n  version: '0.15.0'\n")
+        path = _write_yaml(tmp_path / "ms.yaml", "apcore:\n  version: '1.0.0'\n")
         config = Config.load(path)
         config.mount("mountstack", from_dict={"counter": 1})
         first = config.namespace("mountstack")
@@ -557,7 +557,7 @@ class TestMountContract:
         Contract declares pure: false — mount mutates config state.
         """
         Config.register_namespace("mountmut", defaults={"v": 0})
-        path = _write_yaml(tmp_path / "mu.yaml", "apcore:\n  version: '0.15.0'\n")
+        path = _write_yaml(tmp_path / "mu.yaml", "apcore:\n  version: '1.0.0'\n")
         config = Config.load(path)
         before = config.namespace("mountmut")
         config.mount("mountmut", from_dict={"v": 5})
@@ -655,7 +655,7 @@ class TestReloadContract:
         stored mounts over freshly-read file data.
         """
         Config.register_namespace("reloadmount", defaults={"v": 0})
-        path = _write_yaml(tmp_path / "rm.yaml", "apcore:\n  version: '0.15.0'\nreloadmount:\n  v: 1\n")
+        path = _write_yaml(tmp_path / "rm.yaml", "apcore:\n  version: '1.0.0'\nreloadmount:\n  v: 1\n")
         config = Config.load(path)
         config.mount("reloadmount", from_dict={"mounted": True})
         config.reload()

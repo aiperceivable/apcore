@@ -12,6 +12,7 @@ import type { Context } from '../context.js';
 import { CircuitBreakerOpenError } from '../errors.js';
 import type { ApCoreEvent } from '../events/emitter.js';
 import { createEvent } from '../events/emitter.js';
+import { addCallCleanup } from '../execution-lifetime.js';
 import { Middleware } from './base.js';
 
 export const CTX_CIRCUIT_STATE = '_apcore.mw.circuit.state';
@@ -57,7 +58,7 @@ interface CircuitRecord {
   state: CircuitBreakerState;
   window: RollingWindow;
   openedAt: number | null;
-  probeInFlight: boolean;
+  probe: { context: Context; removeCleanup: () => void } | null;
 }
 
 export interface CircuitBreakerOptions {
@@ -133,7 +134,7 @@ export class CircuitBreakerMiddleware extends Middleware {
         state: CircuitBreakerState.CLOSED,
         window: new RollingWindow(this._windowSize),
         openedAt: null,
-        probeInFlight: false,
+        probe: null,
       });
     }
     return this._circuits.get(key)!;
@@ -143,7 +144,6 @@ export class CircuitBreakerMiddleware extends Middleware {
     if (record.state === CircuitBreakerState.OPEN && record.openedAt !== null) {
       if (Date.now() - record.openedAt >= this._recoveryWindowMs) {
         record.state = CircuitBreakerState.HALF_OPEN;
-        record.probeInFlight = false;
       }
     }
   }
@@ -151,7 +151,7 @@ export class CircuitBreakerMiddleware extends Middleware {
   private _openCircuit(moduleId: string, callerId: string | null, record: CircuitRecord): void {
     record.state = CircuitBreakerState.OPEN;
     record.openedAt = Date.now();
-    record.probeInFlight = false;
+    this._clearProbe(record);
     console.warn(
       `[apcore:middleware] Circuit OPEN for module '${moduleId}' (caller: ${callerId ?? 'unknown'})`,
     );
@@ -161,11 +161,16 @@ export class CircuitBreakerMiddleware extends Middleware {
   private _closeCircuit(moduleId: string, callerId: string | null, record: CircuitRecord): void {
     record.state = CircuitBreakerState.CLOSED;
     record.openedAt = null;
-    record.probeInFlight = false;
+    this._clearProbe(record);
     console.warn(
       `[apcore:middleware] Circuit CLOSED for module '${moduleId}' (caller: ${callerId ?? 'unknown'})`,
     );
     this._emit('apcore.circuit.closed', moduleId, callerId, 'info');
+  }
+
+  private _clearProbe(record: CircuitRecord): void {
+    record.probe?.removeCleanup();
+    record.probe = null;
   }
 
   private _emit(
@@ -198,10 +203,18 @@ export class CircuitBreakerMiddleware extends Middleware {
     }
 
     if (record.state === CircuitBreakerState.HALF_OPEN) {
-      if (record.probeInFlight) {
+      if (record.probe !== null) {
         throw new CircuitBreakerOpenError(moduleId, callerId);
       }
-      record.probeInFlight = true;
+      const removeCleanup = addCallCleanup(context, () => {
+        const release = (): void => {
+          if (record.probe?.context === context) this._clearProbe(record);
+        };
+        const token = context.cancelToken;
+        if (token === null) release();
+        else void token.drain().then(release);
+      });
+      record.probe = { context, removeCleanup };
     }
 
     return null;
@@ -218,7 +231,7 @@ export class CircuitBreakerMiddleware extends Middleware {
 
     record.window.record(false);
 
-    if (record.state === CircuitBreakerState.HALF_OPEN) {
+    if (record.state === CircuitBreakerState.HALF_OPEN && record.probe?.context === context) {
       this._closeCircuit(moduleId, callerId, record);
       context.data[CTX_CIRCUIT_STATE] = CircuitBreakerState.CLOSED;
     }
@@ -241,7 +254,7 @@ export class CircuitBreakerMiddleware extends Middleware {
 
     record.window.record(true);
 
-    if (record.state === CircuitBreakerState.HALF_OPEN) {
+    if (record.state === CircuitBreakerState.HALF_OPEN && record.probe?.context === context) {
       this._openCircuit(moduleId, callerId, record);
       context.data[CTX_CIRCUIT_STATE] = CircuitBreakerState.OPEN;
     } else if (record.state === CircuitBreakerState.CLOSED) {
@@ -266,6 +279,9 @@ export class CircuitBreakerMiddleware extends Middleware {
 
   /** Manually reset the circuit to CLOSED (e.g., for operator override or tests). */
   reset(moduleId: string, callerId: string | null = null): void {
-    this._circuits.delete(this._key(moduleId, callerId));
+    const key = this._key(moduleId, callerId);
+    const record = this._circuits.get(key);
+    if (record) this._clearProbe(record);
+    this._circuits.delete(key);
   }
 }

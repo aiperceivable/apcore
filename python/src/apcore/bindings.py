@@ -531,21 +531,27 @@ class BindingLoader:
 
         # Mode 2: external reference
         if "schema_ref" in binding:
-            ref_path = pathlib.Path(binding_file_dir) / binding["schema_ref"]
-            if not ref_path.exists():
-                raise BindingFileInvalidError(
-                    file_path=str(ref_path),
-                    reason="Schema reference file not found",
-                )
+            reference = binding["schema_ref"]
+            if not isinstance(reference, str) or not reference:
+                raise BindingFileInvalidError(file_path=file_path, reason="schema_ref must be a non-empty path")
+            ref_path = pathlib.Path(binding_file_dir) / reference
             try:
-                ref_data = yaml.safe_load(ref_path.read_text())
+                ref_data = yaml.safe_load(ref_path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeError) as exc:
+                raise BindingFileInvalidError(
+                    file_path=str(ref_path), reason=f"Unable to read schema reference: {exc}"
+                ) from exc
             except yaml.YAMLError as exc:
                 raise BindingFileInvalidError(
                     file_path=str(ref_path),
                     reason=f"YAML parse error: {exc}",
                 ) from exc
-            if ref_data is None:
-                ref_data = {}
+            if not isinstance(ref_data, dict) or any(
+                not isinstance(ref_data.get(field, {}), dict) for field in ("input_schema", "output_schema")
+            ):
+                raise BindingFileInvalidError(
+                    file_path=str(ref_path), reason="Schema reference and its input/output schemas must be mappings"
+                )
             return (
                 _build_model_from_json_schema(ref_data.get("input_schema", {}), "InputModel"),
                 _build_model_from_json_schema(ref_data.get("output_schema", {}), "OutputModel"),

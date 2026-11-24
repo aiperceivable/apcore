@@ -80,7 +80,7 @@ fn register_echo(registry: &Registry, module_id: &str) {
 /// `dir`, so relative `acl.root` resolves against `dir` via `source_path`.
 fn write_config(dir: &std::path::Path, acl_root: &str) -> std::path::PathBuf {
     let config = json!({
-        "version": "0.24.0",
+        "version": "1.0.0",
         "project": { "name": "acl-discovery-test" },
         "extensions": { "root": "./extensions" },
         "schema": { "root": "./schemas" },
@@ -207,7 +207,7 @@ async fn present_dir_without_global_acl_yaml_discovers_none() {
 #[test]
 fn config_omitting_acl_root_is_valid_with_default() {
     let config = json!({
-        "version": "0.24.0",
+        "version": "1.0.0",
         "project": { "name": "no-acl-root" },
         "extensions": { "root": "./extensions" },
         "schema": { "root": "./schemas" },

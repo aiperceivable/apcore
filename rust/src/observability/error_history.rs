@@ -1,4 +1,4 @@
-// APCore Protocol — Error history tracking with fingerprinting & min-heap eviction
+// APCore Protocol — Error history tracking with fingerprinting and ordered eviction
 // Spec reference: observability.md §1.3, §1.4
 
 use async_trait::async_trait;
@@ -8,7 +8,7 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::cmp::Reverse;
-use std::collections::{BinaryHeap, HashMap, VecDeque};
+use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::sync::Arc;
 use std::sync::OnceLock;
 
@@ -157,26 +157,32 @@ pub fn compute_fingerprint_from_error(error: &ModuleError, module_id: &str) -> S
 // ErrorHistory — pluggable storage + min-heap eviction + fingerprint dedup
 // ---------------------------------------------------------------------------
 
-/// Internal heap entry: (last_occurred, monotonic seq, fingerprint).
-/// Wrapped in `Reverse` so `BinaryHeap` becomes a min-heap on last_occurred.
-type HeapEntry = Reverse<(DateTime<Utc>, u64, String)>;
+#[derive(Debug)]
+struct IndexedError {
+    entry: ErrorEntry,
+    sequence: u64,
+}
 
 #[derive(Debug, Default)]
 struct ErrorHistoryState {
-    /// fingerprint → entry (O(1) dedup lookup).
-    fp_index: HashMap<String, ErrorEntry>,
-    /// module_id → fingerprints in insertion order. `VecDeque` gives O(1)
-    /// `pop_front` for per-module eviction (observability.md §1.3 mandates
-    /// O(log N) — this is the per-module half; heap pop is O(log N) total).
+    fp_index: HashMap<String, IndexedError>,
+    /// Per-module insertion order.
     module_index: HashMap<String, VecDeque<String>>,
-    /// Min-heap on last_occurred timestamp for O(log N) eviction.
-    /// Lazy deletion: stale entries (where stored timestamp != entry.last_occurred,
-    /// or fingerprint already evicted) are skipped on pop. Bound is roughly
-    /// `max_total_entries × dedup_factor` — every dedup hit pushes a new heap
-    /// entry that becomes stale immediately.
-    heap: BinaryHeap<HeapEntry>,
-    /// Tie-breaker for heap ordering when timestamps collide.
+    /// Exactly one key per retained fingerprint, ordered by last occurrence.
+    eviction_order: BTreeSet<(DateTime<Utc>, u64, String)>,
     seq: u64,
+}
+
+impl ErrorHistoryState {
+    fn remove_entry(&mut self, fingerprint: String) {
+        if let Some(indexed) = self.fp_index.remove(&fingerprint) {
+            self.eviction_order.remove(&(
+                indexed.entry.last_occurred,
+                indexed.sequence,
+                fingerprint,
+            ));
+        }
+    }
 }
 
 /// Total-entry limit when a constructor does not take one.
@@ -323,14 +329,19 @@ impl ErrorHistory {
         {
             let mut state = self.state.lock();
 
-            if let Some(existing) = state.fp_index.get_mut(&fp) {
-                existing.count += 1;
-                existing.last_occurred = when;
-                existing.timestamp = when;
-                entry_to_notify = existing.clone();
-                state.seq += 1;
-                let seq = state.seq;
-                state.heap.push(Reverse((when, seq, fp.clone())));
+            if let Some(indexed) = state.fp_index.get_mut(&fp) {
+                let previous = indexed.entry.last_occurred;
+                let sequence = indexed.sequence;
+                indexed.entry.count += 1;
+                indexed.entry.last_occurred = when;
+                indexed.entry.timestamp = when;
+                entry_to_notify = indexed.entry.clone();
+                if previous != when {
+                    state
+                        .eviction_order
+                        .remove(&(previous, sequence, fp.clone()));
+                    state.eviction_order.insert((when, sequence, fp));
+                }
             } else {
                 let entry = ErrorEntry {
                     module_id: module_id.to_string(),
@@ -344,15 +355,17 @@ impl ErrorHistory {
                     fingerprint: fp.clone(),
                 };
                 entry_to_notify = entry.clone();
-                state.fp_index.insert(fp.clone(), entry);
+                state.seq += 1;
+                let sequence = state.seq;
+                state
+                    .fp_index
+                    .insert(fp.clone(), IndexedError { entry, sequence });
                 state
                     .module_index
                     .entry(module_id.to_string())
                     .or_default()
                     .push_back(fp.clone());
-                state.seq += 1;
-                let seq = state.seq;
-                state.heap.push(Reverse((when, seq, fp)));
+                state.eviction_order.insert((when, sequence, fp));
 
                 // Eviction may now remove the entry we just inserted (if it has
                 // the oldest last_occurred); that's fine — the store has already
@@ -403,7 +416,7 @@ impl ErrorHistory {
         let mut entries: Vec<ErrorEntry> = fps
             .iter()
             .rev()
-            .filter_map(|fp| state.fp_index.get(fp).cloned())
+            .filter_map(|fp| state.fp_index.get(fp).map(|indexed| indexed.entry.clone()))
             .collect();
         if let Some(n) = limit {
             entries.truncate(n);
@@ -415,7 +428,11 @@ impl ErrorHistory {
     #[must_use]
     pub fn get_all(&self, limit: Option<usize>) -> Vec<ErrorEntry> {
         let state = self.state.lock();
-        let mut all: Vec<ErrorEntry> = state.fp_index.values().cloned().collect();
+        let mut all: Vec<ErrorEntry> = state
+            .fp_index
+            .values()
+            .map(|indexed| indexed.entry.clone())
+            .collect();
         all.sort_by_key(|e| Reverse(e.last_occurred));
         if let Some(n) = limit {
             all.truncate(n);
@@ -435,13 +452,13 @@ impl ErrorHistory {
         if let Some(id) = module_id {
             if let Some(fps) = state.module_index.remove(id) {
                 for fp in fps {
-                    state.fp_index.remove(&fp);
+                    state.remove_entry(fp);
                 }
             }
         } else {
             state.fp_index.clear();
             state.module_index.clear();
-            state.heap.clear();
+            state.eviction_order.clear();
             state.seq = 0;
         }
     }
@@ -451,19 +468,13 @@ fn evict_per_module(state: &mut ErrorHistoryState, module_id: &str, max_per_modu
     let Some(fps) = state.module_index.get_mut(module_id) else {
         return;
     };
-    while fps.len() > max_per_module {
-        if let Some(evicted_fp) = fps.pop_front() {
-            state.fp_index.remove(&evicted_fp);
-        } else {
-            break;
-        }
-    }
-    if state
-        .module_index
-        .get(module_id)
-        .is_some_and(VecDeque::is_empty)
-    {
+    let excess = fps.len().saturating_sub(max_per_module);
+    let evicted = fps.drain(..excess).collect::<Vec<_>>();
+    if fps.is_empty() {
         state.module_index.remove(module_id);
+    }
+    for fp in evicted {
+        state.remove_entry(fp);
     }
 }
 
@@ -475,27 +486,22 @@ fn evict_total(state: &mut ErrorHistoryState, max_total: usize) {
     }
 }
 
-/// Pop the oldest live entry from the heap; returns true if an entry was removed.
+/// Evict the globally oldest retained entry.
 fn pop_oldest(state: &mut ErrorHistoryState) -> bool {
-    while let Some(Reverse((heap_ts, _seq, fp))) = state.heap.pop() {
-        if let Some(entry) = state.fp_index.get(&fp) {
-            // Skip stale heap entries: dedup may have refreshed last_occurred,
-            // leaving older heap entries that no longer reflect entry state.
-            if entry.last_occurred != heap_ts {
-                continue;
-            }
-            let module_id = entry.module_id.clone();
-            state.fp_index.remove(&fp);
-            if let Some(fps) = state.module_index.get_mut(&module_id) {
-                fps.retain(|f| f != &fp);
-                if fps.is_empty() {
-                    state.module_index.remove(&module_id);
-                }
-            }
-            return true;
+    let Some((_, _, fp)) = state.eviction_order.pop_first() else {
+        return false;
+    };
+    let Some(indexed) = state.fp_index.remove(&fp) else {
+        return false;
+    };
+    let module_id = &indexed.entry.module_id;
+    if let Some(fps) = state.module_index.get_mut(module_id) {
+        fps.retain(|f| f != &fp);
+        if fps.is_empty() {
+            state.module_index.remove(module_id);
         }
     }
-    false
+    true
 }
 
 /// Middleware that records errors into an `ErrorHistory`.
@@ -558,6 +564,18 @@ impl Middleware for ErrorHistoryMiddleware {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn repeat_errors_keep_the_eviction_index_bounded() {
+        let history = ErrorHistory::new(5);
+        let time = Utc::now();
+        let error = ModuleError::new(ErrorCode::GeneralInternalError, "network is unavailable");
+        for _ in 0..1000 {
+            history.record_at("test.module", &error, time);
+        }
+        assert_eq!(history.get("test.module", None)[0].count, 1000);
+        assert_eq!(history.state.lock().eviction_order.len(), 1);
+    }
 
     #[test]
     fn normalize_replaces_uuid() {

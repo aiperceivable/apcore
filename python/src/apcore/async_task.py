@@ -16,7 +16,7 @@ from functools import partial
 from typing import Any, Protocol, TypeVar, cast, runtime_checkable
 
 from apcore.context import Context
-from apcore.errors import ErrorCodes, InvalidInputError, ModuleError, TaskLimitExceededError
+from apcore.errors import ErrorCodes, InvalidInputError, ModuleError, TaskLimitExceededError, TaskStoreError
 
 __all__ = [
     "TaskStatus",
@@ -534,10 +534,15 @@ class AsyncTaskManager:
             await self._save(info)
 
         async_task = asyncio.create_task(self._run(task_id, module_id, inputs, context, retry_policy))
-        async_task.add_done_callback(lambda _: self._async_tasks.pop(task_id, None))
+        async_task.add_done_callback(partial(self._runner_finished, task_id))
         self._async_tasks[task_id] = async_task
 
         return task_id
+
+    def _runner_finished(self, task_id: str, task: asyncio.Task[None]) -> None:
+        self._async_tasks.pop(task_id, None)
+        if not task.cancelled() and (error := task.exception()) is not None:
+            _logger.error("Task %s runner stopped: %s", task_id, error, exc_info=error)
 
     def get_status(self, task_id: str) -> TaskInfo | None:
         """Return a snapshot of the TaskInfo for a task, or None if not found.
@@ -866,8 +871,20 @@ class AsyncTaskManager:
         non-corrupting (one extra terminal write that the next cancel no-ops
         against).
         """
-        current = await self._store_get(task_id)
+        current = await self._read_for_runner(task_id)
         return current is not None and current.status in _TERMINAL_STATUSES
+
+    async def _read_for_runner(self, task_id: str) -> TaskInfo | None:
+        # An accepted task already owns its slot. Retry transient reads without
+        # counting them against the module's execution retry policy.
+        for delay in (0.01, 0.02):
+            try:
+                return await self._store_get(task_id)
+            except TaskStoreError as exc:
+                if not exc.retryable:
+                    raise
+                await asyncio.sleep(delay)
+        return await self._store_get(task_id)
 
     async def _run(
         self,
@@ -885,7 +902,7 @@ class AsyncTaskManager:
             # snapshot captured before the loop: with a shared store the
             # record may have been cancelled or deleted during the backoff
             # sleep, and a stale object would write that change away.
-            info = await self._store_get(task_id)
+            info = await self._read_for_runner(task_id)
             if info is None:
                 return
             if info.status in _TERMINAL_STATUSES:

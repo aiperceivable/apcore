@@ -54,7 +54,7 @@ class _CircuitRecord:
     #: Rolling window of recent outcomes — ``True`` = success, ``False`` = error.
     window: deque[bool] = field(default_factory=deque)
     opened_at: datetime | None = None
-    probe_in_flight: bool = False
+    probe_context: Context[Any] | None = None
     lock: threading.Lock = field(default_factory=threading.Lock, compare=False, repr=False)
 
     def error_rate(self) -> float:
@@ -135,7 +135,7 @@ class CircuitBreakerMiddleware(Middleware):
             record.state = CircuitBreakerState.CLOSED
             record.window.clear()
             record.opened_at = None
-            record.probe_in_flight = False
+            record.probe_context = None
 
     # ------------------------------------------------------------------
     # Middleware hooks
@@ -152,10 +152,13 @@ class CircuitBreakerMiddleware(Middleware):
                 raise CircuitBreakerOpenError(module_id=module_id, caller_id=key[1] or None)
 
             if record.state == CircuitBreakerState.HALF_OPEN:
-                if record.probe_in_flight:
+                if record.probe_context is not None:
                     self._write_state(context, CircuitBreakerState.OPEN)
                     raise CircuitBreakerOpenError(module_id=module_id, caller_id=key[1] or None)
-                record.probe_in_flight = True
+                record.probe_context = context
+                scope = getattr(context, "_execution_scope", None)
+                if scope is not None:
+                    scope.callback(self._release_probe, record, context)
 
             self._write_state(context, record.state)
         return None
@@ -173,11 +176,11 @@ class CircuitBreakerMiddleware(Middleware):
         with record.lock:
             record.window.append(True)
             self._trim(record)
-            if record.state == CircuitBreakerState.HALF_OPEN:
+            if record.state == CircuitBreakerState.HALF_OPEN and record.probe_context is context:
                 record.state = CircuitBreakerState.CLOSED
                 record.window.clear()
                 record.opened_at = None
-                record.probe_in_flight = False
+                record.probe_context = None
                 emit_closed = True
                 _logger.info("Circuit CLOSED for module '%s' (caller '%s')", key[0], key[1])
         if emit_closed:
@@ -205,7 +208,7 @@ class CircuitBreakerMiddleware(Middleware):
             rate = record.error_rate()
 
             if record.state == CircuitBreakerState.HALF_OPEN:
-                opens = True
+                opens = record.probe_context is context
             elif record.state == CircuitBreakerState.CLOSED:
                 opens = len(record.window) >= self._min_samples and rate >= self._open_threshold
             else:
@@ -214,7 +217,7 @@ class CircuitBreakerMiddleware(Middleware):
             if opens:
                 record.state = CircuitBreakerState.OPEN
                 record.opened_at = self._clock()
-                record.probe_in_flight = False
+                record.probe_context = None
                 emit_opened = True
                 _logger.warning(
                     "Circuit OPEN for module '%s' (caller '%s') at error_rate %.3f",
@@ -229,6 +232,12 @@ class CircuitBreakerMiddleware(Middleware):
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _release_probe(record: _CircuitRecord, context: Context[Any]) -> None:
+        with record.lock:
+            if record.probe_context is context:
+                record.probe_context = None
 
     def _key_of(self, module_id: str, context: Context) -> tuple[str, str]:
         caller_id = getattr(context, "caller_id", None)
@@ -254,7 +263,7 @@ class CircuitBreakerMiddleware(Middleware):
         elapsed_ms = (self._clock() - record.opened_at).total_seconds() * 1000
         if elapsed_ms >= self._recovery_window_ms:
             record.state = CircuitBreakerState.HALF_OPEN
-            record.probe_in_flight = False
+            record.probe_context = None
             _logger.info("Circuit HALF_OPEN for module '%s' after recovery window", module_id)
 
     def _write_state(self, context: Context, state: CircuitBreakerState) -> None:

@@ -75,6 +75,23 @@ def _load_probe_class(path: Path) -> type:
 
 
 class TestHotReloadPreservesMetadata:
+    def test_watcher_preserves_previous_registration_when_custom_validator_rejects(self, tmp_path: Path) -> None:
+        class Validator:
+            def validate(self, module: Any) -> list[str]:
+                return ["description rejected"] if module.description == "invalid" else []
+
+        path = tmp_path / "probe.py"
+        _write_probe(path, description="original", version="1.0.0", tags=[], documentation="probe")
+        original = _load_probe_class(path)()
+        reg = Registry(extensions_dir=str(tmp_path))
+        reg.set_validator(Validator())
+        reg.register("probe", original)
+
+        _write_probe(path, description="invalid", version="2.0.0", tags=[], documentation="probe")
+        reg._handle_file_change(str(path))
+
+        assert reg.get("probe") is original
+
     def test_reloaded_module_keeps_its_descriptor_and_dependencies(self, tmp_path: Path) -> None:
         probe_path = tmp_path / "reload_probe.py"
         _write_probe(

@@ -11,6 +11,8 @@ import yaml
 
 from apcore.acl import ACL
 from apcore.config import Config
+from apcore.errors import ConfigNotFoundError
+from apcore.registry import Registry
 from apcore.schema.loader import SchemaLoader
 
 _ACL_POLICY = textwrap.dedent(
@@ -150,6 +152,27 @@ class TestProjectRootByDiscoveryTier:
 
 
 class TestProjectRootWithoutABackingFile:
+    def test_path_environment_values_keep_string_spelling(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("APCORE_SCHEMA_ROOT", "123")
+        monkeypatch.setenv("APCORE_SYS_CONTROL_OVERRIDES__PATH", "true")
+        config_path = _write_config(tmp_path, "apcore.yaml", {"apcore": {"project": {"name": "paths"}}})
+        config = Config.load(str(config_path), validate=False)
+        assert config.get("schema.root") == "123"
+        assert config.get("sys_modules.control.overrides_path") == "true"
+
+    @pytest.mark.parametrize("suffix", ["/", "/."])
+    def test_id_map_honors_directory_qualifier_on_file(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, suffix: str
+    ) -> None:
+        path = tmp_path / "ids.yaml"
+        path.write_text("mappings: []", encoding="utf-8")
+        monkeypatch.chdir(tmp_path)
+        config = Config(data={"id_map": {"overrides": "ids.yaml" + suffix}})
+        with pytest.raises(ConfigNotFoundError):
+            Registry(config=config)
+
     def test_in_memory_config_resolves_to_cwd(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.chdir(tmp_path)
 

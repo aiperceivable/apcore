@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from apcore.context import Context
+from apcore.observability.storage import STORAGE_NAMESPACE_USAGE, InMemoryStorageBackend
 from apcore.observability.usage import (
     ModuleUsageDetail,
     ModuleUsageSummary,
@@ -39,6 +40,17 @@ class TestUsageRecord:
 
 
 class TestUsageCollector:
+    def test_storage_keeps_records_that_share_a_timestamp(self) -> None:
+        storage = InMemoryStorageBackend()
+        collector = UsageCollector(storage=storage)
+        timestamp = datetime.now(timezone.utc).isoformat()
+        collector.record("mod.a", "caller.first", 2, True, timestamp)
+        collector.record("mod.a", "caller.second", 3, True, timestamp)
+
+        assert {record["caller_id"] for _, record in storage.list(STORAGE_NAMESPACE_USAGE)} == {
+            "caller.first", "caller.second"
+        }
+
     def test_collector_default_retention(self) -> None:
         collector = UsageCollector()
         assert collector.retention_hours == 168

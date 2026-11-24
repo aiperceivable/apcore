@@ -397,6 +397,24 @@ class TestSchemaMode:
         with pytest.raises(BindingFileInvalidError):
             loader.load_bindings(str(f), registry)
 
+    @pytest.mark.parametrize("directory", [False, True])
+    def test_invalid_schema_ref_has_a_typed_error(self, loader, registry, tmp_path, directory):
+        path = tmp_path / "schema.yaml"
+        if directory:
+            path.mkdir()
+        else:
+            path.write_text("single YAML string\n")
+        binding = tmp_path / "test.binding.yaml"
+        binding.write_text(
+            "bindings:\n"
+            "  - module_id: test.ref\n"
+            "    target: binding_helpers:typed_function\n"
+            "    schema_ref: schema.yaml\n"
+        )
+
+        with pytest.raises(BindingFileInvalidError):
+            loader.load_bindings(str(binding), registry)
+
 
 # ---------------------------------------------------------------------------
 # Registration and Integration Tests

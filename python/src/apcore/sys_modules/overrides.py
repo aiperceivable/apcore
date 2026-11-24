@@ -19,12 +19,18 @@ import json
 import logging
 import os
 import tempfile
+import threading
+from _thread import LockType
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
+from weakref import WeakValueDictionary
 
 import yaml
 
 logger = logging.getLogger(__name__)
+
+_update_locks: WeakValueDictionary[Path | int, LockType] = WeakValueDictionary()
+_update_locks_guard = threading.Lock()
 
 
 __all__ = [
@@ -75,6 +81,7 @@ class FileOverridesStore:
     """
 
     def __init__(self, path: str | os.PathLike[str]) -> None:
+        self._raw_path = os.fspath(path)
         self._path = Path(path)
 
     @property
@@ -83,17 +90,21 @@ class FileOverridesStore:
         return self._path
 
     def load(self) -> dict[str, Any]:
-        if not self._path.exists():
-            return {}
         try:
-            raw = self._path.read_text(encoding="utf-8")
-        except OSError as exc:
-            logger.warning(
-                "[apcore:overrides] Failed to read overrides file %s: %s",
-                self._path,
-                exc,
-            )
+            return self._read_mapping()
+        except (OSError, ValueError) as exc:
+            logger.warning("[apcore:overrides] %s", exc)
             return {}
+
+    def _read_mapping(self) -> dict[str, Any]:
+        """Read the authoritative mapping before replacing it."""
+        try:
+            with open(self._raw_path, encoding="utf-8") as source:
+                raw = source.read()
+        except FileNotFoundError:
+            return {}
+        except (OSError, UnicodeError) as exc:
+            raise OSError(f"Failed to read overrides file {self._path}: {exc}") from exc
         if not raw:
             return {}
         try:
@@ -104,21 +115,12 @@ class FileOverridesStore:
             try:
                 parsed = json.loads(raw)
             except json.JSONDecodeError:
-                logger.warning(
-                    "[apcore:overrides] Overrides file %s is not valid YAML/JSON; skipping (%s)",
-                    self._path,
-                    exc,
-                )
-                return {}
+                raise ValueError(f"Overrides file {self._path} is not valid YAML/JSON: {exc}") from exc
         if isinstance(parsed, dict):
             return dict(parsed)
         if parsed is None:
             return {}
-        logger.warning(
-            "[apcore:overrides] Overrides file %s root is not a mapping; skipping",
-            self._path,
-        )
-        return {}
+        raise ValueError(f"Overrides file {self._path} root is not a mapping")
 
     def save(self, overrides: dict[str, Any]) -> None:
         directory = self._path.parent if str(self._path.parent) else Path(".")
@@ -152,7 +154,7 @@ class FileOverridesStore:
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 yaml.safe_dump(ordered, f, default_flow_style=False, sort_keys=True)
-            os.replace(tmp_path, self._path)
+            os.replace(tmp_path, self._raw_path)
         except Exception as exc:
             logger.error(
                 "[apcore:overrides] Failed to write overrides file %s: %s",
@@ -163,3 +165,25 @@ class FileOverridesStore:
                 os.unlink(tmp_path)
             except OSError:
                 pass
+
+
+def _persist_override(store: OverridesStore, key: str, value: Any) -> None:
+    """Merge one override under the lock shared by all writers to the store."""
+    try:
+        load = store.load
+        lock_key: Path | int = id(store)
+        if isinstance(store, FileOverridesStore):
+            lock_key = store.path.parent.resolve() / store.path.name
+            if type(store).load is FileOverridesStore.load:
+                load = store._read_mapping
+        with _update_locks_guard:
+            lock = _update_locks.get(lock_key)
+            if lock is None:
+                lock = _update_locks[lock_key] = threading.Lock()
+        with lock:
+            existing = load()
+            if not isinstance(existing, dict):
+                raise ValueError("Overrides store did not return a mapping")
+            store.save({**existing, key: value})
+    except Exception as exc:
+        logger.error("Failed to persist override for key '%s': %s", key, exc)

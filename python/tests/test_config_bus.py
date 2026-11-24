@@ -719,10 +719,11 @@ class TestA12NSValidation:
     def teardown_method(self) -> None:
         _clear_ns_registry_except_builtins()
 
-    def test_strict_mode_rejects_unknown_namespace(self, tmp_path: Path) -> None:
+    @pytest.mark.parametrize("unknown_value", ["{x: 1}", "7"])
+    def test_strict_mode_rejects_unknown_namespace(self, tmp_path: Path, unknown_value: str) -> None:
         yaml_file = tmp_path / "cfg.yaml"
         yaml_file.write_text(
-            """
+            f"""
 apcore:
   version: "1.0.0"
   project:
@@ -736,12 +737,32 @@ apcore:
     default_effect: allow
 _config:
   strict: true
-unknown_ns:
-  x: 1
+unknown_ns: {unknown_value}
 """
         )
         with pytest.raises(ConfigError, match="Unknown namespace"):
             Config.load(str(yaml_file), validate=True)
+
+    @pytest.mark.parametrize(
+        ("section", "error"),
+        [
+            ("observability: {tracing: {exporter: stdout, otlp_endpoint: 'http://collector'}}", "otlp_endpoint"),
+            ("obs: {redaction: {regex_patterns: ['[']}}", "regex_patterns"),
+        ],
+    )
+    def test_namespace_mode_applies_core_semantic_checks(self, tmp_path: Path, section: str, error: str) -> None:
+        yaml_file = tmp_path / "cfg.yaml"
+        yaml_file.write_text(f'apcore:\n  version: "1.0.0"\n  project: {{name: test}}\n  {section}\n')
+
+        with pytest.raises(ConfigError, match=error):
+            Config.load(str(yaml_file))
+
+    def test_explicit_validation_uses_namespace_mode(self, tmp_path: Path) -> None:
+        yaml_file = tmp_path / "cfg.yaml"
+        yaml_file.write_text('apcore:\n  version: "1.0.0"\n  project: {name: test}\n_config: {strict: true}\n')
+        config = Config.load(str(yaml_file))
+
+        config.validate()
 
     def test_non_strict_mode_allows_unknown_namespace(self, tmp_path: Path) -> None:
         yaml_file = tmp_path / "cfg.yaml"

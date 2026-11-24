@@ -17,9 +17,8 @@
  *   - Config / discoverConfigFile / DEFAULTS-aware Config.load (filesystem)
  *   - BindingLoader (loads YAML from disk)
  *   - SchemaLoader / RefResolver (load schemas from disk)
- *   - Registry directory scanning (`Registry.discover` is exposed but
- *     dynamically loads `node:fs` at call time and will throw cleanly in
- *     a browser; in-memory `register/get/has/list` are fully usable)
+ *   - Registry directory scanning and watching. In-memory registry operations
+ *     such as register, get, has and list are supported.
  *   - sys-modules `registerSysModules` overridesPath file loader
  *
  * If you reach for one of those in browser code, expose the equivalent

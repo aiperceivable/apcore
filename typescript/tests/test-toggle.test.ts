@@ -125,7 +125,7 @@ describe('ToggleFeatureModule', () => {
     });
 
     // Register a dummy module so toggle can find it
-    registry.registerInternal('test.dummy', { description: 'dummy module for testing' });
+    registry.registerInternal('test.dummy', { description: 'dummy module for testing', execute: () => ({}) });
   });
 
   afterEach(() => {

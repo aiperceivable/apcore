@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { Context, createIdentity } from '../src/context.js';
 import type { Identity } from '../src/context.js';
 
@@ -153,6 +153,19 @@ describe('Context.child()', () => {
 });
 
 describe('Context.toJSON() / Context.fromJSON()', () => {
+  it('warns and omits nonserializable context data from wire output', () => {
+    const ctx = Context.create();
+    ctx.data['visible'] = { count: 10 };
+    ctx.data['opaque'] = { count: 10n };
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      expect(JSON.parse(JSON.stringify(ctx)).data).toEqual({ visible: { count: 10 } });
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('opaque'));
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it('round-trips context with identity', () => {
     const identity = createIdentity('user-42', 'admin', ['superuser', 'editor'], { org: 'acme' });
     const executor = { name: 'test-executor' };

@@ -19,6 +19,7 @@ import type { TSchema } from '@sinclair/typebox';
 import yaml from 'js-yaml';
 import type { Config } from '../config.js';
 import { SchemaNotFoundError, SchemaParseError } from '../errors.js';
+import { negotiateDocumentVersion } from '../version.js';
 import { RefResolver } from './ref-resolver.js';
 import type { ResolvedSchema, SchemaDefinition } from './types.js';
 import { SchemaStrategy } from './types.js';
@@ -30,13 +31,15 @@ export {
   sortedKeysStringify,
 } from './loader-pure.js';
 
+type CompiledSchema = Pick<ResolvedSchema, 'jsonSchema' | 'schema'>;
+
 export class SchemaLoader {
   private _config: Config;
   private _schemasDir: string;
   private _resolver: RefResolver;
   private _schemaCache: Map<string, SchemaDefinition> = new Map();
-  private _pathIndex: Map<string, string> = new Map();
-  private _contentCache: Map<string, [ResolvedSchema, ResolvedSchema]> = new Map();
+  private _resolvedCache = new Map<string, [ResolvedSchema, ResolvedSchema]>();
+  private _contentCache = new Map<string, [CompiledSchema, CompiledSchema]>();
 
   constructor(config: Config, schemasDir?: string | null) {
     this._config = config;
@@ -72,6 +75,13 @@ export class SchemaLoader {
     }
 
     const dataObj = data as Record<string, unknown>;
+    const version = dataObj['version'];
+    if (version != null) {
+      if (typeof version !== 'string') {
+        throw new SchemaParseError(`Schema version for '${moduleId}' must be a string`);
+      }
+      negotiateDocumentVersion(version);
+    }
     for (const fieldName of ['input_schema', 'output_schema', 'description']) {
       if (!(fieldName in dataObj)) {
         throw new SchemaParseError(
@@ -93,7 +103,7 @@ export class SchemaLoader {
       errorSchema: (dataObj['error_schema'] as Record<string, unknown>) ?? null,
       definitions,
       sourcePath: filePath,
-      version: (dataObj['version'] as string) ?? '1.0.0',
+      version: version ?? '1.0.0',
       documentation: (dataObj['documentation'] as string) ?? null,
       schemaUrl: (dataObj['$schema'] as string) ?? null,
     };
@@ -146,50 +156,42 @@ export class SchemaLoader {
     };
     const strategy = strategyMap[rawStrategy] ?? SchemaStrategy.YAML_FIRST;
 
-    const pathKey = `${moduleId}:${strategy}`;
-    const cachedHash = this._pathIndex.get(pathKey);
-    if (cachedHash) {
-      return this._contentCache.get(cachedHash)!;
+    if (strategy === SchemaStrategy.NATIVE_FIRST && nativeInputSchema && nativeOutputSchema) {
+      return this._wrapNative(moduleId, nativeInputSchema, nativeOutputSchema);
     }
-
-    let result: [ResolvedSchema, ResolvedSchema] | null = null;
-
-    if (strategy === SchemaStrategy.YAML_FIRST) {
-      try {
-        result = this._loadAndResolve(moduleId);
-      } catch (e) {
-        if (e instanceof SchemaNotFoundError && nativeInputSchema && nativeOutputSchema) {
-          result = this._wrapNative(moduleId, nativeInputSchema, nativeOutputSchema);
-        } else {
-          throw e;
-        }
+    try {
+      return this._loadAndResolve(moduleId);
+    } catch (error) {
+      if (strategy === SchemaStrategy.YAML_FIRST && error instanceof SchemaNotFoundError &&
+          nativeInputSchema && nativeOutputSchema) {
+        return this._wrapNative(moduleId, nativeInputSchema, nativeOutputSchema);
       }
-    } else if (strategy === SchemaStrategy.NATIVE_FIRST) {
-      if (nativeInputSchema && nativeOutputSchema) {
-        result = this._wrapNative(moduleId, nativeInputSchema, nativeOutputSchema);
-      } else {
-        result = this._loadAndResolve(moduleId);
-      }
-    } else if (strategy === SchemaStrategy.YAML_ONLY) {
-      result = this._loadAndResolve(moduleId);
+      throw error;
     }
-
-    if (result === null) {
-      throw new SchemaNotFoundError(moduleId);
-    }
-
-    const digest = contentHash({ input: result[0].jsonSchema, output: result[1].jsonSchema });
-    if (!this._contentCache.has(digest)) {
-      this._contentCache.set(digest, result);
-    }
-    this._pathIndex.set(pathKey, digest);
-
-    return this._contentCache.get(digest)!;
   }
 
   private _loadAndResolve(moduleId: string): [ResolvedSchema, ResolvedSchema] {
-    const sd = this.load(moduleId);
-    return this.resolve(sd);
+    const cached = this._resolvedCache.get(moduleId);
+    if (cached) return cached;
+    const definition = this.load(moduleId);
+    const sourcePath = definition.sourcePath ?? null;
+    const input = this._resolver.resolve(definition.inputSchema, sourcePath);
+    const output = this._resolver.resolve(definition.outputSchema, sourcePath);
+    const digest = contentHash({ input, output });
+    let compiled = this._contentCache.get(digest);
+    if (!compiled) {
+      compiled = [
+        { jsonSchema: input, schema: jsonSchemaToTypeBox(input) },
+        { jsonSchema: output, schema: jsonSchemaToTypeBox(output) },
+      ];
+      this._contentCache.set(digest, compiled);
+    }
+    const result: [ResolvedSchema, ResolvedSchema] = [
+      { ...compiled[0], moduleId: definition.moduleId, direction: 'input' },
+      { ...compiled[1], moduleId: definition.moduleId, direction: 'output' },
+    ];
+    this._resolvedCache.set(moduleId, result);
+    return result;
   }
 
   private _wrapNative(
@@ -214,7 +216,7 @@ export class SchemaLoader {
 
   clearCache(): void {
     this._schemaCache.clear();
-    this._pathIndex.clear();
+    this._resolvedCache.clear();
     this._contentCache.clear();
     this._resolver.clearCache();
   }

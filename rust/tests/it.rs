@@ -197,6 +197,8 @@ mod test_context_logger_schema;
 mod test_crate_root_exports;
 #[path = "test_decorator.rs"]
 mod test_decorator;
+#[path = "test_document_version_negotiation_conformance.rs"]
+mod test_document_version_negotiation_conformance;
 #[path = "test_error_fingerprinting.rs"]
 mod test_error_fingerprinting;
 #[path = "test_error_history_heap.rs"]

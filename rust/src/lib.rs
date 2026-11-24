@@ -74,7 +74,7 @@ pub use builtin_steps::{
     BuiltinModuleLookup, BuiltinOutputValidation, BuiltinReturnResult,
 };
 pub use cancel::{CancelToken, ExecutionCancelledError};
-pub use client::{APCore, APCoreOptions};
+pub use client::{APCore, APCoreOptions, TypedModuleOptions};
 pub use config::{
     Config, ConfigMode, EnvStyle, ExecutorConfig, MetricsConfig, MountSource, NamespaceInfo,
     NamespaceRegistration, ObservabilityConfig, TracingConfig, RESERVED_NAMESPACES,

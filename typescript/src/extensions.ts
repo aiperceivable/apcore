@@ -55,11 +55,13 @@ function isModuleValidator(value: unknown): value is ModuleValidator {
   return typeof value === 'object' && value !== null && typeof (value as Record<string, unknown>)['validate'] === 'function';
 }
 
-/** Type guard: checks if value has at least one middleware method (before, after, onError). */
+/** Check the hooks and priority used by the middleware manager. */
 function isMiddleware(value: unknown): value is Middleware {
   if (typeof value !== 'object' || value === null) return false;
   const obj = value as Record<string, unknown>;
-  return typeof obj['before'] === 'function' || typeof obj['after'] === 'function' || typeof obj['onError'] === 'function';
+  return typeof obj['priority'] === 'number' && Number.isFinite(obj['priority'])
+    && typeof obj['before'] === 'function' && typeof obj['after'] === 'function'
+    && typeof obj['onError'] === 'function';
 }
 
 /** Type guard: checks if value has a `check` method (ACL). */

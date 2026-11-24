@@ -30,10 +30,6 @@ conformance:
       - timeout_cancellation
       - canonicalize_name
   known_deviations:
-    - feature: version negotiation on load
-      spec: protocol-spec §13.3
-      reason: The exported negotiation utility is not invoked when loading configuration or schema files.
-      severity: major
     - feature: schema migration
       spec: protocol-spec §13.4
       reason: Automatic schema migration is not implemented.

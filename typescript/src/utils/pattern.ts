@@ -72,19 +72,22 @@ export function matchPattern(pattern: string, moduleId: string): boolean {
  * @returns True when the pattern matches the entire value.
  */
 export function matchGlob(pattern: string, value: string): boolean {
-  const segments = pattern.split('*');
-  if (segments.length === 1) return matchExact(segments[0], value);
+  const segments = pattern.split('*').map(segment => Array.from(segment));
+  const chars = Array.from(value);
+  if (segments.length === 1) {
+    return segments[0].length === chars.length && matchAt(segments[0], chars, 0);
+  }
 
-  if (!matchPrefix(segments[0], value)) return false;
+  if (!matchAt(segments[0], chars, 0)) return false;
   let pos = segments[0].length;
 
   for (let i = 1; i < segments.length - 1; i++) {
     const segment = segments[i];
-    if (!segment) continue;
-    const end = value.length - segment.length;
+    if (segment.length === 0) continue;
+    const end = chars.length - segment.length;
     let found = -1;
     for (let j = pos; j <= end; j++) {
-      if (matchExact(segment, value.slice(j, j + segment.length))) {
+      if (matchAt(segment, chars, j)) {
         found = j;
         break;
       }
@@ -94,23 +97,17 @@ export function matchGlob(pattern: string, value: string): boolean {
   }
 
   const last = segments[segments.length - 1];
-  if (!last) return true;
-  if (value.length - pos < last.length) return false;
-  return matchExact(last, value.slice(value.length - last.length));
+  const suffixStart = chars.length - last.length;
+  return suffixStart >= pos && matchAt(last, chars, suffixStart);
 }
 
-/** True when `text` starts with `segment`, treating `?` as any character. */
-function matchPrefix(segment: string, text: string): boolean {
-  if (text.length < segment.length) return false;
+/** Match a fixed segment at a code-point offset. */
+function matchAt(segment: string[], text: string[], offset: number): boolean {
+  if (text.length - offset < segment.length) return false;
   for (let k = 0; k < segment.length; k++) {
-    if (segment[k] !== '?' && segment[k] !== text[k]) return false;
+    if (segment[k] !== '?' && segment[k] !== text[offset + k]) return false;
   }
   return true;
-}
-
-/** True when `segment` covers `text` exactly, treating `?` as any character. */
-function matchExact(segment: string, text: string): boolean {
-  return segment.length === text.length && matchPrefix(segment, text);
 }
 
 /**

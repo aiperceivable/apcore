@@ -1213,15 +1213,9 @@ export class ACL {
    * Per-`check()` / per-`asyncCheck()` capture slot for the handler-error
    * message produced by `_evaluateConditions[Async]`.
    *
-   * `_currentFrame` names the frame belonging to the evaluation *currently*
-   * on the stack. `_evaluateConditions[Async]` captures the reference at
-   * entry and writes to that captured object, never back through the static
-   * — so neither a nested `check()` (which pushes and pops its own frame)
-   * nor a concurrent `asyncCheck()` suspended mid-evaluation can steal or
-   * clobber another call's error. This is the JS equivalent of
-   * apcore-python's `_handler_error_var` ContextVar token pair and
-   * apcore-rust's depth-tracked thread-local / tokio task-local
-   * (sync findings A-D-026, W2).
+   * Synchronous handlers use the evaluation frame on their current stack.
+   * Async evaluation passes its frame through each condition and compound
+   * expression explicitly, including across awaits.
    */
   private static _currentFrame: EvaluationFrame | null = null;
 
@@ -1230,13 +1224,13 @@ export class ACL {
     projection: GovernanceProjection | null,
   ): [EvaluationFrame, EvaluationFrame | null] {
     const previous = ACL._currentFrame;
-    const frame: EvaluationFrame = {
-      errors: new Map<string, string>(),
-      pending: [],
-      projection,
-    };
+    const frame = ACL._createEvaluationFrame(projection);
     ACL._currentFrame = frame;
     return [frame, previous];
+  }
+
+  private static _createEvaluationFrame(projection: GovernanceProjection | null): EvaluationFrame {
+    return { errors: new Map(), pending: [], projection };
   }
 
   /**
@@ -1434,10 +1428,8 @@ export class ACL {
     conditions: Record<string, unknown>,
     context: Context,
     prefix = '',
+    frame: EvaluationFrame | null = null,
   ): Promise<ConditionOutcome> {
-    // Bind the frame at entry — after an `await` the static may point at
-    // another in-flight evaluation's frame.
-    const frame = ACL._currentFrame;
     // Same fail-closed guard as the sync path — see _evaluateConditions.
     if (!isConditionsObject(conditions)) {
       const rootPath = prefix === '' ? CONDITIONS_ROOT_PATH : prefix;
@@ -1460,10 +1452,21 @@ export class ACL {
       }
       let outcome: ConditionOutcome;
       const sizeBefore = frame?.errors.size ?? 0;
+      const compoundHandler = handler === builtinOrHandlerAsync
+        ? builtinOrHandlerAsync
+        : handler === builtinNotHandlerAsync ? builtinNotHandlerAsync : null;
       try {
-        const result = isOutcomeHandler(handler)
-          ? await handler.evaluateOutcome(value, context, path)
-          : await handler.evaluate(value, context);
+        let result: ConditionOutcome | boolean;
+        if (handler === builtinArgumentsHandler) {
+          result = builtinArgumentsHandler.evaluateOutcome(value, context, path, frame?.projection ?? null);
+        } else if (compoundHandler !== null) {
+          result = await compoundHandler.evaluateOutcome(value, context, path, (child, ctx, childPath) =>
+            ACL._evaluateConditionsAsync(child, ctx, childPath, frame));
+        } else {
+          result = isOutcomeHandler(handler)
+            ? await handler.evaluateOutcome(value, context, path)
+            : await handler.evaluate(value, context);
+        }
         outcome = typeof result === 'boolean' ? (result ? 'satisfied' : 'unsatisfied') : result;
         if (outcome === 'unevaluable') ACL._recordBareUnevaluable(frame, path, sizeBefore);
       } catch (e) {
@@ -1829,41 +1832,30 @@ export class ACL {
     // requirement 3) and the failure state that scopes requirement 5's
     // suppression lives on the sink, so a bare callable could honour neither.
     const auditSink = this._auditSink;
-    // Open a capture frame private to this evaluation (see checkAccess()).
-    const [frame, previousFrame] = ACL._pushEvaluationFrame(options?.arguments ?? null);
+    const frame = ACL._createEvaluationFrame(options?.arguments ?? null);
     // §6.1.1 rule 5 — see checkAccess(). The two paths MUST NOT drift on this:
     // a requirement that survives an unevaluable rule on one path and is lost
     // on the other is the same fail-open, reachable by choosing an entry point.
     let pendingApproval = false;
 
-    try {
-      for (let idx = 0; idx < rules.length; idx++) {
-        // Re-arm the current frame after every await gap: a concurrent
-        // asyncCheck() may have become "current" while we were suspended.
-        ACL._currentFrame = frame;
-        const rule = rules[idx];
-        frame.pending.length = 0;
-        const outcome = await this._matchesRuleAsync(rule, effectiveCaller, targetId, ctx, idx);
-        // Re-arm again: the await above may have yielded to another evaluation.
-        ACL._currentFrame = frame;
-        if (outcome === 'unevaluable') {
-          if (ACL._raisesPendingApproval(rule)) pendingApproval = true;
-          if (!ACL._resolveUnevaluable(rule, idx, frame)) continue;
-        } else if (outcome === 'no_match') {
-          continue;
-        }
-        return this._decideByRule(
-          effectiveCaller, targetId, rule, idx, ctx, auditSink, frame, pendingApproval,
-        );
+    for (let idx = 0; idx < rules.length; idx++) {
+      const rule = rules[idx];
+      frame.pending.length = 0;
+      const outcome = await this._matchesRuleAsync(rule, effectiveCaller, targetId, ctx, idx, frame);
+      if (outcome === 'unevaluable') {
+        if (ACL._raisesPendingApproval(rule)) pendingApproval = true;
+        if (!ACL._resolveUnevaluable(rule, idx, frame)) continue;
+      } else if (outcome === 'no_match') {
+        continue;
       }
-
-      return this._decideByDefault(
-        effectiveCaller, targetId, defaultEffect, rules.length, ctx, auditSink, frame,
-        pendingApproval,
+      return this._decideByRule(
+        effectiveCaller, targetId, rule, idx, ctx, auditSink, frame, pendingApproval,
       );
-    } finally {
-      ACL._popEvaluationFrame(previousFrame);
     }
+
+    return this._decideByDefault(
+      effectiveCaller, targetId, defaultEffect, rules.length, ctx, auditSink, frame, pendingApproval,
+    );
   }
 
   /**
@@ -1995,9 +1987,8 @@ export class ACL {
     target: string,
     context: Context | null,
     ruleIndex: number,
+    frame: EvaluationFrame,
   ): Promise<RuleOutcome> {
-    const frame = ACL._currentFrame;
-
     const structural = ACL._precheckPatternFields(rule);
     if (structural.length > 0) {
       ACL._recordFaults(structural, frame);
@@ -2021,7 +2012,7 @@ export class ACL {
         this._warnConditionalRuleWithoutContext(rule, ruleIndex);
         return 'no_match';
       }
-      const outcome = await ACL._evaluateConditionsAsync(rule.conditions, context);
+      const outcome = await ACL._evaluateConditionsAsync(rule.conditions, context, '', frame);
       if (outcome === 'unsatisfied') return 'no_match';
       if (outcome === 'unevaluable') return 'unevaluable';
     }
@@ -2386,10 +2377,13 @@ ACL.registerCondition('max_call_depth', new MaxCallDepthHandler());
 // precheck covers it for free: `argument:` written for `arguments:` is then an
 // unregistered condition key, so the rule is unevaluable rather than silently
 // inert. It reads the §6.1.8 projection bound to the evaluation in flight.
-ACL.registerCondition('arguments', new ArgumentsHandler(ACL._currentGovernanceProjection));
+const builtinArgumentsHandler = new ArgumentsHandler(ACL._currentGovernanceProjection);
+ACL.registerCondition('arguments', builtinArgumentsHandler);
 ACL.registerCondition('$or', new OrHandler(ACL._evaluateConditions.bind(ACL)));
 ACL.registerCondition('$not', new NotHandler(ACL._evaluateConditions.bind(ACL)));
 // Async-aware variants used by asyncCheck() so Promise-returning conditions
 // inside $or/$not are awaited rather than dropped via fail-closed.
-ACL.registerAsyncCondition('$or', new OrHandlerAsync(ACL._evaluateConditionsAsync.bind(ACL)));
-ACL.registerAsyncCondition('$not', new NotHandlerAsync(ACL._evaluateConditionsAsync.bind(ACL)));
+const builtinOrHandlerAsync = new OrHandlerAsync(ACL._evaluateConditionsAsync.bind(ACL));
+const builtinNotHandlerAsync = new NotHandlerAsync(ACL._evaluateConditionsAsync.bind(ACL));
+ACL.registerAsyncCondition('$or', builtinOrHandlerAsync);
+ACL.registerAsyncCondition('$not', builtinNotHandlerAsync);

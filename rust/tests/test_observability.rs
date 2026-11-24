@@ -30,6 +30,31 @@ fn make_error(msg: &str) -> ModuleError {
     ModuleError::new(ErrorCode::ModuleExecuteError, msg)
 }
 
+#[tokio::test]
+async fn usage_keeps_distinct_calls_with_the_same_timestamp_in_storage() {
+    use apcore::observability::storage::{InMemoryStorageBackend, StorageBackend};
+    use std::sync::Arc;
+
+    let backend = Arc::new(InMemoryStorageBackend::new());
+    let collector = UsageCollector::with_storage_backend(Some(backend.clone()));
+    let timestamp = chrono::Utc::now();
+    collector.record_at("test.mod", Some("one"), 12.0, true, timestamp);
+    collector.record_at("test.mod", Some("two"), 13.0, true, timestamp);
+
+    let entries = tokio::time::timeout(std::time::Duration::from_millis(100), async {
+        loop {
+            let entries = backend.list("usage", "test.mod:").await.unwrap();
+            if entries.len() >= 2 {
+                break entries;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("two independent records must be persisted");
+    assert_eq!(entries.len(), 2);
+}
+
 // ===========================================================================
 // ErrorHistory
 // ===========================================================================

@@ -20,6 +20,7 @@
 
 /** Validate *value* against a raw JSON Schema object, via the caller's converter. */
 export type SubSchemaCheck = (sub: Record<string, unknown>, value: unknown) => boolean;
+type ResolveReference = (reference: string) => Record<string, unknown> | boolean | undefined;
 
 /**
  * Presence of any of these makes a schema need the applicator evaluator.
@@ -59,7 +60,8 @@ export function containsNeedsEvaluator(schema: Record<string, unknown>): boolean
 /** True when *schema* carries at least one keyword this module enforces. */
 export function hasApplicatorKeyword(schema: Record<string, unknown>): boolean {
   return (
-    APPLICATOR_KEYWORDS.some((keyword) => keyword in schema) || containsNeedsEvaluator(schema)
+    APPLICATOR_KEYWORDS.some((keyword) => keyword in schema) || containsNeedsEvaluator(schema) ||
+    (Array.isArray(schema.required) && schema.required.some((key) => Object.hasOwn(Object.prototype, key)))
   );
 }
 
@@ -104,8 +106,10 @@ export function checkApplicators(
   schema: Record<string, unknown>,
   value: unknown,
   check: SubSchemaCheck,
+  resolveReference: ResolveReference,
 ): boolean {
   return (
+    checkOwnRequired(schema, value) &&
     checkPrefixItems(schema, value, check) &&
     checkContains(schema, value, check) &&
     checkPatternProperties(schema, value, check) &&
@@ -113,9 +117,14 @@ export function checkApplicators(
     checkDependentRequired(schema, value) &&
     checkDependentSchemas(schema, value, check) &&
     checkConditional(schema, value, check) &&
-    checkUnevaluatedItems(schema, value, check) &&
-    checkUnevaluatedProperties(schema, value, check)
+    checkUnevaluatedItems(schema, value, check, resolveReference) &&
+    checkUnevaluatedProperties(schema, value, check, resolveReference)
   );
+}
+
+function checkOwnRequired(schema: Record<string, unknown>, value: unknown): boolean {
+  return !isPlainObject(value) || !Array.isArray(schema.required) ||
+    schema.required.every((name) => Object.hasOwn(value, name));
 }
 
 /**
@@ -193,7 +202,7 @@ function checkPatternProperties(
       matched = true;
       if (!checkSub(sub, member, check)) return false;
     }
-    if (matched || key in declared || additional === undefined) continue;
+    if (matched || Object.hasOwn(declared, key) || additional === undefined) continue;
     if (!checkSub(additional, member, check)) return false;
   }
   return true;
@@ -215,8 +224,8 @@ function checkDependentRequired(schema: Record<string, unknown>, value: unknown)
   const dependencies = schema['dependentRequired'];
   if (!isPlainObject(dependencies) || !isPlainObject(value)) return true;
   for (const [trigger, required] of Object.entries(dependencies)) {
-    if (!(trigger in value) || !Array.isArray(required)) continue;
-    if (!required.every((name) => typeof name === 'string' && name in value)) return false;
+    if (!Object.hasOwn(value, trigger) || !Array.isArray(required)) continue;
+    if (!required.every((name) => typeof name === 'string' && Object.hasOwn(value, name))) return false;
   }
   return true;
 }
@@ -230,7 +239,7 @@ function checkDependentSchemas(
   const dependencies = schema['dependentSchemas'];
   if (!isPlainObject(dependencies) || !isPlainObject(value)) return true;
   for (const [trigger, sub] of Object.entries(dependencies)) {
-    if (!(trigger in value)) continue;
+    if (!Object.hasOwn(value, trigger)) continue;
     if (!checkSub(sub, value, check)) return false;
   }
   return true;
@@ -257,10 +266,11 @@ function checkUnevaluatedItems(
   schema: Record<string, unknown>,
   value: unknown,
   check: SubSchemaCheck,
+  resolveReference: ResolveReference,
 ): boolean {
   const unevaluated = schema['unevaluatedItems'];
   if (unevaluated === undefined || !Array.isArray(value)) return true;
-  const evaluated = evaluatedItems(schema, value, check);
+  const evaluated = evaluatedItems(schema, value, check, resolveReference);
   for (let index = 0; index < value.length; index += 1) {
     if (evaluated.has(index)) continue;
     if (!checkSub(unevaluated, value[index], check)) return false;
@@ -273,10 +283,11 @@ function checkUnevaluatedProperties(
   schema: Record<string, unknown>,
   value: unknown,
   check: SubSchemaCheck,
+  resolveReference: ResolveReference,
 ): boolean {
   const unevaluated = schema['unevaluatedProperties'];
   if (unevaluated === undefined || !isPlainObject(value)) return true;
-  const evaluated = evaluatedProperties(schema, value, check);
+  const evaluated = evaluatedProperties(schema, value, check, resolveReference);
   for (const [key, member] of Object.entries(value)) {
     if (evaluated.has(key)) continue;
     if (!checkSub(unevaluated, member, check)) return false;
@@ -305,8 +316,13 @@ function annotatingSubSchemas(
   schema: Record<string, unknown>,
   value: unknown,
   check: SubSchemaCheck,
+  resolveReference: ResolveReference,
 ): Record<string, unknown>[] {
   const sources: Record<string, unknown>[] = [];
+  if (typeof schema.$ref === 'string') {
+    const target = resolveReference(schema.$ref);
+    if (isPlainObject(target) && target !== schema) sources.push(target);
+  }
 
   for (const keyword of BRANCH_KEYWORDS) {
     const branches = schema[keyword];
@@ -327,7 +343,7 @@ function annotatingSubSchemas(
   const dependencies = schema['dependentSchemas'];
   if (isPlainObject(dependencies) && isPlainObject(value)) {
     for (const [trigger, sub] of Object.entries(dependencies)) {
-      if (!(trigger in value)) continue;
+      if (!Object.hasOwn(value, trigger)) continue;
       if (isPlainObject(sub) && checkSub(sub, value, check)) sources.push(sub);
     }
   }
@@ -340,13 +356,17 @@ function evaluatedProperties(
   schema: Record<string, unknown>,
   value: Record<string, unknown>,
   check: SubSchemaCheck,
+  resolveReference: ResolveReference,
+  visited = new Set<Record<string, unknown>>(),
 ): Set<string> {
   const evaluated = new Set<string>();
+  if (visited.has(schema)) return evaluated;
+  visited.add(schema);
   const keys = Object.keys(value);
 
   const declared = schema['properties'];
   if (isPlainObject(declared)) {
-    for (const key of keys) if (key in declared) evaluated.add(key);
+    for (const key of keys) if (Object.hasOwn(declared, key)) evaluated.add(key);
   }
 
   const patterns = schema['patternProperties'];
@@ -364,8 +384,8 @@ function evaluatedProperties(
     for (const key of keys) evaluated.add(key);
   }
 
-  for (const sub of annotatingSubSchemas(schema, value, check)) {
-    for (const key of evaluatedProperties(sub, value, check)) evaluated.add(key);
+  for (const sub of annotatingSubSchemas(schema, value, check, resolveReference)) {
+    for (const key of evaluatedProperties(sub, value, check, resolveReference, visited)) evaluated.add(key);
   }
   return evaluated;
 }
@@ -375,8 +395,12 @@ function evaluatedItems(
   schema: Record<string, unknown>,
   value: readonly unknown[],
   check: SubSchemaCheck,
+  resolveReference: ResolveReference,
+  visited = new Set<Record<string, unknown>>(),
 ): Set<number> {
   const evaluated = new Set<number>();
+  if (visited.has(schema)) return evaluated;
+  visited.add(schema);
 
   const prefix = schema['prefixItems'];
   const prefixLength = Array.isArray(prefix) ? prefix.length : 0;
@@ -397,8 +421,8 @@ function evaluatedItems(
     }
   }
 
-  for (const sub of annotatingSubSchemas(schema, value, check)) {
-    for (const index of evaluatedItems(sub, value, check)) evaluated.add(index);
+  for (const sub of annotatingSubSchemas(schema, value, check, resolveReference)) {
+    for (const index of evaluatedItems(sub, value, check, resolveReference, visited)) evaluated.add(index);
   }
   return evaluated;
 }

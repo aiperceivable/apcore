@@ -3668,7 +3668,13 @@ describe('apcore Conformance Suite (TypeScript)', () => {
       const modules: Record<string, Record<string, unknown>> = {};
       const metadata: Record<string, Record<string, unknown> | null> = {};
       for (const moduleId of registeredModules) {
-        modules[moduleId] = { description: 'dummy', version: '1.0.0', execute: () => ({}) };
+        modules[moduleId] = {
+          description: 'Test module with dependencies',
+          inputSchema: { type: 'object' },
+          outputSchema: { type: 'object' },
+          version: '1.0.0',
+          execute: () => ({}),
+        };
         const deps = declared[moduleId];
         metadata[moduleId] = deps ? { dependencies: deps.map((d) => ({ module_id: d })) } : null;
         await registry.register(moduleId, modules[moduleId], null, metadata[moduleId]);

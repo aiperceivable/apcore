@@ -80,6 +80,29 @@ describe('UsageExporter (#45 §3)', () => {
     expect(exportSpy).toHaveBeenCalledTimes(1);
   });
 
+  it('lets both stop callers wait for a pending export before shutting down the sink', async () => {
+    let complete!: () => void;
+    const exportPromise = new Promise<void>(resolve => { complete = resolve; });
+    const exporter = {
+      export: vi.fn(() => exportPromise),
+      shutdown: vi.fn(),
+    };
+    const periodic = new PeriodicUsageExporter(new UsageCollector(), exporter, 100);
+    periodic.start();
+    vi.advanceTimersByTime(300);
+    expect(exporter.export).toHaveBeenCalledTimes(1);
+    const first = periodic.stop();
+    const second = periodic.stop();
+    const stopped = vi.fn();
+    void second.then(stopped);
+    await Promise.resolve();
+    expect(stopped).not.toHaveBeenCalled();
+    expect(exporter.shutdown).not.toHaveBeenCalled();
+    complete();
+    await Promise.all([first, second]);
+    expect(exporter.shutdown).toHaveBeenCalledTimes(1);
+  });
+
   it('PeriodicUsageExporter defaults to a 1-hour interval when not specified', () => {
     const collector = new UsageCollector();
     const exportSpy = vi.fn();

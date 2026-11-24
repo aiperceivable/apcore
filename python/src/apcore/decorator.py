@@ -198,6 +198,11 @@ class FunctionModule:
         self.output_schema = output_schema if output_schema is not None else generate_output_model(func)
 
         context_param_name = _context_param_name(func)
+        positional_only = [
+            parameter
+            for parameter in inspect.signature(func).parameters.values()
+            if parameter.kind == inspect.Parameter.POSITIONAL_ONLY
+        ]
 
         # Description priority chain
         if description is not None:
@@ -226,25 +231,39 @@ class FunctionModule:
         # ``executor.default_timeout`` for this module.
         self.resources = resources
 
+        def call_arguments(inputs: dict[str, Any], context: Context) -> tuple[list[Any], dict[str, Any]]:
+            kwargs = dict(inputs)
+            if context_param_name is not None:
+                kwargs[context_param_name] = context
+            # Use defaults only for gaps before the last supplied positional
+            # argument; the original callable handles trailing defaults.
+            count = next(
+                (index for index, param in reversed(list(enumerate(positional_only, 1))) if param.name in kwargs),
+                0,
+            )
+            args = []
+            for param in positional_only[:count]:
+                value = kwargs.pop(param.name, param.default)
+                if value is inspect.Parameter.empty:
+                    raise TypeError(f"Missing positional-only argument: {param.name!r}")
+                args.append(value)
+            return args, kwargs
+
         # Create execute closures — two separate defs required so that
         # inspect.iscoroutinefunction returns the correct value.
         if inspect.iscoroutinefunction(func):
 
             async def _async_execute(inputs: dict[str, Any], context: Context) -> dict[str, Any]:
-                call_kwargs = dict(inputs)
-                if context_param_name is not None:
-                    call_kwargs[context_param_name] = context
-                result = await func(**call_kwargs)
+                args, kwargs = call_arguments(inputs, context)
+                result = await func(*args, **kwargs)
                 return _normalize_result(result)
 
             self.execute = _async_execute
         else:
 
             def _sync_execute(inputs: dict[str, Any], context: Context) -> dict[str, Any]:
-                call_kwargs = dict(inputs)
-                if context_param_name is not None:
-                    call_kwargs[context_param_name] = context
-                result = func(**call_kwargs)
+                args, kwargs = call_arguments(inputs, context)
+                result = func(*args, **kwargs)
                 return _normalize_result(result)
 
             self.execute = _sync_execute

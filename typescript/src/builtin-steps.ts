@@ -37,10 +37,11 @@ import { type EventEmitter, createEvent } from './events/emitter.js';
 import type { ExecutionPolicy, PolicyDecision } from './policy.js';
 import { applyDecisionToAnnotations } from './policy.js';
 import { MiddlewareChainError, type MiddlewareManager } from './middleware/manager.js';
-import type { ModuleAnnotations } from './module.js';
+import type { Module, ModuleAnnotations } from './module.js';
 import { DEFAULT_ANNOTATIONS, isModuleIdempotent } from './module.js';
 import type { GovernanceGateMarker, PipelineContext, Step, StepResult } from './pipeline.js';
 import { ExecutionStrategy, GOVERNANCE_GATE } from './pipeline.js';
+import { isStreamingModule } from './streaming.js';
 import type { Registry } from './registry/registry.js';
 import { jsonSchemaToTypeBox } from './schema/loader-pure.js';
 import { SchemaValidator } from './schema/validator.js';
@@ -197,6 +198,8 @@ export class BuiltinCallChainGuard implements Step {
  * has been disabled — inlined here to match the 11-step pipeline spec and
  * apcore-python/apcore-rust implementations (sync finding A-D-011).
  */
+const moduleExecutionLeases = new WeakMap<PipelineContext, () => () => void>();
+
 export class BuiltinModuleLookup implements Step {
   readonly name = 'module_lookup';
   readonly description = 'Resolve module from registry, enforce toggle state';
@@ -217,9 +220,14 @@ export class BuiltinModuleLookup implements Step {
     this._toggleState = toggleState ?? DEFAULT_TOGGLE_STATE;
   }
 
+  /** @internal Shared by module lookup and the system toggle module. */
+  get toggleState(): ToggleState {
+    return this._toggleState;
+  }
+
   async execute(ctx: PipelineContext): Promise<StepResult> {
     const mod = this._registry.get(ctx.moduleId);
-    if (mod === null) {
+    if (mod === null || (!ctx.dryRun && this._registry.isDraining(ctx.moduleId))) {
       throw new ModuleNotFoundError(ctx.moduleId);
     }
 
@@ -230,6 +238,8 @@ export class BuiltinModuleLookup implements Step {
     }
 
     ctx.module = mod;
+    const moduleId = ctx.moduleId;
+    moduleExecutionLeases.set(ctx, () => this._registry.acquireExecution(moduleId, mod));
     // PROTOCOL_SPEC §7.4 (D-96): resolve the registry's DECLARED annotations
     // here and hand them to the gate, which has no registry of its own — the
     // same shape as `aclApprovalRequired`, which Step 4 computes and Step 5
@@ -254,20 +264,13 @@ export class BuiltinModuleLookup implements Step {
     // Early input redaction: set context.redactedInputs BEFORE middleware
     // runs (step 6). This ensures logging middleware sees redacted data.
     if (ctx.context != null) {
+      const { _approval_token: _, ...capturedInputs } = ctx.inputs;
       const inputSchema = resolveSchema(mod as Record<string, unknown>, 'inputSchema');
-      if (inputSchema != null) {
-        ctx.context.redactedInputs = redactSensitive(
-          ctx.inputs,
-          inputSchema as unknown as Record<string, unknown>,
-          this._redaction,
-        );
-      } else {
-        // No schema, so no `x-sensitive` — but the configured (or default)
-        // `sensitive_keys` / `regex_patterns` still apply at the capture point
-        // (PROTOCOL_SPEC 10.6.1 requirements 1 and 3). A raw copy here was
-        // what every logging middleware then wrote out.
-        ctx.context.redactedInputs = redactSensitive(ctx.inputs, {}, this._redaction);
-      }
+      ctx.context.redactedInputs = redactSensitive(
+        capturedInputs,
+        (inputSchema as Record<string, unknown> | null) ?? {},
+        this._redaction,
+      );
     }
 
     return { action: 'continue' };
@@ -853,14 +856,9 @@ export class BuiltinExecute implements Step {
     // skip_to="return_result") so PipelineTrace records steps 9/10 as skipped
     // rather than normal-continue-with-null-output (sync finding A-D-019).
     if (ctx.stream) {
-      const streamFn = mod['stream'] as
-        | ((
-            inputs: Record<string, unknown>,
-            context: Context,
-          ) => AsyncGenerator<Record<string, unknown>>)
-        | undefined;
-      if (typeof streamFn === 'function') {
-        ctx.outputStream = streamFn.call(mod, ctx.inputs, ctx.context);
+      const candidate = ctx.module as Module;
+      if (isStreamingModule(candidate)) {
+        ctx.outputStream = this._streamWithLease(ctx, () => candidate.stream(ctx.inputs, ctx.context));
         return { action: 'skip_to', skipTo: 'return_result' };
       }
       // fallback: execute normally and wrap as single-chunk
@@ -897,14 +895,22 @@ export class BuiltinExecute implements Step {
       throw new InvalidInputError(`Module '${ctx.moduleId}' has no execute method`);
     }
 
-    const executionPromise = Promise.resolve(
-      (
-        executeFn as (
-          inputs: Record<string, unknown>,
-          context: Context,
-        ) => Promise<Record<string, unknown>> | Record<string, unknown>
-      ).call(mod, ctx.inputs, ctx.context),
-    );
+    const release = moduleExecutionLeases.get(ctx)?.();
+    let executionPromise: Promise<Record<string, unknown>>;
+    try {
+      executionPromise = Promise.resolve(
+        (
+          executeFn as (
+            inputs: Record<string, unknown>,
+            context: Context,
+          ) => Promise<Record<string, unknown>> | Record<string, unknown>
+        ).call(mod, ctx.inputs, ctx.context),
+      );
+    } catch (error) {
+      release?.();
+      throw error;
+    }
+    if (release) void executionPromise.then(release, release);
 
     const output = await this._awaitExecution(
       executionPromise,
@@ -923,6 +929,18 @@ export class BuiltinExecute implements Step {
     // and the after-middleware chain has to distinguish them.
     ctx.executeStepRan = true;
     return { action: 'continue' };
+  }
+
+  private async *_streamWithLease(
+    ctx: PipelineContext,
+    createStream: () => AsyncGenerator<Record<string, unknown>>,
+  ): AsyncGenerator<Record<string, unknown>> {
+    const release = moduleExecutionLeases.get(ctx)?.();
+    try {
+      yield* createStream();
+    } finally {
+      release?.();
+    }
   }
 
   /**

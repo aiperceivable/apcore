@@ -18,6 +18,13 @@ from apcore.utils.pattern import match_glob
 logger = logging.getLogger(__name__)
 
 _DLQ_EVENT_TYPE = "apcore.event.delivery_failed"
+_DELIVERY_SUPPRESSED = object()
+
+
+class _DeliveryCircuitOpened(Exception):
+    def __init__(self, error: Exception) -> None:
+        super().__init__(str(error))
+        self.error = error
 
 
 def _iso_now() -> str:
@@ -105,6 +112,11 @@ def _get_subscriber_type(subscriber: Any) -> str:
 def _get_event_pattern(subscriber: Any) -> str:
     pattern = getattr(subscriber, "event_pattern", None)
     return pattern if isinstance(pattern, str) else "*"
+
+
+async def _deliver_to_subscriber(subscriber: Any, event: ApCoreEvent) -> Any:
+    deliver = getattr(type(subscriber), "_deliver_for_emitter", None)
+    return await (deliver(subscriber, event) if deliver is not None else subscriber.on_event(event))
 
 
 def _get_retry_config(subscriber: Any) -> EventRetryConfig:
@@ -283,23 +295,32 @@ class EventEmitter:
         """Deliver event with retry per subscriber's EventRetryConfig."""
         retry = _get_retry_config(subscriber)
         last_error: Exception | None = None
+        attempt_count = 0
 
         for attempt in range(retry.max_attempts):
             try:
-                await subscriber.on_event(event)
-                return
+                if await _deliver_to_subscriber(subscriber, event) is not _DELIVERY_SUPPRESSED:
+                    return
+                if last_error is None:
+                    return
+                break
+            except _DeliveryCircuitOpened as exc:
+                last_error = exc.error
+                attempt_count += 1
+                break
             except Exception as exc:
                 last_error = exc
+                attempt_count += 1
                 if attempt + 1 < retry.max_attempts:
                     delay_s = retry.compute_delay_ms(attempt) / 1000.0
                     await asyncio.sleep(delay_s)
 
         # All attempts exhausted — emit DLQ event then call on_failure
-        await self._emit_dlq(subscriber, event, last_error, retry.max_attempts)
+        await self._emit_dlq(subscriber, event, last_error, attempt_count)
 
         if hasattr(subscriber, "on_failure") and callable(subscriber.on_failure):
             try:
-                result = subscriber.on_failure(event, last_error, retry.max_attempts)
+                result = subscriber.on_failure(event, last_error, attempt_count)
                 if inspect.isawaitable(result):
                     await result
             except Exception:
@@ -308,7 +329,7 @@ class EventEmitter:
     async def _deliver_single_no_retry(self, subscriber: Any, event: ApCoreEvent) -> None:
         """Single delivery attempt for DLQ events — errors are logged and discarded."""
         try:
-            await subscriber.on_event(event)
+            await _deliver_to_subscriber(subscriber, event)
         except Exception:
             logger.error(
                 "Subscriber %r failed to handle DLQ event %s — discarded",

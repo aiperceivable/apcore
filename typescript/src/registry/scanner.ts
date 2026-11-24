@@ -98,7 +98,15 @@ export function scanExtensions(
 
       if (isSymlink) {
         if (!followSymlinks) continue;
-        const real = realpathSync.native(entryPath);
+        let real: string;
+        let targetStat;
+        try {
+          real = realpathSync.native(entryPath);
+          targetStat = statSync(real);
+        } catch {
+          console.warn(`[apcore:scanner] Cannot resolve symlink target: ${entryPath}`);
+          continue;
+        }
         if (visitedRealPaths.has(real)) continue;
         // Confinement check — reject symlinks that escape the extension root
         if (!real.startsWith(rootReal + sep) && real !== rootReal) {
@@ -110,14 +118,6 @@ export function scanExtensions(
         // — marking it here made the branch skip the very entry it was meant to
         // record, and then skip the target when the traversal reached it
         // directly, so both disappeared.
-        // Resolve the symlink target to check if it's a dir or file
-        let targetStat;
-        try {
-          targetStat = statSync(entryPath);
-        } catch {
-          console.warn(`[apcore:scanner] Cannot resolve symlink target: ${entryPath}`);
-          continue;
-        }
         isDir = targetStat.isDirectory();
         isFile = targetStat.isFile();
       } else {

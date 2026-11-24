@@ -18,6 +18,7 @@ use apcore::cancel::CancelToken;
 use apcore::context::{Context, Identity};
 use apcore::errors::{ErrorCode, ModuleError};
 use apcore::middleware::base::Middleware;
+use apcore::middleware::{RetryConfig, RetryMiddleware};
 use apcore::module::{Module, ModuleAnnotations};
 use apcore::registry::{ModuleDescriptor, Registry};
 use apcore::APCore;
@@ -515,6 +516,189 @@ async fn call_with_trace_runs_on_error_recovery() {
 
     assert_eq!(output, json!({"recovered": true}));
     assert_eq!(trace.module_id, "fail.module");
+}
+
+struct TransientModule {
+    attempts: AtomicUsize,
+}
+
+#[async_trait]
+impl Module for TransientModule {
+    fn input_schema(&self) -> Value {
+        json!({"type": "object"})
+    }
+
+    fn output_schema(&self) -> Value {
+        json!({"type": "object"})
+    }
+
+    fn description(&self) -> &'static str {
+        "Fails transiently before succeeding"
+    }
+
+    async fn execute(&self, _inputs: Value, ctx: &Context<Value>) -> Result<Value, ModuleError> {
+        assert_eq!(ctx.caller_id.as_deref(), Some("orchestrator.test"));
+        assert_eq!(ctx.call_chain, ["orchestrator.test", "retry.module"]);
+        let attempt = self.attempts.fetch_add(1, Ordering::SeqCst) + 1;
+        if attempt <= 3 {
+            return Err(
+                ModuleError::new(ErrorCode::GeneralInternalError, "temporary").with_retryable(true),
+            );
+        }
+        Ok(json!({"attempt": attempt}))
+    }
+}
+
+#[tokio::test]
+async fn test_executor_retry_preserves_call_identity_and_trace() {
+    for traced in [false, true] {
+        let client = APCore::new();
+        let mut retry = RetryConfig::default();
+        retry.base_delay_ms = 0;
+        retry.jitter = false;
+        client
+            .use_middleware(Box::new(RetryMiddleware::new(retry)))
+            .unwrap();
+        client
+            .register(
+                "retry.module",
+                Box::new(TransientModule {
+                    attempts: AtomicUsize::new(0),
+                }),
+            )
+            .unwrap();
+        let parent = Context::<Value>::anonymous().child("orchestrator.test");
+        let executor = client.executor();
+        let output = if traced {
+            let (output, trace) = executor
+                .call_with_trace("retry.module", json!({}), Some(&parent), None, None)
+                .await
+                .unwrap();
+            assert!(trace.success);
+            assert_eq!(
+                trace
+                    .steps
+                    .iter()
+                    .filter(|step| step.name == "execute")
+                    .count(),
+                4
+            );
+            output
+        } else {
+            executor
+                .call("retry.module", json!({}), Some(&parent), None)
+                .await
+                .unwrap()
+        };
+        assert_eq!(output, json!({"attempt": 4}));
+    }
+}
+
+#[tokio::test]
+async fn test_call_with_trace_rejects_invalid_module_id() {
+    let client = APCore::new();
+    let result = client
+        .executor()
+        .call_with_trace("INVALID", json!({}), None, None, None)
+        .await;
+    assert_eq!(result.unwrap_err().code, ErrorCode::InvalidModuleId);
+}
+
+#[tokio::test]
+async fn execution_closes_the_middleware_chain_that_entered() {
+    #[derive(Debug)]
+    struct Hooks(
+        &'static str,
+        Arc<parking_lot::Mutex<Vec<(&'static str, &'static str)>>>,
+    );
+
+    #[async_trait]
+    impl Middleware for Hooks {
+        fn name(&self) -> &str {
+            self.0
+        }
+
+        async fn before(
+            &self,
+            _: &str,
+            _: Value,
+            _: &Context<Value>,
+        ) -> Result<Option<Value>, ModuleError> {
+            self.1.lock().push((self.0, "before"));
+            Ok(None)
+        }
+
+        async fn after(
+            &self,
+            _: &str,
+            _: Value,
+            _: Value,
+            _: &Context<Value>,
+        ) -> Result<Option<Value>, ModuleError> {
+            self.1.lock().push((self.0, "after"));
+            Ok(None)
+        }
+
+        async fn on_error(
+            &self,
+            _: &str,
+            _: Value,
+            _: &ModuleError,
+            _: &Context<Value>,
+        ) -> Result<Option<Value>, ModuleError> {
+            self.1.lock().push((self.0, "error"));
+            Ok(None)
+        }
+    }
+
+    for fail in [false, true] {
+        let hooks = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let started = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let mut client = APCore::new();
+        let entered = client
+            .use_middleware_handle(Box::new(Hooks("entered", hooks.clone())))
+            .unwrap();
+        let (started_by_module, release_module) = (started.clone(), release.clone());
+        client
+            .module(
+                "held.module",
+                "Wait for test release",
+                json!({}),
+                json!({}),
+                None,
+                vec![],
+                None,
+                None,
+                vec![],
+                None,
+                move |_, _| {
+                    let (started, release) = (started_by_module.clone(), release_module.clone());
+                    Box::pin(async move {
+                        started.notify_one();
+                        release.notified().await;
+                        if fail {
+                            return Err(ModuleError::new(ErrorCode::ModuleExecuteError, "failed"));
+                        }
+                        Ok(json!({}))
+                    })
+                },
+            )
+            .unwrap();
+        let client = Arc::new(client);
+        let caller = client.clone();
+        let running =
+            tokio::spawn(async move { caller.call("held.module", json!({}), None, None).await });
+        started.notified().await;
+        assert!(client.remove_handle(entered));
+        client
+            .use_middleware_handle(Box::new(Hooks("replacement", hooks.clone())))
+            .unwrap();
+        release.notify_one();
+        assert_eq!(running.await.unwrap().is_err(), fail);
+        let exit = if fail { "error" } else { "after" };
+        assert_eq!(*hooks.lock(), [("entered", "before"), ("entered", exit)]);
+    }
 }
 
 // ---------------------------------------------------------------------------

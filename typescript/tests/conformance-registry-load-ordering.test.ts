@@ -36,6 +36,13 @@ function caseById(id: string): Record<string, any> {
   return found;
 }
 
+
+const validModuleMetadata = {
+  description: 'Test module',
+  inputSchema: { type: 'object' },
+  outputSchema: { type: 'object' },
+};
+
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
 describe('Conformance: registry_load_ordering.json', () => {
@@ -52,6 +59,7 @@ describe('Conformance: registry_load_ordering.json', () => {
     const midLoadGot: unknown[] = [];
 
     const mod = {
+      ...validModuleMetadata,
       execute: async () => ({}),
       onLoad: async () => {
         await sleep(delayMs / 2);
@@ -120,6 +128,7 @@ describe('Conformance: registry_load_ordering.json', () => {
     }
 
     const failing = {
+      ...validModuleMetadata,
       execute: async () => ({}),
       onLoad: async () => {
         throw new ConnectionError(errorCfg['message']);
@@ -175,6 +184,7 @@ describe('Conformance: registry_load_ordering.json', () => {
 
     const registry = new Registry();
     const makeSlow = () => ({
+      ...validModuleMetadata,
       execute: async () => ({}),
       onLoad: async () => {
         await sleep(delayMs);
@@ -218,6 +228,7 @@ describe('Conformance: registry_load_ordering.json', () => {
     // Deadlock protection, not a performance assertion.
     const watchdog = setTimeout(() => fail(new Error('onLoad callbacks did not overlap')), 5000);
     const makeSlow = (delayMs: number) => ({
+      ...validModuleMetadata,
       execute: async () => ({}),
       onLoad: async () => {
         entered += 1;

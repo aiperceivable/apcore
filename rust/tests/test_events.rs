@@ -215,6 +215,25 @@ async fn test_emitter_unsubscribe_nonexistent_returns_false() {
 }
 
 #[tokio::test]
+async fn test_emitter_handles_survive_unsubscribe_by_id() {
+    let emitter = EventEmitter::new();
+    let old = emitter.subscribe(Box::new(RecordingSubscriber::new("old", "*")));
+    let remaining = RecordingSubscriber::new("remaining", "*");
+    let handle = emitter.subscribe(Box::new(remaining.clone()));
+    let keep = RecordingSubscriber::new("keep", "*");
+    emitter.subscribe(Box::new(keep.clone()));
+
+    assert!(emitter.unsubscribe_by_id("old"));
+    assert!(!emitter.unsubscribe_handle(old));
+    assert!(emitter.unsubscribe_handle(handle));
+    emitter
+        .emit_sequential(&ApCoreEvent::new("test.received", json!({})))
+        .await;
+    assert!(remaining.received_events().is_empty());
+    assert_eq!(keep.received_events(), ["test.received"]);
+}
+
+#[tokio::test]
 async fn test_emitter_error_isolation() {
     // A failing subscriber must not prevent other subscribers from receiving events.
     let good = RecordingSubscriber::new("good", "*");
@@ -480,6 +499,37 @@ struct BlockingSubscriber {
     barrier: Arc<tokio::sync::Notify>,
     started: Arc<std::sync::atomic::AtomicBool>,
     finished: Arc<std::sync::atomic::AtomicBool>,
+}
+
+#[tokio::test]
+async fn test_emitter_flush_keeps_tracking_deliveries_after_timeout_or_cancellation() {
+    use std::{sync::atomic::AtomicBool, time::Duration};
+
+    let emitter = EventEmitter::new();
+    let barrier = Arc::new(tokio::sync::Notify::new());
+    emitter.subscribe(Box::new(BlockingSubscriber {
+        id: "held".into(),
+        barrier: barrier.clone(),
+        started: Arc::new(AtomicBool::new(false)),
+        finished: Arc::new(AtomicBool::new(false)),
+    }));
+    emitter
+        .emit(&ApCoreEvent::new("test.held", json!({})))
+        .await;
+    emitter.flush(5).await.unwrap();
+    assert!(
+        tokio::time::timeout(Duration::from_millis(5), emitter.flush(0))
+            .await
+            .is_err()
+    );
+
+    let drain = emitter.flush(0);
+    tokio::pin!(drain);
+    assert!(tokio::time::timeout(Duration::from_millis(5), &mut drain)
+        .await
+        .is_err());
+    barrier.notify_one();
+    drain.await.unwrap();
 }
 
 #[async_trait]

@@ -644,6 +644,13 @@ describe('setAcl / setApprovalHandler on strategies without those steps', () => 
 });
 
 describe('Executor.callWithTrace — PipelineStepError unwrap', () => {
+  it('applies the same module ID validation as call()', async () => {
+    const executor = new Executor({ registry: new Registry() });
+    await expect(executor.callWithTrace('Invalid Module', {})).rejects.toMatchObject({
+      code: 'INVALID_MODULE_ID',
+    });
+  });
+
   it('surfaces original typed error (not PipelineStepError) for unknown module', async () => {
     const registry = new Registry();
     const executor = new Executor({ registry });
@@ -655,7 +662,7 @@ describe('Executor.callWithTrace — PipelineStepError unwrap', () => {
 
 // A-D-017: middleware can request a pipeline retry with new inputs via RetrySignal.
 describe('Executor.call — middleware RetrySignal retry semantics', () => {
-  it('re-runs the pipeline when middleware.onError returns RetrySignal', async () => {
+  it.each(['call', 'callWithTrace'] as const)('%s retries with the inputs from RetrySignal', async (entry) => {
     const { RetrySignal } = await import('../src/middleware/base.js');
 
     let attempts = 0;
@@ -690,8 +697,73 @@ describe('Executor.call — middleware RetrySignal retry semantics', () => {
     const executor = new Executor({ registry });
     executor.use(new RetryMiddleware());
 
-    const result = await executor.call('test.retry', {});
+    const result = entry === 'call'
+      ? await executor.call('test.retry', {})
+      : (await executor.callWithTrace('test.retry', {}))[0];
     expect(attempts).toBe(2);
     expect(result['ok']).toBe(true);
+  });
+});
+
+describe('Executor execution lifetime', () => {
+  it('preserves opaque module output values when collecting observability data', async () => {
+    const registry = new Registry();
+    registry.register('test.opaque', {
+      description: 'Opaque nested output',
+      inputSchema: Type.Object({}),
+      outputSchema: Type.Object({ nested: Type.Any() }),
+      execute: () => ({ nested: { count: 10n } }),
+    });
+    const executor = new Executor({ registry });
+
+    await expect(executor.call('test.opaque')).resolves.toEqual({ nested: { count: 10n } });
+  });
+
+  it('delays unloading until execution settles, even after a call timeout', async () => {
+    let finish!: (output: Record<string, unknown>) => void;
+    const physicalExecution = new Promise<Record<string, unknown>>((resolve) => { finish = resolve; });
+    const module = {
+      description: 'Slow module',
+      inputSchema: Type.Object({}),
+      outputSchema: Type.Object({}),
+      resources: { timeout: 5 },
+      execute: () => physicalExecution,
+    };
+    const registry = new Registry();
+    registry.register('test.slow', module);
+    const executor = new Executor({ registry });
+
+    await expect(executor.call('test.slow', {})).rejects.toMatchObject({ code: 'MODULE_TIMEOUT' });
+    const unload = registry.safeUnregister('test.slow', 500);
+    await Promise.resolve();
+    expect(registry.get('test.slow')).toBe(module);
+    await expect(executor.call('test.slow', {})).rejects.toBeInstanceOf(ModuleNotFoundError);
+    finish({});
+    await expect(unload).resolves.toBe(true);
+    expect(registry.get('test.slow')).toBeNull();
+  });
+});
+
+describe('Executor.validate()', () => {
+  it.each(['resolve', 'reject'] as const)('reports warnings when an async preflight hook %ss', async (completion) => {
+    const registry = new Registry();
+    registry.register('test.preflight', {
+      description: 'Module with an asynchronous preflight check',
+      inputSchema: Type.Object({}),
+      outputSchema: Type.Object({}),
+      execute: () => ({}),
+      preflight: async () => {
+        if (completion === 'reject') throw new Error('preflight warning');
+        return ['preflight warning'];
+      },
+    });
+    const executor = new Executor({ registry });
+
+    const result = await executor.validate('test.preflight', {});
+
+    expect(result.valid).toBe(true);
+    expect(result.checks.find((check) => check.check === 'module_preflight')?.warnings).toEqual([
+      completion === 'resolve' ? 'preflight warning' : 'preflight() raised Error: preflight warning',
+    ]);
   });
 });

@@ -20,6 +20,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Type } from '@sinclair/typebox';
+import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
 
 import * as browser from '../src/browser/index.js';
@@ -61,54 +62,26 @@ function stripTypeOnlyImports(source: string): string {
     .replace(/typeof\s+import\s*\(\s*['"][^'"]+['"]\s*\)/g, 'typeof __ERASED__');
 }
 
-/**
- * Static imports and re-exports — these enter the bundler's static graph
- * unconditionally. We follow these recursively to audit the full closure.
- */
-function collectStaticImports(source: string): string[] {
-  const code = stripTypeOnlyImports(source);
+/** Follow static and literal dynamic edges, including lazy chunks emitted by bundlers. */
+function collectImportSpecifiers(file: string, source: string): string[] {
+  const parsed = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true);
   const specifiers: string[] = [];
-  const patterns = [
-    /import\s+[^'"]*\s+from\s+['"]([^'"]+)['"]/g,
-    /import\s+['"]([^'"]+)['"]/g,
-    /export\s+[^'"]*\s+from\s+['"]([^'"]+)['"]/g,
-  ];
-  for (const re of patterns) {
-    for (const match of code.matchAll(re)) specifiers.push(match[1]);
-  }
-  return specifiers;
-}
-
-/**
- * All specifiers, including dynamic `import('…')` and `require('…')`,
- * but only those that sit at module top level (no leading whitespace
- * — i.e. at column 0). A top-level `await import('node:fs')` chain is
- * what causes the bun init deadlock and is the only dynamic form that
- * also breaks browser bundlers at parse time.
- *
- * Lazy `await import('node:*')` *inside* an async function body is
- * intentionally NOT flagged — browser bundlers keep it as a dynamic
- * import that is only resolved if the method is actually invoked.
- * Browser callers that don't call `Registry.discover()` / `watch()`
- * never reach those lines, so flagging them would be over-strict.
- */
-function collectAllSpecifiers(source: string): string[] {
-  const code = stripTypeOnlyImports(source);
-  const specifiers: string[] = [];
-  const patterns = [
-    /import\s+[^'"]*\s+from\s+['"]([^'"]+)['"]/g,
-    /import\s+['"]([^'"]+)['"]/g,
-    /export\s+[^'"]*\s+from\s+['"]([^'"]+)['"]/g,
-    // Top-level only (column 0) — anything indented is inside a function
-    // body and won't drag node:* into the browser bundle at parse time.
-    /^require\s*\(\s*['"]([^'"]+)['"]\s*\)/gm,
-    /^(?:const|let|var)\s+\w+\s*=\s*await\s+import\s*\(\s*['"]([^'"]+)['"]\s*\)/gm,
-    /^\w+\s*=\s*await\s+import\s*\(\s*['"]([^'"]+)['"]\s*\)/gm,
-    /^await\s+import\s*\(\s*['"]([^'"]+)['"]\s*\)/gm,
-  ];
-  for (const re of patterns) {
-    for (const match of code.matchAll(re)) specifiers.push(match[1]);
-  }
+  const visit = (node: ts.Node): void => {
+    if (ts.isImportDeclaration(node) && !node.importClause?.isTypeOnly &&
+        ts.isStringLiteralLike(node.moduleSpecifier)) {
+      specifiers.push(node.moduleSpecifier.text);
+    } else if (ts.isExportDeclaration(node) && !node.isTypeOnly &&
+        node.moduleSpecifier && ts.isStringLiteralLike(node.moduleSpecifier)) {
+      specifiers.push(node.moduleSpecifier.text);
+    } else if (ts.isCallExpression(node) &&
+        (node.expression.kind === ts.SyntaxKind.ImportKeyword ||
+          (ts.isIdentifier(node.expression) && node.expression.text === 'require'))) {
+      const [arg] = node.arguments;
+      if (arg && ts.isStringLiteralLike(arg)) specifiers.push(arg.text);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(parsed);
   return specifiers;
 }
 
@@ -163,25 +136,13 @@ function walkBrowserGraph(): StaticCheckFinding[] {
       findings.push({ file: rel, reason: 'uses `createRequire`' });
     }
 
-    // Flag any node-builtin specifier — static OR dynamic — but only
-    // recurse into static-import targets. A dynamic import inside an
-    // async function body is browser-bundler-safe at parse time and
-    // typically guarded at runtime by the caller; recursing into its
-    // target would drag obviously-Node-only files (registry/scanner.ts,
-    // registry/metadata.ts) into the audit even though browser callers
-    // never reach them.
-    for (const spec of collectAllSpecifiers(src)) {
+    for (const spec of collectImportSpecifiers(file, src)) {
       if (isNodeSpecifier(spec)) {
         findings.push({ file: rel, reason: `imports Node builtin "${spec}"` });
-      }
-    }
-    for (const spec of collectStaticImports(src)) {
-      if (isNodeSpecifier(spec)) continue; // already flagged above
-      if (spec.startsWith('.')) {
+      } else {
         const resolved = resolveRelative(file, spec);
         if (resolved) stack.push(resolved);
       }
-      // Bare package imports are peer/runtime deps and assumed browser-safe.
     }
   }
 

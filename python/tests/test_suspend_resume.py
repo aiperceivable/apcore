@@ -120,13 +120,6 @@ class _BrokenResumeModule:
 # ---------------------------------------------------------------------------
 
 
-def _register_directly(registry: Registry, module_id: str, module: Any) -> None:
-    """Register a module directly into the registry (bypassing validation)."""
-    with registry._lock:
-        registry._modules[module_id] = module
-        registry._lowercase_map[module_id.lower()] = module_id
-
-
 def _make_reload(
     registry: Registry,
     emitter: EventEmitter | None = None,
@@ -148,7 +141,7 @@ class TestSuspendResumeStateTransfer:
         registry = Registry()
         old_mod = _StatefulModule()
         old_mod.counter = 42
-        _register_directly(registry, "stateful.mod", old_mod)
+        registry.register_internal("stateful.mod", old_mod)
 
         reload_mod = _make_reload(registry)
         new_mod = _StatefulModuleV2()
@@ -186,7 +179,7 @@ class TestBackwardCompatibility:
 
     def test_plain_module_reloads_without_error(self) -> None:
         registry = Registry()
-        _register_directly(registry, "plain.mod", _PlainModule())
+        registry.register_internal("plain.mod", _PlainModule())
 
         reload_mod = _make_reload(registry)
         new_mod = _PlainModuleV2()
@@ -212,7 +205,7 @@ class TestSuspendReturnsNone:
 
     def test_resume_not_called_when_suspend_returns_none(self) -> None:
         registry = Registry()
-        _register_directly(registry, "none.mod", _SuspendReturnsNoneModule())
+        registry.register_internal("none.mod", _SuspendReturnsNoneModule())
 
         reload_mod = _make_reload(registry)
         new_mod = _SuspendReturnsNoneModule()
@@ -238,7 +231,7 @@ class TestSuspendErrorHandling:
 
     def test_suspend_error_logged_reload_succeeds(self, caplog: pytest.LogCaptureFixture) -> None:
         registry = Registry()
-        _register_directly(registry, "broken.suspend", _BrokenSuspendModule())
+        registry.register_internal("broken.suspend", _BrokenSuspendModule())
 
         reload_mod = _make_reload(registry)
         new_mod = _PlainModuleV2()
@@ -258,7 +251,7 @@ class TestResumeErrorHandling:
 
     def test_resume_error_logged_reload_succeeds(self, caplog: pytest.LogCaptureFixture) -> None:
         registry = Registry()
-        _register_directly(registry, "broken.resume", _BrokenResumeModule())
+        registry.register_internal("broken.resume", _BrokenResumeModule())
 
         reload_mod = _make_reload(registry)
         # New module also has broken on_resume

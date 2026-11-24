@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 from typing import Annotated, Any, Literal, Union, cast
 
@@ -12,6 +13,7 @@ import yaml
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import SchemaError as JsonSchemaError
 from pydantic import BaseModel, ConfigDict, Field, create_model, model_validator
+from pydantic.fields import FieldInfo
 from pydantic.functional_validators import AfterValidator, BeforeValidator
 from pydantic_core import PydanticCustomError, PydanticUndefined
 from referencing import Registry, Resource
@@ -22,6 +24,7 @@ from apcore.errors import SchemaNotFoundError, SchemaParseError
 from apcore.schema.hardening import content_hash
 from apcore.schema.ref_resolver import RefResolver
 from apcore.schema.types import ResolvedSchema, SchemaDefinition, SchemaStrategy
+from apcore.version import _negotiate_document_version
 
 __all__ = ["SchemaLoader"]
 
@@ -535,6 +538,9 @@ class SchemaLoader:
             if field_name not in data:
                 raise SchemaParseError(message=f"Missing required field: {field_name} in schema for '{module_id}'")
 
+        if "version" in data:
+            _negotiate_document_version(str(data["version"]))
+
         definitions = dict(data.get("definitions", {}))
         definitions.update(data.get("$defs", {}))
 
@@ -581,6 +587,10 @@ class SchemaLoader:
         current_file = schema_def.source_path
         resolved_input = self._resolver.resolve(schema_def.input_schema, current_file)
         resolved_output = self._resolver.resolve(schema_def.output_schema, current_file)
+
+        digest = content_hash({"input": resolved_input, "output": resolved_output})
+        if digest in self._content_cache:
+            return self._cached_schema_pair(digest, schema_def.module_id)
 
         input_model = self.generate_model(resolved_input, f"{schema_def.module_id}_Input")
         output_model = self.generate_model(resolved_output, f"{schema_def.module_id}_Output")
@@ -637,15 +647,10 @@ class SchemaLoader:
             field_definitions["__pydantic_extra__"] = (dict[str, extra_type], ...)  # type: ignore[valid-type]
         for prop_name, prop_schema in properties.items():
             python_type, field_info = self._schema_to_field_info(prop_schema, prop_name, model_name, root)
-            is_required = prop_name in required
-
-            if not is_required:
-                # Make type nullable if not already
-                python_type = python_type | None  # type: ignore[operator]
-                # Set default to None if no explicit default
-                if field_info.default is PydanticUndefined:
-                    is_arr = isinstance(prop_schema.get("type"), str) and prop_schema.get("type") == "array"
-                    field_info = self._clone_field_with_default(prop_schema, None, is_array=is_arr)
+            if prop_name not in required and field_info.default is PydanticUndefined:
+                # Omission is permitted independently of the value type. A
+                # factory leaves the missing sentinel out of exported defaults.
+                field_info = FieldInfo.merge_field_infos(field_info, FieldInfo(default_factory=type(None)))
 
             field_definitions[prop_name] = (python_type, field_info)
 
@@ -1022,12 +1027,6 @@ class SchemaLoader:
 
         return Field(**kwargs)
 
-    def _clone_field_with_default(self, prop_schema: dict[str, Any], default: Any, is_array: bool = False) -> Any:
-        """Build a new Field with the given default, preserving all constraints from schema."""
-        schema_with_default = dict(prop_schema)
-        schema_with_default["default"] = default
-        return self._build_field(schema_with_default, is_array=is_array)
-
     def get_schema(
         self,
         module_id: str,
@@ -1035,52 +1034,31 @@ class SchemaLoader:
         native_output_schema: type[BaseModel] | None = None,
     ) -> tuple[ResolvedSchema, ResolvedSchema]:
         """Get resolved schemas using the configured loading strategy."""
-        if module_id in self._path_index:
-            return self._content_cache[self._path_index[module_id]]
-
         strategy = SchemaStrategy(self._config.get("schema.strategy", "yaml_first"))
-        result: tuple[ResolvedSchema, ResolvedSchema] | None = None
+        if strategy == SchemaStrategy.NATIVE_FIRST and native_input_schema and native_output_schema:
+            return self._wrap_native(module_id, native_input_schema, native_output_schema)
 
-        if strategy == SchemaStrategy.YAML_FIRST:
-            try:
-                result = self._load_and_resolve(module_id)
-            except SchemaNotFoundError:
-                if native_input_schema and native_output_schema:
-                    result = self._wrap_native(module_id, native_input_schema, native_output_schema)
-                else:
-                    raise
-
-        elif strategy == SchemaStrategy.NATIVE_FIRST:
-            if native_input_schema and native_output_schema:
-                result = self._wrap_native(module_id, native_input_schema, native_output_schema)
-            else:
-                result = self._load_and_resolve(module_id)
-
-        elif strategy == SchemaStrategy.YAML_ONLY:
-            result = self._load_and_resolve(module_id)
-
-        if result is None:
-            raise SchemaNotFoundError(schema_id=module_id)
-
-        self._store_in_cache(module_id, result)
-        return result
+        try:
+            return self._load_and_resolve(module_id)
+        except SchemaNotFoundError:
+            if strategy != SchemaStrategy.YAML_ONLY and native_input_schema and native_output_schema:
+                return self._wrap_native(module_id, native_input_schema, native_output_schema)
+            raise
 
     def _load_and_resolve(self, module_id: str) -> tuple[ResolvedSchema, ResolvedSchema]:
-        """Load and resolve a schema, using the two-level content-addressable cache."""
-        if module_id in self._path_index:
-            return self._content_cache[self._path_index[module_id]]
+        """Load and resolve YAML, then index its compiled models by schema content."""
         sd = self.load(module_id)
+        if module_id in self._path_index:
+            return self._cached_schema_pair(self._path_index[module_id], sd.module_id)
         result = self.resolve(sd)
-        self._store_in_cache(module_id, result)
+        digest = content_hash({"input": result[0].json_schema, "output": result[1].json_schema})
+        self._content_cache.setdefault(digest, result)
+        self._path_index[module_id] = digest
         return result
 
-    def _store_in_cache(self, module_id: str, result: tuple[ResolvedSchema, ResolvedSchema]) -> None:
-        """Store a resolved schema pair in the two-level content-addressable cache."""
-        combined = {"input": result[0].json_schema, "output": result[1].json_schema}
-        digest = content_hash(combined)
-        if digest not in self._content_cache:
-            self._content_cache[digest] = result
-        self._path_index[module_id] = digest
+    def _cached_schema_pair(self, digest: str, module_id: str) -> tuple[ResolvedSchema, ResolvedSchema]:
+        input_schema, output_schema = self._content_cache[digest]
+        return replace(input_schema, module_id=module_id), replace(output_schema, module_id=module_id)
 
     def _wrap_native(
         self,

@@ -1803,21 +1803,21 @@ class ACL:
         if root == "":
             root = Config.get_default("acl.root")
 
-        root_path = Path(config.resolve_path(str(root)))
+        root_path = config.resolve_path(str(root))
 
-        if not root_path.exists():
+        if not os.path.exists(root_path):
             # Missing path -> no enforcement. Do NOT synthesize an ACL.
             return None
 
-        if root_path.is_dir():
+        if os.path.isdir(root_path):
             # Directory convention: acl/{scope}_acl.yaml (PROTOCOL_SPEC §3.1).
-            acl_file = root_path / "global_acl.yaml"
+            acl_file = Path(root_path) / "global_acl.yaml"
             if not acl_file.is_file():
                 # Directory present but no conventional ACL file -> no-op.
                 return None
             return cls.load(str(acl_file))
 
-        return cls.load(str(root_path))
+        return cls.load(root_path)
 
     def check(
         self,

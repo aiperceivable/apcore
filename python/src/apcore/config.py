@@ -31,6 +31,8 @@ from apcore.errors import (
     ConfigNotFoundError,
 )
 
+from apcore.version import _negotiate_document_version
+
 __all__ = ["Config", "discover_config_file"]
 
 _logger = logging.getLogger(__name__)
@@ -557,12 +559,10 @@ def _apply_env_overrides(
     """
     result = copy.deepcopy(data)  # deep copy to protect shared defaults
     for env_key, env_value in os.environ.items():
-        coerced = _coerce_env_value(env_value)
-
         # 1. Global env_map (bare env var → top-level key).
         if env_key in _GLOBAL_ENV_MAP:
             if namespace_prefixes is None:
-                _set_nested(result, _GLOBAL_ENV_MAP[env_key], coerced)
+                _set_env_override(result, _GLOBAL_ENV_MAP[env_key], env_key, env_value)
             continue
         if namespace_prefixes is not None and any(env_key.startswith(p) for p in namespace_prefixes):
             continue
@@ -580,20 +580,36 @@ def _apply_env_overrides(
             continue
         # Convert: single _ → . (separator), double __ → literal _
         dot_path = suffix.lower().replace("__", "\x00").replace("_", ".").replace("\x00", "_")
-        # §9.2.1 requirement 5: an empty string is not a path. The variable is
-        # set, so §9.2 would call it an override; discarding it here is what
-        # makes resolution fall through to the tier below instead of blanking a
-        # directory the configuration file declared.
-        if dot_path in _SCALAR_PATH_TYPED_CONFIG_KEYS and _is_empty_path_value(coerced):
+        _set_env_override(result, dot_path, env_key, env_value)
+    return result
+
+
+def _set_env_override(
+    data: dict[str, Any],
+    key: str,
+    env_key: str,
+    raw_value: str,
+    *,
+    namespace: str | None = None,
+    nested: bool = True,
+) -> None:
+    path_key = f"{namespace}.{key}" if namespace and namespace != "apcore" else key.removeprefix("apcore.")
+    if path_key in _SCALAR_PATH_TYPED_CONFIG_KEYS:
+        if _is_empty_path_value(raw_value):
             _logger.warning(
                 "%s is set but empty; %r is path-typed and an empty string is not a path "
                 "(PROTOCOL_SPEC §9.2.1 requirement 5). Ignoring the override.",
                 env_key,
-                dot_path,
+                path_key,
             )
-            continue
-        _set_nested(result, dot_path, coerced)
-    return result
+            return
+        value: Any = raw_value
+    else:
+        value = _coerce_env_value(raw_value)
+    if nested:
+        _set_nested(data, key, value)
+    else:
+        data[key] = value
 
 
 def _coerce_env_value(value: str) -> Any:
@@ -808,13 +824,11 @@ def _apply_namespace_env_overrides(
     )
 
     for env_key, env_value in os.environ.items():
-        coerced = _coerce_env_value(env_value)
-
         # 1. Global env_map (bare env var → top-level dot-path).
         # The mapped target may be a dot-path (e.g. "server.port"); set it
         # nested at the top level so `get()` can traverse it.
         if env_key in _GLOBAL_ENV_MAP:
-            _set_nested(result, _GLOBAL_ENV_MAP[env_key], coerced)
+            _set_env_override(result, _GLOBAL_ENV_MAP[env_key], env_key, env_value)
             continue
 
         # 2. Namespace env_map (bare env var → namespace key).
@@ -825,7 +839,7 @@ def _apply_namespace_env_overrides(
             if not isinstance(ns_data, dict):
                 ns_data = {}
                 result[ns_name] = ns_data
-            _set_nested(ns_data, config_key, coerced)
+            _set_env_override(ns_data, config_key, env_key, env_value, namespace=ns_name)
             continue
 
         # 3. Prefix-based dispatch.
@@ -844,10 +858,7 @@ def _apply_namespace_env_overrides(
             continue
         key, is_nested = _resolve_env_suffix(suffix, matched)
         ns_data = result.setdefault(matched.name, {})
-        if is_nested:
-            _set_nested(ns_data, key, coerced)
-        else:
-            ns_data[key] = coerced
+        _set_env_override(ns_data, key, env_key, env_value, namespace=matched.name, nested=is_nested)
 
     return result
 
@@ -890,7 +901,7 @@ def _apply_namespace_defaults(
 
 def _validate_namespace_schema(
     namespace: str,
-    ns_data: dict[str, Any],
+    ns_data: Any,
     schema: dict[str, Any] | str,
 ) -> None:
     """Validate ns_data against schema."""
@@ -1498,10 +1509,7 @@ class Config:
         config._reload_path = str(absolute_path)
         config._project_root = project_root
         if validate:
-            if config._mode == "namespace":
-                config._validate_namespace_mode()
-            else:
-                config.validate()
+            config.validate()
         # PROTOCOL_SPEC §9.11 step 5: reload() re-validates only if the
         # originating load() did. Silently re-imposing validation on a config
         # the caller deliberately loaded with validate=False is a behaviour
@@ -1744,6 +1752,12 @@ class Config:
             raise ValueError("An empty configuration value is not a path")
         if Path(raw_path).is_absolute():
             return raw_path
+        # A terminal slash or dot requires the preceding component to be a
+        # directory. pathlib strips these markers, potentially turning an
+        # invalid filename into one that can be opened.
+        separators = (os.sep, os.altsep) if os.altsep else (os.sep,)
+        if raw_path.endswith((*separators, *(f"{sep}." for sep in separators))):
+            return os.path.join(self._project_root, raw_path)
         return str(Path(self._project_root) / raw_path)
 
     # ------------------------------------------------------------------
@@ -1868,68 +1882,54 @@ class Config:
             ConfigError: With all validation errors in the message
                 (``code="CONFIG_INVALID"``).
         """
+        namespace_mode = self._mode == "namespace"
+        data = self._data.get("apcore", {}) if namespace_mode else self._data
+        declared = self._declared.get("apcore", {}) if namespace_mode else self._declared
+        if "version" in declared:
+            _negotiate_document_version(str(declared["version"]))
+
         errors: list[str] = []
+        if not namespace_mode:
+            # Defaults do not satisfy a required declaration in legacy mode.
+            for field in _REQUIRED_FIELDS:
+                if _get_nested(declared, field) is None:
+                    errors.append(f"Missing required field: '{field}'")
 
-        # 1. Required field check — against the DECLARED document (§9.3 step 1).
-        #    Reading ``self._data`` here would be a no-op for anything with a
-        #    default, because ``_load_legacy_mode`` has already merged the
-        #    default table into it.
-        for field in _REQUIRED_FIELDS:
-            value = _get_nested(self._declared, field)
-            if value is None:
-                errors.append(f"Missing required field: '{field}'")
-
-        # 2. Constraint validation
+        strict = _meta_strict(self._data)
+        prefix = "apcore." if namespace_mode else ""
         for field, (check_fn, err_msg) in _CONSTRAINTS.items():
-            value = _get_nested(self._data, field)
+            value = _get_nested(data, field)
             if value is not None and not check_fn(value):
-                errors.append(f"Invalid value for '{field}': {err_msg} (got {value!r})")
+                errors.append(f"Invalid value for '{prefix}{field}': {err_msg} (got {value!r})")
 
-        # 3. Semantic validation
-        #
-        # PROTOCOL_SPEC §10.1.1 requirement 3: an OTLP endpoint set against an
-        # exporter that does not read it is a rejected configuration, not a
-        # silent no-op. A value an operator wrote down and nothing reads is the
-        # shape of every defect apcore#118 found.
-        otlp_endpoint = _get_nested(self._data, "observability.tracing.otlp_endpoint")
+        # §10.1.1: endpoints require an exporter that consumes them.
+        otlp_endpoint = _get_nested(data, "observability.tracing.otlp_endpoint")
         if otlp_endpoint is not None:
-            exporter = _get_nested(self._data, "observability.tracing.exporter", "stdout")
+            exporter = _get_nested(data, "observability.tracing.exporter", "stdout")
             if exporter != "otlp":
                 errors.append(
-                    f"observability.tracing.otlp_endpoint is set but "
-                    f"observability.tracing.exporter is {exporter!r}, which does not read it. "
+                    f"{prefix}observability.tracing.otlp_endpoint is set but "
+                    f"{prefix}observability.tracing.exporter is {exporter!r}, which does not read it. "
                     f"Set exporter to 'otlp', or remove the endpoint."
                 )
 
-        self._validate_path_availability(self._data, errors)
-
-        # 4. §9.14 reject_unknown_framework_keys — step 1 runs it in LEGACY mode
-        #    too, where the whole document *is* the ``apcore`` namespace. The
-        #    messages join ``errors`` rather than raising on their own so a
-        #    document with both a missing required field and a stray key reports
-        #    both; §9.14 step 3 only requires that every offending key be named.
-        if _meta_strict(self._data):
-            errors.extend(_collect_unknown_framework_keys(self._data))
-
-        # 5. PROTOCOL_SPEC §9.2.3 requirement 6d / §10.6.1: an
-        #    `obs.redaction.regex_patterns` entry the engine cannot compile MUST
-        #    be reported here, not skipped at the first log record. A redaction
-        #    rule that redacts nothing is indistinguishable, from the outside,
-        #    from one that works — and on this surface the difference is
-        #    credentials in plaintext.
-        errors.extend(_collect_uncompilable_regex_patterns(self._data))
-
+        self._validate_path_availability(data, errors)
+        if strict:
+            errors.extend(_collect_unknown_framework_keys(data, prefix=prefix))
+        errors.extend(_collect_uncompilable_regex_patterns(data))
         if errors:
             raise ConfigError(
                 message=f"Configuration validation failed ({len(errors)} error(s)):\n"
                 + "\n".join(f"  - {e}" for e in errors),
                 details={"errors": errors},
             )
+        if namespace_mode:
+            self._validate_registered_namespaces(strict)
 
     def _validate_path_availability(self, data: dict[str, Any], errors: list[str]) -> None:
         ext_root = _get_nested(data, "extensions.root")
         auto_discover = _get_nested(data, "extensions.auto_discover", False)
-        if auto_discover and ext_root and not Path(self.resolve_path(str(ext_root))).exists():
+        if auto_discover and ext_root and not os.path.exists(self.resolve_path(str(ext_root))):
             _logger.warning(
                 "extensions.auto_discover=true but extensions.root '%s' does not exist",
                 ext_root,
@@ -1937,52 +1937,16 @@ class Config:
 
         schema_strategy = _get_nested(data, "schema.strategy")
         schema_root = _get_nested(data, "schema.root")
-        if schema_strategy == "yaml_only" and schema_root and not Path(self.resolve_path(str(schema_root))).exists():
+        if schema_strategy == "yaml_only" and schema_root and not os.path.isdir(self.resolve_path(str(schema_root))):
             errors.append(f"schema.strategy='yaml_only' but schema.root '{schema_root}' does not exist")
 
-    def _validate_namespace_mode(self) -> None:
-        """Run A12-NS validation for namespace mode (§9.14).
-
-        1. Run original A12 on ``data["apcore"]``, then
-           ``reject_unknown_framework_keys`` over the same subtree.
-        2. For each other top-level key: if registered and has a schema, validate.
-        3. In strict mode (``_config.strict=True``): raise on unknown namespaces.
-        """
-        apcore_data = self._data.get("apcore", {})
-        if not isinstance(apcore_data, dict):
-            apcore_data = {}
-
-        strict = _meta_strict(self._data)
-
-        # C-4: In namespace mode the "apcore:" key is metadata (e.g. version),
-        # not a standalone config.  Run only CONSTRAINTS — not REQUIRED_FIELDS —
-        # so that a minimal namespace-mode YAML (empty apcore: block) is accepted,
-        # consistent with the TypeScript implementation.
-        errors: list[str] = []
-        for field, (check_fn, err_msg) in _CONSTRAINTS.items():
-            value = _get_nested(apcore_data, field)
-            if value is not None and not check_fn(value):
-                errors.append(f"Invalid value for 'apcore.{field}': {err_msg} (got {value!r})")
-        # §9.14 step 2: the sub-algorithm runs against the apcore namespace's
-        # own subtree here, not the whole document — a sibling namespace's keys
-        # are governed by its registered schema, not by apcore-config.schema.json.
-        if strict:
-            errors.extend(_collect_unknown_framework_keys(apcore_data, prefix="apcore."))
-        self._validate_path_availability(apcore_data, errors)
-        if errors:
-            raise ConfigError(
-                message=f"Configuration validation failed ({len(errors)} error(s)):\n"
-                + "\n".join(f"  - {e}" for e in errors),
-                details={"errors": errors},
-            )
-
+    def _validate_registered_namespaces(self, strict: bool) -> None:
+        """Validate the configuration supplied by registered namespaces."""
         with _GLOBAL_NS_REGISTRY_LOCK:
             registry_snapshot = dict(_GLOBAL_NS_REGISTRY)
 
         for key, value in self._data.items():
             if key in ("apcore", "_config"):
-                continue
-            if not isinstance(value, dict):
                 continue
             reg = registry_snapshot.get(key)
             if reg is None:

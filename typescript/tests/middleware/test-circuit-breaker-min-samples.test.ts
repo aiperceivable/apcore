@@ -13,6 +13,9 @@
  */
 import { describe, expect, it } from 'vitest';
 import { Context } from '../../src/context.js';
+import { CancelToken } from '../../src/cancel.js';
+import { Executor } from '../../src/executor.js';
+import { Registry } from '../../src/registry/registry.js';
 import {
   CircuitBreakerMiddleware,
   CircuitBreakerState,
@@ -35,6 +38,42 @@ function driveErrors(
 }
 
 describe('CircuitBreaker min_samples (A-D-05)', () => {
+  it('allows the next HALF_OPEN probe when the cancelled call has settled', async () => {
+    const registry = new Registry();
+    const moduleId = 'test.circuit';
+    let calls = 0;
+    let entered!: () => void;
+    const enteredProbe = new Promise<void>((resolve) => { entered = resolve; });
+    registry.register(moduleId, {
+      description: 'A circuit breaker test module',
+      inputSchema: { type: 'object' },
+      outputSchema: { type: 'object' },
+      async execute(_inputs: Record<string, unknown>, context: Context) {
+        calls++;
+        if (calls === 1) throw new Error('Service failure');
+        if (calls === 2) {
+          entered();
+          await new Promise<void>((resolve) => context.signal.addEventListener('abort', () => resolve(), { once: true }));
+        }
+        return { settled: true };
+      },
+    });
+    const executor = new Executor({ registry });
+    const breaker = new CircuitBreakerMiddleware({ minSamples: 1, recoveryWindowMs: 0 });
+    executor.use(breaker);
+    await expect(executor.call(moduleId)).rejects.toThrow('Service failure');
+
+    const token = new CancelToken();
+    const probe = executor.call(moduleId, {}, Context.create(undefined, undefined, token));
+    await enteredProbe;
+    token.cancel();
+    await expect(probe).rejects.toMatchObject({ code: 'EXECUTION_CANCELLED' });
+    await token.drain();
+
+    await expect(executor.call(moduleId)).resolves.toEqual({ settled: true });
+    expect(breaker.getState(moduleId)).toBe(CircuitBreakerState.CLOSED);
+  });
+
   it('opens after 5 consecutive failures with default options', () => {
     const cb = new CircuitBreakerMiddleware();
     const ctx = new Context('trace', 'caller', []);

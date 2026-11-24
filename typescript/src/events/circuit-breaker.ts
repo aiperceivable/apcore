@@ -1,5 +1,6 @@
 import type { EventSubscriber, ApCoreEvent } from './emitter.js';
-import { resolveSubscriberType } from './emitter.js';
+import { deliverSubscriber, resolveSubscriberType } from './emitter.js';
+import type { RetryConfig } from './retry.js';
 
 export enum CircuitState {
   CLOSED = 'CLOSED',
@@ -78,6 +79,14 @@ export class CircuitBreakerWrapper implements EventSubscriber {
     return this._subscriber.subscriberType ?? this._subscriberType;
   }
 
+  get retry(): RetryConfig | undefined {
+    return this._subscriber.retry;
+  }
+
+  onFailure(event: ApCoreEvent, error: Error, attemptCount: number): void | Promise<void> {
+    return this._subscriber.onFailure?.(event, error, attemptCount);
+  }
+
   get state(): CircuitState {
     return this._state;
   }
@@ -95,10 +104,17 @@ export class CircuitBreakerWrapper implements EventSubscriber {
   }
 
   async onEvent(event: ApCoreEvent): Promise<void> {
+    // Direct use of the breaker isolates failures. The emitter owns error
+    // reporting when it invokes the internal delivery path.
+    await this[deliverSubscriber](event).catch(() => {});
+  }
+
+  async [deliverSubscriber](event: ApCoreEvent): Promise<boolean> {
     this.checkRecovery();
-    if (this._state === CircuitState.OPEN) return;
+    if (this._state === CircuitState.OPEN) return false;
 
     let circuitEvent: ApCoreEvent | null = null;
+    let failure: { error: unknown } | undefined;
     let timeoutId: ReturnType<typeof setTimeout> | undefined;
     try {
       await Promise.race([
@@ -112,6 +128,7 @@ export class CircuitBreakerWrapper implements EventSubscriber {
       ]);
       circuitEvent = this._onSuccess();
     } catch (err: unknown) {
+      failure = { error: err };
       circuitEvent = this._onFailure(err);
     } finally {
       clearTimeout(timeoutId);
@@ -124,6 +141,8 @@ export class CircuitBreakerWrapper implements EventSubscriber {
         // circuit events must not surface to callers
       }
     }
+    if (failure !== undefined) throw failure.error;
+    return true;
   }
 
   private _onSuccess(): ApCoreEvent | null {

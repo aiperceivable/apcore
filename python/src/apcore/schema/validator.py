@@ -243,7 +243,8 @@ class SchemaValidator:
         """Validate data and return model_dump(). Raises SchemaValidationError on failure."""
         try:
             instance = model.model_validate(self._coerce(data, model), strict=not self._coerce_types)
-            return instance.model_dump()
+            generated = isinstance(getattr(model, "__apcore_source_schema__", None), dict)
+            return instance.model_dump(exclude_unset=generated)
         except PydanticValidationError as e:
             result = SchemaValidationResult(valid=False, errors=self._pydantic_error_to_details(e))
             raise result.to_error() from e

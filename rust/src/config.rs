@@ -1117,6 +1117,15 @@ impl Config {
         config.yaml_path = Some(source.to_path_buf());
         config.absolute_source_path = Some(path);
         config.detect_mode();
+        if let Some(value) = config.get_declared("version") {
+            let declared = value.as_str().ok_or_else(|| {
+                ModuleError::new(
+                    ErrorCode::VersionIncompatible,
+                    "Configuration version must be a string",
+                )
+            })?;
+            crate::version::negotiate_document_version(declared)?;
+        }
         init_builtin_namespaces();
         config.apply_env_overrides();
         config.validate()?;
@@ -2505,12 +2514,10 @@ impl Config {
         // registration was silently dropped in legacy mode.
         let gmap = global_env_map().read();
         for (key, value) in std::env::vars() {
-            let parsed = Self::coerce_env_value(&value);
-
             // 1. Global env_map (bare env var → top-level/dot-path key).
             if let Some(config_key) = gmap.get(&key) {
                 tracing::debug!(env = %key, path = %config_key, "Applying legacy env override (global env_map)");
-                self.apply_one_env_override(&key, config_key, parsed);
+                self.apply_one_env_override(&key, config_key, &value);
                 continue;
             }
 
@@ -2525,7 +2532,7 @@ impl Config {
             if let Some(suffix) = key.strip_prefix("APCORE_") {
                 let dot_path = Self::env_key_to_dot_path(suffix);
                 tracing::debug!(env = %key, path = %dot_path, "Applying legacy env override");
-                self.apply_one_env_override(&key, &dot_path, parsed);
+                self.apply_one_env_override(&key, &dot_path, &value);
             }
         }
     }
@@ -2558,18 +2565,16 @@ impl Config {
         });
 
         for (env_key, env_value) in std::env::vars() {
-            let parsed = Self::coerce_env_value(&env_value);
-
             // 1. Global env_map (bare env var → top-level key).
             if let Some(config_key) = gmap.get(&env_key) {
-                self.apply_one_env_override(&env_key, config_key, parsed);
+                self.apply_one_env_override(&env_key, config_key, &env_value);
                 continue;
             }
 
             // 2. Namespace env_map (bare env var → namespace key).
             if let Some(&(ns_name, config_key)) = ns_env_maps.get(env_key.as_str()) {
                 let full_path = format!("{ns_name}.{config_key}");
-                self.apply_one_env_override(&env_key, &full_path, parsed);
+                self.apply_one_env_override(&env_key, &full_path, &env_value);
                 continue;
             }
 
@@ -2585,7 +2590,7 @@ impl Config {
                     let key = Self::resolve_env_suffix(suffix, reg);
                     let full_path = format!("{}.{key}", reg.name);
                     tracing::debug!(env = %env_key, path = %full_path, "Applying namespace env override");
-                    self.apply_one_env_override(&env_key, &full_path, parsed.clone());
+                    self.apply_one_env_override(&env_key, &full_path, &env_value);
                     matched = true;
                     break;
                 }
@@ -2599,7 +2604,7 @@ impl Config {
                 if let Some(suffix) = env_key.strip_prefix("APCORE_") {
                     let dot_path = format!("apcore.{}", Self::env_key_to_dot_path(suffix));
                     tracing::debug!(env = %env_key, path = %dot_path, "Applying fallback env override (no namespace match)");
-                    self.apply_one_env_override(&env_key, &dot_path, parsed);
+                    self.apply_one_env_override(&env_key, &dot_path, &env_value);
                 }
             }
         }
@@ -2646,11 +2651,10 @@ impl Config {
     /// Non-path-typed keys are untouched. An empty `APCORE_LOGGING_LEVEL` is a
     /// value the operator can mean, and §9.2.1's requirement is scoped to the
     /// closed path-typed set precisely because `""` is meaningless only there.
-    fn apply_one_env_override(&mut self, env_key: &str, dot_path: &str, value: serde_json::Value) {
-        let empty_path =
-            Self::is_path_typed_key(dot_path.strip_prefix("apcore.").unwrap_or(dot_path))
-                && matches!(&value, serde_json::Value::String(s) if s.is_empty());
-        if empty_path {
+    fn apply_one_env_override(&mut self, env_key: &str, dot_path: &str, value: &str) {
+        let path_typed =
+            Self::is_path_typed_key(dot_path.strip_prefix("apcore.").unwrap_or(dot_path));
+        if path_typed && value.is_empty() {
             tracing::warn!(
                 env = %env_key,
                 key = %dot_path,
@@ -2662,7 +2666,12 @@ impl Config {
             );
             return;
         }
-        self.set(dot_path, value);
+        let resolved = if path_typed {
+            serde_json::Value::String(value.to_owned())
+        } else {
+            Self::coerce_env_value(value)
+        };
+        self.set(dot_path, resolved);
     }
 
     /// Map a canonical dot-path key to a typed field value.

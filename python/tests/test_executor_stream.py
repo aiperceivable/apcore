@@ -85,6 +85,44 @@ def _make_executor(
 
 
 class TestExecutorStream:
+    async def test_closing_client_stream_closes_the_module_source(self) -> None:
+        closed = asyncio.Event()
+
+        class CleanupModule(StreamingModule):
+            async def stream(self, inputs, context):
+                try:
+                    yield {"value": 1}
+                    yield {"value": 2}
+                finally:
+                    closed.set()
+
+        client = APCore()
+        client.register("test.cleanup", CleanupModule())
+        output = client.stream("test.cleanup", {"count": 2})
+        assert await anext(output) == {"value": 1}
+        await output.aclose()
+        assert closed.is_set()
+
+    async def test_fallback_single_chunk_when_stream_is_not_callable(self) -> None:
+        module = MockModule()
+        module.stream = 1
+        executor = _make_executor(module)
+
+        assert [chunk async for chunk in executor.stream("test.module", {"name": "Ada"})] == [
+            {"greeting": "Hello, Ada!"}
+        ]
+
+    async def test_nested_merge_preserves_previously_yielded_chunks(self) -> None:
+        class NestedModule(DisjointKeyModule):
+            async def stream(self, inputs, context):
+                yield {"nested": {"first": 1}}
+                yield {"nested": {"second": 2}}
+
+        executor = _make_executor(NestedModule())
+        chunks = [chunk async for chunk in executor.stream("test.module")]
+
+        assert chunks == [{"nested": {"first": 1}}, {"nested": {"second": 2}}]
+
     async def test_fallback_single_chunk_when_no_stream(self) -> None:
         mod = MockModule()
         ex = _make_executor(module=mod)

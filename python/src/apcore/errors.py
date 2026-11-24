@@ -1608,6 +1608,7 @@ class ErrorCodeRegistry:
                             conflict_source=f"reserved prefix '{prefix}'",
                         )
 
+            self._all_codes.difference_update(self._module_codes.get(module_id, ()))
             self._module_codes[module_id] = frozenset(codes)
             self._all_codes.update(codes)
 

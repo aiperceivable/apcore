@@ -23,7 +23,7 @@ use crate::context::Context;
 use crate::errors::{ErrorCode, ModuleError};
 use crate::events::emitter::{ApCoreEvent, EventEmitter};
 use crate::middleware::adapters::{AfterMiddleware, BeforeMiddleware};
-use crate::middleware::base::Middleware;
+use crate::middleware::base::{Middleware, OnErrorOutcome};
 use crate::middleware::manager::{MiddlewareHandle, MiddlewareManager};
 use crate::module::PreflightCheckResult as PfCheck;
 use crate::module::{PreflightCheckResult, PreflightResult};
@@ -291,10 +291,6 @@ impl StreamSetup {
 
     fn context(&self) -> &Context<Value> {
         &self.pipe_ctx.context
-    }
-
-    fn middleware_manager(&self) -> Option<&Arc<MiddlewareManager>> {
-        self.pipe_ctx.middleware_manager.as_ref()
     }
 
     fn event_emitter(&self) -> Option<&Arc<EventEmitter>> {
@@ -1133,99 +1129,90 @@ impl Executor {
         ctx: Option<&Context<serde_json::Value>>,
         version_hint: Option<&str>,
     ) -> Result<serde_json::Value, ModuleError> {
-        Self::validate_module_id(module_id)?;
-        let context = match ctx {
-            Some(c) => c.clone(),
-            // D-103: a call that supplied no identity keeps a null one. The
-            // `@external` sentinel is the caller-side ACL substitution for a
-            // null `caller_id` (applied by `BuiltinContextCreation`), never a
-            // principal.
-            None => Context::<serde_json::Value>::anonymous(),
-        };
-        let mut pipe_ctx = PipelineContext::new(module_id, inputs, context, self.strategy.name());
-        if let Some(hint) = version_hint {
-            pipe_ctx.version_hint = Some(hint.to_string());
-        }
-        self.inject_resources(&mut pipe_ctx);
-        self.bind_to_context(&mut pipe_ctx)?;
+        self.execute_call(module_id, inputs, ctx, version_hint, &self.strategy, false)
+            .await
+            .map(|(output, _)| output)
+    }
 
-        // Loop iterates only when a RetrySignal is returned from middleware
-        // on_error_outcome; every other path returns or errors on the first
-        // attempt (sync finding A-D-017).
+    async fn execute_call(
+        &self,
+        module_id: &str,
+        mut inputs: Value,
+        context: Option<&Context<Value>>,
+        version_hint: Option<&str>,
+        strategy: &ExecutionStrategy,
+        record_attempts: bool,
+    ) -> Result<(Value, PipelineTrace), ModuleError> {
+        Self::validate_module_id(module_id)?;
+        let mut parent = context.cloned().unwrap_or_else(Context::anonymous);
+        parent.bind_executor(self.instance_handle())?;
+        let started = std::time::Instant::now();
+        let mut previous_steps = Vec::new();
+
         loop {
-            match PipelineEngine::run(&self.strategy, &mut pipe_ctx).await {
+            let mut attempt =
+                PipelineContext::new(module_id, inputs, parent.clone(), strategy.name());
+            attempt.version_hint = version_hint.map(str::to_owned);
+            self.inject_resources(&mut attempt);
+
+            let (output, mut trace) = match PipelineEngine::run(strategy, &mut attempt).await {
                 Ok((output, trace)) => {
                     Self::reject_aborted_trace(&trace)?;
-                    return Ok(output.unwrap_or(serde_json::Value::Null));
+                    (output.unwrap_or(Value::Null), trace)
                 }
-                Err(e) => {
-                    // §1.1 fail-fast: PipelineEngine wraps step failures in a
-                    // `PipelineStepError`. Unwrap to the original typed error so
-                    // public callers (and middleware on_error handlers) see the
-                    // underlying cause — matches Python `Executor.call`.
-                    let underlying = e.unwrap_pipeline_step_error().unwrap_or(e);
-                    // §1.2 fail-fast: MiddlewareManager.execute_before wraps a
-                    // failing middleware's error as MiddlewareChainError preserving
-                    // the original in details["inner_error"]. Unwrap so callers
-                    // can dispatch on the original error class (e.g.
-                    // ApprovalDeniedError) — matches apcore-python and
-                    // apcore-typescript MiddlewareChainError.original semantics
-                    // (sync finding A-D-015).
-                    let underlying = underlying
-                        .unwrap_middleware_chain_error()
-                        .unwrap_or(underlying);
-                    // Algorithm A11: decorate with trace_id + module_id before
-                    // middleware.on_error and final re-raise — matches
-                    // apcore-python executor.py:781-782 and apcore-typescript
-                    // executor.ts:352 (sync finding A-D-016).
-                    let underlying =
-                        propagate_module_error(underlying, module_id, &pipe_ctx.context);
-                    // Cancellation short-circuit (D-20): an ExecutionCancelled
-                    // error MUST bypass the on_error middleware chain so
-                    // logging middleware cannot swallow it and retry
-                    // middleware cannot resurrect the call via RetrySignal.
-                    // Mirrors apcore-python and apcore-typescript.
-                    // Spec: docs/features/core-executor.md §Cancellation Short-Circuit
-                    if matches!(underlying.code, ErrorCode::ExecutionCancelled) {
-                        return Err(underlying);
-                    }
-                    // Run middleware on_error hooks in reverse so any registered
-                    // recovery / retry middleware can intercept the error.
-                    let executed = pipe_ctx.executed_middlewares.clone();
-                    if !executed.is_empty() {
-                        let outcome = self
-                            .middleware_manager
-                            .execute_on_error_outcome(
-                                module_id,
-                                pipe_ctx.inputs.clone(),
-                                &underlying,
-                                &pipe_ctx.context,
-                                &executed,
-                            )
-                            .await;
-                        match outcome {
-                            Some(crate::middleware::base::OnErrorOutcome::Recovery(value)) => {
-                                return Ok(value);
+                Err(error) => {
+                    let error = Self::call_error(module_id, &attempt, error);
+                    match Self::recover_call(module_id, &attempt, &error).await {
+                        Some(OnErrorOutcome::Recovery(output)) => (output, attempt.trace),
+                        Some(OnErrorOutcome::Retry(signal)) => {
+                            // Preserve the call's deadline and shared state. Each
+                            // attempt derives its context from the original caller.
+                            parent.global_deadline = attempt.context.global_deadline;
+                            inputs = signal.inputs;
+                            if record_attempts {
+                                previous_steps.extend(attempt.trace.steps);
                             }
-                            Some(crate::middleware::base::OnErrorOutcome::Retry(signal)) => {
-                                // Reset per-run pipeline state so the next
-                                // iteration starts clean (matches Python's
-                                // _reset_pipe_ctx_for_retry — sync A-D-017).
-                                pipe_ctx.inputs = signal.inputs;
-                                pipe_ctx.validated_inputs = None;
-                                pipe_ctx.module = None;
-                                pipe_ctx.output = None;
-                                pipe_ctx.validated_output = None;
-                                pipe_ctx.executed_middlewares.clear();
-                                continue;
-                            }
-                            None => {}
+                            continue;
                         }
+                        None => return Err(error),
                     }
-                    return Err(underlying);
                 }
+            };
+            if !previous_steps.is_empty() {
+                previous_steps.append(&mut trace.steps);
+                trace.steps = previous_steps;
+                trace.total_duration_ms = started.elapsed().as_secs_f64() * 1000.0;
             }
+            return Ok((output, trace));
         }
+    }
+
+    fn call_error(module_id: &str, ctx: &PipelineContext, error: ModuleError) -> ModuleError {
+        let error = error.unwrap_pipeline_step_error().unwrap_or(error);
+        let error = error.unwrap_middleware_chain_error().unwrap_or(error);
+        propagate_module_error(error, module_id, &ctx.context)
+    }
+
+    async fn recover_call(
+        module_id: &str,
+        ctx: &PipelineContext,
+        error: &ModuleError,
+    ) -> Option<OnErrorOutcome> {
+        if ctx.terminal_gate_failure
+            || error.code == ErrorCode::ExecutionCancelled
+            || ctx.executed_middlewares.is_empty()
+        {
+            return None;
+        }
+        MiddlewareManager::execute_on_error_outcome_snapshot(
+            ctx.middleware_snapshot.as_deref()?,
+            module_id,
+            ctx.inputs.clone(),
+            error,
+            &ctx.context,
+            &ctx.executed_middlewares,
+        )
+        .await
     }
 
     /// Validate module inputs without executing (steps 1-7, spec §12.3).
@@ -1879,19 +1866,7 @@ impl Executor {
         decorated: &ModuleError,
         module_id: &str,
     ) -> Option<Value> {
-        let mm = setup.middleware_manager()?.clone();
-        if setup.pipe_ctx.executed_middlewares.is_empty() {
-            return None;
-        }
-        let outcome = mm
-            .execute_on_error_outcome(
-                module_id,
-                setup.inputs().clone(),
-                decorated,
-                setup.context(),
-                &setup.pipe_ctx.executed_middlewares,
-            )
-            .await;
+        let outcome = Self::recover_call(module_id, &setup.pipe_ctx, decorated).await;
         match outcome {
             Some(crate::middleware::base::OnErrorOutcome::Recovery(value)) => Some(value),
             Some(crate::middleware::base::OnErrorOutcome::Retry(_)) => {
@@ -1933,75 +1908,26 @@ impl Executor {
         // Drive the shared pipeline engine up to — but not including — the
         // `execute` step. This inherits all per-step metadata handling from
         // `PipelineEngine::run`, so streaming and non-streaming never diverge.
-        let (_output, trace) = match PipelineEngine::run_until_step(
-            &self.strategy,
-            &mut pipe_ctx,
-            "execute",
-        )
-        .await
-        {
-            Ok(pair) => pair,
-            Err(e) => {
-                // A-D-001: a Phase-1 (pre-execute) failure MUST run the
-                // middleware on_error recovery chain over the executed
-                // middlewares — mirroring `call()` and apcore-python /
-                // apcore-typescript `stream()`. Any recovery value is yielded
-                // as the stream's chunk; otherwise the (unwrapped, decorated)
-                // error is surfaced as today.
-                //
-                // §1.1 fail-fast: unwrap PipelineStepError to the original
-                // typed error. §1.2: unwrap MiddlewareChainError so on_error
-                // handlers and the caller see the typed cause. Algorithm A11:
-                // decorate with trace_id + module_id. These mirror `call()`'s
-                // error handling exactly.
-                let underlying = e.unwrap_pipeline_step_error().unwrap_or(e);
-                let underlying = underlying
-                    .unwrap_middleware_chain_error()
-                    .unwrap_or(underlying);
-                let underlying = propagate_module_error(underlying, module_id, &pipe_ctx.context);
-                // Cancellation short-circuit (D-20): an ExecutionCancelled
-                // error MUST bypass the on_error middleware chain so logging
-                // middleware cannot swallow it and retry middleware cannot
-                // resurrect the call. Mirrors `call()` and Python/TS stream().
-                if matches!(underlying.code, ErrorCode::ExecutionCancelled) {
-                    return Err(underlying);
-                }
-                let executed = pipe_ctx.executed_middlewares.clone();
-                if !executed.is_empty() {
-                    let outcome = self
-                        .middleware_manager
-                        .execute_on_error_outcome(
-                            module_id,
-                            pipe_ctx.inputs.clone(),
-                            &underlying,
-                            &pipe_ctx.context,
-                            &executed,
-                        )
-                        .await;
-                    match outcome {
-                        Some(crate::middleware::base::OnErrorOutcome::Recovery(value)) => {
+        let (_output, trace) =
+            match PipelineEngine::run_until_step(&self.strategy, &mut pipe_ctx, "execute").await {
+                Ok(pair) => pair,
+                Err(e) => {
+                    let underlying = Self::call_error(module_id, &pipe_ctx, e);
+                    match Self::recover_call(module_id, &pipe_ctx, &underlying).await {
+                        Some(OnErrorOutcome::Recovery(value)) => {
                             return Ok(StreamPrep::Recovery(value));
                         }
-                        Some(crate::middleware::base::OnErrorOutcome::Retry(_)) => {
-                            // Retry is not meaningful once stream() has been
-                            // entered: a streaming caller could only be mid-
-                            // stream on a re-run, so a retry request is
-                            // translated back into the original error rather
-                            // than silently re-running. Mirrors apcore-python
-                            // (executor.py: "Retry requested during stream …
-                            // ignored; re-raising") and apcore-typescript.
+                        Some(OnErrorOutcome::Retry(_)) => {
                             tracing::warn!(
                                 module_id = %module_id,
-                                "Retry requested during stream phase 1 — ignored; surfacing original error"
+                                "Retry requested during stream phase 1; surfacing original error"
                             );
-                            return Err(underlying);
                         }
                         None => {}
                     }
+                    return Err(underlying);
                 }
-                return Err(underlying);
-            }
-        };
+            };
 
         // `run_until` returns `Ok` for pipeline-level aborts (so the caller
         // can observe the trace). Streaming requires a resolved module, so
@@ -2282,81 +2208,15 @@ impl Executor {
         version_hint: Option<&str>,
         strategy: Option<&ExecutionStrategy>,
     ) -> Result<(Value, PipelineTrace), ModuleError> {
-        let effective_strategy = strategy.unwrap_or(&self.strategy);
-
-        let context = match ctx {
-            Some(c) => c.clone(),
-            // D-103: no synthetic principal for a call that supplied none.
-            None => Context::<Value>::anonymous(),
-        };
-
-        let mut pipeline_ctx =
-            PipelineContext::new(module_id, inputs, context, effective_strategy.name());
-        // Sync finding A-D-005 (D-19): forward version_hint like call() does so
-        // the trace variant shares call()'s version-negotiation semantics.
-        if let Some(hint) = version_hint {
-            pipeline_ctx.version_hint = Some(hint.to_string());
-        }
-        self.inject_resources(&mut pipeline_ctx);
-        self.bind_to_context(&mut pipeline_ctx)?;
-
-        match PipelineEngine::run(effective_strategy, &mut pipeline_ctx).await {
-            Ok((output, trace)) => {
-                // A pipeline ABORT must surface here exactly as it does in
-                // `call`. This SDK's engine signals abort by returning
-                // `Ok((output, trace))` with `trace.success == false` rather
-                // than by erroring, so every caller carries the obligation to
-                // re-check the flag — and this one did not, handing back `Ok`
-                // for an aborted pipeline while `call` returned `Err` and both
-                // peer SDKs raised. features/core-executor.md §Trace Variants
-                // (D-19): an error that propagates in `call()` MUST also
-                // propagate in the trace variant.
-                Self::reject_aborted_trace(&trace)?;
-                Ok((output.unwrap_or(Value::Null), trace))
-            }
-            Err(e) => {
-                // Unwrap PipelineStepError + MiddlewareChainError so callers
-                // and on_error middleware see the typed cause (D-22).
-                let underlying = e.unwrap_pipeline_step_error().unwrap_or(e);
-                let underlying = underlying
-                    .unwrap_middleware_chain_error()
-                    .unwrap_or(underlying);
-                let underlying =
-                    propagate_module_error(underlying, module_id, &pipeline_ctx.context);
-
-                // Cancellation short-circuit (D-20).
-                if matches!(underlying.code, ErrorCode::ExecutionCancelled) {
-                    return Err(underlying);
-                }
-
-                // Run middleware on_error chain (D-19) — recovery returns
-                // (recovered_value, trace); a Retry signal is treated as a
-                // failure (the trace variant does not loop). Mirrors
-                // apcore-python `call_with_trace` (recovery yes, retry no).
-                let executed = pipeline_ctx.executed_middlewares.clone();
-                if !executed.is_empty() {
-                    let outcome = self
-                        .middleware_manager
-                        .execute_on_error_outcome(
-                            module_id,
-                            pipeline_ctx.inputs.clone(),
-                            &underlying,
-                            &pipeline_ctx.context,
-                            &executed,
-                        )
-                        .await;
-                    if let Some(crate::middleware::base::OnErrorOutcome::Recovery(value)) = outcome
-                    {
-                        // Trace captured during the failing run includes any
-                        // on_error events recorded inside the pipeline; return
-                        // it alongside the recovered value.
-                        let trace = pipeline_ctx.trace.clone();
-                        return Ok((value, trace));
-                    }
-                }
-                Err(underlying)
-            }
-        }
+        self.execute_call(
+            module_id,
+            inputs,
+            ctx,
+            version_hint,
+            strategy.unwrap_or(&self.strategy),
+            true,
+        )
+        .await
     }
 
     /// Inject executor resources into a pipeline context so builtin steps

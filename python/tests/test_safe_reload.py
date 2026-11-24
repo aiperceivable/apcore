@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import threading
 from typing import Any
 
 import pytest
 
-from apcore.errors import ModuleNotFoundError
+from apcore.errors import ModuleNotFoundError, ModuleTimeoutError
+from apcore.executor import Executor
 from apcore.registry.registry import Registry
 
 
@@ -56,6 +58,73 @@ class TestSafeUnregisterIdle:
 
 class TestSafeUnregisterWaitsForInflight:
     """safe_unregister() waits for in-flight executions then returns True."""
+
+    @pytest.mark.asyncio
+    async def test_waits_for_an_executor_call_to_finish(self, registry: Registry) -> None:
+        entered = asyncio.Event()
+        finish = asyncio.Event()
+        unloaded = threading.Event()
+
+        class BusyModule(_StubModule):
+            async def execute(self, inputs, context):
+                entered.set()
+                await finish.wait()
+                return {"unloaded": unloaded.is_set()}
+
+            def on_unload(self):
+                unloaded.set()
+
+        registry.register("busy.mod", BusyModule(), version="2.0.0")
+        call = asyncio.create_task(Executor(registry).call_async("busy.mod", version_hint="2.0.0"))
+        await asyncio.wait_for(entered.wait(), timeout=1)
+        unregister = asyncio.create_task(asyncio.to_thread(registry.safe_unregister, "busy.mod", timeout_ms=1000))
+        try:
+            for _ in range(100):
+                if registry.is_draining("busy.mod") or unregister.done():
+                    break
+                await asyncio.sleep(0.001)
+            assert registry.is_draining("busy.mod")
+            assert not unloaded.is_set()
+        finally:
+            finish.set()
+            result = await call
+            drained = await unregister
+
+        assert result == {"unloaded": False}
+        assert drained and unloaded.is_set()
+
+    @pytest.mark.asyncio
+    async def test_timeout_keeps_the_module_leased_until_execution_finishes(self, registry: Registry) -> None:
+        finish = asyncio.Event()
+        unloaded = threading.Event()
+
+        class BusyModule(_StubModule):
+            resources = {"timeout": 10}
+
+            async def execute(self, inputs, context):
+                await finish.wait()
+                return {"ok": True}
+
+            def on_unload(self):
+                unloaded.set()
+
+        registry.register("busy.mod", BusyModule())
+        with pytest.raises(ModuleTimeoutError):
+            await Executor(registry).call_async("busy.mod")
+
+        unregister = asyncio.create_task(asyncio.to_thread(registry.safe_unregister, "busy.mod", timeout_ms=1000))
+        try:
+            for _ in range(100):
+                if registry.is_draining("busy.mod") or unregister.done():
+                    break
+                await asyncio.sleep(0.001)
+            assert registry.is_draining("busy.mod")
+            assert not unloaded.is_set()
+        finally:
+            finish.set()
+            drained = await unregister
+
+        assert drained and unloaded.is_set()
 
     def test_waits_and_returns_true(self, registry: Registry) -> None:
         registry.register("busy.mod", _StubModule())

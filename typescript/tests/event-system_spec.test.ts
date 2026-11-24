@@ -565,8 +565,8 @@ describe('EventEmitter.flush', () => {
     try {
       emitter.emit(makeEvent());
       await emitter.flush(2000);
-      const pending = (emitter as unknown as { _pending: unknown[] })._pending;
-      expect(pending.length).toBe(0);
+      const pending = (emitter as unknown as { _pending: Set<unknown> })._pending;
+      expect(pending.size).toBe(0);
     } finally {
       await emitter.shutdown(1000);
     }

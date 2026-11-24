@@ -63,8 +63,6 @@ export class ErrorCodeRegistry {
   }
 
   register(moduleId: string, codes: Set<string>): void {
-    if (codes.size === 0) return;
-
     for (const code of codes) {
       // Check collision with framework reserved codes
       if (FRAMEWORK_CODES.has(code)) {
@@ -88,6 +86,8 @@ export class ErrorCodeRegistry {
       }
     }
 
+    this.unregister(moduleId);
+    if (codes.size === 0) return;
     this._moduleCodes.set(moduleId, new Set(codes));
     for (const code of codes) {
       this._allCodes.add(code);

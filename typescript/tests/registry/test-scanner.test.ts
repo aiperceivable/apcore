@@ -32,6 +32,13 @@ function touch(relativePath: string, content = ''): string {
 }
 
 describe('scanExtensions', () => {
+  it('skips a dangling symlink and discovers its valid neighbor', () => {
+    touch('valid.ts');
+    symlinkSync(join(tempDir, 'missing.ts'), join(tempDir, 'dangling.ts'));
+
+    expect(scanExtensions(tempDir, 8, true).map((item) => item.canonicalId)).toEqual(['valid']);
+  });
+
   it('traverses a configured absolute root containing a directory symlink and parent segment', () => {
     const physical = touch('other/modules/physical.ts');
     touch('project/modules/decoy.ts');

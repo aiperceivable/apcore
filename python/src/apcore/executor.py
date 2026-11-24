@@ -14,8 +14,9 @@ import logging
 import threading
 import time
 import weakref
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator
 from concurrent.futures import Future
+from contextlib import AsyncExitStack
 from typing import Any, Callable
 
 from apcore.acl import ACL
@@ -238,7 +239,9 @@ def _deep_merge(
         return
     for key, value in override.items():
         if key in base and isinstance(base[key], dict) and isinstance(value, dict):
-            _deep_merge(base[key], value, _depth=_depth + 1, max_depth=cap)
+            nested = dict(base[key])
+            _deep_merge(nested, value, _depth=_depth + 1, max_depth=cap)
+            base[key] = nested
         else:
             base[key] = value
 
@@ -1127,54 +1130,57 @@ class Executor:
         Returns:
             The module output dict, possibly modified by middleware.
         """
-        self._validate_module_id(module_id)
+        output, _ = await self._run_call(module_id, inputs, context, version_hint)
+        return output
 
-        # PROTOCOL_SPEC §"Contract: Executor binding to Context": bind self
-        # to the Context before pipeline step 1. Auto-create the Context when
-        # the caller did not supply one.
+    async def _run_call(
+        self,
+        module_id: str,
+        inputs: dict[str, Any] | None,
+        context: Any | None,
+        version_hint: str | None,
+        strategy: ExecutionStrategy | str | None = None,
+    ) -> tuple[dict[str, Any], PipelineTrace]:
+        self._validate_module_id(module_id)
+        effective_strategy = self._effective_strategy(strategy)
         if context is None:
             context = Context.create()
         context.bind_executor(self)
 
-        pipe_ctx = PipelineContext(
-            module_id=module_id,
-            inputs=inputs or {},
-            context=context,
-            version_hint=version_hint,
-        )
-        # Loop iterates only when a RetrySignal is returned from on_error
-        # handlers; every other path returns or raises on the first attempt.
+        invocation_deadline: float | None = None
+        attempted_steps = []
+        started = time.monotonic()
         while True:
-            try:
-                output, _trace = await self._pipeline_engine.run(self._strategy, pipe_ctx)
-            except PipelineAbortError as e:
-                raise self._translate_abort(e) from e
-            except PipelineStepError as e:
-                # Unwrap to the original typed cause for the executor public API.
-                # PipelineStepError is the engine-level contract (execution-pipeline.md § "Errors"); the
-                # executor exposes the underlying typed error to callers.
-                underlying = e.cause if isinstance(e.cause, Exception) else e
-                # D-20: cancellation MUST short-circuit BEFORE on_error. A step
-                # may wrap an ExecutionCancelledError in PipelineStepError (or a
-                # MiddlewareChainError); re-check the unwrapped cause and
-                # propagate it directly without running the recovery chain.
-                cancelled = self._unwrap_cancellation(underlying)
-                if cancelled is not None:
-                    raise cancelled
-                result = await self._recover_from_call_error(underlying, pipe_ctx, module_id)
-                if isinstance(result, RetrySignal):
-                    self._reset_pipe_ctx_for_retry(pipe_ctx, result.inputs)
-                    continue
-                return result
-            except ExecutionCancelledError:
-                raise
-            except Exception as exc:
-                result = await self._recover_from_call_error(exc, pipe_ctx, module_id)
-                if isinstance(result, RetrySignal):
-                    self._reset_pipe_ctx_for_retry(pipe_ctx, result.inputs)
-                    continue
-                return result
-            return output
+            async with AsyncExitStack() as execution_scope:
+                # Every retry derives from the original caller. Context data is
+                # shared across attempts, while caller identity and depth stay fixed.
+                pipe_ctx = PipelineContext(
+                    module_id=module_id,
+                    inputs=inputs or {},
+                    context=context,
+                    strategy=effective_strategy,
+                    version_hint=version_hint,
+                    invocation_deadline=invocation_deadline,
+                    execution_scope=execution_scope,
+                )
+                try:
+                    output, trace = await self._pipeline_engine.run(effective_strategy, pipe_ctx)
+                except PipelineAbortError as exc:
+                    raise self._translate_abort(exc) from exc
+                except Exception as exc:
+                    recovery = await self._recover_from_call_error(exc, pipe_ctx, module_id)
+                    if isinstance(recovery, RetrySignal):
+                        inputs = recovery.inputs
+                        invocation_deadline = pipe_ctx.invocation_deadline
+                        if pipe_ctx.trace is not None:
+                            attempted_steps.extend(pipe_ctx.trace.steps)
+                        continue
+                    output = recovery
+                    trace = pipe_ctx.trace or PipelineTrace(module_id=module_id, strategy_name=effective_strategy.name)
+            if attempted_steps:
+                trace.steps[:0] = attempted_steps
+                trace.total_duration_ms = (time.monotonic() - started) * 1000
+            return output, trace
 
     @staticmethod
     def _unwrap_cancellation(exc: Exception) -> "ExecutionCancelledError | None":
@@ -1194,21 +1200,6 @@ class Executor:
         if isinstance(unwrapped, MiddlewareChainError):
             unwrapped = unwrapped.original
         return unwrapped if isinstance(unwrapped, ExecutionCancelledError) else None
-
-    @staticmethod
-    def _reset_pipe_ctx_for_retry(pipe_ctx: PipelineContext, new_inputs: dict[str, Any]) -> None:
-        """Prepare PipelineContext for another pipeline run triggered by RetrySignal.
-
-        Preserves the top-level :attr:`PipelineContext.context` (so retry
-        counters in ``context.data`` carry across attempts) while clearing
-        per-run fields that the next attempt will re-populate.
-        """
-        pipe_ctx.inputs = new_inputs
-        pipe_ctx.validated_inputs = None
-        pipe_ctx.module = None
-        pipe_ctx.output = None
-        pipe_ctx.validated_output = None
-        pipe_ctx.executed_middlewares = []
 
     async def _recover_from_call_error(
         self,
@@ -1247,6 +1238,11 @@ class Executor:
         cancelled = self._unwrap_cancellation(exc)
         if cancelled is not None:
             raise cancelled
+        recoverable = True
+        if isinstance(exc, PipelineStepError):
+            recoverable = exc.recoverable
+            if isinstance(exc.cause, Exception):
+                exc = exc.cause
         ctx_obj = pipe_ctx.context
         # Unwrap MiddlewareChainError BEFORE propagation so the wrapped
         # typed cause is what middleware on_error handlers and the final
@@ -1254,7 +1250,7 @@ class Executor:
         original = exc.original if isinstance(exc, MiddlewareChainError) else exc
         wrapped = propagate_error(original, module_id, ctx_obj) if ctx_obj else original
         executed_mw = pipe_ctx.executed_middlewares
-        if executed_mw:
+        if recoverable and executed_mw:
             recovery = await self._middleware_manager.execute_on_error_async(
                 module_id, pipe_ctx.inputs, wrapped, ctx_obj, executed_mw
             )
@@ -1272,7 +1268,7 @@ class Executor:
         inputs: dict[str, Any] | None = None,
         context: Context | None = None,
         version_hint: str | None = None,
-    ) -> AsyncIterator[dict[str, Any]]:
+    ) -> AsyncGenerator[dict[str, Any], None]:
         """Async generator that streams module output chunks.
 
         Phase 1: Pipeline runs steps 1-7 (context, guard, lookup, ACL, approval,
@@ -1298,145 +1294,147 @@ class Executor:
             context = Context.create()
         context.bind_executor(self)
 
-        pipe_ctx = PipelineContext(
-            module_id=module_id,
-            inputs=inputs or {},
-            context=context,
-            version_hint=version_hint,
-            stream=True,
-        )
+        async with AsyncExitStack() as execution_scope:
+            pipe_ctx = PipelineContext(
+                module_id=module_id,
+                inputs=inputs or {},
+                context=context,
+                version_hint=version_hint,
+                stream=True,
+                execution_scope=execution_scope,
+            )
 
-        # Phase 1: Run pipeline up to execute step.
-        # BuiltinExecute detects ctx.stream=True and checks for module.stream().
-        try:
-            output, _trace = await self._pipeline_engine.run(self._strategy, pipe_ctx)
-        except PipelineAbortError as e:
-            raise self._translate_abort(e) from e
-        except PipelineStepError as e:
-            underlying = e.cause if isinstance(e.cause, Exception) else e
-            # D-20: cancellation short-circuits BEFORE on_error (mirror call_async).
-            cancelled = self._unwrap_cancellation(underlying)
-            if cancelled is not None:
-                raise cancelled
-            recovery = await self._recover_from_call_error(underlying, pipe_ctx, module_id)
-            if isinstance(recovery, RetrySignal):
-                _logger.warning(
-                    "Retry requested during stream for '%s' — ignored; re-raising",
-                    module_id,
-                )
-                raise underlying
-            yield recovery
-            return
-        except ExecutionCancelledError:
-            raise
-        except Exception as exc:
-            recovery = await self._recover_from_call_error(exc, pipe_ctx, module_id)
-            if isinstance(recovery, RetrySignal):
-                # Retry is not meaningful once a stream has been entered: the
-                # first failure-aware caller of stream() could only be mid-
-                # stream, so we translate a retry request back into the
-                # original error rather than silently re-running.
-                _logger.warning(
-                    "Retry requested during stream for '%s' — ignored; re-raising",
-                    module_id,
-                )
-                raise exc
-            yield recovery
-            return
-
-        # If module has no stream(), pipeline already executed and set ctx.output
-        if pipe_ctx.output_stream is None:
-            yield pipe_ctx.output or {}
-            return
-
-        # Phase 2: Iterate stream, accumulate chunks
-        # Per streaming.md §4, respect ctx.context.global_deadline during
-        # iteration: raise ModuleTimeoutError between chunks if the deadline
-        # passes, so long-running streams cannot silently outrun their budget.
-        accumulated: dict[str, Any] = {}
-        # PROTOCOL_SPEC §5: resolved ONCE per stream, not per chunk. A
-        # configuration mutated mid-stream — `system.control.update_config`
-        # can do exactly that — must not change the cap of a stream already
-        # in flight. This used to be called inside the chunk loop, which
-        # contradicted the guarantee its own commit message stated.
-        merge_depth_cap = self._merge_depth_cap()
-        global_deadline = getattr(pipe_ctx.context, "global_deadline", None)
-        try:
-            async for idx, chunk in _aenumerate(pipe_ctx.output_stream):
-                # D-99: epoch seconds, so compared against `time.time()`.
-                if global_deadline is not None and time.time() > global_deadline:
-                    raise ModuleTimeoutError(
-                        module_id=module_id,
-                        timeout_ms=self._global_timeout,
-                        retryable=_is_idempotent(pipe_ctx.module),
-                    )
-                chunk = normalize_module_output(chunk)
-                # Cross-SDK contract (Rust ``deep_merge_chunks_checked``):
-                # a stream chunk is valid iff it is a JSON object (dict).
-                # Reject the first non-object chunk BEFORE merge and BEFORE
-                # yield so the invalid chunk is never delivered to the
-                # consumer; deep_merge can only accumulate objects.
-                if not isinstance(chunk, dict):
-                    actual_type = _json_type_name(chunk)
-                    raise InvalidInputError(
-                        message=(
-                            f"Streaming chunk at index {idx} is not a JSON object "
-                            f"(got {actual_type}); chunks must be objects so "
-                            f"deep_merge can accumulate them."
-                        ),
-                        code="GENERAL_INVALID_INPUT",
-                        details={
-                            "code": "STREAM_CHUNK_NOT_OBJECT",
-                            "chunk_index": idx,
-                            "actual_type": actual_type,
-                        },
-                    )
-                _deep_merge(accumulated, chunk, max_depth=merge_depth_cap)
-                yield chunk
-        except ExecutionCancelledError:
-            raise
-        except Exception as exc:
-            recovery = await self._recover_from_call_error(exc, pipe_ctx, module_id)
-            if isinstance(recovery, RetrySignal):
-                # Retry is not meaningful once a stream has been entered: the
-                # first failure-aware caller of stream() could only be mid-
-                # stream, so we translate a retry request back into the
-                # original error rather than silently re-running.
-                _logger.warning(
-                    "Retry requested during stream for '%s' — ignored; re-raising",
-                    module_id,
-                )
-                raise exc
-            yield recovery
-            return
-
-        # Phase 3: Output validation + middleware_after on accumulated result
-        pipe_ctx.output = accumulated
-        post_steps = [
-            s for s in self._strategy.steps if s.name in ("output_validation", "middleware_after", "return_result")
-        ]
-        if post_steps:
-            # The post-stream sub-strategy is a slice of an already-validated
-            # parent strategy; its ``requires`` keys (e.g. ``module``,
-            # ``output``) are seeded by the streaming pre-flight, not by
-            # earlier steps in this sub-strategy. Skip the strict §2.1
-            # dependency check that would otherwise reject the slice.
-            post_strategy = ExecutionStrategy("post_stream", post_steps, validate_dependencies=False)
+            # Phase 1: Run pipeline up to execute step.
+            # BuiltinExecute detects ctx.stream=True and checks for module.stream().
             try:
-                await self._pipeline_engine.run(post_strategy, pipe_ctx)
-            except Exception as post_exc:
-                # Non-fatal for the caller: chunks have already been yielded,
-                # so a failed post-stream validation/middleware run cannot
-                # retroactively change the observable output. Still emit an
-                # observability event + WARNING log so the failure is visible
-                # — unvalidated output that reached a consumer is worth
-                # investigating even if it can't be un-sent.
-                _logger.warning(
-                    "Post-stream validation/middleware failed for module %s",
-                    module_id,
-                    exc_info=True,
-                )
-                self._emit_post_stream_failure(module_id, pipe_ctx.context, post_exc)
+                output, _trace = await self._pipeline_engine.run(self._strategy, pipe_ctx)
+            except PipelineAbortError as e:
+                raise self._translate_abort(e) from e
+            except PipelineStepError as e:
+                underlying = e.cause if isinstance(e.cause, Exception) else e
+                # D-20: cancellation short-circuits BEFORE on_error (mirror call_async).
+                cancelled = self._unwrap_cancellation(underlying)
+                if cancelled is not None:
+                    raise cancelled
+                recovery = await self._recover_from_call_error(e, pipe_ctx, module_id)
+                if isinstance(recovery, RetrySignal):
+                    _logger.warning(
+                        "Retry requested during stream for '%s' — ignored; re-raising",
+                        module_id,
+                    )
+                    raise underlying
+                yield recovery
+                return
+            except ExecutionCancelledError:
+                raise
+            except Exception as exc:
+                recovery = await self._recover_from_call_error(exc, pipe_ctx, module_id)
+                if isinstance(recovery, RetrySignal):
+                    # Retry is not meaningful once a stream has been entered: the
+                    # first failure-aware caller of stream() could only be mid-
+                    # stream, so we translate a retry request back into the
+                    # original error rather than silently re-running.
+                    _logger.warning(
+                        "Retry requested during stream for '%s' — ignored; re-raising",
+                        module_id,
+                    )
+                    raise exc
+                yield recovery
+                return
+
+            # If module has no stream(), pipeline already executed and set ctx.output
+            if pipe_ctx.output_stream is None:
+                yield pipe_ctx.output or {}
+                return
+
+            # Phase 2: Iterate stream, accumulate chunks
+            # Per streaming.md §4, respect ctx.context.global_deadline during
+            # iteration: raise ModuleTimeoutError between chunks if the deadline
+            # passes, so long-running streams cannot silently outrun their budget.
+            accumulated: dict[str, Any] = {}
+            # PROTOCOL_SPEC §5: resolved ONCE per stream, not per chunk. A
+            # configuration mutated mid-stream — `system.control.update_config`
+            # can do exactly that — must not change the cap of a stream already
+            # in flight. This used to be called inside the chunk loop, which
+            # contradicted the guarantee its own commit message stated.
+            merge_depth_cap = self._merge_depth_cap()
+            global_deadline = getattr(pipe_ctx.context, "global_deadline", None)
+            try:
+                async for idx, chunk in _aenumerate(pipe_ctx.output_stream):
+                    # D-99: epoch seconds, so compared against `time.time()`.
+                    if global_deadline is not None and time.time() > global_deadline:
+                        raise ModuleTimeoutError(
+                            module_id=module_id,
+                            timeout_ms=self._global_timeout,
+                            retryable=_is_idempotent(pipe_ctx.module),
+                        )
+                    chunk = normalize_module_output(chunk)
+                    # Cross-SDK contract (Rust ``deep_merge_chunks_checked``):
+                    # a stream chunk is valid iff it is a JSON object (dict).
+                    # Reject the first non-object chunk BEFORE merge and BEFORE
+                    # yield so the invalid chunk is never delivered to the
+                    # consumer; deep_merge can only accumulate objects.
+                    if not isinstance(chunk, dict):
+                        actual_type = _json_type_name(chunk)
+                        raise InvalidInputError(
+                            message=(
+                                f"Streaming chunk at index {idx} is not a JSON object "
+                                f"(got {actual_type}); chunks must be objects so "
+                                f"deep_merge can accumulate them."
+                            ),
+                            code="GENERAL_INVALID_INPUT",
+                            details={
+                                "code": "STREAM_CHUNK_NOT_OBJECT",
+                                "chunk_index": idx,
+                                "actual_type": actual_type,
+                            },
+                        )
+                    _deep_merge(accumulated, chunk, max_depth=merge_depth_cap)
+                    yield chunk
+            except ExecutionCancelledError:
+                raise
+            except Exception as exc:
+                recovery = await self._recover_from_call_error(exc, pipe_ctx, module_id)
+                if isinstance(recovery, RetrySignal):
+                    # Retry is not meaningful once a stream has been entered: the
+                    # first failure-aware caller of stream() could only be mid-
+                    # stream, so we translate a retry request back into the
+                    # original error rather than silently re-running.
+                    _logger.warning(
+                        "Retry requested during stream for '%s' — ignored; re-raising",
+                        module_id,
+                    )
+                    raise exc
+                yield recovery
+                return
+
+            # Phase 3: Output validation + middleware_after on accumulated result
+            pipe_ctx.output = accumulated
+            post_steps = [
+                s for s in self._strategy.steps if s.name in ("output_validation", "middleware_after", "return_result")
+            ]
+            if post_steps:
+                # The post-stream sub-strategy is a slice of an already-validated
+                # parent strategy; its ``requires`` keys (e.g. ``module``,
+                # ``output``) are seeded by the streaming pre-flight, not by
+                # earlier steps in this sub-strategy. Skip the strict §2.1
+                # dependency check that would otherwise reject the slice.
+                post_strategy = ExecutionStrategy("post_stream", post_steps, validate_dependencies=False)
+                try:
+                    await self._pipeline_engine.run(post_strategy, pipe_ctx)
+                except Exception as post_exc:
+                    # Non-fatal for the caller: chunks have already been yielded,
+                    # so a failed post-stream validation/middleware run cannot
+                    # retroactively change the observable output. Still emit an
+                    # observability event + WARNING log so the failure is visible
+                    # — unvalidated output that reached a consumer is worth
+                    # investigating even if it can't be un-sent.
+                    _logger.warning(
+                        "Post-stream validation/middleware failed for module %s",
+                        module_id,
+                        exc_info=True,
+                    )
+                    self._emit_post_stream_failure(module_id, pipe_ctx.context, post_exc)
 
     def _emit_post_stream_failure(
         self,
@@ -1590,66 +1588,7 @@ class Executor:
         Returns:
             A tuple of (result dict, PipelineTrace).
         """
-        effective_strategy = self._effective_strategy(strategy)
-
-        # PROTOCOL_SPEC §"Contract: Executor binding to Context": bind self
-        # to the Context before pipeline step 1.
-        if context is None:
-            context = Context.create()
-        context.bind_executor(self)
-
-        pipe_ctx = PipelineContext(
-            module_id=module_id,
-            inputs=inputs or {},
-            context=context,
-            strategy=effective_strategy,
-            version_hint=version_hint,
-        )
-        engine = PipelineEngine()
-        try:
-            return await engine.run(effective_strategy, pipe_ctx)
-        except PipelineAbortError as e:
-            raise self._translate_abort(e) from e
-        except ExecutionCancelledError:
-            raise
-        except Exception as exc:
-            # D-19: "the trace variant MUST share identical error-recovery
-            # semantics with the underlying call()". ``call_async`` unwraps
-            # ``PipelineStepError`` to its typed cause before entering recovery
-            # (execution-pipeline.md § "Errors" makes the wrapper the *engine*-level contract, not the
-            # executor's). Passing the raw wrapper made one step failure surface
-            # as PIPELINE_STEP_ERROR here and as, say, MODULE_NOT_FOUND through
-            # ``call()`` — to on_error middleware and to the caller alike.
-            # apcore-typescript and apcore-rust both unwrap first.
-            # ``_recover_from_call_error`` peels the MiddlewareChainError layer
-            # and re-checks cancellation (D-20) itself.
-            underlying = exc
-            if isinstance(exc, PipelineStepError):
-                underlying = exc.cause if isinstance(exc.cause, Exception) else exc
-            # If a middleware ``on_error`` recovers, return the recovery dict.
-            recovery = await self._recover_from_call_error(underlying, pipe_ctx, module_id)
-            if isinstance(recovery, RetrySignal):
-                # call_with_trace is a one-shot introspection API: retries
-                # would require re-running the engine but we also need a
-                # trace, so we re-raise the original exception rather than
-                # silently looping. Callers that need retry semantics should
-                # use call() / call_async() and add a tracing middleware.
-                _logger.warning(
-                    "Retry requested during call_with_trace for '%s' — ignored; re-raising",
-                    module_id,
-                )
-                raise exc
-            # The trace the engine actually built during the failing run, not a
-            # fresh empty stub. ``PipelineEngine.run`` publishes it onto the
-            # context as it goes, so the recovery path can hand back the real
-            # record — every step that ran, and the one that failed. Parity with
-            # apcore-typescript (`pipelineCtx.trace`) and apcore-rust
-            # (`pipeline_ctx.trace.clone()`). The fallback covers a failure
-            # raised before the engine got as far as publishing.
-            trace = pipe_ctx.trace
-            if trace is None:
-                trace = PipelineTrace(module_id=module_id, strategy_name=effective_strategy.name)
-            return recovery, trace
+        return await self._run_call(module_id, inputs, context, version_hint, strategy)
 
     def _effective_strategy(
         self,

@@ -18,7 +18,7 @@ use apcore::executor::Executor;
 use apcore::module::Module;
 use apcore::policy::{ExecutionPolicy, PolicyRule};
 use apcore::registry::Registry;
-use apcore::{APCore, APCoreOptions};
+use apcore::{APCore, APCoreOptions, TypedModuleOptions};
 use async_trait::async_trait;
 use serde_json::{json, Value};
 
@@ -65,6 +65,58 @@ async fn test_apcore_register_and_call_round_trip() {
         .expect("call should succeed");
 
     assert_eq!(result["echoed"]["hello"], "world");
+}
+
+#[tokio::test]
+async fn test_apcore_registers_and_validates_typed_function_modules() {
+    #[derive(serde::Deserialize, schemars::JsonSchema)]
+    struct Input {
+        name: String,
+    }
+
+    #[derive(serde::Serialize, schemars::JsonSchema)]
+    struct Output {
+        message: String,
+    }
+
+    let mut client = APCore::new();
+    client
+        .typed_module(
+            "demo.greet",
+            "Greet an APCore caller",
+            TypedModuleOptions::default(),
+            |input: Input, _ctx| {
+                Box::pin(async move {
+                    Ok(Output {
+                        message: format!("Hello, {}!", input.name),
+                    })
+                })
+            },
+        )
+        .unwrap();
+
+    let descriptor = client
+        .registry()
+        .get_definition("demo.greet")
+        .unwrap()
+        .unwrap();
+    assert_eq!(descriptor.input_schema["required"], json!(["name"]));
+    assert_eq!(descriptor.output_schema["required"], json!(["message"]));
+    assert_eq!(
+        client
+            .call("demo.greet", json!({"name":"Ada"}), None, None)
+            .await
+            .unwrap(),
+        json!({"message":"Hello, Ada!"})
+    );
+    assert_eq!(
+        client
+            .call("demo.greet", json!({}), None, None)
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::SchemaValidationError
+    );
 }
 
 #[tokio::test]

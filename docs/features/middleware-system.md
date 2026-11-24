@@ -506,12 +506,14 @@ before_step(step_name, state)
 - Implementations MUST provide `StepMiddleware` with three callbacks — `before_step`, `after_step`, `on_step_error` — each optional (no-op default).
 - `before_step(step_name, state)` MUST be invoked before the step body. It is an **observation** hook; its return value carries no meaning. Input rewriting is the module-level `Middleware.before` contract.
 - `after_step(step_name, state, result)` MUST be invoked after the step body completes successfully, with `result` a snapshot of the step's output.
-- `on_step_error(step_name, state, error)` MUST be invoked when the step body raises. A non-null return MUST be treated as recovery output: the error does not propagate, the value becomes the step's output, and the pipeline continues with the next step.
+- `on_step_error(step_name, state, error)` MUST be invoked when the step body raises. For recoverable steps, a non-null return becomes the step's output and the pipeline continues with the next step.
 - A null return from every `on_step_error` MUST let the original error propagate (subject to the step's `ignore_errors` — [Fail-Fast Error Handling](./core-executor.md#fail-fast-error-handling)).
 - `after_step` MUST also be invoked after a **recovered** step body, so a middleware that acquired something in `before_step` always gets its `after_step`.
 - `before_step` callbacks MUST run in registration order; `after_step` and `on_step_error` in **reverse** registration order (onion model).
 - `on_step_error` callbacks run over the middlewares whose `before_step` had executed; the first non-null recovery value short-circuits the rest.
 - Sync and async callbacks MUST both be supported; detection is an SDK-local concern (Python inspects the returned value, TypeScript awaits unconditionally, Rust uses `async_trait`).
+
+A failure from the built-in ACL or approval gate terminates the pipeline. The engine invokes every entered error hook in reverse order for observation and cleanup, discards their return values, and propagates the gate error.
 
 #### A `before_step` failure terminates the step — it is not recoverable
 

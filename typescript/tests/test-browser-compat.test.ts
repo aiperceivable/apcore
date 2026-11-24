@@ -198,6 +198,7 @@ describe('Registry pure-logic (no filesystem)', () => {
     const registry = new Registry();
 
     const mockModule = {
+      description: 'Browser-compatible module',
       execute: async () => ({ ok: true }),
       inputSchema: { type: 'object' } as Record<string, unknown>,
       outputSchema: { type: 'object' } as Record<string, unknown>,
@@ -216,6 +217,7 @@ describe('Registry pure-logic (no filesystem)', () => {
 
     registry.on('register', (id: string) => events.push(id));
     registry.register('a.b', {
+      description: 'Browser event test module',
       execute: async () => ({}),
       inputSchema: { type: 'object' } as Record<string, unknown>,
       outputSchema: { type: 'object' } as Record<string, unknown>,

@@ -12,6 +12,8 @@ from apcore.pipeline import (
     ExecutionStrategy,
     PipelineContext,
     PipelineDependencyError,
+    PipelineEngine,
+    PipelineStepError,
     StepResult,
 )
 
@@ -19,6 +21,41 @@ from apcore.pipeline import (
 class _Step(BaseStep):
     async def execute(self, ctx: PipelineContext) -> StepResult:
         return StepResult(action="continue")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("gate_name", ["BuiltinACLCheck", "BuiltinApprovalGate"])
+async def test_gate_failure_notifies_all_step_cleanup_handlers(gate_name: str, monkeypatch) -> None:
+    from apcore import builtin_steps
+
+    failure = RuntimeError("Decision provider unavailable")
+    received = []
+
+    async def unavailable(_ctx):
+        raise failure
+
+    class Cleanup:
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+        def before_step(self, *_args):
+            pass
+
+        def on_step_error(self, step_name, _state, error):
+            received.append((self.name, step_name, error))
+            return StepResult(action="continue")
+
+    step = getattr(builtin_steps, gate_name)()
+    monkeypatch.setattr(step, "execute", unavailable)
+    strategy = ExecutionStrategy("gate", [step], validate_dependencies=False)
+    strategy.add_step_middleware(Cleanup("outer"))
+    strategy.add_step_middleware(Cleanup("inner"))
+
+    with pytest.raises(PipelineStepError) as exc_info:
+        await PipelineEngine().run(strategy, PipelineContext("example", {}, None))
+
+    assert exc_info.value.cause is failure
+    assert received == [("inner", step.name, failure), ("outer", step.name, failure)]
 
 
 # ---------------------------------------------------------------------------
@@ -42,6 +79,18 @@ class TestDependencyValidationRaises:
 
     def test_dependency_error_subclasses_module_error(self) -> None:
         assert issubclass(PipelineDependencyError, ModuleError)
+
+    @pytest.mark.parametrize("method", ["insert_before", "insert_after"])
+    def test_failed_insert_preserves_previous_strategy(self, method: str) -> None:
+        original = _Step("original")
+        strategy = ExecutionStrategy("s", [original])
+
+        with pytest.raises(PipelineDependencyError):
+            getattr(strategy, method)("original", _Step("new", requires=("missing_key",)))
+
+        assert strategy.steps == [original]
+        getattr(strategy, method)("original", _Step("new"))
+        assert {step.name for step in strategy.steps} == {"original", "new"}
 
 
 # ---------------------------------------------------------------------------

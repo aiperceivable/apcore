@@ -73,6 +73,32 @@ describe('BatchSpanProcessor queue full', () => {
 });
 
 describe('BatchSpanProcessor forceFlush', () => {
+  it('reports timeout while an export is in progress and lets the next flush wait for it', async () => {
+    vi.useFakeTimers();
+    let complete!: () => void;
+    const exporting = new Promise<void>(resolve => { complete = resolve; });
+    const exportSpan = vi.fn(() => exporting);
+    const processor = new BatchSpanProcessor({ exporter: { export: exportSpan }, scheduleDelayMs: 60_000 });
+    try {
+      processor.onSpan(makeSpan());
+      const timed = processor.forceFlush(5);
+      await vi.advanceTimersByTimeAsync(5);
+      await expect(timed).resolves.toBe(false);
+      const next = processor.forceFlush(500);
+      const finished = vi.fn();
+      void next.then(finished);
+      await Promise.resolve();
+      expect(finished).not.toHaveBeenCalled();
+      complete();
+      await expect(next).resolves.toBe(true);
+      expect(exportSpan).toHaveBeenCalledTimes(1);
+    } finally {
+      complete();
+      await processor.shutdown();
+      vi.useRealTimers();
+    }
+  });
+
   it('drains the queue synchronously (from the caller\'s point of view)', async () => {
     const exporter = new InMemoryExporter();
     const proc = new BatchSpanProcessor({

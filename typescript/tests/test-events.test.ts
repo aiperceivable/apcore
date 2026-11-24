@@ -222,6 +222,45 @@ describe('EventEmitter', () => {
     expect(resolved).toBe(2); // only 2 tracked-and-delivered; the 3rd failed through the DLQ
   });
 
+  it('keeps overflow delivery bounded and reports backpressure while the reserve is busy', async () => {
+    const emitter = new EventEmitter(1);
+    let finishNormal!: () => void;
+    let finishOverflow!: () => void;
+    const normal = new Promise<void>(resolve => { finishNormal = resolve; });
+    const overflow = new Promise<void>(resolve => { finishOverflow = resolve; });
+    const delivered: number[] = [];
+    const deadLetters: number[] = [];
+    emitter.subscribe({
+      eventPattern: 'test.event',
+      onEvent: event => {
+        delivered.push(event.data['id'] as number);
+        return normal;
+      },
+    });
+    emitter.subscribe({
+      eventPattern: 'apcore.event.delivery_failed',
+      onEvent: event => {
+        const original = event.data['original_event'] as { payload: { id: number } };
+        deadLetters.push(original.payload.id);
+        return overflow;
+      },
+    });
+    const event = (id: number) => createEvent('test.event', null, 'info', { id });
+    expect(emitter.tryEmit(event(1))).toBe(true);
+    await emitter.flush(1);
+    expect(emitter.tryEmit(event(2))).toBe(true);
+    expect(emitter.tryEmit(event(3))).toBe(false);
+    expect(emitter.tryEmit(event(4))).toBe(false);
+    expect(delivered).toEqual([1]);
+    expect(deadLetters).toEqual([2]);
+    finishNormal();
+    finishOverflow();
+    await emitter.flush();
+    expect(emitter.tryEmit(event(3))).toBe(true);
+    await emitter.flush();
+    expect(delivered).toEqual([1, 3]);
+  });
+
   it('flush defaults to a finite 5000ms deadline rather than 0=infinite (sync A-D-503)', async () => {
     // Multi-round scenario: round-1 subscriber spawns round-2 deliveries.
     // With a virtualised clock pushed past 5000ms after round-1 completes,

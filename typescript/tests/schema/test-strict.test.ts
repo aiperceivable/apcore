@@ -2,6 +2,17 @@ import { describe, it, expect } from 'vitest';
 import { toStrictSchema, applyLlmDescriptions, stripExtensions } from '../../src/schema/strict.js';
 
 describe('toStrictSchema', () => {
+  it('preserves boolean schemas for optional properties and sorts property names by code point', () => {
+    const supplementary = '\u{10000}';
+    const bmp = '\uE000';
+    const strict = toStrictSchema({ type: 'object', properties: { [supplementary]: true, [bmp]: false } });
+    expect(strict.required).toEqual([bmp, supplementary]);
+    expect(strict.properties).toEqual({
+      [supplementary]: { anyOf: [true, { type: 'null' }] },
+      [bmp]: { anyOf: [false, { type: 'null' }] },
+    });
+  });
+
   it('adds additionalProperties: false', () => {
     const schema = {
       type: 'object',

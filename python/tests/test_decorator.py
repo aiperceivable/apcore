@@ -743,6 +743,15 @@ class TestFunctionModuleConstructor:
 class TestFunctionModuleSyncExecute:
     """Tests for sync function execution through FunctionModule.execute()."""
 
+    def test_positional_only_values_and_context_preserve_defaults(self):
+        def greet(context: Context, name: str = "Ada", greeting: str = "Hello", /) -> str:
+            assert context is ctx
+            return f"{greeting}, {name}"
+
+        ctx = Context.create()
+        module = FunctionModule(func=greet, module_id="test.greet")
+        assert module.execute({"greeting": "Hi"}, ctx) == {"result": "Hi, Ada"}
+
     def test_sync_function_called_correctly(self):
         """execute() should call the wrapped function with unpacked inputs."""
         fm = FunctionModule(func=_greet, module_id="test.greet")

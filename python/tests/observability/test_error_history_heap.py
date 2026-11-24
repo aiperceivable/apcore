@@ -19,6 +19,24 @@ def _err(code: str = "X", msg: str = "boom") -> ModuleError:
 
 
 class TestHeapEviction:
+    def test_repeated_fingerprint_keeps_a_bounded_heap(self) -> None:
+        hist = ErrorHistory(max_total_entries=1)
+        for _ in range(100):
+            hist.record("mod.a", _err())
+
+        assert hist.get_all()[0].count == 100
+        assert len(hist._heap) <= 2
+
+    def test_dedup_refresh_preserves_same_timestamp_order(self, monkeypatch) -> None:
+        monkeypatch.setattr("apcore.observability.error_history.utc_millis_z", lambda: "2026-01-01T00:00:00.000Z")
+        hist = ErrorHistory(max_total_entries=2)
+        hist.record("mod.a", _err())
+        hist.record("mod.b", _err())
+        hist.record("mod.a", _err())
+        hist.record("mod.c", _err())
+
+        assert [entry.module_id for entry in hist.get_all()] == ["mod.c", "mod.a"]
+
     def test_oldest_globally_is_evicted(self) -> None:
         """When max_total_entries is exceeded, the entry with the oldest
         ``last_occurred`` (across *all* modules) is evicted."""

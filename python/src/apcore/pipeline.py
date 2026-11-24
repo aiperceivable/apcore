@@ -7,6 +7,7 @@ import inspect
 import logging
 import time
 from abc import ABC, abstractmethod
+from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from enum import Enum
 from collections.abc import Sequence
@@ -132,6 +133,10 @@ class PipelineContext:
     # `check_access` against the previous call's argument key set. Framework-
     # computed and never accepted from caller input (rule 3).
     governance_projection: Any | None = None
+    # Budget set by context creation and retained across retry attempts.
+    invocation_deadline: float | None = None
+    execution_scope: AsyncExitStack | None = None
+    module_task: asyncio.Future[Any] | None = None
 
 
 @dataclass
@@ -356,7 +361,7 @@ class ExecutionStrategy:
         self._rebuild_index()
         self._validate_dependencies_enabled = validate_dependencies
         if validate_dependencies:
-            self._validate_dependencies()
+            self._validate_dependencies(self.steps)
 
     def add_step_middleware(self, middleware: StepMiddleware) -> None:
         """Register a :class:`StepMiddleware` for this strategy.
@@ -371,7 +376,8 @@ class ExecutionStrategy:
         """Rebuild the O(1) name→index map. Called after any mutation."""
         self._name_to_idx: dict[str, int] = {s.name: i for i, s in enumerate(self.steps)}
 
-    def _validate_dependencies(self) -> None:
+    @staticmethod
+    def _validate_dependencies(steps: Sequence[Step]) -> None:
         """Raise :class:`PipelineDependencyError` if a step's ``requires`` are
         not satisfied by any preceding step's ``provides`` (Issue #33 §2.1).
 
@@ -379,7 +385,7 @@ class ExecutionStrategy:
         runtime errors deep inside step execution.
         """
         provided: set[str] = set()
-        for step in self.steps:
+        for step in steps:
             requires: tuple[str, ...] = getattr(step, "requires", ())
             missing = set(requires) - provided
             if missing:
@@ -392,27 +398,23 @@ class ExecutionStrategy:
 
     def insert_after(self, anchor: str, step: Step) -> None:
         """Insert a step after the named anchor step."""
-        if step.name in self._name_to_idx:
-            raise StepNameDuplicateError(f"Step '{step.name}' already exists")
-        anchor_idx = self._name_to_idx.get(anchor)
-        if anchor_idx is None:
-            raise StepNotFoundError(f"Anchor step '{anchor}' not found")
-        self.steps.insert(anchor_idx + 1, step)
-        self._rebuild_index()
-        if self._validate_dependencies_enabled:
-            self._validate_dependencies()
+        self._insert_at_anchor(anchor, step, offset=1)
 
     def insert_before(self, anchor: str, step: Step) -> None:
         """Insert a step before the named anchor step."""
+        self._insert_at_anchor(anchor, step, offset=0)
+
+    def _insert_at_anchor(self, anchor: str, step: Step, *, offset: int) -> None:
         if step.name in self._name_to_idx:
             raise StepNameDuplicateError(f"Step '{step.name}' already exists")
         anchor_idx = self._name_to_idx.get(anchor)
         if anchor_idx is None:
             raise StepNotFoundError(f"Anchor step '{anchor}' not found")
-        self.steps.insert(anchor_idx, step)
-        self._rebuild_index()
+        index = anchor_idx + offset
         if self._validate_dependencies_enabled:
-            self._validate_dependencies()
+            self._validate_dependencies([*self.steps[:index], step, *self.steps[index:]])
+        self.steps.insert(index, step)
+        self._rebuild_index()
 
     def remove(self, step_name: str) -> None:
         """Remove a step by name. Raises if the step is not removable."""
@@ -591,7 +593,7 @@ async def _invoke_step_cleanup_hooks(
     state: PipelineState,
     error: Exception,
 ) -> None:
-    """Notify ``on_step_error`` on the ``before_step`` failure path — cleanup only.
+    """Notify ``on_step_error`` when a terminal failure permits cleanup only.
 
     Deliberately a SEPARATE helper from :func:`_invoke_on_step_error` rather
     than a flag on it, because the two passes have opposite purposes and the
@@ -843,6 +845,7 @@ class PipelineEngine:
                 # Middleware instances, not StepMiddlewares, so they must not
                 # be substituted for ``step_mws``.
                 error_mws: Sequence[StepMiddleware] = step_mws
+                fail_closed = getattr(step, "_fail_closed_on_error", False)
                 recovery: Any = None
                 if error_mws:
                     err_state = PipelineState(
@@ -850,7 +853,10 @@ class PipelineEngine:
                         outputs=step_outputs,
                         context=ctx,
                     )
-                    recovery = await _invoke_on_step_error(error_mws, step.name, err_state, exc)
+                    if fail_closed:
+                        await _invoke_step_cleanup_hooks(error_mws, step.name, err_state, exc)
+                    else:
+                        recovery = await _invoke_on_step_error(error_mws, step.name, err_state, exc)
 
                 if recovery is not None:
                     # Coerce non-StepResult recoveries (e.g. plain dicts) into
@@ -867,7 +873,7 @@ class PipelineEngine:
                     # Fall through to the success path below.
                 else:
                     # (4) ignore_errors: log and continue
-                    if ignore_errors:
+                    if ignore_errors and not fail_closed:
                         _logger.warning("Step '%s' failed (ignored): %s", step.name, error_text)
                         trace.steps.append(
                             StepTrace(
@@ -900,15 +906,18 @@ class PipelineEngine:
                             step_name=step.name,
                             cause=ModuleTimeoutError(module_id=ctx.module_id, timeout_ms=timeout_ms),
                             trace=trace,
+                            recoverable=not fail_closed,
                         ) from exc
-                    if isinstance(exc, MiddlewareChainError):
+                    if isinstance(exc, MiddlewareChainError) and not fail_closed:
                         # A middleware chain failure is already in its canonical
                         # wrapper; re-wrapping would hide MiddlewareChainError
                         # from callers that catch it (spec: "MUST be wrapped in
                         # MiddlewareChainError, identical to the module-level
                         # contract").
                         raise
-                    raise PipelineStepError(step_name=step.name, cause=exc, trace=trace) from exc
+                    raise PipelineStepError(
+                        step_name=step.name, cause=exc, trace=trace, recoverable=not fail_closed
+                    ) from exc
 
             # (5) Record successful step trace
             step_trace = StepTrace(
@@ -1103,6 +1112,8 @@ class PipelineStepError(ModuleError):
         step_name: str,
         cause: Exception | None = None,
         trace: PipelineTrace | None = None,
+        *,
+        recoverable: bool = True,
         **kwargs: Any,
     ) -> None:
         cause_msg = str(cause) if cause is not None else "unknown error"
@@ -1115,6 +1126,7 @@ class PipelineStepError(ModuleError):
         )
         self.step_name = step_name
         self.pipeline_trace = trace
+        self.recoverable = recoverable
 
 
 class PipelineStepNotFoundError(ModuleError):

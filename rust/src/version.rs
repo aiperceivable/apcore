@@ -1,7 +1,13 @@
 // APCore Protocol — Version negotiation
 // Spec reference: Protocol version compatibility checks
 
+use std::cmp::Ordering;
+
 use crate::errors::{ErrorCode, ModuleError, VersionIncompatibleError};
+
+const CURRENT_DOCUMENT_VERSION: &str = "2.0.0";
+const LEGACY_DOCUMENT_VERSION: &str = "1.66.0";
+const DEPRECATION_THRESHOLD: u64 = 2;
 
 /// A parsed semver version with optional prerelease suffix.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -24,7 +30,7 @@ impl SemVer {
 }
 
 /// Semver ordering: major > minor > patch, then prerelease < release.
-/// Among prereleases with the same major.minor.patch, compare lexicographically.
+/// Prerelease identifiers follow SemVer numeric and lexical ordering.
 impl Ord for SemVer {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         self.major
@@ -36,8 +42,33 @@ impl Ord for SemVer {
                 // Release > prerelease
                 (None, Some(_)) => std::cmp::Ordering::Greater,
                 (Some(_), None) => std::cmp::Ordering::Less,
-                (Some(a), Some(b)) => a.cmp(b),
+                (Some(a), Some(b)) => compare_prereleases(a, b),
             })
+    }
+}
+
+fn compare_prereleases(left: &str, right: &str) -> Ordering {
+    let mut left = left.split('.');
+    let mut right = right.split('.');
+    loop {
+        let (a, b) = match (left.next(), right.next()) {
+            (None, None) => return Ordering::Equal,
+            (None, Some(_)) => return Ordering::Less,
+            (Some(_), None) => return Ordering::Greater,
+            (Some(a), Some(b)) => (a, b),
+        };
+        let ordering = match (
+            a.bytes().all(|b| b.is_ascii_digit()),
+            b.bytes().all(|b| b.is_ascii_digit()),
+        ) {
+            (true, true) => a.len().cmp(&b.len()).then_with(|| a.cmp(b)),
+            (true, false) => Ordering::Less,
+            (false, true) => Ordering::Greater,
+            (false, false) => a.cmp(b),
+        };
+        if ordering != Ordering::Equal {
+            return ordering;
+        }
     }
 }
 
@@ -51,23 +82,20 @@ impl PartialOrd for SemVer {
 ///
 /// Accepts versions like `"1.2.3"` and `"1.2.3-alpha"`.
 fn parse_semver(version: &str) -> Option<SemVer> {
-    let parts: Vec<&str> = version.split('.').collect();
-    if parts.len() != 3 {
-        return None;
-    }
-    let major = parts[0].parse::<u64>().ok()?;
-    let minor = parts[1].parse::<u64>().ok()?;
-
-    // The patch segment may contain a prerelease suffix: "3-alpha"
-    let (patch, prerelease) = if let Some(dash_pos) = parts[2].find('-') {
-        let patch_str = &parts[2][..dash_pos];
-        let pre_str = &parts[2][dash_pos + 1..];
-        if pre_str.is_empty() {
-            return None;
+    let mut parts = version.trim().splitn(3, '.');
+    let major = parse_component(parts.next()?)?;
+    let minor = parse_component(parts.next()?)?;
+    let patch_and_pre = parts.next()?;
+    let (patch, prerelease) = match patch_and_pre.split_once('-') {
+        Some((patch, pre)) => {
+            if !pre.split('.').all(|part| {
+                !part.is_empty() && part.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+            }) {
+                return None;
+            }
+            (parse_component(patch)?, Some(pre.to_string()))
         }
-        (patch_str.parse::<u64>().ok()?, Some(pre_str.to_string()))
-    } else {
-        (parts[2].parse::<u64>().ok()?, None)
+        None => (parse_component(patch_and_pre)?, None),
     };
 
     Some(SemVer {
@@ -76,6 +104,15 @@ fn parse_semver(version: &str) -> Option<SemVer> {
         patch,
         prerelease,
     })
+}
+
+fn parse_component(component: &str) -> Option<u64> {
+    if (component.len() > 1 && component.starts_with('0'))
+        || !component.bytes().all(|b| b.is_ascii_digit())
+    {
+        return None;
+    }
+    component.parse().ok()
 }
 
 /// Negotiate a compatible protocol version between a declared version and
@@ -121,12 +158,44 @@ pub fn negotiate_version(declared_version: &str, sdk_version: &str) -> Result<St
 
     // Declared minor < SDK minor -> return declared (backward compat)
     if declared.minor < sdk.minor {
+        let gap = sdk.minor - declared.minor;
+        if gap > DEPRECATION_THRESHOLD {
+            tracing::warn!(
+                declared_version,
+                sdk_version,
+                minor_gap = gap,
+                "Declared version trails the SDK; consider upgrading your configuration"
+            );
+        }
         return Ok(declared_version.to_string());
     }
 
     // Same minor -> return max(declared, sdk)
     let effective = std::cmp::max(&declared, &sdk);
     Ok(effective.to_string_repr())
+}
+
+/// Check file compatibility while preserving the declared version on the document.
+pub(crate) fn negotiate_document_version(declared: &str) -> Result<(), ModuleError> {
+    let declared = declared.trim();
+    // Early configuration examples used a short major.minor version.
+    let mut components = declared.split('.');
+    let short = components.next().and_then(parse_component).is_some()
+        && components.next().and_then(parse_component).is_some()
+        && components.next().is_none();
+    let normalized;
+    let declared = if short {
+        normalized = format!("{declared}.0");
+        normalized.as_str()
+    } else {
+        declared
+    };
+    let supported = if declared.starts_with("1.") {
+        LEGACY_DOCUMENT_VERSION
+    } else {
+        CURRENT_DOCUMENT_VERSION
+    };
+    negotiate_version(declared, supported).map(|_| ())
 }
 
 #[cfg(test)]

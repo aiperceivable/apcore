@@ -26,6 +26,7 @@ interface ProjectRootCase {
     readonly resolved_config_paths: Record<string, string | string[]>;
     readonly resolved_acl_root?: string;
     readonly resolved_schema_root?: string;
+    readonly config_path_file_readable?: Record<string, boolean>;
   };
 }
 
@@ -135,6 +136,16 @@ function assertConsumers(config: Config, expected: ProjectRootCase['expected']):
   }
   if (expected.resolved_schema_root !== undefined) {
     expect(new SchemaLoader(config).load('probe').description).toBe(expected.resolved_schema_root);
+  }
+  for (const [key, readable] of Object.entries(expected.config_path_file_readable ?? {})) {
+    const value = config.get(key);
+    expect(typeof value, key).toBe('string');
+    const read = () => readFileSync(config.resolvePath(value as string));
+    if (readable) {
+      expect(read, key).not.toThrow();
+    } else {
+      expect(read, key).toThrow();
+    }
   }
 }
 

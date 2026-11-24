@@ -39,7 +39,7 @@ asserting nothing.
 
 It runs test processes, so it is slow — minutes, not seconds. It belongs in a
 scheduled job or a local sweep, not on the per-PR path. ``--strict`` exits 1 on
-any unpinned case; the default reports and exits 0.
+any unpinned case. An indeterminate run exits 2 in every mode.
 
 MUTATION IS DESTRUCTIVE: the fixture file is rewritten and restored around each
 case. It restores on exceptions and on SIGINT, but do not run it on a dirty
@@ -609,8 +609,6 @@ def main() -> int:
                     continue
                 pinned_by = None
                 for strategy in STRATEGIES:
-                    if pinned_by is not None:
-                        break
                     mutated = json.loads(backup.read_text())
                     for c in mutated["test_cases"]:
                         if c.get("id") == cid:
@@ -630,13 +628,14 @@ def main() -> int:
                             if run_drivers(sdk, args.sdk_root, files):
                                 pinned_by = sdk
                                 break
-                        except NoTestsRan:
-                            # Cannot conclude anything; the fixture pre-check
-                            # above already rejected this shape, so reaching here
-                            # means the invocation degraded mid-sweep.
-                            pinned_by = "indeterminate"
+                        except NoTestsRan as exc:
+                            indeterminate[path.name] = f"{sdk} ran no tests for {cid} ({exc})"
                             break
+                    if pinned_by is not None or path.name in indeterminate:
+                        break
                 shutil.copy(backup, path)
+                if path.name in indeterminate:
+                    break
                 if pinned_by is not None:
                     continue
                 skips = allow.get((path.name, cid), set())
@@ -653,10 +652,10 @@ def main() -> int:
     print(f"\n{checked} cases mutated across {len(paths)} fixtures — "
           f"{total_unpinned} pinned by no driver, in {len(unpinned)} fixtures")
     if indeterminate:
-        print(f"{len(indeterminate)} fixture(s) were RED before mutation, so nothing "
-              f"could be concluded about their cases:")
-        for stem, sdks in sorted(indeterminate.items()):
-            print(f"  {stem}: failing on {sdks}")
+        print(f"{len(indeterminate)} fixture(s) could not be measured:", file=sys.stderr)
+        for fixture, reason in sorted(indeterminate.items()):
+            print(f"  {fixture}: {reason}", file=sys.stderr)
+        return 2
     if no_expected:
         n = sum(len(v) for v in no_expected.values())
         print(f"{n} cases state no expectation this tool can mutate — NOT MEASURED, which is "

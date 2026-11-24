@@ -27,7 +27,7 @@ from apcore.async_task import (
     TaskStatus,
     TaskStore,
 )
-from apcore.errors import InvalidInputError
+from apcore.errors import InvalidInputError, TaskStoreError
 
 
 class _StubExecutor:
@@ -192,6 +192,26 @@ class _AsyncOnlyStore:
 
 
 class TestManagerWithAsyncStore:
+    @pytest.mark.asyncio
+    async def test_runner_retries_a_transient_initial_store_read(self) -> None:
+        class TransientStore(InMemoryTaskStore):
+            failed = False
+
+            async def get(self, task_id: str) -> TaskInfo | None:
+                if not self.failed:
+                    self.failed = True
+                    raise TaskStoreError(operation="get")
+                return await super().get(task_id)
+
+        manager = AsyncTaskManager(_StubExecutor(), store=TransientStore(), max_tasks=1)
+        task_id = await manager.submit("test.x", {})
+        await asyncio.wait_for(manager._async_tasks[task_id], timeout=1)
+
+        assert await manager.get_result_async(task_id) == {"ok": True}
+        second_task_id = await manager.submit("test.x", {})
+        assert second_task_id != task_id
+        await asyncio.wait_for(manager._async_tasks[second_task_id], timeout=1)
+
     def test_sync_accessors_run_async_store_outside_an_event_loop(self) -> None:
         store = _AsyncOnlyStore(delay=0.001)
         mgr = AsyncTaskManager(executor=_StubExecutor(), store=store)

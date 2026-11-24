@@ -306,6 +306,19 @@ output_schema:
       expect(first).toBe(second);
     });
 
+    it('shares compiled YAML schemas without sharing module identity', () => {
+      writeSchema('first.schema.yaml', validYaml);
+      writeSchema('second.schema.yaml', validYaml);
+      const loader = new SchemaLoader(makeConfig(), schemasDir);
+
+      const first = loader.getSchema('first');
+      const second = loader.getSchema('second');
+
+      expect(second.map((schema) => schema.moduleId)).toEqual(['second', 'second']);
+      expect(second[0].schema).toBe(first[0].schema);
+      expect(loader.getSchema('second')).toBe(second);
+    });
+
     it('returns distinct output schemas for modules with identical input but different output (regression: cache hash collision)', () => {
       // Two modules: same input schema, different output schemas.
       // Before the fix, both resolved to the first module's output schema.
@@ -414,6 +427,49 @@ output_schema:
       const loader = new SchemaLoader(config);
       expect(loader).toBeInstanceOf(SchemaLoader);
     });
+  });
+});
+
+describe('JSON Schema boolean subschemas', () => {
+  it('retains boolean constraints for properties, items, and references', () => {
+    const schema = jsonSchemaToTypeBox({
+      type: 'object',
+      properties: {
+        free: true,
+        forbidden: false,
+        empty: { type: 'array', items: false },
+        absent: { $ref: '#/$defs/never' },
+      },
+      $defs: { never: false },
+    });
+    expect(Value.Check(schema, { free: 5, empty: [] })).toBe(true);
+    expect(Value.Check(schema, { forbidden: 1 })).toBe(false);
+    expect(Value.Check(schema, { empty: [1] })).toBe(false);
+    expect(Value.Check(schema, { absent: 1 })).toBe(false);
+  });
+
+  it('requires declared properties whose names are inherited on plain objects', () => {
+    const schema = jsonSchemaToTypeBox({ type: 'object', required: ['constructor'] });
+    expect(Value.Check(schema, {})).toBe(false);
+    expect(Value.Check(schema, { constructor: 'example' })).toBe(true);
+  });
+
+  it('preserves ref siblings and counts property annotations through referenced allOf branches', () => {
+    const schema = jsonSchemaToTypeBox({
+      $defs: { entry: { properties: { label: { type: 'string' } } } },
+      allOf: [{ $ref: '#/$defs/entry' }],
+      unevaluatedProperties: false,
+    });
+    expect(Value.Check(schema, { label: 'example' })).toBe(true);
+    expect(Value.Check(schema, { label: 'example', other: true })).toBe(false);
+
+    const refWithSibling = jsonSchemaToTypeBox({
+      $defs: { entry: { properties: { label: { type: 'string' } } } },
+      $ref: '#/$defs/entry',
+      unevaluatedProperties: false,
+    });
+    expect(Value.Check(refWithSibling, { label: 'example' })).toBe(true);
+    expect(Value.Check(refWithSibling, { label: 'example', other: true })).toBe(false);
   });
 });
 

@@ -1,5 +1,5 @@
 {
-  "description": "Algorithm A25 `match_glob` — PROTOCOL_SPEC 9.2.3. The single matcher for every glob-dialect pattern-valued value in the specification: `bindings.pattern`, `obs.redaction.sensitive_keys` glob entries, event `event_pattern` / `include_events` / `exclude_events`, and `system.control.reload_module`'s `path_filter`. It is NOT the matcher for ACL rule patterns or `match_modules`, which match module IDs with A08 and are pinned by `pattern_matching.json`.\n\nTwo metacharacters and no others: `*` (zero or more characters, crossing `.` and `/`) and `?` (exactly one). Every other character is a literal, `[ ] { } \\ ! ^ -` included. The match is anchored to the whole value. Every string is a valid pattern: A25 has no parse phase and MUST NOT raise or skip.\n\nWHY THIS FIXTURE EXISTS (#116, #117). Before v1.37.0 the specification typed these values with the bare word \"glob\" and named no algorithm, so each SDK delegated to its host library — `pathlib.Path.glob`, `fnmatch`, the `glob` crate, a translated `RegExp` — and inherited that library's dialect. The corpus could not see it: every pattern value in every fixture was `*`, a literal, or leading-star-plus-literal-suffix, which is the one family on which a real glob, a leading-star strip and a first-star removal all coincide. Cases here are therefore chosen by one rule: A CASE EARNS ITS PLACE ONLY IF IT FAILS AGAINST AT LEAST ONE IMPLEMENTATION AS SHIPPED. Of the 30 cases, 11 are marked DISCRIMINATING in their `_why` and name the shipped implementation each one separates; the remaining 19 are marked CONTROL and exist to keep the discriminating cases from being satisfiable by a degenerate matcher.",
+  "description": "Algorithm A25 `match_glob` — PROTOCOL_SPEC 9.2.3. The single matcher for every glob-dialect pattern-valued value in the specification: `bindings.pattern`, `obs.redaction.sensitive_keys` glob entries, event `event_pattern` / `include_events` / `exclude_events`, and `system.control.reload_module`'s `path_filter`. It is NOT the matcher for ACL rule patterns or `match_modules`, which match module IDs with A08 and are pinned by `pattern_matching.json`.\n\nTwo metacharacters and no others: `*` (zero or more characters, crossing `.` and `/`) and `?` (exactly one). Every other character is a literal, `[ ] { } \\ ! ^ -` included. The match is anchored to the whole value. Every string is a valid pattern: A25 has no parse phase and MUST NOT raise or skip.\n\nWHY THIS FIXTURE EXISTS (#116, #117). Before v1.37.0 the specification typed these values with the bare word \"glob\" and named no algorithm, so each SDK delegated to its host library — `pathlib.Path.glob`, `fnmatch`, the `glob` crate, a translated `RegExp` — and inherited that library's dialect. The corpus could not see it: every pattern value in every fixture was `*`, a literal, or leading-star-plus-literal-suffix, which is the one family on which a real glob, a leading-star strip and a first-star removal all coincide. Cases here are therefore chosen by one rule: A CASE EARNS ITS PLACE ONLY IF IT FAILS AGAINST AT LEAST ONE IMPLEMENTATION AS SHIPPED. Of the 32 cases, 13 are marked DISCRIMINATING in their `_why` and name the shipped implementation each one separates; the remaining 19 are marked CONTROL and exist to keep the discriminating cases from being satisfiable by a degenerate matcher.",
   "test_cases": [
     {
       "id": "star_matches_everything",
@@ -49,6 +49,20 @@
       "value": "a",
       "expected": false,
       "_why": "CONTROL — `?` is one character, never zero. A `*`-only matcher answers false here too, so this case alone separates nothing — it exists to stop `question_matches_exactly_one_character` from being satisfiable by making `?` match zero-or-more."
+    },
+    {
+      "id": "question_matches_one_supplementary_code_point",
+      "pattern": "?.yaml",
+      "value": "🌱.yaml",
+      "expected": true,
+      "_why": "DISCRIMINATING — TypeScript previously counted UTF-16 code units. One Unicode code point still occupies one wildcard position."
+    },
+    {
+      "id": "two_questions_cannot_split_a_supplementary_code_point",
+      "pattern": "data*??.yaml",
+      "value": "data🌱.yaml",
+      "expected": false,
+      "_why": "DISCRIMINATING — TypeScript previously counted UTF-16 code units. The final two wildcard positions require two Unicode code points."
     },
     {
       "id": "question_mark_is_a_wildcard",

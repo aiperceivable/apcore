@@ -5,6 +5,13 @@ import { Config } from '../src/config.js';
 import { Context } from '../src/context.js';
 import { ModuleTimeoutError } from '../src/errors.js';
 
+
+const validModuleMetadata = {
+  description: 'Test module',
+  inputSchema: { type: 'object' },
+  outputSchema: { type: 'object' },
+};
+
 function makeRegistry(): Registry {
   const reg = new Registry();
   return reg;
@@ -23,6 +30,7 @@ describe('Executor global timeout', () => {
     const reg = makeRegistry();
     let captured: number | null = null;
     reg.register('test.mod', {
+      ...validModuleMetadata,
       id: 'test.mod',
       execute: (_inputs: Record<string, unknown>, ctx: Context) => {
         captured = ctx.globalDeadline;
@@ -44,6 +52,7 @@ describe('Executor global timeout', () => {
     let innerDeadline: number | undefined;
 
     reg.register('outer', {
+      ...validModuleMetadata,
       id: 'outer',
       execute: async (_inputs: Record<string, unknown>, ctx: Context) => {
         outerDeadline = ctx.globalDeadline as number;
@@ -53,6 +62,7 @@ describe('Executor global timeout', () => {
       },
     });
     reg.register('inner', {
+      ...validModuleMetadata,
       id: 'inner',
       execute: (_inputs: Record<string, unknown>, ctx: Context) => {
         innerDeadline = ctx.globalDeadline as number;
@@ -71,6 +81,7 @@ describe('Executor global timeout', () => {
   it('throws ModuleTimeoutError when global deadline exceeded', async () => {
     const reg = makeRegistry();
     reg.register('slow', {
+      ...validModuleMetadata,
       id: 'slow',
       execute: async () => {
         await sleep(200);
@@ -89,6 +100,7 @@ describe('Executor global timeout', () => {
     const reg = makeRegistry();
     let captured: number | null = -1;
     reg.register('test.mod', {
+      ...validModuleMetadata,
       id: 'test.mod',
       execute: (_inputs: Record<string, unknown>, ctx: Context) => {
         captured = ctx.globalDeadline;
@@ -107,6 +119,7 @@ describe('Executor global timeout', () => {
     const reg = makeRegistry();
     let captured: number | null = null;
     reg.register('test.stream', {
+      ...validModuleMetadata,
       id: 'test.stream',
       execute: (_inputs: Record<string, unknown>, ctx: Context) => {
         captured = ctx.globalDeadline;

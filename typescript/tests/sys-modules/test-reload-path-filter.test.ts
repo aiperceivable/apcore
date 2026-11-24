@@ -19,6 +19,8 @@ describe('ReloadModule path_filter (Issue #45.4)', () => {
   function createDummyModule(version: string = '1.0.0'): Record<string, unknown> {
     return {
       description: 'A dummy module',
+      inputSchema: { type: 'object' },
+      outputSchema: { type: 'object' },
       version,
       execute: () => ({ result: 'ok' }),
     };

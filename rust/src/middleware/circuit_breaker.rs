@@ -9,7 +9,8 @@
 // re-opens it.
 
 use std::collections::{HashMap, VecDeque};
-use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
@@ -62,15 +63,7 @@ struct Circuit {
     window: VecDeque<bool>,
     /// When the circuit last transitioned to OPEN. Used to detect recovery.
     opened_at: Option<Instant>,
-    /// `true` if a probe call is currently in flight in HALF_OPEN state.
-    /// Limits HALF_OPEN concurrency to a single probe.
-    probe_in_flight: bool,
-    /// When the active HALF_OPEN probe was admitted. If the probe never
-    /// completes (e.g. async cancellation between `before` and
-    /// `after`/`on_error`), the slot would otherwise leak — the next
-    /// `before()` reclaims it once it has been held longer than the
-    /// recovery window.
-    probe_started_at: Option<Instant>,
+    probe: Option<ProbeOwner>,
 }
 
 impl Circuit {
@@ -79,8 +72,7 @@ impl Circuit {
             state: CircuitBreakerState::Closed,
             window: VecDeque::new(),
             opened_at: None,
-            probe_in_flight: false,
-            probe_started_at: None,
+            probe: None,
         }
     }
 
@@ -100,6 +92,48 @@ impl Circuit {
         #[allow(clippy::cast_precision_loss)] // window_size is bounded; precision loss negligible
         let rate = errors as f64 / self.window.len() as f64;
         rate
+    }
+}
+
+#[derive(Debug)]
+enum ProbeOwner {
+    Invocation(Weak<AtomicBool>),
+    Direct {
+        trace_id: String,
+        data: Weak<parking_lot::RwLock<HashMap<String, serde_json::Value>>>,
+    },
+}
+
+impl ProbeOwner {
+    fn new(ctx: &Context<serde_json::Value>) -> Self {
+        ctx.cancel_token.as_ref().map_or_else(
+            || Self::Direct {
+                trace_id: ctx.trace_id.clone(),
+                data: Arc::downgrade(&ctx.data),
+            },
+            |token| Self::Invocation(token.invocation_scope()),
+        )
+    }
+
+    fn expired(&self) -> bool {
+        match self {
+            Self::Invocation(scope) => scope.strong_count() == 0,
+            Self::Direct { data, .. } => data.strong_count() == 0,
+        }
+    }
+
+    fn matches(&self, ctx: &Context<serde_json::Value>) -> bool {
+        match self {
+            Self::Invocation(scope) => ctx
+                .cancel_token
+                .as_ref()
+                .is_some_and(|token| scope.ptr_eq(&token.invocation_scope())),
+            Self::Direct { trace_id, data } => {
+                ctx.cancel_token.is_none()
+                    && &ctx.trace_id == trace_id
+                    && data.ptr_eq(&Arc::downgrade(&ctx.data))
+            }
+        }
     }
 }
 
@@ -312,8 +346,7 @@ impl CircuitBreakerMiddleware {
         let entry = circuits.entry(key).or_insert_with(Circuit::new);
         entry.state = state;
         entry.opened_at = opened_at;
-        entry.probe_in_flight = false;
-        entry.probe_started_at = None;
+        entry.probe = None;
     }
 
     /// Reset a circuit to CLOSED and clear its rolling window.
@@ -333,8 +366,7 @@ impl CircuitBreakerMiddleware {
             circuit.state = CircuitBreakerState::Closed;
             circuit.window.clear();
             circuit.opened_at = None;
-            circuit.probe_in_flight = false;
-            circuit.probe_started_at = None;
+            circuit.probe = None;
         }
     }
 
@@ -414,32 +446,22 @@ impl Middleware for CircuitBreakerMiddleware {
                     let elapsed = now.saturating_duration_since(opened_at);
                     if elapsed >= recovery {
                         circuit.state = CircuitBreakerState::HalfOpen;
-                        circuit.probe_in_flight = false;
-                        circuit.probe_started_at = None;
+                        circuit.probe = None;
                     }
                 }
             }
 
-            // Reclaim a stale HALF_OPEN probe slot if the prior probe never
-            // completed (cancellation, panic) and has been held longer than
-            // the recovery window.
-            if circuit.state == CircuitBreakerState::HalfOpen && circuit.probe_in_flight {
-                if let Some(started) = circuit.probe_started_at {
-                    if now.saturating_duration_since(started) >= recovery {
-                        circuit.probe_in_flight = false;
-                        circuit.probe_started_at = None;
-                    }
-                }
+            if circuit.probe.as_ref().is_some_and(ProbeOwner::expired) {
+                circuit.probe = None;
             }
 
             match circuit.state {
                 CircuitBreakerState::Open => Outcome::Reject,
                 CircuitBreakerState::HalfOpen => {
-                    if circuit.probe_in_flight {
+                    if circuit.probe.is_some() {
                         Outcome::Reject
                     } else {
-                        circuit.probe_in_flight = true;
-                        circuit.probe_started_at = Some(now);
+                        circuit.probe = Some(ProbeOwner::new(ctx));
                         Outcome::Allow(CircuitBreakerState::HalfOpen)
                     }
                 }
@@ -471,13 +493,18 @@ impl Middleware for CircuitBreakerMiddleware {
         let event = {
             let mut circuits = self.circuits.lock();
             let circuit = circuits.entry(key.clone()).or_insert_with(Circuit::new);
-            circuit.push(true, self.config.window_size);
-
-            if circuit.state == CircuitBreakerState::HalfOpen {
+            if circuit.state == CircuitBreakerState::Closed {
+                circuit.push(true, self.config.window_size);
+            }
+            if circuit.state == CircuitBreakerState::HalfOpen
+                && circuit
+                    .probe
+                    .as_ref()
+                    .is_some_and(|probe| probe.matches(ctx))
+            {
                 circuit.state = CircuitBreakerState::Closed;
                 circuit.opened_at = None;
-                circuit.probe_in_flight = false;
-                circuit.probe_started_at = None;
+                circuit.probe = None;
                 // Reset the rolling window — the prior failures that opened
                 // the breaker are stale; future trips must accumulate again
                 // before re-opening.
@@ -517,8 +544,16 @@ impl Middleware for CircuitBreakerMiddleware {
         let event = {
             let mut circuits = self.circuits.lock();
             let circuit = circuits.entry(key.clone()).or_insert_with(Circuit::new);
+            let tracks_outcome = circuit.state == CircuitBreakerState::Closed
+                || (circuit.state == CircuitBreakerState::HalfOpen
+                    && circuit
+                        .probe
+                        .as_ref()
+                        .is_some_and(|probe| probe.matches(ctx)));
+            if !tracks_outcome {
+                return Ok(None);
+            }
             circuit.push(false, self.config.window_size);
-
             let rate = circuit.error_rate();
             let opens = match circuit.state {
                 CircuitBreakerState::HalfOpen => true,
@@ -532,8 +567,7 @@ impl Middleware for CircuitBreakerMiddleware {
             if opens {
                 circuit.state = CircuitBreakerState::Open;
                 circuit.opened_at = Some(now);
-                circuit.probe_in_flight = false;
-                circuit.probe_started_at = None;
+                circuit.probe = None;
                 Some(Self::build_event(
                     "apcore.circuit.opened",
                     &key.0,
@@ -699,6 +733,123 @@ mod tests {
             mw.state(module, "orchestrator.billing"),
             CircuitBreakerState::Closed
         );
+    }
+
+    #[tokio::test]
+    async fn only_the_admitted_half_open_call_can_close_the_circuit() {
+        let now = Arc::new(Mutex::new(Instant::now()));
+        let clock = now.clone();
+        let mw = CircuitBreakerMiddleware::builder()
+            .recovery_window_ms(5)
+            .build()
+            .with_clock(move || *clock.lock());
+        let module = "mod.a";
+        let older = ctx_with_caller("orch");
+        let mut probe = ctx_with_caller("orch");
+        probe.cancel_token = Some(crate::cancel::CancelToken::new());
+        mw.before(module, serde_json::Value::Null, &older)
+            .await
+            .unwrap();
+        mw.force_state(
+            module,
+            "orch",
+            CircuitBreakerState::HalfOpen,
+            Some(*now.lock()),
+        );
+        mw.before(module, serde_json::Value::Null, &probe)
+            .await
+            .unwrap();
+        mw.after(
+            module,
+            serde_json::Value::Null,
+            serde_json::Value::Null,
+            &older,
+        )
+        .await
+        .unwrap();
+        assert_eq!(mw.state(module, "orch"), CircuitBreakerState::HalfOpen);
+        *now.lock() += Duration::from_millis(10);
+        let candidate = ctx_with_caller("orch");
+        assert!(mw
+            .before(module, serde_json::Value::Null, &candidate)
+            .await
+            .is_err());
+        mw.after(
+            module,
+            serde_json::Value::Null,
+            serde_json::Value::Null,
+            &probe,
+        )
+        .await
+        .unwrap();
+        assert_eq!(mw.state(module, "orch"), CircuitBreakerState::Closed);
+    }
+
+    #[tokio::test]
+    async fn direct_half_open_probe_stays_admitted_until_its_context_is_dropped() {
+        let now = Arc::new(Mutex::new(Instant::now()));
+        let clock = now.clone();
+        let mw = CircuitBreakerMiddleware::builder()
+            .recovery_window_ms(5)
+            .build()
+            .with_clock(move || *clock.lock());
+        let (module, caller) = ("mod.a", "orch");
+        let probe = ctx_with_caller(caller);
+        let candidate = ctx_with_caller(caller);
+        mw.force_state(
+            module,
+            caller,
+            CircuitBreakerState::HalfOpen,
+            Some(*now.lock()),
+        );
+        mw.before(module, serde_json::Value::Null, &probe)
+            .await
+            .unwrap();
+
+        *now.lock() += Duration::from_millis(10);
+        assert_eq!(
+            mw.before(module, serde_json::Value::Null, &candidate)
+                .await
+                .unwrap_err()
+                .code,
+            ErrorCode::CircuitBreakerOpen
+        );
+
+        drop(probe);
+        mw.before(module, serde_json::Value::Null, &candidate)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn direct_half_open_probe_is_owned_by_its_context_even_with_a_shared_trace_id() {
+        let mw = CircuitBreakerMiddleware::builder().build();
+        let (module, caller) = ("mod.a", "orch");
+        let probe = ctx_with_caller(caller);
+        let mut unrelated = ctx_with_caller(caller);
+        unrelated.trace_id.clone_from(&probe.trace_id);
+        mw.force_state(module, caller, CircuitBreakerState::HalfOpen, None);
+        mw.before(module, serde_json::Value::Null, &probe)
+            .await
+            .unwrap();
+        mw.after(
+            module,
+            serde_json::Value::Null,
+            serde_json::Value::Null,
+            &unrelated,
+        )
+        .await
+        .unwrap();
+        assert_eq!(mw.state(module, caller), CircuitBreakerState::HalfOpen);
+        mw.after(
+            module,
+            serde_json::Value::Null,
+            serde_json::Value::Null,
+            &probe,
+        )
+        .await
+        .unwrap();
+        assert_eq!(mw.state(module, caller), CircuitBreakerState::Closed);
     }
 
     #[tokio::test]

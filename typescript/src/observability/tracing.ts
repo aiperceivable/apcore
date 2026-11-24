@@ -93,7 +93,7 @@ export class OTLPExporter implements SpanExporter {
     this._timeoutMs = options?.timeoutMs ?? 5000;
   }
 
-  export(span: Span): void {
+  async export(span: Span): Promise<void> {
     const payload = {
       resourceSpans: [{
         resource: {
@@ -120,25 +120,25 @@ export class OTLPExporter implements SpanExporter {
       }],
     };
 
-    // Fire-and-forget POST with timeout so a stuck OTLP backend does not
-    // accumulate pending promises and retain span data in memory.
+    // The processor can await the POST. A deadline bounds a stuck connection.
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this._timeoutMs);
-    fetch(this._endpoint, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...this._headers,
-      },
-      body: JSON.stringify(payload),
-      signal: controller.signal,
-    })
-      .catch((err: unknown) => {
-        console.warn('[apcore:tracing] OTLP export failed:', err);
-      })
-      .finally(() => {
-        clearTimeout(timer);
+    try {
+      const response = await fetch(this._endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...this._headers,
+        },
+        body: JSON.stringify(payload),
+        signal: controller.signal,
       });
+      if (!response.ok) throw new Error(`OTLP exporter received HTTP ${response.status}`);
+    } catch (error) {
+      console.warn('[apcore:tracing] OTLP export failed:', error);
+    } finally {
+      clearTimeout(timer);
+    }
   }
 }
 

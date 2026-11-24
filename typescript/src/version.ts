@@ -10,6 +10,8 @@ const SEMVER_RE = /^(?<major>0|[1-9]\d*)\.(?<minor>0|[1-9]\d*)\.(?<patch>0|[1-9]
 
 /** Deprecation warning threshold. */
 const DEPRECATION_THRESHOLD = 2;
+const CURRENT_DOCUMENT_VERSION = '2.0.0';
+const LEGACY_DOCUMENT_VERSION = '1.66.0';
 
 interface SemVer {
   readonly major: number;
@@ -131,4 +133,16 @@ export function negotiateVersion(declaredVersion: string, sdkVersion: string): s
   // Same minor -> effective = max(declared, sdk)
   const cmp = compareSortKeys(sortKey(declared), sortKey(sdk));
   return cmp >= 0 ? semverToString(declared) : semverToString(sdk);
+}
+
+/** Check file compatibility while preserving the declared version on the document. */
+export function negotiateDocumentVersion(declared: string): void {
+  let normalized = declared.trim();
+  // Early configuration examples used a short major.minor version.
+  if (/^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/.test(normalized)) normalized += '.0';
+  const supported = normalized.startsWith('1.') ? LEGACY_DOCUMENT_VERSION : CURRENT_DOCUMENT_VERSION;
+  if (!SEMVER_RE.test(normalized)) {
+    throw new VersionIncompatibleError(declared, supported, 'Invalid semantic version');
+  }
+  negotiateVersion(normalized, supported);
 }

@@ -16,6 +16,7 @@ import type { ExecutionPolicy } from './policy.js';
 import {
   BuiltinACLCheck,
   BuiltinApprovalGate,
+  BuiltinModuleLookup,
   buildInternalStrategy,
   buildMinimalStrategy,
   buildPerformanceStrategy,
@@ -24,6 +25,7 @@ import {
 } from './builtin-steps.js';
 import type { StandardStrategyDeps } from './builtin-steps.js';
 import { ExecutionCancelledError } from './cancel.js';
+import { finishCall } from './execution-lifetime.js';
 import type { Config } from './config.js';
 import { buildStrategyFromConfigSync } from './pipeline-config.js';
 // Import directly from emitter.js (browser-safe) — NOT events/index.js, which
@@ -72,7 +74,7 @@ import {
 } from './pipeline.js';
 import { MAX_MODULE_ID_LENGTH, MODULE_ID_PATTERN } from './registry/registry.js';
 import type { Registry } from './registry/registry.js';
-import type { ToggleState } from './sys-modules/toggle.js';
+import { DEFAULT_TOGGLE_STATE, type ToggleState } from './sys-modules/toggle.js';
 import { propagateError } from './utils/error-propagation.js';
 import { normalizeModuleObject } from './utils/module-output.js';
 
@@ -177,11 +179,36 @@ export function redactSensitive(
   schemaDict: Record<string, unknown>,
   rules?: RedactionConfig | null,
 ): Record<string, unknown> {
-  const redacted = JSON.parse(JSON.stringify(data));
+  const redacted = (captureRedactableValue(data, new Set()) ?? {}) as Record<string, unknown>;
   redactFields(redacted, schemaDict, createRedactionReferenceContext(schemaDict));
   redactSecretPrefix(redacted);
   const configured = rules ?? RedactionConfig.default();
   return configured.redact(redacted) as Record<string, unknown>;
+}
+
+/** Copy JSON-shaped data for capture without serializing opaque module values. */
+function captureRedactableValue(value: unknown, active: Set<object>): unknown {
+  if (value === null || typeof value === 'string' || typeof value === 'boolean') return value;
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+  if (typeof value !== 'object' || active.has(value)) return null;
+  active.add(value);
+  try {
+    if (Array.isArray(value)) return value.map((item) => captureRedactableValue(item, active));
+    if (value instanceof Date) return Date.prototype.toJSON.call(value);
+    if (!isMergeRecord(value)) return null;
+    const entries: [string, unknown][] = [];
+    for (const [key, descriptor] of Object.entries(Object.getOwnPropertyDescriptors(value))) {
+      if (!descriptor.enumerable) continue;
+      const item = descriptor.value;
+      if (item === undefined && Object.hasOwn(descriptor, 'value')) continue;
+      entries.push([key, captureRedactableValue(item, active)]);
+    }
+    return Object.fromEntries(entries);
+  } catch {
+    return null;
+  } finally {
+    active.delete(value);
+  }
 }
 
 const COMBINATORS = ['anyOf', 'oneOf', 'allOf'] as const;
@@ -326,6 +353,26 @@ export function resolveMergeDepth(config: Config | null | undefined): number {
   return value;
 }
 
+function isMergeRecord(value: unknown): value is Record<string, unknown> {
+  if (value === null || typeof value !== 'object') return false;
+  const proto = Object.getPrototypeOf(value);
+  return proto === null || proto === Object.prototype;
+}
+
+function copyChunkValue(value: unknown, active = new Map<object, unknown>()): unknown {
+  if (!Array.isArray(value) && !isMergeRecord(value)) return value;
+  if (active.has(value)) return active.get(value);
+  const copy: Record<string, unknown> | unknown[] = Array.isArray(value) ? new Array(value.length) : {};
+  active.set(value, copy);
+  for (const [key, item] of Object.entries(value)) {
+    Object.defineProperty(copy, key, {
+      value: copyChunkValue(item, active), writable: true, enumerable: true, configurable: true,
+    });
+  }
+  active.delete(value);
+  return copy;
+}
+
 export function deepMergeChunk(
   base: Record<string, unknown>,
   overlay: Record<string, unknown>,
@@ -336,23 +383,21 @@ export function deepMergeChunk(
     if (
       depth < maxDepth &&
       Object.hasOwn(base, key) &&
-      base[key] != null &&
-      typeof base[key] === 'object' &&
-      !Array.isArray(base[key]) &&
-      value != null &&
-      typeof value === 'object' &&
-      !Array.isArray(value)
+      isMergeRecord(base[key]) &&
+      isMergeRecord(value)
     ) {
       deepMergeChunk(
         base[key] as Record<string, unknown>,
-        value as Record<string, unknown>,
+        value,
         depth + 1,
         maxDepth,
       );
     } else {
       // At the depth cap, replace rather than recurse. Define own data keys
       // directly so JSON properties cannot invoke inherited setters.
-      Object.defineProperty(base, key, { value, writable: true, enumerable: true, configurable: true });
+      Object.defineProperty(base, key, {
+        value: copyChunkValue(value), writable: true, enumerable: true, configurable: true,
+      });
     }
   }
 }
@@ -399,7 +444,7 @@ export class Executor {
   private _config: Config | null;
   private _approvalHandler: ApprovalHandler | null;
   private _policy: ExecutionPolicy | null;
-  private _toggleState: ToggleState | null;
+  private readonly _toggleState: ToggleState;
   private _eventEmitter: EventEmitter | null;
   private _eventEmitterConfigured: boolean;
   private _strategy: ExecutionStrategy;
@@ -425,7 +470,7 @@ export class Executor {
     this._config = options.config ?? null;
     this._approvalHandler = options.approvalHandler ?? null;
     this._policy = options.policy ?? null;
-    this._toggleState = options.toggleState ?? null;
+    this._toggleState = options.toggleState ?? DEFAULT_TOGGLE_STATE;
     this._eventEmitter = options.eventEmitter ?? null;
     this._eventEmitterConfigured = this._eventEmitter !== null;
 
@@ -618,6 +663,12 @@ export class Executor {
   /** Get the current execution strategy. */
   get currentStrategy(): ExecutionStrategy {
     return this._strategy;
+  }
+
+  /** @internal State used by the current strategy's built-in module lookup. */
+  get toggleState(): ToggleState {
+    const lookup = this._strategy.steps.find((step) => step instanceof BuiltinModuleLookup);
+    return lookup?.toggleState ?? this._toggleState;
   }
 
   private _moduleGovernanceAnnotations(moduleId: string): ModuleAnnotations | null {
@@ -884,7 +935,20 @@ export class Executor {
     context?: Context | null,
     versionHint?: string | null,
   ): Promise<Record<string, unknown>> {
+    const [output] = await this._callWithTrace(moduleId, inputs, context, this._strategy, versionHint);
+    return output;
+  }
+
+  private async _callWithTrace(
+    moduleId: string,
+    inputs: Record<string, unknown> | null | undefined,
+    context: Context | null | undefined,
+    strategy: ExecutionStrategy,
+    versionHint: string | null | undefined,
+  ): Promise<[Record<string, unknown>, PipelineTrace]> {
     this._validateModuleId(moduleId);
+    // Per-call strategies use the providers owned by this executor (D-129).
+    if (strategy !== this._strategy) this._bindProviders(strategy);
 
     // Issue #66: auto-bind executor to context on every entry. withExecutor
     // is idempotent for the same instance and raises ContextBindingError on
@@ -902,7 +966,7 @@ export class Executor {
       validatedOutput: null,
       stream: false,
       outputStream: null,
-      strategy: this._strategy,
+      strategy,
       trace: null,
       versionHint: versionHint ?? null,
     };
@@ -913,8 +977,8 @@ export class Executor {
     try {
       while (true) {
         try {
-          const [output, _trace] = await this._pipelineEngine.run(this._strategy, pipeCtx);
-          return (output ?? {}) as Record<string, unknown>;
+          const [output, trace] = await this._pipelineEngine.run(strategy, pipeCtx);
+          return [(output ?? {}) as Record<string, unknown>, trace];
         } catch (exc) {
           if (exc instanceof ExecutionCancelledError) throw exc;
           // PipelineStepError is the engine-level contract (protocol-spec §5.16 requirement 1). Unwrap the cause
@@ -942,19 +1006,23 @@ export class Executor {
             );
             if (recovery instanceof RetrySignal) {
               this._resetPipeCtxForRetry(pipeCtx, recovery.inputs);
-              if (pipeCtx.context.cancelToken !== ctx.cancelToken)
-                pipeCtx.context.cancelToken?.dispose();
+              this._finishCallContext(pipeCtx.context, ctx);
               pipeCtx.context = ctx;
               continue;
             }
-            if (recovery !== null) return recovery;
+            if (recovery !== null) return [recovery, pipeCtx.trace!];
           }
           throw wrapped;
         }
       }
     } finally {
-      if (pipeCtx.context.cancelToken !== ctx.cancelToken) pipeCtx.context.cancelToken?.dispose();
+      this._finishCallContext(pipeCtx.context, ctx);
     }
+  }
+
+  private _finishCallContext(context: Context, parent: Context): void {
+    finishCall(context);
+    if (context.cancelToken !== parent.cancelToken) context.cancelToken?.dispose();
   }
 
   /**
@@ -1001,76 +1069,7 @@ export class Executor {
     options?: { strategy?: ExecutionStrategy | null } | null,
     versionHint?: string | null,
   ): Promise<[Record<string, unknown>, PipelineTrace]> {
-    const strategy = options?.strategy ?? this._strategy;
-    // A per-call strategy is still a strategy this executor runs: its built-in
-    // gates enforce this executor's providers (PROTOCOL_SPEC 6.6.5.5, D-129).
-    if (strategy !== this._strategy) this._bindProviders(strategy);
-
-    // Issue #66: auto-bind executor (see call() for rationale).
-    let ctx = context ?? Context.create();
-    ctx = bindExecutorToCtx(ctx, this);
-    const pipelineCtx: PipelineContext = {
-      moduleId,
-      inputs: inputs ?? {},
-      context: ctx,
-      module: null,
-      validatedInputs: null,
-      output: null,
-      validatedOutput: null,
-      stream: false,
-      outputStream: null,
-      strategy,
-      trace: null,
-      // D-19: callWithTrace shares call() semantics modulo return shape, so the
-      // version hint must reach the pipeline context (e.g. registry version
-      // resolution) identically to call().
-      versionHint: versionHint ?? null,
-    };
-
-    try {
-      const [output, trace] = await this._pipelineEngine.run(strategy, pipelineCtx);
-      return [(output ?? {}) as Record<string, unknown>, trace];
-    } catch (exc) {
-      // Spec D-19/D-20/D-22: `callWithTrace` MUST share `call()`'s error
-      // semantics — same on_error chain, same cancellation short-circuit,
-      // same MiddlewareChainError unwrap. The trace is the observable record
-      // of execution, including any middleware recovery, not a sanitized
-      // projection. (Closes A-D-EXEC-004; mirrors Python
-      // `call_async_with_trace`.)
-      if (exc instanceof ExecutionCancelledError) throw exc;
-
-      const unwrapped =
-        exc instanceof PipelineStepError ? (exc.cause instanceof Error ? exc.cause : exc) : exc;
-      // D-20: step-wrapped cancellation bypasses on_error here too.
-      if (unwrapped instanceof ExecutionCancelledError) throw unwrapped;
-      const ctxObj = pipelineCtx.context;
-      const underlying =
-        unwrapped instanceof MiddlewareChainError ? unwrapped.original : (unwrapped as Error);
-      const wrapped = propagateError(underlying, moduleId, ctxObj);
-
-      const executedMw = pipelineCtx.executedMiddlewares;
-      if (executedMw && executedMw.length > 0) {
-        const recovery = await this._middlewareManager.executeOnError(
-          moduleId,
-          pipelineCtx.inputs,
-          wrapped as Error,
-          ctxObj,
-          executedMw as Middleware[],
-        );
-        if (recovery !== null && !(recovery instanceof RetrySignal)) {
-          // RetrySignal is intentionally not honoured in the trace variant
-          // (D-19 leaves retry-loop semantics to `call()`); a non-null
-          // recovery dict counts as a successful middleware repair and is
-          // returned alongside the trace already captured in pipelineCtx.
-          const trace = (pipelineCtx.trace ?? null) as unknown as PipelineTrace;
-          return [recovery, trace];
-        }
-      }
-      throw wrapped;
-    } finally {
-      if (pipelineCtx.context.cancelToken !== ctx.cancelToken)
-        pipelineCtx.context.cancelToken?.dispose();
-    }
+    return this._callWithTrace(moduleId, inputs, context, options?.strategy ?? this._strategy, versionHint);
   }
 
   /**
@@ -1297,7 +1296,7 @@ export class Executor {
         }
       }
     } finally {
-      if (pipeCtx.context.cancelToken !== ctx.cancelToken) pipeCtx.context.cancelToken?.dispose();
+      this._finishCallContext(pipeCtx.context, ctx);
     }
   }
 
@@ -1480,7 +1479,7 @@ export class Executor {
         const modWithPreflight = mod as { preflight?: Module['preflight'] };
         if (typeof modWithPreflight.preflight === 'function') {
           try {
-            const preflightWarnings = modWithPreflight.preflight(effectiveInputs, pipeCtx.context);
+            const preflightWarnings = await modWithPreflight.preflight(effectiveInputs, pipeCtx.context);
             if (Array.isArray(preflightWarnings) && preflightWarnings.length > 0) {
               checks.push({
                 check: Executor.MODULE_PREFLIGHT_CHECK,

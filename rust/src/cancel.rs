@@ -154,6 +154,10 @@ impl CancelToken {
         }
     }
 
+    pub(crate) fn invocation_scope(&self) -> std::sync::Weak<AtomicBool> {
+        Arc::downgrade(&self.cancelled)
+    }
+
     /// Derive an independently cancellable token that observes its parent.
     #[must_use]
     pub fn child(&self) -> Self {

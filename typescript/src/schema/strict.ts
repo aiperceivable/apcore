@@ -2,6 +2,7 @@
  * Strict mode conversion for JSON Schemas (Algorithm A23).
  */
 
+import { compareCodePoints } from '../utils/compare-code-points.js';
 import { deepCopy } from '../utils/index.js';
 
 export function toStrictSchema(schema: Record<string, unknown>): Record<string, unknown> {
@@ -110,7 +111,12 @@ function convertToStrict(node: unknown): void {
     const optionalNames = allNames.filter((n) => !existingRequired.has(n));
 
     for (const name of optionalNames) {
-      const prop = properties[name] as Record<string, unknown>;
+      const schema = properties[name];
+      if (typeof schema === 'boolean') {
+        properties[name] = { anyOf: [schema, { type: 'null' }] };
+        continue;
+      }
+      const prop = schema as Record<string, unknown>;
       const constrained = ['enum', 'const', '$ref', 'allOf', 'anyOf', 'oneOf', 'not', 'if']
         .some((key) => key in prop);
       if (!('type' in prop) || constrained) {
@@ -124,7 +130,7 @@ function convertToStrict(node: unknown): void {
       }
     }
 
-    obj['required'] = [...allNames].sort();
+    obj['required'] = allNames.sort(compareCodePoints);
   }
 
   if ('properties' in obj && typeof obj['properties'] === 'object' && obj['properties'] !== null) {

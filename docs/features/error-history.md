@@ -17,7 +17,7 @@ Related pages: [Observability](./observability.md) · [Metrics and Usage](./metr
 - **Persistence.** Each recorded entry is also saved to the collector's [`StorageBackend`](./metrics-and-usage.md#pluggable-storage-backends) under the namespace `error_history`, keyed by fingerprint (D-113).
 - **Thread safety.** All operations are safe to call concurrently; `record` never raises, because it runs inside error handling.
 
-All three SDKs implement the eviction with a min-heap keyed on `last_occurred` (with lazy deletion of entries refreshed by deduplication) plus a per-module index, which makes eviction O(log N). That is an implementation choice, not part of the protocol: any structure that evicts the same entries is conformant.
+The SDKs use a min-heap keyed on `last_occurred` and a per-module index. Repeated errors refresh the eviction order. The heap's capacity stays proportional to the configured history size.
 
 ## Configuration
 

@@ -1,9 +1,36 @@
 import { describe, it, expect, vi } from 'vitest';
 import { EventEmitter, createEvent } from '../src/events/emitter.js';
 import type { ApCoreEvent, EventSubscriber } from '../src/events/emitter.js';
+import { CircuitBreakerWrapper } from '../src/events/circuit-breaker.js';
 import { StdoutSubscriber } from '../src/events/subscribers.js';
 
 describe('Event delivery semantics (#61)', () => {
+  it('retries a wrapped subscriber and forwards exhausted delivery to its observer and dead-letter subscribers', async () => {
+    const emitter = new EventEmitter();
+    const failure = new Error('test delivery failed');
+    const deliver = vi.fn(async () => { throw failure; });
+    const onFailure = vi.fn();
+    const deadLetters: ApCoreEvent[] = [];
+    emitter.subscribe(new CircuitBreakerWrapper({
+      subscriberId: 'flaky',
+      eventPattern: 'test.event',
+      retry: { maxAttempts: 2, initialBackoffMs: 0 },
+      onEvent: deliver,
+      onFailure,
+    }, emitter));
+    emitter.subscribe({
+      eventPattern: 'apcore.event.delivery_failed',
+      onEvent: event => { deadLetters.push(event); },
+    });
+    const original = createEvent('test.event', null, 'info', {});
+    emitter.emit(original);
+    await emitter.flush();
+    expect(deliver).toHaveBeenCalledTimes(2);
+    expect(onFailure).toHaveBeenCalledWith(original, failure, 2);
+    expect(deadLetters).toHaveLength(1);
+    expect(deadLetters[0].data).toMatchObject({ subscriber_id: 'flaky', attempt_count: 2 });
+  });
+
   describe('eventPattern filtering', () => {
     it('subscriber with eventPattern receives only matching events', async () => {
       const emitter = new EventEmitter();

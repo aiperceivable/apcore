@@ -343,7 +343,7 @@ describe('§6.1.8 the governance projection', () => {
     // `redactedInputs` carries the values the key rules leave alone, and is
     // redacted for logging, not shaped for a decision. Reusing it as the
     // governance input would put values into the decision path.
-    registry.register('cli.git_push', {
+    vi.spyOn(registry, 'get').mockReturnValue({
       outputSchema: PermissiveOutput,
       annotations: createAnnotations(),
       description: 'schema-less',

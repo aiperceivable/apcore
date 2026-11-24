@@ -157,9 +157,8 @@ class ErrorHistory:
       _module_index: module_id → deque[entry]    O(1) module get; O(1) popleft eviction
       _heap: min-heap (last_occurred, seq, entry) O(log N) eviction of oldest by last_seen_at
 
-    Heap note: lazy deletion is used — stale heap entries (from dedup timestamp refreshes)
-    are skipped on pop. The heap may grow to O(total_records) in a high-dedup workload;
-    it is bounded in practice by max_total_entries × dedup_factor.
+    Stale records from deduplication and per-module eviction are skipped on pop.
+    Periodic compaction keeps the heap bounded by twice the live history size.
 
     Deduplication is keyed on SHA-256(code:module_id:normalize(message)) so ephemeral
     values in messages (UUIDs, timestamps, large integers) do not create duplicate entries.
@@ -254,6 +253,11 @@ class ErrorHistory:
                 self._evict_module(module_id)
                 self._evict_total()
                 entry_to_notify = entry
+            if len(self._heap) > 2 * len(self._fp_index):
+                self._heap = [
+                    (item.last_occurred, self._order[fp], item) for fp, item in self._fp_index.items()
+                ]
+                heapq.heapify(self._heap)
         # Notify store outside the internal lock to avoid lock-ordering issues.
         self._store.record_error(entry_to_notify)
         if self._storage is not None:
@@ -311,7 +315,7 @@ class ErrorHistory:
         """Return all entries sorted by last_occurred, newest first."""
         with self._lock:
             all_entries = list(self._fp_index.values())
-        all_entries.sort(key=lambda e: (e.last_occurred, self._order.get(e.fingerprint, 0)), reverse=True)
+            all_entries.sort(key=lambda e: (e.last_occurred, self._order[e.fingerprint]), reverse=True)
         if limit is not None:
             all_entries = all_entries[:limit]
         return all_entries
@@ -325,6 +329,8 @@ class ErrorHistory:
             evicted = module_entries.popleft()
             self._fp_index.pop(evicted.fingerprint, None)
             self._order.pop(evicted.fingerprint, None)
+        if not module_entries:
+            self._module_index.pop(module_id, None)
 
     def _evict_total(self) -> None:
         """Evict the oldest entry (by last_occurred) until total is within limit."""
@@ -334,9 +340,9 @@ class ErrorHistory:
     def _pop_oldest(self) -> None:
         """Pop the oldest live entry from the heap and remove it from all indexes."""
         while self._heap:
-            ts, _, entry = heapq.heappop(self._heap)
+            _, sequence, entry = heapq.heappop(self._heap)
             # Skip stale heap entries: fingerprint evicted already, or refreshed by dedup.
-            if entry.fingerprint in self._fp_index and entry.last_occurred == ts:
+            if self._order.get(entry.fingerprint) == sequence:
                 self._fp_index.pop(entry.fingerprint, None)
                 self._order.pop(entry.fingerprint, None)
                 module_entries = self._module_index.get(entry.module_id)

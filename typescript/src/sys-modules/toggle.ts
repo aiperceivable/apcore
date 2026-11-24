@@ -15,6 +15,7 @@ import type { Context } from '../context.js';
 import type { AuditStore } from './audit.js';
 import { buildAuditEntry, extractAuditIdentity } from './audit.js';
 import type { OverridesStore } from './overrides.js';
+import { persistOverride } from './override-update.js';
 
 /**
  * Toggle state container. Tracks which modules are disabled.
@@ -141,39 +142,10 @@ export class ToggleFeatureModule {
     console.warn(`[apcore:control] Feature toggled: module_id=${moduleId} enabled=${enabled} reason=${reason}`);
 
     if (this._overridesStore !== null) {
-      this._persistToggleOverride(moduleId, enabled);
+      persistOverride(this._overridesStore, `toggle.${moduleId}`, enabled);
     }
 
     return { success: true, module_id: moduleId, enabled };
-  }
-
-  private _persistToggleOverride(moduleId: string, enabled: boolean): void {
-    const store = this._overridesStore!;
-    const overrideKey = `toggle.${moduleId}`;
-    try {
-      const loaded = store.load();
-      if (loaded !== null && typeof (loaded as { then?: unknown }).then === 'function') {
-        (loaded as Promise<Record<string, unknown>>)
-          .then((existing) => {
-            existing[overrideKey] = enabled;
-            return store.save(existing);
-          })
-          .catch((err: unknown) => {
-            console.warn(`[apcore:control] Failed to persist toggle override for '${moduleId}':`, err);
-          });
-        return;
-      }
-      const existing = loaded as Record<string, unknown>;
-      existing[overrideKey] = enabled;
-      const saveResult = store.save(existing);
-      if (saveResult !== undefined && typeof (saveResult as { then?: unknown }).then === 'function') {
-        (saveResult as Promise<void>).catch((err: unknown) => {
-          console.warn(`[apcore:control] Failed to persist toggle override for '${moduleId}':`, err);
-        });
-      }
-    } catch (err) {
-      console.warn(`[apcore:control] Failed to persist toggle override for '${moduleId}':`, err);
-    }
   }
 
   private _validateInputs(inputs: Record<string, unknown>): { moduleId: string; enabled: boolean; reason: string } {

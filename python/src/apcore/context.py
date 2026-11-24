@@ -11,6 +11,8 @@ from typing import TYPE_CHECKING, Any, Generic, Mapping, Protocol, TypeVar, runt
 from apcore.cancel import CancelToken
 
 if TYPE_CHECKING:
+    from contextlib import AsyncExitStack
+
     from apcore.observability.context_logger import ContextLogger
     from apcore.trace_context import TraceParent
 
@@ -167,6 +169,7 @@ class Context(Generic[T]):
     # `arguments` condition unevaluable rather than vacuously true (§6.1.1).
     # Transient like `executor` and `services`: not serialized.
     governance_projection: GovernanceProjection | None = field(default=None, repr=False)
+    _execution_scope: AsyncExitStack | None = field(default=None, init=False, repr=False, compare=False)
 
     @classmethod
     def create(

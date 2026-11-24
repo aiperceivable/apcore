@@ -1166,17 +1166,22 @@ async fn run_task(
                         // it captures the wall-clock of the first execution and
                         // matches the Python reference behaviour so cross-language
                         // TaskInfo snapshots remain comparable mid-retry.
-                        if let Err(e) = store.save(&info).await {
-                            warn!(task_id = %task_id, "retry state save failed: {e}");
+                        match store.save(&info).await {
+                            Ok(()) => {
+                                debug!(
+                                    task_id = %task_id,
+                                    attempt = info.retry_count,
+                                    delay_ms,
+                                    "scheduling retry"
+                                );
+                                tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+                                continue;
+                            }
+                            Err(e) => {
+                                warn!(task_id = %task_id, "retry state save failed: {e}");
+                                info.retry_count -= 1;
+                            }
                         }
-                        debug!(
-                            task_id = %task_id,
-                            attempt = info.retry_count,
-                            delay_ms,
-                            "scheduling retry"
-                        );
-                        tokio::time::sleep(Duration::from_millis(delay_ms)).await;
-                        continue;
                     }
                 }
                 info.status = TaskStatus::Failed;
@@ -1341,6 +1346,77 @@ mod tests {
         let registry = Arc::new(Registry::default());
         let config = Arc::new(crate::config::Config::default());
         Arc::new(Executor::new(registry, config))
+    }
+
+    #[tokio::test]
+    async fn failed_retry_state_write_stops_background_execution() {
+        #[derive(Default)]
+        struct FailingRetryWrite {
+            store: InMemoryTaskStore,
+            attempts: std::sync::atomic::AtomicU32,
+        }
+
+        #[async_trait]
+        impl TaskStore for FailingRetryWrite {
+            async fn save(&self, task: &TaskInfo) -> Result<(), ModuleError> {
+                if task.status == TaskStatus::Pending && task.retry_count > 0 {
+                    return Err(ModuleError::new(
+                        ErrorCode::GeneralInternalError,
+                        "retry state unavailable",
+                    ));
+                }
+                if task.status == TaskStatus::Running {
+                    self.attempts.fetch_add(1, Ordering::SeqCst);
+                }
+                self.store.save(task).await
+            }
+
+            async fn get(&self, id: &str) -> Result<Option<TaskInfo>, ModuleError> {
+                self.store.get(id).await
+            }
+
+            async fn list(&self, status: Option<TaskStatus>) -> Result<Vec<TaskInfo>, ModuleError> {
+                self.store.list(status).await
+            }
+
+            async fn delete(&self, id: &str) -> Result<(), ModuleError> {
+                self.store.delete(id).await
+            }
+
+            async fn list_expired(&self, before: f64) -> Result<Vec<TaskInfo>, ModuleError> {
+                self.store.list_expired(before).await
+            }
+        }
+
+        let store = Arc::new(FailingRetryWrite::default());
+        let manager = AsyncTaskManager::with_store(make_executor(), 1, 100, store.clone());
+        let task_id = manager
+            .submit_with_retry(
+                "missing.module",
+                serde_json::json!({}),
+                None,
+                Some(RetryConfig {
+                    max_retries: 1,
+                    retry_delay_ms: 0,
+                    ..Default::default()
+                }),
+            )
+            .await
+            .unwrap();
+        let task = tokio::time::timeout(Duration::from_millis(100), async {
+            loop {
+                let task = store.get(&task_id).await.unwrap().unwrap();
+                if !task.status.is_active() {
+                    break task;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(task.status, TaskStatus::Failed);
+        assert_eq!(task.retry_count, 0);
+        assert_eq!(store.attempts.load(Ordering::SeqCst), 1);
     }
 
     struct LateCleanupModule(Arc<tokio::sync::Notify>);

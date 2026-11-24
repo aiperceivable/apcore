@@ -161,8 +161,7 @@ Level 2 adds extension points, async modules, the control-plane system modules, 
 | Component | Responsibility | Reference Section |
 |------|------|---------|
 | **Extension point framework** | Six extension points (`discoverer`, `middleware`, `acl`, `span_exporter`, `module_validator`, `approval_handler`) via `ExtensionManager` with `register()`, `get()`, `get_all()`, `unregister()`, `apply()`, `list_points()`. An unknown point is `GENERAL_INVALID_INPUT`; a known point holding nothing is not an error | protocol-spec §11.3, §11.6 |
-| **Extension point chain** | `first_success`, `all`, `fallback` strategies | protocol-spec §11.3 |
-| **Extension loading order** | `load_extensions()` algorithm | protocol-spec §11.7 |
+| **Extension loading order** | `apply()` installs each registered implementation in registration order for multi-valued points (D-143, A16) | protocol-spec §11.7 |
 | **Async modules** | `submit()`, `get_status()`, `cancel()`, `list_tasks()` via `AsyncTaskManager` | protocol-spec §5.8 |
 | **Async state machine** | State transition rules (PENDING → RUNNING → COMPLETED/FAILED/CANCELLED) via `TaskStatus` enum | protocol-spec §5.8 |
 | **Middleware state machine** | Complete state transitions (init → before → execute → after → done, with error branches) | protocol-spec §11.5 |
@@ -307,11 +306,10 @@ apcore Conformant — Level 2 (Full)
 
 ## 7. Known Deviations
 
-The following requirements are not met by the current SDK releases (apcore-python, apcore-typescript and apcore-rust). Each applies to all three unless the row says otherwise. Implementations declaring conformance **MUST** list the ones that apply in `known_deviations`.
+The following requirements are not met by the SDK implementations in this repository. Each applies to all three unless the row says otherwise. Implementations declaring conformance **MUST** list the ones that apply in `known_deviations`.
 
 | Requirement | Spec reference | Level | Current status |
 |---|---|---|---|
-| Version negotiation on load | protocol-spec §13.3 | Level 2 MUST | `negotiate_version()` is exported as a function in all three SDKs, but no SDK calls it when loading configuration or schema files. |
 | Schema migration | protocol-spec §13.4 | Level 2 SHOULD | `migrate_schema()` is not implemented. |
 | Module isolation | protocol-spec §5.5 | Level 2 SHOULD | Process- or container-level isolation is not implemented; modules run in the host process. |
 | Multi-version coexistence | protocol-spec §5.4 | Level 2 SHOULD | apcore-python resolves a `version_hint` on `Registry.get`. apcore-typescript accepts the hint, ignores it, and warns that it is deprecated. apcore-rust takes no hint. |
@@ -320,7 +318,7 @@ The following requirements are not met by the current SDK releases (apcore-pytho
 
 ## 8. Conformance Test Fixtures
 
-The repository ships **93 cross-language fixture files** under `conformance/fixtures/` covering **1126 test cases**. `conformance-integrity` checks these two numbers, §8.1's per-fixture counts and its Total row against the fixtures themselves. Each fixture is consumed by all three SDK test runners (§5.2). An SDK declaring a conformance level **MUST** pass every fixture whose tested feature is required at that level (§5.3).
+The repository ships **94 cross-language fixture files** under `conformance/fixtures/` covering **1140 test cases**. `conformance-integrity` checks these two numbers, §8.1's per-fixture counts and its Total row against the fixtures themselves. Each fixture is consumed by all three SDK test runners (§5.2). An SDK declaring a conformance level **MUST** pass every fixture whose tested feature is required at that level (§5.3).
 
 ### 8.1 Fixture Inventory
 
@@ -352,12 +350,13 @@ The repository ships **93 cross-language fixture files** under `conformance/fixt
 | [`env_prefix_dispatch`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/env_prefix_dispatch.json) | 4 | Namespace-mode env dispatch: `APCORE` reserved for `apcore`, one namespace per variable by longest prefix, unmatched `APCORE_` variables belong to `apcore` (spec §9.8.2, D-146) |
 | [`config_key_governance`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/config_key_governance.json) | 8 | Configuration key surface governance (§9.1 / §9.3 / §9.15.3) |
 | [`config_path_typed_keys`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/config_path_typed_keys.json) | 8 | Closed set of path-typed configuration keys (§9.2.1) |
-| [`config_project_root`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/config_project_root.json) | 13 | Project-root path resolution across discovery tiers and explicit loads, including user-level configurations, a symlinked file entry, absolute paths, and working-directory changes after load (§9.2.2) |
+| [`config_project_root`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/config_project_root.json) | 15 | Project-root path resolution across discovery tiers and explicit loads, including symlinked entries, working-directory changes, numeric environment paths, and directory qualifiers (§9.2.2) |
 | [`context_create`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/context_create.json) | 15 | `Context.create()` canonical 6-parameter factory and executor binding |
 | [`context_serialization`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/context_serialization.json) | 8 | Context JSON round-trip (spec §5.7) |
 | [`context_trace_parent`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/context_trace_parent.json) | 10 | `Context.create` trace_parent input handling (spec §10.5) |
 | [`contextual_audit`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/contextual_audit.json) | 10 | Contextual audit trail for control-plane modules (D-35) |
 | [`dependency_version_constraints`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/dependency_version_constraints.json) | 18 | Dependency version constraint enforcement (spec §5.3, §5.15.2) |
+| [`document_version_negotiation`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/document_version_negotiation.json) | 8 | Configuration and module-schema file compatibility (A14, spec §13.3) |
 | [`error_codes`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/error_codes.json) | 19 | Error code collision detection (Algorithm A17, spec §8.4) |
 | [`error_details_shape`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/error_details_shape.json) | 5 | `SCHEMA_VALIDATION_ERROR` details items are `{path, keyword, message}` with a JSON Pointer path; `details` keys are snake_case (spec §8.1, D-149) |
 | [`ephemeral_modules`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/ephemeral_modules.json) | 7 | `ephemeral.*`: one audit event per register / unregister under the standard bootstrap, the bare ID `ephemeral`, `INVALID_MODULE_ID` rejections (spec §2.5.1, D-148) |
@@ -387,7 +386,7 @@ The repository ships **93 cross-language fixture files** under `conformance/fixt
 | [`pattern_matching`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/pattern_matching.json) | 12 | ACL / `match_modules` module-ID pattern matching (Algorithm A08) |
 | [`extension_point_lookup`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/extension_point_lookup.json) | 12 | An unknown extension point is an error, an empty one is not (D-108) |
 | [`export_profiles`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/export_profiles.json) | 5 | Export profiles: `anthropic` strips every `x-*` keyword and keeps properties named `x-…`; `mcp` carries `requiresApproval` / `streaming` in `_meta`, never in `annotations` (spec §4.17, Appendix D.1, D-140) |
-| [`glob_matching`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/glob_matching.json) | 30 | Portable glob matching for pattern-valued values (Algorithm A25, §9.2.3) |
+| [`glob_matching`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/glob_matching.json) | 32 | Portable glob matching for pattern-valued values (Algorithm A25, §9.2.3) |
 | [`pipeline_failfast_config`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/pipeline_failfast_config.json) | 7 | Pipeline configuration fail-fast (spec §5.16) |
 | [`pipeline_hardening`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/pipeline_hardening.json) | 7 | Pipeline execution hardening: fail-fast, replace-step, run_until, a step timeout raises `MODULE_TIMEOUT` (spec §5.16, D-142) |
 | [`pipeline_section_wiring`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/pipeline_section_wiring.json) | 6 | A configured `pipeline:` section reaches the running strategy (§5.16 requirements 6 and 7, D-72) |
@@ -418,8 +417,8 @@ The repository ships **93 cross-language fixture files** under `conformance/fixt
 | [`trace_context`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/trace_context.json) | 8 | W3C TraceContext alignment (spec §10.5) |
 | [`usage_contract`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/usage_contract.json) | 11 | `system.usage.*` value semantics no schema can assert (spec §6.7.1) |
 | [`usage_exporter`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/usage_exporter.json) | 3 | `UsageExporter` push interface (D-55) |
-| [`version_negotiation`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/version_negotiation.json) | 10 | Version negotiation (Algorithm A14) |
-| **Total** | **1126** | **93 fixtures** |
+| [`version_negotiation`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/version_negotiation.json) | 12 | Version negotiation (Algorithm A14) |
+| **Total** | **1140** | **94 fixtures** |
 
 ### 8.2 Loading Fixtures from a Test Runner
 

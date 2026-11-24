@@ -44,6 +44,19 @@ describe('ErrorCodeRegistry', () => {
     expect(() => reg.register('my.module', new Set(['CUSTOM_CODE']))).not.toThrow();
   });
 
+  it('atomically replaces registrations and releases codes removed by the replacement', () => {
+    const registry = new ErrorCodeRegistry();
+    registry.register('module.a', new Set(['OLD_CODE', 'SHARED_CODE']));
+    registry.register('module.b', new Set(['OTHER_CODE']));
+    expect(() => registry.register('module.a', new Set(['OTHER_CODE']))).toThrow(ErrorCodeCollisionError);
+    expect(registry.allCodes.has('OLD_CODE')).toBe(true);
+    registry.register('module.a', new Set(['SHARED_CODE', 'NEW_CODE']));
+    expect(() => registry.register('module.b', new Set(['OTHER_CODE', 'OLD_CODE']))).not.toThrow();
+    registry.register('module.a', new Set());
+    expect(registry.allCodes.has('SHARED_CODE')).toBe(false);
+    expect(registry.allCodes.has('NEW_CODE')).toBe(false);
+  });
+
   it('unregisters codes', () => {
     const reg = new ErrorCodeRegistry();
     reg.register('my.module', new Set(['CUSTOM_CODE']));

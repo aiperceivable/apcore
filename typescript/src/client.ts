@@ -111,10 +111,9 @@ export class APCore {
 
   constructor(options?: APCoreOptions) {
     this.config = options?.config ?? null;
-    this._toggleState = options?.toggleState ?? new ToggleState();
-
     this.metricsCollector = options?.metricsCollector ?? null;
     const prebuiltExecutor = options?.executor;
+    this._toggleState = prebuiltExecutor?.toggleState ?? options?.toggleState ?? new ToggleState();
 
     // CLI-1: a supplied Executor brings its own Registry, and that is the one
     // this client must expose. Building a second one here meant `register()`

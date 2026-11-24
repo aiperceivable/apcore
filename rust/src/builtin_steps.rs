@@ -314,9 +314,7 @@ impl Step for BuiltinModuleLookup {
         // ERR-004: the guidance-bearing builder — the peers attach a default
         // `ai_guidance` to MODULE_NOT_FOUND on the error class, so every raise
         // site carries it.
-        let module = registry
-            .get(&ctx.module_id)?
-            .ok_or_else(|| ModuleError::module_not_found(&ctx.module_id))?;
+        let (module, lease) = registry.acquire_execution(&ctx.module_id)?;
         // Check if the module is disabled before proceeding. Two sources:
         //   1. The registry descriptor's `enabled` flag (direct registry-level
         //      disable).
@@ -334,6 +332,7 @@ impl Step for BuiltinModuleLookup {
             return Err(ModuleError::module_disabled(&ctx.module_id));
         }
         ctx.module = Some(module.clone());
+        ctx.module_lease = Some(lease);
 
         // PROTOCOL_SPEC §6.1.8 rule 1: compute the governance projection of the
         // call's arguments HERE, at Step 3, so it is available to the ACL check
@@ -1082,38 +1081,45 @@ impl Step for BuiltinMiddlewareBefore {
             None => return Ok(StepResult::continue_step()),
         };
 
-        let (modified_inputs, executed) = match middleware_manager
-            .execute_before(&ctx.module_id, ctx.inputs.clone(), &ctx.context)
+        let snapshot = ctx
+            .middleware_snapshot
+            .get_or_insert_with(|| middleware_manager.execution_snapshot());
+        let (modified_inputs, executed) =
+            match crate::middleware::manager::MiddlewareManager::execute_before_snapshot(
+                snapshot,
+                &ctx.module_id,
+                ctx.inputs.clone(),
+                &ctx.context,
+            )
             .await
-        {
-            Ok((inputs, executed)) => (inputs, executed),
-            Err(e) => {
-                // Recover the list of middlewares that ran during execute_before
-                // from the MiddlewareChainError details so on_error runs over
-                // exactly those (mirrors Python builtin_steps.py:483 setting
-                // ctx.executed_middlewares = exc.executed_middlewares and TS
-                // builtin-steps.ts:442) — sync finding A-D-01. Without this the
-                // recovery middleware's on_error is skipped (empty &[]) and the
-                // executor-level on_error/RetrySignal loop is bypassed.
-                let executed: Vec<usize> = e
-                    .details
-                    .get("executed_middlewares")
-                    .and_then(|v| serde_json::from_value(v.clone()).ok())
-                    .unwrap_or_default();
-                ctx.executed_middlewares.clone_from(&executed);
-                // A-D-010 / A-D-012: do NOT run step-level on_error recovery
-                // here. Record which middlewares ran (above) and propagate the
-                // error so the executor-level loop is the SOLE on_error site —
-                // it runs `execute_on_error_outcome` over `executed` and honors
-                // both Recovery and Retry. Step-level `execute_on_error` mapped
-                // RetrySignal→None (dropping retries) and, combined with the
-                // executor pass, fired on_error twice. Mirrors apcore-python
-                // (chain errors store executed_middlewares + raise) and
-                // apcore-typescript.
-                let _ = &middleware_manager; // retained for the Ok-path borrow above
-                return Err(e);
-            }
-        };
+            {
+                Ok((inputs, executed)) => (inputs, executed),
+                Err(e) => {
+                    // Recover the list of middlewares that ran during execute_before
+                    // from the MiddlewareChainError details so on_error runs over
+                    // exactly those (mirrors Python builtin_steps.py:483 setting
+                    // ctx.executed_middlewares = exc.executed_middlewares and TS
+                    // builtin-steps.ts:442) — sync finding A-D-01. Without this the
+                    // recovery middleware's on_error is skipped (empty &[]) and the
+                    // executor-level on_error/RetrySignal loop is bypassed.
+                    let executed: Vec<usize> = e
+                        .details
+                        .get("executed_middlewares")
+                        .and_then(|v| serde_json::from_value(v.clone()).ok())
+                        .unwrap_or_default();
+                    ctx.executed_middlewares.clone_from(&executed);
+                    // A-D-010 / A-D-012: do NOT run step-level on_error recovery
+                    // here. Record which middlewares ran (above) and propagate the
+                    // error so the executor-level loop is the SOLE on_error site —
+                    // it runs `execute_on_error_outcome` over `executed` and honors
+                    // both Recovery and Retry. Step-level `execute_on_error` mapped
+                    // RetrySignal→None (dropping retries) and, combined with the
+                    // executor pass, fired on_error twice. Mirrors apcore-python
+                    // (chain errors store executed_middlewares + raise) and
+                    // apcore-typescript.
+                    return Err(e);
+                }
+            };
         ctx.inputs = modified_inputs;
         ctx.executed_middlewares = executed;
         Ok(StepResult::continue_step())
@@ -1253,7 +1259,9 @@ impl Step for BuiltinExecute {
             let token = context.cancel_token.clone();
             // Read the retry-safety flag before `module` moves into the task.
             let retryable = module.annotations().idempotent;
+            let lease = ctx.module_lease.clone();
             let execution = async move {
+                let _lease = lease;
                 let result = module.execute(inputs, &context).await;
                 if let Err(error) = &result {
                     tracing::debug!(
@@ -1379,9 +1387,17 @@ impl Step for BuiltinMiddlewareAfter {
             return Ok(StepResult::continue_step());
         };
 
-        match middleware_manager
-            .execute_after(&ctx.module_id, ctx.inputs.clone(), output, &ctx.context)
-            .await
+        let snapshot = ctx
+            .middleware_snapshot
+            .get_or_insert_with(|| middleware_manager.execution_snapshot());
+        match crate::middleware::manager::MiddlewareManager::execute_after_snapshot(
+            snapshot,
+            &ctx.module_id,
+            ctx.inputs.clone(),
+            output,
+            &ctx.context,
+        )
+        .await
         {
             Ok(modified_output) => {
                 ctx.output = Some(modified_output);
@@ -1613,6 +1629,46 @@ mod tests {
                 "timeout={timeout}: module future outlived its owner"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn safe_unregister_waits_for_timed_out_module_to_finish() {
+        let started = Arc::new(tokio::sync::Notify::new());
+        let finish = Arc::new(tokio::sync::Notify::new());
+        let registry = Arc::new(crate::registry::registry::Registry::new());
+        registry
+            .register_module(
+                "pending",
+                Box::new(PendingModule {
+                    started: started.clone(),
+                    finish: finish.clone(),
+                    cleaned: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                }),
+            )
+            .unwrap();
+        let mut config = crate::config::Config::default();
+        config.set("executor.default_timeout", serde_json::json!(20));
+        let executor = crate::executor::Executor::new(registry.clone(), Arc::new(config));
+        let invocation = tokio::spawn(async move {
+            executor
+                .call("pending", serde_json::json!({}), None, None)
+                .await
+        });
+        started.notified().await;
+        assert_eq!(
+            invocation.await.unwrap().unwrap_err().code,
+            ErrorCode::ModuleTimeout
+        );
+
+        let drain = registry.safe_unregister("pending", 5000);
+        tokio::pin!(drain);
+        assert!(tokio::time::timeout(Duration::from_millis(5), &mut drain)
+            .await
+            .is_err());
+        assert!(registry.is_draining("pending"));
+        finish.notify_one();
+        assert!(drain.await.unwrap());
+        assert!(registry.get("pending").unwrap().is_none());
     }
 
     fn empty_context() -> PipelineContext {

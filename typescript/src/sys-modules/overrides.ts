@@ -15,6 +15,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as yaml from 'js-yaml';
 import { appendFilesystemPath } from '../utils/filesystem-path.js';
+import { readOverridesForUpdate } from './override-update.js';
 
 /**
  * Pluggable persistence for runtime config & toggle overrides.
@@ -78,26 +79,28 @@ export class FileOverridesStore implements OverridesStore {
   }
 
   load(): Record<string, unknown> {
-    if (!fs.existsSync(this._path)) return {};
+    try {
+      return this[readOverridesForUpdate]();
+    } catch (error) {
+      console.warn(`[apcore:overrides] Skipping overrides file '${this._path}':`, error);
+      return {};
+    }
+  }
+
+  [readOverridesForUpdate](): Record<string, unknown> {
     let raw: string;
     try {
       raw = fs.readFileSync(this._path, 'utf-8');
-    } catch (err) {
-      console.warn(`[apcore:overrides] Failed to read overrides file '${this._path}':`, err);
-      return {};
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return {};
+      throw error;
     }
-    if (raw.length === 0) return {};
-    try {
-      const parsed = yaml.load(raw);
-      if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
-        return { ...(parsed as Record<string, unknown>) };
-      }
-      console.warn(`[apcore:overrides] Overrides file '${this._path}' root is not a mapping; skipping`);
-      return {};
-    } catch (err) {
-      console.warn(`[apcore:overrides] Overrides file '${this._path}' is not valid YAML; skipping`, err);
-      return {};
+    const parsed: unknown = yaml.load(raw);
+    if (parsed == null) return {};
+    if (typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new TypeError('Overrides file root must be a mapping');
     }
+    return { ...parsed };
   }
 
   save(overrides: Record<string, unknown>): void {

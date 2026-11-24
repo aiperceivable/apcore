@@ -1,7 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, rmSync, mkdirSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { EventEmitter as NodeEventEmitter } from 'node:events';
+import type { FSWatcher } from 'node:fs';
+import { registryNodeFilesystem } from '../../src/registry/install-filesystem.js';
 import { Type } from '@sinclair/typebox';
 import { Registry, MAX_MODULE_ID_LENGTH } from '../../src/registry/registry.js';
 import { FunctionModule } from '../../src/decorator.js';
@@ -35,6 +38,50 @@ describe('Registry', () => {
     expect(registry.get('test.a')).toBe(mod);
     expect(registry.has('test.a')).toBe(true);
     expect(registry.count).toBe(1);
+  });
+
+  it('rejects malformed structural registration fields before publishing the module', () => {
+    const registry = new Registry();
+    expect(() => registry.register('test.invalid', { execute: () => ({}), inputSchema: 'invalid' }))
+      .toThrow(InvalidInputError);
+    expect(() => registry.register('test.invalid', { description: 'Missing execution hook' }))
+      .toThrow(InvalidInputError);
+    expect(() => registry.register('test.invalid', { description: 'Missing schemas', execute() { return {}; } }))
+      .toThrow(InvalidInputError);
+    expect(registry.get('test.invalid')).toBeNull();
+  });
+
+  it('rejects static-only schemas that instance execution would ignore', () => {
+    class StaticSchemaModule {
+      static inputSchema = Type.Object({});
+      static outputSchema = Type.Object({});
+      description = 'Schemas are declared on the constructor';
+      execute() { return {}; }
+    }
+    const registry = new Registry();
+    expect(() => registry.register('test.static', new StaticSchemaModule())).toThrow(InvalidInputError);
+  });
+
+  it('keeps internal modules invisible until asynchronous initialization completes', async () => {
+    const registry = new Registry();
+    let finish!: () => void;
+    const init = new Promise<void>((resolve) => { finish = resolve; });
+    const mod = Object.assign(createMod('system.test'), { onLoad: () => init });
+
+    const register = registry.registerInternal('system.test', mod);
+    expect(registry.get('system.test')).toBeNull();
+    finish();
+    await register;
+    expect(registry.get('system.test')).toBe(mod);
+  });
+
+  it('awaits initialization of modules supplied by a custom discoverer', async () => {
+    const registry = new Registry();
+    const mod = Object.assign(createMod('test.custom'), { onLoad: async () => {} });
+    registry.setDiscoverer({ discover: () => [{ moduleId: 'test.custom', module: mod }] });
+
+    await expect(registry.discover()).resolves.toBe(1);
+    expect(registry.get('test.custom')).toBe(mod);
   });
 
   it('get returns null for unknown module', () => {
@@ -1043,6 +1090,29 @@ describe('Registry discover() onLoad failure during _registerInOrder', () => {
     rmSync(tempDir, { recursive: true, force: true });
   });
 
+  it('skips modules with a failed required dependency and keeps optional dependents', async () => {
+    for (const id of ['primary', 'required', 'optional']) {
+      const hook = id === 'primary' ? "onLoad() { throw new Error('primary failed'); }," : '';
+      writeFileSync(join(tempDir, `${id}.js`), `export default {
+        execute() { return {}; }, description: '${id}',
+        inputSchema: { type: 'object' }, outputSchema: { type: 'object' }, ${hook}
+      };`);
+    }
+    writeFileSync(join(tempDir, 'required_meta.yaml'), 'dependencies:\n  - module_id: primary\n');
+    writeFileSync(join(tempDir, 'optional_meta.yaml'), 'dependencies:\n  - module_id: primary\n    optional: true\n');
+    const registry = new Registry({ extensionsDir: tempDir });
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await expect(registry.discover()).resolves.toBe(1);
+      expect(registry.moduleIds).toEqual(['optional']);
+      expect(warning).toHaveBeenCalledWith(
+        expect.stringContaining('required'), expect.objectContaining({ code: 'MODULE_LOAD_ERROR' }),
+      );
+    } finally {
+      warning.mockRestore();
+    }
+  });
+
   it('skips module and warns when onLoad throws during discover()', async () => {
     writeFileSync(
       join(tempDir, 'failload.js'),
@@ -1687,44 +1757,37 @@ describe('Registry hot reload (watch/unwatch)', () => {
     }
   });
 
-  it('D-80: a watched file change reaches a callback subscribed through on()', async () => {
-    // End-to-end over a real fs.watch: subscribe via the public API, touch a
-    // watched file, and require the notification to arrive. Without the fix
-    // the `on()` call itself throws, so this test cannot even reach the touch.
+  it('D-80: a watched file change unregisters and reports the exact discovered module', async () => {
+    for (const dir of ['first', 'second']) {
+      mkdirSync(join(tempDir, dir));
+      writeFileSync(join(tempDir, dir, 'echo.js'), `export default {
+        execute() { return {}; }, description: '${dir}',
+        inputSchema: { type: 'object' }, outputSchema: { type: 'object' },
+      };`);
+    }
     const registry = new Registry({ extensionsDir: tempDir });
-    const watchedFile = join(tempDir, 'watched.js');
-    writeFileSync(watchedFile, 'export const version = 1;\n');
+    await expect(registry.discover()).resolves.toBe(2);
+    const onChange = vi.fn();
+    registry.on('file_changed', onChange);
 
-    const mod = {
-      execute: async () => ({}),
-      description: 'Watched module',
-      inputSchema: { type: 'object' },
-      outputSchema: { type: 'object' },
-    };
-    registry.register('watched', mod);
-
-    const seen: Array<{ moduleId: string; payload: unknown }> = [];
-    registry.on('file_changed', (moduleId: string, payload: unknown) => {
-      seen.push({ moduleId, payload });
+    let notify!: (eventType: string, filename: string) => void;
+    const watcher = Object.assign(new NodeEventEmitter(), { close: vi.fn() });
+    const watch = vi.spyOn(registryNodeFilesystem.fs, 'watch').mockImplementation((_root, _opts, listener) => {
+      notify = listener as typeof notify;
+      return watcher as unknown as FSWatcher;
     });
-
-    await registry.watch();
     try {
-      // fs.watch delivery is asynchronous and platform-dependent; poll rather
-      // than sleeping a fixed amount, and re-touch in case the watcher was not
-      // yet armed when the first write landed.
-      const deadline = Date.now() + 5000;
-      while (seen.length === 0 && Date.now() < deadline) {
-        writeFileSync(watchedFile, `export const version = ${Date.now()};\n`);
-        await new Promise((resolve) => setTimeout(resolve, 100));
-      }
-      expect(seen.length).toBeGreaterThan(0);
-      expect(seen[0].moduleId).toBe('watched');
-      expect((seen[0].payload as { filePath: string }).filePath).toContain('watched.js');
+      await registry.watch();
+      notify('change', join('second', 'echo.js'));
+      await Promise.resolve();
+
+      expect(registry.moduleIds).toEqual(['first.echo']);
+      expect(onChange).toHaveBeenCalledWith('second.echo', { filePath: expect.stringContaining(join('second', 'echo.js')) });
     } finally {
       registry.unwatch();
+      watch.mockRestore();
     }
-  }, 15000);
+  });
 
   it('unwatch() is safe to call when not watching', () => {
     const registry = new Registry();
@@ -1740,30 +1803,16 @@ describe('Registry hot reload (watch/unwatch)', () => {
     registry.unwatch();
   });
 
-  it('_pathToModuleId maps a file path to a module ID correctly', () => {
-    const registry = new Registry();
-    const mod = {
-      execute: async () => ({}),
-      description: 'Test module',
-      inputSchema: { type: 'object' },
-      outputSchema: { type: 'object' },
-    };
-    registry.register('my_module', mod);
-    const result = (registry as any)._pathToModuleId('/some/path/my_module.ts');
-    expect(result).toBe('my_module');
-  });
+  it('matches a namespaced source by its discovered file path', async () => {
+    const filePath = join(realpathSync.native(tempDir), 'my_module.js');
+    writeFileSync(filePath, `export default {
+      execute() { return {}; }, description: 'Namespaced source',
+      inputSchema: { type: 'object' }, outputSchema: { type: 'object' },
+    };`);
+    const registry = new Registry({ extensionsDirs: [{ root: tempDir, namespace: 'ns' }] });
+    await expect(registry.discover()).resolves.toBe(1);
 
-  it('_pathToModuleId maps a namespaced module correctly', () => {
-    const registry = new Registry();
-    const mod = {
-      execute: async () => ({}),
-      description: 'Namespaced module',
-      inputSchema: { type: 'object' },
-      outputSchema: { type: 'object' },
-    };
-    registry.register('ns.my_module', mod);
-    const result = (registry as any)._pathToModuleId('/some/path/my_module.js');
-    expect(result).toBe('ns.my_module');
+    expect((registry as any)._pathToModuleId(filePath)).toBe('ns.my_module');
   });
 
   it('_pathToModuleId returns null for an unknown file', () => {
@@ -1779,25 +1828,22 @@ describe('Registry hot reload (watch/unwatch)', () => {
     expect(result).toBeNull();
   });
 
-  it('_handleFileDeletion unregisters a known module and calls onUnload exactly once', async () => {
-    const registry = new Registry();
-    let unloadCount = 0;
-    const mod = {
-      execute: async () => ({}),
-      description: 'Deletable module',
-      inputSchema: { type: 'object' },
-      outputSchema: { type: 'object' },
-      onUnload() { unloadCount += 1; },
-    };
-    registry.register('deletable', mod);
-    expect(registry.has('deletable')).toBe(true);
+  it('_handleFileDeletion unregisters a discovered module and calls onUnload once', async () => {
+    const registry = new Registry({ extensionsDir: tempDir });
+    const filePath = join(realpathSync.native(tempDir), 'deletable.js');
+    writeFileSync(filePath, `export default {
+      execute() { return {}; }, onUnload() {}, description: 'Deletable module',
+      inputSchema: { type: 'object' }, outputSchema: { type: 'object' },
+    };`);
+    await expect(registry.discover()).resolves.toBe(1);
+    const mod = registry.get('deletable') as { onUnload(): void };
+    const onUnload = vi.spyOn(mod, 'onUnload');
 
-    await (registry as any)._handleFileDeletion('/extensions/deletable.ts');
+    rmSync(filePath);
+    await (registry as any)._handleFileDeletion(filePath);
 
     expect(registry.has('deletable')).toBe(false);
-    // unregister() owns the onUnload call; a handler that also calls it
-    // releases the module's resources twice.
-    expect(unloadCount).toBe(1);
+    expect(onUnload).toHaveBeenCalledOnce();
   });
 
   it('_handleFileDeletion does nothing for an unknown file', () => {
@@ -1814,42 +1860,16 @@ describe('Registry hot reload (watch/unwatch)', () => {
     expect(registry.has('existing')).toBe(true);
   });
 
-  it('A-D-104: _handleFileChange unregisters the module and emits file_changed (TS event-only contract)', async () => {
-    // Per sync finding A-D-104, the TS SDK is event-only by design — see the
-    // JSDoc on Registry.watch(). Python re-imports, Rust re-discovers, but
-    // ES modules cannot be reliably evicted from Node's loader cache, so TS
-    // unregisters and emits 'file_changed' for consumers to re-register.
+  it('does not unload a programmatically registered module on a matching filename', async () => {
     const registry = new Registry();
-    let unloadCount = 0;
-    const mod = {
-      execute: async () => ({}),
-      description: 'Watched module',
-      inputSchema: { type: 'object' },
-      outputSchema: { type: 'object' },
-      onUnload() { unloadCount += 1; },
-    };
-    registry.register('watched', mod);
+    registry.register('watched', createMod('watched'));
+    const onChange = vi.fn();
+    registry.on('file_changed', onChange);
 
-    const events: Array<{ moduleId: string; payload: unknown }> = [];
-    // D-80: 'file_changed' IS a standard registry event and is subscribed to
-    // through the public `on()`. This test used to reach into `_callbacks`
-    // directly because `on()` rejected the name — which was the bug, not a
-    // testing convenience.
-    registry.on('file_changed', (id: string, payload: unknown) => {
-      events.push({ moduleId: id, payload });
-    });
+    await (registry as any)._handleFileChange('/extensions/watched.js');
 
-    await (registry as unknown as { _handleFileChange: (p: string) => Promise<void> })
-      ._handleFileChange('/extensions/watched.js');
-
-    // Module is unregistered (Python/Rust diverge: they would re-register).
-    expect(registry.has('watched')).toBe(false);
-    expect(unloadCount).toBe(1);
-
-    // file_changed event is emitted with the module ID and file path.
-    expect(events).toHaveLength(1);
-    expect(events[0].moduleId).toBe('watched');
-    expect((events[0].payload as { filePath: string }).filePath).toBe('/extensions/watched.js');
+    expect(registry.has('watched')).toBe(true);
+    expect(onChange).toHaveBeenCalledWith('watched', { filePath: '/extensions/watched.js' });
   });
 });
 

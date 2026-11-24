@@ -6,7 +6,6 @@
 // `open_threshold` consecutive failures and probing once via HALF_OPEN after
 // `recovery_window_ms`. Mirrors the Python `CircuitBreakerWrapper`.
 
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -16,8 +15,9 @@ use parking_lot::Mutex;
 use serde_json::json;
 
 use super::emitter::ApCoreEvent;
+use super::retry::EventRetryConfig;
 use super::subscribers::EventSubscriber;
-use crate::errors::ModuleError;
+use crate::errors::{ErrorCode, ModuleError};
 
 /// Circuit-breaker lifecycle state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -65,22 +65,52 @@ pub struct CircuitBreakerWrapper {
     timeout_ms: u64,
     open_threshold: u32,
     recovery_window_ms: u64,
-    state: Arc<Mutex<CircuitState>>,
-    consecutive_failures: AtomicU32,
-    last_failure_at: Arc<Mutex<Option<DateTime<Utc>>>>,
+    state: Mutex<DeliveryCircuit>,
     /// Pluggable clock for tests; defaults to wall clock.
     clock: Box<dyn Fn() -> DateTime<Utc> + Send + Sync>,
     subscriber_type_name: String,
 }
 
+#[derive(Debug)]
+struct DeliveryCircuit {
+    phase: CircuitState,
+    consecutive_failures: u32,
+    last_failure_at: Option<DateTime<Utc>>,
+    generation: u64,
+    probe_in_flight: bool,
+}
+
+impl DeliveryCircuit {
+    fn transition(&mut self, phase: CircuitState) {
+        self.phase = phase;
+        self.generation += 1;
+        self.probe_in_flight = false;
+    }
+}
+
+/// Records which circuit generation admitted a delivery. A cancelled probe
+/// releases the half-open slot and an old completion cannot change a new cycle.
+struct DeliveryAdmission<'a> {
+    circuit: &'a Mutex<DeliveryCircuit>,
+    generation: u64,
+    probe: bool,
+}
+
+impl Drop for DeliveryAdmission<'_> {
+    fn drop(&mut self) {
+        if self.probe {
+            let mut circuit = self.circuit.lock();
+            if circuit.generation == self.generation {
+                circuit.probe_in_flight = false;
+            }
+        }
+    }
+}
+
 impl std::fmt::Debug for CircuitBreakerWrapper {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("CircuitBreakerWrapper")
-            .field("state", &*self.state.lock())
-            .field(
-                "consecutive_failures",
-                &self.consecutive_failures.load(Ordering::SeqCst),
-            )
+            .field("circuit", &*self.state.lock())
             .field("timeout_ms", &self.timeout_ms)
             .field("open_threshold", &self.open_threshold)
             .field("recovery_window_ms", &self.recovery_window_ms)
@@ -107,9 +137,13 @@ impl CircuitBreakerWrapper {
             timeout_ms: DEFAULT_TIMEOUT_MS,
             open_threshold: DEFAULT_OPEN_THRESHOLD,
             recovery_window_ms: DEFAULT_RECOVERY_WINDOW_MS,
-            state: Arc::new(Mutex::new(CircuitState::Closed)),
-            consecutive_failures: AtomicU32::new(0),
-            last_failure_at: Arc::new(Mutex::new(None)),
+            state: Mutex::new(DeliveryCircuit {
+                phase: CircuitState::Closed,
+                consecutive_failures: 0,
+                last_failure_at: None,
+                generation: 0,
+                probe_in_flight: false,
+            }),
             clock: Box::new(Utc::now),
             subscriber_type_name,
         }
@@ -155,114 +189,133 @@ impl CircuitBreakerWrapper {
     /// Snapshot the current circuit state.
     #[must_use]
     pub fn state(&self) -> CircuitState {
-        *self.state.lock()
+        self.state.lock().phase
     }
 
     /// Snapshot the current consecutive-failure count.
     #[must_use]
     pub fn consecutive_failures(&self) -> u32 {
-        self.consecutive_failures.load(Ordering::SeqCst)
+        self.state.lock().consecutive_failures
     }
 
     /// Last recorded failure timestamp, or `None` if there has been no failure
     /// yet (or the breaker has fully recovered to CLOSED).
     #[must_use]
     pub fn last_failure_at(&self) -> Option<DateTime<Utc>> {
-        *self.last_failure_at.lock()
+        self.state.lock().last_failure_at
     }
 
     /// Force the circuit state. Public for tests + callers that need to
     /// hydrate state from external storage; no public guarantees about safety
     /// during concurrent delivery.
     pub fn force_state(&self, state: CircuitState) {
-        *self.state.lock() = state;
+        self.state.lock().transition(state);
     }
 
     /// Force the recorded `last_failure_at`. Public for tests.
     pub fn force_last_failure_at(&self, t: Option<DateTime<Utc>>) {
-        *self.last_failure_at.lock() = t;
+        self.state.lock().last_failure_at = t;
     }
 
     /// Force the consecutive-failure counter. Public for tests.
     pub fn force_consecutive_failures(&self, n: u32) {
-        self.consecutive_failures.store(n, Ordering::SeqCst);
+        self.state.lock().consecutive_failures = n;
     }
 
     /// Transition `OPEN → HALF_OPEN` if `recovery_window_ms` has elapsed since
     /// `last_failure_at`. Always called at the start of `on_event`; exposed
     /// publicly so tests can probe the transition without invoking delivery.
     pub fn check_recovery(&self) {
-        let mut state_guard = self.state.lock();
-        if *state_guard != CircuitState::Open {
+        let now = (self.clock)();
+        self.update_recovery(&mut self.state.lock(), now);
+    }
+
+    fn update_recovery(&self, circuit: &mut DeliveryCircuit, now: DateTime<Utc>) {
+        if circuit.phase != CircuitState::Open {
             return;
         }
-        let Some(last) = *self.last_failure_at.lock() else {
-            return;
-        };
-        let now = (self.clock)();
-        let elapsed_ms_signed = now.signed_duration_since(last).num_milliseconds().max(0);
-        // safe cast: max(0) ensures the value is non-negative
-        let elapsed_ms = u64::try_from(elapsed_ms_signed).unwrap_or(u64::MAX);
-        if elapsed_ms >= self.recovery_window_ms {
-            *state_guard = CircuitState::HalfOpen;
+        if let Some(last) = circuit.last_failure_at {
+            let elapsed = now.signed_duration_since(last).num_milliseconds();
+            if u64::try_from(elapsed).is_ok_and(|elapsed| elapsed >= self.recovery_window_ms) {
+                circuit.transition(CircuitState::HalfOpen);
+            }
         }
     }
 
-    /// Record a successful delivery, returning the lifecycle event (if any) to emit.
-    fn on_success(&self) -> Option<ApCoreEvent> {
-        let mut state_guard = self.state.lock();
-        let was_half_open = *state_guard == CircuitState::HalfOpen;
-        *state_guard = CircuitState::Closed;
-        self.consecutive_failures.store(0, Ordering::SeqCst);
-        if was_half_open {
-            Some(self.make_event(
-                "apcore.subscriber.circuit_closed",
-                "info",
-                json!({
-                    // D-145: WHICH subscriber — two of one type are otherwise
-                    // indistinguishable.
-                    "subscriber_id": self.subscriber.subscriber_id(),
-                    "subscriber_type": self.subscriber_type_name,
-                    "recovery_attempt": true,
-                }),
-            ))
-        } else {
-            None
+    fn admit_delivery(&self) -> Option<DeliveryAdmission<'_>> {
+        let now = (self.clock)();
+        let mut circuit = self.state.lock();
+        self.update_recovery(&mut circuit, now);
+        if circuit.phase == CircuitState::Open || circuit.probe_in_flight {
+            return None;
         }
+        let probe = circuit.phase == CircuitState::HalfOpen;
+        circuit.probe_in_flight = probe;
+        Some(DeliveryAdmission {
+            circuit: &self.state,
+            generation: circuit.generation,
+            probe,
+        })
     }
 
-    /// Record a failed delivery, returning the lifecycle event (if any) to emit.
-    fn on_failure(&self, error_msg: &str) -> Option<ApCoreEvent> {
-        let now = (self.clock)();
-        let new_count = self.consecutive_failures.fetch_add(1, Ordering::SeqCst) + 1;
-        *self.last_failure_at.lock() = Some(now);
-
-        let mut state_guard = self.state.lock();
-        let opens = match *state_guard {
-            CircuitState::HalfOpen => true,
-            CircuitState::Closed => new_count >= self.open_threshold,
-            CircuitState::Open => false,
-        };
-        if opens {
-            *state_guard = CircuitState::Open;
-            tracing::warn!(
-                subscriber_type = %self.subscriber_type_name,
-                consecutive_failures = new_count,
-                error = %error_msg,
-                "circuit opened for subscriber"
-            );
-            Some(self.make_event(
-                "apcore.subscriber.circuit_opened",
-                "warn",
-                json!({
-                    "subscriber_id": self.subscriber.subscriber_id(),
-                    "subscriber_type": self.subscriber_type_name,
-                    "consecutive_failures": new_count,
-                }),
-            ))
-        } else {
-            None
+    fn on_success(&self, admission: &DeliveryAdmission<'_>) -> Option<ApCoreEvent> {
+        {
+            let mut circuit = self.state.lock();
+            if circuit.generation != admission.generation {
+                return None;
+            }
+            circuit.consecutive_failures = 0;
+            circuit.last_failure_at = None;
+            if !admission.probe {
+                return None;
+            }
+            circuit.transition(CircuitState::Closed);
         }
+        Some(self.make_event(
+            "apcore.subscriber.circuit_closed",
+            "info",
+            json!({
+                "subscriber_id": self.subscriber.subscriber_id(),
+                "subscriber_type": self.subscriber_type_name,
+                "recovery_attempt": true,
+            }),
+        ))
+    }
+
+    fn on_failure(
+        &self,
+        admission: &DeliveryAdmission<'_>,
+        error: &ModuleError,
+    ) -> Option<ApCoreEvent> {
+        let now = (self.clock)();
+        let count = {
+            let mut circuit = self.state.lock();
+            if circuit.generation != admission.generation {
+                return None;
+            }
+            circuit.consecutive_failures = circuit.consecutive_failures.saturating_add(1);
+            circuit.last_failure_at = Some(now);
+            if !admission.probe && circuit.consecutive_failures < self.open_threshold {
+                return None;
+            }
+            circuit.transition(CircuitState::Open);
+            circuit.consecutive_failures
+        };
+        tracing::warn!(
+            subscriber_type = %self.subscriber_type_name,
+            consecutive_failures = count,
+            error = %error,
+            "circuit opened for subscriber"
+        );
+        Some(self.make_event(
+            "apcore.subscriber.circuit_opened",
+            "warn",
+            json!({
+                "subscriber_id": self.subscriber.subscriber_id(),
+                "subscriber_type": self.subscriber_type_name,
+                "consecutive_failures": count,
+            }),
+        ))
     }
 
     fn make_event(&self, event_type: &str, severity: &str, data: serde_json::Value) -> ApCoreEvent {
@@ -294,26 +347,46 @@ impl EventSubscriber for CircuitBreakerWrapper {
         self.subscriber.event_type_filter()
     }
 
+    fn subscriber_type(&self) -> &str {
+        self.subscriber.subscriber_type()
+    }
+
+    fn retry(&self) -> EventRetryConfig {
+        self.subscriber.retry()
+    }
+
+    async fn on_failure(&self, event: &ApCoreEvent, error: &ModuleError, attempt_count: u32) {
+        self.subscriber
+            .on_failure(event, error, attempt_count)
+            .await;
+    }
+
     async fn on_event(&self, event: &ApCoreEvent) -> Result<(), ModuleError> {
-        self.check_recovery();
-        if self.state() == CircuitState::Open {
-            // Spec: deliver() is NOT called in OPEN state; events are silently discarded.
-            return Ok(());
-        }
+        let _ = self.delivery_attempt(event).await;
+        Ok(())
+    }
 
+    async fn delivery_attempt(&self, event: &ApCoreEvent) -> Option<Result<(), ModuleError>> {
+        let admission = self.admit_delivery()?;
         let timeout = Duration::from_millis(self.timeout_ms);
-        let outcome = tokio::time::timeout(timeout, self.subscriber.on_event(event)).await;
+        let outcome = tokio::time::timeout(timeout, self.subscriber.on_event(event))
+            .await
+            .unwrap_or_else(|_| {
+                Err(ModuleError::new(
+                    ErrorCode::ModuleTimeout,
+                    "Subscriber delivery timed out",
+                ))
+            });
 
-        let circuit_event = match outcome {
-            Ok(Ok(())) => self.on_success(),
-            Ok(Err(e)) => self.on_failure(&e.to_string()),
-            Err(_) => self.on_failure("delivery timeout"),
+        let circuit_event = match &outcome {
+            Ok(()) => self.on_success(&admission),
+            Err(error) => self.on_failure(&admission, error),
         };
 
         if let Some(ev) = circuit_event {
             self.dispatch_circuit_event(ev);
         }
-        Ok(())
+        Some(outcome)
     }
 }
 
@@ -343,8 +416,8 @@ fn declared_subscriber_type(subscriber: &dyn EventSubscriber) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::errors::ErrorCode;
     use serde_json::json;
+    use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::Mutex as StdMutex;
 
     #[derive(Debug, Default)]
@@ -431,6 +504,52 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn emitter_uses_wrapped_retry_and_failure_callback() {
+        use crate::events::emitter::EventEmitter;
+        use crate::events::retry::EventRetryConfig;
+
+        #[derive(Debug, Default)]
+        struct RetryCounts {
+            delivered: AtomicU32,
+            exhausted: AtomicU32,
+        }
+
+        #[derive(Debug)]
+        struct RecordingFailure(Arc<RetryCounts>);
+
+        #[async_trait]
+        impl EventSubscriber for RecordingFailure {
+            fn retry(&self) -> EventRetryConfig {
+                EventRetryConfig {
+                    max_attempts: 2,
+                    ..EventRetryConfig::no_retry()
+                }
+            }
+
+            async fn on_event(&self, _event: &ApCoreEvent) -> Result<(), ModuleError> {
+                self.0.delivered.fetch_add(1, Ordering::SeqCst);
+                Err(ModuleError::new(ErrorCode::GeneralInternalError, "offline"))
+            }
+
+            async fn on_failure(&self, _event: &ApCoreEvent, error: &ModuleError, attempts: u32) {
+                assert_eq!(error.message, "offline");
+                self.0.exhausted.store(attempts, Ordering::SeqCst);
+            }
+        }
+
+        let counts = Arc::new(RetryCounts::default());
+        let emitter = EventEmitter::new();
+        emitter.subscribe(Box::new(CircuitBreakerWrapper::new(
+            Box::new(RecordingFailure(counts.clone())),
+            Arc::new(RecordingSink::default()),
+        )));
+        emitter.emit(&make_event()).await;
+        emitter.flush(0).await.unwrap();
+        assert_eq!(counts.delivered.load(Ordering::SeqCst), 2);
+        assert_eq!(counts.exhausted.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
     async fn open_state_discards_without_delivery() {
         let sink = Arc::new(RecordingSink::default());
         let wrapper = CircuitBreakerWrapper::new(
@@ -466,6 +585,39 @@ mod tests {
         let captured = sink.captured();
         assert_eq!(captured.len(), 1);
         assert_eq!(captured[0].event_type, "apcore.subscriber.circuit_closed");
+    }
+
+    #[tokio::test]
+    async fn half_open_admits_one_subscriber_delivery() {
+        #[derive(Debug, Default)]
+        struct BlockingDelivery {
+            started: tokio::sync::Notify,
+            release: tokio::sync::Notify,
+        }
+        #[async_trait]
+        impl EventSubscriber for Arc<BlockingDelivery> {
+            async fn on_event(&self, _event: &ApCoreEvent) -> Result<(), ModuleError> {
+                self.started.notify_one();
+                self.release.notified().await;
+                Ok(())
+            }
+        }
+        let subscriber = Arc::new(BlockingDelivery::default());
+        let wrapper = Arc::new(CircuitBreakerWrapper::new(
+            Box::new(subscriber.clone()),
+            Arc::new(RecordingSink::default()),
+        ));
+        wrapper.force_state(CircuitState::HalfOpen);
+        let probe = wrapper.clone();
+        let running = tokio::spawn(async move { probe.on_event(&make_event()).await });
+        subscriber.started.notified().await;
+        tokio::time::timeout(Duration::from_millis(20), wrapper.on_event(&make_event()))
+            .await
+            .expect("half-open circuit discards additional deliveries")
+            .unwrap();
+        subscriber.release.notify_one();
+        running.await.unwrap().unwrap();
+        assert_eq!(wrapper.state(), CircuitState::Closed);
     }
 
     #[tokio::test]

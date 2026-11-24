@@ -12,7 +12,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock, Weak};
 
 use async_trait::async_trait;
 use parking_lot::{Mutex, RwLock};
@@ -54,7 +54,8 @@ pub enum OverridesError {
 ///
 /// `load` returns the current persisted overrides as a `HashMap` keyed by
 /// dot-path config key. `save` overwrites the entire backing store with the
-/// supplied map (callers are expected to merge first, then save).
+/// supplied map. Use [`Self::update`] to persist one key while retaining
+/// other entries.
 ///
 /// Cross-language: matches the `OverridesStore` interface in apcore-python and
 /// apcore-typescript.
@@ -65,6 +66,17 @@ pub trait OverridesStore: Send + Sync {
         &self,
         overrides: &HashMap<String, serde_json::Value>,
     ) -> Result<(), OverridesError>;
+
+    /// Set an override key. The default serializes updates on this instance
+    /// and uses `load` and `save`. Implementations that share storage across
+    /// instances can coordinate at the backing store instead.
+    async fn update(&self, key: &str, value: &serde_json::Value) -> Result<(), OverridesError> {
+        let lock = store_update_lock(self);
+        let _guard = lock.lock().await;
+        let mut current = self.load().await?;
+        current.insert(key.to_string(), value.clone());
+        self.save(&current).await
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -106,6 +118,11 @@ impl OverridesStore for InMemoryOverridesStore {
         guard.clone_from(overrides);
         Ok(())
     }
+
+    async fn update(&self, key: &str, value: &serde_json::Value) -> Result<(), OverridesError> {
+        self.inner.write().insert(key.to_string(), value.clone());
+        Ok(())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -133,9 +150,6 @@ impl FileOverridesStore {
 #[async_trait]
 impl OverridesStore for FileOverridesStore {
     async fn load(&self) -> Result<HashMap<String, serde_json::Value>, OverridesError> {
-        if !self.path.exists() {
-            return Ok(HashMap::new());
-        }
         read_yaml_overrides_sync(&self.path)
     }
 
@@ -143,56 +157,13 @@ impl OverridesStore for FileOverridesStore {
         &self,
         overrides: &HashMap<String, serde_json::Value>,
     ) -> Result<(), OverridesError> {
-        // Sort keys for deterministic on-disk layout (cross-language parity).
-        let sorted: BTreeMap<String, serde_json::Value> = overrides
-            .iter()
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect();
+        let lock = write_lock_for(&self.path)?;
+        let _guard = lock.lock();
+        write_yaml_overrides_sync(&self.path, overrides)
+    }
 
-        let lock = write_lock_for(&self.path);
-        let _g = lock.lock();
-
-        if let Some(parent) = self.path.parent() {
-            if !parent.as_os_str().is_empty() {
-                std::fs::create_dir_all(parent).map_err(|e| OverridesError::Io {
-                    path: parent.to_path_buf(),
-                    source: e,
-                })?;
-            }
-        }
-
-        let yaml = serde_yaml_ng::to_string(&sorted).map_err(|e| OverridesError::Yaml {
-            path: self.path.clone(),
-            source: e,
-        })?;
-
-        let dir = self
-            .path
-            .parent()
-            .filter(|p| !p.as_os_str().is_empty())
-            .map_or_else(|| Path::new(".").to_path_buf(), Path::to_path_buf);
-        let pid = std::process::id();
-        let nanos = chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0);
-        let tmp = dir.join(format!(
-            ".{}.{pid}.{nanos}.tmp",
-            self.path
-                .file_name()
-                .and_then(|s| s.to_str())
-                .unwrap_or("overrides")
-        ));
-
-        std::fs::write(&tmp, &yaml).map_err(|e| OverridesError::Io {
-            path: tmp.clone(),
-            source: e,
-        })?;
-        if let Err(e) = std::fs::rename(&tmp, &self.path) {
-            let _ = std::fs::remove_file(&tmp);
-            return Err(OverridesError::Io {
-                path: self.path.clone(),
-                source: e,
-            });
-        }
-        Ok(())
+    async fn update(&self, key: &str, value: &serde_json::Value) -> Result<(), OverridesError> {
+        write_override_sync(&self.path, key, value)
     }
 }
 
@@ -217,9 +188,6 @@ pub fn load_overrides(
     config: &mut Config,
     toggle_state: Option<&ToggleState>,
 ) {
-    if !overrides_path.exists() {
-        return;
-    }
     let loaded = match read_yaml_overrides_sync(overrides_path) {
         Ok(map) => map,
         Err(e) => {
@@ -240,10 +208,18 @@ pub fn load_overrides(
 fn read_yaml_overrides_sync(
     path: &Path,
 ) -> Result<HashMap<String, serde_json::Value>, OverridesError> {
-    let raw = std::fs::read_to_string(path).map_err(|e| OverridesError::Io {
-        path: path.to_path_buf(),
-        source: e,
-    })?;
+    let raw = match std::fs::read_to_string(path) {
+        Ok(raw) => raw,
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(HashMap::new());
+        }
+        Err(source) => {
+            return Err(OverridesError::Io {
+                path: path.to_path_buf(),
+                source,
+            });
+        }
+    };
     if raw.is_empty() {
         return Ok(HashMap::new());
     }
@@ -263,7 +239,9 @@ fn read_yaml_overrides_sync(
     };
     let mut out: HashMap<String, serde_json::Value> = HashMap::new();
     for (k, v) in map {
-        let Some(key) = k.as_str() else { continue };
+        let key = k
+            .as_str()
+            .ok_or_else(|| OverridesError::Serialize("non-string YAML mapping key".to_string()))?;
         let json_value = yaml_to_json(&v).map_err(OverridesError::Serialize)?;
         out.insert(key.to_string(), json_value);
     }
@@ -307,17 +285,28 @@ fn apply_overrides(
 
 /// Persist a single key/value into an [`OverridesStore`].
 ///
-/// Performs a read-modify-write cycle (load existing entries, insert/update
-/// the supplied key, save). Used by the control modules so callers can swap
-/// the backing store without rewriting the persistence flow.
+/// Used by control modules to delegate a single-key update to the backing store.
 pub async fn persist_one(
     store: &dyn OverridesStore,
     key: &str,
     value: &serde_json::Value,
 ) -> Result<(), OverridesError> {
-    let mut current = store.load().await.unwrap_or_default();
-    current.insert(key.to_string(), value.clone());
-    store.save(&current).await
+    store.update(key, value).await
+}
+
+fn store_update_lock(store: &(impl OverridesStore + ?Sized)) -> Arc<tokio::sync::Mutex<()>> {
+    type StoreLocks = Mutex<HashMap<usize, Weak<tokio::sync::Mutex<()>>>>;
+    static LOCKS: OnceLock<StoreLocks> = OnceLock::new();
+
+    let store_address = std::ptr::from_ref(store).cast::<()>() as usize;
+    let mut locks = LOCKS.get_or_init(Mutex::default).lock();
+    locks.retain(|_, lock| lock.strong_count() != 0);
+    if let Some(lock) = locks.get(&store_address).and_then(Weak::upgrade) {
+        return lock;
+    }
+    let lock = Arc::new(tokio::sync::Mutex::new(()));
+    locks.insert(store_address, Arc::downgrade(&lock));
+    lock
 }
 
 // ---------------------------------------------------------------------------
@@ -326,18 +315,26 @@ pub async fn persist_one(
 
 /// Per-path lock registry — prevents concurrent writers from corrupting the
 /// overrides file when multiple modules persist simultaneously.
-fn write_lock_for(path: &Path) -> Arc<Mutex<()>> {
-    use std::collections::HashMap as StdHashMap;
-    use std::sync::OnceLock;
+fn write_lock_for(path: &Path) -> Result<Arc<Mutex<()>>, OverridesError> {
+    static LOCKS: OnceLock<Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>> = OnceLock::new();
 
-    static LOCKS: OnceLock<Mutex<StdHashMap<PathBuf, Arc<Mutex<()>>>>> = OnceLock::new();
-    let registry = LOCKS.get_or_init(|| Mutex::new(StdHashMap::new()));
+    // The physical destination directory gives relative paths and directory
+    // aliases the same lock, including the first write to a new directory.
+    let dir = override_directory(path);
+    let canonical_dir = std::fs::create_dir_all(dir)
+        .and_then(|()| dir.canonicalize())
+        .map_err(|source| OverridesError::Io {
+            path: dir.to_path_buf(),
+            source,
+        })?;
+    let key = path
+        .file_name()
+        .map_or_else(|| path.to_path_buf(), |name| canonical_dir.join(name));
+    let registry = LOCKS.get_or_init(|| Mutex::new(HashMap::new()));
     let mut guard = registry.lock();
-    Arc::clone(
-        guard
-            .entry(path.to_path_buf())
-            .or_insert_with(|| Arc::new(Mutex::new(()))),
-    )
+    Ok(Arc::clone(
+        guard.entry(key).or_insert_with(|| Arc::new(Mutex::new(()))),
+    ))
 }
 
 /// Persist a single key/value into the overrides YAML file.
@@ -349,77 +346,55 @@ fn write_lock_for(path: &Path) -> Arc<Mutex<()>> {
 /// the control modules. Errors are logged at WARN level — overrides
 /// persistence is best-effort and must not abort the calling control module.
 pub fn write_override(overrides_path: &Path, key: &str, value: &serde_json::Value) {
-    let lock = write_lock_for(overrides_path);
-    let _g = lock.lock();
-
-    if let Some(parent) = overrides_path.parent() {
-        if !parent.as_os_str().is_empty() {
-            if let Err(e) = std::fs::create_dir_all(parent) {
-                tracing::error!(
-                    error = %e,
-                    path = %overrides_path.display(),
-                    "Failed to create overrides parent directory"
-                );
-                return;
-            }
-        }
+    if let Err(error) = write_override_sync(overrides_path, key, value) {
+        tracing::warn!(%error, key, "Failed to persist override");
     }
+}
 
-    // Read existing overrides as an ordered mapping so the on-disk layout
-    // remains stable across writes (BTreeMap → alphabetical key order).
-    let mut existing: BTreeMap<String, serde_json::Value> =
-        match std::fs::read_to_string(overrides_path) {
-            Ok(s) if !s.is_empty() => match serde_yaml_ng::from_str::<serde_yaml_ng::Value>(&s) {
-                Ok(serde_yaml_ng::Value::Mapping(map)) => map
-                    .into_iter()
-                    .filter_map(|(k, v)| {
-                        let k = k.as_str()?.to_string();
-                        let v = yaml_to_json(&v).ok()?;
-                        Some((k, v))
-                    })
-                    .collect(),
-                _ => BTreeMap::new(),
-            },
-            _ => BTreeMap::new(),
-        };
-
+fn write_override_sync(
+    path: &Path,
+    key: &str,
+    value: &serde_json::Value,
+) -> Result<(), OverridesError> {
+    let lock = write_lock_for(path)?;
+    let _guard = lock.lock();
+    let mut existing = read_yaml_overrides_sync(path)?;
     existing.insert(key.to_string(), value.clone());
+    write_yaml_overrides_sync(path, &existing)
+}
 
-    let yaml = match serde_yaml_ng::to_string(&existing) {
-        Ok(s) => s,
-        Err(e) => {
-            tracing::error!(error = %e, key = %key, "Failed to serialize overrides YAML");
-            return;
-        }
-    };
+fn override_directory(path: &Path) -> &Path {
+    path.parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."))
+}
 
-    let dir = overrides_path
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .map_or_else(|| Path::new(".").to_path_buf(), Path::to_path_buf);
+fn write_yaml_overrides_sync(
+    path: &Path,
+    overrides: &HashMap<String, serde_json::Value>,
+) -> Result<(), OverridesError> {
+    let dir = override_directory(path);
+    let sorted: BTreeMap<_, _> = overrides.iter().collect();
+    let yaml = serde_yaml_ng::to_string(&sorted).map_err(|source| OverridesError::Yaml {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    let filename = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("overrides");
     let pid = std::process::id();
     let nanos = chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0);
-    let tmp = dir.join(format!(
-        ".{}.{pid}.{nanos}.tmp",
-        overrides_path
-            .file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or("overrides")
-    ));
+    let tmp = dir.join(format!(".{filename}.{pid}.{nanos}.tmp"));
 
-    if let Err(e) = std::fs::write(&tmp, &yaml) {
-        tracing::error!(error = %e, path = %tmp.display(), "Failed to write overrides tempfile");
-        return;
-    }
-    if let Err(e) = std::fs::rename(&tmp, overrides_path) {
-        tracing::error!(
-            error = %e,
-            path = %overrides_path.display(),
-            "Failed to rename overrides tempfile into place"
-        );
-        // best-effort cleanup
+    if let Err(source) = std::fs::write(&tmp, yaml).and_then(|()| std::fs::rename(&tmp, path)) {
         let _ = std::fs::remove_file(&tmp);
+        return Err(OverridesError::Io {
+            path: path.to_path_buf(),
+            source,
+        });
     }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------

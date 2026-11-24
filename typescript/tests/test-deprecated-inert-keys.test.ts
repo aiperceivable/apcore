@@ -83,7 +83,7 @@ const INERT_KEY_VALUES: Record<string, string> = {
   'extensions.auto_discover': 'false',
 };
 
-const MINIMAL_YAML = 'version: "0.30.0"\nproject:\n  name: inert-keys-test\n';
+const MINIMAL_YAML = 'version: "1.0.0"\nproject:\n  name: inert-keys-test\n';
 
 /**
  * All ten in one document. Written out rather than assembled from `declare()`

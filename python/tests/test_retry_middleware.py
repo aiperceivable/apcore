@@ -234,14 +234,15 @@ class TestRetryMiddlewareIntegration:
     """
 
     @pytest.mark.asyncio
-    async def test_retry_re_runs_module_and_returns_success(self) -> None:
+    @pytest.mark.parametrize("with_trace", [False, True])
+    async def test_retry_re_runs_module_and_returns_success(self, with_trace: bool) -> None:
         """A module that fails retryable twice then succeeds is re-run via the pipeline."""
         from apcore.errors import ModuleError
         from apcore.executor import Executor
         from apcore.registry import Registry
         from pydantic import BaseModel
 
-        attempts: list[int] = []
+        attempts: list[tuple[str | None, list[str], float | None]] = []
 
         class _InSchema(BaseModel):
             x: int
@@ -255,7 +256,7 @@ class TestRetryMiddlewareIntegration:
             description = "Fails the first two times, succeeds on the third."
 
             async def execute(self, inputs: dict, context) -> dict:  # type: ignore[no-untyped-def]
-                attempts.append(1)
+                attempts.append((context.caller_id, context.call_chain, context.global_deadline))
                 if len(attempts) < 3:
                     raise ModuleError(code="TRANSIENT", message="flaky", retryable=True)
                 return {"attempt": len(attempts)}
@@ -266,9 +267,18 @@ class TestRetryMiddlewareIntegration:
         mw = RetryMiddleware(config=RetryConfig(max_retries=5, jitter=False, base_delay_ms=0))
         ex = Executor(registry=reg, middlewares=[mw])
 
-        result = await ex.call_async("flaky", {"x": 1})
+        if with_trace:
+            result, trace = await ex.call_async_with_trace("flaky", {"x": 1})
+            assert trace.success
+            assert [step.result.action for step in trace.steps if step.name == "execute"] == [
+                "abort",
+                "abort",
+                "continue",
+            ]
+        else:
+            result = await ex.call_async("flaky", {"x": 1})
         assert result == {"attempt": 3}
-        assert len(attempts) == 3
+        assert attempts == [(None, ["flaky"], attempts[0][2])] * 3
 
     @pytest.mark.asyncio
     async def test_retry_gives_up_after_max_and_propagates_error(self) -> None:

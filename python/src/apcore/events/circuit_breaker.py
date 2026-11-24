@@ -8,7 +8,13 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import TYPE_CHECKING, Any
 
-from apcore.events.emitter import ApCoreEvent, EventSubscriber
+from apcore.events.emitter import (
+    ApCoreEvent,
+    EventSubscriber,
+    _DELIVERY_SUPPRESSED,
+    _DeliveryCircuitOpened,
+    _ensure_subscriber_id,
+)
 
 if TYPE_CHECKING:
     from apcore.events.emitter import EventEmitter
@@ -74,7 +80,15 @@ class CircuitBreakerWrapper:
 
     @property
     def subscriber_id(self) -> Any:
-        return getattr(self._subscriber, "subscriber_id", None)
+        return _ensure_subscriber_id(self._subscriber)
+
+    @property
+    def retry(self) -> Any:
+        return getattr(self._subscriber, "retry", None)
+
+    @property
+    def on_failure(self) -> Any:
+        return getattr(self._subscriber, "on_failure", None)
 
     @property
     def subscriber_type(self) -> Any:
@@ -98,30 +112,43 @@ class CircuitBreakerWrapper:
             return self._consecutive_failures
 
     async def on_event(self, event: ApCoreEvent) -> None:
+        """Attempt direct delivery, recording failures in the circuit."""
+        try:
+            await self._deliver_for_emitter(event)
+        except Exception:
+            # The public wrapper also supports direct, best-effort delivery.
+            pass
+
+    async def _deliver_for_emitter(self, event: ApCoreEvent) -> object | None:
         import asyncio
 
         try:
             self._check_recovery()
         except Exception:
             logger.exception("CircuitBreakerWrapper._check_recovery raised unexpectedly")
-            return
+            raise
 
         with self._lock:
             current_state = self._state
 
         if current_state == CircuitState.OPEN:
-            return
+            return _DELIVERY_SUPPRESSED
 
-        circuit_event: ApCoreEvent | None = None
         try:
             await asyncio.wait_for(
                 self._subscriber.on_event(event),
                 timeout=self._timeout_ms / 1000.0,
             )
-            circuit_event = self._on_success()
         except Exception as exc:
-            circuit_event = self._on_failure(exc)
+            transition = self._on_failure(exc)
+            self._emit_transition(transition)
+            if transition is not None:
+                raise _DeliveryCircuitOpened(exc) from exc
+            raise
+        self._emit_transition(self._on_success())
+        return None
 
+    def _emit_transition(self, circuit_event: ApCoreEvent | None) -> None:
         if circuit_event is not None:
             try:
                 self._emitter.emit(circuit_event)

@@ -6,6 +6,7 @@ use std::sync::Arc;
 use serde_json::Value;
 
 use crate::approval::ApprovalHandler;
+use crate::bindings::typed_async_handler;
 use crate::config::Config;
 use crate::context::Context;
 use crate::decorator::FunctionModule;
@@ -35,6 +36,17 @@ pub struct APCoreOptions {
     pub approval_handler: Option<Box<dyn ApprovalHandler>>,
     /// Execution policy for the Executor built by the client.
     pub policy: Option<ExecutionPolicy>,
+}
+
+/// Optional module metadata for [`APCore::typed_module`].
+#[derive(Default)]
+pub struct TypedModuleOptions {
+    pub documentation: Option<String>,
+    pub tags: Vec<String>,
+    pub version: Option<String>,
+    pub metadata: Option<std::collections::HashMap<String, Value>>,
+    pub examples: Vec<crate::module::ModuleExample>,
+    pub display: Option<Value>,
 }
 
 /// Main entry point for interacting with the `APCore` system.
@@ -427,6 +439,43 @@ impl APCore {
         self.registry
             .register(module_id, Box::new(func_module), descriptor)?;
         Ok(self)
+    }
+
+    /// Register a function module whose schemas derive from its input and output types.
+    /// The input type must implement `Deserialize` and `JsonSchema`. The output type
+    /// must implement `Serialize` and `JsonSchema`.
+    pub fn typed_module<I, O>(
+        &mut self,
+        module_id: &str,
+        description: &str,
+        options: TypedModuleOptions,
+        handler: impl for<'a> Fn(
+                I,
+                &'a Context<Value>,
+            ) -> std::pin::Pin<
+                Box<dyn std::future::Future<Output = Result<O, ModuleError>> + Send + 'a>,
+            > + Send
+            + Sync
+            + 'static,
+    ) -> Result<&mut Self, ModuleError>
+    where
+        I: schemars::JsonSchema + serde::de::DeserializeOwned + Send + 'static,
+        O: schemars::JsonSchema + serde::Serialize + Send + 'static,
+    {
+        let (handler, input_schema, output_schema) = typed_async_handler(handler);
+        self.module(
+            module_id,
+            description,
+            input_schema,
+            output_schema,
+            options.documentation,
+            options.tags,
+            options.version.as_deref(),
+            options.metadata,
+            options.examples,
+            options.display.as_ref(),
+            move |inputs, ctx| handler(inputs, ctx),
+        )
     }
 
     /// Call (execute) a module by ID with the given inputs.

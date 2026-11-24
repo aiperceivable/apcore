@@ -34,6 +34,7 @@ from apcore.errors import (
     ModuleNotFoundError,
     ModuleTimeoutError,
     SchemaValidationError,
+    StreamingInterfaceError,
 )
 from apcore.module import ModuleAnnotations
 from apcore.pipeline import (
@@ -192,6 +193,8 @@ class _GovernanceGateFields(BaseStep):
     configuring the step object directly instead of through YAML.
     """
 
+    _fail_closed_on_error = True
+
     def _check_gate_field(self, key: str, value: Any) -> None:
         if gate_field_violations(self, {key: value}):
             raise ConfigurationError(gate_field_violation_message(self.name, [key]))
@@ -274,6 +277,8 @@ class BuiltinContextCreation(BaseStep):
         # carries the parent's `global_deadline` forward, so a nested call
         # inherits the budget of the tree it belongs to.
         ctx.context = base_ctx.child(ctx.module_id)
+        if isinstance(ctx.context, Context):
+            ctx.context._execution_scope = ctx.execution_scope
         # Every invocation owns its cancellation signal. Parent cancellation
         # propagates downward, while a timeout leaves ancestors reusable.
         parent_token = getattr(base_ctx, "cancel_token", None)
@@ -303,8 +308,11 @@ class BuiltinContextCreation(BaseStep):
         # compared against a monotonic basis that is roughly 1.8e9 against
         # roughly 1e5, so the deadline never fires and the call runs with no
         # budget at all — silent, and fail-open.
-        if ctx.context.global_deadline is None and self._global_timeout > 0:
-            ctx.context.global_deadline = time.time() + self._global_timeout / 1000.0
+        if ctx.context.global_deadline is None:
+            ctx.context.global_deadline = ctx.invocation_deadline
+            if ctx.context.global_deadline is None and self._global_timeout > 0:
+                ctx.context.global_deadline = time.time() + self._global_timeout / 1000.0
+        ctx.invocation_deadline = ctx.context.global_deadline
 
         return StepResult(action="continue")
 
@@ -425,10 +433,33 @@ class BuiltinModuleLookup(BaseStep):
 
     async def execute(self, ctx: PipelineContext) -> StepResult:
         version_hint = getattr(ctx, "version_hint", None)
-        if version_hint is not None:
-            module = self._registry.get(ctx.module_id, version_hint=version_hint)
+        resolve = getattr(type(self._registry), "_resolve_registration", None)
+        if resolve is not None:
+            if ctx.execution_scope is not None:
+                lease = self._registry._acquire_registration(ctx.module_id, version_hint)
+                registration = lease.__enter__()
+
+                def release_lease() -> None:
+                    task = ctx.module_task
+                    if task is None or task.done():
+                        lease.__exit__(None, None, None)
+                    else:
+                        # A cooperative timeout can return while work still
+                        # runs. Retain its lease until the work itself stops.
+                        task.add_done_callback(lambda _: lease.__exit__(None, None, None))
+
+                ctx.execution_scope.callback(release_lease)
+            else:
+                registration = resolve(self._registry, ctx.module_id, version_hint)
+            module = registration.module if registration is not None else None
+            declared_annotations = registration.metadata.get("annotations") if registration is not None else None
         else:
-            module = self._registry.get(ctx.module_id)
+            if version_hint is not None:
+                module = self._registry.get(ctx.module_id, version_hint=version_hint)
+            else:
+                module = self._registry.get(ctx.module_id)
+            get_declared = getattr(self._registry, "get_declared_annotations", None)
+            declared_annotations = get_declared(ctx.module_id) if module is not None and callable(get_declared) else None
         if module is None:
             raise ModuleNotFoundError(module_id=ctx.module_id)
 
@@ -446,8 +477,7 @@ class BuiltinModuleLookup(BaseStep):
         # instance, and a `*.binding.yaml` / `metadata=` source declaring
         # `requires_approval: true` reached `get_definition()` and the manifest
         # while the module executed UNGATED.
-        get_declared = getattr(self._registry, "get_declared_annotations", None)
-        ctx.declared_annotations = get_declared(ctx.module_id) if callable(get_declared) else None
+        ctx.declared_annotations = declared_annotations
 
         # Early input redaction: set context.redacted_inputs BEFORE any
         # middleware runs (step 6: BuiltinMiddlewareBefore). This ensures
@@ -1313,12 +1343,22 @@ class BuiltinExecute(BaseStep):
 
         inputs = ctx.validated_inputs if ctx.validated_inputs is not None else ctx.inputs
 
-        # Stream mode: set up output_stream if module satisfies StreamingModule Protocol
-        from apcore.streaming import StreamingModule
+        if ctx.stream:
+            from apcore.registry.registry import _validate_streaming_signature
 
-        if ctx.stream and isinstance(module, StreamingModule):
-            ctx.output_stream = module.stream(inputs, ctx.context)
-            return StepResult(action="skip_to", skip_to="return_result")
+            try:
+                _validate_streaming_signature(ctx.module_id, module)
+            except StreamingInterfaceError:
+                pass  # No compatible streaming method. Execute once as a fallback.
+            else:
+                stream = module.stream(inputs, ctx.context)
+                if inspect.isawaitable(stream):
+                    stream = await stream
+                ctx.output_stream = aiter(stream)
+                close_stream = getattr(ctx.output_stream, "aclose", None)
+                if ctx.execution_scope is not None and callable(close_stream):
+                    ctx.execution_scope.push_async_callback(close_stream)
+                return StepResult(action="skip_to", skip_to="return_result")
 
         # Determine per-module timeout. `0` means "no per-module limit" on both
         # sides of the fallback — the same reading apcore-typescript
@@ -1344,14 +1384,18 @@ class BuiltinExecute(BaseStep):
                 timeout_s = remaining
 
         try:
-            if inspect.iscoroutinefunction(module.execute):
+            is_async = inspect.iscoroutinefunction(module.execute)
+            if is_async:
                 coro = module.execute(inputs, ctx.context)
             else:
                 loop = asyncio.get_event_loop()
                 coro = loop.run_in_executor(None, module.execute, inputs, ctx.context)
 
+            task = ctx.module_task = asyncio.ensure_future(coro)
+            # Consume late failures even when the call was cancelled while
+            # waiting and no request remains to observe the result.
+            task.add_done_callback(_discard_late_execution)
             if timeout_s is not None:
-                task = asyncio.ensure_future(coro)
                 completed, _ = await asyncio.wait({task}, timeout=timeout_s)
                 if not completed:
                     token = getattr(ctx.context, "cancel_token", None)
@@ -1360,7 +1404,6 @@ class BuiltinExecute(BaseStep):
                     # Cancellation is cooperative: do not wait for cleanup or
                     # forcibly cancel the module's coroutine. Consume a late
                     # exception so a discarded result cannot become a warning.
-                    task.add_done_callback(_discard_late_execution)
                     raise ModuleTimeoutError(
                         module_id=ctx.module_id,
                         timeout_ms=int(timeout_s * 1000),
@@ -1368,7 +1411,8 @@ class BuiltinExecute(BaseStep):
                     )
                 output = task.result()
             else:
-                output = await coro
+                # Cancelling the asyncio wrapper does not stop a worker thread.
+                output = await task if is_async else await asyncio.shield(task)
             output = normalize_module_output(output)
             if output is not None and not isinstance(output, dict):
                 raise ModuleExecuteError(module_id=ctx.module_id, message="Return value must be Map")

@@ -12,6 +12,7 @@
 import { Kind, Type, TypeRegistry, type TSchema } from '@sinclair/typebox';
 import { Value } from '@sinclair/typebox/value';
 import { checkApplicators, containsNeedsEvaluator, hasApplicatorKeyword } from './applicators.js';
+import { compareCodePoints } from '../utils/compare-code-points.js';
 import { KEYWORD_MARKER } from './constants.js';
 
 // ---------------------------------------------------------------------------
@@ -21,7 +22,7 @@ import { KEYWORD_MARKER } from './constants.js';
 export function sortedKeysStringify(obj: unknown): string {
   if (obj === null || typeof obj !== 'object') return JSON.stringify(obj);
   if (Array.isArray(obj)) return `[${obj.map(sortedKeysStringify).join(',')}]`;
-  const sorted = Object.keys(obj as object).sort();
+  const sorted = Object.keys(obj).sort(compareCodePoints);
   const pairs = sorted.map(
     (k) => `${JSON.stringify(k)}:${sortedKeysStringify((obj as Record<string, unknown>)[k])}`,
   );
@@ -78,10 +79,9 @@ export function jsonSchemaToTypeBox(
   return _convert(schema, root ?? schema);
 }
 
-function _convert(schema: Record<string, unknown>, root: Record<string, unknown>): TSchema {
-  if ('$ref' in schema) {
-    return _convertRef(schema['$ref'] as string, schema, root);
-  }
+function _convert(schema: Record<string, unknown> | boolean, root: Record<string, unknown>): TSchema {
+  if (typeof schema === 'boolean') return schema ? Type.Unknown() : Type.Never();
+  const ref = typeof schema['$ref'] === 'string' ? _convertRef(schema['$ref'], schema, root) : null;
 
   const rawType = schema['type'];
   const schemaType = rawType as string | undefined;
@@ -103,7 +103,9 @@ function _convert(schema: Record<string, unknown>, root: Record<string, unknown>
   else {
     // No `type` at all — the combinator and bare constraint keywords are the
     // whole schema.
-    return _annotate(_withApplicators(_convertTypeless(schema, root), schema, root), schema);
+    const typed = _convertTypeless(schema, root);
+    const result = ref === null ? typed : Type.Intersect([ref, typed]);
+    return _annotate(_withApplicators(result, schema, root), schema);
   }
 
   // `type` and a combinator keyword are independent assertions that must BOTH
@@ -112,6 +114,7 @@ function _convert(schema: Record<string, unknown>, root: Record<string, unknown>
   // `{type: ["string","boolean"], enum: ["always","auto","never"]}` accepted any
   // string at all — apcore-rust and apcore-python both reject a non-member.
   result = _intersectWithCombinator(result, schema, root);
+  if (ref !== null) result = Type.Intersect([ref, result]);
 
   return _annotate(isTypeUnion ? result : _withApplicators(result, schema, root), schema);
 }
@@ -193,7 +196,7 @@ function _convertTypeUnion(
  */
 function _typeBranchSchema(schema: Record<string, unknown>): Record<string, unknown> {
   const branchSchema: Record<string, unknown> = { ...schema };
-  for (const keyword of ['description', 'title', ...COMBINATOR_KEYWORDS]) {
+  for (const keyword of ['description', 'title', '$ref', ...COMBINATOR_KEYWORDS]) {
     delete branchSchema[keyword];
   }
   return branchSchema;
@@ -238,13 +241,13 @@ function _convertObject(
   schema: Record<string, unknown>,
   root: Record<string, unknown>,
 ): TSchema {
-  const properties = schema['properties'] as Record<string, Record<string, unknown>> | undefined;
+  const properties = schema['properties'] as Record<string, Record<string, unknown> | boolean> | undefined;
   const required = new Set((schema['required'] as string[]) ?? []);
   const additional = _additionalPropertiesOption(schema, root);
   const opts = { ..._constraintOptions(schema, OBJECT_CONSTRAINTS), ...additional };
 
   if (properties || required.size > 0) {
-    const typeboxProps: Record<string, TSchema> = {};
+    const typeboxProps: Record<string, TSchema> = Object.create(null);
     for (const [name, propSchema] of Object.entries(properties ?? {})) {
       const propType = _convert(propSchema, root);
       typeboxProps[name] = required.has(name) ? propType : Type.Optional(propType);
@@ -254,7 +257,7 @@ function _convertObject(
     // a whole schema on its own and is exactly what an `if` / `then` /
     // `dependentSchemas` sub-schema usually looks like.
     for (const name of required) {
-      if (!(name in typeboxProps)) typeboxProps[name] = Type.Unknown();
+      if (!Object.hasOwn(typeboxProps, name)) typeboxProps[name] = Type.Unknown();
     }
     return Type.Object(typeboxProps, opts);
   }
@@ -313,8 +316,8 @@ function _convertArray(
   // With a `prefixItems` sibling, `items` no longer describes every position —
   // it applies only past the prefix (§10.3.1.2). `Type.Array` has one element
   // schema for the whole array, so both are left to `_checkApplicatorNode`.
-  const items = 'prefixItems' in schema ? undefined : (schema['items'] as Record<string, unknown>);
-  return Type.Array(items ? _convert(items, root) : Type.Unknown(), opts);
+  const items = 'prefixItems' in schema ? undefined : (schema['items'] as Record<string, unknown> | boolean | undefined);
+  return Type.Array(items == null ? Type.Unknown() : _convert(items, root), opts);
 }
 
 function _convertString(schema: Record<string, unknown>): TSchema {
@@ -563,7 +566,7 @@ if (!TypeRegistry.Has(REF_KIND)) {
 function _resolveRefTarget(
   ref: string,
   root: Record<string, unknown>,
-): Record<string, unknown> | undefined {
+): Record<string, unknown> | boolean | undefined {
   if (ref === '#' || ref === '#/') return root;
   if (typeof root['$id'] === 'string' && ref === root['$id']) return root;
   if (!ref.startsWith('#/')) return undefined;
@@ -571,9 +574,11 @@ function _resolveRefTarget(
   let current: unknown = root;
   for (const rawSegment of ref.slice(2).split('/')) {
     const segment = rawSegment.replace(/~1/g, '/').replace(/~0/g, '~');
-    if (current === null || typeof current !== 'object' || Array.isArray(current)) return undefined;
+    if (current === null || typeof current !== 'object' || Array.isArray(current) ||
+        !Object.hasOwn(current, segment)) return undefined;
     current = (current as Record<string, unknown>)[segment];
   }
+  if (typeof current === 'boolean') return current;
   if (current === null || typeof current !== 'object' || Array.isArray(current)) return undefined;
   return current as Record<string, unknown>;
 }
@@ -587,6 +592,7 @@ function _convertRef(
   // A `$ref` whose target is the node holding it asserts nothing and would spin
   // forever; an unresolvable one has nothing to assert either.
   if (target === undefined || target === schema) return Type.Unknown();
+  if (typeof target === 'boolean') return _convert(target, root);
   return Type.Unsafe({ [Kind]: REF_KIND, apcoreRefTarget: target, apcoreRefRoot: root });
 }
 
@@ -655,7 +661,10 @@ if (!TypeRegistry.Has(APPLICATOR_KIND)) {
       apcoreSchema: Record<string, unknown>;
       apcoreRoot: Record<string, unknown>;
     };
-    return checkApplicators(node.apcoreSchema, value, _subSchemaChecker(node.apcoreRoot));
+    return checkApplicators(
+      node.apcoreSchema, value, _subSchemaChecker(node.apcoreRoot),
+      (reference) => _resolveRefTarget(reference, node.apcoreRoot),
+    );
   });
 }
 

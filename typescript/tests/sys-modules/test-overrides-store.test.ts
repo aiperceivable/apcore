@@ -20,6 +20,7 @@ import { Registry } from '../../src/registry/registry.js';
 import { Executor } from '../../src/executor.js';
 import { EventEmitter } from '../../src/events/index.js';
 import { UpdateConfigModule } from '../../src/sys-modules/control.js';
+import { ToggleFeatureModule, ToggleState } from '../../src/sys-modules/toggle.js';
 import { Context, createIdentity } from '../../src/context.js';
 import { registerSysModules } from '../../src/sys-modules/registration.js';
 
@@ -134,6 +135,52 @@ describe('FileOverridesStore', () => {
 });
 
 describe('UpdateConfigModule writes to OverridesStore', () => {
+  it.each([false, true])('preserves invalid existing overrides (legacy path %s)', (legacy) => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'apcore-overrides-'));
+    const file = path.join(directory, 'overrides.yaml');
+    const original = 'app.existing: 42\ninvalid: [unclosed\n';
+    try {
+      fs.writeFileSync(file, original);
+      const config = new Config({});
+      const storeOptions = legacy ? { overridesPath: file } : { overridesStore: new FileOverridesStore(file) };
+      const mod = new UpdateConfigModule(config, new EventEmitter(), storeOptions);
+      mod.execute({ key: 'app.updated', value: true, reason: 'update' }, null);
+      expect(config.get('app.updated')).toBe(true);
+      expect(fs.readFileSync(file, 'utf-8')).toBe(original);
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('serializes async writes across config updates and feature toggles', async () => {
+    let data: Record<string, unknown> = { 'app.existing': 42 };
+    const saveSnapshots: Record<string, unknown>[] = [];
+    let finishFirstSave!: () => void;
+    const holdFirstSave = new Promise<void>((resolve) => { finishFirstSave = resolve; });
+    const store: OverridesStore = {
+      load: async () => ({ ...data }),
+      save: async (snapshot) => {
+        saveSnapshots.push(snapshot);
+        if (saveSnapshots.length === 1) await holdFirstSave;
+        data = snapshot;
+      },
+    };
+    const registry = new Registry();
+    await registry.register('app.module', {
+      description: 'Sample module', inputSchema: { type: 'object' }, outputSchema: { type: 'object' },
+      execute: () => ({}),
+    });
+    const emitter = new EventEmitter();
+    const update = new UpdateConfigModule(new Config({}), emitter, { overridesStore: store });
+    const toggle = new ToggleFeatureModule(registry, emitter, new ToggleState(), undefined, store);
+    update.execute({ key: 'app.updated', value: true, reason: 'update' }, null);
+    toggle.execute({ module_id: 'app.module', enabled: false, reason: 'toggle' }, null);
+    finishFirstSave();
+    await vi.waitFor(() => {
+      expect(data).toEqual({ 'app.existing': 42, 'app.updated': true, 'toggle.app.module': false });
+    });
+  });
+
   it('persists each successful update via the injected store', async () => {
     const store = new InMemoryOverridesStore();
     const config = new Config({});

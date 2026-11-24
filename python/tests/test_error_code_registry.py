@@ -10,6 +10,17 @@ from apcore.errors import ErrorCodeCollisionError, ErrorCodeRegistry, ErrorCodes
 
 
 class TestErrorCodeRegistry:
+    def test_replacing_codes_releases_removed_codes(self) -> None:
+        registry = ErrorCodeRegistry()
+        registry.register("owner.example", {"EXAMPLE_OLD", "EXAMPLE_SHARED"})
+        registry.register("owner.example", {"EXAMPLE_NEW", "EXAMPLE_SHARED"})
+        registry.register("other.example", {"EXAMPLE_OLD"})
+
+        registry.unregister("owner.example")
+        assert "EXAMPLE_OLD" in registry.all_codes
+        assert "EXAMPLE_NEW" not in registry.all_codes
+        assert "EXAMPLE_SHARED" not in registry.all_codes
+
     def test_register_custom_codes(self) -> None:
         reg = ErrorCodeRegistry()
         reg.register("my.module", {"MY_MODULE_CUSTOM_ERR", "MY_MODULE_OTHER"})

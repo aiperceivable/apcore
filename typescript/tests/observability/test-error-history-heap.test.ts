@@ -7,11 +7,32 @@
  * (lazy-deletion correctness).
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { ErrorHistory } from '../../src/observability/error-history.js';
 import { ModuleError } from '../../src/errors.js';
 
 describe('ErrorHistory min-heap eviction', () => {
+  it('keeps one heap entry per fingerprint and evicts by latest occurrence within the same tick', () => {
+    vi.useFakeTimers();
+    try {
+      const history = new ErrorHistory({ maxTotalEntries: 2 });
+      const repeated = new ModuleError('CODE', 'repeated');
+      history.record('mod.one', repeated);
+      history.record('mod.two', new ModuleError('CODE', 'second'));
+      for (let i = 0; i < 1000; i++) history.record('mod.one', repeated);
+      const heap = (history as unknown as { _heap: { size: number } })._heap;
+      expect(heap.size).toBe(2);
+      history.record('mod.three', new ModuleError('CODE', 'third'));
+      expect(history.getAll().map(entry => entry.moduleId)).toEqual(['mod.three', 'mod.one']);
+      history.clearModule('mod.one');
+      expect(heap.size).toBe(1);
+      history.clear();
+      expect(heap.size).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('keeps total within cap across many modules', () => {
     const cap = 100;
     const history = new ErrorHistory({

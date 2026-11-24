@@ -83,13 +83,13 @@ fn write_yaml(dir: &tempfile::TempDir, name: &str, body: &str) -> std::path::Pat
 
 /// Minimal namespace-mode YAML preamble (activates namespace mode via the
 /// top-level `apcore:` key) with a valid executor block so `validate()` passes.
-const NS_HEADER: &str = "apcore:\n  version: '0.15.0'\n";
+const NS_HEADER: &str = "apcore:\n  version: '1.0.0'\n";
 
 /// Legacy-mode preamble carrying the spec-mandated required fields (A-D-03:
 /// version, project.name, extensions.root, schema.root, acl.root,
 /// acl.default_effect) so that `validate()` passes for legacy fixtures. Prepend
 /// this to a legacy YAML body that needs to load successfully.
-const LEGACY_REQUIRED: &str = "version: '0.15.0'\n\
+const LEGACY_REQUIRED: &str = "version: '1.0.0'\n\
 project:\n  name: demo\n\
 extensions:\n  root: ./extensions\n\
 schema:\n  root: ./schemas\n\

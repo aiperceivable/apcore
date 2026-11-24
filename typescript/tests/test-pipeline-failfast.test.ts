@@ -51,6 +51,26 @@ function makeFakeDeps() {
 // ---------------------------------------------------------------------------
 
 describe('ExecutionStrategy unmet dependency (§2.1)', () => {
+  it.each(['insertBefore', 'insertAfter'] as const)('preserves the strategy after a rejected %s', (operation) => {
+    const strategy = new ExecutionStrategy('kept', [makeStep('anchor')]);
+    const invalid = makeStep('invalid', { requires: ['unknown'] });
+
+    expect(() => strategy[operation]('anchor', invalid)).toThrow(PipelineDependencyError);
+    expect(strategy.steps.map((step) => step.name)).toEqual(['anchor']);
+    expect(strategy.findStepIndex('invalid')).toBeUndefined();
+  });
+
+  it('keeps dependency declarations when configuring an inserted custom step', async () => {
+    registerStepType('needs_capability', () => makeStep('consumer', { requires: ['missing'] }));
+    try {
+      await expect(buildStrategyFromConfig({
+        steps: [{ type: 'needs_capability', name: 'consumer', after: 'module_lookup' }],
+      }, makeFakeDeps())).rejects.toThrow(PipelineDependencyError);
+    } finally {
+      unregisterStepType('needs_capability');
+    }
+  });
+
   it('throws PipelineDependencyError when requires is not provided by any preceding step', () => {
     expect(() => new ExecutionStrategy('bad', [makeStep('a', { requires: ['output'] })])).toThrow(
       PipelineDependencyError,

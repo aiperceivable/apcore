@@ -2,13 +2,14 @@
 // Spec reference: observability.md §1.2 BatchSpanProcessor for Non-Blocking OTEL Export
 
 use async_trait::async_trait;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use parking_lot::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex as AsyncMutex};
 use tokio::time::{interval, timeout, Duration};
 
 use super::span::{Span, SpanExporter};
-use crate::errors::ModuleError;
+use crate::errors::{ErrorCode, ModuleError};
 
 /// Span processor — receives finished spans and decides when/how to export them.
 ///
@@ -121,14 +122,31 @@ impl BatchSpanProcessorBuilder {
 
 #[derive(Debug)]
 struct BatchInner {
-    rx: AsyncMutex<mpsc::Receiver<Span>>,
+    buffer: AsyncMutex<ExportBuffer>,
     queue_size: AtomicU64,
     spans_dropped: AtomicU64,
     config: BatchSpanProcessorConfig,
     exporter: Arc<dyn SpanExporter>,
-    shutdown_tx: AsyncMutex<Option<mpsc::Sender<()>>>,
-    /// Set when shutdown has been signalled (avoids double-signalling on Drop).
-    shutdown_signalled: AtomicBool,
+    // Taking the sender also closes admission to the span queue. The lock
+    // orders shutdown with concurrent non-blocking enqueue operations.
+    shutdown_tx: Mutex<Option<mpsc::Sender<()>>>,
+    exporter_closed: AsyncMutex<bool>,
+}
+
+#[derive(Debug)]
+struct ExportBuffer {
+    rx: mpsc::Receiver<Span>,
+    // Keep the current span in the buffer until export settles. A cancelled
+    // flush can be retried without losing that span or the rest of the queue.
+    exporting: Option<Span>,
+}
+
+impl BatchInner {
+    fn signal_shutdown(&self) {
+        if let Some(tx) = self.shutdown_tx.lock().take() {
+            let _ = tx.try_send(());
+        }
+    }
 }
 
 /// Non-blocking span processor that buffers spans and exports in background batches.
@@ -166,13 +184,16 @@ impl BatchSpanProcessor {
         let (tx, rx) = mpsc::channel::<Span>(config.max_queue_size);
         let (shutdown_tx, mut shutdown_rx) = mpsc::channel::<()>(1);
         let inner = Arc::new(BatchInner {
-            rx: AsyncMutex::new(rx),
+            buffer: AsyncMutex::new(ExportBuffer {
+                rx,
+                exporting: None,
+            }),
             queue_size: AtomicU64::new(0),
             spans_dropped: AtomicU64::new(0),
             config,
             exporter,
-            shutdown_tx: AsyncMutex::new(Some(shutdown_tx)),
-            shutdown_signalled: AtomicBool::new(false),
+            shutdown_tx: Mutex::new(Some(shutdown_tx)),
+            exporter_closed: AsyncMutex::new(false),
         });
 
         let bg_inner = inner.clone();
@@ -193,7 +214,10 @@ impl BatchSpanProcessor {
                             }
                         }
                         _ = shutdown_rx.recv() => {
-                            flush_batch(&bg_inner).await;
+                            let _ = timeout(
+                                Duration::from_millis(bg_inner.config.export_timeout_ms),
+                                drain_queue(&bg_inner),
+                            ).await;
                             break;
                         }
                     }
@@ -242,24 +266,16 @@ impl BatchSpanProcessor {
     /// Returns `true` once the queue is empty, or `false` if `timeout_ms`
     /// elapses first. Delegates to the same [`flush_batch`] the background
     /// loop uses, repeatedly, since spans can arrive between successive
-    /// calls. Safe to call on an already-shut-down processor — it only
-    /// touches the queue and the exporter, neither of which `shutdown()`
-    /// tears down.
+    /// calls. Once shutdown begins, reports whether its drain has completed.
     ///
     /// Mirrors apcore-python's `BatchSpanProcessor.force_flush`.
     pub async fn force_flush(&self, timeout_ms: u64) -> bool {
-        let inner = self.inner.clone();
-        let _ = timeout(Duration::from_millis(timeout_ms), async {
-            loop {
-                flush_batch(&inner).await;
-                if inner.queue_size.load(Ordering::Relaxed) == 0 {
-                    break;
-                }
-                tokio::task::yield_now().await;
-            }
-        })
-        .await;
-        self.inner.queue_size.load(Ordering::Relaxed) == 0
+        if self.inner.shutdown_tx.lock().is_none() {
+            return self.queue_size() == 0;
+        }
+        timeout(Duration::from_millis(timeout_ms), drain_queue(&self.inner))
+            .await
+            .is_ok()
     }
 }
 
@@ -267,66 +283,63 @@ impl BatchSpanProcessor {
 /// Returns `true` when the receiver is permanently closed (all senders dropped),
 /// which signals the bg loop that no further spans can ever arrive.
 async fn flush_batch(inner: &BatchInner) -> bool {
-    let mut rx = inner.rx.lock().await;
-    let mut batch: Vec<Span> = Vec::with_capacity(inner.config.max_export_batch_size);
-    let mut closed = false;
-    while batch.len() < inner.config.max_export_batch_size {
-        match rx.try_recv() {
-            Ok(span) => {
-                inner.queue_size.fetch_sub(1, Ordering::Relaxed);
-                batch.push(span);
-            }
-            Err(mpsc::error::TryRecvError::Empty) => break,
-            Err(mpsc::error::TryRecvError::Disconnected) => {
-                closed = true;
-                break;
+    let mut buffer = inner.buffer.lock().await;
+    for _ in 0..inner.config.max_export_batch_size.max(1) {
+        if buffer.exporting.is_none() {
+            match buffer.rx.try_recv() {
+                Ok(span) => buffer.exporting = Some(span),
+                Err(mpsc::error::TryRecvError::Empty) => return false,
+                Err(mpsc::error::TryRecvError::Disconnected) => return true,
             }
         }
+        if let Some(span) = buffer.exporting.as_ref() {
+            if let Err(error) = inner.exporter.export(span).await {
+                tracing::warn!(error = %error.message, "BatchSpanProcessor: export failed");
+            }
+        }
+        buffer.exporting = None;
+        inner.queue_size.fetch_sub(1, Ordering::Relaxed);
     }
-    drop(rx);
+    false
+}
 
-    for span in batch {
-        if let Err(e) = inner.exporter.export(&span).await {
-            tracing::warn!(error = %e.message, "BatchSpanProcessor: export failed");
+async fn drain_queue(inner: &BatchInner) {
+    loop {
+        flush_batch(inner).await;
+        if inner.queue_size.load(Ordering::Relaxed) == 0 {
+            break;
         }
+        tokio::task::yield_now().await;
     }
-    closed
 }
 
 #[async_trait]
 impl SpanProcessor for BatchSpanProcessor {
     async fn on_span_end(&self, span: Span) {
-        match self.tx.try_send(span) {
-            Ok(()) => {
+        let admission = self.inner.shutdown_tx.lock();
+        if admission.is_some() {
+            if let Ok(permit) = self.tx.try_reserve() {
                 self.inner.queue_size.fetch_add(1, Ordering::Relaxed);
-            }
-            Err(_) => {
-                self.inner.spans_dropped.fetch_add(1, Ordering::Relaxed);
+                permit.send(span);
+                return;
             }
         }
+        self.inner.spans_dropped.fetch_add(1, Ordering::Relaxed);
     }
 
     async fn shutdown(&self) -> Result<(), ModuleError> {
-        // Signal the background worker (if any) to flush and exit.
-        // Idempotent: Option::take + AtomicBool guard prevent double-signalling
-        // even when called concurrently with Drop.
-        self.inner.shutdown_signalled.store(true, Ordering::SeqCst);
-        let mut guard = self.inner.shutdown_tx.lock().await;
-        if let Some(tx) = guard.take() {
-            let _ = tx.send(()).await;
+        let mut closed = self.inner.exporter_closed.lock().await;
+        if *closed {
+            return Ok(());
         }
-        drop(guard);
-
-        // Final drain up to export_timeout_ms.
-        let timeout_dur = Duration::from_millis(self.inner.config.export_timeout_ms);
-        let inner = self.inner.clone();
-        let _ = timeout(timeout_dur, async move {
-            // Drain any remaining spans the worker hasn't consumed.
-            flush_batch(&inner).await;
-        })
-        .await;
-
-        self.inner.exporter.shutdown().await
+        self.inner.signal_shutdown();
+        let timeout_duration = Duration::from_millis(self.inner.config.export_timeout_ms);
+        timeout(timeout_duration, drain_queue(&self.inner))
+            .await
+            .map_err(|_| ModuleError::new(ErrorCode::ModuleTimeout, "Timed out draining spans"))?;
+        self.inner.exporter.shutdown().await?;
+        *closed = true;
+        Ok(())
     }
 }
 
@@ -374,20 +387,6 @@ impl SpanExporter for BatchSpanProcessor {
 
 impl Drop for LastHandle {
     fn drop(&mut self) {
-        // Avoid leaking the background task if the user drops every clone
-        // without ever calling shutdown(). We can't await here, so we just
-        // best-effort trigger the shutdown channel; the bg task observes it
-        // on its next tick and exits. If shutdown() was already called,
-        // shutdown_signalled is set and we skip.
-        if self.inner.shutdown_signalled.swap(true, Ordering::SeqCst) {
-            return;
-        }
-        // try_lock_owned is unstable; use blocking try_lock on the std-side
-        // mutex equivalent: take the option via the async mutex's try_lock.
-        if let Ok(mut guard) = self.inner.shutdown_tx.try_lock() {
-            if let Some(tx) = guard.take() {
-                let _ = tx.try_send(());
-            }
-        }
+        self.inner.signal_shutdown();
     }
 }

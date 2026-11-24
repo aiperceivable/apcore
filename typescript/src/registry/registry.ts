@@ -10,6 +10,7 @@ import {
   DuplicateModuleIdError,
   ErrorCodes,
   InvalidInputError,
+  ModuleLoadError,
   ModuleNotFoundError,
   StreamingInterfaceError,
 } from '../errors.js';
@@ -27,53 +28,29 @@ import { deepCopy } from '../utils/index.js';
 import type { DependencyInfo, ModuleDescriptor } from './types.js';
 import { validateModule } from './validation.js';
 
-// ── Lazy-loaded Node.js modules ────────────────────────────────────
-// These are loaded on first use so that importing Registry in a browser
-// bundler does not fail at parse time. Only the filesystem-dependent
-// methods (discover, watch, constructor with idMapPath) trigger the load.
-// We use dynamic import() to avoid any top-level reference to node: modules.
-
-let _nodeFs: typeof import('node:fs') | null = null;
-let _nodePath: typeof import('node:path') | null = null;
-
-async function ensureNodeModules(): Promise<{
-  fs: typeof import('node:fs');
+type RegistryFilesystem = {
+  fs: Pick<typeof import('node:fs'), 'accessSync' | 'realpathSync'> & {
+    watch(path: string, options: { recursive: boolean }, listener: (event: string, filename: string | null) => void): import('node:fs').FSWatcher;
+  };
   path: typeof import('node:path');
-}> {
-  if (_nodeFs === null) {
-    _nodeFs = await import('node:fs');
+  loadIdMap: typeof import('./metadata.js').loadIdMap;
+  loadMetadata: typeof import('./metadata.js').loadMetadata;
+  scanExtensions: typeof import('./scanner.js').scanExtensions;
+  scanMultiRoot: typeof import('./scanner.js').scanMultiRoot;
+};
+
+let registryFilesystem: RegistryFilesystem | null = null;
+
+/** @internal Installed by the Node entry point. */
+export function _setRegistryFilesystem(filesystem: RegistryFilesystem): void {
+  registryFilesystem = filesystem;
+}
+
+function requireRegistryFilesystem(): RegistryFilesystem {
+  if (registryFilesystem === null) {
+    throw new Error('Filesystem registry operations require the Node entry point. Register modules programmatically in browsers.');
   }
-  if (_nodePath === null) {
-    _nodePath = await import('node:path');
-  }
-  return { fs: _nodeFs, path: _nodePath };
-}
-
-async function lazyLoadIdMap(idMapPath: string): Promise<Record<string, Record<string, unknown>>> {
-  const { loadIdMap } = await import('./metadata.js');
-  return loadIdMap(idMapPath);
-}
-
-async function lazyLoadMetadata(metaPath: string): Promise<Record<string, unknown>> {
-  const { loadMetadata } = await import('./metadata.js');
-  return loadMetadata(metaPath);
-}
-
-async function lazyScanExtensions(
-  root: string, maxDepth: number, followSymlinks: boolean, ignorePatterns: readonly string[],
-): Promise<import('./types.js').DiscoveredModule[]> {
-  const { scanExtensions } = await import('./scanner.js');
-  return scanExtensions(root, maxDepth, followSymlinks, ignorePatterns);
-}
-
-async function lazyScanMultiRoot(
-  roots: Array<Record<string, unknown>>,
-  maxDepth: number,
-  followSymlinks: boolean,
-  ignorePatterns: readonly string[],
-): Promise<import('./types.js').DiscoveredModule[]> {
-  const { scanMultiRoot } = await import('./scanner.js');
-  return scanMultiRoot(roots, maxDepth, followSymlinks, ignorePatterns);
+  return registryFilesystem;
 }
 
 /**
@@ -377,6 +354,8 @@ export class Registry {
 
   // Safe hot-reload state (F09 / Algorithm A21)
   private _refCounts: Map<string, number> = new Map();
+  private readonly _sourceFiles = new Map<string, string>();
+  private readonly _executionGenerations = new Map<string, object>();
   private _draining: Set<string> = new Set();
   private _drainResolvers: Map<string, Array<() => void>> = new Map();
 
@@ -451,7 +430,7 @@ export class Registry {
   /** Lazily load the ID map from disk on first discover(). */
   private async _ensureIdMap(): Promise<void> {
     if (this._idMapLoaded || this._idMapPath === null) return;
-    this._idMap = await lazyLoadIdMap(this._idMapPath);
+    this._idMap = requireRegistryFilesystem().loadIdMap(this._idMapPath);
     this._idMapLoaded = true;
   }
 
@@ -536,7 +515,9 @@ export class Registry {
       }
 
       try {
-        this._registerImpl(moduleId, mod);
+        this._assertModuleStructure(moduleId, mod);
+        this._assertNoIdConflict(moduleId);
+        await this._registerWithOnLoad(moduleId, mod);
         count++;
       } catch (e) {
         console.warn(`[apcore:registry] Failed to register custom-discovered module '${moduleId}':`, e);
@@ -572,7 +553,8 @@ export class Registry {
     const filteredModules = this._filterIdConflicts(validModules, rawMetadata);
     const loadOrder = this._resolveLoadOrder(filteredModules, rawMetadata);
 
-    return this._registerInOrder(loadOrder, filteredModules, rawMetadata);
+    const sourceFiles = new Map(discovered.map((module) => [module.canonicalId, module.filePath]));
+    return this._registerInOrder(loadOrder, filteredModules, rawMetadata, sourceFiles);
   }
 
   private async _scanRoots(): Promise<import('./types.js').DiscoveredModule[]> {
@@ -587,9 +569,9 @@ export class Registry {
 
     const hasNamespace = this._extensionRoots.some((r) => 'namespace' in r);
     if (this._extensionRoots.length > 1 || hasNamespace) {
-      return lazyScanMultiRoot(this._extensionRoots, maxDepth, followSymlinks, ignorePatterns);
+      return requireRegistryFilesystem().scanMultiRoot(this._extensionRoots, maxDepth, followSymlinks, ignorePatterns);
     }
-    return lazyScanExtensions(
+    return requireRegistryFilesystem().scanExtensions(
       this._extensionRoots[0]['root'] as string,
       maxDepth,
       followSymlinks,
@@ -630,7 +612,7 @@ export class Registry {
   private async _applyIdMapOverrides(discovered: import('./types.js').DiscoveredModule[]): Promise<void> {
     if (Object.keys(this._idMap).length === 0) return;
 
-    const { fs: nodeFs, path: nodePath } = await ensureNodeModules();
+    const { fs: nodeFs, path: nodePath } = requireRegistryFilesystem();
     const resolvedRoots = this._extensionRoots.map((entry) => {
       const root = entry['root'] as string;
       return nodePath.isAbsolute(root) ? root : nodePath.resolve(root);
@@ -681,7 +663,7 @@ export class Registry {
   ): Promise<Map<string, Record<string, unknown>>> {
     const rawMetadata = new Map<string, Record<string, unknown>>();
     for (const dm of discovered) {
-      rawMetadata.set(dm.canonicalId, dm.metaPath ? await lazyLoadMetadata(dm.metaPath) : {});
+      rawMetadata.set(dm.canonicalId, dm.metaPath ? requireRegistryFilesystem().loadMetadata(dm.metaPath) : {});
     }
     return rawMetadata;
   }
@@ -823,61 +805,28 @@ export class Registry {
     loadOrder: string[],
     validModules: Map<string, unknown>,
     rawMetadata: Map<string, Record<string, unknown>>,
+    sourceFiles: ReadonlyMap<string, string>,
   ): Promise<number> {
-    // Stage 8 (D-32). Conflict detection / ID validation already happened in
-    // `_filterIdConflicts` (stage 7), so this loop is purely a register pass.
-    //
-    // Deferred-publish contract (issue #65, audit D11-001 / D10-005): a module
-    // is NEVER published to `_modules`/`_moduleMeta`/`_lowercaseMap` until its
-    // `onLoad` (sync or async) has succeeded. This mirrors the public
-    // `_registerWithOnLoad` path: the caller observes either a fully-published
-    // module OR an `apcore.registry.module_load_failed` event — never a module
-    // that is visible mid-load. On `onLoad` failure we emit the event, skip
-    // publishing, and move to the next module (skip-on-failure, never abort).
     let count = 0;
-    for (const modId of loadOrder) {
-      const mod = validModules.get(modId);
-      if (mod === undefined) continue;
-      const modObj = mod as Record<string, unknown>;
-
-      // Run onLoad BEFORE publishing. Handle both sync and async onLoad: call
-      // it, and if it returns a Promise, await it.
-      //
-      // The ID is reserved in `_inFlight` for the whole of onLoad. `register()`
-      // computes its duplicate set as `_modules ∪ _inFlight`, so without the
-      // reservation a concurrent `register()` of the same ID slipping into the
-      // await gap is accepted and silently overwrites this module. Both
-      // apcore-python (`_in_flight.add` before `on_load`) and apcore-rust
-      // reserve here; registry-system.md is explicit that the invariants apply
-      // to every registration path — "SDKs MUST NOT create per-path
-      // exceptions".
-      if (typeof modObj['onLoad'] === 'function') {
-        this._inFlight.set(modId, Promise.resolve());
-        try {
-          const onLoadResult = (modObj['onLoad'] as () => unknown)();
-          if (onLoadResult instanceof Promise) {
-            await onLoadResult;
-          }
-        } catch (e) {
-          // Sync throw or async rejection: release the reservation, emit
-          // module_load_failed, do NOT publish, warn, and skip to the next
-          // module.
-          this._inFlight.delete(modId);
-          this._emitModuleLoadFailed(modId, e);
-          console.warn(`[apcore:registry] onLoad failed for ${modId}, skipping:`, e);
-          continue;
+    for (const moduleId of loadOrder) {
+      const module = validModules.get(moduleId);
+      if (module === undefined) continue;
+      const metadata = rawMetadata.get(moduleId) ?? {};
+      try {
+        const dependencies = parseDependencies((metadata['dependencies'] as Array<Record<string, unknown>>) ?? []);
+        const missing = dependencies.find((dep) => !dep.optional && !this.has(dep.moduleId));
+        if (missing) {
+          const error = new ModuleLoadError(moduleId, `Required dependency '${missing.moduleId}' did not load`);
+          this._emitModuleLoadFailed(moduleId, error);
+          throw error;
         }
-        this._inFlight.delete(modId);
+        this._assertModuleStructure(moduleId, module);
+        this._assertNoIdConflict(moduleId);
+        await this._registerWithOnLoad(moduleId, module, null, metadata, { sourceFile: sourceFiles.get(moduleId) });
+        count++;
+      } catch (error) {
+        console.warn(`[apcore:registry] Failed to load ${moduleId}, skipping:`, error);
       }
-
-      // Success (including empty / no-onLoad modules): publish all state.
-      const mergedMeta = mergeModuleMetadata(modObj, rawMetadata.get(modId) ?? {});
-      this._modules.set(modId, mod);
-      this._moduleMeta.set(modId, mergedMeta);
-      this._lowercaseMap.set(modId.toLowerCase(), modId);
-
-      this._triggerEvent(REGISTRY_EVENTS.REGISTER, modId, mod);
-      count++;
     }
     return count;
   }
@@ -933,7 +882,7 @@ export class Registry {
     // declaring `streaming: true` without `stream()` reported
     // DuplicateModuleIdError in TypeScript where Python and Rust report
     // StreamingInterfaceError.
-    this._assertStreamingInterface(moduleId, module);
+    this._assertModuleStructure(moduleId, module, true);
 
     // 3. Custom validator (may be async).
     //
@@ -980,11 +929,11 @@ export class Registry {
    * and a `duplicate_id` conflict is reported as DuplicateModuleIdError while
    * every other error-severity conflict is InvalidInputError.
    */
-  private _assertNoIdConflict(moduleId: string): void {
+  private _assertNoIdConflict(moduleId: string, reservedWords: ReadonlySet<string> = RESERVED_WORDS): void {
     const conflict = detectIdConflicts(
       moduleId,
       new Set([...this._modules.keys(), ...this._inFlight.keys()]),
-      RESERVED_WORDS,
+      reservedWords,
       this._lowercaseMap,
     );
     if (conflict === null) return;
@@ -1011,199 +960,55 @@ export class Registry {
     module: unknown,
     version?: string | null,
     metadata?: Record<string, unknown> | null,
-    options?: { context?: Context | null },
+    options?: { context?: Context | null; sourceFile?: string; throwSyncLoadFailure?: boolean },
     ephemeral?: boolean,
   ): Promise<void> {
     const overrides: Record<string, unknown> = { ...(metadata ?? {}) };
-    if (version !== undefined && version !== null) {
-      overrides['version'] = version;
-    }
+    if (version != null) overrides['version'] = version;
+    const mod = module as Record<string, unknown>;
+    const merged = mergeModuleMetadata(mod, overrides);
 
-    // Detect async onLoad
-    const modObj = module as Record<string, unknown>;
-    if (typeof modObj['onLoad'] === 'function') {
-      // Call onLoad and check if it returns a Promise.
-      // Sync onLoad must emit module_load_failed on throw (Issue #65 gap;
-      // mirror the async-Promise rejection branch below). The strong-guarantee
-      // invariant — caller observes either fully-published or
-      // module_load_failed — applies to every registration path including
-      // this entry point.
-      // A-D-013: reserve the in-flight slot BEFORE invoking onLoad, for both
-      // sync and async onLoad. The module MUST NOT be observable via get()/has()
-      // while onLoad runs (strong-guarantee invariant #65). Reserving uniformly
-      // — not only for the async branch — makes the in-flight gate effective
-      // for a sync onLoad that re-entrantly inspects the registry, matching
-      // apcore-python (_in_flight.add before on_load) and apcore-rust.
-      // A resolved placeholder Promise is used as the sync sentinel; the
-      // async branch overwrites it with the real loadPromise below.
-      this._inFlight.set(moduleId, Promise.resolve());
-
-      let onLoadResult: unknown;
-      try {
-        onLoadResult = (modObj['onLoad'] as () => unknown)();
-      } catch (e) {
-        // Surface sync onLoad failures as a rejected Promise so the
-        // strong-guarantee invariant — `register()` always returns a Promise
-        // — holds for sync and async onLoad alike. Without this, callers
-        // doing `await registry.register(...)` would see sync throws and the
-        // module_load_failed event would arrive before the await target.
-        this._inFlight.delete(moduleId);
-        this._emitModuleLoadFailed(moduleId, e);
-        return Promise.reject(e);
-      }
-
-      if (onLoadResult instanceof Promise) {
-        // Async onLoad: deferred-publish
-        // Register metadata and lowercase index (but NOT _modules) so conflict
-        // detection works for concurrent registrations of the same ID.
-        const modObjFull = module as Record<string, unknown>;
-        this._moduleMeta.set(moduleId, mergeModuleMetadata(modObjFull, overrides));
-        this._lowercaseMap.set(moduleId.toLowerCase(), moduleId);
-
-        const loadPromise = onLoadResult.then(
-          () => {
-            // Commit module to visible state
-            this._modules.set(moduleId, module);
-            this._inFlight.delete(moduleId);
-            this._triggerEvent(REGISTRY_EVENTS.REGISTER, moduleId, module);
-            if (ephemeral) {
-              this._emitEphemeralAudit('apcore.registry.module_registered', moduleId, options?.context ?? null);
-            }
-          },
-          (err: unknown) => {
-            // onLoad failed: rollback all state
-            this._inFlight.delete(moduleId);
-            this._moduleMeta.delete(moduleId);
-            this._lowercaseMap.delete(moduleId.toLowerCase());
-            // Emit module_load_failed event (spec #65)
-            this._emitModuleLoadFailed(moduleId, err);
-            throw err;
-          },
-        );
-        // Guard against unhandled rejection if caller fire-and-forgets (no await)
-        loadPromise.catch(() => {});
-        this._inFlight.set(moduleId, loadPromise);
-        return loadPromise;
-      }
-      // Sync onLoad returned (possibly undefined) — fall through to normal
-      // registration. Release the in-flight reservation now that onLoad has
-      // succeeded; the module becomes visible on the publish below (A-D-013).
+    const publish = (): void => {
       this._inFlight.delete(moduleId);
-    }
-
-    // Sync path: no onLoad, or sync onLoad already called above
-    this._modules.set(moduleId, module);
-    this._lowercaseMap.set(moduleId.toLowerCase(), moduleId);
-
-    const modObjFull = module as Record<string, unknown>;
-    this._moduleMeta.set(moduleId, mergeModuleMetadata(modObjFull, overrides));
-
-    this._triggerEvent(REGISTRY_EVENTS.REGISTER, moduleId, module);
-
-    if (ephemeral) {
-      this._emitEphemeralAudit('apcore.registry.module_registered', moduleId, options?.context ?? null);
-    }
-
-    return Promise.resolve();
-  }
-
-  /**
-   * Inner registration — no validator, no ID validation. Used by discover() paths that run
-   * their own checks. Validates streaming annotation, runs sync onLoad, commits to _modules.
-   */
-  private _registerImpl(
-    moduleId: string,
-    module: unknown,
-    metadataOverrides: Record<string, unknown> = {},
-  ): void {
-    // Algorithm A03: detect ID conflicts (exact duplicate, reserved word, case collision)
-    const conflict = detectIdConflicts(
-      moduleId,
-      new Set([...this._modules.keys(), ...this._inFlight.keys()]),
-      RESERVED_WORDS,
-      this._lowercaseMap,
-    );
-    if (conflict !== null) {
-      if (conflict.severity === 'error') {
-        // Same discrimination as `register()` (registry.ts:796). The register
-        // Contract's Errors list names `DUPLICATE_MODULE_ID` for "module_id is
-        // already registered, or a concurrent registration is currently
-        // loading the same ID" — reporting the generic GENERAL_INVALID_INPUT
-        // from this path alone meant the same condition surfaced under two
-        // different codes depending on which entry point the caller used.
-        if (conflict.type === 'duplicate_id') {
-          throw new DuplicateModuleIdError(moduleId);
-        }
-        throw new InvalidInputError(conflict.message);
+      this._modules.set(moduleId, module);
+      this._moduleMeta.set(moduleId, merged);
+      this._lowercaseMap.set(moduleId.toLowerCase(), moduleId);
+      if (options?.sourceFile !== undefined) this._sourceFiles.set(moduleId, options.sourceFile);
+      this._triggerEvent(REGISTRY_EVENTS.REGISTER, moduleId, module);
+      if (ephemeral) {
+        this._emitEphemeralAudit('apcore.registry.module_registered', moduleId, options?.context ?? null);
       }
-      console.warn(`[apcore:registry] ID conflict: ${conflict.message}`);
-    }
+    };
 
-    // Streaming annotation validation: if module declares streaming=true it must
-    // implement the StreamingModule interface (has stream() + STREAMING_MARKER).
-    this._assertStreamingInterface(moduleId, module);
-
-    // A-D-REG-003 / spec REG-003: deferred-publish for the discover path.
-    // Reserve the slot in metadata + lowercase index (for conflict detection)
-    // but do NOT insert into `_modules` until onLoad has completed. The
-    // strong-guarantee invariant (#65) applies uniformly to every registration
-    // path including discover/hot-reload — observers must never see a module
-    // that subsequently fails its onLoad.
-    const modObj = module as Record<string, unknown>;
-    this._moduleMeta.set(moduleId, mergeModuleMetadata(modObj, metadataOverrides));
-    this._lowercaseMap.set(moduleId.toLowerCase(), moduleId);
-
-    // Reserve the ID for the whole of onLoad so a re-entrant registration sees
-    // it as taken, exactly as `register()` (A-D-013), `_registerInOrder` and
-    // `registerInternal` (A-D-001) already do. This path was the one
-    // registration path that never reserved: `register()` computes its
-    // duplicate set as `_modules ∪ _inFlight`, so while a custom discoverer's
-    // module ran its sync onLoad the ID was in neither set. A re-entrant
-    // `register('<its own id>', otherModule)` was therefore accepted,
-    // published `otherModule` and fired a `register` event — and the
-    // `this._modules.set(moduleId, module)` below then overwrote it
-    // last-writer-wins, orphaning `otherModule` with its onLoad already run,
-    // its register event already delivered and its onUnload permanently
-    // unreachable. registry-system.md: "SDKs MUST NOT create per-path
-    // exceptions". Released on every exit path below.
-    this._inFlight.set(moduleId, Promise.resolve());
-
-    // Call onLoad if available (sync only in this discover() path)
-    if (typeof modObj['onLoad'] === 'function') {
-      let onLoadResult: unknown;
+    const onLoad = mod['onLoad'];
+    if (typeof onLoad === 'function') {
+      this._inFlight.set(moduleId, Promise.resolve());
+      const fail = (error: unknown): void => {
+        this._inFlight.delete(moduleId);
+        this._emitModuleLoadFailed(moduleId, error);
+      };
       try {
-        onLoadResult = (modObj['onLoad'] as () => unknown)();
-      } catch (e) {
-        // Rollback the reservation: nothing was published, so observers
-        // never saw the module.
-        this._inFlight.delete(moduleId);
-        this._moduleMeta.delete(moduleId);
-        this._lowercaseMap.delete(moduleId.toLowerCase());
-        this._emitModuleLoadFailed(moduleId, e);
-        throw e;
-      }
-      if (onLoadResult instanceof Promise) {
-        // Async onLoad in discover() path: warn and skip — deferred-publish
-        // with async onLoad is only available via the public register() API.
-        console.warn(
-          `[apcore:registry] Module '${moduleId}' has async onLoad in discover() path ` +
-          `— async onLoad is not supported here; use Registry.register() instead. Module skipped.`,
-        );
-        this._inFlight.delete(moduleId);
-        this._moduleMeta.delete(moduleId);
-        this._lowercaseMap.delete(moduleId.toLowerCase());
-        onLoadResult.catch(() => {}); // prevent unhandled rejection
-        return;
+        const result: unknown = onLoad.call(module);
+        if (result != null && typeof (result as PromiseLike<unknown>).then === 'function') {
+          const promise = Promise.resolve(result).then(publish, (error: unknown) => {
+            fail(error);
+            throw error;
+          });
+          this._inFlight.set(moduleId, promise);
+          void promise.catch(() => {});
+          return promise;
+        }
+      } catch (error) {
+        fail(error);
+        if (options?.throwSyncLoadFailure) throw error;
+        const rejected = Promise.reject(error);
+        void rejected.catch(() => {});
+        return rejected;
       }
     }
 
-    // onLoad succeeded — now commit the module to the visible map. The
-    // in-flight reservation is released first so the publish below is the
-    // single source of truth for the ID.
-    this._inFlight.delete(moduleId);
-    this._modules.set(moduleId, module);
-
-    this._triggerEvent(REGISTRY_EVENTS.REGISTER, moduleId, module);
+    publish();
+    return Promise.resolve();
   }
 
   unregister(moduleId: string, options?: { context?: Context | null }): boolean {
@@ -1212,6 +1017,7 @@ export class Registry {
     const module = this._modules.get(moduleId)!;
     this._modules.delete(moduleId);
     this._moduleMeta.delete(moduleId);
+    this._sourceFiles.delete(moduleId);
     this._schemaCache.delete(moduleId);
     this._lowercaseMap.delete(moduleId.toLowerCase());
 
@@ -1223,6 +1029,7 @@ export class Registry {
     this._draining.delete(moduleId);
     this._drainResolvers.delete(moduleId);
     this._refCounts.delete(moduleId);
+    this._executionGenerations.delete(moduleId);
 
     // Call onUnload if available
     const modObj = module as Record<string, unknown>;
@@ -1724,10 +1531,7 @@ export class Registry {
     }
 
     const generation = this._watchGeneration;
-    const { fs, path: nodePath } = await ensureNodeModules();
-    // unwatch() may run while the lazy Node import is pending. Concurrent
-    // watch() calls may also have installed the watcher while this awaited.
-    if (generation !== this._watchGeneration || this._watchers?.length) return;
+    const { fs, path: nodePath } = requireRegistryFilesystem();
     const { join } = nodePath;
 
     this._watchers = [];
@@ -1740,7 +1544,7 @@ export class Registry {
       try {
         const watchedDir = fs.realpathSync.native(rootPath);
         const watcher = fs.watch(watchedDir, { recursive: true }, (eventType: string, filename: string | null) => {
-          if (!filename) return;
+          if (this._watchGeneration !== generation || !filename) return;
           if (!filename.endsWith(".ts") && !filename.endsWith(".js")) return;
 
           const fullPath = join(watchedDir, filename);
@@ -1767,6 +1571,9 @@ export class Registry {
             handle(this._handleFileChange(fullPath));
           }
         });
+        watcher.on('error', (error) => {
+          console.warn(`[apcore:registry] Filesystem watch failed for '${rootPath}':`, error);
+        });
         this._watchers.push(watcher);
       } catch (e) {
         // Surface real failures (EMFILE, EACCES, Linux kernels < 4.7 without
@@ -1792,7 +1599,7 @@ export class Registry {
   }
 
   private async _handleFileChange(filePath: string): Promise<void> {
-    const { path: nodePath } = await ensureNodeModules();
+    const { path: nodePath } = requireRegistryFilesystem();
     const { basename, extname } = nodePath;
     const moduleId = this._pathToModuleId(filePath);
 
@@ -1822,13 +1629,8 @@ export class Registry {
   }
 
   private _pathToModuleId(filePath: string): string | null {
-    // _nodePath is guaranteed loaded when this is called from watch/handleFile*
-    const { basename, extname } = _nodePath!;
-    const base = basename(filePath, extname(filePath));
-    for (const mid of this.moduleIds) {
-      if (mid.endsWith(base) || mid === base) {
-        return mid;
-      }
+    for (const [moduleId, sourceFile] of this._sourceFiles) {
+      if (sourceFile === filePath) return moduleId;
     }
     return null;
   }
@@ -1842,20 +1644,11 @@ export class Registry {
    * Aligned with apcore-python `Registry.register_internal` and apcore-rust
    * `Registry::register_internal`.
    */
-  /**
-   * Refuse a module that declares `streaming: true` without implementing the
-   * streaming interface (a `stream()` method plus the `apcore.streaming`
-   * marker).
-   *
-   * Shared by every registration door. `register()` and the discovery path
-   * `_registerImpl` each had their own copy and `registerInternal` had none
-   * (STR-5), so a sys/internal module could advertise streaming it cannot do
-   * and the failure moved to the first `stream()` call. `registerInternal`'s
-   * own contract is that it "bypasses **only** the reserved word check";
-   * apcore-python's `register_internal` runs this check and apcore-rust's
-   * `register_core` is reached by both doors.
-   */
-  private _assertStreamingInterface(moduleId: string, module: unknown): void {
+  private _assertModuleStructure(moduleId: string, module: unknown, requireMetadata = false): void {
+    const errors = validateModule(module, { requireMetadata, allowStaticSchemas: !requireMetadata });
+    if (errors.length > 0) {
+      throw new InvalidInputError(`Invalid module '${moduleId}': ${errors.join('; ')}`);
+    }
     const mod = module as Record<string, unknown>;
     const ann = mod['annotations'];
     if (ann == null || typeof ann !== 'object') return;
@@ -1867,7 +1660,7 @@ export class Registry {
     throw new StreamingInterfaceError(moduleId, true, hasStreamMethod, hasMarker);
   }
 
-  registerInternal(moduleId: string, module: unknown): void {
+  registerInternal(moduleId: string, module: unknown): Promise<void> | void {
     // protocol-spec §2.5.1: ephemeral.* IDs MUST be rejected here. Namespace →
     // registration-mechanism is a 1:1 mapping; mixing blurs the audit-trail
     // distinction between framework-emitted (`system.*`) and caller-emitted
@@ -1886,79 +1679,10 @@ export class Registry {
     // STR-5: module-structure validation, before duplicate detection — the
     // order registry-system.md's "Side Effects (ordered)" states and D-86
     // settles (module_id -> structure/streaming -> validator -> duplicate).
-    this._assertStreamingInterface(moduleId, module);
+    this._assertModuleStructure(moduleId, module);
 
-    // D11-007: route duplicate detection through detectIdConflicts (with an
-    // empty reserved-words set so the bypass for system.* prefixes is
-    // preserved). This restores the case-collision branch present in
-    // apcore-python (registry.py:1674) and apcore-rust (registry.rs:727).
-    // The lowercase-only EBNF in validateModuleId makes case collisions
-    // unreachable today, but the contract surface stays aligned across SDKs.
-    // The duplicate set is `_modules ∪ _inFlight`, matching `register()`
-    // (registry.ts:790) and the reservation rule stated at registry.ts:684.
-    // Reading `_modules` alone left the ID looking free while an onLoad was
-    // in progress, so a re-entrant or concurrent registerInternal of the same
-    // ID was accepted: the inner call published its module and fired a
-    // `register` event, then the outer publish overwrote it last-writer-wins,
-    // orphaning the first instance and leaving its onUnload unreachable.
-    // apcore-python (registry.py:2283) and apcore-rust (registry.rs:1151)
-    // both reserve. registry-system.md's "Applies to every registration path"
-    // forbids per-path exceptions (sync finding A-D-001).
-    const conflict = detectIdConflicts(
-      moduleId,
-      new Set([...this._modules.keys(), ...this._inFlight.keys()]),
-      new Set<string>(),
-      this._lowercaseMap,
-    );
-    if (conflict !== null) {
-      if (conflict.severity === 'error') {
-        // Same discrimination the other registration paths make. The register
-        // Contract's Errors list names DUPLICATE_MODULE_ID for "module_id is
-        // already registered, or a concurrent registration is currently
-        // loading the same ID"; reporting the generic GENERAL_INVALID_INPUT
-        // here meant one condition surfaced under two codes depending on
-        // which entry point the caller used.
-        if (conflict.type === 'duplicate_id') {
-          throw new DuplicateModuleIdError(moduleId);
-        }
-        throw new InvalidInputError(conflict.message);
-      }
-      console.warn(`[apcore:registry] ID conflict: ${conflict.message}`);
-    }
-
-    // A-D-REG-004 / spec REG-003: deferred-publish for registerInternal.
-    // Reserve metadata + lowercase index but defer the visible _modules
-    // insert until onLoad succeeds so the strong-guarantee invariant (#65)
-    // holds uniformly across `register()`, `registerInternal`, and
-    // discover/hot-reload paths.
-    const modObj = module as Record<string, unknown>;
-    this._moduleMeta.set(moduleId, mergeModuleMetadata(modObj, {}));
-    // Mirror apcore-python register_internal and apcore-rust register_core:
-    // every registration site (including sys/internal) populates the lowercase
-    // index. The lowercase-only EBNF pattern enforced by validateModuleId makes
-    // case collisions unreachable today, but keeping _lowercaseMap consistent
-    // with _modules preserves the invariant for downstream conflict detection.
-    this._lowercaseMap.set(moduleId.toLowerCase(), moduleId);
-
-    // Reserve the ID for the whole of onLoad so a re-entrant registration
-    // sees it as taken. Released on both the success and failure paths below.
-    this._inFlight.set(moduleId, Promise.resolve());
-
-    if (typeof modObj['onLoad'] === 'function') {
-      try {
-        (modObj['onLoad'] as () => void)();
-      } catch (e) {
-        this._inFlight.delete(moduleId);
-        this._moduleMeta.delete(moduleId);
-        this._lowercaseMap.delete(moduleId.toLowerCase());
-        this._emitModuleLoadFailed(moduleId, e);
-        throw e;
-      }
-    }
-
-    this._inFlight.delete(moduleId);
-    this._modules.set(moduleId, module);
-    this._triggerEvent(REGISTRY_EVENTS.REGISTER, moduleId, module);
+    this._assertNoIdConflict(moduleId, new Set());
+    return this._registerWithOnLoad(moduleId, module, null, null, { throwSyncLoadFailure: true });
   }
 
   /**
@@ -2072,6 +1796,20 @@ export class Registry {
     return mod;
   }
 
+  /** @internal Hold an execution reference to the instance resolved by lookup. */
+  acquireExecution(moduleId: string, expectedModule: unknown): () => void {
+    if (this._modules.get(moduleId) !== expectedModule) throw new ModuleNotFoundError(moduleId);
+    this.acquire(moduleId);
+    const generation = this._executionGenerations.get(moduleId) ?? {};
+    this._executionGenerations.set(moduleId, generation);
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      if (this._executionGenerations.get(moduleId) === generation) this.release(moduleId);
+    };
+  }
+
   /**
    * Release a previously acquired module reference.
    *
@@ -2123,6 +1861,7 @@ export class Registry {
     }
     this._drainResolvers.delete(moduleId);
     this._refCounts.delete(moduleId);
+    this._executionGenerations.delete(moduleId);
   }
 
   /**

@@ -54,7 +54,8 @@ export class NoopUsageExporter implements UsageExporter {
  */
 export class PeriodicUsageExporter {
   private _timer: ReturnType<typeof setInterval> | null = null;
-  private _running = false;
+  private _exporting: Promise<void> | null = null;
+  private _stopping: Promise<void> | null = null;
 
   constructor(
     private readonly collector: UsageCollector,
@@ -64,8 +65,7 @@ export class PeriodicUsageExporter {
 
   /** Begin periodic export. Idempotent — calling twice is a no-op. */
   start(): void {
-    if (this._running) return;
-    this._running = true;
+    if (this._timer !== null || this._stopping !== null) return;
     this._timer = setInterval(() => {
       this._tick();
     }, this.intervalMs);
@@ -83,16 +83,18 @@ export class PeriodicUsageExporter {
    * is running) and BatchSpanProcessor semantics.
    */
   async stop(): Promise<void> {
-    if (!this._running) return;
-    this._running = false;
-    if (this._timer !== null) {
-      clearInterval(this._timer);
-      this._timer = null;
-    }
-    await this.exporter.shutdown();
+    if (this._stopping !== null) return this._stopping;
+    if (this._timer === null) return;
+    clearInterval(this._timer);
+    this._timer = null;
+    this._stopping = Promise.resolve(this._exporting).then(() => this.exporter.shutdown()).finally(() => {
+      this._stopping = null;
+    });
+    return this._stopping;
   }
 
   private _tick(): void {
+    if (this._exporting !== null) return;
     let summary: Record<string, unknown>;
     try {
       summary = { modules: this.collector.getSummary() };
@@ -100,15 +102,25 @@ export class PeriodicUsageExporter {
       console.warn('[apcore:usage-exporter] Failed to build summary:', e);
       return;
     }
+    let complete!: () => void;
+    this._exporting = new Promise<void>(resolve => { complete = resolve; });
+    const finish = () => {
+      this._exporting = null;
+      complete();
+    };
     try {
       const result = this.exporter.export(summary);
-      if (result instanceof Promise) {
-        result.catch((e: unknown) => {
+      if (result !== undefined) {
+        void Promise.resolve(result).then(finish, (e: unknown) => {
           console.warn('[apcore:usage-exporter] export() rejected:', e);
+          finish();
         });
+      } else {
+        finish();
       }
     } catch (e) {
       console.warn('[apcore:usage-exporter] export() threw:', e);
+      finish();
     }
   }
 }

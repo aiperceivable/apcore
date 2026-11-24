@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { UsageCollector, UsageMiddleware, bucketKey } from '../src/observability/usage.js';
+import { STORAGE_NAMESPACE_USAGE } from '../src/observability/storage.js';
 import { Context } from '../src/context.js';
 
 describe('bucketKey', () => {
@@ -10,6 +11,15 @@ describe('bucketKey', () => {
 });
 
 describe('UsageCollector', () => {
+  it('persists distinct usage records with the same module and timestamp', async () => {
+    const collector = new UsageCollector();
+    const timestamp = new Date().toISOString();
+    collector.record('mod.a', 'caller.one', 1, true, timestamp);
+    collector.record('mod.a', 'caller.two', 2, true, timestamp);
+    const rows = await collector.storage.list(STORAGE_NAMESPACE_USAGE, 'mod.a:');
+    expect(rows.map(([, row]) => row['caller_id'])).toEqual(['caller.one', 'caller.two']);
+  });
+
   it('records and retrieves usage summary', () => {
     const collector = new UsageCollector();
     collector.record('mod.a', 'caller1', 50, true);

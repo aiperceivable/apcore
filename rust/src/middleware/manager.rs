@@ -190,11 +190,11 @@ impl MiddlewareManager {
                 ),
             ));
         }
+        let mut mws = self.middlewares.lock();
         let identity = registration.map(|r| {
             self.note_identity(&r);
             r.identity
         });
-        let mut mws = self.middlewares.lock();
         let mut handles = self.handles.lock();
         let mut identities = self.identities.lock();
         // Find the first position where existing priority is strictly less than
@@ -337,12 +337,13 @@ impl MiddlewareManager {
     /// registered — the same shape `remove` uses, and idempotent for the same
     /// reason.
     pub fn remove_handle(&self, handle: MiddlewareHandle) -> bool {
+        let mut middlewares = self.middlewares.lock();
         let mut handles = self.handles.lock();
         let Some(i) = handles.iter().position(|h| *h == handle) else {
             return false;
         };
         handles.remove(i);
-        self.middlewares.lock().remove(i);
+        middlewares.remove(i);
         drop(handles);
         self.forget_identity_at(i);
         true
@@ -363,6 +364,10 @@ impl MiddlewareManager {
         mws.iter().find(|m| m.name() == name).map(Arc::clone)
     }
 
+    pub(crate) fn execution_snapshot(&self) -> Vec<Arc<dyn Middleware>> {
+        self.middlewares.lock().clone()
+    }
+
     /// Run the before hooks for all middlewares in order.
     ///
     /// Returns the (possibly modified) input and the list of indices of
@@ -375,14 +380,18 @@ impl MiddlewareManager {
     pub async fn execute_before(
         &self,
         module_id: &str,
+        inputs: serde_json::Value,
+        ctx: &Context<serde_json::Value>,
+    ) -> Result<(serde_json::Value, Vec<usize>), ModuleError> {
+        Self::execute_before_snapshot(&self.execution_snapshot(), module_id, inputs, ctx).await
+    }
+
+    pub(crate) async fn execute_before_snapshot(
+        mws: &[Arc<dyn Middleware>],
+        module_id: &str,
         mut inputs: serde_json::Value,
         ctx: &Context<serde_json::Value>,
     ) -> Result<(serde_json::Value, Vec<usize>), ModuleError> {
-        // Clone Arc pointers so the mutex is not held across .await points.
-        let mws: Vec<Arc<dyn Middleware>> = {
-            let guard = self.middlewares.lock();
-            guard.iter().map(Arc::clone).collect()
-        };
         let mut executed: Vec<usize> = Vec::new();
         for (i, mw) in mws.iter().enumerate() {
             // Push BEFORE calling before() so the failing middleware is included in
@@ -439,14 +448,20 @@ impl MiddlewareManager {
         &self,
         module_id: &str,
         inputs: serde_json::Value,
+        output: serde_json::Value,
+        ctx: &Context<serde_json::Value>,
+    ) -> Result<serde_json::Value, ModuleError> {
+        Self::execute_after_snapshot(&self.execution_snapshot(), module_id, inputs, output, ctx)
+            .await
+    }
+
+    pub(crate) async fn execute_after_snapshot(
+        mws: &[Arc<dyn Middleware>],
+        module_id: &str,
+        inputs: serde_json::Value,
         mut output: serde_json::Value,
         ctx: &Context<serde_json::Value>,
     ) -> Result<serde_json::Value, ModuleError> {
-        // Clone Arc pointers so the mutex is not held across .await points.
-        let mws: Vec<Arc<dyn Middleware>> = {
-            let guard = self.middlewares.lock();
-            guard.iter().map(Arc::clone).collect()
-        };
         for mw in mws.iter().rev() {
             if let Some(modified) = mw
                 .after(module_id, inputs.clone(), output.clone(), ctx)
@@ -499,12 +514,25 @@ impl MiddlewareManager {
         ctx: &Context<serde_json::Value>,
         executed: &[usize],
     ) -> Option<crate::middleware::base::OnErrorOutcome> {
-        // Clone Arc pointers so the mutex is not held across .await points.
-        let mws: Vec<Arc<dyn Middleware>> = {
-            let guard = self.middlewares.lock();
-            guard.iter().map(Arc::clone).collect()
-        };
+        Self::execute_on_error_outcome_snapshot(
+            &self.execution_snapshot(),
+            module_id,
+            inputs,
+            error,
+            ctx,
+            executed,
+        )
+        .await
+    }
 
+    pub(crate) async fn execute_on_error_outcome_snapshot(
+        mws: &[Arc<dyn Middleware>],
+        module_id: &str,
+        inputs: serde_json::Value,
+        error: &ModuleError,
+        ctx: &Context<serde_json::Value>,
+        executed: &[usize],
+    ) -> Option<crate::middleware::base::OnErrorOutcome> {
         for &i in executed.iter().rev() {
             if let Some(mw) = mws.get(i) {
                 match mw

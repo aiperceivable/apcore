@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 import threading
 import time
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -184,7 +185,7 @@ class UsageCollector:
         if self._storage is not None:
             self._storage.save(
                 STORAGE_NAMESPACE_USAGE,
-                f"{module_id}:{timestamp}",
+                f"{module_id}:{timestamp}:{uuid.uuid4().hex}",
                 {
                     "module_id": module_id,
                     "timestamp": timestamp,

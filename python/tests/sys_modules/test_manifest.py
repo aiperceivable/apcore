@@ -368,9 +368,7 @@ class TestManifestFullSelfReflective:
     def test_manifest_full_self_reflective(self) -> None:
         registry = Registry(extensions_dir="/tmp/fake_extensions")
         manifest_mod = ManifestFullModule(registry=registry)
-        # Bypass reserved word check (sys modules are registered internally)
-        registry._modules["system.manifest.full"] = manifest_mod
-        registry._lowercase_map["system.manifest.full"] = "system.manifest.full"
+        registry.register_internal("system.manifest.full", manifest_mod)
         result = manifest_mod.execute({}, context=None)
         module_ids = [m["module_id"] for m in result["modules"]]
         assert "system.manifest.full" in module_ids

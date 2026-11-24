@@ -170,6 +170,13 @@ pub trait EventSubscriber: Send + Sync + std::fmt::Debug {
 
     /// Handle an incoming event.
     async fn on_event(&self, event: &ApCoreEvent) -> Result<(), ModuleError>;
+
+    /// Report an attempt to the emitter's retry loop. `None` means the
+    /// subscriber did not attempt delivery.
+    #[doc(hidden)]
+    async fn delivery_attempt(&self, event: &ApCoreEvent) -> Option<Result<(), ModuleError>> {
+        Some(self.on_event(event).await)
+    }
 }
 
 // ---------------------------------------------------------------------------

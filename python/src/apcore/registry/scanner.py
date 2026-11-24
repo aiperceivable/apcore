@@ -21,7 +21,7 @@ _SKIP_FILE_SUFFIXES = {".pyc"}
 
 
 def scan_extensions(
-    root: Path,
+    root: str | Path,
     max_depth: int = 8,
     follow_symlinks: bool = False,
     ignore_patterns: Sequence[str] | None = None,
@@ -39,9 +39,9 @@ def scan_extensions(
     supplied and a directory a project had excluded from discovery was scanned
     and registered anyway — a skip rule that failed OPEN (apcore#118).
     """
-    root = Path(root).resolve()
-    if not root.exists():
+    if not os.path.exists(root):
         raise ConfigNotFoundError(config_path=str(root))
+    root = Path(root).resolve()
 
     # Empty entries are dropped rather than treated as a pattern matching
     # nothing in particular: A25 anchors, so `""` would match only the empty
@@ -202,10 +202,10 @@ def scan_multi_root(
     seen_namespaces: set[str] = set()
 
     # Validate all namespaces before scanning
-    resolved: list[tuple[Path, str]] = []
+    resolved: list[tuple[str | Path, str]] = []
     for entry in roots:
-        root_path = Path(entry["root"])
-        namespace = entry.get("namespace") or root_path.name
+        root_path = entry["root"]
+        namespace = entry.get("namespace") or Path(root_path).name
         if namespace in seen_namespaces:
             raise ConfigError(message=f"Duplicate namespace: '{namespace}'")
         seen_namespaces.add(namespace)

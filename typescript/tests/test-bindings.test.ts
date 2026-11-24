@@ -146,6 +146,36 @@ describe('BindingLoader', () => {
   });
 
   describe('loadBindings', () => {
+    it('reports conflicting schema modes before resolving an unavailable target', async () => {
+      const file = writeTempYaml('conflicting.binding.yaml', `bindings:
+  - module_id: test.conflicting
+    target: 'missing-apcore-test-package:run'
+    auto_schema: true
+    input_schema: {type: object}
+    output_schema: {type: object}
+`);
+      await expect(loader.loadBindings(file, registry)).rejects.toMatchObject({
+        code: 'BINDING_SCHEMA_MODE_CONFLICT',
+      });
+    });
+
+    it('honors discovery visibility and explicit extra annotations', async () => {
+      const modPath = writeTempModule('hidden.mjs', 'export function run() { return {}; }');
+      const file = writeTempYaml('hidden.binding.yaml', `bindings:
+  - module_id: test.hidden
+    target: '${modPath}:run'
+    annotations:
+      discoverable: false
+      team: legacy
+      extra: {team: current}
+`);
+      const [module] = await loader.loadBindings(file, registry);
+
+      expect(module.annotations).toMatchObject({ discoverable: false, extra: { team: 'current' } });
+      expect(registry.list()).not.toContain('test.hidden');
+      expect(registry.list({ includeHidden: true })).toContain('test.hidden');
+    });
+
     it('throws BindingFileInvalidError for non-existent file', async () => {
       await expect(
         loader.loadBindings('/nonexistent/path/binding.yaml', registry),

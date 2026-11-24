@@ -12,7 +12,7 @@ description: "Two ways to turn existing code into modules: function wrapping (Py
 
 Besides implementing the Module interface directly, apcore offers two ways to turn existing code into modules:
 
-- **Function wrapping** (§5.11) — wrap a function as a module in code. Python has the `@module` decorator (schemas inferred from type hints); TypeScript has the `module({...})` function (explicit TypeBox schemas); Rust has `FunctionModule` and the `APCore::module(...)` shorthand (explicit JSON schemas, closure handler).
+- **Function wrapping** (§5.11) uses a callable as a module. Python infers schemas from type hints, TypeScript can infer schemas at build time, and Rust derives schemas from the input and output types.
 - **Binding files** (§5.12) — declare modules in a YAML file that maps a `module_id` to a `target` callable, with no change to the target's code. Every SDK ships a `BindingLoader`.
 
 Both paths produce `FunctionModule` instances that run through the full execution pipeline (ACL, approval, middleware, validation).
@@ -63,8 +63,7 @@ Both paths produce `FunctionModule` instances that run through the full executio
 
     const client = new APCore();
 
-    // module() needs an explicit id and TypeBox schemas: JavaScript cannot
-    // derive either from a function at runtime.
+    // Supply TypeBox schemas when calling this API directly from JavaScript.
     client.module({
       id: "text.upper",
       description: "Convert text to uppercase",
@@ -124,6 +123,80 @@ Two registering shortcuts take arguments only (always call them, even with no ar
 - **Description** — the `description` argument, else the first docstring line, else `"Module <name>"`.
 - **Auto ID** — from `__module__` and `__qualname__`, lowercased, non-alphanumerics replaced with `_`, digit-leading segments prefixed with `_` (§5.11.6).
 - **Async** — an `async def` function produces a module whose `execute` is a coroutine function.
+
+### TypeScript schema inference
+
+Use the `apcore-js/compiler` transformer with a TypeScript `Program` to infer schemas before the compiler erases types. Put the callable in the `execute` property of an inline options object passed to the named `module` export. The compiler takes the input schema from the callable's first parameter and the output schema from its awaited return type. An explicit schema in the options takes precedence.
+
+```typescript
+import { APCore, module } from "apcore-js";
+
+function toUpper(input: { text: string }): { result: string } {
+  return { result: input.text.toUpperCase() };
+}
+
+const client = new APCore();
+await client.register("text.upper", module({ id: "text.upper", execute: toUpper }));
+console.log(await client.call("text.upper", { text: "hi" }));
+```
+
+Add the transformer where your build emits the TypeScript program.
+
+```typescript
+import ts from "typescript";
+import { inferModuleSchemas } from "apcore-js/compiler";
+
+const program = ts.createProgram(["app.mts"], {
+  target: ts.ScriptTarget.ES2022,
+  module: ts.ModuleKind.NodeNext,
+  strict: true,
+});
+const diagnostics = ts.getPreEmitDiagnostics(program);
+if (diagnostics.length) {
+  throw new Error(ts.flattenDiagnosticMessageText(diagnostics[0].messageText, "\n"));
+}
+const result = program.emit(undefined, undefined, undefined, false, {
+  before: [inferModuleSchemas(program)],
+});
+if (result.emitSkipped) throw new Error("TypeScript emit failed");
+```
+
+### Rust schema inference
+
+`APCore::typed_module` derives the schemas using `schemars::JsonSchema`. The input type implements `Deserialize` and the output type implements `Serialize`. Use `APCore::module` to supply explicit JSON Schemas.
+
+```rust
+use apcore::{APCore, ModuleError, TypedModuleOptions};
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+use serde_json::json;
+
+#[derive(Deserialize, JsonSchema)]
+struct Input {
+    text: String,
+}
+
+#[derive(Serialize, JsonSchema)]
+struct Output {
+    result: String,
+}
+
+#[tokio::main]
+async fn main() -> Result<(), ModuleError> {
+    let mut client = APCore::new();
+    client.typed_module(
+        "text.upper",
+        "Convert text to uppercase",
+        TypedModuleOptions::default(),
+        |input: Input, _| Box::pin(async move {
+            Ok(Output { result: input.text.to_uppercase() })
+        }),
+    )?;
+    let result = client.call("text.upper", json!({"text": "hi"}), None, None).await?;
+    println!("{result}");
+    Ok(())
+}
+```
 
 ## Binding files
 

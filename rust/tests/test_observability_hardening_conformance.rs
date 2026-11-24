@@ -455,6 +455,7 @@ async fn batch_processor_shutdown_drains_remaining_spans() {
     let exporter = InMemoryExporter::new();
     let processor = BatchSpanProcessor::builder(Arc::new(exporter.clone()))
         .schedule_delay_ms(60_000)
+        .max_export_batch_size(2)
         .export_timeout_ms(2_000)
         .build();
 
@@ -482,6 +483,39 @@ async fn batch_processor_shutdown_drains_remaining_spans() {
         10,
         "all 10 buffered spans must be exported during shutdown drain"
     );
+}
+
+#[tokio::test]
+async fn batch_processor_force_flush_preserves_pending_span_after_timeout() {
+    #[derive(Debug, Default)]
+    struct BlockingExporter {
+        released: tokio::sync::Notify,
+        exported: std::sync::atomic::AtomicBool,
+    }
+
+    #[async_trait::async_trait]
+    impl apcore::observability::span::SpanExporter for BlockingExporter {
+        async fn export(&self, _span: &Span) -> Result<(), apcore::ModuleError> {
+            self.released.notified().await;
+            self.exported
+                .store(true, std::sync::atomic::Ordering::Release);
+            Ok(())
+        }
+
+        async fn shutdown(&self) -> Result<(), apcore::ModuleError> {
+            Ok(())
+        }
+    }
+
+    let exporter = Arc::new(BlockingExporter::default());
+    let processor = BatchSpanProcessor::builder(exporter.clone())
+        .schedule_delay_ms(60_000)
+        .build();
+    processor.on_span_end(Span::new("pending", "trace")).await;
+    assert!(!processor.force_flush(5).await);
+    exporter.released.notify_one();
+    assert!(processor.force_flush(100).await);
+    assert!(exporter.exported.load(std::sync::atomic::Ordering::Acquire));
 }
 
 // ---------------------------------------------------------------------------

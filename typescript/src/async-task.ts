@@ -437,6 +437,35 @@ export class AsyncTaskManager {
     return current !== null && TERMINAL_STATUSES.has(current.status);
   }
 
+  /** Retry a transient write without replaying the module invocation. */
+  private async _saveRunnerState(info: TaskInfo, internal: InternalTask): Promise<boolean> {
+    if (internal.cancelled) return false;
+    try {
+      await this._store.save(info);
+    } catch {
+      const current = await this._store.get(info.taskId);
+      if (internal.cancelled || current === null || TERMINAL_STATUSES.has(current.status)) return false;
+      await this._store.save(info);
+    }
+    return !internal.cancelled;
+  }
+
+  private async _recordRunnerFailure(taskId: string, internal: InternalTask, error: unknown): Promise<void> {
+    if (internal.cancelled) return;
+    try {
+      const current = await this._store.get(taskId);
+      if (current === null || internal.cancelled || TERMINAL_STATUSES.has(current.status)) return;
+      await this._store.save({
+        ...current,
+        status: TaskStatus.FAILED,
+        completedAt: Date.now() / 1000,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    } catch (storeError) {
+      console.warn(`[apcore:async-task] Could not persist failure for '${taskId}':`, storeError);
+    }
+  }
+
   /** Count tasks in PENDING or RUNNING state across the store. */
   private async _countActiveTasks(): Promise<number> {
     let count = 0;
@@ -562,13 +591,12 @@ export class AsyncTaskManager {
       // executor sees real cancellation (D-18). When the caller already
       // supplied a Context we shallow-clone it to attach the token without
       // mutating the caller's instance.
-      const taskContext = await this._buildTaskContext(context, cancelToken);
-
       // slotHeld tracks whether we currently hold a concurrency slot.
       // We release it during backoff waits so other tasks can run.
       let slotHeld = false;
 
       try {
+        const taskContext = await this._buildTaskContext(context, cancelToken);
         // eslint-disable-next-line no-constant-condition
         while (true) {
           await this._acquireSlot();
@@ -576,8 +604,9 @@ export class AsyncTaskManager {
 
           if (internal.cancelled) return;
 
-          const info = await this._store.get(taskId) as MutableTaskInfo | null;
-          if (!info) return;
+          const stored = await this._store.get(taskId);
+          if (!stored) return;
+          const info: MutableTaskInfo = { ...stored };
 
           // The stored record is the authority on whether this task is still
           // ours to advance. `internal.cancelled` only sees cancels issued
@@ -595,45 +624,32 @@ export class AsyncTaskManager {
           if (info.startedAt === null) {
             info.startedAt = Date.now() / 1000;
           }
-          await this._store.save(info);
+          if (!await this._saveRunnerState({ ...info }, internal)) return;
 
-          let execError: unknown = null;
-          let succeeded = false;
-          // Set when the stored record reached a terminal status while this
-          // attempt was running: the task is no longer ours to finish, so we
-          // stop without writing anything further.
-          let abandoned = false;
-
+          let attempt: { result: Record<string, unknown> } | { error: unknown };
           try {
-            const result = await this._executor.call(moduleId, inputs, taskContext);
-            if (!internal.cancelled) {
-              if (await this._isStoredTerminal(taskId)) {
-                abandoned = true;
-              } else {
-                info.status = TaskStatus.COMPLETED;
-                info.completedAt = Date.now() / 1000;
-                info.result = result;
-                await this._store.save(info);
-                succeeded = true;
-              }
-            }
-          } catch (err) {
-            execError = err;
+            attempt = { result: await this._executor.call(moduleId, inputs, taskContext) };
+          } catch (error) {
+            attempt = { error };
           }
 
-          if (succeeded || abandoned || internal.cancelled) return;
+          if (internal.cancelled || await this._isStoredTerminal(taskId)) return;
+          if ('result' in attempt) {
+            info.status = TaskStatus.COMPLETED;
+            info.completedAt = Date.now() / 1000;
+            info.result = attempt.result;
+            await this._saveRunnerState(info, internal);
+            return;
+          }
 
           if (retry && info.retryCount < retry.maxRetries) {
             const delay = retry.computeDelayMs(info.retryCount);
-            // Re-checked before the write: a cancel that landed while the
-            // attempt was failing must not be resurrected as PENDING.
-            if (await this._isStoredTerminal(taskId)) return;
             info.retryCount += 1;
             info.status = TaskStatus.PENDING;
             // Intentionally do NOT reset startedAt / completedAt (A-D-AT-08):
             // startedAt reflects first-run timestamp; completedAt remains null
             // because the task has not yet terminated.
-            await this._store.save(info);
+            if (!await this._saveRunnerState(info, internal)) return;
 
             // Publish the logical retry outcome promptly, but do not let a
             // retry or another task overlap this attempt's deferred finalizers.
@@ -651,14 +667,16 @@ export class AsyncTaskManager {
             if (internal.cancelled) return;
             // Loop continues: re-acquire slot and retry
           } else {
-            if (await this._isStoredTerminal(taskId)) return;
             info.status = TaskStatus.FAILED;
             info.completedAt = Date.now() / 1000;
-            info.error = execError instanceof Error ? execError.message : String(execError);
-            await this._store.save(info);
+            info.error = attempt.error instanceof Error ? attempt.error.message : String(attempt.error);
+            await this._saveRunnerState(info, internal);
             return;
           }
         }
+      } catch (error) {
+        console.warn('[apcore:async-task] Unexpected error in task runner:', error);
+        await this._recordRunnerFailure(taskId, internal, error);
       } finally {
         await cancelToken.drain();
         if (slotHeld) this._releaseSlot();
@@ -675,9 +693,7 @@ export class AsyncTaskManager {
       }
     };
 
-    const worker = run().catch((err) => {
-      console.warn('[apcore:async-task] Unexpected error in task runner:', err);
-    });
+    const worker = run();
     this._workers.add(worker);
     void worker.then(() => { this._workers.delete(worker); });
   }

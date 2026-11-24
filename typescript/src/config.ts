@@ -3,7 +3,7 @@
  * Supports legacy mode (flat YAML) and namespace mode (apcore top-level key).
  */
 
-import { existsSync, readFileSync, realpathSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import process from 'node:process';
@@ -23,6 +23,7 @@ import { jsonSchemaToTypeBox } from './schema/loader-pure.js';
 import { SchemaValidator } from './schema/validator.js';
 import { DEFAULTS, getDefault } from './config-defaults.js';
 import { collectUndeclaredFrameworkKeys, PATH_TYPED_CONFIG_KEYS } from './config-key-surface.js';
+import { negotiateDocumentVersion } from './version.js';
 
 // Re-exported so existing `import { DEFAULTS, getDefault } from './config.js'`
 // paths keep working unchanged.
@@ -315,7 +316,8 @@ function setNested(data: Record<string, unknown>, dotPath: string, value: unknow
 const PY_INT_RE = /^[+-]?[0-9]+$/;
 const PY_FLOAT_RE = /^[+-]?(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eE][+-]?[0-9]+)?$/;
 
-function coerceEnvValue(value: string): unknown {
+function coerceEnvValue(value: string, dotPath: string): unknown {
+  if (PATH_TYPED_DOT_PATHS.has(dotPath)) return value;
   if (value.toLowerCase() === 'true') return true;
   if (value.toLowerCase() === 'false') return false;
   const trimmed = value.trim();
@@ -385,7 +387,7 @@ export function applyEnvOverrides(data: Record<string, unknown>): Record<string,
   for (const [envVar, configKey] of _globalEnvMap.entries()) {
     const envValue = env[envVar];
     if (envValue === undefined) continue;
-    const coerced = coerceEnvValue(envValue);
+    const coerced = coerceEnvValue(envValue, configKey);
     if (discardsEmptyPathValue(configKey, coerced, envVar)) continue;
     setNested(result, configKey, coerced);
   }
@@ -403,7 +405,7 @@ export function applyEnvOverrides(data: Record<string, unknown>): Record<string,
       .replace(/__/g, '\x00')
       .replace(/_/g, '.')
       .replace(/\x00/g, '_');
-    const coerced = coerceEnvValue(envValue);
+    const coerced = coerceEnvValue(envValue, dotPath);
     if (discardsEmptyPathValue(dotPath, coerced, envKey)) continue;
     setNested(result, dotPath, coerced);
   }
@@ -539,12 +541,13 @@ export function applyNamespaceEnvOverrides(data: Record<string, unknown>): Recor
   for (const [envKey, envValue] of Object.entries(env)) {
     if (envValue === undefined) continue;
     if (envKey === ENV_CONFIG_FILE) continue;
-    const coerced = coerceEnvValue(envValue);
-
     // 1. Global env_map (bare env var → top-level key).
     if (_globalEnvMap.has(envKey)) {
       const configKey = _globalEnvMap.get(envKey)!;
-      setNested(result, configKey, coerced);
+      const dotPath = configKey.startsWith('apcore.') ? configKey.slice('apcore.'.length) : configKey;
+      if (!discardsEmptyPathValue(dotPath, envValue, envKey)) {
+        setNested(result, configKey, coerceEnvValue(envValue, dotPath));
+      }
       continue;
     }
 
@@ -554,11 +557,13 @@ export function applyNamespaceEnvOverrides(data: Record<string, unknown>): Recor
     for (const reg of _globalNsRegistry.values()) {
       if (reg.envMap && envKey in reg.envMap) {
         const configKey = reg.envMap[envKey];
+        const dotPath = `${reg.name}.${configKey}`;
+        handledByNsMap = true;
+        if (discardsEmptyPathValue(dotPath, envValue, envKey)) break;
         if (typeof result[reg.name] !== 'object' || result[reg.name] === null) {
           result[reg.name] = {};
         }
-        setNested(result[reg.name] as Record<string, unknown>, configKey, coerced);
-        handledByNsMap = true;
+        setNested(result[reg.name] as Record<string, unknown>, configKey, coerceEnvValue(envValue, dotPath));
         break;
       }
     }
@@ -578,6 +583,7 @@ export function applyNamespaceEnvOverrides(data: Record<string, unknown>): Recor
         // §9.2.1 requirement 5 applies in namespace mode too; the path-typed
         // set is spelled from the apcore namespace's root.
         const fullPath = reg.name === 'apcore' ? key : `${reg.name}.${key}`;
+        const coerced = coerceEnvValue(envValue, fullPath);
         if (discardsEmptyPathValue(fullPath, coerced, envKey)) break;
 
         if (typeof result[reg.name] !== 'object' || result[reg.name] === null) {
@@ -1092,6 +1098,7 @@ export class Config {
 
     if (config._validateOnLoad) {
       config.validate();
+      config._validateDocumentVersion();
     }
 
     config._warnDeprecatedInertKeys();
@@ -1199,10 +1206,15 @@ export class Config {
   /** Shared write path for {@link Config.set}. */
   private _setInto(target: Record<string, unknown>, key: string, value: unknown): void {
     if (this._mode === 'namespace') {
-      const resolved = resolveNamespacePath(key);
+      let resolved = resolveNamespacePath(key);
       if (resolved === null) {
         setNested(target, key, value);
         return;
+      }
+      const namespace = resolved.namespace;
+      if (!Object.hasOwn(this._data, namespace) && !_globalNsRegistry.has(namespace) &&
+          (Object.hasOwn(DEFAULTS, namespace) || namespace === 'version' || namespace === 'project')) {
+        resolved = { namespace: 'apcore', subPath: key };
       }
       if (!resolved.subPath) {
         target[resolved.namespace] = value;
@@ -1248,10 +1260,11 @@ export class Config {
   resolvePath(value: string): string {
     if (value === '') throw new ConfigError('Cannot resolve an empty filesystem path');
     if (isAbsolute(value)) return value;
-    // Collapsing a parent segment before traversing a symlink can select
-    // a different file than the same path opened by the operating system.
+    // The filesystem consumes parent segments after following symlinks, and
+    // trailing separators or `/.` require that the last entry be a directory.
     const separators = process.platform === 'win32' ? /[\\/]/ : /\//;
-    return value.split(separators).includes('..')
+    const segments = value.split(separators);
+    return segments.includes('..') || segments.slice(1).includes('.') || segments.at(-1) === ''
       ? appendFilesystemPath(this._projectRoot, value)
       : resolve(this._projectRoot, value);
   }
@@ -1437,13 +1450,7 @@ export class Config {
     //    plaintext. JavaScript is the engine that rejects the inline `(?i)`
     //    flag the other two accept, so this fires on portable-LOOKING patterns
     //    and not only on malformed ones.
-    errors.push(...uncompilableRegexPatternErrors(this.get('obs.redaction.regex_patterns')));
-
-    // 5. PROTOCOL_SPEC §10.1.1 requirement 3: an OTLP endpoint set against an
-    //    exporter that does not read it is a rejected configuration, not a
-    //    silent no-op. A value an operator wrote down and nothing reads is the
-    //    shape of every defect apcore#118 found.
-    errors.push(...otlpEndpointMismatchErrors(this));
+    errors.push(...this._commonValidationErrors());
 
     if (errors.length > 0) {
       throw new ConfigError(
@@ -1451,6 +1458,31 @@ export class Config {
           errors.map((e) => `  - ${e}`).join('\n'),
       );
     }
+  }
+
+  private _validateDocumentVersion(): void {
+    const version = this.getDeclared('version');
+    if (typeof version === 'string') negotiateDocumentVersion(version);
+  }
+
+  private _commonValidationErrors(): string[] {
+    const errors = [
+      ...uncompilableRegexPatternErrors(this.get('obs.redaction.regex_patterns')),
+      ...otlpEndpointMismatchErrors(this),
+    ];
+    for (const field of REQUIRED_FIELDS) {
+      const value = this.getDeclared(field);
+      if (value != null && typeof value !== 'string') {
+        errors.push(`Invalid value for '${field}': must be a string`);
+      }
+    }
+    if (this.get('schema.strategy') === 'yaml_only') {
+      const root = this.get('schema.root') || './schemas';
+      if (typeof root !== 'string' || !statSync(this.resolvePath(root), { throwIfNoEntry: false })?.isDirectory()) {
+        errors.push("Invalid value for 'schema.root': yaml_only requires an existing schema directory");
+      }
+    }
+    return errors;
   }
 
   private _validateNamespaceMode(): void {
@@ -1491,9 +1523,7 @@ export class Config {
       errors.push(...this._undeclaredFrameworkKeyErrors(apcore as Record<string, unknown>));
     }
 
-    // §10.1.1 requirement 3, as in legacy mode: the disagreement is between two
-    // keys, and which file layout declared them changes nothing about it.
-    errors.push(...otlpEndpointMismatchErrors(this));
+    errors.push(...this._commonValidationErrors());
 
     // Strict mode: reject unknown namespaces (§9.10 step 3b).
     //
@@ -1644,29 +1674,29 @@ export class Config {
     if (this._sourceFile === null) {
       throw new ConfigError('Cannot reload: Config was not loaded from a YAML file');
     }
-    const previousMounts = new Map(this._mounts);
     // Load unvalidated: validation must run after mounts and env overrides are
     // re-applied, otherwise it would judge an incomplete tree.
     const reloaded = Config._loadFromFile(this._sourceFile, { validate: false }, this._projectRoot);
-    this._data = reloaded._data;
-    this._declared = reloaded._declared;
-    this._mode = reloaded._mode;
-    this._mounts = new Map();
 
     // Re-apply mounts
-    for (const [namespace, mountData] of previousMounts) {
-      this.mount(namespace, { fromDict: mountData });
+    for (const [namespace, mountData] of this._mounts) {
+      reloaded.mount(namespace, { fromDict: mountData });
     }
 
     // Re-apply namespace env overrides in namespace mode
-    if (this._mode === 'namespace') {
-      this._data = applyNamespaceEnvOverrides(this._data);
-      this._declared = applyNamespaceEnvOverrides(this._declared);
+    if (reloaded._mode === 'namespace') {
+      reloaded._data = applyNamespaceEnvOverrides(reloaded._data);
+      reloaded._declared = applyNamespaceEnvOverrides(reloaded._declared);
     }
 
     if (this._validateOnLoad) {
-      this.validate();
+      reloaded.validate();
+      reloaded._validateDocumentVersion();
     }
+    this._data = reloaded._data;
+    this._declared = reloaded._declared;
+    this._mode = reloaded._mode;
+    this._mounts = reloaded._mounts;
   }
 }
 

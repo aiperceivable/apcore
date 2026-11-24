@@ -216,14 +216,14 @@ impl SchemaLoader {
         let mut last_err: Option<ModuleError> = None;
         for path in &candidates {
             if path.exists() {
-                self.load_from_file(module_id, path)?;
-                // INVARIANT: load_from_file inserts into self.schemas on Ok; the key is present.
-                let value = self.get(module_id).expect("just loaded").clone();
+                let value = Self::read_schema_file(path)?;
                 // Resolve `$ref`s against this file's directory before shaping
                 // the definition, so circular / too-deep / unresolvable
                 // references fail at load time as they do in Python and TS.
                 let value = self.resolve(&value, Some(path))?;
-                return Self::value_to_schema_def(module_id, value);
+                let definition = Self::value_to_schema_def(module_id, value.clone())?;
+                self.schemas.insert(module_id.to_string(), value);
+                return Ok(definition);
             }
             last_err = Some(ModuleError::new(
                 ErrorCode::SchemaNotFound,
@@ -354,6 +354,12 @@ impl SchemaLoader {
 
     /// Load a schema from a JSON/YAML file.
     pub fn load_from_file(&mut self, name: &str, path: &Path) -> Result<(), ModuleError> {
+        let value = Self::read_schema_file(path)?;
+        self.schemas.insert(name.to_string(), value);
+        Ok(())
+    }
+
+    fn read_schema_file(path: &Path) -> Result<serde_json::Value, ModuleError> {
         let contents = std::fs::read_to_string(path).map_err(|e| {
             ModuleError::new(
                 ErrorCode::SchemaNotFound,
@@ -378,9 +384,21 @@ impl SchemaLoader {
                 )
             })?
         };
-
-        self.schemas.insert(name.to_string(), value);
-        Ok(())
+        let is_definition = (value.get("input_schema").is_some()
+            || value.get("inputSchema").is_some())
+            && (value.get("output_schema").is_some() || value.get("outputSchema").is_some());
+        if is_definition {
+            if let Some(version) = value.get("version") {
+                let declared = version.as_str().ok_or_else(|| {
+                    ModuleError::new(
+                        ErrorCode::VersionIncompatible,
+                        "Schema version must be a string",
+                    )
+                })?;
+                crate::version::negotiate_document_version(declared)?;
+            }
+        }
+        Ok(value)
     }
 
     /// Load a schema from a JSON value.

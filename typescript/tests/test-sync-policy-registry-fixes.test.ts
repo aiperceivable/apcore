@@ -65,6 +65,13 @@ describe('W3: ExecutionPolicy.fromObject rejects non-boolean governance switches
   });
 });
 
+
+const validModuleMetadata = {
+  description: 'Test module',
+  inputSchema: { type: 'object' },
+  outputSchema: { type: 'object' },
+};
+
 // ---------------------------------------------------------------------------
 // W4 — structure validation precedes duplicate detection
 // ---------------------------------------------------------------------------
@@ -72,9 +79,10 @@ describe('W3: ExecutionPolicy.fromObject rejects non-boolean governance switches
 describe('W4: register() validates module structure before duplicate detection', () => {
   it('raises StreamingInterfaceError, not DuplicateModuleIdError, for a broken re-registration', async () => {
     const registry = new Registry();
-    await registry.register('svc.stream', { execute: async () => ({}) });
+    await registry.register('svc.stream', { ...validModuleMetadata, execute: async () => ({}) });
 
     const broken = {
+      ...validModuleMetadata,
       execute: async () => ({}),
       annotations: { streaming: true },
       // no stream() and no STREAMING_MARKER — the structure is invalid
@@ -85,8 +93,8 @@ describe('W4: register() validates module structure before duplicate detection',
 
   it('still raises DuplicateModuleIdError for a structurally valid duplicate', async () => {
     const registry = new Registry();
-    await registry.register('svc.plain', { execute: async () => ({}) });
-    expect(() => registry.register('svc.plain', { execute: async () => ({}) })).toThrow(
+    await registry.register('svc.plain', { ...validModuleMetadata, execute: async () => ({}) });
+    expect(() => registry.register('svc.plain', { ...validModuleMetadata, execute: async () => ({}) })).toThrow(
       DuplicateModuleIdError,
     );
   });
@@ -122,9 +130,10 @@ describe('W5: the discovery register pass reserves the ID while onLoad runs', ()
           loadOrder: string[],
           validModules: Map<string, unknown>,
           rawMetadata: Map<string, Record<string, unknown>>,
+          sourceFiles: ReadonlyMap<string, string>,
         ): Promise<number>;
       }
-    )._registerInOrder(['svc.raced'], new Map([['svc.raced', discovered]]), new Map());
+    )._registerInOrder(['svc.raced'], new Map([['svc.raced', discovered]]), new Map(), new Map());
 
     // Let the onLoad start and suspend.
     await Promise.resolve();
@@ -133,7 +142,7 @@ describe('W5: the discovery register pass reserves the ID while onLoad runs', ()
     // The module must not be visible yet …
     expect(registry.has('svc.raced')).toBe(false);
     // … and a concurrent registration of the same ID must be rejected.
-    expect(() => registry.register('svc.raced', { execute: async () => ({ from: 'racer' }) })).toThrow(
+    expect(() => registry.register('svc.raced', { ...validModuleMetadata, execute: async () => ({ from: 'racer' }) })).toThrow(
       DuplicateModuleIdError,
     );
 
@@ -159,13 +168,14 @@ describe('W5: the discovery register pass reserves the ID while onLoad runs', ()
           loadOrder: string[],
           validModules: Map<string, unknown>,
           rawMetadata: Map<string, Record<string, unknown>>,
+          sourceFiles: ReadonlyMap<string, string>,
         ): Promise<number>;
       }
-    )._registerInOrder(['svc.failed'], new Map([['svc.failed', failing]]), new Map());
+    )._registerInOrder(['svc.failed'], new Map([['svc.failed', failing]]), new Map(), new Map());
 
     expect(registry.has('svc.failed')).toBe(false);
     // The slot must be free again for a later registration.
-    await registry.register('svc.failed', { execute: async () => ({}) });
+    await registry.register('svc.failed', { ...validModuleMetadata, execute: async () => ({}) });
     expect(registry.has('svc.failed')).toBe(true);
   });
 });
@@ -177,7 +187,7 @@ describe('W5: the discovery register pass reserves the ID while onLoad runs', ()
 describe('W9: buildMinimalStrategy honours the per-instance ToggleState', () => {
   it('blocks a module disabled on the instance ToggleState', async () => {
     const registry = new Registry();
-    await registry.register('svc.toggled', { execute: async () => ({ ok: true }) });
+    await registry.register('svc.toggled', { ...validModuleMetadata, execute: async () => ({ ok: true }) });
 
     const toggleState = new ToggleState();
     toggleState.disable('svc.toggled');
@@ -188,7 +198,7 @@ describe('W9: buildMinimalStrategy honours the per-instance ToggleState', () => 
 
   it('does not leak a disable across instances (module-global fallback)', async () => {
     const registry = new Registry();
-    await registry.register('svc.isolated', { execute: async () => ({ ok: true }) });
+    await registry.register('svc.isolated', { ...validModuleMetadata, execute: async () => ({ ok: true }) });
 
     const disabled = new ToggleState();
     disabled.disable('svc.isolated');

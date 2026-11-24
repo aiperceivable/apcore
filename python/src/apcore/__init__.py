@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
+from contextlib import aclosing
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _get_version
 from typing import Any
@@ -511,10 +512,11 @@ async def stream(
     inputs: dict[str, Any] | None = None,
     context: Context | None = None,
     version_hint: str | None = None,
-) -> AsyncIterator[dict[str, Any]]:
+) -> AsyncGenerator[dict[str, Any], None]:
     """Global convenience for _default_client.stream()."""
-    async for chunk in _get_default_client().stream(module_id, inputs, context, version_hint=version_hint):
-        yield chunk
+    async with aclosing(_get_default_client().stream(module_id, inputs, context, version_hint=version_hint)) as output:
+        async for chunk in output:
+            yield chunk
 
 
 def validate(module_id: str, inputs: dict[str, Any] | None = None, context: Context | None = None) -> PreflightResult:

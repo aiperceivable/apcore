@@ -104,6 +104,12 @@ describe('Discoverer extension', () => {
 });
 
 describe('Middleware extension', () => {
+  it('rejects an incomplete middleware before it can be installed on an executor', () => {
+    const mgr = new ExtensionManager();
+    expect(() => mgr.register('middleware', { priority: 100, after() {} })).toThrow(TypeError);
+    expect(mgr.getAll('middleware')).toEqual([]);
+  });
+
   it('register and getAll', () => {
     const mgr = new ExtensionManager();
     const mw1 = new StubMiddleware();

@@ -30,7 +30,7 @@ import { Registry } from '../src/registry/registry.js';
 const PermissiveInput = Type.Object({}, { additionalProperties: true });
 const PermissiveOutput = Type.Object({}, { additionalProperties: true });
 
-function makeModule(annotations: ModuleAnnotations, description = ''): Record<string, unknown> {
+function makeModule(annotations: ModuleAnnotations, description = 'Policy test module'): Record<string, unknown> {
   return {
     inputSchema: PermissiveInput,
     outputSchema: PermissiveOutput,

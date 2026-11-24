@@ -58,6 +58,8 @@ pub type RunUntilPredicate = Box<dyn Fn(&PipelineState) -> bool + Send + Sync>;
 ///   `value`, the failure is treated as a successful continue, and
 ///   `after_step` still fires for the recovered step. Returning `Ok(None)`
 ///   lets the original error propagate, subject to `ignore_errors`.
+///   Built-in ACL and approval gate failures propagate after all entered
+///   middleware observes the error in reverse order for cleanup.
 ///
 /// Invocation order (`features/middleware-system.md` "Pipeline Step Middleware"
 /// → "Normative Rules", fixture `pipeline_step_middleware.json`):
@@ -273,6 +275,7 @@ pub struct PipelineContext {
     // -- Resolved during pipeline (None until the responsible step runs) --
     /// Set by `module_lookup` step.
     pub module: Option<Arc<dyn Module>>,
+    pub(crate) module_lease: Option<Arc<crate::registry::registry::ModuleExecutionLease>>,
     /// The §6.1.8 governance projection of `inputs` — the argument key set and
     /// each key's JSON type, and **never** a value.
     ///
@@ -308,6 +311,8 @@ pub struct PipelineContext {
     pub version_hint: Option<String>,
     /// Tracks which middleware ran, enabling `on_error` recovery chain.
     pub executed_middlewares: Vec<usize>,
+    pub(crate) middleware_snapshot: Option<Vec<Arc<dyn crate::middleware::base::Middleware>>>,
+    pub(crate) terminal_gate_failure: bool,
 
     // -- Executor resources (injected by Executor::call) --
     /// Module registry for lookups.
@@ -369,6 +374,7 @@ impl PipelineContext {
             inputs,
             context,
             module: None,
+            module_lease: None,
             governance_projection: None,
             acl_approval_required: false,
             validated_inputs: None,
@@ -378,6 +384,8 @@ impl PipelineContext {
             preflight_errors: vec![],
             version_hint: None,
             executed_middlewares: vec![],
+            middleware_snapshot: None,
+            terminal_gate_failure: false,
             registry: None,
             config: None,
             redaction: None,
@@ -1094,6 +1102,50 @@ async fn run_after_step_hooks(
     Ok(())
 }
 
+/// Notify entered middleware of terminal failures for observation and cleanup.
+async fn observe_step_error_hooks(
+    middlewares: &[Arc<dyn StepMiddleware>],
+    step_name: &str,
+    step_outputs: &HashMap<String, Option<serde_json::Value>>,
+    ctx: &PipelineContext,
+    error: &ModuleError,
+) {
+    let state = PipelineState {
+        step_name,
+        outputs: step_outputs,
+        context: ctx,
+    };
+    for mw in middlewares.iter().rev() {
+        if let Err(hook_err) = mw.on_step_error(step_name, &state, error).await {
+            tracing::warn!(
+                step = %step_name,
+                error = %hook_err,
+                "StepMiddleware on_step_error failed during cleanup"
+            );
+        }
+    }
+}
+
+async fn recover_step_error(
+    middlewares: &[Arc<dyn StepMiddleware>],
+    step_name: &str,
+    step_outputs: &HashMap<String, Option<serde_json::Value>>,
+    ctx: &PipelineContext,
+    error: &ModuleError,
+) -> Result<Option<serde_json::Value>, ModuleError> {
+    let state = PipelineState {
+        step_name,
+        outputs: step_outputs,
+        context: ctx,
+    };
+    for mw in middlewares.iter().rev() {
+        if let Some(output) = mw.on_step_error(step_name, &state, error).await? {
+            return Ok(Some(output));
+        }
+    }
+    Ok(None)
+}
+
 impl PipelineEngine {
     /// Run every step in `strategy` against `ctx`, respecting flow-control
     /// actions (`continue`, `skip_to`, `abort`).
@@ -1280,36 +1332,14 @@ impl PipelineEngine {
                     "StepMiddleware before_step failed for step '{step_name_for_hooks}': {err}"
                 ));
 
-                // The step body never ran, so unwind by notifying exactly the
-                // middlewares that did run, in REVERSE order. A recovery value
-                // returned here is ignored: there is no step output to replace
-                // because the step never executed, and the fixture requires the
-                // MiddlewareChainError to surface.
-                //
-                // First-recovery-wins MUST NOT apply to this pass: short-
-                // circuiting exists to stop shopping for a recovery once one is
-                // found, and no recovery is being sought here. The loop
-                // therefore has NO early exit — neither `Ok(Some(_))` (dropped
-                // by the `if let Err` pattern) nor `Err(_)` (logged) may cut it
-                // short, or the cleanup of every middleware registered behind
-                // that one is stranded.
-                for mw in middlewares[..before_executed].iter().rev() {
-                    let state = PipelineState {
-                        step_name: &step_name_for_hooks,
-                        outputs: &step_outputs,
-                        context: ctx,
-                    };
-                    if let Err(hook_err) = mw
-                        .on_step_error(&step_name_for_hooks, &state, &chain_err)
-                        .await
-                    {
-                        tracing::warn!(
-                            step = %step_name_for_hooks,
-                            error = %hook_err,
-                            "StepMiddleware on_step_error failed while unwinding before_step"
-                        );
-                    }
-                }
+                observe_step_error_hooks(
+                    &middlewares[..before_executed],
+                    &step_name_for_hooks,
+                    &step_outputs,
+                    ctx,
+                    &chain_err,
+                )
+                .await;
 
                 ctx.trace.steps.push(StepTrace {
                     name: step_name_for_hooks.clone(),
@@ -1348,8 +1378,8 @@ impl PipelineEngine {
 
             let duration_ms = step_start.elapsed().as_secs_f64() * 1000.0;
 
-            let result = match exec_result {
-                Ok(r) => r,
+            let (result, continuation_reason) = match exec_result {
+                Ok(r) => (r, None),
                 Err(err) => {
                     if ctx.dry_run {
                         failed_capabilities.extend(
@@ -1370,140 +1400,72 @@ impl PipelineEngine {
                         idx += 1;
                         continue;
                     }
-                    // (3b) StepMiddleware: on_step_error hooks run in REVERSE
-                    // registration order (onion unwinding) and may recover by
-                    // returning Some(value). The FIRST middleware to return a
-                    // recovery value wins; remaining middlewares are skipped.
-                    let mut recovery: Option<serde_json::Value> = None;
-                    let mut hook_err: Option<ModuleError> = None;
-                    for mw in middlewares.iter().rev() {
-                        let state = PipelineState {
-                            step_name: &step_name_for_hooks,
-                            outputs: &step_outputs,
-                            context: ctx,
-                        };
-                        match mw.on_step_error(&step_name_for_hooks, &state, &err).await {
-                            Ok(Some(v)) => {
-                                recovery = Some(v);
-                                break;
-                            }
-                            Ok(None) => {}
-                            Err(e) => {
-                                hook_err = Some(e);
-                                break;
-                            }
-                        }
-                    }
-                    if let Some(e) = hook_err {
-                        ctx.trace.steps.push(StepTrace {
-                            name: step_name_for_hooks.clone(),
-                            duration_ms,
-                            result: StepResult::abort(&e.to_string()),
-                            skipped: false,
-                            decision_point: false,
-                            skip_reason: None,
-                        });
-                        ctx.trace.total_duration_ms =
-                            pipeline_start.elapsed().as_secs_f64() * 1000.0;
-                        return Err(ModuleError::pipeline_step_error(&step_name_for_hooks, &e));
-                    }
-                    if let Some(value) = recovery {
-                        ctx.output = Some(value);
-                        // The onion MUST close after a RECOVERED step body as
-                        // well as after a naturally successful one: the step
-                        // produced an output and the pipeline continues, so a
-                        // middleware that acquired something in `before_step`
-                        // gets its `after_step` here or the recovery path
-                        // leaks (`features/middleware-system.md` → "Pipeline
-                        // Step Middleware" → Normative Rules; fixture case
-                        // `after_step_fires_after_a_recovered_step`). Every
-                        // registered middleware ran `before_step` — a step body
-                        // only executes once the whole chain succeeded — so the
-                        // full chain unwinds, in reverse registration order.
-                        let after_result_value =
-                            ctx.output.clone().unwrap_or(serde_json::Value::Null);
-                        if let Err(after_err) = run_after_step_hooks(
+                    let is_gate = step.builtin_gate().is_some();
+                    let recovery = if is_gate {
+                        ctx.terminal_gate_failure = true;
+                        observe_step_error_hooks(
                             middlewares,
                             &step_name_for_hooks,
                             &step_outputs,
                             ctx,
-                            &after_result_value,
+                            &err,
+                        )
+                        .await;
+                        Ok(None)
+                    } else {
+                        recover_step_error(
+                            middlewares,
+                            &step_name_for_hooks,
+                            &step_outputs,
+                            ctx,
+                            &err,
                         )
                         .await
-                        {
+                    };
+                    match recovery {
+                        Ok(Some(value)) => {
+                            ctx.output = Some(value);
+                            (
+                                StepResult {
+                                    action: "continue".into(),
+                                    explanation: Some(format!("recovered from: {err}")),
+                                    ..Default::default()
+                                },
+                                Some("error_recovered".to_string()),
+                            )
+                        }
+                        Ok(None) if step_ignore_errors && !is_gate => {
+                            tracing::warn!(step = step.name(), error = %err, "Step failed (ignored)");
                             ctx.trace.steps.push(StepTrace {
-                                name: step_name_for_hooks.clone(),
+                                name: step.name().to_string(),
                                 duration_ms,
-                                result: StepResult::abort(&after_err.to_string()),
+                                result: StepResult {
+                                    action: "continue".into(),
+                                    explanation: Some(err.to_string()),
+                                    ..Default::default()
+                                },
+                                skipped: false,
+                                decision_point: false,
+                                skip_reason: Some("error_ignored".to_string()),
+                            });
+                            idx += 1;
+                            continue;
+                        }
+                        failure => {
+                            let failure = failure.err().unwrap_or(err);
+                            ctx.trace.steps.push(StepTrace {
+                                name: step.name().to_string(),
+                                duration_ms,
+                                result: StepResult::abort(&failure.to_string()),
                                 skipped: false,
                                 decision_point: false,
                                 skip_reason: None,
                             });
                             ctx.trace.total_duration_ms =
                                 pipeline_start.elapsed().as_secs_f64() * 1000.0;
-                            return Err(ModuleError::pipeline_step_error(
-                                &step_name_for_hooks,
-                                &after_err,
-                            ));
+                            return Err(ModuleError::pipeline_step_error(step.name(), &failure));
                         }
-                        ctx.trace.steps.push(StepTrace {
-                            name: step_name_for_hooks.clone(),
-                            duration_ms,
-                            result: StepResult {
-                                action: "continue".into(),
-                                explanation: Some(format!("recovered from: {err}")),
-                                ..Default::default()
-                            },
-                            skipped: false,
-                            decision_point: false,
-                            skip_reason: Some("error_recovered".to_string()),
-                        });
-                        // Below `run_after_step_hooks` for the same reason as
-                        // (6): the recovered step is still the CURRENT step
-                        // while its `after_step` runs, so it MUST NOT yet be a
-                        // key in `state.outputs`.
-                        step_outputs.insert(step_name_for_hooks.clone(), ctx.output.clone());
-                        idx += 1;
-                        continue;
                     }
-
-                    // (4) ignore_errors: log and continue (§1.1)
-                    if step_ignore_errors {
-                        tracing::warn!(
-                            step = step.name(),
-                            error = %err,
-                            "Step failed (ignored)"
-                        );
-                        ctx.trace.steps.push(StepTrace {
-                            name: step.name().to_string(),
-                            duration_ms,
-                            result: StepResult {
-                                action: "continue".into(),
-                                explanation: Some(err.to_string()),
-                                ..Default::default()
-                            },
-                            skipped: false,
-                            decision_point: false,
-                            skip_reason: Some("error_ignored".to_string()),
-                        });
-                        idx += 1;
-                        continue;
-                    }
-                    // Fail-fast (§1.1): record the abort in the trace and
-                    // surface a `PipelineStepError` carrying the step name and
-                    // original cause. Executor consumers (call/validate)
-                    // unwrap this back to the original error before returning
-                    // to user code.
-                    ctx.trace.steps.push(StepTrace {
-                        name: step.name().to_string(),
-                        duration_ms,
-                        result: StepResult::abort(&err.to_string()),
-                        skipped: false,
-                        decision_point: false,
-                        skip_reason: None,
-                    });
-                    ctx.trace.total_duration_ms = pipeline_start.elapsed().as_secs_f64() * 1000.0;
-                    return Err(ModuleError::pipeline_step_error(step.name(), &err));
                 }
             };
 
@@ -1545,7 +1507,7 @@ impl PipelineEngine {
                 result,
                 skipped: false,
                 decision_point: false,
-                skip_reason: None,
+                skip_reason: continuation_reason,
             });
 
             // (6) Snapshot output for run_until predicates. `Value::clone` walks

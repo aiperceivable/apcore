@@ -6,25 +6,35 @@
  * inputSchema, outputSchema, description, and execute.
  */
 
-export function validateModule(moduleOrClass: unknown): string[] {
+export function validateModule(
+  moduleOrClass: unknown,
+  { requireMetadata = true, allowStaticSchemas = true } = {},
+): string[] {
+  if (moduleOrClass === null || (typeof moduleOrClass !== 'object' && typeof moduleOrClass !== 'function')) {
+    return ['Module must be an object'];
+  }
   const errors: string[] = [];
   const obj = moduleOrClass as Record<string, unknown>;
+  const constructor = allowStaticSchemas ? obj.constructor as unknown as Record<string, unknown> : undefined;
 
   // Check inputSchema
-  const inputSchema = obj['inputSchema'] ?? (obj.constructor as unknown as Record<string, unknown>)?.['inputSchema'];
-  if (inputSchema == null || typeof inputSchema !== 'object') {
+  const inputSchema = obj['inputSchema'] ?? constructor?.['inputSchema'];
+  if ((inputSchema == null && requireMetadata) ||
+      (inputSchema != null && (typeof inputSchema !== 'object' || Array.isArray(inputSchema)))) {
     errors.push('Missing or invalid inputSchema: must be a TSchema object');
   }
 
   // Check outputSchema
-  const outputSchema = obj['outputSchema'] ?? (obj.constructor as unknown as Record<string, unknown>)?.['outputSchema'];
-  if (outputSchema == null || typeof outputSchema !== 'object') {
+  const outputSchema = obj['outputSchema'] ?? constructor?.['outputSchema'];
+  if ((outputSchema == null && requireMetadata) ||
+      (outputSchema != null && (typeof outputSchema !== 'object' || Array.isArray(outputSchema)))) {
     errors.push('Missing or invalid outputSchema: must be a TSchema object');
   }
 
   // Check description
   const description = obj['description'];
-  if (!description || typeof description !== 'string') {
+  if ((description == null && requireMetadata) ||
+      (description != null && (typeof description !== 'string' || description.length === 0))) {
     errors.push('Missing or empty description');
   }
 

@@ -7,8 +7,126 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use apcore::sys_modules::overrides::{FileOverridesStore, InMemoryOverridesStore, OverridesStore};
+use apcore::sys_modules::overrides::{
+    persist_one, write_override, FileOverridesStore, InMemoryOverridesStore, OverridesError,
+    OverridesStore,
+};
+use async_trait::async_trait;
+use parking_lot::Mutex;
 use serde_json::json;
+
+#[derive(Default)]
+struct TestStore {
+    data: Mutex<HashMap<String, serde_json::Value>>,
+    fail_reads: bool,
+}
+
+#[async_trait]
+impl OverridesStore for TestStore {
+    async fn load(&self) -> Result<HashMap<String, serde_json::Value>, OverridesError> {
+        if self.fail_reads {
+            return Err(OverridesError::Serialize("test read failure".into()));
+        }
+        let snapshot = self.data.lock().clone();
+        tokio::task::yield_now().await;
+        Ok(snapshot)
+    }
+
+    async fn save(
+        &self,
+        overrides: &HashMap<String, serde_json::Value>,
+    ) -> Result<(), OverridesError> {
+        self.data.lock().clone_from(overrides);
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn test_persist_one_does_not_save_after_read_failure() {
+    let store = TestStore {
+        data: Mutex::new(HashMap::from([("toggle.demo.held".into(), json!(false))])),
+        fail_reads: true,
+    };
+    let result = persist_one(&store, "executor.default_timeout", &json!(700)).await;
+    assert!(result.is_err());
+    assert_eq!(
+        *store.data.lock(),
+        HashMap::from([("toggle.demo.held".into(), json!(false))])
+    );
+}
+
+#[tokio::test]
+async fn test_persist_one_serializes_updates_to_the_same_store() {
+    let store = TestStore::default();
+    let first = json!(10);
+    let second = json!(false);
+    let (updated, toggled) = tokio::join!(
+        persist_one(&store, "executor.max_call_depth", &first),
+        persist_one(&store, "toggle.demo.held", &second),
+    );
+    updated.unwrap();
+    toggled.unwrap();
+    assert_eq!(
+        *store.data.lock(),
+        HashMap::from([
+            ("executor.max_call_depth".into(), first),
+            ("toggle.demo.held".into(), second),
+        ]),
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn test_file_updates_serialize_across_instances_and_legacy_writers() {
+    const UPDATES: u32 = 24;
+    let dir = tempfile::tempdir().unwrap();
+    let project = dir.path().join("project");
+    std::fs::create_dir(&project).unwrap();
+    let path = project.join("state/overrides.yaml");
+    #[cfg(unix)]
+    let alias = {
+        let link = dir.path().join("project-link");
+        std::os::unix::fs::symlink(&project, &link).unwrap();
+        link.join("state/overrides.yaml")
+    };
+    #[cfg(not(unix))]
+    let alias = path.clone();
+    let start = Arc::new(tokio::sync::Barrier::new(UPDATES as usize));
+    let mut writers = Vec::new();
+    for index in 0..UPDATES {
+        let path = if index % 4 < 2 { &path } else { &alias }.clone();
+        let start = start.clone();
+        writers.push(tokio::spawn(async move {
+            let key = format!("example.value_{index}");
+            let value = json!(index);
+            start.wait().await;
+            if index % 2 == 0 {
+                let store = FileOverridesStore::new(path);
+                persist_one(&store, &key, &value).await.unwrap();
+            } else {
+                write_override(&path, &key, &value);
+            }
+        }));
+    }
+    for writer in writers {
+        writer.await.unwrap();
+    }
+
+    let stored = FileOverridesStore::new(path).load().await.unwrap();
+    assert_eq!(stored.len(), UPDATES as usize);
+    for index in 0..UPDATES {
+        assert_eq!(stored[&format!("example.value_{index}")], json!(index));
+    }
+}
+
+#[test]
+fn test_write_override_preserves_unparseable_existing_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("overrides.yaml");
+    let existing = "toggle.demo.held: false\nunfinished: [\n";
+    std::fs::write(&path, existing).unwrap();
+    write_override(&path, "executor.max_call_depth", &json!(10));
+    assert_eq!(std::fs::read_to_string(path).unwrap(), existing);
+}
 
 #[tokio::test]
 async fn in_memory_overrides_store_load_returns_empty_when_unsaved() {

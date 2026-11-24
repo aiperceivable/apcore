@@ -446,6 +446,16 @@ def test_client_reports_system_module_registration_failures(
 
 
 class TestEvents:
+    def test_on_receives_explicit_dead_letter_event(self) -> None:
+        client = APCore(config=_sys_config())
+        received = []
+        event = ApCoreEvent("apcore.event.delivery_failed", None, "2026-01-01T00:00:00Z", "error", {})
+        client.on(event.event_type, received.append)
+        assert client.events is not None
+        client.events.emit(event)
+        client.events.flush()
+        assert received == [event]
+
     def test_client_receives_executor_governance_events(self) -> None:
         policy = ExecutionPolicy([PolicyRule("test.governed", requires_approval=True)])
         client = APCore(config=_sys_config(), policy=policy)

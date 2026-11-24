@@ -12,9 +12,7 @@ a machine that resolves symbols against the real SDK can catch that.
 Scope, deliberately narrow so the result is trustworthy:
 
   * Python      `from apcore[.x] import A, B`  → module exists, symbol defined
-  * TypeScript  `from 'apcore-js'`             → symbol re-exported from src/index.ts
-                `from 'apcore-js/sub'`         → always an error; the package
-                                                 exports only "." and "./context-keys"
+  * TypeScript  `from 'apcore-js[/sub]'`       → resolves through package.json exports
                 `from 'apcore'`                → always an error; the package is apcore-js
   * Rust        `use apcore::{A, B}`           → symbol re-exported from src/lib.rs
                 `ErrorCode::X`                 → X is a real enum variant
@@ -96,13 +94,37 @@ def python_surface(sdk: Path) -> dict[str, set[str]]:
     return surface
 
 
-def typescript_surface(sdk: Path) -> set[str]:
-    """Names re-exported from src/index.ts."""
-    index = sdk / "src" / "index.ts"
-    if not index.is_file():
-        return set()
-    src = index.read_text()
-    names: set[str] = set()
+def typescript_surface(sdk: Path) -> dict[str, set[str]]:
+    """Names available at each explicit package export."""
+    manifest = sdk / "package.json"
+    if not manifest.is_file():
+        return {}
+
+    def sources(target):
+        if isinstance(target, dict):
+            for condition in target.values():
+                yield from sources(condition)
+        elif isinstance(target, str) and target.startswith("./dist/"):
+            relative = target.removeprefix("./dist/")
+            stem = relative.removesuffix(".d.ts").removesuffix(".js")
+            source = sdk / "src" / f"{stem}.ts"
+            if source.is_file():
+                yield source
+
+    exports = json.loads(manifest.read_text()).get("exports", {})
+    return {
+        "apcore-js" if subpath == "." else f"apcore-js/{subpath.removeprefix('./')}":
+        {name for source in set(sources(target)) for name in _typescript_file_exports(source)}
+        for subpath, target in exports.items()
+    }
+
+
+def _typescript_file_exports(source: Path) -> set[str]:
+    """Collect top-level declarations and explicit re-exports from source."""
+    src = source.read_text()
+    declaration = (r"export\s+(?:declare\s+)?(?:abstract\s+)?(?:async\s+)?"
+                   r"(?:class|function|const|let|var|interface|type|enum)\s+([\w$]+)")
+    names = set(re.findall(declaration, src))
     for blk in re.findall(r"export\s+(?:type\s+)?\{([^}]*)\}\s*from", src, re.S):
         for item in blk.split(","):
             item = item.strip()
@@ -114,15 +136,9 @@ def typescript_surface(sdk: Path) -> set[str]:
             if m:
                 names.add(m.group(1))
     for star in re.findall(r"export\s+\*\s+from\s+['\"]\./([^'\"]+)['\"]", src):
-        p = sdk / "src" / star.replace(".js", ".ts")
+        p = source.parent / star.replace(".js", ".ts")
         if p.is_file():
-            names |= set(
-                re.findall(
-                    r"export\s+(?:declare\s+)?(?:abstract\s+)?"
-                    r"(?:class|function|const|let|var|interface|type|enum)\s+([\w$]+)",
-                    p.read_text(),
-                )
-            )
+            names.update(re.findall(declaration, p.read_text()))
     return names
 
 
@@ -227,7 +243,7 @@ def check_python(blocks, surface, out: list[Violation]) -> None:
                     out.append((loc, line, f"`{mod}` does not export `{name}`"))
 
 
-def check_typescript(blocks, exports: set[str], out: list[Violation]) -> None:
+def check_typescript(blocks, exports: dict[str, set[str]], out: list[Violation]) -> None:
     if not exports:
         return
     for path, fence_line, lang, body in blocks:
@@ -239,12 +255,14 @@ def check_typescript(blocks, exports: set[str], out: list[Violation]) -> None:
             loc = f"{path.relative_to(REPO)}:{line}"
             if spec == "apcore" or spec.startswith("apcore/"):
                 out.append((loc, line, f"package is `apcore-js`, not `{spec}`"))
-            elif spec.startswith("apcore-js/") and spec != "apcore-js/context-keys":
-                out.append((loc, line, f"`{spec}` is not an exported subpath "
-                                       "(package.json exports only '.' and './context-keys')"))
+            elif spec not in exports:
+                out.append((loc, line, f"`{spec}` is not exported by package.json"))
         for m in re.finditer(
-            r"""import\s+(?:type\s+)?\{([^}]*)\}\s*from\s*['"]apcore-js['"]""", body, re.S
+            r"""import\s+(?:type\s+)?\{([^}]*)\}\s*from\s*['"](apcore-js(?:/[\w./-]+)?)['"]""", body, re.S
         ):
+            spec = m.group(2)
+            if spec not in exports:
+                continue
             line = fence_line + body[: m.start()].count("\n") + 1
             loc = f"{path.relative_to(REPO)}:{line}"
             for item in m.group(1).split(","):
@@ -252,8 +270,8 @@ def check_typescript(blocks, exports: set[str], out: list[Violation]) -> None:
                 # Skip inline-comment noise inside multi-line import braces.
                 if not name or name.startswith("//") or " " in name:
                     continue
-                if name not in exports:
-                    out.append((loc, line, f"`apcore-js` does not export `{name}`"))
+                if name not in exports[spec]:
+                    out.append((loc, line, f"`{spec}` does not export `{name}`"))
 
 
 def check_rust_nested(blocks, mods: dict, out: list[Violation]) -> None:

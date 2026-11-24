@@ -3,16 +3,11 @@
 from __future__ import annotations
 
 import logging
-import os
-import tempfile
 import threading
 import time
 import uuid
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any
-
-import yaml
 
 from apcore.config import Config, _CONSTRAINTS
 from apcore.utils.pattern import match_glob
@@ -28,10 +23,10 @@ from apcore.errors import (
 )
 from apcore.events.emitter import ApCoreEvent, EventEmitter
 from apcore.module import ModuleAnnotations
-from apcore.registry.registry import Registry
+from apcore.registry.registry import Registry, _RegistrationSnapshot
 from apcore.sys_modules.audit import AuditEntry, AuditStore
 from apcore.sys_modules.identity import _audit_payload_extras
-from apcore.sys_modules.overrides import OverridesStore
+from apcore.sys_modules.overrides import FileOverridesStore, OverridesStore, _persist_override
 
 __all__ = [
     "UpdateConfigModule",
@@ -97,67 +92,6 @@ logger = logging.getLogger(__name__)
 
 #: Keys that cannot be changed at runtime.
 _RESTRICTED_KEYS: frozenset[str] = frozenset({"sys_modules.enabled"})
-
-# Per-path locks prevent concurrent writers from corrupting the overrides file.
-_overrides_locks: dict[str, threading.Lock] = {}
-_overrides_locks_lock = threading.Lock()
-
-
-def _get_overrides_lock(overrides_path: str) -> threading.Lock:
-    """Return (creating if needed) the per-path lock for a given overrides file."""
-    with _overrides_locks_lock:
-        if overrides_path not in _overrides_locks:
-            _overrides_locks[overrides_path] = threading.Lock()
-        return _overrides_locks[overrides_path]
-
-
-def _persist_via_store(store: OverridesStore, key: str, value: Any) -> None:
-    """Read-modify-write a single override key through a pluggable store.
-
-    Errors are logged but never propagated — persistence failures must not
-    cause the in-memory mutation (already applied) to surface as a runtime
-    exception, mirroring the legacy ``_write_overrides`` semantics.
-    """
-    try:
-        existing = store.load() or {}
-        if not isinstance(existing, dict):
-            existing = {}
-        existing[key] = value
-        store.save(existing)
-    except Exception as exc:
-        logger.error("Failed to persist override for key '%s' via store: %s", key, exc)
-
-
-def _write_overrides(overrides_path: str, key: str, value: Any) -> None:
-    """Read the overrides YAML, update the key, and write it back atomically.
-
-    Uses a per-path lock to prevent concurrent writes and an atomic
-    rename (write to temp → os.replace) to prevent partial-write corruption.
-    """
-    lock = _get_overrides_lock(overrides_path)
-    with lock:
-        try:
-            try:
-                with open(overrides_path, "r", encoding="utf-8") as f:
-                    existing: dict[str, Any] = yaml.safe_load(f) or {}
-            except FileNotFoundError:
-                existing = {}
-            existing[key] = value
-            parent = Path(overrides_path).parent
-            fd, tmp_path = tempfile.mkstemp(dir=parent, suffix=".tmp")
-            try:
-                with os.fdopen(fd, "w", encoding="utf-8") as f:
-                    yaml.safe_dump(existing, f, default_flow_style=False)
-                os.replace(tmp_path, overrides_path)
-            except Exception:
-                try:
-                    os.unlink(tmp_path)
-                except OSError:
-                    pass
-                raise
-        except Exception as exc:
-            logger.error("Failed to persist override for key '%s': %s", key, exc)
-
 
 def _build_audit_entry(
     action: str,
@@ -251,9 +185,9 @@ class UpdateConfigModule:
         self._log_change(key, old_value, value, reason)
 
         if self._overrides_store is not None:
-            _persist_via_store(self._overrides_store, key, value)
+            _persist_override(self._overrides_store, key, value)
         elif self._overrides_path:
-            _write_overrides(self._overrides_path, key, value)
+            _persist_override(FileOverridesStore(self._overrides_path), key, value)
 
         redacted = self._is_sensitive_key(key)
         if self._audit_store is not None:
@@ -503,11 +437,12 @@ class ReloadModule:
         if not module_id:
             raise InvalidInputError(message="'module_id' must not be empty")
 
-        previous_version = self._get_current_version(module_id)
+        previous = self._registry._snapshot_registration(module_id)
+        if previous is None:
+            raise ModuleNotFoundError(module_id=module_id)
+        previous_version = str(previous.metadata.get("version") or "1.0.0")
         start = time.monotonic()
-
-        old_module = self._registry.get(module_id)
-        suspended_state = self._try_suspend(module_id, old_module)
+        suspended_state = self._try_suspend(module_id, previous.module)
 
         self._registry.safe_unregister(module_id)
 
@@ -519,7 +454,7 @@ class ReloadModule:
             # working module gone. Both steps are inside the guard because a
             # re-registration that fails leaves exactly the same hole as a
             # re-discovery that fails.
-            self._restore_after_failed_reload(module_id, old_module)
+            self._restore_after_failed_reload(module_id, previous, suspended_state)
             if isinstance(exc, ReloadFailedError):
                 raise
             raise ReloadFailedError(module_id=module_id, reason=str(exc)) from exc
@@ -657,37 +592,15 @@ class ReloadModule:
             )
             return sorted(module_ids)
 
-    def _restore_after_failed_reload(self, module_id: str, old_module: Any) -> None:
-        """Put the previous instance back after a reload failed (D-112).
-
-        COMPENSATING, not transactional. The module is genuinely unregistered
-        for a window and a concurrent call in that window sees
-        ``MODULE_NOT_FOUND``; this does not claim atomic replacement, and the
-        spec forbids implementations from claiming it. What it does prevent is
-        the worse outcome: a failed hot-fix making a WORKING module disappear.
-
-        ``register_internal`` re-runs the module's ``on_load``, which rule 2
-        requires — ``on_unload`` already ran during the unregister, so
-        re-publishing without it yields a module that is visible but torn down,
-        harder to diagnose than one that is absent.
-
-        If the restoring load ALSO fails the module stays unavailable (rule 3):
-        there is no good state left to return to, and publishing a module whose
-        load hook failed is the defect deferred publication exists to prevent.
-        The original failure is the one the caller is told about, so this logs
-        rather than raises.
-        """
-        if old_module is None:
+    def _restore_after_failed_reload(
+        self, module_id: str, previous: _RegistrationSnapshot, suspended_state: dict[str, Any] | None
+    ) -> None:
+        """Restore all previous versions after reinitializing the unloaded module (D-112)."""
+        if not self._registry._restore_registration(module_id, previous):
+            logger.error("system.control.reload: could not restore '%s' after a failed reload", module_id)
             return
-        try:
-            self._registry.register_internal(module_id, old_module)
-        except Exception as restore_exc:  # noqa: BLE001 - rule 3: stay unavailable
-            logger.error(
-                "system.control.reload: restoring '%s' after a failed reload also failed: %s. "
-                "The module is unavailable (D-112 rule 3).",
-                module_id,
-                restore_exc,
-            )
+        if suspended_state is not None:
+            self._try_resume(module_id, previous.module, suspended_state)
 
     def _reload_one(self, module_id: str, context: Any = None) -> None:
         """Reload a single module as part of a bulk (path_filter) reload.
@@ -701,11 +614,11 @@ class ReloadModule:
         which does pass ``context``) recorded the real one. Two records of the
         same action disagreeing about who performed it (sync finding A-D-017).
         """
-        old_module = self._registry.get(module_id)
-        if old_module is None:
+        previous = self._registry._snapshot_registration(module_id)
+        if previous is None:
             return
 
-        suspended_state = self._try_suspend(module_id, old_module)
+        suspended_state = self._try_suspend(module_id, previous.module)
         self._registry.safe_unregister(module_id)
 
         try:
@@ -716,7 +629,7 @@ class ReloadModule:
             # whole still fails (D-17), and modules that already reloaded
             # successfully are NOT rolled back — cross-module transactionality
             # is not a primitive the registry has.
-            self._restore_after_failed_reload(module_id, old_module)
+            self._restore_after_failed_reload(module_id, previous, suspended_state)
             if isinstance(exc, ReloadFailedError):
                 raise
             raise ReloadFailedError(module_id=module_id, reason=str(exc)) from exc
@@ -725,7 +638,7 @@ class ReloadModule:
             self._try_resume(module_id, new_module, suspended_state)
 
         new_version = getattr(new_module, "version", "1.0.0")
-        prev_version = getattr(old_module, "version", "1.0.0")
+        prev_version = previous.metadata.get("version") or "1.0.0"
         self._emit_module_reloaded(module_id, str(prev_version), str(new_version), context)
 
     # ------------------------------------------------------------------
@@ -739,13 +652,6 @@ class ReloadModule:
         if reason is None or not isinstance(reason, str) or not reason:
             raise InvalidInputError(message="'reason' is required and must be a non-empty string")
         return reason
-
-    def _get_current_version(self, module_id: str) -> str:
-        """Get the version of the currently registered module."""
-        module = self._registry.get(module_id)
-        if module is None:
-            raise ModuleNotFoundError(module_id=module_id)
-        return str(getattr(module, "version", "1.0.0"))
 
     def _rediscover_module(self, module_id: str) -> Any:
         """Re-discover the module source and return a new instance."""
@@ -916,14 +822,14 @@ class ToggleFeatureModule:
         self._log_toggle(module_id, enabled, reason)
 
         if self._overrides_store is not None:
-            _persist_via_store(
+            _persist_override(
                 self._overrides_store,
                 f"toggle.{module_id}",
                 enabled,
             )
         elif self._overrides_path:
-            _write_overrides(
-                self._overrides_path,
+            _persist_override(
+                FileOverridesStore(self._overrides_path),
                 f"toggle.{module_id}",
                 enabled,
             )

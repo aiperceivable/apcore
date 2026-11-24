@@ -392,6 +392,9 @@ class TestGenerateModel:
         )
         obj = Model()
         assert obj.nickname is None
+        assert Model.model_json_schema()["properties"]["nickname"] == {"type": "string", "title": "Nickname"}
+        with pytest.raises(ValidationError):
+            Model(nickname=None)
 
     def test_default_value(self, tmp_path: Path) -> None:
         loader = self._make_loader(tmp_path)
@@ -869,8 +872,10 @@ class TestContentAddressableCache:
         )
 
         loader = make_loader(tmp_path)
-        loader.get_schema("alpha")
-        loader.get_schema("beta")
+        alpha_input, _ = loader.get_schema("alpha")
+        beta_input, _ = loader.get_schema("beta")
+        assert (alpha_input.module_id, beta_input.module_id) == ("alpha", "beta")
+        assert alpha_input.model is beta_input.model
 
         assert (
             len(loader._content_cache) == 1
@@ -878,6 +883,31 @@ class TestContentAddressableCache:
         assert (
             loader._path_index["alpha"] == loader._path_index["beta"]
         ), "Both module_ids must map to the same SHA-256 digest"
+
+    def test_identical_native_json_schemas_keep_distinct_native_validators(self, tmp_path: Path) -> None:
+        class First(BaseModel):
+            value: int
+
+            @field_validator("value")
+            @classmethod
+            def positive(cls, value: int) -> int:
+                if value < 0:
+                    raise ValueError("Expected positive value")
+                return value
+
+        class Second(BaseModel):
+            value: int
+
+        First.model_config["title"] = Second.model_config["title"] = "Native"
+        assert First.model_json_schema() == Second.model_json_schema()
+        loader = make_loader(tmp_path)
+        first_input, _ = loader.get_schema("alpha", First, First)
+        second_input, _ = loader.get_schema("beta", Second, Second)
+
+        assert first_input.model is First
+        assert second_input.module_id == "beta"
+        assert second_input.model is Second
+        assert loader.get_schema("beta", Second, Second)[0].model(value=-1).value == -1
 
     def test_different_content_produces_separate_entries(self, tmp_path: Path) -> None:
         write_yaml(

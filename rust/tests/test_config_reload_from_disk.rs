@@ -20,7 +20,7 @@ fn reload_from_disk_picks_up_file_changes() {
     // (version/project/extensions/schema/acl), or `from_yaml_file`'s validation
     // rejects it. Keep them stable across both writes; only the executor knobs
     // change between loads.
-    let required_fields = "version: \"0.23.0\"\n\
+    let required_fields = "version: \"1.0.0\"\n\
          project:\n  name: demo\n\
          extensions:\n  root: ./extensions\n\
          schema:\n  root: ./schemas\n\

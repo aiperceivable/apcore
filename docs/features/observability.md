@@ -289,7 +289,7 @@ Lifecycle methods:
 | Method | Behaviour |
 |---|---|
 | `on_span_end(span)` (TypeScript `onSpan`) | Enqueue and return immediately; drop and count when the queue is full. Never raises. |
-| `force_flush(timeout_ms = 30000)` (TypeScript `forceFlush`) | Drain the queue now; returns `true` if it emptied before the deadline, `false` otherwise. The processor keeps running. Python is synchronous; TypeScript and Rust are awaited. |
+| `force_flush(timeout_ms = 30000)` (TypeScript `forceFlush`) | Drain queued spans and wait for in-flight exports. Returns `true` when the drain finishes before the deadline, or `false` when the deadline elapses. Python is synchronous; TypeScript and Rust are awaited. |
 | `shutdown()` | Stop the background worker and flush what is left within `export_timeout_ms`. Python and Rust also call the exporter's `shutdown()`. |
 
 Python passes a processor straight to `TracingMiddleware(processor=…)`. In Rust both processors implement `SpanExporter`, so they go where an exporter goes. TypeScript's `TracingMiddleware` takes an exporter, so wrap the processor in a one-line adapter:

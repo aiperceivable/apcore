@@ -40,10 +40,6 @@ conformance:
       spec: StorageBackend.save
       reason: Five existing canonical scalar-value cases remain expected failures because Python storage accepts dictionary records. Record-valued storage paths pass.
       severity: major
-    - feature: version-negotiation-on-load
-      spec: §13.3
-      reason: negotiate_version is available but is not invoked when loading configuration or schema files.
-      severity: major
     - feature: schema-migration
       spec: §13.4
       reason: migrate_schema is not implemented.

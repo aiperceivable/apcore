@@ -32,6 +32,18 @@
       "expected": "1.2.3"
     },
     {
+      "id": "numeric_prerelease_identifiers_sort_numerically",
+      "declared": "2.0.0-rc.2",
+      "sdk": "2.0.0-rc.10",
+      "expected": "2.0.0-rc.10"
+    },
+    {
+      "id": "numeric_prerelease_identifier_precedes_text",
+      "declared": "2.0.0-beta.99",
+      "sdk": "2.0.0-beta.alpha",
+      "expected": "2.0.0-beta.alpha"
+    },
+    {
       "id": "major_mismatch_error",
       "declared": "2.0.0",
       "sdk": "1.0.0",

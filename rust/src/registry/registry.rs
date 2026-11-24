@@ -428,7 +428,7 @@ struct RegistryCore {
     modules: HashMap<String, Arc<dyn Module>>,
     descriptors: HashMap<String, ModuleDescriptor>,
     /// Reference counts for safe hot-reload — prevents unloading while in use.
-    ref_counts: HashMap<String, usize>,
+    ref_counts: HashMap<String, Arc<ModuleReferences>>,
     /// Modules marked for unload (draining active requests before removal).
     draining: HashSet<String>,
     /// Case-insensitive lookup: lowercase name -> canonical name.
@@ -443,6 +443,57 @@ struct RegistryCore {
     /// `DiscoveredModule::source` of every module registered by discovery, so
     /// the file watcher can tell which module a changed or removed file is.
     sources: HashMap<String, String>,
+}
+
+/// Tracks one registration, so a force-unloaded call cannot release a later registration.
+#[derive(Debug, Default)]
+struct ModuleReferences {
+    count: ParkingLotMutex<usize>,
+    drained: tokio::sync::Notify,
+}
+
+impl ModuleReferences {
+    fn release(&self) {
+        let mut count = self.count.lock();
+        if *count > 0 {
+            *count -= 1;
+        }
+        if *count == 0 {
+            self.drained.notify_waiters();
+        }
+    }
+}
+
+pub(crate) struct ModuleExecutionLease(Arc<ModuleReferences>);
+
+impl Drop for ModuleExecutionLease {
+    fn drop(&mut self) {
+        self.0.release();
+    }
+}
+
+/// Removes the draining marker if the unregister future is cancelled.
+struct DrainGuard<'a> {
+    registry: &'a Registry,
+    name: &'a str,
+    references: Arc<ModuleReferences>,
+}
+
+impl DrainGuard<'_> {
+    fn refers_to_current_registration(&self, core: &RegistryCore) -> bool {
+        core.ref_counts
+            .get(self.name)
+            .is_some_and(|current| Arc::ptr_eq(current, &self.references))
+    }
+}
+
+impl Drop for DrainGuard<'_> {
+    fn drop(&mut self) {
+        let mut core = self.registry.core.write();
+        if self.refers_to_current_registration(&core) {
+            core.draining.remove(self.name);
+        }
+    }
 }
 
 /// One registered version of a multi-version module.
@@ -464,6 +515,20 @@ impl RegistryCore {
             versions: HashMap::new(),
             sources: HashMap::new(),
         }
+    }
+
+    fn remove_module(&mut self, name: &str) -> Option<Arc<dyn Module>> {
+        let module = self.modules.remove(name)?;
+        self.descriptors.remove(name);
+        self.lowercase_map.remove(&name.to_lowercase());
+        self.schema_cache.remove(name);
+        self.versions.remove(name);
+        self.sources.remove(name);
+        self.draining.remove(name);
+        if let Some(references) = self.ref_counts.remove(name) {
+            references.drained.notify_waiters();
+        }
+        Some(module)
     }
 }
 
@@ -491,8 +556,6 @@ pub struct Registry {
     /// D-89: `(module_id, version)` pairs whose deprecation warning has already
     /// been emitted by THIS registry instance.
     deprecation_warned: ParkingLotMutex<HashSet<(String, String, String)>>,
-    /// Drain completion notification — signaled when a draining module reaches zero refs.
-    drain_events: RwLock<HashMap<String, Arc<tokio::sync::Notify>>>,
     /// Optional discoverer for module discovery.
     discoverer: RwLock<Option<Arc<dyn Discoverer>>>,
     /// Optional validator for module validation.
@@ -589,10 +652,6 @@ impl std::fmt::Debug for Registry {
             .field("draining", &core.draining)
             .field("in_flight", &in_flight_snapshot)
             .field(
-                "drain_events_keys",
-                &self.drain_events.read().keys().cloned().collect::<Vec<_>>(),
-            )
-            .field(
                 "callbacks_keys",
                 &self.callbacks.read().keys().cloned().collect::<Vec<_>>(),
             )
@@ -622,7 +681,6 @@ impl Registry {
             callbacks: RwLock::new(HashMap::new()),
             callback_counter: AtomicU64::new(1),
             deprecation_warned: ParkingLotMutex::new(HashSet::new()),
-            drain_events: RwLock::new(HashMap::new()),
             discoverer: RwLock::new(None),
             validator: RwLock::new(None),
             extension_roots: RwLock::new(Vec::new()),
@@ -1030,32 +1088,29 @@ impl Registry {
         name: &str,
         context: Option<&crate::Context<serde_json::Value>>,
     ) -> Result<bool, ModuleError> {
-        let removed: Arc<dyn Module> = {
-            let mut core = self.core.write();
-            let Some(module) = core.modules.remove(name) else {
-                return Ok(false);
-            };
-            core.descriptors.remove(name);
-            core.lowercase_map.remove(&name.to_lowercase());
-            core.schema_cache.remove(name);
-            core.versions.remove(name);
-            core.sources.remove(name);
-            core.ref_counts.remove(name);
-            core.draining.remove(name);
-            module
-        };
-        self.drain_events.write().remove(name);
+        let removed = self.core.write().remove_module(name);
+        if let Some(module) = removed {
+            self.notify_unregistered(name, module.as_ref(), context);
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
 
+    fn notify_unregistered(
+        &self,
+        name: &str,
+        removed: &dyn Module,
+        context: Option<&crate::Context<serde_json::Value>>,
+    ) {
         // Fire on_unload BEFORE the "unregister" callback so subscribers observe
         // the post-on_unload module state, matching apcore-python and
         // apcore-typescript ordering (sync finding A-D-003).
         removed.on_unload();
         for cb in self.snapshot_callbacks("unregister") {
-            cb(name, removed.as_ref());
+            cb(name, removed);
         }
         self.emit_ephemeral_event("apcore.registry.module_unregistered", name, context);
-
-        Ok(true)
     }
 
     /// Get a shared reference to a module by name.
@@ -1843,59 +1898,52 @@ impl Registry {
 
     /// Draining-aware unregister.
     pub async fn safe_unregister(&self, name: &str, timeout_ms: u64) -> Result<bool, ModuleError> {
-        // Mark draining, check ref_count. If zero we can proceed immediately.
-        let need_wait_notify: Option<Arc<tokio::sync::Notify>> = {
+        let references = {
             let mut core = self.core.write();
-            if !core.modules.contains_key(name) {
-                // Idempotent — match apcore-python `return False` and
-                // apcore-typescript `return false` semantics (sync finding A-D-007).
+            if !core.modules.contains_key(name) || !core.draining.insert(name.to_string()) {
                 return Ok(false);
             }
-            core.draining.insert(name.to_string());
-            let current_refs = core.ref_counts.get(name).copied().unwrap_or(0);
-            if current_refs == 0 {
-                None
-            } else {
-                let notify = Arc::new(tokio::sync::Notify::new());
-                self.drain_events
-                    .write()
-                    .insert(name.to_string(), Arc::clone(&notify));
-                Some(notify)
+            Arc::clone(core.ref_counts.entry(name.to_string()).or_default())
+        };
+        let guard = DrainGuard {
+            registry: self,
+            name,
+            references,
+        };
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
+        let clean = loop {
+            let notified = guard.references.drained.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if !guard.refers_to_current_registration(&self.core.read()) {
+                return Ok(false);
+            }
+            let count = *guard.references.count.lock();
+            if count == 0 {
+                break true;
+            }
+            if tokio::time::timeout_at(deadline, notified).await.is_err() {
+                tracing::warn!(
+                    module_id = name,
+                    timeout_ms,
+                    in_flight = count,
+                    "Force-unloading module after timeout"
+                );
+                break false;
             }
         };
-
-        match need_wait_notify {
-            None => {
-                self.unregister(name)?;
-                Ok(true)
+        let removed = {
+            let mut core = self.core.write();
+            if !guard.refers_to_current_registration(&core) {
+                return Ok(false);
             }
-            Some(notify) => {
-                let result = tokio::time::timeout(
-                    std::time::Duration::from_millis(timeout_ms),
-                    notify.notified(),
-                )
-                .await;
-
-                let clean = result.is_ok();
-                if !clean {
-                    // Timeout — force-unload, matching Python and TypeScript behavior.
-                    let in_flight = self.core.read().ref_counts.get(name).copied().unwrap_or(0);
-                    tracing::warn!(
-                        "Force-unloading module '{}' after {}ms timeout ({} in-flight executions)",
-                        name,
-                        timeout_ms,
-                        in_flight,
-                    );
-                }
-                {
-                    let mut core = self.core.write();
-                    core.draining.remove(name);
-                }
-                self.drain_events.write().remove(name);
-                self.unregister(name)?;
-                Ok(clean)
-            }
-        }
+            core.remove_module(name)
+        };
+        let Some(module) = removed else {
+            return Ok(false);
+        };
+        self.notify_unregistered(name, module.as_ref(), None);
+        Ok(clean)
     }
 
     /// Ref-counted module access with explicit reference tracking.
@@ -1915,6 +1963,21 @@ impl Registry {
     /// - `Err(ModuleError(code=ModuleNotFound))` if the module is currently
     ///   draining (a `safe_unregister` is in progress) or not registered.
     pub fn acquire(&self, name: &str) -> Result<Arc<dyn Module>, ModuleError> {
+        self.acquire_with_count(name).map(|(module, _)| module)
+    }
+
+    pub(crate) fn acquire_execution(
+        &self,
+        name: &str,
+    ) -> Result<(Arc<dyn Module>, Arc<ModuleExecutionLease>), ModuleError> {
+        let (module, count) = self.acquire_with_count(name)?;
+        Ok((module, Arc::new(ModuleExecutionLease(count))))
+    }
+
+    fn acquire_with_count(
+        &self,
+        name: &str,
+    ) -> Result<(Arc<dyn Module>, Arc<ModuleReferences>), ModuleError> {
         let mut core = self.core.write();
         if core.draining.contains(name) {
             return Err(ModuleError::new(
@@ -1927,8 +1990,9 @@ impl Registry {
             .get(name)
             .cloned()
             .ok_or_else(|| ModuleError::module_not_found(name))?;
-        *core.ref_counts.entry(name.to_string()).or_insert(0) += 1;
-        Ok(module)
+        let references = Arc::clone(core.ref_counts.entry(name.to_string()).or_default());
+        *references.count.lock() += 1;
+        Ok((module, references))
     }
 
     /// Release a previously acquired module reference.
@@ -1942,27 +2006,8 @@ impl Registry {
     /// Calling `release()` on a name that was never acquired is a no-op —
     /// matches Python/TS forgiving semantics.
     pub fn release(&self, name: &str) {
-        let should_notify = {
-            let mut core = self.core.write();
-            if let Some(count) = core.ref_counts.get_mut(name) {
-                if *count > 0 {
-                    *count -= 1;
-                }
-                if *count == 0 {
-                    core.ref_counts.remove(name);
-                    true
-                } else {
-                    false
-                }
-            } else {
-                false
-            }
-        };
-
-        if should_notify {
-            if let Some(notify) = self.drain_events.read().get(name) {
-                notify.notify_one();
-            }
+        if let Some(references) = self.core.read().ref_counts.get(name) {
+            references.release();
         }
     }
 

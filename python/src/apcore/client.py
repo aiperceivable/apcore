@@ -16,7 +16,8 @@ calls.  When writing Python code that must itself be async, prefer the
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Callable as CallableABC
+from collections.abc import AsyncGenerator, Callable as CallableABC
+from contextlib import aclosing
 from typing import Any, Callable
 
 from apcore.config import Config
@@ -300,7 +301,7 @@ class APCore:
         inputs: dict[str, Any] | None = None,
         context: Context | None = None,
         version_hint: str | None = None,
-    ) -> AsyncIterator[dict[str, Any]]:
+    ) -> AsyncGenerator[dict[str, Any], None]:
         """Stream module output chunk by chunk.
 
         Args:
@@ -312,8 +313,9 @@ class APCore:
         Yields:
             Dict chunks from the module's stream() or a single call result.
         """
-        async for chunk in self.executor.stream(module_id, inputs, context, version_hint=version_hint):
-            yield chunk
+        async with aclosing(self.executor.stream(module_id, inputs, context, version_hint=version_hint)) as output:
+            async for chunk in output:
+                yield chunk
 
     def validate(
         self,
@@ -545,6 +547,7 @@ class _CallbackSubscriber:
         handler: CallableABC[[ApCoreEvent], Any],
     ) -> None:
         self.event_type = event_type
+        self.event_pattern = event_type
         self._handler = handler
         self._is_async = asyncio.iscoroutinefunction(handler)
 

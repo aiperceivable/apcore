@@ -21,9 +21,9 @@ The semantics match the cross-language spec in ``docs/features/observability.md`
 from __future__ import annotations
 
 import logging
-import queue
 import threading
 import time
+from collections import deque
 from typing import Protocol, runtime_checkable
 
 from apcore.observability.span import Span
@@ -111,33 +111,33 @@ class BatchSpanProcessor:
         # Accept the spec-style alias.
         self._max_export_batch_size = max_export_batch if max_export_batch is not None else max_export_batch_size
         self._export_timeout_ms = export_timeout_ms
-        self._queue: queue.Queue[Span] = queue.Queue(maxsize=max_queue_size)
+        self._queue: deque[Span] = deque()
         self._spans_dropped = 0
-        self._dropped_lock = threading.Lock()
-        self._shutdown_event = threading.Event()
-        self._shutdown_called = False
+        self._condition = threading.Condition()
+        self._accepted = 0
+        self._completed = 0
+        self._flush_target = 0
+        self._shutdown_deadline: float | None = None
+        self._stopped = False
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
 
     @property
     def spans_dropped(self) -> int:
-        with self._dropped_lock:
+        with self._condition:
             return self._spans_dropped
 
     @property
     def queue_size(self) -> int:
-        return self._queue.qsize()
+        with self._condition:
+            return len(self._queue)
 
     def on_span_end(self, span: Span) -> None:
-        """Enqueue span or drop (non-blocking) if the queue is at capacity.
-
-        Logs a warning at most once per consecutive drop streak so the
-        operator is alerted without flooding the log.
-        """
-        try:
-            self._queue.put_nowait(span)
-        except queue.Full:
-            with self._dropped_lock:
+        """Enqueue a span without waiting for the exporter."""
+        with self._condition:
+            if self._shutdown_deadline is not None:
+                return
+            if self._max_queue_size > 0 and len(self._queue) >= self._max_queue_size:
                 self._spans_dropped += 1
                 if self._spans_dropped == 1 or self._spans_dropped % 1000 == 0:
                     _logger.warning(
@@ -145,70 +145,68 @@ class BatchSpanProcessor:
                         self._max_queue_size,
                         self._spans_dropped,
                     )
-
-    def _flush(self) -> None:
-        """Drain up to max_export_batch_size spans and export them."""
-        batch: list[Span] = []
-        try:
-            while len(batch) < self._max_export_batch_size:
-                batch.append(self._queue.get_nowait())
-        except queue.Empty:
-            pass
-        for span in batch:
-            try:
-                self._exporter.export(span)
-            except Exception:  # noqa: BLE001
-                _logger.exception("BatchSpanProcessor: export failed")
+                return
+            self._queue.append(span)
+            self._accepted += 1
 
     def force_flush(self, timeout_ms: int = 30000) -> bool:
-        """Synchronously drain the queue, exporting all currently buffered spans.
-
-        Unlike :meth:`shutdown`, the processor stays alive after this call;
-        new spans can continue to be enqueued.  Returns ``True`` once the
-        queue is empty, or ``False`` if the deadline expires first.
-
-        Repeatedly drains in a tight loop because spans can arrive between
-        successive ``_flush()`` calls.
-        """
-        deadline = time.monotonic() + (timeout_ms / 1000.0)
-        while time.monotonic() < deadline:
-            self._flush()
-            if self._queue.empty():
-                return True
-            # Yield briefly to producer threads.
-            time.sleep(0.001)
-        return self._queue.empty()
+        """Wait at most ``timeout_ms`` for previously accepted spans to export."""
+        with self._condition:
+            target = self._accepted
+            self._flush_target = max(self._flush_target, target)
+            self._condition.notify_all()
+            self._condition.wait_for(lambda: self._completed >= target or self._stopped, timeout=timeout_ms / 1000.0)
+            return self._completed >= target
 
     def _run(self) -> None:
-        """Background worker: flush on each schedule_delay_ms tick, then on shutdown."""
-        delay = self._schedule_delay_ms / 1000.0
-        while True:
-            shutdown_signaled = self._shutdown_event.wait(timeout=delay)
-            self._flush()
-            if shutdown_signaled:
-                break
+        """Own all exports and drain buffered spans when flushing or stopping."""
+        delay = max(self._schedule_delay_ms, 1) / 1000.0
+        batch_size = max(self._max_export_batch_size, 1)
+        try:
+            while True:
+                with self._condition:
+                    self._condition.wait_for(
+                        lambda: self._shutdown_deadline is not None or self._completed < self._flush_target,
+                        timeout=delay,
+                    )
+                    deadline = self._shutdown_deadline
+                    if deadline is not None and (not self._queue or time.monotonic() >= deadline):
+                        self._queue.clear()
+                        return
+                    batch = [self._queue.popleft() for _ in range(min(batch_size, len(self._queue)))]
+
+                for span in batch:
+                    deadline = self._shutdown_deadline
+                    if deadline is not None and time.monotonic() >= deadline:
+                        break
+                    try:
+                        self._exporter.export(span)
+                    except Exception:  # noqa: BLE001 - exporter failures are best effort
+                        _logger.exception("BatchSpanProcessor: export failed")
+                    with self._condition:
+                        self._completed += 1
+                        self._condition.notify_all()
+        finally:
+            with self._condition:
+                self._stopped = True
+                self._condition.notify_all()
+            try:
+                close_exporter = getattr(self._exporter, "shutdown", None)
+                if callable(close_exporter):
+                    close_exporter()
+            except Exception:  # noqa: BLE001 - exporter shutdown is best effort
+                _logger.exception("BatchSpanProcessor: exporter.shutdown() failed")
 
     def shutdown(self) -> None:
-        """Signal shutdown; flush remaining spans within export_timeout_ms deadline.
-
-        Idempotent — calling ``shutdown`` more than once is safe and a no-op
-        on subsequent invocations.
-        """
-        if self._shutdown_called:
-            return
-        self._shutdown_called = True
-        self._shutdown_event.set()
-        timeout = self._export_timeout_ms / 1000.0
-        self._thread.join(timeout=timeout)
-        # Final drain for any spans that arrived after the last flush
-        self._flush()
-        # Best-effort downstream shutdown.
-        try:
-            shutdown_fn = getattr(self._exporter, "shutdown", None)
-            if callable(shutdown_fn):
-                shutdown_fn()
-        except Exception:  # noqa: BLE001
-            _logger.exception("BatchSpanProcessor: exporter.shutdown() failed")
+        """Stop admission and drain as many queued spans as the deadline allows."""
+        with self._condition:
+            if self._shutdown_deadline is not None:
+                return
+            timeout = max(self._export_timeout_ms, 0) / 1000.0
+            self._shutdown_deadline = time.monotonic() + timeout
+            self._condition.notify_all()
+        if threading.current_thread() is not self._thread:
+            self._thread.join(timeout=max(self._shutdown_deadline - time.monotonic(), 0))
 
 
 __all__ = [

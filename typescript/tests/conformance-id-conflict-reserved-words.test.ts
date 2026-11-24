@@ -46,8 +46,8 @@ const fixture = PRESENT ? loadFixture() : { reserved_words: [], test_cases: [] a
 
 const conformantModule = {
   description: 'conformance fixture module',
-  inputSchema: () => ({ type: 'object' }),
-  outputSchema: () => ({ type: 'object' }),
+  inputSchema: { type: 'object' },
+  outputSchema: { type: 'object' },
   execute: async () => ({}),
 };
 

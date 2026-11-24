@@ -69,7 +69,7 @@ pub struct EventEmitter {
     // lock is used (not `tokio::Mutex`) because emit runs from both sync
     // (`Registry::register` -> `emit_spawn`) and async contexts; emit snapshots
     // the subscriber list under a short read-lock and never holds it across `.await`.
-    subscribers: RwLock<Vec<Arc<dyn EventSubscriber>>>,
+    subscribers: RwLock<Vec<(SubscriberHandle, Arc<dyn EventSubscriber>)>>,
     pub max_workers: usize,
     /// Set to `true` by [`Self::shutdown`]. Once set, all `emit*` methods
     /// drop incoming events as no-ops (sync finding A-D-502).
@@ -78,11 +78,8 @@ pub struct EventEmitter {
     /// awaits these (up to a timeout) so callers can wait for pending
     /// deliveries to drain (sync findings A-D-024 / A-D-027). Completed
     /// handles are pruned lazily on each `emit`/`flush`.
-    pending: Arc<Mutex<Vec<JoinHandle<()>>>>,
-    /// Parallel to `subscribers`: the handle issued for each registration, so
-    /// `unsubscribe_handle` can remove exactly one even when several share a
-    /// `subscriber_id()` (sync finding A-D-025).
-    handles: RwLock<Vec<SubscriberHandle>>,
+    pending: Mutex<Vec<JoinHandle<()>>>,
+    flush_lock: tokio::sync::Mutex<()>,
     next_handle: AtomicU64,
 }
 
@@ -95,6 +92,20 @@ pub struct SubscriberHandle(u64);
 /// The `EventSubscriber::subscriber_id` trait default.
 const DEFAULT_SUBSCRIBER_ID: &str = "default";
 
+/// Returns outstanding handles to the emitter when a flush times out or is cancelled.
+struct PendingFlush<'a> {
+    pending: &'a Mutex<Vec<JoinHandle<()>>>,
+    handles: Vec<JoinHandle<()>>,
+}
+
+impl Drop for PendingFlush<'_> {
+    fn drop(&mut self) {
+        if !self.handles.is_empty() {
+            self.pending.lock().extend(self.handles.drain(..).rev());
+        }
+    }
+}
+
 impl EventEmitter {
     /// Create a new event emitter.
     #[must_use]
@@ -103,8 +114,8 @@ impl EventEmitter {
             subscribers: RwLock::new(vec![]),
             max_workers: 4,
             is_shutdown: Arc::new(AtomicBool::new(false)),
-            pending: Arc::new(Mutex::new(Vec::new())),
-            handles: RwLock::new(vec![]),
+            pending: Mutex::new(Vec::new()),
+            flush_lock: tokio::sync::Mutex::new(()),
             next_handle: AtomicU64::new(0),
         }
     }
@@ -126,22 +137,24 @@ impl EventEmitter {
     pub fn subscribe(&self, subscriber: Box<dyn EventSubscriber>) -> SubscriberHandle {
         // Convert Box -> Arc so subscribers can be cloned into spawned
         // tasks by `emit_spawn` (sync finding A-D-501).
-        let mut subs = self.subscribers.write();
         let handle = SubscriberHandle(self.next_handle.fetch_add(1, Ordering::SeqCst));
-        subs.push(Arc::from(subscriber));
-        self.handles.write().push(handle);
+        self.subscribers
+            .write()
+            .push((handle, Arc::from(subscriber)));
         handle
     }
 
     /// Remove exactly the subscriber that [`Self::subscribe`] returned `handle`
     /// for. Unambiguous regardless of `subscriber_id()`.
     pub fn unsubscribe_handle(&self, handle: SubscriberHandle) -> bool {
-        let mut handles = self.handles.write();
-        let Some(pos) = handles.iter().position(|h| *h == handle) else {
+        let mut subscribers = self.subscribers.write();
+        let Some(position) = subscribers
+            .iter()
+            .position(|(registered, _)| *registered == handle)
+        else {
             return false;
         };
-        handles.remove(pos);
-        self.subscribers.write().remove(pos);
+        subscribers.remove(position);
         true
     }
 
@@ -168,7 +181,7 @@ impl EventEmitter {
                 .subscribers
                 .read()
                 .iter()
-                .filter(|s| s.subscriber_id() == DEFAULT_SUBSCRIBER_ID)
+                .filter(|(_, s)| s.subscriber_id() == DEFAULT_SUBSCRIBER_ID)
                 .count();
             if ambiguous > 1 {
                 tracing::warn!(
@@ -185,7 +198,9 @@ impl EventEmitter {
     /// Remove the first subscriber whose `subscriber_id()` matches the given ID string.
     pub fn unsubscribe_by_id(&self, subscriber_id: &str) -> bool {
         let mut subs = self.subscribers.write();
-        let pos = subs.iter().position(|s| s.subscriber_id() == subscriber_id);
+        let pos = subs
+            .iter()
+            .position(|(_, s)| s.subscriber_id() == subscriber_id);
         if let Some(i) = pos {
             subs.remove(i);
             true
@@ -202,7 +217,7 @@ impl EventEmitter {
     pub fn unsubscribe_by_event_type(&self, event_type: &str) -> usize {
         let mut subs = self.subscribers.write();
         let before = subs.len();
-        subs.retain(|s| s.event_type_filter().is_none_or(|t| t != event_type));
+        subs.retain(|(_, s)| s.event_type_filter().is_none_or(|t| t != event_type));
         before - subs.len()
     }
 
@@ -231,25 +246,7 @@ impl EventEmitter {
     /// the body itself does not block on subscriber execution.
     #[allow(clippy::unused_async)]
     pub async fn emit(&self, event: &ApCoreEvent) {
-        if self.is_shutdown.load(Ordering::SeqCst) {
-            return;
-        }
-        let all_subscribers: Vec<Arc<dyn EventSubscriber>> = self.subscribers.read().clone();
-        let mut handles: Vec<JoinHandle<()>> = Vec::new();
-        for subscriber in &all_subscribers {
-            if Self::subscriber_matches(subscriber.as_ref(), &event.event_type) {
-                let sub = Arc::clone(subscriber);
-                let evt = event.clone();
-                let dlq_subs = all_subscribers.clone();
-                handles.push(tokio::spawn(async move {
-                    Self::deliver_with_dlq(sub, evt, dlq_subs).await;
-                }));
-            }
-        }
-        // Track in-flight tasks so flush() can await them; prune finished ones.
-        let mut pending = self.pending.lock();
-        pending.retain(|h| !h.is_finished());
-        pending.extend(handles);
+        self.spawn_deliveries(event, true);
     }
 
     /// Single-attempt sequential emit — bypasses the per-subscriber retry
@@ -266,7 +263,7 @@ impl EventEmitter {
             return;
         }
         // Snapshot under a short read-lock; never hold the lock across `.await`.
-        let subscribers: Vec<Arc<dyn EventSubscriber>> = self.subscribers.read().clone();
+        let subscribers: Vec<Arc<dyn EventSubscriber>> = self.subscriber_snapshot();
         for subscriber in &subscribers {
             if Self::subscriber_matches(subscriber.as_ref(), &event.event_type) {
                 if let Err(e) = subscriber.on_event(event).await {
@@ -296,7 +293,7 @@ impl EventEmitter {
         if self.is_shutdown.load(Ordering::SeqCst) {
             return Ok(());
         }
-        let all_subscribers: Vec<Arc<dyn EventSubscriber>> = self.subscribers.read().clone();
+        let all_subscribers: Vec<Arc<dyn EventSubscriber>> = self.subscriber_snapshot();
         for subscriber in &all_subscribers {
             if Self::matches_pattern(pattern, &event.event_type)
                 && Self::subscriber_matches(subscriber.as_ref(), &event.event_type)
@@ -335,48 +332,36 @@ impl EventEmitter {
     }
 
     pub async fn flush(&self, timeout_ms: u64) -> Result<(), ModuleError> {
-        // Take ownership of the current in-flight handles.
-        let handles: Vec<JoinHandle<()>> = {
-            let mut pending = self.pending.lock();
-            std::mem::take(&mut *pending)
+        let deadline = (timeout_ms > 0)
+            .then(|| tokio::time::Instant::now() + Duration::from_millis(timeout_ms));
+        let _flush = match deadline {
+            Some(deadline) => {
+                let Ok(guard) = tokio::time::timeout_at(deadline, self.flush_lock.lock()).await
+                else {
+                    return Ok(());
+                };
+                guard
+            }
+            None => self.flush_lock.lock().await,
         };
-        if handles.is_empty() {
-            return Ok(());
-        }
-
-        let deadline = if timeout_ms == 0 {
-            None
-        } else {
-            Some(tokio::time::Instant::now() + Duration::from_millis(timeout_ms))
+        let mut handles = std::mem::take(&mut *self.pending.lock());
+        handles.reverse();
+        let mut pending = PendingFlush {
+            pending: &self.pending,
+            handles,
         };
-
-        let mut unfinished: Vec<JoinHandle<()>> = Vec::new();
-        for handle in handles {
+        while let Some(handle) = pending.handles.last_mut() {
             match deadline {
                 None => {
                     let _ = handle.await;
                 }
-                Some(dl) => {
-                    let now = tokio::time::Instant::now();
-                    if now >= dl {
-                        // Budget exhausted — keep remaining tasks running.
-                        unfinished.push(handle);
-                        continue;
+                Some(deadline) => {
+                    if tokio::time::timeout_at(deadline, handle).await.is_err() {
+                        break;
                     }
-                    // Await the task up to the deadline. On either outcome
-                    // (completed or per-task timeout) the result is discarded:
-                    // a timed-out delivery continues detached in the background
-                    // (the JoinHandle is consumed by timeout_at).
-                    let _ = tokio::time::timeout_at(dl, handle).await;
                 }
             }
-        }
-
-        if !unfinished.is_empty() {
-            let mut pending = self.pending.lock();
-            // Re-track any tasks we did not get to await, plus any new ones.
-            unfinished.extend(std::mem::take(&mut *pending));
-            *pending = unfinished;
+            pending.handles.pop();
         }
         Ok(())
     }
@@ -402,27 +387,7 @@ impl EventEmitter {
     // matches by-value (sync finding A-D-501).
     #[allow(clippy::needless_pass_by_value)]
     pub fn emit_spawn(&self, event: ApCoreEvent) {
-        if self.is_shutdown.load(Ordering::SeqCst) {
-            return;
-        }
-        let subscribers: Vec<Arc<dyn EventSubscriber>> = self.subscribers.read().clone();
-        for subscriber in &subscribers {
-            if !Self::subscriber_matches(subscriber.as_ref(), &event.event_type) {
-                continue;
-            }
-            let sub = Arc::clone(subscriber);
-            let evt = event.clone();
-            tokio::spawn(async move {
-                if let Err(e) = sub.on_event(&evt).await {
-                    tracing::warn!(
-                        subscriber_id = %sub.subscriber_id(),
-                        event_type = %evt.event_type,
-                        error = %e,
-                        "emit_spawn: subscriber on_event failed"
-                    );
-                }
-            });
-        }
+        self.spawn_deliveries(&event, false);
     }
 
     /// Mark this emitter as shut down and flush any pending work.
@@ -465,27 +430,50 @@ impl EventEmitter {
     /// **Post-shutdown:** drops the event as a no-op.
     #[allow(clippy::needless_pass_by_value)]
     pub fn emit_delivery_semantics(&self, event: ApCoreEvent) {
-        if self.is_shutdown.load(Ordering::SeqCst) {
+        self.spawn_deliveries(&event, true);
+    }
+
+    fn subscriber_snapshot(&self) -> Vec<Arc<dyn EventSubscriber>> {
+        self.subscribers
+            .read()
+            .iter()
+            .map(|(_, subscriber)| Arc::clone(subscriber))
+            .collect()
+    }
+
+    fn spawn_deliveries(&self, event: &ApCoreEvent, retry: bool) {
+        if self.is_shutdown() {
             return;
         }
-        // Capture a snapshot for both the delivery loop and DLQ delivery.
-        let all_subscribers: Vec<Arc<dyn EventSubscriber>> = self.subscribers.read().clone();
+        let all_subscribers = self.subscriber_snapshot();
+        let matching = all_subscribers
+            .iter()
+            .filter(|subscriber| Self::subscriber_matches(subscriber.as_ref(), &event.event_type))
+            .map(Arc::clone)
+            .collect::<Vec<_>>();
 
-        let mut handles: Vec<JoinHandle<()>> = Vec::new();
-        for subscriber in &all_subscribers {
-            if !Self::subscriber_matches(subscriber.as_ref(), &event.event_type) {
-                continue;
-            }
-            let sub = Arc::clone(subscriber);
-            let evt = event.clone();
-            let dlq_subs = all_subscribers.clone();
-            handles.push(tokio::spawn(async move {
-                Self::deliver_with_dlq(sub, evt, dlq_subs).await;
+        // Schedule and record together so shutdown cannot flush between them.
+        let mut pending = self.pending.lock();
+        if self.is_shutdown() {
+            return;
+        }
+        pending.retain(|handle| !handle.is_finished());
+        for subscriber in matching {
+            let event = event.clone();
+            let dlq_subscribers = retry.then(|| all_subscribers.clone());
+            pending.push(tokio::spawn(async move {
+                if let Some(dlq_subscribers) = dlq_subscribers {
+                    Self::deliver_with_dlq(subscriber, event, dlq_subscribers).await;
+                } else if let Err(error) = subscriber.on_event(&event).await {
+                    tracing::warn!(
+                        subscriber_id = %subscriber.subscriber_id(),
+                        event_type = %event.event_type,
+                        error = %error,
+                        "emit_spawn: subscriber on_event failed"
+                    );
+                }
             }));
         }
-        let mut pending = self.pending.lock();
-        pending.retain(|h| !h.is_finished());
-        pending.extend(handles);
     }
 
     /// Deliver an event to one subscriber with retry + optional DLQ emission.
@@ -496,17 +484,21 @@ impl EventEmitter {
     ) {
         let retry = subscriber.retry();
         let mut last_error: Option<ModuleError> = None;
+        let mut attempts = 0;
 
         for attempt in 0..retry.max_attempts {
-            match subscriber.on_event(&event).await {
-                Ok(()) => return,
-                Err(e) => {
+            match subscriber.delivery_attempt(&event).await {
+                Some(Ok(())) => return,
+                Some(Err(e)) => {
+                    attempts += 1;
                     last_error = Some(e);
                     if attempt + 1 < retry.max_attempts {
                         tokio::time::sleep(Duration::from_millis(retry.compute_delay_ms(attempt)))
                             .await;
                     }
                 }
+                None if last_error.is_none() => return,
+                None => break,
             }
         }
 
@@ -543,7 +535,7 @@ impl EventEmitter {
                     "type": format!("{:?}", err.code),
                     "message": err.message,
                 },
-                "attempt_count": retry.max_attempts,
+                "attempt_count": attempts,
                 "timestamp": chrono::Utc::now().to_rfc3339(),
             }),
         );
@@ -566,9 +558,7 @@ impl EventEmitter {
             }
         }
 
-        subscriber
-            .on_failure(&event, &err, retry.max_attempts)
-            .await;
+        subscriber.on_failure(&event, &err, attempts).await;
     }
 
     /// Whether `subscriber` should receive an event of type `event_type`.

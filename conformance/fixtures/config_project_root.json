@@ -12,6 +12,7 @@
     "layout_tokens": "A path can start with <tier6_dir> or <tier7_dir>. Replace the token with the running platform’s user-config directory under the redirected home. The <tier6_config> and <tier7_config> tokens represent the respective files.",
     "absolute_env": "Join each absolute_env value to the absolute layout root without removing its dot segments. Pass this spelling to the environment and assert that Config preserves it verbatim.",
     "consumers": "When resolved_acl_root or resolved_schema_root is present, invoke its public loader. Every candidate contains an ACL defaulting to deny and a schema named probe. The first ACL rule and the schema describe their directory. A driver may alternatively identify the ACL by removing the expected file and observing that discovery returns no ACL while other candidates still exist.",
+    "config_path_file_readable": "For each key, resolve its effective value through Config and read the result directly with the filesystem API. Compare whether the read succeeds. Pass the resolved spelling without normalizing directory qualifiers.",
     "consume_from": "When present, change to this layout directory after loading Config and before asserting resolved paths or using the consumers.",
     "comparison": "Compare project-root and effective relative paths as absolute paths after normalizing the platform’s temporary-directory spelling. Separately compare absolute_env paths verbatim.",
     "symlinks": "Materialize each symlinks entry after writing fs. Both sides are layout paths. Use the file entry’s parent as the project root, even if the target is in another directory."
@@ -319,6 +320,56 @@
       },
       "symlinks": {
         "project/link": "elsewhere/deep"
+      }
+    },
+    {
+      "id": "env_path_with_numeric_name",
+      "comment": "Environment coercion leaves filesystem paths as strings, including a numeric directory and a file named like a boolean.",
+      "tier": 4,
+      "cwd": "project",
+      "env": {
+        "APCORE_SCHEMA_ROOT": "123",
+        "APCORE_ID__MAP_OVERRIDES": "true"
+      },
+      "fs": {
+        "project/apcore.yaml": "project: {name: fixture}\n",
+        "project/123/probe.schema.yaml": "module_id: probe\ndescription: 'project/123'\ninput_schema: {type: object}\noutput_schema: {type: object}\n",
+        "project/true": "mappings: []\n"
+      },
+      "expected": {
+        "config_source_dir": "project",
+        "project_root": "project",
+        "project_root_equals_cwd": true,
+        "resolved_schema_root": "project/123",
+        "resolved_config_paths": {
+          "schema.root": "project/123",
+          "id_map.overrides": "project/true"
+        },
+        "config_path_file_readable": {
+          "id_map.overrides": true
+        }
+      }
+    },
+    {
+      "id": "relative_file_paths_preserve_directory_qualifiers",
+      "comment": "A trailing separator or final dot requires a directory and cannot be removed when resolving a path to a regular file.",
+      "cwd": "project",
+      "config_from_mapping": {
+        "id_map": {"overrides": "ids.yaml/"},
+        "sys_modules": {"control": {"overrides_path": "ids.yaml/."}}
+      },
+      "fs": {
+        "project/ids.yaml": "mappings: []\n"
+      },
+      "expected": {
+        "config_source_dir": null,
+        "project_root": "project",
+        "project_root_equals_cwd": true,
+        "resolved_config_paths": {},
+        "config_path_file_readable": {
+          "id_map.overrides": false,
+          "sys_modules.control.overrides_path": false
+        }
       }
     },
     {

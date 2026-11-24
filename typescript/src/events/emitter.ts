@@ -14,8 +14,13 @@ export interface ApCoreEvent {
   readonly data: Record<string, unknown>;
 }
 
+/** Internal delivery path for wrappers that otherwise isolate subscriber failures. */
+export const deliverSubscriber = Symbol('apcore.event.deliverSubscriber');
+
 export interface EventSubscriber {
   onEvent(event: ApCoreEvent): void | Promise<void>;
+  /** @internal Return false when delivery is skipped because the circuit is open. */
+  [deliverSubscriber]?(event: ApCoreEvent): Promise<boolean>;
   /** Optional stable ID for this subscriber, used in DLQ payloads and identity tracking. */
   readonly subscriberId?: string;
   /**
@@ -100,12 +105,13 @@ export function resolveSubscriberType(subscriber: {
 
 export class EventEmitter {
   private _subscribers: EventSubscriber[] = [];
-  private _pending: Promise<void>[] = [];
+  private readonly _pending = new Set<Promise<void>>();
+  private readonly _overflow = new Set<Promise<void>>();
   private readonly _maxPending: number;
   private _shutdown = false;
 
   constructor(maxPending: number = DEFAULT_MAX_PENDING) {
-    this._maxPending = maxPending;
+    this._maxPending = Math.max(0, Math.floor(maxPending));
   }
 
   subscribe(subscriber: EventSubscriber): void {
@@ -131,41 +137,49 @@ export class EventEmitter {
   }
 
   emit(event: ApCoreEvent): void {
-    // A-D-028: silently drop emits after shutdown.
-    if (this._shutdown) return;
-    const snapshot = this._getMatchingSubscribers(event.eventType);
-    for (const subscriber of snapshot) {
-      // Every subscriber — built-in and user-registered, with or without an explicit
-      // `retry` block — goes through the unified retry/backoff/DLQ delivery path.
-      // A subscriber that omits `retry` receives the spec default policy
-      // (max_attempts=3); one that explicitly sets maxAttempts:1 disables retry.
-      // (event-system.md §Per-Subscriber Retry Policy; sync finding A-D-005)
-      if (this._pending.length >= this._maxPending) {
-        // A-D-06: the pending buffer is full. The event was accepted by emit(),
-        // so it MUST NOT be silently discarded (event-system.md §Overflow). Route
-        // the affected delivery through the dead-letter path with
-        // reason: "pending_overflow" instead of a log-only drop. `maxPending`
-        // remains a legitimate memory bound — we just fail through the DLQ.
-        const overflowPromise = this._emitOverflowDLQ(subscriber, event);
-        const tracked = overflowPromise.catch(() => {
-          // DLQ subscriber errors handled inside _emitOverflowDLQ
-        });
-        this._pending.push(tracked);
-        tracked.then(() => {
-          const idx = this._pending.indexOf(tracked);
-          if (idx !== -1) this._pending.splice(idx, 1);
-        });
-      } else {
-        const tracked = this._deliver(subscriber, event).catch(() => {
-          // errors handled inside _deliver
-        });
-        this._pending.push(tracked);
-        tracked.then(() => {
-          const idx = this._pending.indexOf(tracked);
-          if (idx !== -1) this._pending.splice(idx, 1);
-        });
-      }
+    if (!this.tryEmit(event) && !this._shutdown) {
+      console.warn('[apcore:events] Pending deliveries at capacity; event was not accepted:', event.eventType);
     }
+  }
+
+  /** Return false if shutdown or saturation prevents accepting the event. */
+  tryEmit(event: ApCoreEvent): boolean {
+    if (this._shutdown) return false;
+    const isDlq = event.eventType === 'apcore.event.delivery_failed';
+    const snapshot = this._getMatchingSubscribers(event.eventType, isDlq);
+    const available = this._maxPending - this._pending.size;
+    const overflow = snapshot.slice(available);
+    if (overflow.length > 0 && (this._overflow.size !== 0 || isDlq)) {
+      return false;
+    }
+    // Reserve every slot before invoking subscriber code, which can emit reentrantly.
+    const start = snapshot.slice(0, available).map(subscriber =>
+      this._reserve(this._pending, () => isDlq
+        ? this._deliverDlq(subscriber, event)
+        : this._deliver(subscriber, event)));
+    if (overflow.length > 0) {
+      start.push(this._reserve(this._overflow, async () => {
+        for (const subscriber of overflow) await this._emitOverflowDLQ(subscriber, event);
+      }));
+    }
+    for (const deliver of start) deliver();
+    return true;
+  }
+
+  private _reserve(pending: Set<Promise<void>>, deliver: () => Promise<void>): () => void {
+    let settle!: () => void;
+    const slot = new Promise<void>(resolve => { settle = resolve; });
+    pending.add(slot);
+    const release = () => {
+      pending.delete(slot);
+      settle();
+    };
+    return () => {
+      void deliver().then(release, error => {
+        release();
+        console.error('[apcore:events] Delivery task failed:', error);
+      });
+    };
   }
 
   private _getMatchingSubscribers(eventType: string, isDlq = false): EventSubscriber[] {
@@ -183,13 +197,22 @@ export class EventEmitter {
 
   private async _deliver(subscriber: EventSubscriber, event: ApCoreEvent): Promise<void> {
     const retry = resolveRetry(subscriber.retry);
-    let lastError: Error = new Error('Unknown error');
+    let lastError: Error | undefined;
+    let attempts = 0;
 
     for (let attempt = 0; attempt < retry.maxAttempts; attempt++) {
       try {
-        await subscriber.onEvent(event);
-        return;
+        const wrappedDeliver = subscriber[deliverSubscriber];
+        if (wrappedDeliver === undefined) {
+          await subscriber.onEvent(event);
+          return;
+        }
+        if (await wrappedDeliver.call(subscriber, event)) return;
+        // An already-open circuit skips delivery. A circuit that opens during
+        // this event still reports any attempt that actually failed.
+        break;
       } catch (e) {
+        attempts++;
         lastError = e instanceof Error ? e : new Error(String(e));
         if (attempt + 1 < retry.maxAttempts) {
           await sleep(computeDelayMs(retry, attempt));
@@ -198,11 +221,12 @@ export class EventEmitter {
     }
 
     // All attempts exhausted — emit DLQ event and invoke onFailure callback
-    await this._emitDLQ(subscriber, event, lastError, retry.maxAttempts);
+    if (lastError === undefined) return;
+    await this._emitDLQ(subscriber, event, lastError, attempts);
 
     if (subscriber.onFailure) {
       try {
-        await subscriber.onFailure(event, lastError, retry.maxAttempts);
+        await subscriber.onFailure(event, lastError, attempts);
       } catch (cbError) {
         console.error('[apcore:events] onFailure callback raised:', cbError);
       }
@@ -265,14 +289,17 @@ export class EventEmitter {
     // isDlq=true excludes catch-all ('*'/no-pattern) subscribers (A-D-026).
     const dlqSubscribers = this._getMatchingSubscribers(dlqEvent.eventType, true);
     for (const dlqSub of dlqSubscribers) {
-      try {
-        const r = dlqSub.onEvent(dlqEvent);
-        if (r instanceof Promise) {
-          await r;
-        }
-      } catch (dlqErr) {
-        console.error('[apcore:events] DLQ subscriber raised:', dlqErr);
-      }
+      await this._deliverDlq(dlqSub, dlqEvent);
+    }
+  }
+
+  private async _deliverDlq(subscriber: EventSubscriber, event: ApCoreEvent): Promise<void> {
+    try {
+      const wrappedDeliver = subscriber[deliverSubscriber];
+      if (wrappedDeliver === undefined) await subscriber.onEvent(event);
+      else await wrappedDeliver.call(subscriber, event);
+    } catch (error) {
+      console.error('[apcore:events] DLQ subscriber raised:', error);
     }
   }
 
@@ -294,10 +321,8 @@ export class EventEmitter {
   async flush(timeoutMs: number = 5000): Promise<void> {
     // A-D-027: per-pending semantics (Python canonical) — each pending delivery
     // gets up to `timeoutMs` to settle, rather than sharing one total deadline.
-    // A delivery that exceeds its budget is abandoned (the next call to flush
-    // can re-await any that are still tracked).
-    const pending = [...this._pending];
-    this._pending = [];
+    // A timed-out delivery remains tracked so later calls can continue waiting.
+    const pending = [...this._pending, ...this._overflow];
     for (const p of pending) {
       if (timeoutMs > 0) {
         let timer: ReturnType<typeof setTimeout> | undefined;

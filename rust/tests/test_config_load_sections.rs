@@ -98,14 +98,14 @@ my_vendor:
 
 /// Namespace-mode document: the §9.6 `apcore:` block plus every section.
 fn namespace_mode_yaml() -> String {
-    format!("apcore:\n  version: \"9.9.9-fixture\"\n{SECTIONS_YAML}")
+    format!("apcore:\n  version: \"1.0.0-fixture\"\n{SECTIONS_YAML}")
 }
 
 /// Legacy-mode document: no `apcore:` block, so the §9.3 required fields
 /// (`version`, `project.name`) have to be declared at the root for `validate()`
 /// to pass.
 fn legacy_mode_yaml() -> String {
-    format!("version: \"9.9.9-fixture\"\nproject:\n  name: sections-fixture\n{SECTIONS_YAML}")
+    format!("version: \"1.0.0-fixture\"\nproject:\n  name: sections-fixture\n{SECTIONS_YAML}")
 }
 
 /// Write `body` to `<tmp>/<name>` and load it the way a deployment does.
@@ -271,7 +271,7 @@ fn get_reflects_every_declared_section_in_legacy_mode() {
     for (key, expected) in declared_pairs() {
         assert_get(&config, key, &expected);
     }
-    assert_get(&config, "version", &json!("9.9.9-fixture"));
+    assert_get(&config, "version", &json!("1.0.0-fixture"));
     assert_get(&config, "project.name", &json!("sections-fixture"));
 }
 
@@ -309,8 +309,8 @@ fn modules_path_typed_field_reflects_the_file_in_every_reader() {
 fn required_fields_are_read_from_the_file() {
     let (_dir, config) = loaded_legacy();
 
-    assert_eq!(config.get("version"), Some(json!("9.9.9-fixture")));
-    assert_eq!(config.get_declared("version"), Some(json!("9.9.9-fixture")));
+    assert_eq!(config.get("version"), Some(json!("1.0.0-fixture")));
+    assert_eq!(config.get_declared("version"), Some(json!("1.0.0-fixture")));
     assert_eq!(config.get("project.name"), Some(json!("sections-fixture")));
     assert_eq!(
         config.get_declared("project.name"),

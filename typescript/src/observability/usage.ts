@@ -4,6 +4,7 @@
 
 import { Middleware } from '../middleware/base.js';
 import type { Context } from '../context.js';
+import { randomHex } from '../utils/index.js';
 import {
   InMemoryStorageBackend,
   STORAGE_NAMESPACE_USAGE,
@@ -84,6 +85,8 @@ export class UsageCollector {
   readonly retentionHours: number;
   private readonly _maxRecordsPerBucket: number;
   private readonly _storage: StorageBackend;
+  private readonly _storageWriterId = randomHex(16);
+  private _storageSequence = 0;
   // moduleId -> bucketKey -> UsageRecord[]
   private readonly _data: Map<string, Map<string, UsageRecord[]>> = new Map();
 
@@ -144,17 +147,20 @@ export class UsageCollector {
     }
     this._cleanupExpired(moduleId);
 
-    // D-113: persist under the canonical `usage` namespace. The backend was
-    // constructed here and written to by nothing. Not awaited — `record` is
-    // synchronous and a backend failure must not break the in-memory
-    // aggregation, which is what `getSummary` reads.
-    void this._storage.save(STORAGE_NAMESPACE_USAGE, `${moduleId}:${ts}`, {
-      module_id: moduleId,
-      timestamp: ts,
-      caller_id: callerId,
-      latency_ms: latencyMs,
-      success,
-    });
+    const key = `${moduleId}:${ts}:${this._storageWriterId}:${++this._storageSequence}`;
+    try {
+      void Promise.resolve(this._storage.save(STORAGE_NAMESPACE_USAGE, key, {
+        module_id: moduleId,
+        timestamp: ts,
+        caller_id: callerId,
+        latency_ms: latencyMs,
+        success,
+      })).catch(error => {
+        console.warn('[apcore:usage] Storage write failed', error);
+      });
+    } catch (error) {
+      console.warn('[apcore:usage] Storage write failed', error);
+    }
   }
 
   getSummary(period: string = '24h'): ModuleUsageSummary[] {

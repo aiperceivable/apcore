@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { Type } from '@sinclair/typebox';
 import { AsyncTaskManager, TaskStatus, InMemoryTaskStore, RetryConfig } from '../src/async-task.js';
 import type { TaskInfo } from '../src/async-task.js';
@@ -68,6 +68,40 @@ describe('TaskStatus', () => {
 
 describe('AsyncTaskManager', () => {
   describe('submit and status transitions', () => {
+    it.each([TaskStatus.RUNNING, TaskStatus.COMPLETED])('recovers a transient %s write without repeating module execution', async (failedStatus) => {
+      class CopyingStore extends InMemoryTaskStore {
+        private failOnce = true;
+
+        override async save(task: TaskInfo): Promise<void> {
+          if (this.failOnce && task.status === failedStatus) {
+            this.failOnce = false;
+            throw new Error('Transient store failure');
+          }
+          await super.save({ ...task });
+        }
+
+        override async get(taskId: string): Promise<TaskInfo | null> {
+          const task = await super.get(taskId);
+          return task === null ? null : { ...task };
+        }
+      }
+      const store = new CopyingStore();
+      const executor = new Executor({ registry: createRegistry() });
+      const execute = vi.spyOn(executor, 'call');
+      const manager = new AsyncTaskManager({ executor, store, maxTasks: 1 });
+      const task = await manager.submit('test.simple', { x: 7 }, {
+        retry: new RetryConfig({ maxRetries: 1, retryDelayMs: 1 }),
+      });
+
+      await vi.waitFor(async () => {
+        await expect(manager.getStatus(task)).resolves.toMatchObject({ status: TaskStatus.COMPLETED });
+      }, { timeout: 200 });
+      await expect(manager.getResult(task)).resolves.toEqual({ value: 7 });
+      expect(execute).toHaveBeenCalledTimes(1);
+      await expect(manager.submit('test.simple', {})).resolves.toEqual(expect.any(String));
+      await manager.shutdown();
+    });
+
     it('submits a task and transitions to COMPLETED', async () => {
       const { manager } = createManager();
       const taskId = await manager.submit('test.simple', { x: 42 });

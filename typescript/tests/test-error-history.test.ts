@@ -1,5 +1,6 @@
-import { describe, it, expect } from 'vitest';
-import { ErrorHistory } from '../src/observability/error-history.js';
+import { describe, it, expect, vi } from 'vitest';
+import { computeFingerprint, ErrorHistory } from '../src/observability/error-history.js';
+import { InMemoryStorageBackend, STORAGE_NAMESPACE_ERROR_HISTORY } from '../src/observability/storage.js';
 import { ErrorHistoryMiddleware } from '../src/middleware/error-history.js';
 import { ModuleError, ModuleExecuteError } from '../src/errors.js';
 import { Context } from '../src/context.js';
@@ -24,6 +25,30 @@ describe('ErrorHistory', () => {
     const entries = history.get('mod.a');
     expect(entries).toHaveLength(1);
     expect(entries[0].count).toBe(2);
+  });
+
+  it('persists the latest count in order even when a previous storage write is still active', async () => {
+    const memory = new InMemoryStorageBackend();
+    let release!: () => void;
+    const firstWrite = new Promise<void>(resolve => { release = resolve; });
+    const save = vi.fn(async (namespace: string, key: string, value: Record<string, unknown>) => {
+      if (value['count'] === 1) await firstWrite;
+      memory.save(namespace, key, value);
+    });
+    const history = new ErrorHistory({ storage: {
+      save,
+      get: memory.get.bind(memory),
+      list: memory.list.bind(memory),
+      delete: memory.delete.bind(memory),
+    } });
+    const error = new ModuleError('E1', 'repeat');
+    history.record('mod.a', error);
+    history.record('mod.a', error);
+    history.record('mod.a', error);
+    expect(save).toHaveBeenCalledTimes(1);
+    release();
+    const key = computeFingerprint(error.code, 'mod.a', error.message);
+    await vi.waitFor(() => expect(memory.get(STORAGE_NAMESPACE_ERROR_HISTORY, key)).toMatchObject({ count: 3 }));
   });
 
   it('returns newest first', () => {

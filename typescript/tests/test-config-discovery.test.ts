@@ -5,7 +5,7 @@ import * as os from 'node:os';
 import { Config, discoverConfigFile } from '../src/config.js';
 
 const VALID_YAML = `
-version: "0.8.0"
+version: "1.0.0"
 extensions:
   root: ./extensions
   auto_discover: false

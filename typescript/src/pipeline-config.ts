@@ -6,11 +6,12 @@ import { buildStandardStrategy } from './builtin-steps.js';
 import type { StandardStrategyDeps } from './builtin-steps.js';
 import {
   ConfigurationError,
+  GOVERNANCE_GATE,
   gateWeakeningError,
   gateWeakeningFields,
   governanceGateOf,
 } from './pipeline.js';
-import type { ExecutionStrategy, PipelineContext, Step, StepResult } from './pipeline.js';
+import type { ExecutionStrategy, GovernanceGateMarker, PipelineContext, Step, StepResult } from './pipeline.js';
 
 // `ConfigurationError` lives in `pipeline.ts` so `ExecutionStrategy` can raise
 // it for a weakened governance gate (D-130); re-exported here, where it has
@@ -174,6 +175,9 @@ class ConfiguredStep implements Step {
   readonly description: string;
   readonly removable: boolean;
   readonly replaceable: boolean;
+  readonly requires?: readonly string[];
+  readonly provides?: readonly string[];
+  readonly [GOVERNANCE_GATE]: GovernanceGateMarker | null;
 
   name: string;
   matchModules?: string[] | null;
@@ -189,6 +193,9 @@ class ConfiguredStep implements Step {
     this.description = inner.description;
     this.removable = inner.removable;
     this.replaceable = inner.replaceable;
+    this.requires = inner.requires;
+    this.provides = inner.provides;
+    this[GOVERNANCE_GATE] = governanceGateOf(inner);
     this.matchModules = overrides.matchModules ?? inner.matchModules ?? null;
     this.ignoreErrors = overrides.ignoreErrors ?? inner.ignoreErrors ?? false;
     this.pure = overrides.pure ?? inner.pure ?? false;

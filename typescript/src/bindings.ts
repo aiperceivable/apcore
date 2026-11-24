@@ -23,8 +23,8 @@ import { matchGlob } from './utils/pattern.js';
 import { jsonSchemaToTypeBox } from './schema/loader.js';
 import { assertOpenAiStrictCompatible } from './schema/openai-strict.js';
 
-import type { ModuleAnnotations, ResourceLimits } from './module.js';
-import { DEFAULT_ANNOTATIONS } from './module.js';
+import type { ResourceLimits } from './module.js';
+import { annotationsFromJSON } from './module.js';
 
 const SUPPORTED_SPEC_VERSIONS = new Set(['1.0']);
 const BINDING_KEYS = new Set(['module_id', 'target', 'description', 'documentation',
@@ -45,50 +45,6 @@ function validateBindingEntry(entry: unknown, filePath: string): asserts entry i
   if ('auto_schema' in entry && ![true, false, 'true', 'permissive', 'strict'].includes(entry.auto_schema as boolean | string)) {
     throw new BindingFileInvalidError(filePath, "auto_schema must be true, false, 'true', 'permissive', or 'strict'");
   }
-}
-
-/**
- * Convert a snake_case YAML annotations dict to a typed ModuleAnnotations.
- * Unknown keys go into `extra`.
- */
-function parseAnnotations(raw: Record<string, unknown>): ModuleAnnotations {
-  const extra: Record<string, unknown> = {};
-  for (const key of Object.keys(raw)) {
-    if (
-      ![
-        'readonly',
-        'destructive',
-        'idempotent',
-        'requires_approval',
-        'open_world',
-        'streaming',
-        'cacheable',
-        'cache_ttl',
-        'cache_key_fields',
-        'paginated',
-        'pagination_style',
-        'extra',
-      ].includes(key)
-    ) {
-      extra[key] = raw[key];
-    }
-  }
-  const rawExtra = (raw['extra'] as Record<string, unknown>) ?? {};
-  return {
-    readonly: (raw['readonly'] as boolean) ?? DEFAULT_ANNOTATIONS.readonly,
-    destructive: (raw['destructive'] as boolean) ?? DEFAULT_ANNOTATIONS.destructive,
-    idempotent: (raw['idempotent'] as boolean) ?? DEFAULT_ANNOTATIONS.idempotent,
-    requiresApproval: (raw['requires_approval'] as boolean) ?? DEFAULT_ANNOTATIONS.requiresApproval,
-    openWorld: (raw['open_world'] as boolean) ?? DEFAULT_ANNOTATIONS.openWorld,
-    streaming: (raw['streaming'] as boolean) ?? DEFAULT_ANNOTATIONS.streaming,
-    cacheable: (raw['cacheable'] as boolean) ?? DEFAULT_ANNOTATIONS.cacheable,
-    cacheTtl: (raw['cache_ttl'] as number) ?? DEFAULT_ANNOTATIONS.cacheTtl,
-    cacheKeyFields:
-      (raw['cache_key_fields'] as string[] | null) ?? DEFAULT_ANNOTATIONS.cacheKeyFields,
-    paginated: (raw['paginated'] as boolean) ?? DEFAULT_ANNOTATIONS.paginated,
-    paginationStyle: (raw['pagination_style'] as string) ?? DEFAULT_ANNOTATIONS.paginationStyle,
-    extra: { ...rawExtra, ...extra },
-  };
 }
 
 /** §9.1.1 default for `bindings.dir`. */
@@ -435,7 +391,6 @@ export class BindingLoader {
     filePath?: string,
   ): Promise<FunctionModule> {
     const targetString = binding['target'] as string;
-    const func = await this.resolveTarget(targetString);
     const moduleId = binding['module_id'] as string;
 
     // Detect schema mode conflicts (protocol-spec §5.12.2)
@@ -451,6 +406,7 @@ export class BindingLoader {
       throw new BindingSchemaInferenceFailedError(targetString, moduleId, filePath);
     }
 
+    const func = await this.resolveTarget(targetString);
     let inputSchema: TSchema;
     let outputSchema: TSchema;
 
@@ -539,7 +495,7 @@ export class BindingLoader {
       tags: (binding['tags'] as string[]) ?? null,
       version: (binding['version'] as string) ?? '1.0.0',
       annotations: binding['annotations']
-        ? parseAnnotations(binding['annotations'] as Record<string, unknown>)
+        ? annotationsFromJSON(binding['annotations'] as Record<string, unknown>)
         : undefined,
       metadata: binding['metadata'] as Record<string, unknown> | undefined,
       resources: binding['resources'] as ResourceLimits | undefined,

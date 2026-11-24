@@ -108,6 +108,15 @@ def _assert_consumers(config: Config, expected: dict[str, Any]) -> None:
         assert acl.rules[0].description == expected["resolved_acl_root"]
     if "resolved_schema_root" in expected:
         assert SchemaLoader(config).load("probe").description == expected["resolved_schema_root"]
+    for key, readable in expected.get("config_path_file_readable", {}).items():
+        path = config.resolve_path(config.get(key))
+        try:
+            with open(path, "rb") as file:
+                file.read(1)
+        except OSError:
+            assert readable is False, key
+        else:
+            assert readable is True, key
 
 
 @pytest.mark.parametrize("case_id", _CASES)
@@ -130,6 +139,7 @@ def test_config_project_root(case_id: str, tmp_path: Path, monkeypatch: pytest.M
         "resolved_config_paths",
         "resolved_acl_root",
         "resolved_schema_root",
+        "config_path_file_readable",
     }
     assert not set(expected) - known
     _assert_root(tmp_path, config, expected)

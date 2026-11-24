@@ -257,9 +257,7 @@ def _make_registry_with_module(module_id: str = "my.module") -> tuple[Registry, 
     """Create a registry with a single fake module registered."""
     registry = Registry()
     module = _FakeModule()
-    with registry._lock:
-        registry._modules[module_id] = module
-        registry._lowercase_map[module_id.lower()] = module_id
+    registry.register_internal(module_id, module)
     return registry, module
 
 

@@ -24,8 +24,8 @@ type MaybeModule = Record<string, unknown> & Record<symbol, unknown>;
  *
  * Detection order:
  *   1. Module has STREAMING_MARKER and stream() → proper implementation.
- *   2. Module has stream() only → transitional duck-typing fallback; warns once
- *      per instance and will be removed in the next major version.
+ *   2. Module has a native async generator named stream → compatibility for
+ *      unmarked streaming implementations, with one warning per instance.
  *   3. Neither → false.
  */
 export function isStreamingModule(m: Module): m is StreamingModule {
@@ -33,7 +33,8 @@ export function isStreamingModule(m: Module): m is StreamingModule {
   if (mm[STREAMING_MARKER] === true && typeof mm['stream'] === 'function') {
     return true;
   }
-  if (typeof mm['stream'] === 'function') {
+  if (typeof mm['stream'] === 'function' &&
+      Object.prototype.toString.call(mm['stream']) === '[object AsyncGeneratorFunction]') {
     if (!_warned.has(m)) {
       _warned.add(m);
       console.warn(

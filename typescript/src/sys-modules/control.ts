@@ -2,9 +2,7 @@
  * System control modules -- runtime config update and hot-reload.
  */
 
-import * as fs from 'node:fs';
 import { v4 as uuidv4 } from 'uuid';
-import * as yaml from 'js-yaml';
 import {
   ConfigError,
   ErrorCodes,
@@ -27,7 +25,8 @@ import type { AuditStore } from './audit.js';
 import { buildAuditEntry, extractAuditIdentity } from './audit.js';
 import { matchGlob } from '../utils/pattern.js';
 import { REDACTED_VALUE } from '../executor.js';
-import type { OverridesStore } from './overrides.js';
+import { FileOverridesStore, type OverridesStore } from './overrides.js';
+import { persistOverride } from './override-update.js';
 
 const RESTRICTED_KEYS = new Set(['sys_modules.enabled']);
 
@@ -78,15 +77,14 @@ export class UpdateConfigModule {
   private readonly _config: Config;
   private readonly _emitter: EventEmitter;
   private readonly _auditStore: AuditStore | null;
-  private readonly _overridesPath: string | null;
   private readonly _overridesStore: OverridesStore | null;
 
   constructor(config: Config, eventEmitter: EventEmitter, options?: UpdateConfigOptions) {
     this._config = config;
     this._emitter = eventEmitter;
     this._auditStore = options?.auditStore ?? null;
-    this._overridesPath = options?.overridesPath ?? null;
-    this._overridesStore = options?.overridesStore ?? null;
+    this._overridesStore = options?.overridesStore ??
+      (options?.overridesPath != null ? new FileOverridesStore(options.overridesPath) : null);
   }
 
   execute(inputs: Record<string, unknown>, context: unknown): Record<string, unknown> {
@@ -112,9 +110,7 @@ export class UpdateConfigModule {
     // Store-XOR-path precedence (Python/Rust parity, matches toggle.ts): the
     // pluggable store takes precedence over the legacy YAML path; never both.
     if (this._overridesStore !== null) {
-      this._persistOverrideToStore(key, value);
-    } else if (this._overridesPath !== null) {
-      this._persistOverride(key, value);
+      persistOverride(this._overridesStore, key, value);
     }
 
     const entry = buildAuditEntry('update_config', 'system.control.update_config', ctx, { before: safeOld, after: safeNew });
@@ -138,56 +134,6 @@ export class UpdateConfigModule {
     console.warn(`[apcore:control] Config updated: key=${key} old_value=${safeOld} new_value=${safeNew} reason=${reason}`);
 
     return { success: true, key, old_value: safeOld, new_value: safeNew };
-  }
-
-  private _persistOverrideToStore(key: string, value: unknown): void {
-    try {
-      const store = this._overridesStore!;
-      const loaded = store.load();
-      if (loaded !== null && typeof (loaded as { then?: unknown }).then === 'function') {
-        // Async store — fire-and-forget the read-modify-write so execute() stays sync.
-        (loaded as Promise<Record<string, unknown>>)
-          .then((existing) => {
-            existing[key] = value;
-            return store.save(existing);
-          })
-          .catch((err: unknown) => {
-            console.warn(`[apcore:control] Failed to persist override for key '${key}' via OverridesStore:`, err);
-          });
-        return;
-      }
-      const existing = loaded as Record<string, unknown>;
-      existing[key] = value;
-      const saveResult = store.save(existing);
-      if (saveResult !== undefined && typeof (saveResult as { then?: unknown }).then === 'function') {
-        (saveResult as Promise<void>).catch((err: unknown) => {
-          console.warn(`[apcore:control] Failed to persist override for key '${key}' via OverridesStore:`, err);
-        });
-      }
-    } catch (err) {
-      console.warn(`[apcore:control] Failed to persist override for key '${key}' via OverridesStore:`, err);
-    }
-  }
-
-  private _persistOverride(key: string, value: unknown): void {
-    let overrides: Record<string, unknown> = {};
-    if (fs.existsSync(this._overridesPath!)) {
-      try {
-        const content = fs.readFileSync(this._overridesPath!, 'utf-8');
-        const parsed = yaml.load(content);
-        if (typeof parsed === 'object' && parsed !== null) {
-          overrides = parsed as Record<string, unknown>;
-        }
-      } catch {
-        // Start fresh if parse fails
-      }
-    }
-    overrides[key] = value;
-    try {
-      fs.writeFileSync(this._overridesPath!, yaml.dump(overrides), 'utf-8');
-    } catch (err) {
-      console.warn(`[apcore:control] Failed to persist override for key '${key}':`, err);
-    }
   }
 
   private _validateInputs(inputs: Record<string, unknown>): { key: string; value: unknown; reason: string } {
@@ -262,7 +208,7 @@ export class ReloadModule {
     type: 'object' as const,
     properties: {
       success: { type: 'boolean' as const, description: 'Whether the reload succeeded' },
-      module_id: { type: 'string' as const, description: 'ID of the reloaded module (single-module mode)' },
+      module_id: { type: ['string', 'null'], description: 'ID of the reloaded module (single-module mode)' },
       reloaded_modules: { type: 'array' as const, description: 'IDs of reloaded modules (path_filter mode)' },
       previous_version: { type: 'string' as const, description: 'Version before reload' },
       new_version: { type: 'string' as const, description: 'Version after reload' },

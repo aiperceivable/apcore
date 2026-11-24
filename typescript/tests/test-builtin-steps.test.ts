@@ -193,7 +193,11 @@ describe('BuiltinModuleLookup', () => {
   });
 
   it('sets ctx.module when module is found', async () => {
-    const mod = makeModule();
+    const mod = makeModule({
+      description: 'Module lookup fixture',
+      inputSchema: { type: 'object' },
+      outputSchema: { type: 'object' },
+    });
     const reg = makeRegistry({ 'test.module': mod });
     const step = new BuiltinModuleLookup(reg);
     const pctx = makePipelineContext();

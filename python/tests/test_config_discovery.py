@@ -108,7 +108,7 @@ class TestDiscoverConfigFile:
 class TestConfigLoad:
     def _make_valid_yaml(self, path: Path) -> None:
         data = {
-            "version": "0.8.0",
+            "version": "1.0.0",
             "extensions": {"root": "./extensions", "auto_discover": False},
             "schema": {"root": "./schemas"},
             "acl": {"root": "./acl", "default_effect": "deny"},
