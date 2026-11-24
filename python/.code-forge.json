@@ -1,0 +1,23 @@
+{
+  "_tool": {
+    "name": "code-forge",
+    "description": "Transform documentation into actionable development plans with task breakdown and status tracking",
+    "url": "https://github.com/tercel/code-forge",
+    "skills_collection": "https://github.com/tercel/claude-code-skills"
+  },
+  "directories": {
+    "base": "./",
+    "input": "../apcore/docs/features",
+    "output": "implementation/"
+  },
+  "git": {
+    "auto_commit": false,
+    "commit_state_file": true,
+    "gitignore_patterns": []
+  },
+  "execution": {
+    "default_mode": "ask",
+    "auto_tdd": true,
+    "task_granularity": "medium"
+  }
+}

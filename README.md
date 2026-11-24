@@ -10,23 +10,19 @@
 
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/12294/badge)](https://www.bestpractices.dev/projects/12294)
-[![Python Version](https://img.shields.io/badge/python-3.11%2B-blue)](https://github.com/aiperceivable/apcore-python)
-[![TypeScript Version](https://img.shields.io/badge/TypeScript-Node_18%2B-blue)](https://github.com/aiperceivable/apcore-typescript)
-[![Rust Version](https://img.shields.io/badge/Rust-1.75%2B-blue)](https://github.com/aiperceivable/apcore-rust)
-
 apcore is a **governed, protocol-neutral runtime and module standard** for application capabilities that agents or code can call.
 
 You define a capability once — a description, an input schema, an output schema and behavioral annotations. The runtime then applies identity, access control, approval, validation, middleware, execution, structured errors and trace context on every call. Surface adapters project the same capability to MCP, A2A, CLI, HTTP or direct code.
 
 MCP tells an agent what it *can* call. apcore decides whether *this* call — with these arguments, by this identity — should run at all, and leaves evidence that it did.
 
-This repository holds the **protocol specification**, JSON Schemas and cross-language conformance fixtures. The runtimes live in separate repositories:
+This repository holds the **protocol specification**, JSON Schemas, cross-language conformance fixtures and three independently published runtime SDKs.
 
-| SDK | Language | Install | Repository |
-|-----|----------|---------|------------|
-| `apcore` | Python 3.11+ | `pip install apcore` | [apcore-python](https://github.com/aiperceivable/apcore-python) |
-| `apcore-js` | TypeScript (Node 18+) | `npm install apcore-js` | [apcore-typescript](https://github.com/aiperceivable/apcore-typescript) |
-| `apcore` | Rust 1.75+ | `cargo add apcore` | [apcore-rust](https://github.com/aiperceivable/apcore-rust) |
+| Language | Install | Source |
+|----------|---------|--------|
+| Python | `pip install apcore` | [Python SDK](./python/) |
+| TypeScript | `npm install apcore-js` | [TypeScript SDK](./typescript/) |
+| Rust | `cargo add apcore` | [Rust SDK](./rust/) |
 
 Current versions are listed on the [documentation home](./docs/index.md).
 
@@ -154,10 +150,10 @@ Adapters are independently versioned and available for Python, TypeScript and Ru
 
 | Adapter | Projects modules as | Repository |
 |---|---|---|
-| `apcore-mcp` | MCP tools (with a Tool Explorer UI) | [apcore-mcp](https://github.com/aiperceivable/apcore-mcp) |
-| `apcore-a2a` | A2A skills and Agent Card metadata | [apcore-a2a](https://github.com/aiperceivable/apcore-a2a) |
-| `apcore-cli` | CLI commands and arguments | [apcore-cli](https://github.com/aiperceivable/apcore-cli) |
-| `apcore-toolkit` | Shared scanners, schema extraction and output writers for adapter authors | [apcore-toolkit](https://github.com/aiperceivable/apcore-toolkit) |
+| `apcore-mcp` | MCP tools (with a Tool Explorer UI) | [apcore-mcp](https://github.com/aiperceivable/apcore-surfaces/tree/main/mcp) |
+| `apcore-a2a` | A2A skills and Agent Card metadata | [apcore-a2a](https://github.com/aiperceivable/apcore-surfaces/tree/main/a2a) |
+| `apcore-cli` | CLI commands and arguments | [apcore-cli](https://github.com/aiperceivable/apcore-surfaces/tree/main/cli) |
+| `apcore-toolkit` | Shared scanners, schema extraction and output writers for adapter authors | [apcore-toolkit](https://github.com/aiperceivable/apcore-surfaces/tree/main/toolkit) |
 
 Framework integrations bind HTTP endpoints to modules: `fastapi-apcore`, `django-apcore`, `flask-apcore`, `nestjs-apcore`, `express-apcore`, `hono-apcore`, `axum-apcore`. To write your own, see the [Adapter Development guide](./docs/guides/adapter-development.md).
 

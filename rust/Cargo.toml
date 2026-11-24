@@ -1,0 +1,160 @@
+[package]
+name = "apcore"
+version = "0.33.0"
+edition = "2021"
+# Minimum supported Rust version. Verified with `cargo +1.86 check --all-features`.
+# The binding language constraint is `std::task::Waker::noop()` (used by the
+# synchronous ACL condition-evaluation path), stabilized in Rust 1.85; 1.86 is
+# the floor this repo actually verifies against. The README badge and the
+# Requirements section must be kept in step with this value.
+rust-version = "1.86"
+# Disable per-file integration-test binary autodiscovery. Cargo would otherwise
+# compile each tests/*.rs into its own binary (122 of them), each re-doing
+# apcore monomorphization + linking 277 deps (~20s each). Instead a single
+# aggregator `tests/it.rs` pulls them all in as modules → one codegen + one
+# link. See tests/it.rs. (apcore#dev-ergonomics)
+autotests = false
+description = "Build once, invoke by code or AI — with schema, ACL, approval, and audit enforced at every call"
+license = "Apache-2.0"
+readme = "README.md"
+authors = ["aiperceivable <tercel.yi@gmail.com>"]
+homepage = "https://aiperceivable.com"
+repository = "https://github.com/aiperceivable/apcore"
+documentation = "https://apcore.aiperceivable.com/"
+keywords = ["ai", "llm", "module", "middleware", "schema"]
+categories = [
+    "api-bindings",
+    "asynchronous",
+    "development-tools",
+    "web-programming",
+    "config",
+]
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+# The consolidated integration-test binary for all files that don't touch
+# process-global state (autotests disabled above).
+[[test]]
+name = "it"
+path = "tests/it.rs"
+
+# Files that register into the process-global Config namespace registry or
+# mutate env vars are kept as SEPARATE binaries so each runs in its own process
+# — one binary would cross-pollute their global state and break `cargo test`.
+# Cargo autodiscovers `examples/*.rs` and `examples/*/main.rs` only, so an
+# example living at `examples/<dir>/<name>.rs` is never compiled and can rot.
+# Declaring it explicitly puts it back under `cargo build --examples`.
+[[example]]
+name = "format_date"
+path = "examples/bindings/format_date.rs"
+
+[[test]]
+name = "config_bus"
+path = "tests/config_bus.rs"
+
+[[test]]
+name = "config_bus_spec"
+path = "tests/config_bus_spec.rs"
+
+[[test]]
+name = "config_discovery"
+path = "tests/config_discovery.rs"
+
+[[test]]
+name = "conformance_test"
+path = "tests/conformance_test.rs"
+
+# The three §9.2.1 / §9.2.2 / §5.12.6 conformance drivers. Each mutates the
+# process environment (`APCORE_*`, `HOME`) and/or the working directory, which
+# is exactly the state `tests/it.rs` cannot share across its threads.
+[[test]]
+name = "test_config_path_typed_keys_conformance"
+path = "tests/test_config_path_typed_keys_conformance.rs"
+
+[[test]]
+name = "test_bindings_dir_resolution_conformance"
+path = "tests/test_bindings_dir_resolution_conformance.rs"
+
+[[test]]
+name = "test_config_project_root_conformance"
+path = "tests/test_config_project_root_conformance.rs"
+
+# §9.2.4's deprecation notice is asserted at the ENVIRONMENT tier too, so this
+# file sets `APCORE_*` variables. A leaked variable is invisible to the test
+# that set it and turns a negative case in ANOTHER file red, so it gets its own
+# process like the discovery drivers above.
+[[test]]
+name = "test_deprecated_inert_keys"
+path = "tests/test_deprecated_inert_keys.rs"
+
+# Mutates `APCORE_*` for the environment tier, so it gets its own process
+# like the discovery drivers above.
+[[test]]
+name = "test_get_declared_typed_sections"
+path = "tests/test_get_declared_typed_sections.rs"
+
+# Sets `APCORE_ID__MAP_OVERRIDES` and the working directory per case.
+[[test]]
+name = "test_id_map_from_config_conformance"
+path = "tests/test_id_map_from_config_conformance.rs"
+
+[[test]]
+name = "test_capture_point_redaction"
+path = "tests/test_capture_point_redaction.rs"
+
+[[test]]
+name = "test_extensions_ignore_patterns"
+path = "tests/test_extensions_ignore_patterns.rs"
+
+[[test]]
+name = "test_issue_123_conformance"
+path = "tests/test_issue_123_conformance.rs"
+
+# Changes proxy environment variables, so it must run outside the shared test binary.
+[[test]]
+name = "test_otlp_proxy_routing"
+path = "tests/test_otlp_proxy_routing.rs"
+required-features = ["events"]
+
+[dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "fs", "io-util"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml_ng = "0.10"
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+thiserror = "2"
+async-trait = "0.1.92"
+tracing = "0.1"
+regex = "1"
+jsonschema = "0.28"
+# Reuse the schema engine's URI parser for local-only reference redaction.
+referencing = "0.28"
+sha2 = "0.10"
+reqwest = { version = "0.12", features = ["json"], optional = true }
+futures-core = "0.3"
+futures-util = "0.3"
+async-stream = "0.3"
+parking_lot = "0.12"
+schemars = "0.8"
+dashmap = "6"
+notify = { version = "8", default-features = false, features = ["macos_fsevent"] }
+
+[features]
+default = []
+events = ["reqwest"]
+
+[dev-dependencies]
+tempfile = "3"
+trybuild = "1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt"] }
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+doc_markdown = "allow"

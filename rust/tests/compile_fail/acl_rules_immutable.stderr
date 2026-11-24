@@ -1,0 +1,5 @@
+error[E0594]: cannot assign to data in a `&` reference
+  --> tests/compile_fail/acl_rules_immutable.rs:29:5
+   |
+29 |     acl.rules()[0].targets = Vec::new(); // ERROR: cannot assign through a `&` reference
+   |     ^^^^^^^^^^^^^^^^^^^^^^ cannot assign

@@ -1,0 +1,36 @@
+module_id: test.llm_extensions
+description: Schema exercising all x-* LLM extension fields
+version: "1.0.0"
+
+input_schema:
+  type: object
+  properties:
+    prompt:
+      type: string
+      description: User prompt
+      x-llm-description: The natural language prompt to send to the language model
+      x-examples:
+        - "Summarize this document"
+        - "Translate to French"
+    api_key:
+      type: string
+      description: API key
+      x-sensitive: true
+    max_tokens:
+      type: integer
+      description: Maximum tokens
+      x-constraints: Must be between 1 and 4096
+    old_field:
+      type: string
+      description: Legacy field
+      x-deprecated:
+        reason: Use new_field instead
+        replacement: new_field
+  required:
+    - prompt
+
+output_schema:
+  type: object
+  properties:
+    response:
+      type: string

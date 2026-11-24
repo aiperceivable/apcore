@@ -1,0 +1,13 @@
+# Environment variables (sensitive data)
+.env
+.data
+
+# Secrets
+secrets/
+*.pem
+*.key
+
+.claude/
+CLAUDE.md
+.cursor/
+

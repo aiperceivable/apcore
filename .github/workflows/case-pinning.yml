@@ -40,53 +40,33 @@ jobs:
     timeout-minutes: 150
     steps:
       - uses: actions/checkout@v4
-        with:
-          path: apcore
-
-      # The sweep runs the real drivers, so all three SDKs must be present and
-      # buildable. A missing checkout is not a pass: the tool raises NoTestsRan
-      # rather than reading "no tests ran" as "nothing went red", which is the
-      # bug that manufactured its own first Rust result.
-      - uses: actions/checkout@v4
-        with:
-          repository: aiperceivable/apcore-python
-          path: apcore-python
-      - uses: actions/checkout@v4
-        with:
-          repository: aiperceivable/apcore-typescript
-          path: apcore-typescript
-      - uses: actions/checkout@v4
-        with:
-          repository: aiperceivable/apcore-rust
-          path: apcore-rust
 
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
       - uses: pnpm/action-setup@v4
         with:
-          version: 9
+          version: 10
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "22"
           cache: pnpm
-          cache-dependency-path: apcore-typescript/pnpm-lock.yaml
+          cache-dependency-path: typescript/pnpm-lock.yaml
       - uses: dtolnay/rust-toolchain@stable
 
       - name: Test the mutation checker
-        working-directory: apcore
         run: python3 -m unittest conformance.test_check_case_pinning -v
 
       - name: Install SDKs
         run: |
-          python3 -m pip install --quiet -e apcore-python[dev]
-          pnpm --dir apcore-typescript install --frozen-lockfile
-          cargo build --manifest-path apcore-rust/Cargo.toml --tests --all-features
+          python3 -m pip install --quiet -e "./python[dev]"
+          pnpm --dir typescript install --frozen-lockfile
+          cargo build --manifest-path rust/Cargo.toml --tests --all-features
 
       # Warm the Rust build so the first mutated case is not charged for a full
       # compile inside the per-case timeout.
       - name: Prebuild Rust tests
-        run: cargo test --manifest-path apcore-rust/Cargo.toml --all-features --no-run
+        run: cargo test --manifest-path rust/Cargo.toml --all-features --no-run
 
       # Four scopes. `any` is the weak question — does SOME driver run this case —
       # and it is kept because a wholly dead case fails it first and cheapest.
@@ -97,20 +77,21 @@ jobs:
       # positive cases were fixed in apcore-python and stayed broken in the other
       # two for exactly that reason (apcore#93).
       - name: Every fixture case is run by some driver, and by each of them
-        working-directory: apcore
         # The baseline is EMPTY: all 651 measurable cases are pinned as of
         # apcore#92. The diff below therefore fails on the first case that stops
         # being pinned, which is the state this job exists to hold. If the
         # baseline ever gains entries again, they are a backlog to shrink, not a
         # permanent exemption.
+        env:
+          FIXTURE: ${{ inputs.fixture }}
+          ONLY: ${{ inputs.sdk }}
+        shell: bash
         run: |
-          FIXTURE="${{ github.event.inputs.fixture }}"
-          ONLY="${{ github.event.inputs.sdk }}"
           : > pinning.txt
           for scope in any python typescript rust; do
             [ -n "$ONLY" ] && [ "$scope" != "$ONLY" ] && continue
             echo "===== scope: $scope" | tee -a pinning.txt
-            python3 conformance/check_case_pinning.py --sdk-root .. \
+            python3 conformance/check_case_pinning.py --sdk-root . \
               ${FIXTURE:+--fixture "$FIXTURE"} \
               $([ "$scope" != any ] && echo "--sdk $scope") | tee -a pinning.txt
           done
@@ -154,4 +135,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: case-pinning
-          path: apcore/pinning.txt
+          path: pinning.txt

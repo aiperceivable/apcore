@@ -28,6 +28,11 @@ import re
 import sys
 from pathlib import Path
 
+if __package__:
+    from .sdk_layout import sdk_dir
+else:
+    from sdk_layout import sdk_dir
+
 REPO = Path(__file__).resolve().parent.parent
 FIXTURES = REPO / "conformance" / "fixtures"
 BASELINE = REPO / "conformance" / "driver_coverage_baseline.json"
@@ -113,7 +118,7 @@ def loads_fixtures(text: str, suffix: str) -> bool:
 def drivers_for(sdk_root: Path, sdk: str, fixture_stem: str) -> list[str]:
     """Test files in `sdk` that load `<fixture_stem>.json` by name."""
     repo, test_dirs, suffixes = SDKS[sdk]
-    base = sdk_root / repo
+    base = sdk_dir(sdk_root, repo)
     if not base.is_dir():
         return []
     # Loaders name a fixture either with its extension (Python's
@@ -146,14 +151,14 @@ def drivers_for(sdk_root: Path, sdk: str, fixture_stem: str) -> list[str]:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--sdk-root", type=Path, default=REPO.parent)
+    ap.add_argument("--sdk-root", type=Path, default=REPO)
     ap.add_argument("--strict", action="store_true", help="exit 1 on any gap")
     ap.add_argument("--baseline", action="store_true",
                     help="exit 1 only on gaps not in driver_coverage_baseline.json")
     ap.add_argument("--write-baseline", action="store_true")
     args = ap.parse_args()
 
-    present = [s for s, (repo, *_) in SDKS.items() if (args.sdk_root / repo).is_dir()]
+    present = [s for s, (repo, *_) in SDKS.items() if sdk_dir(args.sdk_root, repo).is_dir()]
     if len(present) < 3:
         print(f"Need all three SDK checkouts under {args.sdk_root} "
               f"(found: {', '.join(present) or 'none'}) — skipping.")
@@ -176,7 +181,7 @@ def main() -> int:
     for path in sorted(FIXTURES.glob("*.json")):
         for sdk, (repo, *_rest) in SDKS.items():
             for rel in drivers_for(args.sdk_root, sdk, path.stem):
-                q, d = quarantine_ratio(args.sdk_root / repo / rel)
+                q, d = quarantine_ratio(sdk_dir(args.sdk_root, repo) / rel)
                 if d and q >= d:
                     vacuous.append(f"{path.stem} / {sdk}: {rel} — {q} quarantine marker(s) "
                                    f"for {d} test(s); this may be counted as driven while "

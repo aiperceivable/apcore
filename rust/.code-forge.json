@@ -1,0 +1,25 @@
+{
+  "_tool": {
+    "name": "code-forge",
+    "description": "Transform documentation into actionable development plans",
+    "url": "https://github.com/tercel/code-forge"
+  },
+  "directories": {
+    "base": "./",
+    "input": "../apcore/docs/features",
+    "output": "planning/"
+  },
+  "reference_docs": {
+    "sources": ["../apcore-python/planning/*/plan.md"]
+  },
+  "port": {
+    "source_docs": "../apcore",
+    "reference_impl": "../apcore-python",
+    "target_lang": "rust"
+  },
+  "execution": {
+    "default_mode": "ask",
+    "auto_tdd": true,
+    "task_granularity": "medium"
+  }
+}

@@ -1,0 +1,103 @@
+{
+  "feature": "async-task-evolution",
+  "feature_name": "AsyncTask Evolution (Issue #34)",
+  "status": "in_progress",
+  "tasks": [
+    {
+      "id": "T01",
+      "title": "TaskStore protocol + InMemoryTaskStore",
+      "description": "Define TaskStore Protocol with get/put/delete/list. Implement InMemoryTaskStore wrapping a dict. No changes to AsyncTaskManager yet.",
+      "status": "pending",
+      "tdd_steps": [
+        "RED: test InMemoryTaskStore.put/get/delete/list (TC-003..006)",
+        "RED: test isinstance(InMemoryTaskStore(), TaskStore) (TC-001)",
+        "GREEN: implement TaskStore protocol + InMemoryTaskStore",
+        "REFACTOR: ensure clean separation, no logic leak"
+      ],
+      "files": ["src/apcore/async_task.py", "tests/test_async_task.py"]
+    },
+    {
+      "id": "T02",
+      "title": "Wire TaskStore into AsyncTaskManager",
+      "description": "AsyncTaskManager.__init__ accepts store: TaskStore | None. Replace all self._tasks dict accesses with self._store calls. Preserve existing behaviour.",
+      "status": "pending",
+      "tdd_steps": [
+        "RED: test custom store receives put() on each state transition (TC-007, TC-008)",
+        "GREEN: replace _tasks dict with self._store; route all reads/writes through store",
+        "REFACTOR: verify no direct dict access remains"
+      ],
+      "files": ["src/apcore/async_task.py", "tests/test_async_task.py"]
+    },
+    {
+      "id": "T03",
+      "title": "BackoffStrategy enum + RetryPolicy dataclass",
+      "description": "Add BackoffStrategy (FIXED/LINEAR/EXPONENTIAL) and RetryPolicy dataclass with delay_for(attempt) method.",
+      "status": "pending",
+      "tdd_steps": [
+        "RED: test delay_for() for all three strategies (TC-009, TC-010, TC-011)",
+        "GREEN: implement BackoffStrategy + RetryPolicy.delay_for()",
+        "REFACTOR: add to __all__"
+      ],
+      "files": ["src/apcore/async_task.py", "tests/test_async_task.py"]
+    },
+    {
+      "id": "T04",
+      "title": "TaskInfo retry fields + TaskStatus.RETRYING",
+      "description": "Add attempt_number: int = 0 and max_retries: int = 0 to TaskInfo. Add RETRYING to TaskStatus enum.",
+      "status": "pending",
+      "tdd_steps": [
+        "RED: test TaskStatus.RETRYING exists (TC-024)",
+        "RED: test TaskInfo has attempt_number and max_retries fields",
+        "GREEN: extend TaskInfo dataclass + TaskStatus enum",
+        "REFACTOR: verify existing tests still pass"
+      ],
+      "files": ["src/apcore/async_task.py", "tests/test_async_task.py"]
+    },
+    {
+      "id": "T05",
+      "title": "Retry loop in AsyncTaskManager._run()",
+      "description": "submit() accepts retry_policy: RetryPolicy | None. _run() wraps execution in a retry loop: on failure, if attempt_number < max_retries set RETRYING, sleep, increment, retry. On cancellation during RETRYING sleep, set CANCELLED.",
+      "status": "pending",
+      "tdd_steps": [
+        "RED: test no retry_policy -> straight to FAILED (TC-012)",
+        "RED: test retry_policy exhausted -> FAILED with correct attempt_number (TC-013)",
+        "RED: test status sequence RUNNING->RETRYING->RUNNING->FAILED (TC-015)",
+        "RED: test succeeds on retry N -> COMPLETED, attempt_number==N (TC-016)",
+        "RED: test cancel during RETRYING -> CANCELLED (TC-017)",
+        "GREEN: implement retry loop in _run(); pass retry_policy through submit()",
+        "REFACTOR: extract delay calculation, keep _run() readable"
+      ],
+      "files": ["src/apcore/async_task.py", "tests/test_async_task.py"]
+    },
+    {
+      "id": "T06",
+      "title": "Reaper: start_reaper() / stop_reaper()",
+      "description": "Add start_reaper(interval_seconds, max_age_seconds) and stop_reaper() to AsyncTaskManager. start_reaper creates asyncio.Task running periodic cleanup loop. shutdown() calls stop_reaper().",
+      "status": "pending",
+      "tdd_steps": [
+        "RED: test reaper removes terminal tasks automatically (TC-018)",
+        "RED: test reaper does not remove active tasks (TC-019)",
+        "RED: test stop_reaper() halts cleanup (TC-020)",
+        "RED: test shutdown() stops reaper (TC-021)",
+        "RED: test stop_reaper() no-op when not running (TC-022)",
+        "RED: test double start_reaper() raises RuntimeError (TC-023)",
+        "GREEN: implement start_reaper / stop_reaper / integrate into shutdown()",
+        "REFACTOR: guard, error message, clean task reference management"
+      ],
+      "files": ["src/apcore/async_task.py", "tests/test_async_task.py"]
+    },
+    {
+      "id": "T07",
+      "title": "Update public exports + run full test suite",
+      "description": "Add TaskStore, InMemoryTaskStore, RetryPolicy, BackoffStrategy to __all__ in async_task.py and to apcore/__init__.py exports. Run ruff, black, pyright, pytest.",
+      "status": "pending",
+      "tdd_steps": [
+        "Update __all__ in async_task.py",
+        "Add imports + exports in __init__.py",
+        "ruff check --fix . && black . && pyright .",
+        "pytest -> all pass"
+      ],
+      "files": ["src/apcore/async_task.py", "src/apcore/__init__.py"]
+    }
+  ]
+}

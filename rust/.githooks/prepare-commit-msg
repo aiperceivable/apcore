@@ -1,0 +1,9 @@
+#!/bin/sh
+# Automatically add Signed-off-by line (DCO) if not already present
+
+SOB=$(git var GIT_COMMITTER_IDENT | sed -n 's/^\(.*>\).*$/Signed-off-by: \1/p')
+
+if ! grep -qs "^$SOB" "$1"; then
+  echo "" >> "$1"
+  echo "$SOB" >> "$1"
+fi
