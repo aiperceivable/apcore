@@ -54,6 +54,13 @@ jobs:
       run: |
         ruff check src/ tests/
 
+    - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      with:
+        node-version: '22'
+
+    - name: Type check with Pyright
+      run: npx --yes --package pyright@1.1.414 -- pyright --pythonpath "$(command -v python)" src
+
     - name: Run tests
       run: |
         pytest

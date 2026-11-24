@@ -1,5 +1,8 @@
 name: Conformance integrity
 
+permissions:
+  contents: read
+
 # The doc repo owns the canonical schemas and the conformance fixtures the SDKs
 # drive. These checks guard the seam between them: a fixture that has drifted
 # from schemas/ is worse than no fixture, because three SDKs will be validated
@@ -12,6 +15,9 @@ on:
       - "conformance/**"
       - "docs/**"
       - "examples/**"
+      - "python/**"
+      - "typescript/**"
+      - "rust/**"
       - "README.md"
       - "CONTRIBUTING.md"
       - "llms.txt"
@@ -22,6 +28,9 @@ on:
       - "conformance/**"
       - "docs/**"
       - "examples/**"
+      - "python/**"
+      - "typescript/**"
+      - "rust/**"
       - "README.md"
       - "CONTRIBUTING.md"
       - "llms.txt"
@@ -31,9 +40,9 @@ jobs:
   integrity:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.11"
 
@@ -46,11 +55,34 @@ jobs:
         # already assumed ("CI installs both").
         run: pip install --quiet jsonschema referencing pyyaml
 
-      - name: Every schema is valid Draft 2020-12
+      - name: Every schema is valid Draft 2020-12 and describes its properties
         run: |
           python3 - <<'PY'
           import glob, json, sys
           from jsonschema import Draft202012Validator
+
+          mapped = {"$defs", "definitions", "properties", "patternProperties", "dependentSchemas"}
+          sequences = {"allOf", "anyOf", "oneOf", "prefixItems"}
+          single = {
+              "additionalProperties", "unevaluatedProperties", "items", "unevaluatedItems",
+              "contains", "propertyNames", "not", "if", "then", "else", "contentSchema",
+          }
+
+          def undescribed_properties(node):
+              if not isinstance(node, dict):
+                  return
+              for keyword, value in node.items():
+                  if keyword in mapped and isinstance(value, dict):
+                      for name, schema in value.items():
+                          if keyword == "properties" and isinstance(schema, dict) and not schema.get("description"):
+                              yield name
+                          yield from undescribed_properties(schema)
+                  elif keyword in sequences and isinstance(value, list):
+                      for schema in value:
+                          yield from undescribed_properties(schema)
+                  elif keyword in single:
+                      yield from undescribed_properties(value)
+
           bad = 0
           for path in sorted(glob.glob("schemas/*.schema.json")):
               doc = json.load(open(path))
@@ -60,6 +92,9 @@ jobs:
                   Draft202012Validator.check_schema(doc)
               except Exception as exc:
                   print(f"{path}: {exc}", file=sys.stderr); bad += 1
+              for name in undescribed_properties(doc):
+                  print(f"{path}: property {name!r} needs a description", file=sys.stderr)
+                  bad += 1
           sys.exit(1 if bad else 0)
           PY
 
@@ -223,9 +258,9 @@ jobs:
     # wrong.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.11"
 

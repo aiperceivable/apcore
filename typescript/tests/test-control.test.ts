@@ -97,7 +97,7 @@ describe('UpdateConfigModule', () => {
   });
 
   describe('constraint enforcement', () => {
-    it('raises ConfigError on a post-set constraint violation', () => {
+    it('raises ConfigError on a constraint violation', () => {
       const cfg = Config.fromDefaults();
       const constrained = new UpdateConfigModule(cfg, emitter);
       let caught: unknown;
@@ -110,14 +110,22 @@ describe('UpdateConfigModule', () => {
       expect((caught as ConfigError).code).toBe('CONFIG_INVALID');
     });
 
-    it('rolls Config back to old_value on a constraint violation', () => {
+    it('rejects a constraint violation before writing to Config', () => {
       const cfg = Config.fromDefaults();
       const constrained = new UpdateConfigModule(cfg, emitter);
       const oldValue = cfg.get('executor.default_timeout');
+      const set = vi.spyOn(cfg, 'set');
       expect(() =>
         constrained.execute({ key: 'executor.default_timeout', value: -5, reason: 'test' }, null),
       ).toThrow(ConfigError);
       expect(cfg.get('executor.default_timeout')).toBe(oldValue);
+      expect(set).not.toHaveBeenCalled();
+    });
+
+    it('applies framework constraints to their explicitly qualified keys', () => {
+      expect(() => mod.execute(
+        { key: 'apcore.executor.default_timeout', value: -5, reason: 'test' }, null,
+      )).toThrow(ConfigError);
     });
   });
 

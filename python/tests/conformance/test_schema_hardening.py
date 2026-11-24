@@ -81,11 +81,11 @@ class TestUnionFixture:
         expected = tc["expected"]
         result = _validate_via_module_path(data, schema)
         assert result.valid == expected["valid"], (
-            f"[{tc['id']}] valid mismatch: got {result.valid}, expected {expected['valid']}. " f"errors={result.errors}"
+            f"[{tc['id']}] valid mismatch: got {result.valid}, expected {expected['valid']}. errors={result.errors}"
         )
         if expected.get("error_code"):
             assert result.error_code == expected["error_code"], (
-                f"[{tc['id']}] error_code mismatch: got {result.error_code!r}, " f"expected {expected['error_code']!r}"
+                f"[{tc['id']}] error_code mismatch: got {result.error_code!r}, expected {expected['error_code']!r}"
             )
 
 
@@ -110,11 +110,11 @@ class TestRecursiveFixture:
         expected = tc["expected"]
         result = _validate_via_module_path(data, schema)
         assert result.valid == expected["valid"], (
-            f"[{tc['id']}] valid mismatch: got {result.valid}, expected {expected['valid']}. " f"errors={result.errors}"
+            f"[{tc['id']}] valid mismatch: got {result.valid}, expected {expected['valid']}. errors={result.errors}"
         )
         if expected.get("error_code"):
             assert result.error_code == expected["error_code"], (
-                f"[{tc['id']}] error_code mismatch: got {result.error_code!r}, " f"expected {expected['error_code']!r}"
+                f"[{tc['id']}] error_code mismatch: got {result.error_code!r}, expected {expected['error_code']!r}"
             )
 
 
@@ -139,11 +139,11 @@ class TestConstraintsFixture:
         expected = tc["expected"]
         result = validate_schema_dict(data, schema)
         assert result.valid == expected["valid"], (
-            f"[{tc['id']}] valid mismatch: got {result.valid}, expected {expected['valid']}. " f"errors={result.errors}"
+            f"[{tc['id']}] valid mismatch: got {result.valid}, expected {expected['valid']}. errors={result.errors}"
         )
         if expected.get("error_code"):
             assert result.error_code == expected["error_code"], (
-                f"[{tc['id']}] error_code mismatch: got {result.error_code!r}, " f"expected {expected['error_code']!r}"
+                f"[{tc['id']}] error_code mismatch: got {result.error_code!r}, expected {expected['error_code']!r}"
             )
 
 
@@ -171,12 +171,12 @@ class TestFormatsFixture:
             result = validate_schema_dict(data, schema)
 
         assert result.valid == expected["valid"], (
-            f"[{tc['id']}] valid mismatch: got {result.valid}, expected {expected['valid']}. " f"errors={result.errors}"
+            f"[{tc['id']}] valid mismatch: got {result.valid}, expected {expected['valid']}. errors={result.errors}"
         )
 
         if expected.get("error_code"):
             assert result.error_code == expected["error_code"], (
-                f"[{tc['id']}] error_code mismatch: got {result.error_code!r}, " f"expected {expected['error_code']!r}"
+                f"[{tc['id']}] error_code mismatch: got {result.error_code!r}, expected {expected['error_code']!r}"
             )
 
         expected_warn = expected.get("warn_logged", False)
@@ -206,9 +206,10 @@ class TestFormatsFixture:
         with caplog.at_level(logging.WARNING, logger="apcore.schema.hardening"):
             validate_schema_dict(data, schema)
         messages = [r.message for r in caplog.records]
-        assert any(
-            "Format violation" in m and "date-time" in m and "not-a-real-date-time" in m for m in messages
-        ), f"expected nested format violation warning, got {messages}"
+        assert any("Format violation" in m and "date-time" in m and "/user/created_at" in m for m in messages), (
+            f"expected nested format violation warning, got {messages}"
+        )
+        assert all("not-a-real-date-time" not in m for m in messages)
 
     def test_format_violation_in_array_items_emits_warning(self, caplog: pytest.LogCaptureFixture) -> None:
         schema = {
@@ -302,7 +303,7 @@ class TestContentHashParity:
         # Pin against the recorded reference so an accidental canonicalization
         # change (e.g. float rendering or key-sort regression) is caught.
         assert digest == PYTHON_CONTENT_HASHES[tc["id"]], (
-            f"[{tc['id']}] content_hash drifted: got {digest}, " f"reference {PYTHON_CONTENT_HASHES[tc['id']]}"
+            f"[{tc['id']}] content_hash drifted: got {digest}, reference {PYTHON_CONTENT_HASHES[tc['id']]}"
         )
 
     def test_report_all_digests(self) -> None:

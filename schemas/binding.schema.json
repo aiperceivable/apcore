@@ -81,13 +81,15 @@
         },
         "schema_ref": {
           "type": "string",
-          "description": "Reference to an external Schema file path"
+          "description": "Relative path from this binding file to an external Schema file."
         },
         "annotations": {
-          "$ref": "#/$defs/Annotations"
+          "$ref": "#/$defs/Annotations",
+          "description": "Behavioral and governance annotations declared for the bound module."
         },
         "resources": {
-          "$ref": "#/$defs/ResourceLimits"
+          "$ref": "#/$defs/ResourceLimits",
+          "description": "Per-module execution timeout and memory limits."
         },
         "tags": {
           "type": "array",
@@ -112,7 +114,8 @@
           "description": "Extended documentation (long-form). Used as fallback when display.documentation is not set."
         },
         "display": {
-          "$ref": "#/$defs/DisplayOverlay"
+          "$ref": "#/$defs/DisplayOverlay",
+          "description": "Presentation metadata for exposing the bound module on a surface."
         }
       },
       "allOf": [

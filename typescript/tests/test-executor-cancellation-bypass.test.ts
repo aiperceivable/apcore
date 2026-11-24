@@ -8,7 +8,7 @@
  * step-wrapped cancellation fell into executeOnError and could be "recovered".
  */
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { Type } from '@sinclair/typebox';
 import { Executor } from '../src/executor.js';
 import { Registry } from '../src/registry/registry.js';
@@ -82,6 +82,27 @@ describe('D-20 cancellation bypasses on_error (callWithTrace)', () => {
 });
 
 describe('callWithTrace forwards versionHint into the pipeline context (A-D-005)', () => {
+  it('warns only once when call and stream receive an unresolved version hint', async () => {
+    const registry = new Registry();
+    await registry.register('module.versioned', {
+      description: 'Fixture module',
+      inputSchema: Type.Object({}),
+      outputSchema: Type.Object({}),
+      execute: () => ({}),
+    });
+    const executor = new Executor({ registry });
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await expect(executor.call('module.versioned', {}, null, '^2.0.0')).resolves.toEqual({});
+      const stream = executor.stream('module.versioned', {}, null, '^3.0.0');
+      await expect(stream.next()).resolves.toEqual({ done: false, value: {} });
+      await stream.return(undefined);
+      const versionWarnings = warning.mock.calls.filter(([line]) => String(line).includes('version hint'));
+      expect(versionWarnings).toHaveLength(1);
+    } finally {
+      warning.mockRestore();
+    }
+  });
   it('exposes the versionHint argument on PipelineContext', async () => {
     let captured: string | null | undefined = '__unset__';
     const captureStep = {

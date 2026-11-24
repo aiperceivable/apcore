@@ -27,7 +27,9 @@ const INPUT_SECRET: &str = "hunter2-input-secret";
 const OUTPUT_SECRET: &str = "tok-output-secret";
 
 #[derive(Debug)]
-struct Login;
+struct Login {
+    declares_schema: bool,
+}
 
 fn input_schema() -> Value {
     json!({
@@ -52,28 +54,46 @@ fn output_schema() -> Value {
 #[async_trait]
 impl Module for Login {
     fn input_schema(&self) -> Value {
-        input_schema()
+        if self.declares_schema {
+            input_schema()
+        } else {
+            json!({})
+        }
     }
     fn output_schema(&self) -> Value {
-        output_schema()
+        if self.declares_schema {
+            output_schema()
+        } else {
+            json!({})
+        }
     }
     fn description(&self) -> &'static str {
         "returns a session for a passphrase"
     }
     async fn execute(&self, inputs: Value, _ctx: &Context<Value>) -> Result<Value, ModuleError> {
-        Ok(json!({"user": inputs["username"], "session": OUTPUT_SECRET}))
+        let field = if self.declares_schema {
+            "session"
+        } else {
+            "_secret_session"
+        };
+        Ok(json!({"user": inputs["username"], (field): OUTPUT_SECRET}))
     }
 }
 
 fn executor() -> Executor {
+    executor_with_schema(true)
+}
+
+fn executor_with_schema(declares_schema: bool) -> Executor {
     let reg = Arc::new(Registry::new());
+    let login = Login { declares_schema };
     let descriptor = ModuleDescriptor {
         module_id: MODULE_ID.to_string(),
         name: None,
         description: "returns a session for a passphrase".to_string(),
         documentation: None,
-        input_schema: input_schema(),
-        output_schema: output_schema(),
+        input_schema: login.input_schema(),
+        output_schema: login.output_schema(),
         version: DEFAULT_MODULE_VERSION.to_string(),
         tags: vec![],
         annotations: None,
@@ -84,7 +104,7 @@ fn executor() -> Executor {
         dependencies: vec![],
         enabled: true,
     };
-    reg.register(MODULE_ID, Box::new(Login), descriptor)
+    reg.register(MODULE_ID, Box::new(login), descriptor)
         .expect("register");
     Executor::new(reg, Arc::new(Config::default()))
 }
@@ -191,4 +211,56 @@ async fn logging_middleware_logs_redacted_values() {
     let log = buf.text();
     assert!(log.contains("START demo.login"), "middleware logged: {log}");
     assert_redacted(&log);
+}
+
+#[tokio::test]
+async fn test_logging_schema_independent_redaction() {
+    let buf = Buf::default();
+    let subscriber = tracing_subscriber::fmt()
+        .with_writer(buf.clone())
+        .with_ansi(false)
+        .finish();
+    let _guard = tracing::subscriber::set_default(subscriber);
+    let executor = executor_with_schema(false);
+    executor
+        .use_middleware(Box::new(LoggingMiddleware::with_defaults()))
+        .unwrap();
+
+    executor
+        .call(
+            MODULE_ID,
+            json!({"username": "alice", "_secret_passphrase": INPUT_SECRET}),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    assert_redacted(&buf.text());
+}
+
+#[tokio::test]
+async fn test_executor_warns_once_about_ignored_version_hints_across_call_and_stream() {
+    use futures_util::StreamExt;
+
+    let buf = Buf::default();
+    let subscriber = tracing_subscriber::fmt()
+        .with_writer(buf.clone())
+        .with_ansi(false)
+        .finish();
+    let _guard = tracing::subscriber::set_default(subscriber);
+
+    let executor = executor();
+    executor
+        .call(MODULE_ID, inputs(), None, None)
+        .await
+        .unwrap();
+    assert!(!buf.text().contains("version_hint is deprecated"));
+    executor
+        .call(MODULE_ID, inputs(), None, Some("1.0.0"))
+        .await
+        .unwrap();
+    let mut result = executor.stream(MODULE_ID, inputs(), None, Some("2.0.0"));
+    assert!(result.next().await.unwrap().is_ok());
+    assert_eq!(buf.text().matches("version_hint is deprecated").count(), 1);
 }

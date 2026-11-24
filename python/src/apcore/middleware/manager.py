@@ -196,13 +196,15 @@ class MiddlewareManager:
         inputs: dict[str, Any],
         output: dict[str, Any],
         context: Context,
+        *,
+        executed_middlewares: list[Middleware] | None = None,
     ) -> dict[str, Any]:
         """Execute after() on all middlewares in REVERSE registration order.
 
         Returns the final output dict. Raises if any middleware's after() raises.
         """
         current_output = output
-        middlewares = self.snapshot()
+        middlewares = self.snapshot() if executed_middlewares is None else executed_middlewares
 
         for mw in reversed(middlewares):
             result = mw.after(module_id, inputs, current_output, context)
@@ -275,6 +277,8 @@ class MiddlewareManager:
         inputs: dict[str, Any],
         output: dict[str, Any],
         context: Context,
+        *,
+        executed_middlewares: list[Middleware] | None = None,
     ) -> dict[str, Any]:
         """Async-aware execute_after.
 
@@ -282,7 +286,7 @@ class MiddlewareManager:
         ``iscoroutinefunction`` to handle decorated/partial async handlers.
         """
         current_output = output
-        middlewares = self.snapshot()
+        middlewares = self.snapshot() if executed_middlewares is None else executed_middlewares
 
         for mw in reversed(middlewares):
             ret = mw.after(module_id, inputs, current_output, context)

@@ -64,6 +64,97 @@ impl Module for SlowStreamingModule {
 /// `stream()` on such a module yields the "not supported" error.
 struct NonStreamingModule;
 
+struct GatedStreamingModule {
+    next_chunk: std::sync::Arc<tokio::sync::Notify>,
+}
+
+#[async_trait]
+impl Module for GatedStreamingModule {
+    fn input_schema(&self) -> Value {
+        json!({"type": "object"})
+    }
+    fn output_schema(&self) -> Value {
+        json!({"type": "object"})
+    }
+    fn description(&self) -> &'static str {
+        "streaming module with an externally scheduled next chunk"
+    }
+    async fn execute(&self, _inputs: Value, _ctx: &Context<Value>) -> Result<Value, ModuleError> {
+        Ok(json!({}))
+    }
+    fn stream(&self, _inputs: Value, _ctx: &Context<Value>) -> Option<ChunkStream> {
+        let next_chunk = self.next_chunk.clone();
+        Some(Box::pin(stream! {
+            yield Ok(json!({"chunk": 1}));
+            next_chunk.notified().await;
+            yield Ok(json!({"chunk": 2}));
+        }))
+    }
+}
+
+#[tokio::test]
+async fn test_stream_deadline_while_awaiting_next_chunk() {
+    let apcore = APCore::new();
+    apcore
+        .register(
+            "gated.stream",
+            Box::new(GatedStreamingModule {
+                next_chunk: Default::default(),
+            }),
+        )
+        .unwrap();
+    let mut ctx = Context::<Value>::anonymous();
+    ctx.global_deadline = Some(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs_f64()
+            + 0.100,
+    );
+    let mut chunks = apcore
+        .executor()
+        .stream("gated.stream", json!({}), Some(&ctx), None);
+    assert_eq!(chunks.next().await.unwrap().unwrap(), json!({"chunk": 1}));
+    let error = timeout(Duration::from_millis(500), chunks.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(error.code, apcore::ErrorCode::ModuleTimeout);
+    assert!(chunks.next().await.is_none());
+}
+
+#[tokio::test]
+async fn test_stream_wait_observes_cancellation_from_its_parent() {
+    let apcore = APCore::new();
+    apcore
+        .register(
+            "gated.stream",
+            Box::new(GatedStreamingModule {
+                next_chunk: Default::default(),
+            }),
+        )
+        .unwrap();
+    let mut ctx = Context::<Value>::anonymous();
+    let token = apcore::CancelToken::new();
+    ctx.cancel_token = Some(token.clone());
+    let mut chunks = apcore
+        .executor()
+        .stream("gated.stream", json!({}), Some(&ctx), None);
+    assert_eq!(chunks.next().await.unwrap().unwrap(), json!({"chunk": 1}));
+    tokio::spawn(async move {
+        sleep(Duration::from_millis(20)).await;
+        token.cancel();
+    });
+    let error = timeout(Duration::from_millis(500), chunks.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(error.code, apcore::ErrorCode::ExecutionCancelled);
+    assert!(chunks.next().await.is_none());
+}
+
 #[async_trait]
 impl Module for NonStreamingModule {
     fn input_schema(&self) -> Value {

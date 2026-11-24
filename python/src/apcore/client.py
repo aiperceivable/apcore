@@ -530,12 +530,15 @@ class APCore:
     def close(self) -> None:
         """Release resources owned by this APCore instance.
 
-        Currently closes the cached sync event loop inside the Executor.
-        Safe to call multiple times. After ``close()`` the same APCore can
-        continue to be used — the Executor will lazily allocate a fresh
-        sync loop on the next synchronous ``call()``.
+        Closes the cached sync loop and the system event bus's delivery
+        resources. The client remains reusable and subscriptions are retained.
         """
-        self.executor.close()
+        try:
+            emitter = self.events
+            if emitter is not None:
+                emitter.close()
+        finally:
+            self.executor.close()
 
 
 class _CallbackSubscriber:

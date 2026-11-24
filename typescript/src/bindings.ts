@@ -3,7 +3,7 @@
  */
 
 import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, isAbsolute, join, resolve, win32 } from 'node:path';
 import type { TSchema } from '@sinclair/typebox';
 import yaml from 'js-yaml';
 import { FunctionModule } from './decorator.js';
@@ -22,6 +22,7 @@ import { inferSchemasFromModule } from './schema/extractor.js';
 import { matchGlob } from './utils/pattern.js';
 import { jsonSchemaToTypeBox } from './schema/loader.js';
 import { assertOpenAiStrictCompatible } from './schema/openai-strict.js';
+import { appendFilesystemPath, isWithinFilesystemPath } from './utils/filesystem-path.js';
 
 import type { ResourceLimits } from './module.js';
 import { annotationsFromJSON } from './module.js';
@@ -71,6 +72,56 @@ export interface BindingConfigLike {
  */
 function asConfiguredString(value: unknown): string | null {
   return typeof value === 'string' && value !== '' ? value : null;
+}
+
+/** File references are resolved beside their declaring binding; the target must be in an allowed root. */
+function loadReferencedSchemas(
+  reference: unknown,
+  bindingFileDir: string,
+  filePath: string,
+  config: BindingConfigLike | null,
+): Record<string, unknown> {
+  if (typeof reference !== 'string' || reference.trim() === '' ||
+      isAbsolute(reference) || win32.isAbsolute(reference) || /^[A-Za-z][A-Za-z0-9+.-]*:/.test(reference)) {
+    throw new BindingFileInvalidError(filePath, 'schema_ref must be a non-empty relative file path');
+  }
+  const allowed = [realpathSync.native(bindingFileDir)];
+  const bindingRoot = allowed[0];
+  const schemaRoot = asConfiguredString(config?.get('schema.root'));
+  if (schemaRoot !== null) {
+    const configured = config?.resolvePath?.(schemaRoot) ?? resolve(schemaRoot);
+    if (existsSync(configured)) allowed.push(realpathSync.native(configured));
+  } else {
+    const sibling = join(dirname(bindingRoot), 'schemas');
+    if (existsSync(sibling) && realpathSync.native(sibling) === sibling) allowed.push(sibling);
+  }
+  let candidate: string;
+  try {
+    candidate = realpathSync.native(appendFilesystemPath(bindingRoot, reference));
+  } catch {
+    throw new BindingFileInvalidError(filePath, 'Schema reference file is not available');
+  }
+  if (!allowed.some((root) => isWithinFilesystemPath(root, candidate))) {
+    throw new BindingFileInvalidError(filePath, 'Schema reference is outside the allowed directories');
+  }
+  let data: unknown;
+  try {
+    if (!statSync(candidate).isFile()) throw new Error('Not a regular file');
+    data = yaml.load(readFileSync(candidate, 'utf-8'));
+  } catch {
+    throw new BindingFileInvalidError(filePath, 'Schema reference could not be read or parsed as YAML');
+  }
+  if (data === null || typeof data !== 'object' || Array.isArray(data)) {
+    throw new BindingFileInvalidError(filePath, 'Schema reference must be a mapping');
+  }
+  const schemas = data as Record<string, unknown>;
+  for (const key of ['input_schema', 'output_schema']) {
+    const schema = schemas[key];
+    if (schema !== undefined && (schema === null || typeof schema !== 'object' || Array.isArray(schema))) {
+      throw new BindingFileInvalidError(filePath, `Schema reference field '${key}' must be a mapping`);
+    }
+  }
+  return schemas;
 }
 
 export interface BindingLoaderOptions {
@@ -249,7 +300,7 @@ export class BindingLoader {
       }
 
       validateBindingLimits(entryObj, config ?? null, filePath);
-      const fm = await this._createModuleFromBinding(entryObj, bindingFileDir, filePath);
+      const fm = await this._createModuleFromBinding(entryObj, bindingFileDir, filePath, config ?? null);
       await registry.register(entryObj['module_id'] as string, fm);
       results.push(fm);
     }
@@ -319,20 +370,23 @@ export class BindingLoader {
   }
 
   async resolveTarget(targetString: string): Promise<(...args: unknown[]) => unknown> {
-    if (!targetString.includes(':')) {
+    if (typeof targetString !== 'string') throw new BindingInvalidTargetError(String(targetString));
+    const firstSeparator = targetString.indexOf(':');
+    if (firstSeparator < 1 || firstSeparator === targetString.length - 1 ||
+        firstSeparator !== targetString.lastIndexOf(':')) {
       throw new BindingInvalidTargetError(targetString);
     }
 
-    const [modulePath, callableName] = targetString.split(':', 2);
+    const modulePath = targetString.slice(0, firstSeparator);
+    const callableName = targetString.slice(firstSeparator + 1);
 
     if (modulePath.includes('..')) {
       throw new BindingInvalidTargetError(
         `Module path '${modulePath}' must not contain '..' segments`,
       );
     }
-
-    if (modulePath.startsWith('file:')) {
-      throw new BindingInvalidTargetError(`Module path '${modulePath}' must not use file: URLs`);
+    if (callableName.includes('/') || callableName.includes('\\')) {
+      throw new BindingInvalidTargetError(targetString);
     }
 
     // Enforce the trusted-package allowlist (when configured) BEFORE importing,
@@ -388,7 +442,8 @@ export class BindingLoader {
   private async _createModuleFromBinding(
     binding: Record<string, unknown>,
     bindingFileDir: string,
-    filePath?: string,
+    filePath: string,
+    config: BindingConfigLike | null,
   ): Promise<FunctionModule> {
     const targetString = binding['target'] as string;
     const moduleId = binding['module_id'] as string;
@@ -406,6 +461,9 @@ export class BindingLoader {
       throw new BindingSchemaInferenceFailedError(targetString, moduleId, filePath);
     }
 
+    const referencedSchemas = 'schema_ref' in binding
+      ? loadReferencedSchemas(binding['schema_ref'], bindingFileDir, filePath, config)
+      : null;
     const func = await this.resolveTarget(targetString);
     let inputSchema: TSchema;
     let outputSchema: TSchema;
@@ -416,21 +474,11 @@ export class BindingLoader {
       const outputSchemaDict = (binding['output_schema'] as Record<string, unknown>) ?? {};
       inputSchema = jsonSchemaToTypeBox(inputSchemaDict);
       outputSchema = jsonSchemaToTypeBox(outputSchemaDict);
-    } else if ('schema_ref' in binding) {
+    } else if (referencedSchemas !== null) {
       // Mode 2: external reference
-      const refPath = resolve(bindingFileDir, binding['schema_ref'] as string);
-      if (!existsSync(refPath)) {
-        throw new BindingFileInvalidError(refPath, 'Schema reference file not found');
-      }
-      let refData: Record<string, unknown>;
-      try {
-        refData = (yaml.load(readFileSync(refPath, 'utf-8')) as Record<string, unknown>) ?? {};
-      } catch (e) {
-        throw new BindingFileInvalidError(refPath, `YAML parse error: ${e}`);
-      }
-      inputSchema = jsonSchemaToTypeBox((refData['input_schema'] as Record<string, unknown>) ?? {});
+      inputSchema = jsonSchemaToTypeBox((referencedSchemas['input_schema'] as Record<string, unknown>) ?? {});
       outputSchema = jsonSchemaToTypeBox(
-        (refData['output_schema'] as Record<string, unknown>) ?? {},
+        (referencedSchemas['output_schema'] as Record<string, unknown>) ?? {},
       );
     } else {
       // Mode 3 (explicit auto_schema) or Mode 4 (implicit default = auto)

@@ -104,7 +104,8 @@ An ordered list of steps with a name. Construction and every insertion check two
   map, never a scan (§5.16 requirement 2).
 - **Satisfied dependencies.** Each step's `requires` must be covered by the `provides` of the
   steps before it, or construction raises `PipelineDependencyError` naming the step and the
-  missing tokens. `remove()` does not re-run this check.
+  missing tokens. TypeScript also validates the proposed step sequence before publishing a
+  removal or replacement.
 
 Python's constructor takes `validate_dependencies=False` and TypeScript's takes
 `{ seedProvides: [...] }` for sub-strategies whose inputs are already populated; the streaming
@@ -488,8 +489,7 @@ typed errors (`ACL_DENIED`, `MODULE_NOT_FOUND`, schema validation errors) instea
   `StepNotReplaceableError` for a non-replaceable target; a missing target is
   `StepNotFoundError` for `replace()` and `PipelineStepNotFoundError` for `configure_step()`.
   Calling `configure_step()` twice leaves exactly one step under that name (§5.16 requirement 3).
-  A replacement that takes a name held by a different step raises `StepNameDuplicateError`
-  (TypeScript checks this in `configureStep()` only).
+  A replacement that takes a name held by a different step raises `StepNameDuplicateError`.
 - Rust's `replace_with` hands the current step to a closure and does not check `replaceable`; the
   configuration loader uses it to overlay `configure:` fields.
 

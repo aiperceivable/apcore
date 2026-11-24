@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+import json
 
 import pytest
 
@@ -15,6 +16,7 @@ from apcore.errors import (
     BindingModuleNotFoundError,
     BindingNotCallableError,
     BindingSchemaMissingError,
+    SchemaValidationError,
 )
 from apcore.executor import Executor
 from apcore.registry import Registry
@@ -339,8 +341,8 @@ class TestSchemaMode:
         assert fm.input_schema.model_fields["name"].is_required()
         assert not fm.input_schema.model_fields["age"].is_required()
 
-    def test_inline_schema_unsupported_features_permissive(self, loader, registry, tmp_path):
-        """Unsupported features (oneOf) create permissive model."""
+    def test_inline_schema_one_of_preserves_declared_contract(self, loader, registry, tmp_path):
+        """Combinators are retained rather than replaced by an unconstrained model."""
         f = tmp_path / "test.binding.yaml"
         f.write_text(
             "bindings:\n"
@@ -357,7 +359,38 @@ class TestSchemaMode:
         )
         result = loader.load_bindings(str(f), registry)
         fm = result[0]
-        assert fm.input_schema.model_config.get("extra") == "allow"
+        assert fm.input_schema.model_json_schema()["oneOf"] == [{"type": "string"}, {"type": "integer"}]
+        with pytest.raises(SchemaValidationError):
+            Executor(registry=registry).call("test.unsupported", {"name": "sample"})
+
+    @pytest.mark.parametrize("external", [False, True])
+    def test_binding_preserves_local_schema_references_and_declared_metadata(
+        self, loader, registry, tmp_path, external, caplog
+    ):
+        input_schema = {
+            "$defs": {"name": {"type": "string", "pattern": "^[A-Z]+$", "format": "email", "x-sensitive": True}},
+            "properties": {"name": {"anyOf": [{"$ref": "#/$defs/name"}, {"type": "null"}]}},
+            "required": ["name"],
+            "additionalProperties": False,
+        }
+        contract = {"input_schema": input_schema, "output_schema": {"type": "object"}}
+        binding = {"module_id": "test.contract", "target": "binding_helpers:typed_function"}
+        if external:
+            (tmp_path / "contract.yaml").write_text(json.dumps(contract))
+            binding["schema_ref"] = "contract.yaml"
+        else:
+            binding.update(contract)
+        source = tmp_path / "example.binding.yaml"
+        source.write_text(json.dumps({"bindings": [binding]}))
+
+        [module] = loader.load_bindings(str(source), registry)
+        assert module.input_schema.model_json_schema() == input_schema
+        executor = Executor(registry=registry)
+        assert executor.call("test.contract", {"name": "ABC"})["name"] == "ABC"
+        assert "field '/name' does not conform to format='email'" in caplog.text
+        assert "ABC" not in caplog.text
+        with pytest.raises(SchemaValidationError):
+            executor.call("test.contract", {"name": "abc"})
 
     def test_schema_ref_loads_external_file(self, loader, registry, tmp_path):
         """schema_ref loads external schema file with relative path."""

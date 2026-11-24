@@ -1,0 +1,43 @@
+{
+  "description": "Binding schema references resolve from their declaring file and accept schema files in authorized roots.",
+  "test_cases": [
+    {
+      "id": "binding_directory",
+      "schema_file": "bindings/payload.yaml",
+      "schema_ref": "payload.yaml",
+      "expected": {"registered": true, "error_code": null}
+    },
+    {
+      "id": "conventional_sibling",
+      "schema_file": "schemas/payload.yaml",
+      "schema_ref": "../schemas/payload.yaml",
+      "expected": {"registered": true, "error_code": null}
+    },
+    {
+      "id": "configured_schema_directory",
+      "schema_file": "shared/schemas/payload.yaml",
+      "schema_ref": "../shared/schemas/payload.yaml",
+      "schema_root": "./shared/schemas",
+      "expected": {"registered": true, "error_code": null}
+    },
+    {
+      "id": "absolute_spelling_of_local_schema",
+      "schema_file": "bindings/payload.yaml",
+      "schema_ref": "payload.yaml",
+      "absolute": true,
+      "expected": {"registered": false, "error_code": "BINDING_FILE_INVALID"}
+    },
+    {
+      "id": "missing_local_schema",
+      "schema_ref": "missing.yaml",
+      "expected": {"registered": false, "error_code": "BINDING_FILE_INVALID"}
+    },
+    {
+      "id": "invalid_local_schema_document",
+      "schema_file": "bindings/payload.yaml",
+      "schema_ref": "payload.yaml",
+      "invalid_document": true,
+      "expected": {"registered": false, "error_code": "BINDING_FILE_INVALID"}
+    }
+  ]
+}

@@ -18,9 +18,8 @@
  *   `EventSubscriber` contract is enforced statically by TypeScript. So the
  *   Python `subscribe.input.subscriber.async_on_event` TypeError guard has no
  *   TS analogue (skip: language-idiom divergence).
- * - Subscribers deliver via global `fetch` (not aiohttp). There is no
- *   `DeliveryError`/`WEBHOOK_DELIVERY_FAILED` type — webhook/a2a rethrow plain
- *   `Error` on 5xx and the emitter owns the DLQ path (skip: missing symbol).
+ * - Subscribers deliver via global `fetch`. The emitter owns retries and
+ *   dead-letter delivery.
  *   The A2A `ImportError`-without-aiohttp clause has no TS analogue (fetch is a
  *   global; skip: missing symbol).
  * - The circuit-breaker contract names `SubscriberCircuitBreaker.on_failure`
@@ -269,13 +268,6 @@ describe('WebhookSubscriber.deliver', () => {
     } finally {
       vi.unstubAllGlobals();
     }
-  });
-
-  it.skip('event_system.deliver.error.WEBHOOK_DELIVERY_FAILED: missing symbol DeliveryError/WEBHOOK_DELIVERY_FAILED (contract gap)', async () => {
-    // Spec declares DeliveryError(code=WEBHOOK_DELIVERY_FAILED) on retry
-    // exhaustion. This SDK has no such type — WebhookSubscriber.onEvent rethrows
-    // a plain Error on 5xx and the EventEmitter owns the DLQ path
-    // (apcore.event.delivery_failed). Recorded as a missing-symbol skip.
   });
 
   it('event_system.deliver.property.async: webhook delivery returns a Promise that resolves to undefined', async () => {

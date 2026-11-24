@@ -16,6 +16,7 @@ import inspect
 import json
 import logging
 import time
+from collections.abc import Awaitable, Callable
 from typing import Any, cast
 
 import pydantic
@@ -37,6 +38,7 @@ from apcore.errors import (
     StreamingInterfaceError,
 )
 from apcore.module import ModuleAnnotations
+from apcore.observability.context_logger import RedactionConfig
 from apcore.pipeline import (
     BaseStep,
     ConfigurationError,
@@ -44,7 +46,7 @@ from apcore.pipeline import (
     PipelineContext,
     StepResult,
 )
-from apcore.policy import ExecutionPolicy, PolicyDecision
+from apcore.policy import ExecutionPolicy, PolicyDecision, strip_approval_token
 from apcore.schema.annotations import governance_union
 from apcore.schema.hardening import warn_format_violations
 from apcore.config import Config
@@ -206,7 +208,7 @@ class _GovernanceGateFields(BaseStep):
     @ignore_errors.setter
     def ignore_errors(self, value: bool) -> None:
         self._check_gate_field("ignore_errors", value)
-        self.__dict__["_gate_ignore_errors"] = value
+        self._gate_ignore_errors = value
 
     @property
     def match_modules(self) -> tuple[str, ...] | None:
@@ -215,7 +217,7 @@ class _GovernanceGateFields(BaseStep):
     @match_modules.setter
     def match_modules(self, value: tuple[str, ...] | None) -> None:
         self._check_gate_field("match_modules", value)
-        self.__dict__["_gate_match_modules"] = value
+        self._gate_match_modules = value
 
     @property
     def pure(self) -> bool:
@@ -224,7 +226,7 @@ class _GovernanceGateFields(BaseStep):
     @pure.setter
     def pure(self, value: bool) -> None:
         self._check_gate_field("pure", value)
-        self.__dict__["_gate_pure"] = value
+        self._gate_pure = value
 
 
 # ---------------------------------------------------------------------------
@@ -370,7 +372,7 @@ class BuiltinCallChainGuard(BaseStep):
 # ---------------------------------------------------------------------------
 
 
-def _resolve_redaction(config: Any | None) -> Any:
+def _resolve_redaction(config: Any | None) -> RedactionConfig:
     """The `obs.redaction.*` rules the capture point applies.
 
     PROTOCOL_SPEC §10.6.1 "Where the rules apply": the union of `x-sensitive`,
@@ -389,11 +391,26 @@ def _resolve_redaction(config: Any | None) -> Any:
     compilation at the configuration read, and `RedactionConfig` compiles
     `regex_patterns` in its constructor.
     """
-    from apcore.observability.context_logger import RedactionConfig
-
     if config is None:
         return RedactionConfig.default()
     return RedactionConfig.from_config(config)
+
+
+def _redact_payload(data: dict[str, Any] | None, schema_model: Any, rules: RedactionConfig | None) -> dict[str, Any]:
+    from apcore.utils.redaction import redact_sensitive
+
+    schema: Any = getattr(schema_model, "__apcore_source_schema__", None)
+    if not isinstance(schema, dict):
+        schema_json = getattr(schema_model, "model_json_schema", None)
+        schema = schema_json() if callable(schema_json) else {}
+    rules = rules or _resolve_redaction(None)
+    return redact_sensitive(
+        data or {},
+        schema,
+        sensitive_keys=rules.sensitive_keys,
+        regex_patterns=rules.compiled_regex_patterns,
+        replacement=rules.replacement,
+    )
 
 
 class BuiltinModuleLookup(BaseStep):
@@ -459,7 +476,9 @@ class BuiltinModuleLookup(BaseStep):
             else:
                 module = self._registry.get(ctx.module_id)
             get_declared = getattr(self._registry, "get_declared_annotations", None)
-            declared_annotations = get_declared(ctx.module_id) if module is not None and callable(get_declared) else None
+            declared_annotations = (
+                get_declared(ctx.module_id) if module is not None and callable(get_declared) else None
+            )
         if module is None:
             raise ModuleNotFoundError(module_id=ctx.module_id)
 
@@ -485,24 +504,9 @@ class BuiltinModuleLookup(BaseStep):
         # of None. Input validation (step 7) still validates; this step
         # only redacts for observability.
         if ctx.context is not None and hasattr(ctx.context, "redacted_inputs"):
-            input_schema = getattr(module, "input_schema", None)
-            schema_dict_fn = getattr(input_schema, "model_json_schema", None) if input_schema else None
-            if schema_dict_fn is not None and callable(schema_dict_fn):
-                from apcore.utils.redaction import redact_sensitive
-
-                schema = cast(dict[str, Any], schema_dict_fn())
-                rules = self._redaction or _resolve_redaction(None)
-                ctx.context.redacted_inputs = redact_sensitive(
-                    ctx.inputs,
-                    schema,
-                    sensitive_keys=rules.sensitive_keys,
-                    regex_patterns=rules.compiled_regex_patterns,
-                    replacement=rules.replacement,
-                )
-            else:
-                # No schema → no redaction needed; store raw inputs so
-                # downstream consumers don't see None.
-                ctx.context.redacted_inputs = dict(ctx.inputs)
+            ctx.context.redacted_inputs = _redact_payload(
+                strip_approval_token(ctx.inputs), getattr(module, "input_schema", None), self._redaction
+            )
 
         # PROTOCOL_SPEC §6.1.8: the governance projection is computed HERE, at
         # Step 3, and made available to the ACL check at Step 4. The ordering is
@@ -601,19 +605,22 @@ class BuiltinACLCheck(_GovernanceGateFields):
         # custom ACL object whose accessor does not accept the keyword, so a
         # host implementation written against the previous surface keeps
         # working.
-        access = getattr(self._acl, "async_check_access", None)
+        acl = self._acl
+        if acl is None:
+            return True, False
+        access = getattr(acl, "async_check_access", None)
         if callable(access):
             decision = await self._call_access(access, caller_id, ctx, awaitable=True)
             return decision.access == "allow", bool(decision.approval_required)
 
-        access = getattr(self._acl, "check_access", None)
+        access = getattr(acl, "check_access", None)
         if callable(access):
             decision = self._call_access(access, caller_id, ctx, awaitable=False)
             return decision.access == "allow", bool(decision.approval_required)
 
-        if hasattr(self._acl, "async_check"):
-            return bool(await self._acl.async_check(caller_id, ctx.module_id, ctx.context)), False
-        return bool(self._acl.check(caller_id, ctx.module_id, ctx.context)), False
+        if hasattr(acl, "async_check"):
+            return bool(await acl.async_check(caller_id, ctx.module_id, ctx.context)), False
+        return bool(acl.check(caller_id, ctx.module_id, ctx.context)), False
 
     @staticmethod
     def _call_access(access: Any, caller_id: str, ctx: PipelineContext, *, awaitable: bool) -> Any:
@@ -1248,6 +1255,8 @@ class BuiltinInputValidation(BaseStep):
         input_schema = getattr(module, "input_schema", None)
         if input_schema is None:
             ctx.validated_inputs = ctx.inputs
+            if ctx.context is not None and hasattr(ctx.context, "redacted_inputs"):
+                ctx.context.redacted_inputs = _redact_payload(strip_approval_token(ctx.inputs), None, self._redaction)
             return StepResult(action="continue")
 
         try:
@@ -1272,21 +1281,10 @@ class BuiltinInputValidation(BaseStep):
         ctx.validated_inputs = ctx.inputs
 
         # Redact sensitive fields after successful validation
-        schema_dict_fn = getattr(input_schema, "model_json_schema", None)
-        if schema_dict_fn is not None and callable(schema_dict_fn):
-            from apcore.utils.redaction import redact_sensitive
-
-            schema = cast(dict[str, Any], schema_dict_fn())
-            rules = self._redaction or _resolve_redaction(None)
-            redacted = redact_sensitive(
-                ctx.inputs,
-                schema,
-                sensitive_keys=rules.sensitive_keys,
-                regex_patterns=rules.compiled_regex_patterns,
-                replacement=rules.replacement,
+        if ctx.context is not None and hasattr(ctx.context, "redacted_inputs"):
+            ctx.context.redacted_inputs = _redact_payload(
+                strip_approval_token(ctx.inputs), input_schema, self._redaction
             )
-            if ctx.context is not None and hasattr(ctx.context, "redacted_inputs"):
-                ctx.context.redacted_inputs = redacted
 
         return StepResult(action="continue")
 
@@ -1357,7 +1355,9 @@ class BuiltinExecute(BaseStep):
                 ctx.output_stream = aiter(stream)
                 close_stream = getattr(ctx.output_stream, "aclose", None)
                 if ctx.execution_scope is not None and callable(close_stream):
-                    ctx.execution_scope.push_async_callback(close_stream)
+                    ctx.execution_scope.push_async_callback(
+                        _close_stream_source, ctx, cast(Callable[[], Awaitable[None]], close_stream)
+                    )
                 return StepResult(action="skip_to", skip_to="return_result")
 
         # Determine per-module timeout. `0` means "no per-module limit" on both
@@ -1434,6 +1434,24 @@ def _discard_late_execution(task: asyncio.Future[Any]) -> None:
         task.exception()
 
 
+async def _close_stream_source(ctx: PipelineContext, close: Callable[[], Awaitable[None]]) -> None:
+    """Close the source once its pending read has stopped, then release its lease."""
+    task = ctx.module_task
+    if task is None or task.done():
+        await close()
+        return
+
+    async def finish(pending: asyncio.Future[Any]) -> None:
+        try:
+            await pending
+        except (Exception, asyncio.CancelledError):
+            pass
+        await close()
+
+    cleanup = ctx.module_task = asyncio.create_task(finish(task))
+    cleanup.add_done_callback(_discard_late_execution)
+
+
 # ---------------------------------------------------------------------------
 # Step 9: Output Validation
 # ---------------------------------------------------------------------------
@@ -1462,12 +1480,10 @@ class BuiltinOutputValidation(BaseStep):
         output_schema = getattr(module, "output_schema", None)
         if output_schema is None:
             ctx.validated_output = ctx.output
-            # No schema → no x-sensitive field to redact. Capture the output as
-            # the input capture point does for a schema-less module, so logging
-            # middleware — which logs only the captured value (§10.6.1
-            # requirement 5, D-131) — neither drops it nor logs a stale one.
             if ctx.context is not None and hasattr(ctx.context, "redacted_output"):
-                ctx.context.redacted_output = dict(ctx.output) if isinstance(ctx.output, dict) else None
+                ctx.context.redacted_output = (
+                    _redact_payload(ctx.output, None, self._redaction) if isinstance(ctx.output, dict) else None
+                )
             return StepResult(action="continue")
 
         if ctx.output is None:
@@ -1495,21 +1511,7 @@ class BuiltinOutputValidation(BaseStep):
         # redacted_inputs). Previously stored under ctx.context.data["_apcore.
         # executor.redacted_output"] which was filtered out by serialize().
         if ctx.context is not None and hasattr(ctx.context, "redacted_output"):
-            schema_dict_fn = getattr(output_schema, "model_json_schema", None)
-            if schema_dict_fn is not None and callable(schema_dict_fn):
-                from apcore.utils.redaction import redact_sensitive
-
-                schema = cast(dict[str, Any], schema_dict_fn())
-                rules = self._redaction or _resolve_redaction(None)
-                ctx.context.redacted_output = redact_sensitive(
-                    ctx.output,
-                    schema,
-                    sensitive_keys=rules.sensitive_keys,
-                    regex_patterns=rules.compiled_regex_patterns,
-                    replacement=rules.replacement,
-                )
-            else:
-                ctx.context.redacted_output = dict(ctx.output) if ctx.output else None
+            ctx.context.redacted_output = _redact_payload(ctx.output, output_schema, self._redaction)
 
         return StepResult(action="continue")
 
@@ -1544,7 +1546,17 @@ class BuiltinMiddlewareAfter(BaseStep):
         self._manager = _ensure_middleware_manager(middleware_manager, middlewares)
 
     async def execute(self, ctx: PipelineContext) -> StepResult:
-        if hasattr(self._manager, "execute_after_async"):
+        from apcore.middleware.manager import MiddlewareManager
+
+        if isinstance(self._manager, MiddlewareManager):
+            output = await self._manager.execute_after_async(
+                ctx.module_id,
+                ctx.inputs,
+                ctx.output or {},
+                ctx.context,
+                executed_middlewares=ctx.executed_middlewares,
+            )
+        elif hasattr(self._manager, "execute_after_async"):
             output = await self._manager.execute_after_async(
                 ctx.module_id,
                 ctx.inputs,

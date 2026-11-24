@@ -75,7 +75,7 @@ def test_explicit_strategy_instance_receives_approval_handler_and_policy() -> No
     strategy = build_standard_strategy(registry=registry)
     executor = Executor(registry=registry, approval_handler=handler, policy=policy, strategy=strategy)
 
-    gate = _gate(strategy, BuiltinApprovalGate)
+    gate = _gate(executor._strategy, BuiltinApprovalGate)
     assert gate.handler is handler
     assert gate.policy is policy
     assert _code(executor) == "APPROVAL_DENIED"
@@ -99,7 +99,8 @@ def test_executor_provider_replaces_the_step_provider() -> None:
     strategy = build_standard_strategy(registry=registry, acl=_allow_all())
     executor = Executor(registry=registry, acl=executor_acl, strategy=strategy)
 
-    assert _gate(strategy, BuiltinACLCheck).acl is executor_acl
+    assert _gate(executor._strategy, BuiltinACLCheck).acl is executor_acl
+    assert _gate(strategy, BuiltinACLCheck).acl is not executor_acl
     assert _code(executor) == "ACL_DENIED"
 
 
@@ -121,6 +122,22 @@ def test_registered_named_strategy_receives_executor_acl() -> None:
         assert _code(executor) == "ACL_DENIED"
     finally:
         Executor._registered_strategies.pop("d129_registered", None)
+
+
+def test_registered_and_supplied_strategies_keep_private_governance_steps() -> None:
+    registry = _registry()
+    template = build_standard_strategy(registry=registry)
+    first_acl = _deny_all()
+    second_acl = _allow_all()
+    Executor.register_strategy("private_gate_test", template)
+    try:
+        first = Executor(registry=registry, acl=first_acl, strategy="private_gate_test")
+        second = Executor(registry=registry, acl=second_acl, strategy=template)
+        assert _gate(first._strategy, BuiltinACLCheck).acl is first_acl
+        assert _gate(second._strategy, BuiltinACLCheck).acl is second_acl
+        assert _gate(template, BuiltinACLCheck).acl is None
+    finally:
+        Executor._registered_strategies.pop("private_gate_test", None)
 
 
 def test_per_call_strategy_override_receives_executor_providers() -> None:

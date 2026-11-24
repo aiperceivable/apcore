@@ -13,8 +13,17 @@ import {
   SchemaParseError,
 } from '../errors.js';
 import { deepCopy } from '../utils/index.js';
+import { CANONICAL_ID_RE } from '../utils/normalize.js';
+import { appendFilesystemPath, isWithinFilesystemPath } from '../utils/filesystem-path.js';
 
 const INLINE_SENTINEL = '__inline__';
+
+export function moduleSchemaPath(schemasDir: string, moduleId: string): string {
+  if (!CANONICAL_ID_RE.test(moduleId)) {
+    throw new SchemaNotFoundError('Invalid canonical module ID in schema reference');
+  }
+  return appendFilesystemPath(schemasDir, moduleId.replace(/\./g, '/') + '.schema.yaml');
+}
 
 /**
  * The `$ref` strings that denote the document being resolved itself. Seeding the
@@ -44,7 +53,7 @@ export class RefResolver {
     // Realpath the root as well (Python: `Path(schemas_dir).resolve()`), so a
     // schemas directory reached through a symlink — /tmp on macOS, a checkout
     // under a symlinked home — still contains its own files once
-    // `_assertWithinSchemasDir` compares realpaths.
+    // containment compares realpaths.
     this._schemasDir = resolve(schemasDir);
     try {
       this._schemasDir = realpathSync.native(this._schemasDir);
@@ -209,14 +218,12 @@ export class RefResolver {
       const pointer = refString.slice(hashIndex + 1);
       const base = currentFile ? dirname(currentFile) : this._schemasDir;
       const resolvedPath = resolve(base, filePart);
-      this._assertWithinSchemasDir(resolvedPath, refString);
-      return [resolvedPath, pointer];
+      return [this._pathWithinSchemasDir(resolvedPath, refString), pointer];
     }
 
     const base = currentFile ? dirname(currentFile) : this._schemasDir;
     const resolvedPath = resolve(base, refString);
-    this._assertWithinSchemasDir(resolvedPath, refString);
-    return [resolvedPath, ''];
+    return [this._pathWithinSchemasDir(resolvedPath, refString), ''];
   }
 
   /**
@@ -247,22 +254,16 @@ export class RefResolver {
     }
   }
 
-  private _assertWithinSchemasDir(rawResolvedPath: string, refString: string): void {
+  private _pathWithinSchemasDir(rawResolvedPath: string, refString: string): string {
     // Compare realpaths on both sides: `_schemasDir` is realpath'd in the
     // constructor, so a symlinked schemas root still matches its own files.
     const resolvedPath = this._realpathLenient(rawResolvedPath);
-    if (resolvedPath === this._schemasDir) return;
-    const rel = nodePath.relative(this._schemasDir, resolvedPath);
-    // A path is inside schemasDir iff its relative form is non-empty, not
-    // absolute, and does not start with a parent-directory traversal segment.
-    // Using path.relative() makes this check cross-platform — the previous
-    // startsWith(schemasDir + '/') check was hard-coded to POSIX separators
-    // and silently disabled on Windows where resolve() emits backslash paths.
-    if (!rel || nodePath.isAbsolute(rel) || rel === '..' || rel.startsWith('..' + nodePath.sep)) {
+    if (!isWithinFilesystemPath(this._schemasDir, resolvedPath)) {
       throw new SchemaNotFoundError(
         `Reference '${refString}' resolves outside schemas directory`,
       );
     }
+    return resolvedPath;
   }
 
   private _convertCanonicalToPath(uri: string): [string, string] {
@@ -270,12 +271,10 @@ export class RefResolver {
     const parts = remainder.split('/');
     const canonicalId = parts[0];
     const pointerParts = parts.slice(1);
-
-    const fileRel = canonicalId.replace(/\./g, '/') + '.schema.yaml';
-    const filePath = resolve(this._schemasDir, fileRel);
+    const filePath = moduleSchemaPath(this._schemasDir, canonicalId);
 
     const pointer = pointerParts.length > 0 ? '/' + pointerParts.join('/') : '';
-    return [filePath, pointer];
+    return [this._pathWithinSchemasDir(filePath, uri), pointer];
   }
 
   /**
@@ -334,7 +333,7 @@ export class RefResolver {
       const segment = rawSegment.replace(/~1/g, '/').replace(/~0/g, '~');
       if (typeof current === 'object' && current !== null && !Array.isArray(current)) {
         const obj = current as Record<string, unknown>;
-        if (segment in obj) {
+        if (Object.hasOwn(obj, segment)) {
           current = obj[segment];
         } else {
           throw new SchemaNotFoundError(`${refString} (segment '${segment}' not found)`);

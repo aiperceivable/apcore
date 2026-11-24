@@ -109,7 +109,7 @@ impl RetryMiddleware {
     /// - With jitter: multiply by a factor in [0.5, 1.5).
     fn calculate_delay(&self, attempt: u32) -> f64 {
         #[allow(clippy::cast_precision_loss)]
-        // intentional: delay values are small (ms) and won't lose meaningful precision
+        // Millisecond delays do not lose meaningful precision.
         let delay = if self.config.strategy == "fixed" {
             self.config.base_delay_ms as f64
         } else {
@@ -117,7 +117,7 @@ impl RetryMiddleware {
             #[allow(clippy::cast_possible_wrap)] // attempt won't exceed i32::MAX in practice
             let exp_delay = self.config.base_delay_ms as f64 * 2.0_f64.powi(attempt as i32);
             #[allow(clippy::cast_precision_loss)]
-            // intentional: delay values are small (ms) and won't lose meaningful precision
+            // Millisecond delays do not lose meaningful precision.
             let max = self.config.max_delay_ms as f64;
             exp_delay.min(max)
         };
@@ -200,7 +200,7 @@ impl Middleware for RetryMiddleware {
 
         // Sleep for the calculated delay.
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        // delay_ms is non-negative and won't exceed u64::MAX
+        // Round a non-negative delay to milliseconds.
         let delay_ms_u64 = delay_ms as u64;
         tokio::time::sleep(tokio::time::Duration::from_millis(delay_ms_u64)).await;
 

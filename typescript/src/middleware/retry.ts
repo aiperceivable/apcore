@@ -3,8 +3,9 @@
  */
 
 import type { Context } from '../context.js';
+import { ExecutionCancelledError } from '../cancel.js';
 import { RETRY_COUNT_BASE } from '../context-keys.js';
-import type { ModuleError } from '../errors.js';
+import { ModuleTimeoutError, type ModuleError } from '../errors.js';
 import { Middleware, RetrySignal } from './base.js';
 
 /**
@@ -35,8 +36,22 @@ const DEFAULT_RETRY_CONFIG: RetryConfig = {
   jitter: true,
 };
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+function sleep(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) {
+      reject(new ExecutionCancelledError());
+      return;
+    }
+    const abort = () => {
+      clearTimeout(timer);
+      reject(new ExecutionCancelledError());
+    };
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', abort);
+      resolve();
+    }, ms);
+    signal.addEventListener('abort', abort, { once: true });
+  });
 }
 
 /**
@@ -87,14 +102,18 @@ export class RetryMiddleware extends Middleware {
     }
 
     const delayMs = this._calculateDelay(retryCount);
-    retryKey.set(context, retryCount + 1);
-
     console.warn(
       `[apcore:retry] Retrying module '${moduleId}' (attempt ${retryCount + 1}/${this._config.maxRetries}) ` +
         `after ${Math.round(delayMs)}ms`,
     );
 
-    await sleep(delayMs);
+    // A timeout cancels only its execution attempt. During recovery the caller
+    // can still cancel the retry through the parent token.
+    const signal = error instanceof ModuleTimeoutError && context.signal.aborted
+      ? context.cancelToken?.parentSignal ?? new AbortController().signal
+      : context.signal;
+    await sleep(delayMs, signal);
+    retryKey.set(context, retryCount + 1);
     return new RetrySignal({ ...inputs });
   }
 

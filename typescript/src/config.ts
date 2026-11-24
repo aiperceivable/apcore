@@ -207,17 +207,14 @@ function deepMergeDicts(
 ): Record<string, unknown> {
   const result: Record<string, unknown> = { ...base };
   for (const [key, value] of Object.entries(override)) {
-    if (
-      key in result &&
-      typeof result[key] === 'object' &&
-      result[key] !== null &&
-      !Array.isArray(result[key]) &&
-      typeof value === 'object' &&
-      value !== null &&
-      !Array.isArray(value)
-    ) {
+    if (isForbiddenSegment(key)) continue;
+    if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
+      const current = Object.hasOwn(result, key) ? result[key] : undefined;
+      const nested = typeof current === 'object' && current !== null && !Array.isArray(current)
+        ? current as Record<string, unknown>
+        : {};
       result[key] = deepMergeDicts(
-        result[key] as Record<string, unknown>,
+        nested,
         value as Record<string, unknown>,
       );
     } else {
@@ -276,12 +273,17 @@ function isForbiddenSegment(part: string): boolean {
   return FORBIDDEN_PATH_SEGMENTS.has(part);
 }
 
+/** Whether a dot path can be addressed as configuration data. */
+export function isConfigurationDataPath(path: string): boolean {
+  return path.split('.').every((part) => part !== '' && !isForbiddenSegment(part));
+}
+
 function setNested(data: Record<string, unknown>, dotPath: string, value: unknown): void {
   const parts = dotPath.split('.');
   // Refuse the whole write rather than sanitising a segment out of it: a caller
   // who wrote `__proto__.polluted` gets no key at all, instead of silently
   // getting `polluted` at the root.
-  if (parts.some(isForbiddenSegment)) {
+  if (!isConfigurationDataPath(dotPath)) {
     console.warn(
       `[apcore:config] Refusing to set '${dotPath}': the path contains a reserved ` +
         `object-graph segment (${[...FORBIDDEN_PATH_SEGMENTS].join(', ')}). ` +
@@ -555,10 +557,11 @@ export function applyNamespaceEnvOverrides(data: Record<string, unknown>): Recor
     // ... search in all registered namespaces ...
     let handledByNsMap = false;
     for (const reg of _globalNsRegistry.values()) {
-      if (reg.envMap && envKey in reg.envMap) {
+      if (reg.envMap && Object.hasOwn(reg.envMap, envKey)) {
         const configKey = reg.envMap[envKey];
         const dotPath = `${reg.name}.${configKey}`;
         handledByNsMap = true;
+        if (!isConfigurationDataPath(dotPath)) break;
         if (discardsEmptyPathValue(dotPath, envValue, envKey)) break;
         if (typeof result[reg.name] !== 'object' || result[reg.name] === null) {
           result[reg.name] = {};
@@ -580,6 +583,7 @@ export function applyNamespaceEnvOverrides(data: Record<string, unknown>): Recor
 
         const { key, isNested } = resolveEnvSuffix(suffix, reg);
         if (!key) continue;
+        if (isNested ? !isConfigurationDataPath(key) : isForbiddenSegment(key)) break;
         // §9.2.1 requirement 5 applies in namespace mode too; the path-typed
         // set is spelled from the apcore namespace's root.
         const fullPath = reg.name === 'apcore' ? key : `${reg.name}.${key}`;
@@ -1174,10 +1178,11 @@ export class Config {
     key: string,
     defaultValue?: unknown,
   ): unknown {
+    if (!isConfigurationDataPath(key)) return defaultValue;
     if (this._mode === 'namespace') {
       const resolved = resolveNamespacePath(key);
       if (resolved === null) return defaultValue;
-      const nsData = source[resolved.namespace];
+      const nsData = Object.hasOwn(source, resolved.namespace) ? source[resolved.namespace] : undefined;
       if (nsData === undefined || nsData === null) {
         // §9.9.1: Fallback to implicit "apcore" namespace if no registered namespace matches.
         if (resolved.namespace !== 'apcore') {
@@ -1199,6 +1204,10 @@ export class Config {
    * satisfies the required-field check.
    */
   set(key: string, value: unknown): void {
+    if (!isConfigurationDataPath(key)) {
+      console.warn(`[apcore:config] Refusing invalid configuration path '${key}'`);
+      return;
+    }
     this._setInto(this._data, key, value);
     this._setInto(this._declared, key, value);
   }
@@ -1220,7 +1229,8 @@ export class Config {
         target[resolved.namespace] = value;
         return;
       }
-      if (typeof target[resolved.namespace] !== 'object' || target[resolved.namespace] === null) {
+      if (!Object.hasOwn(target, resolved.namespace) ||
+          typeof target[resolved.namespace] !== 'object' || target[resolved.namespace] === null) {
         target[resolved.namespace] = {};
       }
       setNested(target[resolved.namespace] as Record<string, unknown>, resolved.subPath, value);

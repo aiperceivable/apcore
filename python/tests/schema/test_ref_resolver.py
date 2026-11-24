@@ -8,6 +8,7 @@ from typing import Any
 import pytest
 import yaml
 
+from apcore.config import Config
 from apcore.errors import (
     SchemaCircularRefError,
     SchemaMaxDepthExceededError,
@@ -15,6 +16,7 @@ from apcore.errors import (
     SchemaParseError,
 )
 from apcore.schema.ref_resolver import RefResolver
+from apcore.schema.loader import SchemaLoader
 
 
 def write_yaml(path: Path, data: dict[str, Any] | str) -> Path:
@@ -127,6 +129,23 @@ class TestRelativeFileRef:
 
 
 class TestCanonicalRef:
+    def test_canonical_file_and_schema_loader_are_confined_to_the_physical_schema_root(self, tmp_path: Path) -> None:
+        root = tmp_path / "schemas"
+        root.mkdir()
+        sample = write_yaml(
+            tmp_path / "ordinary.schema.yaml",
+            {
+                "description": "Title",
+                "input_schema": {},
+                "output_schema": {},
+            },
+        )
+        (root / "draft.schema.yaml").symlink_to(sample)
+        with pytest.raises(SchemaNotFoundError):
+            RefResolver(root).resolve({"$ref": "apcore://draft"})
+        with pytest.raises(SchemaNotFoundError):
+            SchemaLoader(Config(), schemas_dir=root).load("draft")
+
     def test_resolve_canonical_ref(self, tmp_path: Path) -> None:
         write_yaml(
             tmp_path / "common" / "types" / "error.schema.yaml",

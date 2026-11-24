@@ -119,7 +119,7 @@ path = "tests/test_otlp_proxy_routing.rs"
 required-features = ["events"]
 
 [dependencies]
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "fs", "io-util"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "fs", "io-util", "net"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml_ng = "0.10"
@@ -129,7 +129,7 @@ thiserror = "2"
 async-trait = "0.1.92"
 tracing = "0.1"
 regex = "1"
-jsonschema = "0.28"
+jsonschema = { version = "0.28", default-features = false }
 # Reuse the schema engine's URI parser for local-only reference redaction.
 referencing = "0.28"
 sha2 = "0.10"

@@ -9,7 +9,7 @@
 
 use async_trait::async_trait;
 use serde_json::json;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -25,11 +25,29 @@ use crate::registry::types::DepInfo;
 use crate::utils::helpers::match_glob;
 
 use super::audit::{build_audit_entry, record_audit, AuditAction, AuditChange, AuditStore};
-use super::overrides::{persist_one, write_override, OverridesStore};
+use super::overrides::{persist_one, FileOverridesStore, OverridesStore};
 use super::{
     augment_with_context_identity, emit_event, is_sensitive_key, missing_field_error,
     require_string, ToggleState, RESTRICTED_KEYS,
 };
+
+async fn persist_control_override(
+    store: Option<&dyn OverridesStore>,
+    path: Option<&Path>,
+    key: &str,
+    value: &serde_json::Value,
+) {
+    let result = if let Some(store) = store {
+        persist_one(store, key, value).await
+    } else if let Some(path) = path {
+        FileOverridesStore::new(path).update(key, value).await
+    } else {
+        return;
+    };
+    if let Err(error) = result {
+        tracing::warn!(%error, key, "OverridesStore persist failed");
+    }
+}
 
 // ---------------------------------------------------------------------------
 // UpdateConfigModule (F11) — runtime config mutation with optional persistence
@@ -174,13 +192,13 @@ impl Module for UpdateConfigModule {
         // cannot poison the runtime state. Errors are logged and not
         // propagated — overrides persistence is best-effort.
         // Pluggable store takes precedence over the legacy file path.
-        if let Some(store) = self.overrides_store.as_ref() {
-            if let Err(e) = persist_one(store.as_ref(), &key, &value).await {
-                tracing::warn!(error = %e, key = %key, "OverridesStore persist failed");
-            }
-        } else if let Some(path) = self.overrides_path.as_deref() {
-            write_override(path, &key, &value);
-        }
+        persist_control_override(
+            self.overrides_store.as_deref(),
+            self.overrides_path.as_deref(),
+            &key,
+            &value,
+        )
+        .await;
 
         // §1.2 + spec §F11 lines 337-339: redact `old_value`/`new_value` in the
         // emitted event, the audit entry, and the response payload when `key`
@@ -1154,13 +1172,13 @@ impl Module for ToggleFeatureModule {
 
         let toggle_key = format!("toggle.{module_id}");
         let toggle_value = serde_json::Value::Bool(enabled);
-        if let Some(store) = self.overrides_store.as_ref() {
-            if let Err(e) = persist_one(store.as_ref(), &toggle_key, &toggle_value).await {
-                tracing::warn!(error = %e, key = %toggle_key, "OverridesStore persist failed");
-            }
-        } else if let Some(path) = self.overrides_path.as_deref() {
-            write_override(path, &toggle_key, &toggle_value);
-        }
+        persist_control_override(
+            self.overrides_store.as_deref(),
+            self.overrides_path.as_deref(),
+            &toggle_key,
+            &toggle_value,
+        )
+        .await;
 
         let timestamp = chrono::Utc::now().to_rfc3339();
         // Issue #45.2 — augment with caller_id / identity from the Context.

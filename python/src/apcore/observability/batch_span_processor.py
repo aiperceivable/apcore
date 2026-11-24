@@ -42,8 +42,6 @@ class SpanExporter(Protocol):
 
     def export(self, span: Span) -> None: ...
 
-    def shutdown(self) -> None: ...  # pragma: no cover - protocol
-
 
 @runtime_checkable
 class SpanProcessor(Protocol):

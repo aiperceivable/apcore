@@ -14,13 +14,13 @@
 import { createHash } from 'node:crypto';
 import { resolve } from 'node:path';
 import { existsSync, readFileSync, realpathSync } from 'node:fs';
-import { appendFilesystemPath } from '../utils/filesystem-path.js';
+import { isWithinFilesystemPath } from '../utils/filesystem-path.js';
 import type { TSchema } from '@sinclair/typebox';
 import yaml from 'js-yaml';
 import type { Config } from '../config.js';
 import { SchemaNotFoundError, SchemaParseError } from '../errors.js';
 import { negotiateDocumentVersion } from '../version.js';
-import { RefResolver } from './ref-resolver.js';
+import { moduleSchemaPath, RefResolver } from './ref-resolver.js';
 import type { ResolvedSchema, SchemaDefinition } from './types.js';
 import { SchemaStrategy } from './types.js';
 import { jsonSchemaToTypeBox, sortedKeysStringify } from './loader-pure.js';
@@ -58,10 +58,16 @@ export class SchemaLoader {
     const cached = this._schemaCache.get(moduleId);
     if (cached) return cached;
 
-    const filePath = appendFilesystemPath(this._schemasDir, moduleId.replace(/\./g, '/') + '.schema.yaml');
-    if (!existsSync(filePath)) {
+    const declaredPath = moduleSchemaPath(this._schemasDir, moduleId);
+    let filePath: string;
+    let physicalRoot: string;
+    try {
+      filePath = realpathSync.native(declaredPath);
+      physicalRoot = realpathSync.native(this._schemasDir);
+    } catch {
       throw new SchemaNotFoundError(moduleId);
     }
+    if (!isWithinFilesystemPath(physicalRoot, filePath)) throw new SchemaNotFoundError(moduleId);
 
     let data: unknown;
     try {

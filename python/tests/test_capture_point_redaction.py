@@ -42,10 +42,12 @@ class _Capture(Middleware):
     """
 
     def __init__(self) -> None:
+        self.early_inputs: dict[str, Any] | None = None
         self.inputs: dict[str, Any] | None = None
         self.output: dict[str, Any] | None = None
 
     def before(self, module_id: str, inputs: dict[str, Any], context: Any) -> None:
+        self.early_inputs = context.redacted_inputs
         self.inputs = context.redacted_inputs
         return None
 
@@ -96,6 +98,30 @@ def _run(client: APCore, seen: _Capture) -> _Capture:
 
 
 class TestConfiguredRulesReachTheCapturePoint:
+    @pytest.mark.parametrize("configured", [False, True])
+    def test_redaction_rules_apply_without_a_module_schema(self, configured: bool) -> None:
+        class Echo:
+            input_schema = None
+            output_schema = None
+
+            def execute(self, inputs: dict[str, Any], context: Context) -> dict[str, Any]:
+                return inputs
+
+        redaction = {"sensitive_keys": ["private_label"], "regex_patterns": ["mask-me"]}
+        config = Config({"obs": {"redaction": redaction}}) if configured else None
+        client = APCore(config=config)
+        try:
+            client.register("example.schemaless", Echo())
+            seen = _Capture()
+            client.use(seen)
+            raw = {"private_label": "label", "value": "mask-me", "_secret_marker": "sample", "public": "plain"}
+            assert client.call("example.schemaless", raw) == raw
+        finally:
+            client.close()
+        hidden = {"private_label", "value"} if configured else {"_secret_marker"}
+        expected = {key: "***REDACTED***" if key in hidden else value for key, value in raw.items()}
+        assert seen.early_inputs == seen.inputs == seen.output == expected
+
     def test_a_configured_regex_redacts_the_captured_input(self) -> None:
         client, seen = _client({"sensitive_keys": [], "regex_patterns": ["sk-[A-Za-z0-9]{6,}"]})
         seen = _run(client, seen)

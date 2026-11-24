@@ -309,7 +309,14 @@ export class RedactionConfig {
    * apcore-python's `_redact_secrets_recursive`.
    */
   redact(value: unknown, depth: number = 0): unknown {
-    if (depth > MAX_REDACTION_DEPTH) return value;
+    return this._redactTree(value, depth, new Set());
+  }
+
+  private _redactTree(value: unknown, depth: number, parents: ReadonlySet<object>): unknown {
+    if (value === null || typeof value !== 'object') return value;
+    if (parents.has(value)) return '[Circular]';
+    if (depth > MAX_REDACTION_DEPTH) return this.replacement;
+    const ancestors = new Set(parents).add(value);
     if (Array.isArray(value)) {
       return value.map((item) =>
         // A string ELEMENT is matched against `regex_patterns` at its own
@@ -324,17 +331,14 @@ export class RedactionConfig {
         // into skipping what is inside it.
         typeof item === 'string' && this._valueMatches(item)
           ? this.replacement
-          : this.redact(item, depth + 1),
+          : this._redactTree(item, depth + 1, ancestors),
       );
     }
-    if (value !== null && typeof value === 'object') {
-      const result: Record<string, unknown> = {};
-      for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-        result[k] = this._shouldRedact(k, v) ? this.replacement : this.redact(v, depth + 1);
-      }
-      return result;
-    }
-    return value;
+    return Object.fromEntries(
+      Object.entries(value).map(([key, item]) => [key, this._shouldRedact(key, item)
+        ? this.replacement
+        : this._redactTree(item, depth + 1, ancestors)]),
+    );
   }
 
   private _shouldRedact(fieldName: string, value: unknown): boolean {
@@ -412,6 +416,19 @@ const LEVELS: Record<string, number> = {
 
 interface WritableOutput {
   write(s: string): void;
+}
+
+function stringifyLogEntry(entry: Record<string, unknown>): string {
+  const ancestors: object[] = [];
+  return JSON.stringify(entry, function (_key, value: unknown): unknown {
+    if (typeof value === 'bigint') return value.toString();
+    if (value === null || typeof value !== 'object') return value;
+    while (ancestors.length > 0 && ancestors.at(-1) !== this) ancestors.pop();
+    if (ancestors.includes(value)) return '[Circular]';
+    if (ancestors.length > MAX_REDACTION_DEPTH + 1) return '[Truncated]';
+    ancestors.push(value);
+    return value;
+  });
 }
 
 export class ContextLogger {
@@ -508,7 +525,7 @@ export class ContextLogger {
     };
 
     if (this._format === 'json') {
-      this._output.write(JSON.stringify(entry) + '\n');
+      this._output.write(stringifyLogEntry(entry) + '\n');
     } else {
       const ts = now
         .toISOString()

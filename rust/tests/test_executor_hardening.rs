@@ -516,6 +516,13 @@ async fn call_with_trace_runs_on_error_recovery() {
 
     assert_eq!(output, json!({"recovered": true}));
     assert_eq!(trace.module_id, "fail.module");
+
+    let mut stream = client
+        .executor()
+        .stream("fail.module", json!({}), None, None);
+    let recovered = futures_util::StreamExt::next(&mut stream).await.unwrap();
+    assert_eq!(recovered.unwrap(), json!({"recovered": true}));
+    assert!(futures_util::StreamExt::next(&mut stream).await.is_none());
 }
 
 struct TransientModule {
@@ -807,6 +814,11 @@ async fn call_with_trace_surfaces_a_pipeline_abort_like_call_does() {
     let via_trace = executor
         .call_with_trace("some.module", json!({}), None, None, None)
         .await;
+    let via_stream =
+        futures_util::StreamExt::next(&mut executor.stream("some.module", json!({}), None, None))
+            .await
+            .unwrap();
+    assert_eq!(via_stream.unwrap_err().code, ErrorCode::PipelineAbort);
 
     assert!(via_call.is_err(), "call() must surface the abort");
     assert!(

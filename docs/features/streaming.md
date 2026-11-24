@@ -168,7 +168,7 @@ Each SDK exposes a language-idiomatic `StreamingModule` interface so that adapte
 
 **Phase 1 — pipeline setup.** Steps 1–7 of the standard pipeline run as for `call()`: context creation, call-chain guard, module lookup, ACL, approval gate, middleware before, input validation. At step 8 the executor calls the module's `stream()` instead of `execute()`.
 
-**Phase 2 — chunk emission.** The executor iterates the module's stream and yields each chunk to the caller immediately, while deep-merging it into the accumulated output. A chunk that is not an object is rejected before delivery (see [Contract: Module.stream](#contract-modulestream)). The execution timeout is checked between chunks.
+**Phase 2 — chunk emission.** The executor iterates the module's stream and yields each chunk to the caller immediately, while deep-merging it into the accumulated output. A chunk that is not an object is rejected before delivery (see [Contract: Module.stream](#contract-modulestream)). The call deadline applies while waiting for the next chunk. If it expires, the executor cancels the call's token and returns the timeout.
 
 **Phase 3 — post-processing.** After the last chunk, output validation (step 9) and middleware after (step 10) run on the accumulated output. A failure here cannot recall chunks already delivered: it is logged and reported as an event instead of being raised to the caller.
 

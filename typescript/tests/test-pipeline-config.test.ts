@@ -160,6 +160,12 @@ describe('_resolveStep', () => {
     );
   });
 
+  it('applies the file scheme guard case-insensitively', async () => {
+    await expect(_resolveStep({ handler: 'FiLe:unused-fixture.mjs:makeStep' })).rejects.toThrow(
+      /must not use 'file:' URLs/,
+    );
+  });
+
   it('rejects handler path using http: URLs', async () => {
     await expect(_resolveStep({ handler: 'http://evil.com/mod.js:fn' })).rejects.toThrow(
       /must not use 'http:' URLs/,
@@ -312,6 +318,17 @@ describe('buildStrategyFromConfig', () => {
         { configure: { execute: { timeout_ms: 51 } } },
         deps,
       )).toThrow(/Step 'execute': timeout_ms 51 is over the 50 configured/);
+    });
+
+    it('checks timeout aliases on both existing and custom steps', async () => {
+      expect(() => buildStrategyFromConfigSync(
+        { configure: { execute: { timeoutMs: 51 } } },
+        deps,
+      )).toThrow(/Step 'execute': timeout_ms 51 is over the 50 configured/);
+      await expect(buildStrategyFromConfig(
+        { steps: [{ type: CUSTOM_TYPE, name: 'probe', after: 'execute', timeoutMs: 51 }] },
+        deps,
+      )).rejects.toThrow(/Step 'probe': timeout_ms 51 is over the 50 configured/);
     });
 
     it('enforces the name limit when no timeout limit is configured', () => {

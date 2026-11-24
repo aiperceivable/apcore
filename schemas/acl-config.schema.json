@@ -113,7 +113,8 @@
           "maxLength": 500
         },
         "conditions": {
-          "$ref": "#/$defs/RuleConditions"
+          "$ref": "#/$defs/RuleConditions",
+          "description": "Conditions evaluated when matching this access control rule."
         }
       }
     },

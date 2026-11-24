@@ -261,7 +261,7 @@ async function _importStep(handlerPath: string, config: Record<string, unknown>)
   // because 'file:' URLs contain a colon that would otherwise be misparsed.
   const FORBIDDEN_SCHEMES = ['file:', 'http:', 'https:', 'ftp:', 'data:', 'blob:'];
   for (const scheme of FORBIDDEN_SCHEMES) {
-    if (handlerPath.startsWith(scheme)) {
+    if (handlerPath.trimStart().toLowerCase().startsWith(scheme)) {
       throw new Error(`Handler path '${handlerPath}' must not use '${scheme}' URLs.`);
     }
   }
@@ -440,6 +440,7 @@ function resolveConfigurableStepField(key: string): string | undefined {
  */
 function validatePipelineLimits(
   pipelineConfig: PipelineConfig,
+  steps: readonly StepDefinition[],
   config: { get(key: string, defaultValue?: unknown): unknown } | null,
 ): void {
   if (config == null) return;
@@ -460,19 +461,19 @@ function validatePipelineLimits(
 
   for (const [stepName, overrides] of Object.entries(pipelineConfig.configure ?? {})) {
     if (overrides != null && typeof overrides === 'object') {
-      checkTimeout(`Step '${stepName}'`, (overrides as Record<string, unknown>)['timeout_ms']);
+      const timeout = Object.entries(overrides).filter(([key]) => resolveConfigurableStepField(key) === 'timeoutMs');
+      checkTimeout(`Step '${stepName}'`, timeout.at(-1)?.[1]);
     }
   }
 
-  for (const stepDef of pipelineConfig.steps ?? []) {
-    const raw = stepDef as unknown as Record<string, unknown>;
-    const name = raw['name'];
+  for (const stepDef of steps) {
+    const name = stepDef.name;
     if (maxName !== null && typeof name === 'string' && [...name].length > maxName) {
       throw new ConfigurationError(
         `Step '${name}': name is ${[...name].length} characters, over the ${maxName} configured by validation.pipeline.step_name_max_length`,
       );
     }
-    checkTimeout(`Step '${typeof name === 'string' ? name : '<unnamed>'}'`, raw['timeout_ms']);
+    checkTimeout(`Step '${typeof name === 'string' ? name : '<unnamed>'}'`, stepDef.timeoutMs);
   }
 }
 
@@ -557,7 +558,9 @@ function applyPipelineConfigSync(
 ): ExecutionStrategy {
   // The async entry point awaits its resolver; this one does not. The body is
   // shared so `remove`, `configure` and their error messages cannot drift.
-  return applyPipelineConfigImpl(pipelineConfig, deps, resolve) as ExecutionStrategy;
+  const steps = (pipelineConfig.steps ?? []).map(_normalizeStepDefinition);
+  validatePipelineLimits(pipelineConfig, steps, deps.config);
+  return applyPipelineConfigImpl(pipelineConfig, deps, steps, resolve);
 }
 
 async function applyPipelineConfig(
@@ -566,25 +569,20 @@ async function applyPipelineConfig(
   resolve: (def: StepDefinition) => Promise<Step>,
 ): Promise<ExecutionStrategy> {
   const resolved = new Map<StepDefinition, Step>();
-  const entries: ReadonlyArray<Record<string, unknown>> = pipelineConfig.steps ?? [];
-  for (const [index, raw] of entries.entries()) {
-    const def = _normalizeStepDefinition(raw, index);
+  const steps = (pipelineConfig.steps ?? []).map(_normalizeStepDefinition);
+  validatePipelineLimits(pipelineConfig, steps, deps.config);
+  for (const def of steps) {
     resolved.set(def, await resolve(def));
   }
-  let seen = 0;
-  return applyPipelineConfigImpl(pipelineConfig, deps, () => {
-    const def = [...resolved.keys()][seen++];
-    return def === undefined ? null : (resolved.get(def) ?? null);
-  }) as ExecutionStrategy;
+  return applyPipelineConfigImpl(pipelineConfig, deps, steps, (def) => resolved.get(def) ?? null);
 }
 
 function applyPipelineConfigImpl(
   pipelineConfig: PipelineConfig,
   deps: StandardStrategyDeps,
+  stepEntries: readonly StepDefinition[],
   resolve: (def: StepDefinition) => Step | null,
 ): ExecutionStrategy {
-  validatePipelineLimits(pipelineConfig, deps.config);
-
   const strategy = buildStandardStrategy(deps);
 
   // (1) Remove steps — fail fast if target does not exist (protocol-spec §5.16.1)
@@ -664,9 +662,7 @@ function applyPipelineConfigImpl(
   // normalised to the camelCase `StepDefinition` spelling FIRST, so an unknown
   // key raises before any step factory runs and the canonical snake_case
   // spellings actually reach the built step.
-  const stepEntries: ReadonlyArray<Record<string, unknown>> = pipelineConfig.steps ?? [];
-  for (const [index, rawStepDef] of stepEntries.entries()) {
-    const stepDef = _normalizeStepDefinition(rawStepDef, index);
+  for (const stepDef of stepEntries) {
     const step = resolve(stepDef);
     if (step === null) continue;
     const after = stepDef.after;

@@ -11,19 +11,10 @@ import random
 import sys
 import threading
 import time
-from typing import Any, Protocol, runtime_checkable
+from typing import Any
 
 from apcore.middleware import Middleware
 from apcore.observability.span import Span, create_span
-
-
-@runtime_checkable
-class SpanExporter(Protocol):
-    """Protocol for span export destinations."""
-
-    def export(self, span: Span) -> None:
-        """Export a completed span."""
-        ...
 
 
 class StdoutExporter:
@@ -179,6 +170,7 @@ class OTLPExporter:
 from apcore.observability.batch_span_processor import (  # noqa: E402
     BatchSpanProcessor,
     SimpleSpanProcessor,
+    SpanExporter,
     SpanProcessor,
 )
 

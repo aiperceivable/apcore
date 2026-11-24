@@ -9,7 +9,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use jsonschema::{error::ValidationErrorKind, Validator};
+use jsonschema::{error::ValidationErrorKind, Retrieve, Uri, Validator};
 use parking_lot::Mutex;
 use serde_json::Value;
 
@@ -233,7 +233,8 @@ impl SchemaValidator {
         err
     }
 
-    fn compile_cached(&self, schema: &Value) -> Result<Arc<Validator>, String> {
+    pub(crate) fn compile_cached(&self, schema: &Value) -> Result<Arc<Validator>, String> {
+        const MAX_CACHED_VALIDATORS: usize = 1024;
         let digest = content_hash(schema);
 
         if let Some(v) = self.cache.lock().get(&digest) {
@@ -242,9 +243,14 @@ impl SchemaValidator {
 
         let arc = Arc::new(build_validator(schema)?);
 
-        // Another thread may have populated the entry while we were compiling;
-        // both Arcs point to equivalent compiled validators, so overwriting is harmless.
-        self.cache.lock().insert(digest, Arc::clone(&arc));
+        let mut cache = self.cache.lock();
+        if let Some(compiled) = cache.get(&digest) {
+            return Ok(Arc::clone(compiled));
+        }
+        if cache.len() == MAX_CACHED_VALIDATORS {
+            cache.clear();
+        }
+        cache.insert(digest, Arc::clone(&arc));
         Ok(arc)
     }
 
@@ -291,9 +297,24 @@ impl SchemaValidator {
 pub(crate) fn build_validator(schema: &Value) -> Result<Validator, String> {
     let normalised = strip_nested_schema(schema, true);
     jsonschema::options()
+        // SchemaLoader owns the only filesystem-reference boundary. A host
+        // enabling jsonschema's default Cargo features cannot add I/O here.
+        .with_retriever(LocalSchemaOnly)
         .should_validate_formats(false)
         .build(&normalised)
         .map_err(|e| e.to_string())
+}
+
+struct LocalSchemaOnly;
+
+impl Retrieve for LocalSchemaOnly {
+    fn retrieve(&self, _: &Uri<&str>) -> Result<Value, Box<dyn std::error::Error + Send + Sync>> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "External schema resources must be resolved by SchemaLoader",
+        )
+        .into())
+    }
 }
 
 /// Deep-copy `value`, removing every nested `"$schema": "<uri>"` entry.

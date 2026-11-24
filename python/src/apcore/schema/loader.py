@@ -5,9 +5,10 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Callable
+from copy import deepcopy
 from dataclasses import replace
 from pathlib import Path
-from typing import Annotated, Any, Literal, Union, cast
+from typing import Annotated, Any, ClassVar, Literal, Union, cast
 
 import yaml
 from jsonschema import Draft202012Validator
@@ -367,9 +368,7 @@ def _make_schema_assertion(
     except JsonSchemaError as exc:
         raise SchemaParseError(message=f"Invalid schema for keyword(s) {sorted(sub_schema)}: {exc.message}") from exc
 
-    validator = (
-        Draft202012Validator(sub_schema) if registry is None else Draft202012Validator(sub_schema, registry=registry)
-    )
+    validator = Draft202012Validator(sub_schema, registry=Registry() if registry is None else registry)
 
     def assert_sub_schema(value: Any) -> Any:
         data = value if plain_data else _to_jsonable(value)
@@ -385,6 +384,39 @@ def _make_schema_assertion(
         return value
 
     return assert_sub_schema
+
+
+class _SourceSchemaModel(BaseModel):
+    """A native model that presents the exact JSON Schema it validates."""
+
+    __apcore_source_schema__: ClassVar[dict[str, Any]]
+    model_config = ConfigDict(extra="allow")
+
+    @classmethod
+    def model_json_schema(cls, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        return deepcopy(cls.__apcore_source_schema__)
+
+
+def _generate_source_model(schema: dict[str, Any], model_name: str) -> type[BaseModel]:
+    # Binding payloads already use JSON values. The original contract can
+    # validate directly, without narrowing a type or transforming values in
+    # a generated annotation. Expose declared fields for native introspection.
+    validate = _as_model_before_validator(_make_schema_assertion(schema, plain_data=True))
+    required = set(schema.get("required", ()))
+    fields: dict[str, Any] = {
+        name: (Any, ... if name in required else None)
+        for name in schema.get("properties", {})
+        if not name.startswith("_") and not hasattr(_SourceSchemaModel, name)
+    }
+    model = create_model(  # type: ignore[call-overload]
+        model_name,
+        __base__=_SourceSchemaModel,
+        __validators__={"_apcore_source_contract": validate},
+        **fields,
+    )
+    model.__apcore_source_schema__ = schema  # type: ignore[attr-defined]
+    model.__apcore_has_assertions__ = True  # type: ignore[attr-defined]
+    return model
 
 
 # Base URI the root document is registered under so a lazy `$ref` can be pointed
@@ -522,7 +554,7 @@ class SchemaLoader:
         if module_id in self._schema_cache:
             return self._schema_cache[module_id]
 
-        file_path = self._schemas_dir / (module_id.replace(".", "/") + ".schema.yaml")
+        file_path = self._resolver._module_file(module_id)
         if not file_path.exists():
             raise SchemaNotFoundError(schema_id=module_id)
 
@@ -610,7 +642,12 @@ class SchemaLoader:
         return input_rs, output_rs
 
     def generate_model(
-        self, json_schema: dict[str, Any], model_name: str, *, root: dict[str, Any] | None = None
+        self,
+        json_schema: dict[str, Any],
+        model_name: str,
+        *,
+        root: dict[str, Any] | None = None,
+        validate_source: bool = False,
     ) -> type[BaseModel]:
         """Dynamically generate a Pydantic BaseModel from a JSON Schema dict.
 
@@ -619,6 +656,8 @@ class SchemaLoader:
         down unchanged through every nested model, so a ``$ref`` buried in
         ``properties`` still finds ``$defs`` at the top of the document.
         """
+        if validate_source:
+            return _generate_source_model(json_schema, model_name)
         if root is None:
             root = json_schema
         properties = json_schema.get("properties", {})

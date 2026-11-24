@@ -149,6 +149,8 @@ mod test_async_task_evolution_conformance;
 mod test_async_task_hardening;
 #[path = "test_binding_declarations_survive_registration.rs"]
 mod test_binding_declarations_survive_registration;
+#[path = "test_binding_schema_ref_scope_conformance.rs"]
+mod test_binding_schema_ref_scope_conformance;
 #[path = "test_bindings.rs"]
 mod test_bindings;
 #[path = "test_builtin_steps.rs"]

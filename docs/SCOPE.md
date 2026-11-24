@@ -240,6 +240,9 @@ apcore/
 ├── docs/guides/        # Tutorials and cookbooks
 ├── schemas/            # Canonical JSON Schemas
 ├── conformance/        # Cross-language fixtures and guard scripts
+├── python/             # Python SDK
+├── typescript/         # TypeScript SDK
+├── rust/               # Rust SDK
 ├── SCOPE.md            # This file
 └── README.md           # Project introduction
 ```

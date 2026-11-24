@@ -25,6 +25,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Run custom I/O-backed task-store operations through a runtime from synchronous Python and Rust callers. ([#127](https://github.com/aiperceivable/apcore/issues/127))
 - Honor the Python call deadline in the synchronous thread bridge and protect the cached executor event loop from concurrent callers. ([#229](https://github.com/aiperceivable/apcore/issues/229), [#232](https://github.com/aiperceivable/apcore/issues/232))
 - Include the inline typing marker in the Python wheel and check installed type artifacts in distribution CI. ([#233](https://github.com/aiperceivable/apcore/issues/233))
+- Apply the configured observability redaction rules to schema-less calls and omit values from schema format warnings. Clarify the capture contract in Protocol §6.1.8 and §10.6.1.
+- Confine disk-loaded Schema references to authorized directories and disable external retrieval in the Rust Schema validator. Binding files can reference Schema files in the binding directory or the configured Schema root. Standalone loaders accept the conventional sibling `schemas/` directory.
+- Enforce each call's deadline while its stream waits for the next chunk. Surface a deprecation warning when TypeScript or Rust receives a version hint through its execution APIs.
 
 ## [0.33.0] - 2026-11-18
 

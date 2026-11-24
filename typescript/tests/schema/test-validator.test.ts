@@ -197,6 +197,7 @@ describe('SchemaValidator — format warnings (SHOULD-level)', () => {
     expect(result.valid).toBe(true);
     expect(result.warnLogged).toBe(true);
     expect(warnSpy).toHaveBeenCalled();
+    expect(warnSpy.mock.calls.flat().join(' ')).not.toContain('not-a-date');
     warnSpy.mockRestore();
   });
 

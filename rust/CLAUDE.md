@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-`apcore` is a **schema-driven module standard for AI-perceivable interfaces** — a task orchestration and execution specification framework that supports multiple task types via a unified, schema-first API.
+This directory implements the Rust SDK for apcore, a **governed, protocol-neutral runtime and module standard**. The SDK discovers, registers, validates, and executes modules under the shared protocol. Application orchestration and the MCP, A2A, CLI, and toolkit adapters live outside this SDK.
 
 ---
 

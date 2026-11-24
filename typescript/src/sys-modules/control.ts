@@ -19,7 +19,7 @@ import type { DependencyInfo } from '../registry/types.js';
 import type { EventEmitter } from '../events/emitter.js';
 import { createEvent } from '../events/emitter.js';
 import type { Config } from '../config.js';
-import { CONSTRAINTS } from '../config.js';
+import { CONSTRAINTS, isConfigurationDataPath } from '../config.js';
 import type { Context } from '../context.js';
 import type { AuditStore } from './audit.js';
 import { buildAuditEntry, extractAuditIdentity } from './audit.js';
@@ -91,12 +91,12 @@ export class UpdateConfigModule {
     const { key, value, reason } = this._validateInputs(inputs);
     const ctx = context as Context | null;
 
-    this._checkRestricted(key);
+    const frameworkKey = key.startsWith('apcore.') ? key.slice('apcore.'.length) : key;
+    this._checkRestricted(frameworkKey);
+    this._validateValue(frameworkKey, value);
 
     const oldValue = this._config.get(key);
     this._config.set(key, value);
-
-    this._validatePostSet(key, value, oldValue);
 
     // SYS-13: mask with the framework's canonical redaction constant, which is
     // what apcore-python and apcore-rust write. A bespoke `'***'` here meant an
@@ -141,6 +141,9 @@ export class UpdateConfigModule {
     if (typeof key !== 'string' || !key) {
       throw new InvalidInputError("'key' is required and must not be empty");
     }
+    if (!isConfigurationDataPath(key)) {
+      throw new InvalidInputError("Configuration key contains an invalid path segment");
+    }
     const reason = inputs['reason'];
     if (typeof reason !== 'string' || !reason) {
       throw new InvalidInputError("'reason' is required and must not be empty");
@@ -151,7 +154,9 @@ export class UpdateConfigModule {
 
   /** Raise if `key` is in the restricted keys list. Mirrors Python `_check_restricted`. */
   private _checkRestricted(key: string): void {
-    if (RESTRICTED_KEYS.has(key)) {
+    if (key === 'apcore' || [...RESTRICTED_KEYS].some(
+      (restricted) => key === restricted || restricted.startsWith(`${key}.`) || key.startsWith(`${restricted}.`),
+    )) {
       throw new ModuleError(
         ErrorCodes.CONFIG_KEY_RESTRICTED,
         `Configuration key '${key}' cannot be changed at runtime`,
@@ -160,20 +165,14 @@ export class UpdateConfigModule {
     }
   }
 
-  /**
-   * Check the registered constraint after setting. Roll back to `oldValue` and
-   * raise ConfigError on failure. Mirrors Python `_validate_post_set`.
-   */
-  private _validatePostSet(key: string, value: unknown, oldValue: unknown): void {
+  /** Check registered constraints before publishing, persisting, or auditing the update. */
+  private _validateValue(key: string, value: unknown): void {
+    if (!Object.hasOwn(CONSTRAINTS, key)) return;
     const constraint = CONSTRAINTS[key];
-    if (constraint === undefined) {
-      return;
-    }
     const [checkFn, errMsg] = constraint;
     if (!checkFn(value)) {
-      this._config.set(key, oldValue);
-      throw new ConfigError(`Invalid value for '${key}': ${errMsg} (got ${JSON.stringify(value)})`, {
-        details: { key, value },
+      throw new ConfigError(`Invalid value for '${key}': ${errMsg}`, {
+        details: { key },
       });
     }
   }

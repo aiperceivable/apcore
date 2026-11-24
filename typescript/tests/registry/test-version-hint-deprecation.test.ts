@@ -61,6 +61,24 @@ describe('Registry.get version hint (D-126)', () => {
     expect(warn).toHaveBeenCalledTimes(1);
   });
 
+  it('shares the warning cadence between definition and instance lookup', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const registry = new Registry();
+    const otherId = 'executor.probe.other_versioned';
+    registry.register(MODULE_ID, mod('1.0.0'), '1.0.0');
+    registry.register(otherId, mod('1.0.0'), '1.0.0');
+
+    expect(registry.getDefinition(MODULE_ID, '2.0.0')?.version).toBe('1.0.0');
+    expect(warn).toHaveBeenCalledOnce();
+    expect(warn.mock.calls[0]?.[0]).toMatch(/version hint is ignored/);
+    registry.get(MODULE_ID, '2.0.0');
+    expect(warn).toHaveBeenCalledOnce();
+
+    registry.get(otherId, '2.0.0');
+    registry.getDefinition(otherId, '2.0.0');
+    expect(warn).toHaveBeenCalledTimes(2);
+  });
+
   it('stays silent when no hint is passed', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const registry = new Registry();
@@ -69,6 +87,9 @@ describe('Registry.get version hint (D-126)', () => {
     registry.get(MODULE_ID);
     registry.get(MODULE_ID, null);
     registry.get(MODULE_ID, '');
+    registry.getDefinition(MODULE_ID);
+    registry.getDefinition(MODULE_ID, null);
+    registry.getDefinition(MODULE_ID, '');
 
     expect(warn).not.toHaveBeenCalled();
   });

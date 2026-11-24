@@ -456,6 +456,23 @@ class TestEvents:
         client.events.flush()
         assert received == [event]
 
+    def test_close_releases_event_resources_and_keeps_subscriptions_reusable(self) -> None:
+        client = APCore(config=_sys_config())
+        assert client.events is not None
+        received: list[ApCoreEvent] = []
+        client.on("test.life", received.append)
+        event = ApCoreEvent(event_type="test.life", module_id=None, timestamp="now", severity="info", data={})
+        client.events.emit(event)
+        loop = client.events._loop
+        assert loop is not None
+        client.close()
+        assert loop.is_closed()
+        assert received == [event]
+        assert client.events is not None
+        client.events.emit(event)
+        client.close()
+        assert received == [event, event]
+
     def test_client_receives_executor_governance_events(self) -> None:
         policy = ExecutionPolicy([PolicyRule("test.governed", requires_approval=True)])
         client = APCore(config=_sys_config(), policy=policy)

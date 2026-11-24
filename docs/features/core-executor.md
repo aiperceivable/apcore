@@ -408,7 +408,7 @@ Normative behavioral contract. All SDK implementations MUST satisfy these guaran
 - `module_id`: string, required. Validated at method entry — empty, malformed and over-length IDs are rejected before the pipeline context is constructed. Reserved first segments ([§2.5](../spec/protocol-spec.md#25-reserved-words)) are not rejected here, which is what makes `system.*` modules callable.
 - `inputs`: object, optional. Payload conforming to the module's input schema; absent is `{}`.
 - `context`: Context, optional. Created when absent.
-- `version_hint`: string, optional. Preferred version (resolved in Python; TypeScript and Rust resolve the latest registered version).
+- `version_hint`: string, optional. Python uses it to select a version. TypeScript and Rust warn once per module ID per registry instance when a hint is supplied and use the current registered module.
 
 ### Preconditions
 

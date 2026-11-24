@@ -333,6 +333,27 @@ fn test_schema_loader_repeated_load_keeps_resolved_document() {
     }
 }
 
+#[cfg(unix)]
+#[test]
+fn test_schema_loader_resolves_nested_references_under_an_aliased_root() {
+    let project = tempfile::tempdir().unwrap();
+    let schemas = project.path().join("schemas");
+    std::fs::create_dir(&schemas).unwrap();
+    let alias = project.path().join("schema_alias");
+    std::os::unix::fs::symlink(&schemas, &alias).unwrap();
+    std::fs::write(
+        schemas.join("note.schema.yaml"),
+        "type: object\nproperties:\n  label:\n    $ref: ./shared.yaml\n",
+    )
+    .unwrap();
+    std::fs::write(schemas.join("shared.yaml"), "$ref: ./label.yaml\n").unwrap();
+    std::fs::write(schemas.join("label.yaml"), "type: string\n").unwrap();
+
+    let mut loader = SchemaLoader::with_config(&Config::default(), Some(&alias));
+    let schema = loader.load("note").unwrap();
+    assert_eq!(schema.input_schema["properties"]["label"]["type"], "string");
+}
+
 #[test]
 fn test_schema_loader_caches_only_successful_resolution() {
     let dir = tempfile::tempdir().unwrap();

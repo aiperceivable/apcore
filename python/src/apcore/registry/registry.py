@@ -318,7 +318,7 @@ def _validate_module_id(module_id: str, *, allow_reserved: bool = False) -> None
         )
 
     # 2. EBNF pattern check
-    if not MODULE_ID_PATTERN.match(module_id):
+    if not MODULE_ID_PATTERN.fullmatch(module_id):
         raise InvalidInputError(
             f"Invalid module ID: '{module_id}'. Must match pattern: "
             f"{MODULE_ID_PATTERN.pattern} (lowercase, digits, underscores, dots only; no hyphens)",
@@ -848,7 +848,7 @@ class Registry:
 
         return registered_count
 
-    def _scan_params(self) -> tuple[int, bool]:
+    def _scan_params(self) -> tuple[int, bool, list[str]]:
         """Resolve scan parameters from config, falling back to spec defaults.
 
         Logs a WARN on the first call with ``follow_symlinks=True`` so
@@ -2178,7 +2178,9 @@ class Registry:
         if not clean:
             logger.warning(
                 "Force-unloading module %s after %dms timeout (%d in-flight executions)",
-                module_id, timeout_ms, ref_count,
+                module_id,
+                timeout_ms,
+                ref_count,
             )
         self._notify_unregistered(module_id, module)
         return clean
@@ -2192,6 +2194,7 @@ class Registry:
         Raises ImportError if watchdog is not installed.
         """
         try:
+            from watchdog.events import FileSystemEventHandler
             from watchdog.observers import Observer  # type: ignore[import-not-found]
         except ImportError:
             raise ImportError("watchdog is required for hot reload. Install it with: pip install watchdog")
@@ -2200,7 +2203,11 @@ class Registry:
             return  # Already watching
 
         self._observer = Observer()
-        handler = _ModuleChangeHandler(self)
+
+        class WatchdogHandler(_ModuleChangeHandler, FileSystemEventHandler):
+            pass
+
+        handler = WatchdogHandler(self)
 
         for root_config in self._extension_roots:
             root_path = root_config.get("root", "")

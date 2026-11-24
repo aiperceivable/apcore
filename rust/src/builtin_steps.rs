@@ -4,10 +4,11 @@
 use std::time::Duration;
 
 use async_trait::async_trait;
+use serde_json::Value;
 
 use crate::errors::{ErrorCode, ModuleError};
 use crate::events::emitter::ApCoreEvent;
-use crate::executor::{has_schema, redact_sensitive_with, validate_against_schema};
+use crate::executor::{redact_sensitive_with, validate_against_schema};
 use crate::pipeline::{BuiltinGate, ExecutionStrategy, PipelineContext, Step, StepResult};
 use crate::policy::PolicyDecision;
 
@@ -170,6 +171,26 @@ step_meta!(
 // Step implementations
 // ---------------------------------------------------------------------------
 
+fn missing_pipeline_input(name: &str) -> ModuleError {
+    ModuleError::new(
+        ErrorCode::PipelineDependencyError,
+        format!("Required pipeline input '{name}' is missing"),
+    )
+}
+
+fn capture_redacted(
+    value: &Value,
+    schema: &Value,
+    ctx: &PipelineContext,
+) -> std::collections::HashMap<String, Value> {
+    redact_sensitive_with(value, schema, ctx.redaction.as_deref())
+        .as_object()
+        .into_iter()
+        .flatten()
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect()
+}
+
 #[async_trait]
 impl Step for BuiltinContextCreation {
     impl_step_meta!(BuiltinContextCreation);
@@ -253,11 +274,10 @@ impl Step for BuiltinCallChainGuard {
     }
 
     async fn execute(&self, ctx: &mut PipelineContext) -> Result<StepResult, ModuleError> {
-        // INVARIANT: Executor::inject_resources sets config before any step runs.
         let config = ctx
             .config
             .as_ref()
-            .expect("config must be injected into PipelineContext");
+            .ok_or_else(|| missing_pipeline_input("config"))?;
         // Cancellation check before any expensive validation/middleware work
         // (D-21 — `Cancel Token Mid-Pipeline Check`, point 1). The pipeline
         // MUST observe `cancel_token` at the call-chain guard so a caller
@@ -306,15 +326,15 @@ impl Step for BuiltinModuleLookup {
     }
 
     async fn execute(&self, ctx: &mut PipelineContext) -> Result<StepResult, ModuleError> {
-        // INVARIANT: Executor::inject_resources sets registry before any step runs.
         let registry = ctx
             .registry
             .as_ref()
-            .expect("registry must be injected into PipelineContext");
+            .ok_or_else(|| missing_pipeline_input("registry"))?;
         // ERR-004: the guidance-bearing builder — the peers attach a default
         // `ai_guidance` to MODULE_NOT_FOUND on the error class, so every raise
         // site carries it.
-        let (module, lease) = registry.acquire_execution(&ctx.module_id)?;
+        let (module, lease) =
+            registry.acquire_execution(&ctx.module_id, ctx.version_hint.as_deref())?;
         // Check if the module is disabled before proceeding. Two sources:
         //   1. The registry descriptor's `enabled` flag (direct registry-level
         //      disable).
@@ -342,10 +362,8 @@ impl Step for BuiltinModuleLookup {
         //
         // Deliberately NOT `context.redacted_inputs`, which is computed just
         // below for a different purpose (§6.1.8 rule 3): that field's contract
-        // is safe *logging*, it is a raw copy when the module declares no input
-        // schema, and one field serving both "safe to log" and "input to a
-        // security decision" will eventually break one of them in a change made
-        // for the other. The projection carries the key set and each key's JSON
+        // is safe logging regardless of whether the module declares an input
+        // schema. The projection carries the key set and each key's JSON
         // type and has no field that can hold a value.
         ctx.governance_projection = Some(crate::acl::GovernanceProjection::from_arguments(
             &ctx.inputs,
@@ -353,28 +371,9 @@ impl Step for BuiltinModuleLookup {
 
         // Early input redaction: set context.redacted_inputs BEFORE
         // middleware runs (step 6), so logging sees redacted data.
-        let input_schema = module.input_schema().clone();
-        if has_schema(&input_schema) {
-            let redacted =
-                redact_sensitive_with(&ctx.inputs, &input_schema, ctx.redaction.as_deref());
-            ctx.context.redacted_inputs = Some(
-                redacted
-                    .as_object()
-                    .cloned()
-                    .unwrap_or_default()
-                    .into_iter()
-                    .collect(),
-            );
-        } else {
-            ctx.context.redacted_inputs = Some(
-                ctx.inputs
-                    .as_object()
-                    .cloned()
-                    .unwrap_or_default()
-                    .into_iter()
-                    .collect(),
-            );
-        }
+        let mut captured = capture_redacted(&ctx.inputs, &module.input_schema(), ctx);
+        captured.remove("_approval_token");
+        ctx.context.redacted_inputs = Some(captured);
 
         Ok(StepResult::continue_step())
     }
@@ -698,11 +697,10 @@ impl Step for BuiltinApprovalGate {
         // [`Self::take_approval_token`].
         let approval_token = Self::take_approval_token(ctx)?;
 
-        // INVARIANT: Executor::inject_resources sets registry before any step runs.
         let registry = ctx
             .registry
             .as_ref()
-            .expect("registry must be injected into PipelineContext");
+            .ok_or_else(|| missing_pipeline_input("registry"))?;
 
         // Resolve the LIVE module instance. Its annotations are one of the two
         // governance sources the gate unions below (D-96).
@@ -1045,27 +1043,16 @@ impl Step for BuiltinInputValidation {
     }
 
     async fn execute(&self, ctx: &mut PipelineContext) -> Result<StepResult, ModuleError> {
-        // INVARIANT: BuiltinModuleLookup runs before this step and sets ctx.module.
         let module = ctx
             .module
             .as_ref()
-            .expect("module must be resolved before input_validation");
+            .ok_or_else(|| missing_pipeline_input("module"))?;
         let input_schema = module.input_schema();
         validate_against_schema(&ctx.inputs, &input_schema, "Input")?;
 
-        // Store redacted inputs on context.
-        if has_schema(&input_schema) {
-            let redacted =
-                redact_sensitive_with(&ctx.inputs, &input_schema, ctx.redaction.as_deref());
-            ctx.context.redacted_inputs = Some(
-                redacted
-                    .as_object()
-                    .cloned()
-                    .unwrap_or_default()
-                    .into_iter()
-                    .collect(),
-            );
-        }
+        let mut captured = capture_redacted(&ctx.inputs, &input_schema, ctx);
+        captured.remove("_approval_token");
+        ctx.context.redacted_inputs = Some(captured);
         ctx.validated_inputs = Some(ctx.inputs.clone());
         Ok(StepResult::continue_step())
     }
@@ -1203,17 +1190,15 @@ impl Step for BuiltinExecute {
     }
 
     async fn execute(&self, ctx: &mut PipelineContext) -> Result<StepResult, ModuleError> {
-        // INVARIANT: BuiltinModuleLookup runs before this step and sets ctx.module.
         let module = ctx
             .module
             .as_ref()
-            .expect("module must be resolved before execute")
+            .ok_or_else(|| missing_pipeline_input("module"))?
             .clone();
-        // INVARIANT: Executor::inject_resources sets config before any step runs.
         let config = ctx
             .config
             .as_ref()
-            .expect("config must be injected into PipelineContext");
+            .ok_or_else(|| missing_pipeline_input("config"))?;
 
         // Compute effective timeout — start from per-module override
         // (`annotations.extra["resources"]["timeout"]`, in milliseconds; spec
@@ -1343,28 +1328,14 @@ impl Step for BuiltinOutputValidation {
         let Some(output) = ctx.output.as_ref() else {
             return Ok(StepResult::continue_step());
         };
-        // INVARIANT: BuiltinModuleLookup runs before this step and sets ctx.module.
         let module = ctx
             .module
             .as_ref()
-            .expect("module must be resolved before output_validation");
+            .ok_or_else(|| missing_pipeline_input("module"))?;
         let output_schema = module.output_schema();
         validate_against_schema(output, &output_schema, "Output")?;
 
-        // Store redacted output as first-class Context field (symmetric with
-        // redacted_inputs). Previously stored under data["_apcore.executor.
-        // redacted_output"] which was filtered out by serialize().
-        if has_schema(&output_schema) {
-            let redacted = redact_sensitive_with(output, &output_schema, ctx.redaction.as_deref());
-            ctx.context.redacted_output = Some(
-                redacted
-                    .as_object()
-                    .cloned()
-                    .unwrap_or_default()
-                    .into_iter()
-                    .collect(),
-            );
-        }
+        ctx.context.redacted_output = Some(capture_redacted(output, &output_schema, ctx));
         ctx.validated_output.clone_from(&ctx.output);
         Ok(StepResult::continue_step())
     }
@@ -1534,6 +1505,18 @@ mod tests {
     use crate::context::Identity;
     use std::collections::HashMap;
     use std::sync::Arc;
+
+    #[tokio::test]
+    async fn test_input_validation_requires_module_context() {
+        let mut ctx = PipelineContext::new(
+            "sample.module",
+            serde_json::json!({}),
+            Context::anonymous(),
+            "test",
+        );
+        let error = BuiltinInputValidation.execute(&mut ctx).await.unwrap_err();
+        assert_eq!(error.code, ErrorCode::PipelineDependencyError);
+    }
 
     struct PendingModule {
         started: Arc<tokio::sync::Notify>,

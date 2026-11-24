@@ -60,7 +60,8 @@
       "examples": ["1.0.0", "2.1.0-beta.1"]
     },
     "annotations": {
-      "$ref": "#/$defs/Annotations"
+      "$ref": "#/$defs/Annotations",
+      "description": "Behavioral and governance annotations declared in the module metadata."
     },
     "examples": {
       "type": "array",
@@ -107,7 +108,8 @@
       "examples": ["2026-06-01"]
     },
     "resources": {
-      "$ref": "#/$defs/ResourceLimits"
+      "$ref": "#/$defs/ResourceLimits",
+      "description": "Per-module execution timeout and memory limits."
     }
   },
   "$defs": {

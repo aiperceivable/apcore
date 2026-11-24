@@ -1,5 +1,5 @@
 ---
-description: "The canonical, normative apcore protocol specification (RFC 2119, v1.66.0): module, schema, naming, ACL, approval, error, config, and observability requirements for all conforming SDKs."
+description: "The canonical apcore protocol specification (RFC 2119): module, schema, naming, ACL, approval, error, configuration, and observability requirements for all conforming SDKs."
 ---
 
 # apcore — AI-Perceivable Core Standard Specification
@@ -8,7 +8,7 @@ description: "The canonical, normative apcore protocol specification (RFC 2119, 
 
 > Version: 2.0.0
 > Status: Draft
-> Last Updated: 2026-10-19
+> Last Updated: 2026-11-24
 
 ---
 
@@ -4143,7 +4143,7 @@ One **built-in** condition key, part of the condition language §6.1 defines rat
 
 **No predicate reads a value, and that is a design constraint rather than a first cut.** Three reasons, in order of weight:
 
-1. The argument view available here is **not reliably redacted**. Redaction is driven by `x-sensitive` markers in the module's input schema; a module with no input schema gets no field redaction at all, and only the `_secret_` key-prefix rule still applies. A value-reading predicate would pull potentially secret-bearing data into the governance decision path and into `handler_error` diagnostics.
+1. Argument values may contain secrets. Access rules operate on key presence so argument values stay out of governance decisions and `handler_error` diagnostics. Observability capture applies the configured redaction rules in §10.6.1 when the module has no input schema.
 2. The arguments are **unvalidated**. The ACL check is Step 4 and input schema validation is Step 7, so a value may be absent, of the wrong type, or malformed. Key presence is the one question that is well-defined on unvalidated input.
 3. Key presence answers the driving requirement. "Did this call carry `--force`?" is a presence question.
 
@@ -4159,7 +4159,7 @@ The `arguments` condition reads a **governance projection** of the call's argume
 2. The projection **MUST** carry the argument **key set**, and **MAY** carry each key's JSON type. It **MUST NOT** carry any argument value. A projection that structurally cannot hold a value cannot leak one, whatever a future predicate does with it.
 3. The projection **MUST** be computed by the framework and **MUST NOT** be accepted from caller-supplied input. Where an implementation carries it on a context object that is also deserialized from the wire, the field **MUST** be transient — excluded from serialization and ignored on deserialization. A caller that could supply its own projection could satisfy `has_none_of` for a call whose arguments say otherwise, which turns the condition into a caller-controlled switch.
 4. How the projection reaches the condition is **idiomatic** and unconstrained: carrying it on the execution context and passing it as an argument to the check are both conforming, as long as rules 1–3 hold. What is fixed is that the condition sees it and that a caller cannot forge it.
-5. Implementations **MUST NOT** substitute `redacted_inputs`. Its documented contract is safe *logging*; it is a raw copy when the module has no input schema; and one field serving both "safe to log" and "input to a security decision" will eventually break one of them in a change made for the other.
+5. Implementations **MUST NOT** substitute `redacted_inputs`. It carries the observability values captured under §10.6.1. Rule 2 defines the input to a governance decision.
 
 **Well-formedness and availability.** Four cases, all resolving to UNEVALUABLE under §6.1.1's principle rather than to a boolean. The direction matters: every one of them is a shape where "false" would be safe on a `deny` rule and **fail open on an `allow` rule**, which is the defect class §6.1.1 exists to close.
 
@@ -10047,7 +10047,7 @@ See `.schema.json` files in `schemas/` directory.
 
 ### C. Implementations
 
-- **SDKs**: [apcore-python](https://github.com/aiperceivable/apcore-python), [apcore-typescript](https://github.com/aiperceivable/apcore-typescript), [apcore-rust](https://github.com/aiperceivable/apcore-rust). No single SDK is normative; this specification and the conformance fixtures are.
+- **SDKs**: [Python](https://github.com/aiperceivable/apcore/tree/main/python), [TypeScript](https://github.com/aiperceivable/apcore/tree/main/typescript), [Rust](https://github.com/aiperceivable/apcore/tree/main/rust). This specification and the conformance fixtures define the shared contract.
 - **Surface adapters** (independently versioned): `apcore-mcp`, `apcore-a2a`, `apcore-cli`; framework integrations bind HTTP endpoints to modules.
 
 ### D. Module Exposure Methods Reference (Non-core, Reference Only)
@@ -10200,7 +10200,7 @@ The specification is versioned independently of the SDK release line (`0.x`); `C
 
 | Version | Date | Summary | Records |
 |---|---|---|---|
-| 2.0.0 | Unreleased | Resolve every path-typed configuration value against one project root (§9.2.2). | [#113](https://github.com/aiperceivable/apcore/issues/113) |
+| 2.0.0 | Unreleased | Resolve every path-typed configuration value against one project root (§9.2.2). Clarify that configured observability redaction applies to schema-less calls (§6.1.8, §10.6.1). | [#113](https://github.com/aiperceivable/apcore/issues/113) |
 | 1.66.0 | 2026-10-19 | A23 preserves optional enum, const, reference and applicator constraints inside an anyOf-null wrapper; required fields remain unchanged. | [#124](https://github.com/aiperceivable/apcore/issues/124) |
 | 1.65.0 | 2026-10-08 | Add public bare-name canonicalization with structured, non-throwing results in all SDKs; preserve A02, ASCII-only case conversion and existing underscores, and reject non-ASCII, invalid starts and overlong output (§2.2.1). | [Rust #40](https://github.com/aiperceivable/apcore-rust/issues/40) |
 | 1.64.0 | 2026-10-08 | Algorithm A02 is exhaustive and ASCII-scoped: it preserves existing underscores and non-ASCII characters through case conversion, then rejects a result outside the Canonical ID grammar; it never repairs arbitrary identifiers (§2.2). The repairing class-name conversion is named `snake_case_name` and is distinct from A02's `snake_case_identifier` (§2.1.1). | #122 |

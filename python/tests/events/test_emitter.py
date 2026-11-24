@@ -6,6 +6,7 @@ import asyncio
 import dataclasses
 import time
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 from unittest.mock import AsyncMock
 
@@ -215,6 +216,44 @@ class TestEventEmitter:
         emitter = EventEmitter()
         emitter.shutdown(timeout=0.5)
         emitter.shutdown(timeout=0.5)  # must not raise
+
+    def test_shutdown_waits_for_admitted_delivery_to_be_enqueued(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        emitter = EventEmitter()
+        subscriber = AsyncMock()
+        emitter.subscribe(subscriber)
+        submit_entered, release_submit = threading.Event(), threading.Event()
+        close_called, pool_stopped = threading.Event(), threading.Event()
+        submit = emitter._executor.submit
+        stop_pool = emitter._executor.shutdown
+
+        def delayed_submit(*args: Any, **kwargs: Any) -> Any:
+            submit_entered.set()
+            assert release_submit.wait(1)
+            return submit(*args, **kwargs)
+
+        def observe_pool_shutdown(*args: Any, **kwargs: Any) -> None:
+            pool_stopped.set()
+            stop_pool(*args, **kwargs)
+
+        def close() -> None:
+            close_called.set()
+            emitter.shutdown()
+
+        monkeypatch.setattr(emitter._executor, "submit", delayed_submit)
+        monkeypatch.setattr(emitter._executor, "shutdown", observe_pool_shutdown)
+        event = self._make_event()
+        with ThreadPoolExecutor(max_workers=2) as racers:
+            pending_emit = racers.submit(emitter.emit, event)
+            try:
+                assert submit_entered.wait(1)
+                pending_close = racers.submit(close)
+                assert close_called.wait(1)
+                assert not pool_stopped.wait(0.03)
+            finally:
+                release_submit.set()
+            pending_emit.result(timeout=1)
+            pending_close.result(timeout=1)
+        subscriber.on_event.assert_awaited_once_with(event)
 
     def test_emit_after_shutdown_is_noop(self) -> None:
         emitter = EventEmitter()

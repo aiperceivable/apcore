@@ -10,6 +10,7 @@ import pytest
 from pydantic import BaseModel
 
 from apcore.client import APCore
+from apcore.cancel import CancelToken
 from apcore.config import Config
 from apcore.context import Context
 from apcore.errors import InvalidInputError, ModuleNotFoundError, ModuleTimeoutError
@@ -85,6 +86,41 @@ def _make_executor(
 
 
 class TestExecutorStream:
+    async def test_deadline_interrupts_an_unfinished_chunk_and_cancels_only_the_call(self) -> None:
+        class WaitingModule(StreamingModule):
+            token: CancelToken | None = None
+
+            async def stream(self, inputs: dict[str, Any], context: Context) -> AsyncIterator[dict[str, Any]]:
+                self.token = context.cancel_token
+                await asyncio.Event().wait()
+                yield {"value": 1}
+
+        module = WaitingModule()
+        executor = _make_executor(module)
+        parent = CancelToken()
+        context = Context.create(cancel_token=parent, global_deadline=time.time() + 0.03)
+        async with asyncio.timeout(1):
+            with pytest.raises(ModuleTimeoutError):
+                await anext(executor.stream("test.module", {"count": 1}, context=context))
+        assert module.token is not None and module.token.is_cancelled
+        assert not parent.is_cancelled
+
+    async def test_after_uses_the_middleware_that_started_the_stream(self) -> None:
+        recorded: list[str] = []
+
+        class RecordingMiddleware(Middleware):
+            def before(self, module_id, inputs, context):
+                recorded.append("before")
+
+            def after(self, module_id, inputs, output, context):
+                recorded.append("after")
+
+        middleware = RecordingMiddleware()
+        executor = _make_executor(StreamingModule(), middlewares=[middleware])
+        async for _ in executor.stream("test.module", {"count": 1}):
+            assert executor.remove(middleware)
+        assert recorded == ["before", "after"]
+
     async def test_closing_client_stream_closes_the_module_source(self) -> None:
         closed = asyncio.Event()
 

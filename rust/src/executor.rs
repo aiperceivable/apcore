@@ -328,6 +328,8 @@ pub fn validate_against_schema(
     schema: &Value,
     direction: &str,
 ) -> Result<(), ModuleError> {
+    static VALIDATOR: LazyLock<crate::schema::SchemaValidator> =
+        LazyLock::new(crate::schema::SchemaValidator::new);
     // If schema is null/empty, skip validation
     if !has_schema(schema) {
         return Ok(());
@@ -336,7 +338,7 @@ pub fn validate_against_schema(
     // Compiled through the same builder `SchemaValidator` uses, so the executor
     // and the validator can never reach opposite verdicts on one input: the
     // document's own draft is honoured and `format` stays an annotation.
-    let validator = match crate::schema::validator::build_validator(schema) {
+    let validator = match VALIDATOR.compile_cached(schema) {
         Ok(v) => v,
         Err(e) => {
             // The *schema* is broken, not the value. SCHEMA_VALIDATION_ERROR is
@@ -410,32 +412,50 @@ pub fn validate_against_schema(
     )))
 }
 
-/// Return a `ModuleTimeout` error if `deadline` (epoch-seconds) has passed.
-///
-/// STREAM-003 / A-D-007: uses strict `>` to match apcore-python
-/// (`time.monotonic() > global_deadline`) and apcore-typescript
-/// (`Date.now() > globalDeadline`). The unit here is internal epoch-seconds
-/// (set+compared consistently via `as_secs_f64`); the cross-SDK clocks differ
-/// but each is self-consistent — only the comparator is normalized.
-fn stream_deadline_exceeded(
-    deadline: Option<f64>,
-    module_id: &str,
-    idempotent: bool,
-) -> Option<ModuleError> {
-    let deadline = deadline?;
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs_f64();
-    if now > deadline {
-        // ERR-004: guidance-bearing builder, then the streaming-specific
-        // message — the deadline, not a per-module timeout, is what elapsed.
-        let mut err = ModuleError::module_timeout(module_id, 0).with_retryable(idempotent);
-        err.message = format!("Module '{module_id}' streaming aborted: global deadline exceeded");
-        err.details.remove("timeout_ms");
-        return Some(err);
+async fn next_stream_chunk(
+    inner: &mut crate::module::ChunkStream,
+    setup: &StreamSetup,
+) -> Result<Option<Result<Value, ModuleError>>, ModuleError> {
+    let context = setup.context();
+    let token = context.cancel_token.as_ref();
+    let cancellation = async {
+        match token {
+            Some(token) => token.cancelled().await,
+            None => std::future::pending().await,
+        }
+    };
+    let timeout = async {
+        let remaining = context.global_deadline.and_then(|deadline| {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs_f64();
+            std::time::Duration::try_from_secs_f64((deadline - now).max(0.0)).ok()
+        });
+        match remaining {
+            Some(delta) if delta.is_zero() => {}
+            Some(delta) => tokio::time::sleep(delta).await,
+            None => std::future::pending().await,
+        }
+    };
+    let module_id = &setup.module_id;
+    tokio::select! {
+        biased;
+        () = cancellation => Err(crate::cancel::ExecutionCancelledError::new(
+            module_id, "Execution was cancelled",
+        ).into()),
+        () = timeout => {
+            if let Some(token) = token {
+                token.cancel();
+            }
+            let mut error = ModuleError::module_timeout(module_id, 0)
+                .with_retryable(setup.module.annotations().idempotent);
+            error.message = format!("Module '{module_id}' streaming aborted: global deadline exceeded");
+            error.details.remove("timeout_ms");
+            Err(error)
+        }
+        item = inner.next() => Ok(item),
     }
-    None
 }
 
 /// Redact fields marked with `x-sensitive: true` in the schema.
@@ -484,11 +504,6 @@ pub fn redact_sensitive_with(
 ) -> Value {
     let mut redacted = data.clone();
     schema_redaction::redact(&mut redacted, schema);
-    match &mut redacted {
-        Value::Object(object) => redact_secret_prefix(object),
-        Value::Array(items) => redact_secret_prefix_in_list(items),
-        _ => {}
-    }
     match rules {
         Some(cfg) => cfg.redact(&mut redacted),
         None => RedactionConfig::defaults().redact(&mut redacted),
@@ -502,11 +517,9 @@ pub fn redact_sensitive_with(
 /// `captured` is `context.redacted_inputs` / `context.redacted_output`, filled
 /// by the pipeline's capture point with the `x-sensitive` rule and the
 /// configured rules already applied — that is what gets logged, never `raw`.
-/// When the capture point has not run (the middleware is driven outside an
-/// executor, or the module declares no output schema) there is no schema to
-/// apply, and `raw` is logged only after the `_secret_` prefix rule and
-/// `rules` — or the defaults when `rules` is `None`, per requirement 3 — have
-/// been applied.
+/// When the middleware is driven outside an executor, apply the configured
+/// rules to `raw` before logging. Absent rules use the defaults per
+/// requirement 3.
 #[must_use]
 pub(crate) fn loggable_value(
     captured: Option<&HashMap<String, Value>>,
@@ -1636,15 +1649,16 @@ impl Executor {
             let mut accumulated: Vec<Value> = Vec::new();
 
             if let Some(mut inner) = stream_handle {
-                let idempotent = setup.module.annotations().idempotent;
-                while let Some(chunk_result) = inner.next().await {
-                    // STREAM-003 (sync): enforce global_deadline between chunks.
-                    if let Some(err) =
-                        stream_deadline_exceeded(setup.context().global_deadline, &module_id_owned, idempotent)
-                    {
-                        Err(err)?;
-                        return;
-                    }
+                loop {
+                    let chunk_result = match next_stream_chunk(&mut inner, &setup).await {
+                        Ok(Some(chunk)) => chunk,
+                        Ok(None) => break,
+                        Err(error) => {
+                            drop(inner);
+                            Err(error)?;
+                            return;
+                        }
+                    };
                     let chunk = match chunk_result {
                         Ok(c) => c,
                         Err(chunk_err) => {
@@ -1729,21 +1743,24 @@ impl Executor {
     async fn run_stream_fallback(&self, setup: &mut StreamSetup) -> Result<Value, ModuleError> {
         let steps = Self::execute_and_later_step_names(&self.strategy);
         if !steps.is_empty() {
-            PipelineEngine::run_with_options(
+            match PipelineEngine::run_with_options(
                 &self.strategy,
                 &mut setup.pipe_ctx,
                 RunOptions::only_steps(steps),
             )
             .await
-            .map_err(|e| {
-                // Same unwrapping `call()` applies: the caller sees the typed
-                // cause, decorated with trace_id + module_id (Algorithm A11).
-                let underlying = e.unwrap_pipeline_step_error().unwrap_or(e);
-                let underlying = underlying
-                    .unwrap_middleware_chain_error()
-                    .unwrap_or(underlying);
-                propagate_module_error(underlying, &setup.module_id, &setup.pipe_ctx.context)
-            })?;
+            {
+                Ok((_, trace)) => Self::reject_aborted_trace(&trace)?,
+                Err(error) => {
+                    let error = Self::call_error(&setup.module_id, &setup.pipe_ctx, error);
+                    if let Some(OnErrorOutcome::Recovery(value)) =
+                        Self::recover_call(&setup.module_id, &setup.pipe_ctx, &error).await
+                    {
+                        return Ok(value);
+                    }
+                    return Err(error);
+                }
+            }
         }
         Ok(setup.pipe_ctx.output.clone().unwrap_or(Value::Null))
     }
@@ -1932,23 +1949,7 @@ impl Executor {
         // `run_until` returns `Ok` for pipeline-level aborts (so the caller
         // can observe the trace). Streaming requires a resolved module, so
         // an aborted pre-execute phase is an error for us.
-        if !trace.success {
-            let explanation = trace
-                .steps
-                .iter()
-                .find_map(|s| {
-                    if s.result.action == "abort" {
-                        s.result.explanation.clone()
-                    } else {
-                        None
-                    }
-                })
-                .unwrap_or_else(|| "pre-stream pipeline aborted".to_string());
-            return Err(ModuleError::new(
-                ErrorCode::GeneralInternalError,
-                explanation,
-            ));
-        }
+        Self::reject_aborted_trace(&trace)?;
 
         let module = pipe_ctx.module.clone().ok_or_else(|| {
             ModuleError::new(
@@ -2670,6 +2671,29 @@ mod tests {
     // ═══════════════════════════════════════════════════════════════════
     // redact_sensitive
     // ═══════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn configured_capture_uses_the_same_key_rules_as_structured_logging() {
+        let input = json!({"_secret_example": "placeholder", "display_name": "example"});
+        let rules = RedactionConfig::builder()
+            .sensitive_keys(["display_name"])
+            .build();
+
+        let mut logged = input.clone();
+        rules.redact(&mut logged);
+        assert_eq!(
+            logged,
+            json!({"_secret_example": "placeholder", "display_name": REDACTED_VALUE})
+        );
+        assert_eq!(
+            redact_sensitive_with(&input, &Value::Null, Some(&rules)),
+            logged
+        );
+        assert_eq!(
+            redact_sensitive_with(&input, &Value::Null, None)["_secret_example"],
+            REDACTED_VALUE
+        );
+    }
 
     #[test]
     fn test_redact_sensitive_preserves_object_root_with_sensitive_ref_and_composition() {

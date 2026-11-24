@@ -556,6 +556,7 @@ pub struct Registry {
     /// D-89: `(module_id, version)` pairs whose deprecation warning has already
     /// been emitted by THIS registry instance.
     deprecation_warned: ParkingLotMutex<HashSet<(String, String, String)>>,
+    version_hint_warned: ParkingLotMutex<HashSet<String>>,
     /// Optional discoverer for module discovery.
     discoverer: RwLock<Option<Arc<dyn Discoverer>>>,
     /// Optional validator for module validation.
@@ -681,6 +682,7 @@ impl Registry {
             callbacks: RwLock::new(HashMap::new()),
             callback_counter: AtomicU64::new(1),
             deprecation_warned: ParkingLotMutex::new(HashSet::new()),
+            version_hint_warned: ParkingLotMutex::new(HashSet::new()),
             discoverer: RwLock::new(None),
             validator: RwLock::new(None),
             extension_roots: RwLock::new(Vec::new()),
@@ -1969,9 +1971,19 @@ impl Registry {
     pub(crate) fn acquire_execution(
         &self,
         name: &str,
+        version_hint: Option<&str>,
     ) -> Result<(Arc<dyn Module>, Arc<ModuleExecutionLease>), ModuleError> {
         let (module, count) = self.acquire_with_count(name)?;
-        Ok((module, Arc::new(ModuleExecutionLease(count))))
+        let lease = Arc::new(ModuleExecutionLease(count));
+        let warn =
+            version_hint.is_some() && self.version_hint_warned.lock().insert(name.to_owned());
+        if warn {
+            tracing::warn!(
+                module_id = name,
+                "version_hint is deprecated in Rust and is ignored; the registry uses the current module version"
+            );
+        }
+        Ok((module, lease))
     }
 
     fn acquire_with_count(

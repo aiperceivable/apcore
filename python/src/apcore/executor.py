@@ -17,11 +17,12 @@ import weakref
 from collections.abc import AsyncGenerator, AsyncIterator
 from concurrent.futures import Future
 from contextlib import AsyncExitStack
+from copy import copy
 from typing import Any, Callable
 
 from apcore.acl import ACL
 from apcore.approval import ApprovalHandler
-from apcore.builtin_steps import BuiltinContextCreation, _is_idempotent
+from apcore.builtin_steps import BuiltinContextCreation, _discard_late_execution, _is_idempotent
 from apcore.cancel import ExecutionCancelledError
 from apcore.config import Config
 from apcore.context import Context
@@ -161,14 +162,6 @@ def _close_if_alive(ref: "weakref.ref[Executor]") -> None:
             obj.close()
         except Exception:  # pragma: no cover — atexit best-effort
             _logger.warning("atexit Executor.close() failed", exc_info=True)
-
-
-async def _aenumerate(aiter: "AsyncIterator[Any]", start: int = 0) -> "AsyncIterator[tuple[int, Any]]":
-    """Async equivalent of ``enumerate`` for async iterators."""
-    idx = start
-    async for item in aiter:
-        yield idx, item
-        idx += 1
 
 
 def _json_type_name(value: Any) -> str:
@@ -400,7 +393,7 @@ class Executor:
         # executor's providers reach its built-in gate steps. A pre-built
         # instance never received them, so a deny-all ACL let every call through
         # while governance_state() reported the gate as configured and wired.
-        self._bind_providers(self._strategy)
+        self._strategy = self._bind_providers(self._strategy)
 
         self._pipeline_engine = PipelineEngine()
 
@@ -486,8 +479,8 @@ class Executor:
         """Return a copy of the current middleware list."""
         return self._middleware_manager.snapshot()
 
-    def _bind_providers(self, strategy: ExecutionStrategy) -> None:
-        """Bind this executor's providers into *strategy*'s built-in gate steps.
+    def _bind_providers(self, strategy: ExecutionStrategy) -> ExecutionStrategy:
+        """Bind this executor's providers into a private strategy and gate steps.
 
         PROTOCOL_SPEC §6.6.5.5 (D-129). Gates are located by TYPE, never by step
         name (§6.6.5.2), exactly as :meth:`governance_state` recognises them. A
@@ -495,12 +488,17 @@ class Executor:
         the executor was not given leaves the step's own provider untouched, so a
         pre-built strategy that carries its own ACL keeps enforcing it.
 
-        This mutates *strategy* — the instance the caller passed, or a shared
-        strategy registered by name — the same way :meth:`set_acl` always has.
+        Shared strategy templates keep their own providers and custom hook state.
         """
         from apcore.builtin_steps import BuiltinACLCheck, BuiltinApprovalGate
 
-        for step in strategy.steps:
+        bound = copy(strategy)
+        bound.steps = [
+            copy(step) if isinstance(step, (BuiltinACLCheck, BuiltinApprovalGate)) else step for step in strategy.steps
+        ]
+        bound.step_middlewares = list(strategy.step_middlewares)
+        bound._rebuild_index()
+        for step in bound.steps:
             if self._event_emitter_configured and isinstance(step, (BuiltinACLCheck, BuiltinApprovalGate)):
                 step.set_event_emitter(self._event_emitter)
             if isinstance(step, BuiltinACLCheck):
@@ -511,6 +509,7 @@ class Executor:
                     step.set_handler(self._approval_handler)
                 if self._policy is not None:
                     step.set_policy(self._policy)
+        return bound
 
     def set_acl(self, acl: ACL) -> None:
         """Set the access control provider.
@@ -1348,9 +1347,6 @@ class Executor:
                 return
 
             # Phase 2: Iterate stream, accumulate chunks
-            # Per streaming.md §4, respect ctx.context.global_deadline during
-            # iteration: raise ModuleTimeoutError between chunks if the deadline
-            # passes, so long-running streams cannot silently outrun their budget.
             accumulated: dict[str, Any] = {}
             # PROTOCOL_SPEC §5: resolved ONCE per stream, not per chunk. A
             # configuration mutated mid-stream — `system.control.update_config`
@@ -1358,16 +1354,8 @@ class Executor:
             # in flight. This used to be called inside the chunk loop, which
             # contradicted the guarantee its own commit message stated.
             merge_depth_cap = self._merge_depth_cap()
-            global_deadline = getattr(pipe_ctx.context, "global_deadline", None)
             try:
-                async for idx, chunk in _aenumerate(pipe_ctx.output_stream):
-                    # D-99: epoch seconds, so compared against `time.time()`.
-                    if global_deadline is not None and time.time() > global_deadline:
-                        raise ModuleTimeoutError(
-                            module_id=module_id,
-                            timeout_ms=self._global_timeout,
-                            retryable=_is_idempotent(pipe_ctx.module),
-                        )
+                async for idx, chunk in self._stream_chunks(pipe_ctx):
                     chunk = normalize_module_output(chunk)
                     # Cross-SDK contract (Rust ``deep_merge_chunks_checked``):
                     # a stream chunk is valid iff it is a JSON object (dict).
@@ -1435,6 +1423,50 @@ class Executor:
                         exc_info=True,
                     )
                     self._emit_post_stream_failure(module_id, pipe_ctx.context, post_exc)
+
+    async def _stream_chunks(self, ctx: PipelineContext) -> AsyncIterator[tuple[int, Any]]:
+        """Read each chunk within the call deadline and check the linked token."""
+        context = ctx.context
+        token = getattr(context, "cancel_token", None)
+        deadline = getattr(context, "global_deadline", None)
+        source = ctx.output_stream
+        if source is None:
+            return
+        index = 0
+        while True:
+            if token is not None:
+                token.check()
+            try:
+                if deadline is None:
+                    chunk = await anext(source)
+                else:
+                    chunk = await self._read_stream_chunk(ctx, source, deadline)
+            except StopAsyncIteration:
+                return
+            if token is not None:
+                token.check()
+            yield index, chunk
+            index += 1
+
+    async def _read_stream_chunk(self, ctx: PipelineContext, source: AsyncIterator[Any], deadline: float) -> Any:
+        remaining = deadline - time.time()
+        if remaining > 0:
+            task = ctx.module_task = asyncio.ensure_future(anext(source))
+            task.add_done_callback(_discard_late_execution)
+            try:
+                done, _ = await asyncio.wait({task}, timeout=remaining)
+            except asyncio.CancelledError:
+                task.cancel()
+                raise
+            if done:
+                return task.result()
+            task.cancel()
+        token = getattr(ctx.context, "cancel_token", None)
+        if token is not None:
+            token.cancel()
+        raise ModuleTimeoutError(
+            module_id=ctx.module_id, timeout_ms=self._global_timeout, retryable=_is_idempotent(ctx.module)
+        )
 
     def _emit_post_stream_failure(
         self,
@@ -1613,8 +1645,7 @@ class Executor:
             resolved = strategy
         # §6.6.5.5 (D-129): a per-call strategy is still a way this executor gets
         # a strategy, so its gates receive the executor's providers too.
-        self._bind_providers(resolved)
-        return resolved
+        return self._bind_providers(resolved)
 
     # -------------------------------------------------------------------------
     # Introspection

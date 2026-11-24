@@ -91,6 +91,40 @@ const PROMISE_TRUE: ACLConditionHandler = {
 // ---------------------------------------------------------------------------
 
 describe('§6.1.1: an unevaluable condition resolves toward refusing access', () => {
+  it('records a diagnostic for malformed outcomes on sync and async checks', async () => {
+    const key = 'u_invalid_outcome';
+    registerSync(key, { evaluate: (() => undefined) as unknown as ACLConditionHandler['evaluate'] });
+    const rules = [rule('deny', { [key]: true })];
+    const sync = checkWithAudit(rules, 'deny');
+    expect(sync.decision).toBe(false);
+    expect(sync.entry.handlerError).toContain('invalid outcome');
+
+    const entries: AuditEntry[] = [];
+    const acl = new ACL(rules, 'deny', (entry) => entries.push(entry));
+    await expect(acl.asyncCheck('caller.a', 'target.b', ctxWith())).resolves.toBe(false);
+    expect(entries[0].handlerError).toContain('invalid outcome');
+  });
+
+  it('records and handles a rejecting handler reached from the sync path', async () => {
+    const key = 'u_rejected_promise';
+    registerSync(key, { evaluate: () => Promise.reject(new Error('No result available')) });
+    const result = checkWithAudit([rule('deny', { [key]: true })], 'deny');
+    expect(result.entry.handlerError).toContain(key);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+
+  it('recognizes asynchronous results without relying on their Promise prototype', async () => {
+    const key = 'u_thenable';
+    const then = vi.fn((resolve: (answer: boolean) => void) => resolve(false));
+    registerSync(key, { evaluate: (() => ({ then })) as unknown as ACLConditionHandler['evaluate'] });
+    const rules = [rule('deny', { [key]: true })];
+    const result = checkWithAudit(rules, 'deny');
+    expect(result.entry.handlerError).toContain('Async condition');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(then).toHaveBeenCalledOnce();
+    expect(await new ACL(rules, 'allow').asyncCheck('caller.a', 'target.b', ctxWith())).toBe(true);
+  });
+
   // The three situations, crossed with the two effects. The `deny` + `allow`
   // default combination is the one that used to fail open.
   const situations: Array<[string, () => string]> = [

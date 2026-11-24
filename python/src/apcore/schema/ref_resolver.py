@@ -9,6 +9,7 @@ from typing import Any
 import yaml
 
 from apcore.errors import (
+    InvalidInputError,
     SchemaCircularRefError,
     SchemaMaxDepthExceededError,
     SchemaNotFoundError,
@@ -247,6 +248,21 @@ class RefResolver:
         if not resolved_path.is_relative_to(self._schemas_dir):
             raise SchemaNotFoundError(schema_id=f"Reference '{ref_string}' resolves outside schemas directory")
 
+    def _module_file(self, module_id: str) -> Path:
+        """Resolve a canonical module's schema file inside the physical root."""
+        from apcore.registry.registry import _validate_module_id
+
+        try:
+            _validate_module_id(module_id, allow_reserved=True)
+        except InvalidInputError:
+            raise SchemaNotFoundError(schema_id=module_id) from None
+        try:
+            path = (self._schemas_dir / (module_id.replace(".", "/") + ".schema.yaml")).resolve()
+        except (OSError, RuntimeError):
+            raise SchemaNotFoundError(schema_id=module_id) from None
+        self._assert_within_schemas_dir(path, module_id)
+        return path
+
     def _convert_canonical_to_path(self, uri: str) -> tuple[Path, str]:
         """Convert an apcore:// canonical URI to (file_path, json_pointer)."""
         remainder = uri[len("apcore://") :]
@@ -254,11 +270,8 @@ class RefResolver:
         canonical_id = parts[0]
         pointer_parts = parts[1:]
 
-        file_rel = canonical_id.replace(".", "/") + ".schema.yaml"
-        file_path = self._schemas_dir / file_rel
-
         pointer = "/" + "/".join(pointer_parts) if pointer_parts else ""
-        return file_path.resolve(), pointer
+        return self._module_file(canonical_id), pointer
 
     def _resolve_json_pointer(self, document: Any, pointer: str, ref_string: str) -> Any:
         """Navigate a document using an RFC 6901 JSON Pointer."""

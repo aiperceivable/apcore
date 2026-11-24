@@ -27,9 +27,7 @@
 //     `property.async` for emit asserts the async, non-blocking contract.
 //   - `WebhookSubscriber` / `A2ASubscriber` deliver via `on_event` (not a
 //     `deliver` method). The HTTP path is gated behind the `events` cargo
-//     feature. There is no `DeliveryError(WEBHOOK_DELIVERY_FAILED)` type — 5xx
-//     surfaces as a `ModuleError(GeneralInternalError)` and the emitter owns
-//     the dead-letter path. Recorded as a missing-symbol ignore.
+//     feature. The emitter owns retries and dead-letter delivery.
 //   - The circuit-breaker contract names `SubscriberCircuitBreaker.on_failure`
 //     with signature `(subscriber_id, error) -> CircuitState`. Rust ships
 //     `CircuitBreakerWrapper` with a private `on_failure(error_msg)` and a
@@ -415,18 +413,7 @@ async fn subscribe_property_idempotent() {
 // Contract: WebhookSubscriber.deliver
 // ===========================================================================
 
-// clause: event_system.deliver.error.WEBHOOK_DELIVERY_FAILED
-#[test]
-#[ignore = "event_system.deliver.error.WEBHOOK_DELIVERY_FAILED: missing symbol DeliveryError/WEBHOOK_DELIVERY_FAILED (contract gap) — WebhookSubscriber returns ModuleError(GeneralInternalError) on 5xx and the emitter owns the dead-letter path"]
-fn webhook_deliver_error_delivery_error_code() {
-    // Spec declares DeliveryError(code=WEBHOOK_DELIVERY_FAILED) on retry
-    // exhaustion. Rust has no such type — 5xx surfaces as
-    // ModuleError(GeneralInternalError) and the EventEmitter handles the DLQ
-    // path (apcore.event.delivery_failed). See ignore reason.
-    unreachable!();
-}
-
-// The remaining WebhookSubscriber.deliver clauses exercise the real HTTP path,
+// The WebhookSubscriber.deliver clauses exercise the real HTTP path,
 // which is gated behind the `events` cargo feature. They live in a feature-
 // gated module so the binary still compiles when the feature is off.
 #[cfg(feature = "events")]

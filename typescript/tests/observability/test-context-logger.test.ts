@@ -27,6 +27,20 @@ describe('ContextLogger', () => {
     expect(parsed.message).toBe('test message');
   });
 
+  it.each([true, false])('keeps a JSON log serializable with redaction=%s', (redactSensitive) => {
+    const { output, lines } = createBufferOutput();
+    const logger = new ContextLogger({ output, redactSensitive });
+    const shared = { count: 1n };
+    const extra: Record<string, unknown> = { before: shared, after: shared };
+    extra.self = extra;
+    logger.info('bounded log entry', extra);
+    expect(JSON.parse(lines[0]).extra).toEqual({
+      before: { count: '1' },
+      after: { count: '1' },
+      self: '[Circular]',
+    });
+  });
+
   it('logs text format', () => {
     const { output, lines } = createBufferOutput();
     const logger = new ContextLogger({ format: 'text', output });

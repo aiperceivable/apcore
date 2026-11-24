@@ -1,8 +1,6 @@
 // APCore Protocol — Logging middleware
 // Spec reference: Middleware lifecycle with structured logging and redaction
 
-use std::time::Instant;
-
 use async_trait::async_trait;
 use serde_json::Value;
 
@@ -15,17 +13,13 @@ use crate::executor::loggable_value;
 ///
 /// Logs module call start, completion (with duration), and errors from
 /// `context.redacted_inputs` / `context.redacted_output`, never the raw values
-/// (PROTOCOL_SPEC §10.6.1 requirement 5). Thread-safe
-/// by storing per-call timing via context data markers and interior
-/// atomics — no mutable self required.
+/// (PROTOCOL_SPEC §10.6.1 requirement 5). Timing belongs to the invocation
+/// scope so it is released even when a call is cancelled or dropped.
 #[derive(Debug)]
 pub struct LoggingMiddleware {
     log_inputs: bool,
     log_outputs: bool,
     log_errors: bool,
-    /// Per-call start times indexed by a nonce stored in context.data.
-    /// Using a concurrent map keyed by `trace_id` + `module_id` to stay thread-safe.
-    start_times: parking_lot::Mutex<std::collections::HashMap<String, Instant>>,
 }
 
 impl LoggingMiddleware {
@@ -36,7 +30,6 @@ impl LoggingMiddleware {
             log_inputs,
             log_outputs,
             log_errors,
-            start_times: parking_lot::Mutex::new(std::collections::HashMap::new()),
         }
     }
 
@@ -46,9 +39,8 @@ impl LoggingMiddleware {
         Self::new(true, true, true)
     }
 
-    /// Build a key for the start-time map from context and `module_id`.
-    fn timing_key(module_id: &str, ctx: &Context<Value>) -> String {
-        format!("{}:{}", ctx.trace_id, module_id)
+    fn timing_key(&self) -> usize {
+        std::ptr::from_ref(self) as usize
     }
 }
 
@@ -75,11 +67,8 @@ impl Middleware for LoggingMiddleware {
         inputs: Value,
         ctx: &Context<Value>,
     ) -> Result<Option<Value>, ModuleError> {
-        // Record start time in our interior map.
-        let key = Self::timing_key(module_id, ctx);
-        {
-            let mut times = self.start_times.lock();
-            times.insert(key, Instant::now());
+        if let Some(token) = ctx.cancel_token.as_ref() {
+            token.start_middleware_timing(self.timing_key());
         }
 
         if self.log_inputs {
@@ -106,13 +95,11 @@ impl Middleware for LoggingMiddleware {
         output: Value,
         ctx: &Context<Value>,
     ) -> Result<Option<Value>, ModuleError> {
-        let key = Self::timing_key(module_id, ctx);
-        let duration_ms = {
-            let mut times = self.start_times.lock();
-            times
-                .remove(&key)
-                .map_or(0.0, |start| start.elapsed().as_secs_f64() * 1000.0)
-        };
+        let duration_ms = ctx
+            .cancel_token
+            .as_ref()
+            .and_then(|token| token.take_middleware_timing(self.timing_key()))
+            .map_or(0.0, |start| start.elapsed().as_secs_f64() * 1000.0);
 
         if self.log_outputs {
             // D-131: the captured `redacted_output`, never the raw output.
@@ -138,11 +125,8 @@ impl Middleware for LoggingMiddleware {
         error: &ModuleError,
         ctx: &Context<Value>,
     ) -> Result<Option<Value>, ModuleError> {
-        // Clean up timing entry if present.
-        let key = Self::timing_key(module_id, ctx);
-        {
-            let mut times = self.start_times.lock();
-            times.remove(&key);
+        if let Some(token) = ctx.cancel_token.as_ref() {
+            token.take_middleware_timing(self.timing_key());
         }
 
         if self.log_errors {
@@ -196,6 +180,30 @@ mod tests {
             .await;
         assert!(result.is_ok());
         assert!(result.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn test_logging_timings_separate_overlapping_invocations() {
+        let middleware = LoggingMiddleware::new(false, false, false);
+        let root = crate::cancel::CancelToken::new();
+        let mut first = test_ctx();
+        let mut second = first.clone();
+        first.cancel_token = Some(root.child());
+        second.cancel_token = Some(root.child());
+        for context in [&first, &second] {
+            middleware
+                .before("test.module", serde_json::json!({}), context)
+                .await
+                .unwrap();
+        }
+        for context in [&first, &second] {
+            assert!(context
+                .cancel_token
+                .as_ref()
+                .unwrap()
+                .take_middleware_timing(middleware.timing_key())
+                .is_some());
+        }
     }
 
     #[tokio::test]

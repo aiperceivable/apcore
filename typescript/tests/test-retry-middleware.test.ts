@@ -1,9 +1,10 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { Type } from '@sinclair/typebox';
 import { RetryMiddleware, RetryHintMiddleware } from '../src/middleware/retry.js';
 import { Middleware, RetrySignal } from '../src/middleware/base.js';
 import { ModuleError, ModuleTimeoutError } from '../src/errors.js';
 import { Context } from '../src/context.js';
+import { CancelToken, ExecutionCancelledError } from '../src/cancel.js';
 import { Config } from '../src/config.js';
 import { Executor } from '../src/executor.js';
 import { Registry } from '../src/registry/registry.js';
@@ -15,6 +16,24 @@ import type { StepResult } from '../src/pipeline.js';
 describe('RetryMiddleware', () => {
   const makeContext = () => new Context('trace-1', null, ['test.module'], null, null, null, {});
   const COUNT_KEY = '_apcore.mw.retry.count.test.module';
+
+  it('cancels retry backoff before offering another attempt', async () => {
+    vi.useFakeTimers();
+    try {
+      const mw = new RetryMiddleware({ baseDelayMs: 100, jitter: false });
+      const token = new CancelToken();
+      const context = makeContext()._withCancelToken(token);
+      const outcome = mw.onError('test.module', {}, new ModuleTimeoutError('test.module', 5000), context);
+      const settled = vi.fn();
+      void outcome.then(settled, settled);
+      token.cancel();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(settled).toHaveBeenCalledExactlyOnceWith(expect.any(ExecutionCancelledError));
+      expect(context.data[COUNT_KEY]).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 
   it('returns null for non-retryable errors', async () => {
     const mw = new RetryMiddleware({ baseDelayMs: 1, jitter: false });

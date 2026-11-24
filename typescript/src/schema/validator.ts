@@ -442,7 +442,7 @@ export class SchemaValidator {
       const format = schema['format'] as string;
       const validator = FORMAT_VALIDATORS[format];
       if (validator && !validator(data)) {
-        warnings.push(`Format '${format}' validation failed at ${path}: "${data}"`);
+        warnings.push(`Format '${format}' validation failed at ${path}`);
       }
       return;
     }

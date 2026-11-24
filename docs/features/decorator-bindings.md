@@ -240,7 +240,7 @@ bindings:
 | `description` | recommended | Plain-text description |
 | `input_schema` / `output_schema` | one schema mode | Inline JSON Schema |
 | `auto_schema` | one schema mode | `true` / `"permissive"` or `"strict"` — infer schemas from the target |
-| `schema_ref` | one schema mode | Path to an external schema file, relative to the binding file |
+| `schema_ref` | one schema mode | Relative path from the declaring binding file to a schema in an allowed directory |
 | `annotations`, `tags`, `version`, `metadata`, `documentation`, `display` | no | As for any module; `display` is the surface overlay of §5.13 |
 
 The file may also carry a top-level `spec_version` (default `"1.0"`).
@@ -250,7 +250,7 @@ The file may also carry a top-level `spec_version` (default `"1.0"`).
 Exactly one mode applies per entry; combining them raises `BINDING_SCHEMA_MODE_CONFLICT`.
 
 1. **Inline** — `input_schema` and `output_schema`.
-2. **`schema_ref`** — load both from an external schema file.
+2. **`schema_ref`** — load both from an external schema file. The relative path may resolve inside the binding file's directory or the configured `schema.root`. A standalone loader also recognizes the conventional `schemas/` directory beside the binding directory. The resolved file must be inside one of those directories after following symbolic links.
 3. **`auto_schema: true`** (or `"permissive"`) — infer from the target. Python reads the function's type hints; TypeScript reads the target module's exported `inputSchema` / `outputSchema` (or `<name>InputSchema` / `<name>OutputSchema`); Rust takes the schemas carried by a `typed_handler` (derived with `schemars`). If nothing can be inferred, `BINDING_SCHEMA_INFERENCE_FAILED`.
 4. **`auto_schema: "strict"`** — as 3, and the inferred schema must be OpenAI/Anthropic strict-compatible, otherwise `BINDING_STRICT_SCHEMA_INCOMPATIBLE`.
 5. **No schema key** — treated as implicit `auto_schema: true`. When inference finds nothing, Python raises `BINDING_SCHEMA_INFERENCE_FAILED`, TypeScript and Rust fall back to a permissive object schema.

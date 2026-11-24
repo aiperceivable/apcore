@@ -71,8 +71,9 @@ def load_case_ids(path: Path) -> set[str]:
     if path.suffix in (".yaml", ".yml"):
         try:
             import yaml
-        except ImportError:  # pragma: no cover - PyYAML is a dev dependency
-            return set()
+        except ImportError:
+            print(f"PyYAML is required to read the conformance fixture {path.name}.", file=sys.stderr)
+            raise SystemExit(2) from None
         doc = yaml.safe_load(path.read_text())
         # A binding fixture is a list of declarations, addressed by module_id.
         return {b["module_id"] for b in (doc or {}).get("bindings", []) if "module_id" in b}

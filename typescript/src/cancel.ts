@@ -11,8 +11,8 @@
  * whose pause points are not Web APIs.
  */
 
-import { drainExecutions, linkExecutionParent } from './execution-lifetime.js';
-import { ModuleError } from './errors.js';
+import { drainExecutions, linkExecutionParent, trackExecution } from './execution-lifetime.js';
+import { ModuleError, ModuleTimeoutError } from './errors.js';
 
 export class ExecutionCancelledError extends ModuleError {
   // Retryable with a fresh CancelToken (protocol-spec §8.6, D-135): the
@@ -80,6 +80,11 @@ export class CancelToken {
    */
   get signal(): AbortSignal {
     return this._signal;
+  }
+
+  /** @internal The invocation owner can still cancel recovery after this attempt timed out. */
+  get parentSignal(): AbortSignal | undefined {
+    return this._parent?.signal;
   }
 
   get isCancelled(): boolean {
@@ -158,5 +163,44 @@ export class CancelToken {
         'one for signal-based work.',
       );
     }
+  }
+}
+
+/** @internal Wait for an operation while keeping its physical lifetime registered. */
+export async function awaitExecution<T>(
+  execution: Promise<T>,
+  token: CancelToken | null,
+  moduleId: string,
+  timeoutMs: number,
+  retryable: boolean,
+): Promise<T> {
+  if (token) trackExecution(token, execution);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let timedOut = false;
+  let onAbort: (() => void) | undefined;
+  const timeoutError = (): ModuleTimeoutError => new ModuleTimeoutError(moduleId, timeoutMs, { retryable });
+  const interruption = new Promise<never>((_, reject) => {
+    onAbort = (): void => {
+      if (!timedOut) reject(new ExecutionCancelledError());
+    };
+    token?.signal.addEventListener('abort', onAbort, { once: true });
+    if (token?.isCancelled || token?.signal.aborted) onAbort();
+    if (timeoutMs > 0) timer = setTimeout(() => {
+      // Publish cancellation before returning the deadline's own error.
+      timedOut = true;
+      token?.cancel();
+      reject(timeoutError());
+    }, timeoutMs);
+  });
+  try {
+    const output = await Promise.race([execution, interruption]);
+    if (timedOut) throw timeoutError();
+    return output;
+  } catch (error) {
+    if (timedOut) throw timeoutError();
+    throw error;
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+    if (onAbort) token?.signal.removeEventListener('abort', onAbort);
   }
 }

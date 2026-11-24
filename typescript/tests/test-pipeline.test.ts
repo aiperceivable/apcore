@@ -8,6 +8,7 @@ import { Context } from '../src/context.js';
 import {
   ExecutionStrategy,
   PipelineAbortError,
+  PipelineDependencyError,
   PipelineEngine,
   PipelineStepError,
   PipelineStepNotFoundError,
@@ -173,6 +174,23 @@ describe('ExecutionStrategy.insertBefore', () => {
 // ---------------------------------------------------------------------------
 
 describe('ExecutionStrategy.remove', () => {
+  it.each(['remove', 'replace', 'configureStep'] as const)(
+    '%s preserves the previous strategy when a later requirement would be unsatisfied',
+    (operation) => {
+      const provide = makeStep('provide', { provides: ['output'] });
+      const consume = makeStep('consume', { requires: ['output'] });
+      const strategy = new ExecutionStrategy('dependent', [provide, consume]);
+      const change = () => {
+        if (operation === 'remove') strategy.remove('provide');
+        else strategy[operation]('provide', makeStep('replacement'));
+      };
+      expect(change).toThrow(PipelineDependencyError);
+      expect(strategy.steps).toEqual([provide, consume]);
+      expect(strategy.findStepIndex('provide')).toBe(0);
+      expect(strategy.findStepIndex('consume')).toBe(1);
+    },
+  );
+
   it('removes a removable step by name', () => {
     const s = new ExecutionStrategy('s', [makeStep('a'), makeStep('b'), makeStep('c')]);
     s.remove('b');

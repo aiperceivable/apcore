@@ -155,6 +155,14 @@ def registered_step_types() -> list[str]:
     return list(_step_type_registry.keys())
 
 
+def _parse_match_modules(value: Any) -> tuple[str, ...] | None:
+    if value is None:
+        return None
+    if not isinstance(value, (list, tuple)) or not all(isinstance(pattern, str) for pattern in value):
+        raise ConfigurationError("'match_modules' must be an array of module patterns")
+    return tuple(value)
+
+
 def _resolve_step(step_def: dict[str, Any]) -> BaseStep:
     """Resolve a step definition dict into a BaseStep instance.
 
@@ -178,9 +186,7 @@ def _resolve_step(step_def: dict[str, Any]) -> BaseStep:
     config = step_def.get("config", {})
 
     # Extract metadata fields
-    match_modules = step_def.get("match_modules")
-    if match_modules is not None:
-        match_modules = tuple(match_modules)
+    match_modules = _parse_match_modules(step_def.get("match_modules"))
     ignore_errors = step_def.get("ignore_errors", False)
     pure = step_def.get("pure", False)
     timeout_ms = step_def.get("timeout_ms", 0)
@@ -382,6 +388,8 @@ def build_strategy_from_config(
         if weakening:
             raise ConfigurationError(gate_field_violation_message(target.name, weakening))
         for key, value in overrides.items():
+            if key == "match_modules":
+                value = _parse_match_modules(value)
             setattr(target, key, value)
 
     # (3) Resolve and insert custom steps — fail-fast (execution-pipeline.md § "Configuring the pipeline from apcore.yaml")

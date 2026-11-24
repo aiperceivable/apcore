@@ -12,7 +12,7 @@ import re
 from typing import Any, Callable
 
 import yaml
-from pydantic import BaseModel, ConfigDict, create_model
+from pydantic import BaseModel
 
 from apcore.config import Config
 from apcore.decorator import (
@@ -30,25 +30,16 @@ from apcore.errors import (
     BindingSchemaModeConflictError,
     FuncMissingReturnTypeError,
     FuncMissingTypeHintError,
+    SchemaParseError,
 )
 from apcore.registry import Registry
+from apcore.schema.loader import SchemaLoader
 from apcore.schema.openai_strict import assert_openai_strict_compatible
 from apcore.utils.pattern import match_glob
 
 __all__ = ["BindingLoader"]
 
 _logger = logging.getLogger(__name__)
-
-_JSON_SCHEMA_TYPE_MAP: dict[str, type] = {
-    "string": str,
-    "integer": int,
-    "number": float,
-    "boolean": bool,
-    "array": list,
-    "object": dict,
-}
-
-_UNSUPPORTED_KEYS = {"oneOf", "anyOf", "allOf", "$ref", "format"}
 
 _SUPPORTED_SPEC_VERSIONS = {"1.0"}
 
@@ -75,27 +66,48 @@ _DEFAULT_BINDING_PATTERN_KEY = "bindings.pattern"
 _AUTO_SCHEMA_VALID_STRINGS = {"true", "permissive", "strict"}
 
 
-def _build_model_from_json_schema(schema: dict[str, Any], model_name: str = "DynamicModel") -> type[BaseModel]:
-    """Build a Pydantic model from a simple JSON Schema dict."""
-    if _UNSUPPORTED_KEYS & schema.keys():
-        return create_model(model_name, __config__=ConfigDict(extra="allow"))
+def _binding_models(
+    schema_loader: SchemaLoader, document: dict[str, Any], file_path: str
+) -> tuple[type[BaseModel], type[BaseModel]]:
+    models: list[type[BaseModel]] = []
+    for field, name in (("input_schema", "InputModel"), ("output_schema", "OutputModel")):
+        schema = document.get(field, {})
+        if not isinstance(schema, dict):
+            raise BindingFileInvalidError(file_path=file_path, reason=f"'{field}' must be a mapping")
+        try:
+            models.append(schema_loader.generate_model(schema, name, validate_source=True))
+        except SchemaParseError:
+            raise BindingFileInvalidError(file_path=file_path, reason=f"'{field}' contains an invalid schema") from None
+    return models[0], models[1]
 
-    properties = schema.get("properties", {})
-    required = set(schema.get("required", []))
 
-    if not properties:
-        return create_model(model_name, __config__=ConfigDict(extra="allow"))
+def _schema_ref_path(reference: Any, binding_dir: pathlib.Path, config: Config | None, file_path: str) -> pathlib.Path:
+    error = BindingFileInvalidError(
+        file_path=file_path, reason="schema_ref must resolve inside an allowed schema directory"
+    )
+    if not isinstance(reference, str) or not reference.strip():
+        raise BindingFileInvalidError(file_path=file_path, reason="schema_ref must be a non-empty relative path")
+    ref = pathlib.Path(reference)
+    if ref.is_absolute() or ref.drive:
+        raise BindingFileInvalidError(file_path=file_path, reason="schema_ref must be a non-empty relative path")
 
-    fields: dict[str, Any] = {}
-    for prop_name, prop_schema in properties.items():
-        json_type = prop_schema.get("type", "string")
-        python_type = _JSON_SCHEMA_TYPE_MAP.get(json_type, Any)
-        if prop_name in required:
-            fields[prop_name] = (python_type, ...)
+    try:
+        ref_path = (binding_dir / ref).resolve()
+        if config is None:
+            sibling = binding_dir.parent / "schemas"
+            allowed_root = sibling.resolve()
+            # A conventionally named sibling grants no access through an alias
+            # that redirects the entire implicit root to a separate directory.
+            if allowed_root != sibling:
+                allowed_root = binding_dir
         else:
-            fields[prop_name] = (python_type, None)
-
-    return create_model(model_name, **fields)
+            default = Config.get_default("schema.root")
+            allowed_root = pathlib.Path(config.resolve_path(config.get("schema.root", default) or default)).resolve()
+    except (OSError, RuntimeError, ValueError):
+        raise error from None
+    if not (ref_path.is_relative_to(binding_dir) or ref_path.is_relative_to(allowed_root)):
+        raise error
+    return ref_path
 
 
 def _normalize_auto_schema(value: Any) -> str | None:
@@ -257,12 +269,13 @@ class BindingLoader:
                 v1.38.0 did — checks nothing and rejects nothing.
         """
         path = pathlib.Path(file_path)
-        binding_file_dir = str(path.parent)
-
         try:
-            content = path.read_text()
-        except OSError as exc:
+            resolved_binding = path.resolve()
+            content = resolved_binding.read_text(encoding="utf-8")
+        except (OSError, RuntimeError, UnicodeError, ValueError) as exc:
             raise BindingFileInvalidError(file_path=file_path, reason=str(exc)) from exc
+        binding_file_dir = resolved_binding.parent
+        schema_loader = SchemaLoader(config if config is not None else Config(), schemas_dir=binding_file_dir)
 
         try:
             data = yaml.safe_load(content)
@@ -337,7 +350,7 @@ class BindingLoader:
                     reason="Binding entry missing 'target'",
                 )
             _validate_binding_limits(entry, config, file_path=file_path)
-            fm = self._create_module_from_binding(entry, binding_file_dir, file_path=file_path)
+            fm = self._create_module_from_binding(entry, binding_file_dir, schema_loader, config, file_path=file_path)
             registry.register(entry["module_id"], fm)
             results.append(fm)
 
@@ -501,7 +514,9 @@ class BindingLoader:
         self,
         binding: dict[str, Any],
         func: Callable,
-        binding_file_dir: str,
+        binding_file_dir: pathlib.Path,
+        schema_loader: SchemaLoader,
+        config: Config | None,
         *,
         file_path: str,
         module_id: str,
@@ -524,38 +539,29 @@ class BindingLoader:
                         f"binding '{module_id}': explicit schema mode requires both 'input_schema' and 'output_schema'"
                     ),
                 )
-            return (
-                _build_model_from_json_schema(binding["input_schema"], "InputModel"),
-                _build_model_from_json_schema(binding["output_schema"], "OutputModel"),
-            )
+            return _binding_models(schema_loader, binding, file_path)
 
         # Mode 2: external reference
         if "schema_ref" in binding:
-            reference = binding["schema_ref"]
-            if not isinstance(reference, str) or not reference:
-                raise BindingFileInvalidError(file_path=file_path, reason="schema_ref must be a non-empty path")
-            ref_path = pathlib.Path(binding_file_dir) / reference
+            ref_path = _schema_ref_path(binding["schema_ref"], binding_file_dir, config, file_path)
             try:
                 ref_data = yaml.safe_load(ref_path.read_text(encoding="utf-8"))
-            except (OSError, UnicodeError) as exc:
+            except (OSError, UnicodeError):
                 raise BindingFileInvalidError(
-                    file_path=str(ref_path), reason=f"Unable to read schema reference: {exc}"
-                ) from exc
-            except yaml.YAMLError as exc:
+                    file_path=str(ref_path), reason="Unable to read schema reference as UTF-8"
+                ) from None
+            except yaml.YAMLError:
                 raise BindingFileInvalidError(
                     file_path=str(ref_path),
-                    reason=f"YAML parse error: {exc}",
-                ) from exc
+                    reason="Schema reference contains invalid YAML",
+                ) from None
             if not isinstance(ref_data, dict) or any(
                 not isinstance(ref_data.get(field, {}), dict) for field in ("input_schema", "output_schema")
             ):
                 raise BindingFileInvalidError(
                     file_path=str(ref_path), reason="Schema reference and its input/output schemas must be mappings"
                 )
-            return (
-                _build_model_from_json_schema(ref_data.get("input_schema", {}), "InputModel"),
-                _build_model_from_json_schema(ref_data.get("output_schema", {}), "OutputModel"),
-            )
+            return _binding_models(schema_loader, ref_data, str(ref_path))
 
         # Mode 3: explicit auto_schema OR mode 4: implicit auto (default)
         try:
@@ -612,7 +618,9 @@ class BindingLoader:
     def _create_module_from_binding(
         self,
         binding: dict,
-        binding_file_dir: str,
+        binding_file_dir: pathlib.Path,
+        schema_loader: SchemaLoader,
+        config: Config | None,
         *,
         file_path: str,
     ) -> FunctionModule:
@@ -624,6 +632,8 @@ class BindingLoader:
             binding,
             func,
             binding_file_dir,
+            schema_loader,
+            config,
             file_path=file_path,
             module_id=module_id,
         )

@@ -576,7 +576,7 @@ Apache-2.0
 
 - **Documentation**: [docs/apcore](https://github.com/aiperceivable/apcore) - Complete documentation
 - **Website**: [aiperceivable.com](https://aiperceivable.com)
-- **GitHub**: [aiperceivable/apcore-python](https://github.com/aiperceivable/apcore-python)
+- **GitHub**: [Python SDK source](https://github.com/aiperceivable/apcore/tree/main/python)
 - **PyPI**: [apcore](https://pypi.org/project/apcore/)
-- **Issues**: [GitHub Issues](https://github.com/aiperceivable/apcore-python/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/aiperceivable/apcore-python/discussions)
+- **Issues**: [GitHub Issues](https://github.com/aiperceivable/apcore/issues)
+- **Discussions**: [GitHub Discussions](https://github.com/aiperceivable/apcore/discussions)

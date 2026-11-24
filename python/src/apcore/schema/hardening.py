@@ -19,10 +19,14 @@ from uuid import UUID
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+    from referencing._core import Resolver
 
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError as JsonschemaError
 from pydantic import BaseModel
+from referencing import Registry
+from referencing.exceptions import Unresolvable
+from referencing.jsonschema import DRAFT202012
 
 from apcore.schema.types import SchemaValidationErrorDetail, SchemaValidationResult
 
@@ -125,7 +129,7 @@ def validate_schema_dict(data: Any, schema: dict[str, Any]) -> SchemaValidationR
     Format violations (date-time, email, uri, …) emit a logger.warning but do NOT
     fail validation (SHOULD-level enforcement per PROTOCOL_SPEC §4.15.4).
     """
-    validator = Draft202012Validator(schema)
+    validator = Draft202012Validator(schema, registry=Registry())
     raw_errors = list(validator.iter_errors(data))
 
     if raw_errors:
@@ -226,7 +230,12 @@ def _error_to_detail(error: JsonschemaError) -> SchemaValidationErrorDetail:
 
 
 def _check_formats_and_warn(
-    data: Any, schema: Any, _path: str = "", _seen: set[Any] | None = None, _depth: int = 0
+    data: Any,
+    schema: Any,
+    _path: str = "",
+    _seen: set[Any] | None = None,
+    _depth: int = 0,
+    _resolver: Resolver[Any] | None = None,
 ) -> None:
     """Walk the data/schema tree and log warnings for format violations.
 
@@ -247,8 +256,24 @@ def _check_formats_and_warn(
         return
     if _seen is None:
         _seen = set()
+    resolver = (
+        _resolver if _resolver is not None else Registry().resolver_with_root(DRAFT202012.create_resource(schema))
+    )
+
+    def visit(value: Any, child: dict[str, Any], path: str) -> None:
+        resource = DRAFT202012.create_resource(child)
+        _check_formats_and_warn(value, child, path, _seen, _depth + 1, resolver.in_subresource(resource))
 
     _warn_if_format_violated(data, schema, _path, _seen)
+    reference = schema.get("$ref")
+    if isinstance(reference, str):
+        try:
+            resolved = resolver.lookup(reference)
+        except Unresolvable:
+            # Format diagnostics must never attempt additional retrieval.
+            pass
+        else:
+            _check_formats_and_warn(data, resolved.contents, _path, _seen, _depth + 1, resolved.resolver)
 
     # Object: recurse on each declared property's sub-schema.
     if isinstance(data, dict):
@@ -261,7 +286,7 @@ def _check_formats_and_warn(
                 if value is None:
                     continue
                 child_path = f"{_path}/{prop_name}" if _path else f"/{prop_name}"
-                _check_formats_and_warn(value, prop_schema, child_path, _seen, _depth + 1)
+                visit(value, prop_schema, child_path)
 
         additional = schema.get("additionalProperties")
         if isinstance(additional, dict):
@@ -270,28 +295,37 @@ def _check_formats_and_warn(
                 if key in declared or value is None:
                     continue
                 child_path = f"{_path}/{key}" if _path else f"/{key}"
-                _check_formats_and_warn(value, additional, child_path, _seen, _depth + 1)
+                visit(value, additional, child_path)
 
     # Array: walk each element against the schema's `items` declaration.
     if isinstance(data, list):
         items_schema = schema.get("items")
         if isinstance(items_schema, dict):
             for idx, value in enumerate(data):
-                _check_formats_and_warn(value, items_schema, f"{_path}[{idx}]", _seen, _depth + 1)
+                visit(value, items_schema, f"{_path}[{idx}]")
 
     # Combinators: a union branch annotates the data only when the data satisfies it.
     for keyword in ("anyOf", "oneOf"):
         branches = schema.get(keyword)
         if isinstance(branches, list):
             for branch in branches:
-                if isinstance(branch, dict) and Draft202012Validator(branch).is_valid(data):
-                    _check_formats_and_warn(data, branch, _path, _seen, _depth + 1)
+                if isinstance(branch, dict):
+                    branch_scope = resolver.in_subresource(DRAFT202012.create_resource(branch))
+                    # jsonschema accepts the active resolver, but its typing
+                    # omits the keyword. Keep the branch's document scope.
+                    predicate = Draft202012Validator(branch, _resolver=branch_scope)  # pyright: ignore[reportCallIssue]
+                    try:
+                        valid = predicate.is_valid(data)
+                    except Unresolvable:
+                        continue
+                    if valid:
+                        visit(data, branch, _path)
 
     members = schema.get("allOf")
     if isinstance(members, list):
         for member in members:
             if isinstance(member, dict):
-                _check_formats_and_warn(data, member, _path, _seen, _depth + 1)
+                visit(data, member, _path)
 
 
 def _warn_if_format_violated(data: Any, schema: dict[str, Any], path: str, seen: set[Any]) -> None:
@@ -312,8 +346,7 @@ def _warn_if_format_violated(data: Any, schema: dict[str, Any], path: str, seen:
         return
     seen.add(key)
     logger.warning(
-        "Format violation (non-fatal): field %r declared format=%r but value %r is not conformant",
+        "Format violation (non-fatal): field %r does not conform to format=%r",
         path,
         fmt,
-        data,
     )

@@ -47,7 +47,7 @@ The core of `apcore` is a **schema-enforced module/capability framework**: it de
 - After changes, always run:
   - ruff check --fix .
   - ruff format .
-  - pyright .
+  - pyright src
 - Zero errors/warnings before commit.
 
 ### Security & Performance

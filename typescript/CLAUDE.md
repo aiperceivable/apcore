@@ -1,7 +1,7 @@
 # High-Quality Code Specification – Simplicity, Readability, and Maintainability First
 
 ## Project Overview
-The core of `apcore` is **task orchestration and execution specifications**. It provides a unified task orchestration framework that supports execution of multiple task types.
+This directory implements the TypeScript SDK for apcore, a **governed, protocol-neutral runtime and module standard**. The SDK discovers, registers, validates, and executes modules under the shared protocol. Application orchestration and the MCP, A2A, CLI, and toolkit adapters live outside this SDK.
 
 ## Core Principles
 - Prioritize **simplicity, readability, and maintainability** above all.

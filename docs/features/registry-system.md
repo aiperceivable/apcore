@@ -146,11 +146,11 @@ Steps 2–5 are ordered intrinsic-then-extrinsic: what is wrong with the module 
 
 ### Multi-version registration
 
-§5.4 allows the same `module_id` to be registered with several versions and resolved with a version hint. Only Python implements it:
+§5.4 allows the same `module_id` to be registered with several versions and resolved with a version hint:
 
 - **Python** — `register(module_id, module, version=...)` keeps each version; `get(module_id, version_hint=...)` resolves by semantic-version range, and a malformed hint raises `VERSION_CONSTRAINT_INVALID`.
 - **TypeScript** — `version` is stored in the module's metadata; a second registration of the same ID is rejected with `DUPLICATE_MODULE_ID`. `get(moduleId, versionHint)` ignores the hint and warns once per module ID that it is deprecated (D-126).
-- **Rust** — `register_versioned` stores the version, but a second version of an existing ID is rejected with `DUPLICATE_MODULE_ID`; `get` takes no hint.
+- **Rust** — `register_versioned` keeps distinct versions of each ID. Registry lookup returns the highest version, and `get` takes no hint. The execution APIs that accept a hint emit a deprecation warning once per module ID per registry instance and use the highest version.
 
 Portable code should register one version per ID. `metadata.dependencies` works in all three.
 

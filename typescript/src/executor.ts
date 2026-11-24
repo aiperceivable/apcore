@@ -24,8 +24,8 @@ import {
   buildTestingStrategy,
 } from './builtin-steps.js';
 import type { StandardStrategyDeps } from './builtin-steps.js';
-import { ExecutionCancelledError } from './cancel.js';
-import { finishCall } from './execution-lifetime.js';
+import { awaitExecution, ExecutionCancelledError } from './cancel.js';
+import { finishCall, trackExecution } from './execution-lifetime.js';
 import type { Config } from './config.js';
 import { buildStrategyFromConfigSync } from './pipeline-config.js';
 // Import directly from emitter.js (browser-safe) — NOT events/index.js, which
@@ -435,6 +435,50 @@ function bindExecutorToCtx<C>(ctx: C, executor: unknown): C {
   return (typeof c.withExecutor === 'function'
     ? c.withExecutor(executor)
     : c._withExecutor(executor)) as C;
+}
+
+/** Bound each pull while retaining the physical producer until its queued close settles. */
+async function* streamWithinDeadline(
+  stream: AsyncGenerator<Record<string, unknown>>,
+  context: Context,
+  moduleId: string,
+  retryable: boolean,
+): AsyncGenerator<Record<string, unknown>> {
+  const token = context.cancelToken;
+  let complete = false;
+  let interrupted = false;
+  try {
+    for (;;) {
+      const deadline = context.globalDeadline;
+      const remaining = deadline === null ? 0 : deadline * 1000 - Date.now();
+      if (context.signal.aborted) throw new ExecutionCancelledError();
+      if (deadline !== null && remaining <= 0) {
+        token?.cancel();
+        throw new ModuleTimeoutError(moduleId, 0, { retryable });
+      }
+      const next = await awaitExecution(
+        stream.next(), token, moduleId, Math.ceil(remaining), retryable,
+      );
+      if (next.done) {
+        complete = true;
+        return;
+      }
+      yield next.value;
+    }
+  } catch (error) {
+    interrupted = error instanceof ExecutionCancelledError || error instanceof ModuleTimeoutError;
+    throw error;
+  } finally {
+    if (!complete) {
+      const closing = Promise.resolve().then(() => stream.return(undefined));
+      if (token !== null) trackExecution(token, closing);
+      if (interrupted || context.signal.aborted) {
+        void closing.catch(() => console.warn(`[apcore:executor] Stream producer cleanup failed for '${moduleId}'`));
+      } else {
+        await closing;
+      }
+    }
+  }
 }
 
 export class Executor {
@@ -994,6 +1038,7 @@ export class Executor {
           const ctxObj = pipeCtx.context;
           const underlying =
             unwrapped instanceof MiddlewareChainError ? unwrapped.original : (unwrapped as Error);
+          if (underlying instanceof ExecutionCancelledError) throw underlying;
           const wrapped = propagateError(underlying, moduleId, ctxObj);
           const executedMw = pipeCtx.executedMiddlewares;
           if (executedMw && executedMw.length > 0) {
@@ -1132,7 +1177,10 @@ export class Executor {
         // D-20: a step-wrapped cancellation MUST bypass on_error recovery in
         // stream mode too. Rethrow the unwrapped cancellation before recovery.
         if (unwrapped instanceof ExecutionCancelledError) throw unwrapped;
-        const wrapped = propagateError(unwrapped as Error, moduleId, ctxObj);
+        const underlying =
+          unwrapped instanceof MiddlewareChainError ? unwrapped.original : (unwrapped as Error);
+        if (underlying instanceof ExecutionCancelledError) throw underlying;
+        const wrapped = propagateError(underlying, moduleId, ctxObj);
         if (pipeCtx.executedMiddlewares && pipeCtx.executedMiddlewares.length > 0) {
           const recovery = await this._middlewareManager.executeOnError(
             moduleId,
@@ -1167,26 +1215,11 @@ export class Executor {
       // This used to be called inside the chunk loop, which contradicted the
       // guarantee its own commit message stated.
       const mergeDepthCap = resolveMergeDepth(this._config);
-      // Read the first-class `Context.globalDeadline` field, which
-      // `BuiltinContextCreation` now stamps onto the context derived for this
-      // call (spec v1.50.0 D-99 / D-100). The previous private `data` slot is
-      // gone: `data` is caller-visible, caller-writable and shared by reference
-      // with child contexts, and keeping the budget there left the documented
-      // `Context.create` parameter unreadable by the pipeline.
-      const globalDeadline = pipeCtx.context?.globalDeadline ?? null;
       let chunkIndex = 0;
       try {
-        for await (const chunk of outputStream) {
-          // Enforce global_deadline between chunks — matches apcore-python
-          // executor.py:872-879 (sync finding A-D-014). D-99: the deadline is
-          // epoch SECONDS, so the wall clock is scaled to match rather than the
-          // deadline being read as milliseconds.
-          if (globalDeadline !== null && Date.now() / 1000 > globalDeadline) {
-            pipeCtx.context.cancelToken?.cancel();
-            throw new ModuleTimeoutError(moduleId, 0, {
-              retryable: isModuleIdempotent(pipeCtx.module),
-            });
-          }
+        for await (const chunk of streamWithinDeadline(
+          outputStream, pipeCtx.context, moduleId, isModuleIdempotent(pipeCtx.module),
+        )) {
           // Enforce stream-chunk shape BEFORE merge and BEFORE yield (D10-001 /
           // apcore-rust deep_merge_chunks_checked, D-58). A non-object chunk is
           // rejected so it is never delivered to the consumer; deep_merge can
@@ -1216,6 +1249,7 @@ export class Executor {
         if (exc instanceof ExecutionCancelledError) throw exc;
         const ctxObj = pipeCtx.context;
         const wrapped = propagateError(exc as Error, moduleId, ctxObj);
+        if (exc instanceof ModuleTimeoutError && ctxObj.signal.aborted) throw wrapped;
         if (pipeCtx.executedMiddlewares && pipeCtx.executedMiddlewares.length > 0) {
           const recovery = await this._middlewareManager.executeOnError(
             moduleId,

@@ -108,7 +108,7 @@ pub trait EventSubscriber: Send + Sync + std::fmt::Debug {
     /// distinguishable by `EventEmitter::unsubscribe_by_id`.
     // The default returns a literal, but implementors may return non-static strings
     // (e.g. `&self.id`), so the trait signature must remain `&str`.
-    #[allow(clippy::unnecessary_literal_bound)]
+    #[allow(clippy::unnecessary_literal_bound)] // Keep the EventSubscriber borrowed-string signature.
     fn subscriber_id(&self) -> &str {
         "default"
     }
@@ -117,7 +117,7 @@ pub trait EventSubscriber: Send + Sync + std::fmt::Debug {
     ///
     /// Defaults to `"*"` (matches all events). Override to filter by prefix or
     /// exact event type (e.g. `"module.*"` or `"module.loaded"`).
-    #[allow(clippy::unnecessary_literal_bound)]
+    #[allow(clippy::unnecessary_literal_bound)] // Keep the EventSubscriber borrowed-string signature.
     fn event_pattern(&self) -> &str {
         "*"
     }
@@ -139,7 +139,7 @@ pub trait EventSubscriber: Send + Sync + std::fmt::Debug {
     /// their concrete type (e.g. `"webhook"`, `"stdout"`, `"file"`). Matches
     /// apcore-python's declared `subscriber_type` attribute (rather than
     /// parsing the type out of `subscriber_id`).
-    #[allow(clippy::unnecessary_literal_bound)]
+    #[allow(clippy::unnecessary_literal_bound)] // Keep the EventSubscriber borrowed-string signature.
     fn subscriber_type(&self) -> &str {
         "subscriber"
     }
@@ -243,7 +243,7 @@ impl EventSubscriber for WebhookSubscriber {
         &self.id
     }
 
-    #[allow(clippy::unnecessary_literal_bound)]
+    #[allow(clippy::unnecessary_literal_bound)] // Keep the EventSubscriber borrowed-string signature.
     fn subscriber_type(&self) -> &str {
         "webhook"
     }
@@ -384,7 +384,7 @@ impl EventSubscriber for A2ASubscriber {
         &self.id
     }
 
-    #[allow(clippy::unnecessary_literal_bound)]
+    #[allow(clippy::unnecessary_literal_bound)] // Keep the EventSubscriber borrowed-string signature.
     fn subscriber_type(&self) -> &str {
         "a2a"
     }
@@ -577,14 +577,14 @@ impl EventSubscriber for FileSubscriber {
         &self.id
     }
 
-    #[allow(clippy::unnecessary_literal_bound)]
+    #[allow(clippy::unnecessary_literal_bound)] // Keep the EventSubscriber borrowed-string signature.
     fn subscriber_type(&self) -> &str {
         "file"
     }
 
     // Built-in subscribers always match every event; the `&str` signature is
     // dictated by the trait, so the literal lifetime cannot be widened.
-    #[allow(clippy::unnecessary_literal_bound)]
+    #[allow(clippy::unnecessary_literal_bound)] // Keep the EventSubscriber borrowed-string signature.
     fn event_pattern(&self) -> &str {
         "*"
     }
@@ -712,7 +712,7 @@ impl EventSubscriber for StdoutSubscriber {
         &self.id
     }
 
-    #[allow(clippy::unnecessary_literal_bound)]
+    #[allow(clippy::unnecessary_literal_bound)] // Keep the EventSubscriber borrowed-string signature.
     fn subscriber_type(&self) -> &str {
         "stdout"
     }
@@ -737,7 +737,7 @@ impl EventSubscriber for StdoutSubscriber {
         // Explicit user-facing stdout subscriber — println! is intentional here.
         // It mirrors the Python `print(line, file=sys.stdout)` semantics and is the
         // documented behaviour of the `stdout` built-in subscriber type.
-        #[allow(clippy::print_stdout)]
+        #[allow(clippy::print_stdout)] // This subscriber sends events to stdout.
         {
             println!("{line}");
         }
@@ -925,7 +925,7 @@ fn parse_retry_config(
 
 // ModuleError is a protocol-level domain type whose rich field set is spec-required;
 // boxing individual fields would break ergonomics across the entire codebase.
-#[allow(clippy::result_large_err)]
+#[allow(clippy::result_large_err)] // The subscriber factory returns the protocol ModuleError.
 fn build_webhook_subscriber(
     config: &serde_json::Value,
 ) -> Result<Box<dyn EventSubscriber>, ModuleError> {
@@ -970,7 +970,7 @@ fn build_webhook_subscriber(
     Ok(Box::new(sub) as Box<dyn EventSubscriber>)
 }
 
-#[allow(clippy::result_large_err)]
+#[allow(clippy::result_large_err)] // The subscriber factory returns the protocol ModuleError.
 fn build_a2a_subscriber(
     config: &serde_json::Value,
 ) -> Result<Box<dyn EventSubscriber>, ModuleError> {
@@ -1008,7 +1008,7 @@ fn build_a2a_subscriber(
     Ok(Box::new(sub) as Box<dyn EventSubscriber>)
 }
 
-#[allow(clippy::result_large_err)]
+#[allow(clippy::result_large_err)] // The subscriber factory returns the protocol ModuleError.
 fn build_file_subscriber(
     config: &serde_json::Value,
 ) -> Result<Box<dyn EventSubscriber>, ModuleError> {
@@ -1038,7 +1038,7 @@ fn build_file_subscriber(
 
 // `Result` return matches the SubscriberFactory contract; the other built-in
 // factories can fail and the registry uses a single uniform signature.
-#[allow(clippy::result_large_err, clippy::unnecessary_wraps)]
+#[allow(clippy::result_large_err, clippy::unnecessary_wraps)] // Match the shared SubscriberFactory result.
 fn build_stdout_subscriber(
     config: &serde_json::Value,
 ) -> Result<Box<dyn EventSubscriber>, ModuleError> {
@@ -1057,7 +1057,7 @@ fn build_stdout_subscriber(
     Ok(Box::new(sub) as Box<dyn EventSubscriber>)
 }
 
-#[allow(clippy::result_large_err)]
+#[allow(clippy::result_large_err)] // The subscriber factory returns the protocol ModuleError.
 fn build_filter_subscriber(
     config: &serde_json::Value,
 ) -> Result<Box<dyn EventSubscriber>, ModuleError> {

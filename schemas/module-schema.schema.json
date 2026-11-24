@@ -71,7 +71,8 @@
           "type": "object",
           "description": "Property definitions for the object.",
           "additionalProperties": {
-            "$ref": "#/$defs/JSONSchemaDefinition"
+            "$ref": "#/$defs/JSONSchemaDefinition",
+            "description": "Schema for each declared object property."
           }
         },
         "required": {
@@ -207,7 +208,8 @@
           "type": "object",
           "description": "Nested object properties.",
           "additionalProperties": {
-            "$ref": "#/$defs/JSONSchemaDefinition"
+            "$ref": "#/$defs/JSONSchemaDefinition",
+            "description": "Schema for each declared nested property."
           }
         },
         "required": {

@@ -3,6 +3,7 @@
  */
 
 import type { Context } from '../context.js';
+import { ExecutionCancelledError } from '../cancel.js';
 import { ModuleError } from '../errors.js';
 import type { StepMiddleware } from '../pipeline.js';
 import { type Middleware, RetrySignal } from './base.js';
@@ -176,6 +177,7 @@ export class MiddlewareManager {
           return result;
         }
       } catch (e) {
+        if (e instanceof ExecutionCancelledError) throw e;
         console.warn('[apcore:middleware] Error in onError handler, continuing:', e);
         continue;
       }

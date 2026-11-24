@@ -4,7 +4,7 @@
 
 # apcore
 
-[![TypeScript](https://img.shields.io/badge/TypeScript-Node_20+-blue.svg)](https://github.com/aiperceivable/apcore-typescript)
+[![TypeScript](https://img.shields.io/badge/TypeScript-Node_20+-blue.svg)](https://github.com/aiperceivable/apcore/tree/main/typescript)
 [![License](https://img.shields.io/badge/license-Apache%202.0-green.svg)](https://opensource.org/licenses/Apache-2.0)
 [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/12294/badge)](https://www.bestpractices.dev/projects/12294)
 
@@ -840,9 +840,9 @@ npm run build
 
 - **Documentation:** [https://aiperceivable.github.io/apcore/getting-started/](https://aiperceivable.github.io/apcore/getting-started/)
 - **Specification:** [https://github.com/aiperceivable/apcore](https://github.com/aiperceivable/apcore)
-- **GitHub:** [https://github.com/aiperceivable/apcore-typescript](https://github.com/aiperceivable/apcore-typescript)
+- **GitHub:** [TypeScript SDK source](https://github.com/aiperceivable/apcore/tree/main/typescript)
 - **npm:** [https://www.npmjs.com/package/apcore-js](https://www.npmjs.com/package/apcore-js)
-- **Issues:** [https://github.com/aiperceivable/apcore-typescript/issues](https://github.com/aiperceivable/apcore-typescript/issues)
+- **Issues:** [GitHub Issues](https://github.com/aiperceivable/apcore/issues)
 
 ## License
 

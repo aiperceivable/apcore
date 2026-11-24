@@ -6,7 +6,6 @@
  * that each step is independently testable.
  */
 
-import { trackExecution } from './execution-lifetime.js';
 import type { TSchema } from '@sinclair/typebox';
 import { Kind } from '@sinclair/typebox';
 import type { ACL, AccessDecision } from './acl.js';
@@ -17,7 +16,7 @@ import type { ApprovalHandler, ApprovalResult } from './approval.js';
 import { createApprovalRequest, createApprovalResult } from './approval.js';
 import type { Config } from './config.js';
 import { getDefault } from './config-defaults.js';
-import { CancelToken, ExecutionCancelledError } from './cancel.js';
+import { CancelToken, awaitExecution } from './cancel.js';
 import { Context } from './context.js';
 import {
   ACLDeniedError,
@@ -226,7 +225,7 @@ export class BuiltinModuleLookup implements Step {
   }
 
   async execute(ctx: PipelineContext): Promise<StepResult> {
-    const mod = this._registry.get(ctx.moduleId);
+    const mod = this._registry.get(ctx.moduleId, ctx.versionHint);
     if (mod === null || (!ctx.dryRun && this._registry.isDraining(ctx.moduleId))) {
       throw new ModuleNotFoundError(ctx.moduleId);
     }
@@ -912,9 +911,10 @@ export class BuiltinExecute implements Step {
     }
     if (release) void executionPromise.then(release, release);
 
-    const output = await this._awaitExecution(
+    const output = await awaitExecution(
       executionPromise,
-      ctx,
+      ctx.context.cancelToken,
+      ctx.moduleId,
       timeoutMs,
       isModuleIdempotent(mod),
     );
@@ -943,12 +943,6 @@ export class BuiltinExecute implements Step {
     }
   }
 
-  /**
-   * Build a Promise that rejects with ExecutionCancelledError as soon as the
-   * given CancelToken's underlying AbortSignal fires. Used to race against
-   * the module's executionPromise so cancellation interrupts even if the
-   * module isn't awaiting a Web API directly. (D-18, D-21)
-   */
   /**
    * Read the module's declared `resources.timeout` (D-11) in milliseconds.
    * Returns `null` when not declared. Supports two equivalent locations
@@ -979,44 +973,6 @@ export class BuiltinExecute implements Step {
       readResources(extra?.['resources']);
   }
 
-  private async _awaitExecution(
-    execution: Promise<Record<string, unknown>>,
-    ctx: PipelineContext,
-    timeoutMs: number,
-    retryable = false,
-  ): Promise<Record<string, unknown>> {
-    const token = ctx.context.cancelToken;
-    if (token) trackExecution(token, execution);
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    let timedOut = false;
-    let onAbort: (() => void) | undefined;
-    const interruption = new Promise<never>((_, reject) => {
-      onAbort = (): void => {
-        if (!timedOut) reject(new ExecutionCancelledError());
-      };
-      token?.signal.addEventListener('abort', onAbort, { once: true });
-      if (token?.isCancelled || token?.signal.aborted) onAbort();
-      if (timeoutMs > 0) timer = setTimeout(() => {
-        // D-133: publish cancellation first, but the deadline owns the error.
-        // Abort listeners and module rejection must not win the timeout race.
-        timedOut = true;
-        token?.cancel();
-        reject(new ModuleTimeoutError(ctx.moduleId, timeoutMs, { retryable }));
-      }, timeoutMs);
-    });
-    try {
-      const output = await Promise.race([execution, interruption]);
-      if (timedOut) throw new ModuleTimeoutError(ctx.moduleId, timeoutMs, { retryable });
-      return output;
-    } catch (error) {
-      if (timedOut) throw new ModuleTimeoutError(ctx.moduleId, timeoutMs, { retryable });
-      throw error;
-    }
-    finally {
-      if (timer !== undefined) clearTimeout(timer);
-      if (onAbort) token?.signal.removeEventListener('abort', onAbort);
-    }
-  }
 }
 
 // ---------------------------------------------------------------------------

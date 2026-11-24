@@ -150,21 +150,48 @@ impl FileOverridesStore {
 #[async_trait]
 impl OverridesStore for FileOverridesStore {
     async fn load(&self) -> Result<HashMap<String, serde_json::Value>, OverridesError> {
-        read_yaml_overrides_sync(&self.path)
+        run_file_io(self.path.clone(), read_yaml_overrides_sync).await
     }
 
     async fn save(
         &self,
         overrides: &HashMap<String, serde_json::Value>,
     ) -> Result<(), OverridesError> {
-        let lock = write_lock_for(&self.path)?;
-        let _guard = lock.lock();
-        write_yaml_overrides_sync(&self.path, overrides)
+        let overrides = overrides.clone();
+        run_file_io(self.path.clone(), move |path| {
+            let lock = write_lock_for(path)?;
+            let _guard = lock.lock();
+            write_yaml_overrides_sync(path, &overrides)
+        })
+        .await
     }
 
     async fn update(&self, key: &str, value: &serde_json::Value) -> Result<(), OverridesError> {
-        write_override_sync(&self.path, key, value)
+        let key = key.to_owned();
+        let value = value.clone();
+        run_file_io(self.path.clone(), move |path| {
+            write_override_sync(path, &key, &value)
+        })
+        .await
     }
+}
+
+async fn run_file_io<T: Send + 'static>(
+    path: PathBuf,
+    operation: impl FnOnce(&Path) -> Result<T, OverridesError> + Send + 'static,
+) -> Result<T, OverridesError> {
+    let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+        // Allow non-Tokio embedders to drive the store with their own bridge.
+        return operation(&path);
+    };
+    let task_path = path.clone();
+    runtime
+        .spawn_blocking(move || operation(&task_path))
+        .await
+        .map_err(|source| OverridesError::Io {
+            path,
+            source: std::io::Error::other(source),
+        })?
 }
 
 // ---------------------------------------------------------------------------

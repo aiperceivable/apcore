@@ -4,6 +4,8 @@ import { Executor } from '../src/executor.js';
 import { FunctionModule } from '../src/decorator.js';
 import { Registry } from '../src/registry/registry.js';
 import { Middleware } from '../src/middleware/base.js';
+import { CancelToken, ExecutionCancelledError } from '../src/cancel.js';
+import { Context } from '../src/context.js';
 import { InvalidInputError, ModuleNotFoundError, ModuleTimeoutError, SchemaValidationError } from '../src/errors.js';
 
 function createSimpleModule(id: string): FunctionModule {
@@ -49,6 +51,67 @@ async function collectChunks(gen: AsyncGenerator<Record<string, unknown>>): Prom
 }
 
 describe('Executor.stream()', () => {
+  it.each(['deadline', 'cancellation'] as const)(
+    'returns a %s while waiting for a chunk and retains the producer lease until close',
+    async (interrupt) => {
+      vi.useFakeTimers();
+      try {
+        let release!: () => void;
+        let entered!: () => void;
+        const nextStarted = new Promise<void>((resolve) => { entered = resolve; });
+        const held = new Promise<void>((resolve) => { release = resolve; });
+        const closed = vi.fn();
+        const registry = new Registry();
+        const parent = new CancelToken();
+        let producerSignal: AbortSignal | undefined;
+        await registry.register('held.stream', {
+          description: 'Streaming test module',
+          inputSchema: Type.Object({}),
+          outputSchema: Type.Object({ result: Type.Number() }),
+          execute: () => ({ result: 1 }),
+          async *stream(_inputs: Record<string, unknown>, context: Context) {
+            producerSignal = context.signal;
+            try {
+              entered();
+              await held;
+              yield { result: 1 };
+            } finally {
+              closed();
+            }
+          },
+        });
+        const context = Context.create(
+          null, null, parent, undefined, null, (Date.now() + (interrupt === 'deadline' ? 10 : 1000)) / 1000,
+        );
+        const executor = new Executor({ registry });
+        const settled = vi.fn();
+        const iterator = executor.stream('held.stream', {}, context);
+        const result = iterator.next();
+        void result.then(settled, settled);
+        try {
+          await nextStarted;
+          if (interrupt === 'cancellation') parent.cancel();
+          await vi.advanceTimersByTimeAsync(interrupt === 'deadline' ? 10 : 0);
+          expect(settled).toHaveBeenCalledExactlyOnceWith(expect.any(
+            interrupt === 'deadline' ? ModuleTimeoutError : ExecutionCancelledError,
+          ));
+          expect(producerSignal?.aborted).toBe(true);
+          expect(closed).not.toHaveBeenCalled();
+          expect(registry.refCount.get('held.stream')).toBe(1);
+        } finally {
+          release();
+          await result.catch(() => undefined);
+          await iterator.return(undefined);
+          await parent.drain();
+        }
+        expect(closed).toHaveBeenCalledOnce();
+        expect(registry.refCount.has('held.stream')).toBe(false);
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
+
   it('uses execute for a nonstreaming module with an unrelated stream method', async () => {
     const registry = new Registry();
     const mod = Object.assign(createSimpleModule('greet'), { stream: vi.fn(() => 'descriptor') });

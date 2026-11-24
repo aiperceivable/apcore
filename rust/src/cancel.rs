@@ -14,6 +14,8 @@ static NEXT_EXECUTION: AtomicU64 = AtomicU64::new(1);
 struct ExecutionState {
     active: Mutex<HashMap<u64, ExecutionRecord>>,
     changed: tokio::sync::Notify,
+    cancelled: tokio::sync::Notify,
+    middleware_timings: Mutex<HashMap<usize, std::time::Instant>>,
     abort_requested: AtomicBool,
 }
 
@@ -158,6 +160,22 @@ impl CancelToken {
         Arc::downgrade(&self.cancelled)
     }
 
+    pub(crate) fn start_middleware_timing(&self, middleware: usize) {
+        self.executions
+            .middleware_timings
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(middleware, std::time::Instant::now());
+    }
+
+    pub(crate) fn take_middleware_timing(&self, middleware: usize) -> Option<std::time::Instant> {
+        self.executions
+            .middleware_timings
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&middleware)
+    }
+
     /// Derive an independently cancellable token that observes its parent.
     #[must_use]
     pub fn child(&self) -> Self {
@@ -171,6 +189,19 @@ impl CancelToken {
     /// Signal cancellation.
     pub fn cancel(&self) {
         self.cancelled.store(true, Ordering::SeqCst);
+        self.executions.cancelled.notify_waiters();
+    }
+
+    /// Wait until this invocation or one of its parents is cancelled.
+    pub(crate) async fn cancelled(&self) {
+        let notifications: Vec<_> =
+            std::iter::successors(Some(self), |token| token.parent.as_deref())
+                .map(|token| Box::pin(token.executions.cancelled.notified()))
+                .collect();
+        // Register with each ancestor before rechecking the flag.
+        if !self.is_cancelled() {
+            futures_util::future::select_all(notifications).await;
+        }
     }
 
     /// Wait for this invocation and its descendants to finish actual module

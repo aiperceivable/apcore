@@ -199,15 +199,18 @@ class EventEmitter:
     def __init__(self, max_workers: int = 4) -> None:
         self._subscribers: list[Any] = []
         self._lock = threading.Lock()
-        self._executor = ThreadPoolExecutor(
-            max_workers=max_workers,
-            thread_name_prefix="apcore-event",
-        )
+        self._max_workers = max_workers
+        self._executor = self._new_executor()
         self._pending_futures: list[Future[None]] = []
         self._pending_lock = threading.Lock()
         self._loop = asyncio.new_event_loop()
         self._loop_lock = threading.Lock()
         self._shutdown = False
+        self._closing = False
+        self._released = False
+
+    def _new_executor(self) -> ThreadPoolExecutor:
+        return ThreadPoolExecutor(max_workers=self._max_workers, thread_name_prefix="apcore-event")
 
     def subscribe(self, subscriber: Any) -> None:
         """Add a subscriber to receive future events.
@@ -237,18 +240,17 @@ class EventEmitter:
 
         Returns immediately. After :meth:`shutdown`, emits are silently dropped.
         """
-        if self._shutdown:
-            return
         with self._lock:
-            snapshot = list(self._subscribers)
-
-        if not snapshot:
-            return
-
-        future = self._executor.submit(self._deliver, snapshot, event)
-        with self._pending_lock:
-            self._pending_futures = [f for f in self._pending_futures if not f.done()]
-            self._pending_futures.append(future)
+            if self._shutdown or self._closing or not self._subscribers:
+                return
+            if self._released:
+                self._executor = self._new_executor()
+                self._loop = asyncio.new_event_loop()
+                self._released = False
+            future = self._executor.submit(self._deliver, list(self._subscribers), event)
+            with self._pending_lock:
+                self._pending_futures = [f for f in self._pending_futures if not f.done()]
+                self._pending_futures.append(future)
 
     def flush(self, timeout: float = 5.0) -> None:
         """Wait for all pending event deliveries to complete."""
@@ -383,14 +385,39 @@ class EventEmitter:
             )
 
     def shutdown(self, timeout: float = 5.0) -> None:
-        """Release the executor thread pool and asyncio loop."""
-        if self._shutdown:
-            return
-        self._shutdown = True
+        """Stop accepting events and release the thread pool and event loop."""
+        self._release_resources(timeout, terminal=True)
+
+    def close(self, timeout: float = 5.0) -> None:
+        """Release idle resources while keeping subscriptions for future use."""
+        self._release_resources(timeout, terminal=False)
+
+    def _release_resources(self, timeout: float, *, terminal: bool) -> None:
+        with self._lock:
+            self._shutdown = self._shutdown or terminal
+            if self._closing or self._released:
+                return
+            self._closing = True
+        # A subscriber can close its own client. Drain from another thread in
+        # that case so this call never waits for the worker it is running on.
+        try:
+            inside_delivery = asyncio.get_running_loop() is self._loop
+        except RuntimeError:
+            inside_delivery = False
+        if inside_delivery:
+            threading.Thread(target=self._finish_release, args=(timeout,), daemon=True).start()
+        else:
+            self._finish_release(timeout)
+
+    def _finish_release(self, timeout: float) -> None:
         try:
             self.flush(timeout=timeout)
         finally:
-            self._executor.shutdown(wait=True, cancel_futures=True)
-            with self._loop_lock:
-                if not self._loop.is_closed():
+            try:
+                self._executor.shutdown(wait=True, cancel_futures=True)
+                with self._loop_lock:
                     self._loop.close()
+            finally:
+                with self._lock:
+                    self._released = True
+                    self._closing = False

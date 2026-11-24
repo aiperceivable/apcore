@@ -143,6 +143,10 @@ describe('BindingLoader', () => {
       const fn = await loader.resolveTarget(`${modPath}:greet`);
       expect(fn()).toBe('any');
     });
+
+    it('rejects an ambiguous import target before attempting resolution', async () => {
+      await expect(loader.resolveTarget('FiLe:unused-fixture.mjs:greet')).rejects.toThrow(BindingInvalidTargetError);
+    });
   });
 
   describe('loadBindings', () => {

@@ -24,49 +24,64 @@
       ]
     },
     "project": {
-      "$ref": "#/$defs/ProjectConfig"
+      "$ref": "#/$defs/ProjectConfig",
+      "description": "Project name and version metadata."
     },
     "extensions": {
-      "$ref": "#/$defs/ExtensionsConfig"
+      "$ref": "#/$defs/ExtensionsConfig",
+      "description": "Module discovery roots, namespaces, and discovery options."
     },
     "schema": {
-      "$ref": "#/$defs/SchemaConfig"
+      "$ref": "#/$defs/SchemaConfig",
+      "description": "Schema loading root, strategy, and reference limits."
     },
     "acl": {
-      "$ref": "#/$defs/ACLConfig"
+      "$ref": "#/$defs/ACLConfig",
+      "description": "Access control policy discovery settings."
     },
     "logging": {
-      "$ref": "#/$defs/LoggingConfig"
+      "$ref": "#/$defs/LoggingConfig",
+      "description": "Structured logging settings."
     },
     "observability": {
-      "$ref": "#/$defs/ObservabilityConfig"
+      "$ref": "#/$defs/ObservabilityConfig",
+      "description": "Tracing and metrics settings."
     },
     "middleware": {
-      "$ref": "#/$defs/MiddlewareConfig"
+      "$ref": "#/$defs/MiddlewareConfig",
+      "description": "Middleware configuration."
     },
     "executor": {
-      "$ref": "#/$defs/ExecutorConfig"
+      "$ref": "#/$defs/ExecutorConfig",
+      "description": "Execution timeouts and call chain limits."
     },
     "pipeline": {
-      "$ref": "#/$defs/PipelineConfig"
+      "$ref": "#/$defs/PipelineConfig",
+      "description": "Changes to the default execution strategy and custom pipeline steps."
     },
     "validation": {
-      "$ref": "#/$defs/ValidationConfig"
+      "$ref": "#/$defs/ValidationConfig",
+      "description": "Validation limits for author-provided declarations."
     },
     "id_map": {
-      "$ref": "#/$defs/IDMapConfig"
+      "$ref": "#/$defs/IDMapConfig",
+      "description": "Module ID mapping and overrides."
     },
     "bindings": {
-      "$ref": "#/$defs/BindingsConfig"
+      "$ref": "#/$defs/BindingsConfig",
+      "description": "Directory and filename pattern for loading binding files."
     },
     "sys_modules": {
-      "$ref": "#/$defs/SysModulesConfig"
+      "$ref": "#/$defs/SysModulesConfig",
+      "description": "Bundled system modules and their runtime services."
     },
     "stream": {
-      "$ref": "#/$defs/StreamConfig"
+      "$ref": "#/$defs/StreamConfig",
+      "description": "Output stream accumulation settings."
     },
     "obs": {
-      "$ref": "#/$defs/ObsConfig"
+      "$ref": "#/$defs/ObsConfig",
+      "description": "Observability controls for redacting captured and logged values."
     },
     "_config": {
       "$ref": "#/$defs/ConfigBusMeta",

@@ -122,18 +122,26 @@ describe('D-133 timeout owns an abort-listener race', () => {
     } finally { Object.defineProperty(AbortSignal, 'any', descriptor); vi.restoreAllMocks(); }
   });
   it('a streaming deadline cancels its own scope, not the application token', async () => {
+    vi.useFakeTimers();
     const registry = new Registry();
     const application = new CancelToken();
     let seen: Context | undefined;
-    await registry.register('slow.stream', {
-      description: 'Expired streaming deadline', inputSchema: Type.Object({}), outputSchema: Type.Object({}), execute: () => ({}),
-      async *stream(_inputs: Record<string, unknown>, context: Context) { seen = context; yield {}; },
-    });
-    const context = Context.create<null>(null, null, application, undefined, undefined, Date.now() / 1000 - 1);
-    const stream = new Executor({ registry }).stream('slow.stream', {}, context);
-    await expect(stream.next()).rejects.toMatchObject({ code: 'MODULE_TIMEOUT' });
-    expect(seen?.cancelToken?.isCancelled).toBe(true);
-    expect(application.isCancelled).toBe(false);
+    try {
+      await registry.register('slow.stream', {
+        description: 'Streaming deadline', inputSchema: Type.Object({}), outputSchema: Type.Object({}), execute: () => ({}),
+        async *stream(_inputs: Record<string, unknown>, context: Context) { seen = context; yield {}; },
+      });
+      const context = Context.create<null>(null, null, application, undefined, undefined, Date.now() / 1000 + 1);
+      const stream = new Executor({ registry }).stream('slow.stream', {}, context);
+      await expect(stream.next()).resolves.toEqual({ done: false, value: {} });
+      await vi.advanceTimersByTimeAsync(1000);
+      await expect(stream.next()).rejects.toMatchObject({ code: 'MODULE_TIMEOUT' });
+      expect(seen?.cancelToken?.isCancelled).toBe(true);
+      expect(application.isCancelled).toBe(false);
+      await application.drain();
+    } finally {
+      vi.useRealTimers();
+    }
   });
   for (const reaction of ['reject', 'resolve']) {
     it(`reports MODULE_TIMEOUT when module abort listener immediately ${reaction}s`, async () => {

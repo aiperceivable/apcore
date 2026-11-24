@@ -11,9 +11,7 @@ Symbol-reality notes (drive the skip decisions below):
   ``payload``) and raises no errors (fire-and-forget). The spec's
   ``input.event_type.not_empty`` rule is not enforced by this SDK.
 - ``WebhookSubscriber.deliver`` / ``A2ASubscriber.deliver`` are named
-  ``on_event`` in this SDK. The ``DeliveryError(code=WEBHOOK_DELIVERY_FAILED)``
-  type does not exist — webhook raises ``RuntimeError`` and the emitter handles
-  the dead-letter path. Recorded as a missing-symbol skip.
+  ``on_event`` in this SDK. The emitter owns retry and dead-letter delivery.
 - The circuit-breaker contract names ``SubscriberCircuitBreaker.on_failure``
   with signature ``(subscriber_id, error) -> CircuitState``. This SDK ships
   ``CircuitBreakerWrapper`` with a private ``_on_failure(error)`` and a public
@@ -355,20 +353,6 @@ def test_webhook_deliver_input_event_required() -> None:
     session.post.assert_called_once()
     posted = session.post.call_args.kwargs["json"]
     assert posted["event_type"] == "apcore.health.recovered"
-
-
-def test_webhook_deliver_error_delivery_error_code() -> None:
-    """event_system.deliver.error.WEBHOOK_DELIVERY_FAILED
-
-    Spec declares DeliveryError(code=WEBHOOK_DELIVERY_FAILED) on retry
-    exhaustion. This SDK has no such type — webhook raises RuntimeError and the
-    EventEmitter owns the dead-letter path (apcore.event.delivery_failed).
-    """
-    pytest.skip(
-        "missing symbol: DeliveryError / WEBHOOK_DELIVERY_FAILED (contract gap) "
-        "— WebhookSubscriber raises RuntimeError on 5xx and the emitter handles "
-        "the dead-letter path instead"
-    )
 
 
 def test_webhook_deliver_property_async_true() -> None:

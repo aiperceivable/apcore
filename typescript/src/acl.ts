@@ -1318,6 +1318,22 @@ export class ACL {
     ACL._recordUnevaluable(frame, path, `Handler for condition '${path}' could not evaluate it as written`);
   }
 
+  private static _normalizeConditionResult(
+    result: unknown,
+    frame: EvaluationFrame | null,
+    path: string,
+    sizeBefore: number,
+  ): ConditionOutcome {
+    if (typeof result === 'boolean') return result ? 'satisfied' : 'unsatisfied';
+    if (result === 'satisfied' || result === 'unsatisfied') return result;
+    if (result === 'unevaluable') {
+      ACL._recordBareUnevaluable(frame, path, sizeBefore);
+    } else {
+      ACL._recordUnevaluable(frame, path, `Handler for condition '${path}' returned an invalid outcome`);
+    }
+    return 'unevaluable';
+  }
+
   /**
    * Evaluate one condition key on the **sync** path.
    *
@@ -1341,12 +1357,16 @@ export class ACL {
     }
     const sizeBefore = frame?.errors.size ?? 0;
     try {
-      const result = isOutcomeHandler(handler)
+      const result: unknown = isOutcomeHandler(handler)
         ? handler.evaluateOutcome(value, context, path)
         : handler.evaluate(value, context);
-      if (result instanceof Promise) {
-        // apcore-typescript cannot inspect a Promise synchronously, so an
+      if (result !== null && (typeof result === 'object' || typeof result === 'function') &&
+          typeof (result as { then?: unknown }).then === 'function') {
+        // apcore-typescript cannot inspect a thenable synchronously, so an
         // async handler reached from check() yields no answer at all.
+        void Promise.resolve(result).catch(() => {
+          // The sync evaluation has already recorded an unevaluable outcome.
+        });
         ACL._recordUnevaluable(
           frame,
           path,
@@ -1354,9 +1374,7 @@ export class ACL {
         );
         return 'unevaluable';
       }
-      if (typeof result === 'boolean') return result ? 'satisfied' : 'unsatisfied';
-      if (result === 'unevaluable') ACL._recordBareUnevaluable(frame, path, sizeBefore);
-      return result;
+      return ACL._normalizeConditionResult(result, frame, path, sizeBefore);
     } catch (e) {
       ACL._recordUnevaluable(
         frame,
@@ -1456,7 +1474,7 @@ export class ACL {
         ? builtinOrHandlerAsync
         : handler === builtinNotHandlerAsync ? builtinNotHandlerAsync : null;
       try {
-        let result: ConditionOutcome | boolean;
+        let result: unknown;
         if (handler === builtinArgumentsHandler) {
           result = builtinArgumentsHandler.evaluateOutcome(value, context, path, frame?.projection ?? null);
         } else if (compoundHandler !== null) {
@@ -1467,8 +1485,7 @@ export class ACL {
             ? await handler.evaluateOutcome(value, context, path)
             : await handler.evaluate(value, context);
         }
-        outcome = typeof result === 'boolean' ? (result ? 'satisfied' : 'unsatisfied') : result;
-        if (outcome === 'unevaluable') ACL._recordBareUnevaluable(frame, path, sizeBefore);
+        outcome = ACL._normalizeConditionResult(result, frame, path, sizeBefore);
       } catch (e) {
         ACL._recordUnevaluable(
           frame,

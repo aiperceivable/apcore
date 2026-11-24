@@ -858,8 +858,8 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 ### Clone and build
 
 ```bash
-git clone https://github.com/aiperceivable/apcore-rust.git
-cd apcore-rust
+git clone https://github.com/aiperceivable/apcore.git
+cd apcore/rust
 cargo build
 ```
 
@@ -908,7 +908,7 @@ Apache-2.0
 
 - **Documentation**: [https://aiperceivable.github.io/apcore/](https://aiperceivable.github.io/apcore/)
 - **Website**: [aiperceivable.com](https://aiperceivable.com)
-- **GitHub**: [aiperceivable/apcore-rust](https://github.com/aiperceivable/apcore-rust)
+- **GitHub**: [Rust SDK source](https://github.com/aiperceivable/apcore/tree/main/rust)
 - **crates.io**: [apcore](https://crates.io/crates/apcore)
-- **Issues**: [GitHub Issues](https://github.com/aiperceivable/apcore-rust/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/aiperceivable/apcore-rust/discussions)
+- **Issues**: [GitHub Issues](https://github.com/aiperceivable/apcore/issues)
+- **Discussions**: [GitHub Discussions](https://github.com/aiperceivable/apcore/discussions)

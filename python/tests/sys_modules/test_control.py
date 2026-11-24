@@ -133,11 +133,13 @@ class TestUpdateConfigInvalidValueRejected:
         config = _make_config()
         original = config.get("executor.default_timeout")
         mod = _make_module(config=config)
-        with pytest.raises(ModuleError) as exc_info:
-            mod.execute(
-                {"key": "executor.default_timeout", "value": -1, "reason": "bad value"},
-                None,
-            )
+        with patch.object(config, "set", wraps=config.set) as write:
+            with pytest.raises(ModuleError) as exc_info:
+                mod.execute(
+                    {"key": "executor.default_timeout", "value": -1, "reason": "bad value"},
+                    None,
+                )
+            write.assert_not_called()
         assert exc_info.value.code == "CONFIG_INVALID"
         # Value should be rolled back
         assert config.get("executor.default_timeout") == original

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, mkdirSync, rmSync, symlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { RefResolver } from '../../src/schema/ref-resolver.js';
@@ -171,6 +171,26 @@ describe('RefResolver - apcore:// URI resolution', () => {
 
   afterEach(() => {
     rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('checks the physical path of a canonical reference before loading it', () => {
+    const schemasDir = join(tmpDir, 'schemas');
+    mkdirSync(schemasDir);
+    writeFileSync(join(schemasDir, 'inside.schema.yaml'), 'type: string\n');
+    writeFileSync(join(tmpDir, 'sibling.schema.yaml'), 'type: number\n');
+    symlinkSync(join(schemasDir, 'inside.schema.yaml'), join(schemasDir, 'local.schema.yaml'));
+    symlinkSync(join(tmpDir, 'sibling.schema.yaml'), join(schemasDir, 'sibling.schema.yaml'));
+    const resolver = new RefResolver(schemasDir);
+    expect(resolver.resolve({ $ref: 'apcore://local' })).toEqual({ type: 'string' });
+    expect(() => resolver.resolve({ $ref: 'apcore://sibling' })).toThrow(SchemaNotFoundError);
+  });
+
+  it('resolves JSON Pointer segments only on the document itself', () => {
+    const resolver = new RefResolver(tmpDir);
+    expect(() => resolver.resolve({ $ref: '#/$defs/toString', $defs: {} }))
+      .toThrow(SchemaNotFoundError);
+    expect(resolver.resolve({ $ref: '#/$defs/toString', $defs: { toString: { type: 'number' } } }))
+      .toMatchObject({ type: 'number' });
   });
 
   it('resolves apcore:// URI to schema file and JSON pointer', () => {

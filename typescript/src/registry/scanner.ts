@@ -183,7 +183,16 @@ export function scanExtensions(
         const metaPath = appendFilesystemPath(dirPath, stem + '_meta.yaml');
         let metaPathResult: string | null = null;
         try {
-          if (statSync(metaPath).isFile()) metaPathResult = metaPath;
+          const metadataEntry = lstatSync(metaPath);
+          const isMetadataSymlink = metadataEntry.isSymbolicLink();
+          if (isMetadataSymlink && followSymlinks) {
+            const realMetadata = realpathSync.native(metaPath);
+            if (realMetadata.startsWith(rootReal + sep) && statSync(realMetadata).isFile()) {
+              metaPathResult = realMetadata;
+            }
+          } else if (metadataEntry.isFile()) {
+            metaPathResult = metaPath;
+          }
         } catch {
           // no meta file
         }

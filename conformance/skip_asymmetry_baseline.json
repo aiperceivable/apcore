@@ -1,6 +1,6 @@
 {
-  "ratchet": 27,
-  "_ratchet_note": "The ratchet was 24 and is now 27, and the increase is the guard learning to see rather than a regression. Its marker window was a fixed 3-line lookbehind, which misread two of the three suites' own conventions: apcore-rust writes the clause id on a `// clause:` line ABOVE the attribute block, so EVERY `#[ignore]`d clause in that SDK was reported LIVE — a false negative in exactly the direction the guard exists to catch — and apcore-python writes a six-line `@pytest.mark.skip(reason=...)` above the `def` whose docstring carries the id, further than three lines reach. The window is now item-scoped. Five asymmetries the corrected guard exposed were FIXED rather than accepted (see the CHANGELOG entry); the 27 below were each checked against the SDK source on the date in their note.",
+  "ratchet": 26,
+  "_ratchet_note": "Each accepted entry records a clause that runs in one SDK and is skipped in another, with the reason recorded beside it. The limit tracks the current accepted entries.",
   "accepted": {
     "acl_system.add_rule.error.value_error_kwargs_path": {
       "python": "live",
@@ -55,12 +55,6 @@
       "typescript": "skipped",
       "rust": "skipped",
       "note": "verified 2026-09-21: Python raises ImportError when aiohttp is absent. apcore-typescript uses global fetch and apcore-rust gates the HTTP path behind the `events` cargo feature at compile time, so neither has an import to fail."
-    },
-    "event_system.deliver.error.WEBHOOK_DELIVERY_FAILED": {
-      "python": "live",
-      "typescript": "skipped",
-      "rust": "skipped",
-      "note": "verified 2026-09-21: only apcore-python defines DeliveryError/WEBHOOK_DELIVERY_FAILED; apcore-typescript has no such type and apcore-rust returns ModuleError(General*). This is the D-92 shape (a declared error type not every SDK defines) and is the one entry here worth raising as a decision rather than accepting as a language difference."
     },
     "event_system.emit.input.event_type.not_empty": {
       "python": "live",

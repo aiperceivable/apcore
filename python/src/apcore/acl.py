@@ -720,7 +720,8 @@ class _AuditSink:
         that, one specification yields three different "structured records"
         across the SDKs and nothing downstream consumes all three.
         """
-        level = _AUDIT_LEVELS.get(str(self._config.get("log_level", "info")), logging.INFO)
+        config = self._config or {}
+        level = _AUDIT_LEVELS.get(str(config.get("log_level", "info")), logging.INFO)
         try:
             _audit_logger_default.log(level, AUDIT_EVENT_NAME, extra={"apcore_audit": asdict(entry)})
         except Exception as exc:  # noqa: BLE001 — a logging handler can fail too

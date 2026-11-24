@@ -79,9 +79,9 @@ def _summary_to_dict(summary: Any) -> dict[str, Any]:
     if isinstance(summary, dict):
         return summary
     if isinstance(summary, list):
-        modules = [asdict(m) if is_dataclass(m) else m for m in summary]
+        modules = [asdict(m) if is_dataclass(m) and not isinstance(m, type) else m for m in summary]
         return {"modules": modules}
-    if is_dataclass(summary):
+    if is_dataclass(summary) and not isinstance(summary, type):
         return asdict(summary)
     return {"value": summary}
 

@@ -118,7 +118,7 @@ def generate_output_model(func: Any) -> type[BaseModel]:
         raise FuncMissingReturnTypeError(function_name=func.__name__)
 
     # Handle None return type
-    if return_type is type(None):
+    if return_type is None or return_type is type(None):
         return create_model("OutputModel", __config__=ConfigDict(extra="allow"))
 
     # Handle BaseModel subclass

@@ -93,6 +93,7 @@ logger = logging.getLogger(__name__)
 #: Keys that cannot be changed at runtime.
 _RESTRICTED_KEYS: frozenset[str] = frozenset({"sys_modules.enabled"})
 
+
 def _build_audit_entry(
     action: str,
     target_module_id: str,
@@ -174,12 +175,12 @@ class UpdateConfigModule:
     def execute(self, inputs: dict[str, Any], context: Any) -> dict[str, Any]:
         """Update a config value, emit event, and optionally persist + audit."""
         key, value, reason = self._validate_inputs(inputs)
-        self._check_restricted(key)
+        constraint_key = key.removeprefix("apcore.")
+        self._check_restricted(constraint_key)
+        self._validate_value(constraint_key, value)
 
         old_value = self._config.get(key)
         self._config.set(key, value)
-
-        self._validate_post_set(key, value, old_value)
 
         self._emit_event(key, old_value, value, context)
         self._log_change(key, old_value, value, reason)
@@ -236,14 +237,13 @@ class UpdateConfigModule:
                 details={"key": key},
             )
 
-    def _validate_post_set(self, key: str, value: Any, old_value: Any) -> None:
-        """Check constraints after setting. Roll back and raise ConfigError on failure."""
+    def _validate_value(self, key: str, value: Any) -> None:
+        """Validate the candidate before publishing it to readers."""
         if key not in _CONSTRAINTS:
             return
 
         check_fn, err_msg = _CONSTRAINTS[key]
         if not check_fn(value):
-            self._config.set(key, old_value)
             raise ConfigError(
                 message=f"Invalid value for '{key}': {err_msg} (got {value!r})",
                 details={"key": key, "value": value},

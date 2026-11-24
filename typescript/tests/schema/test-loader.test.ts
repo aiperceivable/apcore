@@ -322,7 +322,7 @@ output_schema:
     it('returns distinct output schemas for modules with identical input but different output (regression: cache hash collision)', () => {
       // Two modules: same input schema, different output schemas.
       // Before the fix, both resolved to the first module's output schema.
-      writeSchema('mod-a.schema.yaml', `
+      writeSchema('mod_a.schema.yaml', `
 description: Module A
 input_schema:
   type: object
@@ -337,7 +337,7 @@ output_schema:
       type: string
   required: [result_a]
 `);
-      writeSchema('mod-b.schema.yaml', `
+      writeSchema('mod_b.schema.yaml', `
 description: Module B
 input_schema:
   type: object
@@ -353,11 +353,11 @@ output_schema:
   required: [result_b]
 `);
       const loader = new SchemaLoader(makeConfig(), schemasDir);
-      const [, outputA] = loader.getSchema('mod-a');
-      const [, outputB] = loader.getSchema('mod-b');
+      const [, outputA] = loader.getSchema('mod_a');
+      const [, outputB] = loader.getSchema('mod_b');
 
-      expect(outputA.moduleId).toBe('mod-a');
-      expect(outputB.moduleId).toBe('mod-b');
+      expect(outputA.moduleId).toBe('mod_a');
+      expect(outputB.moduleId).toBe('mod_b');
 
       // Module A's output accepts strings, not integers
       expect(Value.Check(outputA.schema, { result_a: 'hello' })).toBe(true);

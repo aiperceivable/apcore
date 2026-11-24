@@ -14,7 +14,7 @@
  * with no test is a behaviour the next refactor is free to change.
  */
 
-import { mkdirSync, writeFileSync, symlinkSync, rmSync } from 'node:fs';
+import { mkdirSync, writeFileSync, symlinkSync, rmSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
@@ -72,6 +72,19 @@ describe('symlink confinement (D-94)', () => {
 
     expect(scan(true).length).toBe(1);
     expect(scan(false).length).toBe(1);
+  });
+
+  it('checks companion metadata symlinks against the same physical root', () => {
+    writeFileSync(join(root, 'one.js'), 'export const sample = 1;');
+    writeFileSync(join(root, 'two.js'), 'export const sample = 2;');
+    writeFileSync(join(root, 'metadata.yaml'), 'description: In the scan root');
+    writeFileSync(join(outside, 'metadata.yaml'), 'description: A sibling file');
+    symlinkSync(join(root, 'metadata.yaml'), join(root, 'one_meta.yaml'));
+    symlinkSync(join(outside, 'metadata.yaml'), join(root, 'two_meta.yaml'));
+    const entries = new Map(scanExtensions(root, 8, true).map((entry) => [entry.canonicalId, entry]));
+    expect(entries.get('one')?.metaPath).toBe(realpathSync.native(join(root, 'metadata.yaml')));
+    expect(entries.get('two')?.metaPath).toBeNull();
+    expect(scanExtensions(root, 8, false).every((entry) => entry.metaPath === null)).toBe(true);
   });
 
   it('still follows a symlink whose target stays INSIDE the root', () => {

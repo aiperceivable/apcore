@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use crate::config::Config;
 use crate::errors::{ErrorCode, ModuleError};
-use crate::schema::ref_resolver::{RefResolver, DEFAULT_MAX_REF_DEPTH};
+use crate::schema::ref_resolver::{contained_schema_file, RefResolver, DEFAULT_MAX_REF_DEPTH};
 use crate::schema::SchemaDefinition;
 
 /// Strategy for loading schemas when both YAML and native definitions exist.
@@ -197,6 +197,13 @@ impl SchemaLoader {
             return Self::value_to_schema_def(module_id, value.clone());
         }
 
+        if !crate::registry::registry::module_id_pattern().is_match(module_id) {
+            return Err(ModuleError::new(
+                ErrorCode::SchemaNotFound,
+                "A canonical module ID is required for on-disk schema lookup",
+            ));
+        }
+
         // 2. Try to find a file on disk.
         let base = self
             .schemas_dir
@@ -213,17 +220,20 @@ impl SchemaLoader {
             base.join(format!("{module_path}.schema.json")),
         ];
 
+        let physical_root = base.canonicalize().ok();
         let mut last_err: Option<ModuleError> = None;
         for path in &candidates {
-            if path.exists() {
-                let value = Self::read_schema_file(path)?;
-                // Resolve `$ref`s against this file's directory before shaping
-                // the definition, so circular / too-deep / unresolvable
-                // references fail at load time as they do in Python and TS.
-                let value = self.resolve(&value, Some(path))?;
-                let definition = Self::value_to_schema_def(module_id, value.clone())?;
-                self.schemas.insert(module_id.to_string(), value);
-                return Ok(definition);
+            if let Some(root) = physical_root.as_ref() {
+                if let Some(physical) = contained_schema_file(root, path)? {
+                    let value = Self::read_schema_file(&physical)?;
+                    // Resolve `$ref`s against this file's directory before shaping
+                    // the definition, so circular / too-deep / unresolvable
+                    // references fail at load time as they do in Python and TS.
+                    let value = self.resolve(&value, Some(path))?;
+                    let definition = Self::value_to_schema_def(module_id, value.clone())?;
+                    self.schemas.insert(module_id.to_string(), value);
+                    return Ok(definition);
+                }
             }
             last_err = Some(ModuleError::new(
                 ErrorCode::SchemaNotFound,

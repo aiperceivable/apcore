@@ -409,6 +409,81 @@ pub struct BindingLoader {
     limits: ValidationLimits,
 }
 
+fn read_schema_reference(
+    binding_dir: &Path,
+    source_path: &Path,
+    schema_root: Option<&Path>,
+    reference: &Path,
+) -> Result<ResolvedSchemas, ModuleError> {
+    let invalid = |reason| {
+        ModuleError::new(
+            ErrorCode::BindingFileInvalid,
+            format!("{}: schema_ref {reason}", source_path.display()),
+        )
+    };
+    if reference.as_os_str().is_empty()
+        || reference.has_root()
+        || matches!(
+            reference.components().next(),
+            Some(std::path::Component::Prefix(_))
+        )
+    {
+        return Err(invalid("must be a non-empty relative path"));
+    }
+    let binding_root = if binding_dir.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        binding_dir
+    }
+    .canonicalize()
+    .map_err(|_| invalid("binding directory is not readable"))?;
+    let resolved = binding_root
+        .join(reference)
+        .canonicalize()
+        .map_err(|_| invalid("file is not readable"))?;
+    if !resolved.starts_with(&binding_root)
+        && !reference_in_schema_root(&resolved, &binding_root, schema_root)
+    {
+        return Err(invalid(
+            "resolves outside the binding directory and schema root",
+        ));
+    }
+
+    let content =
+        std::fs::read_to_string(&resolved).map_err(|_| invalid("file is not readable"))?;
+    let doc: serde_json::Value =
+        serde_yaml::from_str(&content).map_err(|_| invalid("file has invalid YAML"))?;
+    let doc = doc
+        .as_object()
+        .ok_or_else(|| invalid("file must be a mapping"))?;
+    let schema = |name| match doc.get(name) {
+        Some(value @ serde_json::Value::Object(_)) => Ok(value.clone()),
+        Some(_) => Err(invalid("input_schema and output_schema must be mappings")),
+        None => Ok(serde_json::Value::Object(serde_json::Map::new())),
+    };
+    Ok(ResolvedSchemas {
+        input: schema("input_schema")?,
+        output: schema("output_schema")?,
+    })
+}
+
+fn reference_in_schema_root(
+    reference: &Path,
+    binding_root: &Path,
+    schema_root: Option<&Path>,
+) -> bool {
+    if let Some(root) = schema_root {
+        return root
+            .canonicalize()
+            .is_ok_and(|root| reference.starts_with(root));
+    }
+    // The conventional sibling is permitted, but it cannot redirect access
+    // elsewhere. An explicitly configured root may itself be a symlink.
+    binding_root
+        .parent()
+        .is_some_and(|parent| reference.starts_with(parent.join("schemas")))
+}
+
 impl BindingLoader {
     /// Create a new empty binding loader.
     #[must_use]
@@ -441,11 +516,15 @@ impl BindingLoader {
                 format!("Failed to parse binding JSON '{}': {}", path.display(), e),
             )
         })?;
-        self.ingest(file, path)
+        self.ingest(file, path, None)
     }
 
     /// Load bindings from a YAML file.
     pub fn load_from_yaml(&mut self, path: &Path) -> Result<(), ModuleError> {
+        self.load_yaml(path, None)
+    }
+
+    fn load_yaml(&mut self, path: &Path, schema_root: Option<&Path>) -> Result<(), ModuleError> {
         let content = std::fs::read_to_string(path).map_err(|e| {
             ModuleError::new(
                 ErrorCode::BindingFileInvalid,
@@ -465,11 +544,16 @@ impl BindingLoader {
                 format!("Failed to parse binding YAML '{}': {}", path.display(), e),
             )
         })?;
-        self.ingest(file, path)
+        self.ingest(file, path, schema_root)
     }
 
     /// Common ingestion path after parsing into [`BindingsFile`].
-    fn ingest(&mut self, file: BindingsFile, source_path: &Path) -> Result<(), ModuleError> {
+    fn ingest(
+        &mut self,
+        file: BindingsFile,
+        source_path: &Path,
+        schema_root: Option<&Path>,
+    ) -> Result<(), ModuleError> {
         match file.spec_version.as_deref() {
             None => {
                 tracing::warn!(
@@ -501,7 +585,7 @@ impl BindingLoader {
             // (parity with apcore-python / apcore-typescript).
             entry.source_file = Some(source_path.display().to_string());
             let module_id = entry.module_id.clone();
-            let schemas = self.resolve_schemas(&entry, dir, source_path)?;
+            let schemas = self.resolve_schemas(&entry, dir, source_path, schema_root)?;
             self.schemas.insert(module_id.clone(), schemas);
             self.bindings.insert(module_id, entry);
         }
@@ -513,13 +597,14 @@ impl BindingLoader {
     /// Detects mode conflicts (multiple schema fields specified together)
     /// and loads `schema_ref` external files. For Rust, `auto_schema` is
     /// deferred until registration supplies the target's typed handler schemas.
-    #[allow(clippy::unused_self)]
+    #[allow(clippy::unused_self)] // Kept with the loader's schema-resolution pipeline.
     #[allow(clippy::too_many_lines)] // one linear mode-resolution ladder (§3.4); each arm returns, so splitting would fragment the decision order
     fn resolve_schemas(
         &self,
         entry: &BindingEntry,
         binding_dir: &Path,
         source_path: &Path,
+        schema_root: Option<&Path>,
     ) -> Result<ResolvedSchemas, ModuleError> {
         let modes = detect_modes(entry);
         if modes.len() > 1 {
@@ -556,44 +641,12 @@ impl BindingLoader {
 
         // Mode 2: external file reference
         if let Some(ref_str) = &entry.schema_ref {
-            let ref_path: PathBuf = binding_dir.join(ref_str);
-            let ref_content = std::fs::read_to_string(&ref_path).map_err(|e| {
-                ModuleError::new(
-                    ErrorCode::BindingFileInvalid,
-                    format!(
-                        "{}: schema_ref file '{}' not readable: {}",
-                        source_path.display(),
-                        ref_path.display(),
-                        e,
-                    ),
-                )
-            })?;
-            let ref_doc: serde_yaml::Value = serde_yaml::from_str(&ref_content).map_err(|e| {
-                ModuleError::new(
-                    ErrorCode::BindingFileInvalid,
-                    format!(
-                        "{}: schema_ref file '{}' YAML parse error: {}",
-                        source_path.display(),
-                        ref_path.display(),
-                        e,
-                    ),
-                )
-            })?;
-            let input = serde_yaml::from_value::<serde_json::Value>(
-                ref_doc
-                    .get("input_schema")
-                    .cloned()
-                    .unwrap_or(serde_yaml::Value::Null),
-            )
-            .unwrap_or(serde_json::Value::Object(serde_json::Map::default()));
-            let output = serde_yaml::from_value::<serde_json::Value>(
-                ref_doc
-                    .get("output_schema")
-                    .cloned()
-                    .unwrap_or(serde_yaml::Value::Null),
-            )
-            .unwrap_or(serde_json::Value::Object(serde_json::Map::default()));
-            return Ok(ResolvedSchemas { input, output });
+            return read_schema_reference(
+                binding_dir,
+                source_path,
+                schema_root,
+                Path::new(ref_str),
+            );
         }
 
         // Mode 3: explicit auto_schema (any value) OR implicit default
@@ -753,9 +806,13 @@ impl BindingLoader {
 
         entries.sort_by_key(std::fs::DirEntry::file_name);
 
+        let schema_root = config.map(|cfg| {
+            cfg.get_path("schema.root")
+                .unwrap_or_else(|| cfg.resolve_path("./schemas"))
+        });
         let before = self.bindings.len();
         for entry in entries {
-            self.load_from_yaml(&entry.path())?;
+            self.load_yaml(&entry.path(), schema_root.as_deref())?;
         }
         Ok(self.bindings.len() - before)
     }
@@ -795,7 +852,7 @@ impl BindingLoader {
     /// untyped handlers, so no schema can be inferred in any automatic mode.
     /// Use [`Self::register_into_with_typed_handlers`] with
     /// [`typed_handler`] for `auto_schema: strict` bindings.
-    #[allow(clippy::needless_pass_by_value)]
+    #[allow(clippy::needless_pass_by_value)] // Preserve the public API that accepts owned handlers.
     pub fn register_into_with_handlers(
         &self,
         registry: &Registry,
@@ -873,7 +930,7 @@ impl BindingLoader {
     ///
     /// For bindings with explicit `input_schema`/`output_schema` or `schema_ref`,
     /// the YAML-specified schemas take precedence (handler schemas are ignored).
-    #[allow(clippy::needless_pass_by_value)]
+    #[allow(clippy::needless_pass_by_value)] // Preserve the public API that accepts owned handlers.
     pub fn register_into_with_typed_handlers(
         &self,
         registry: &Registry,

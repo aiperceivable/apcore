@@ -19,7 +19,7 @@ const SUPPORTED_LANGUAGES = new Set(Object.keys(SEPARATORS));
 const CASE_BOUNDARY = /(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])/g;
 
 /** Canonical ID format from PROTOCOL_SPEC section 2.7 EBNF grammar. */
-const CANONICAL_ID_RE = /^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$/;
+export const CANONICAL_ID_RE = /^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$/;
 
 function toSnakeCase(segment: string): string {
   if (!segment) return segment;

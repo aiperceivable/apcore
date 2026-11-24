@@ -571,6 +571,10 @@ export class ExecutionStrategy {
     }
     const candidate = [...this._steps];
     candidate.splice(anchorIdx + offset, 0, step);
+    this._publishSteps(candidate);
+  }
+
+  private _publishSteps(candidate: Step[]): void {
     this._validateDependencies(candidate);
     this._steps = candidate;
     this._rebuildIndex();
@@ -585,8 +589,9 @@ export class ExecutionStrategy {
     if (!this._steps[idx].removable) {
       throw new StepNotRemovableError(`Step '${stepName}' is not removable`);
     }
-    this._steps.splice(idx, 1);
-    this._rebuildIndex();
+    const candidate = [...this._steps];
+    candidate.splice(idx, 1);
+    this._publishSteps(candidate);
   }
 
   /** Replace a step by name. Raises if the step is not replaceable. */
@@ -606,8 +611,7 @@ export class ExecutionStrategy {
         `Step '${newStep.name}' already exists at a different position`,
       );
     }
-    this._steps[idx] = newStep;
-    this._rebuildIndex();
+    this._replaceAt(idx, newStep);
   }
 
   /**
@@ -634,8 +638,13 @@ export class ExecutionStrategy {
         `Step '${newStep.name}' already exists at a different position`,
       );
     }
-    this._steps[idx] = newStep;
-    this._rebuildIndex();
+    this._replaceAt(idx, newStep);
+  }
+
+  private _replaceAt(index: number, step: Step): void {
+    const candidate = [...this._steps];
+    candidate[index] = step;
+    this._publishSteps(candidate);
   }
 
   /** Return the ordered list of step names. */

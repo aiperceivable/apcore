@@ -604,12 +604,17 @@ impl RefResolver {
         };
 
         let root = normalize_path(schemas_dir);
+        let physical_root = schemas_dir.canonicalize().ok();
         for candidate in &candidates {
             let resolved = normalize_path(candidate);
             // Containment check: a `../../`-style reference must not escape the
             // schemas root. Checked before the existence probe so a traversal
             // attempt is reported as such rather than as "not found".
-            if !resolved.starts_with(&root) {
+            if !resolved.starts_with(&root)
+                && !physical_root
+                    .as_ref()
+                    .is_some_and(|root| resolved.starts_with(root))
+            {
                 return Err(ModuleError::new(
                     ErrorCode::SchemaNotFound,
                     format!(
@@ -619,8 +624,10 @@ impl RefResolver {
                     ),
                 ));
             }
-            if resolved.is_file() {
-                return Ok(resolved);
+            if let Some(physical_root) = physical_root.as_ref() {
+                if let Some(physical) = contained_schema_file(physical_root, candidate)? {
+                    return Ok(physical);
+                }
             }
         }
 
@@ -683,10 +690,8 @@ fn load_schema_document(path: &Path) -> Result<serde_json::Value, ModuleError> {
 /// Lexically normalize a path (resolve `.` and `..`) and make it absolute
 /// against the current directory.
 ///
-/// `std::fs::canonicalize` is deliberately avoided: it requires the path to
-/// exist (so a traversal attempt would be reported as "not found" instead of
-/// "outside the schemas root") and it resolves symlinks, which would make a
-/// legitimately-symlinked schemas tree fail the containment check.
+/// Used for diagnostics on paths which might not exist. Physical containment
+/// is checked separately before opening a file.
 fn normalize_path(path: &Path) -> PathBuf {
     let absolute = if path.is_absolute() {
         path.to_path_buf()
@@ -706,6 +711,24 @@ fn normalize_path(path: &Path) -> PathBuf {
         }
     }
     out
+}
+
+/// Resolve an existing schema file physically before any read. The supplied
+/// root must already be canonical.
+pub(crate) fn contained_schema_file(
+    root: &Path,
+    path: &Path,
+) -> Result<Option<PathBuf>, ModuleError> {
+    let Ok(physical) = path.canonicalize() else {
+        return Ok(None);
+    };
+    if !physical.starts_with(root) {
+        return Err(ModuleError::new(
+            ErrorCode::SchemaNotFound,
+            "Referenced file resolves outside the schemas root",
+        ));
+    }
+    Ok(physical.is_file().then_some(physical))
 }
 
 impl Default for RefResolver {
