@@ -1,0 +1,52 @@
+implementation:
+  name: apcore-rust
+  version: 0.33.0
+  language: rust
+  spec_version: 1.65.0
+  maintainer: AI Perceivable
+  repository: https://github.com/aiperceivable/apcore-rust
+conformance:
+  level: 0
+  date: '2026-10-08'
+  fixture_results:
+    scope: issue-123-and-canonicalize-name
+    fixtures: 9
+    cases: 79
+    passed: 79
+    failed: 0
+    skipped: 0
+    report:
+      - tests/test_issue_123_conformance.rs
+      - tests/test_canonicalize_name.rs
+    command: cargo test --all-features --test it --test test_issue_123_conformance
+    fixture_names:
+      - binding_file_validation
+      - env_prefix_dispatch
+      - ephemeral_modules
+      - error_details_shape
+      - export_profiles
+      - json_input_native_types
+      - preflight_check_reporting
+      - timeout_cancellation
+      - canonicalize_name
+  known_deviations:
+    - feature: version negotiation on load
+      spec: protocol-spec §13.3
+      reason: The exported negotiation utility is not invoked when loading configuration or schema files.
+      severity: major
+    - feature: schema migration
+      spec: protocol-spec §13.4
+      reason: Automatic schema migration is not implemented.
+      severity: minor
+    - feature: module isolation
+      spec: protocol-spec §5.5
+      reason: Modules execute in the host process without process or container isolation.
+      severity: minor
+    - feature: multi-version selection
+      spec: protocol-spec §5.4
+      reason: Versioned registration preserves multiple versions, but Registry.get has no caller-selectable version hint and resolves the highest registered version.
+      severity: minor
+    - feature: complete fixture inventory certification
+      spec: conformance declaration
+      reason: This declaration certifies the eight issue-123 fixtures and the bare-name fixture only; it does not claim that every canonical fixture case or a higher conformance level was verified.
+      severity: major

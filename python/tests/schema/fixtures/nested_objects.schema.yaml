@@ -1,0 +1,50 @@
+module_id: test.nested_objects
+description: Schema with deeply nested object structure
+version: "1.0.0"
+
+input_schema:
+  type: object
+  properties:
+    config:
+      type: object
+      properties:
+        database:
+          type: object
+          properties:
+            connection:
+              type: object
+              properties:
+                pool:
+                  type: object
+                  properties:
+                    min_size:
+                      type: integer
+                    max_size:
+                      type: integer
+                  required:
+                    - min_size
+                    - max_size
+                host:
+                  type: string
+                port:
+                  type: integer
+              required:
+                - host
+                - port
+            name:
+              type: string
+          required:
+            - connection
+            - name
+        cache_ttl:
+          type: integer
+      required:
+        - database
+  required:
+    - config
+
+output_schema:
+  type: object
+  properties:
+    status:
+      type: string

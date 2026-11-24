@@ -1,0 +1,100 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "apcore"
+version = "0.33.0"
+description = "Build once, invoke by code or AI — with schema, ACL, approval, and audit enforced at every call"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [
+    {name = "aiperceivable", email = "tercel.yi@gmail.com"}
+]
+license = {text = "Apache-2.0"}
+keywords = [
+    "ai",
+    "llm",
+    "framework",
+    "capability-framework",
+    "schema-driven",
+    "pydantic",
+    "middleware",
+    "observability",
+    "tracing",
+    "metrics",
+    "async",
+    "access-control",
+    "registry",
+    "trace-context",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries :: Application Frameworks",
+    "Typing :: Typed",
+]
+dependencies = [
+    # Upper bounds pin the major so a downstream major release (pydantic 3,
+    # pyyaml 7, jsonschema 5) does not silently break installs. Raise the
+    # upper bound deliberately after a compatibility check rather than
+    # absorbing breakage from `pip install --upgrade`.
+    "pydantic>=2.7,<3",
+    "pyyaml>=6.0,<7",
+    "jsonschema>=4.21,<5",
+    "referencing>=0.30,<1",
+]
+
+[project.urls]
+Homepage = "https://aiperceivable.com"
+Documentation = "https://github.com/aiperceivable/apcore"
+Repository = "https://github.com/aiperceivable/apcore/tree/main/python"
+Issues = "https://github.com/aiperceivable/apcore/issues"
+Changelog = "https://github.com/aiperceivable/apcore/blob/main/python/CHANGELOG.md"
+
+[project.optional-dependencies]
+events = [
+    "aiohttp>=3.9",
+]
+dev = [
+    "pytest>=7.0",
+    "pytest-asyncio>=0.23",
+    "pytest-cov>=4.0",
+    # Bound the minor: ruff 0.x treats the minor as its major, and each minor can
+    # change lint defaults and formatter output. Raise deliberately.
+    "ruff>=0.15.0,<0.17",
+    "mypy>=1.0",
+    "apdev[dev]>=0.2.3",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+# Pin the rule set explicitly. Ruff's implicit default selection changes between
+# releases (0.16 widened it from E4/E7/E9/F to a much larger set), which made CI
+# fail on a newer ruff while an older local ruff passed. Widening the selection
+# is a deliberate change, not a side effect of upgrading the linter.
+select = ["E4", "E7", "E9", "F"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+
+[tool.apdev]
+base_package = "apcore"
+src_dir = "src"

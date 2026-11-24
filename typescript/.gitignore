@@ -1,0 +1,11 @@
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+*.d.ts.map
+src/generated/
+.DS_Store
+package-lock.json
+
+# Spec repo schemas — SSOT is in apcore/schemas/, do not copy
+schemas/

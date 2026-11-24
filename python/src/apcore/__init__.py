@@ -1,0 +1,914 @@
+"""apcore - Schema-driven module standard."""
+
+from __future__ import annotations
+
+from collections.abc import AsyncIterator
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _get_version
+from typing import Any
+
+# Core
+from apcore.approval import (
+    AlwaysDenyHandler,
+    ApprovalHandler,
+    ApprovalRequest,
+    ApprovalResult,
+    AutoApproveHandler,
+    CallbackApprovalHandler,
+)
+from apcore.cancel import CancelToken, ExecutionCancelledError
+from apcore.context import Context, ContextFactory, GovernanceProjection, Identity
+from apcore.context_key import ContextKey
+from apcore.context_keys import (
+    LOGGING_START,
+    METRICS_STARTS,
+    REDACTED_OUTPUT,
+    RETRY_COUNT_BASE,
+    TRACING_SAMPLED,
+    TRACING_SPANS,
+)
+from apcore.registry import (
+    DEFAULT_MODULE_VERSION,
+    EPHEMERAL_NAMESPACE_PREFIX,
+    MAX_MODULE_ID_LENGTH,
+    MODULE_ID_PATTERN,
+    REGISTRY_EVENTS,
+    RESERVED_WORDS,
+    Registry,
+    class_name_to_segment,
+    discover_multi_class,
+)
+from apcore.registry.conflicts import (
+    ConflictResult as ConflictResult,
+    ConflictSeverity as ConflictSeverity,
+    ConflictType as ConflictType,
+    detect_id_conflicts as detect_id_conflicts,
+)
+from apcore.registry.registry import Discoverer, ModuleValidator
+from apcore.client import APCore
+from apcore.registry.types import DependencyInfo, DiscoveredModule, ModuleDescriptor
+from apcore.executor import Executor
+from apcore.utils.redaction import REDACTED_VALUE, redact_sensitive
+
+# Module types
+from apcore.module import (
+    Change,
+    DEFAULT_ANNOTATIONS,
+    Module,
+    ModuleAnnotations,
+    ModuleExample,
+    PreflightCheckResult,
+    PreflightResult,
+    PreviewResult,
+    ValidationResult,
+)
+
+# Config
+from apcore.config import (
+    RESERVED_NAMESPACES,
+    Config,
+    discover_config_file,
+)
+
+# Error Formatter
+from apcore.error_formatter import ErrorFormatter, ErrorFormatterRegistry
+from apcore.streaming import StreamingModule
+
+# Errors
+from apcore.errors import (
+    ACLDeniedError,
+    StreamingInterfaceError,
+    ACLRuleError,
+    ApprovalDeniedError,
+    ApprovalError,
+    ApprovalPendingError,
+    ApprovalTimeoutError,
+    BindingCallableNotFoundError,
+    BindingFileInvalidError,
+    BindingInvalidTargetError,
+    BindingModuleNotFoundError,
+    BindingNotCallableError,
+    BindingSchemaInferenceFailedError,
+    BindingSchemaMissingError,
+    BindingSchemaModeConflictError,
+    BindingStrictSchemaIncompatibleError,
+    CallDepthExceededError,
+    CallFrequencyExceededError,
+    CircularCallError,
+    CircularDependencyError,
+    CircuitBreakerOpenError,
+    CircuitOpenError,
+    ConfigBindError,
+    ConfigEnvMapConflictError,
+    ConfigEnvPrefixConflictError,
+    ConfigError,
+    ConfigMountError,
+    ConfigNamespaceDuplicateError,
+    ConfigNamespaceReservedError,
+    ConfigNotFoundError,
+    ContextBindingError,
+    DependencyNotFoundError,
+    DependencyVersionMismatchError,
+    ErrorCodeCollisionError,
+    ErrorCodeRegistry,
+    ErrorCodes,
+    ErrorFormatterDuplicateError,
+    FRAMEWORK_ERROR_CODE_PREFIXES,
+    FuncMissingReturnTypeError,
+    FuncMissingTypeHintError,
+    IdTooLongError,
+    InternalError,
+    InvalidInputError,
+    InvalidParentIdError,
+    InvalidSegmentError,
+    ModuleDisabledError,
+    ModuleIdConflictError,
+    ModuleError,
+    ModuleExecuteError,
+    ModuleLoadError,
+    ModuleNotFoundError,
+    ModuleReloadConflictError,
+    ModuleTimeoutError,
+    ReloadFailedError,
+    SysModuleRegistrationError,
+    SysModulesDisabledError,
+    SchemaCircularRefError,
+    SchemaMaxDepthExceededError,
+    SchemaNotFoundError,
+    SchemaParseError,
+    SchemaValidationError,
+    TaskLimitExceededError,
+    TaskStoreError,
+    VersionConstraintError,
+)
+
+# ACL
+from apcore.acl import (
+    ACL,
+    AccessDecision,
+    ACLRule,
+    AuditEntry,
+    ConditionOutcome,
+    RuleValidationFinding,
+)
+
+# Execution-time governance policy (apcore#76 RFC pilot)
+from apcore.policy import ExecutionPolicy, PolicyDecision, PolicyRule
+
+# Middleware
+from apcore.middleware import (
+    APCORE_KEY_PREFIX,
+    EXT_KEY_PREFIX,
+    AfterMiddleware,
+    BeforeMiddleware,
+    CircuitBreakerMiddleware,
+    CircuitBreakerState,
+    ErrorHistoryMiddleware,
+    LoggingMiddleware,
+    Middleware,
+    MiddlewareChainError,
+    MiddlewareManager,
+    NamespaceCheck,
+    PlatformNotifyMiddleware,
+    RetryConfig,
+    RetryMiddleware,
+    RetrySignal,
+    validate_context_key,
+)
+
+# Decorators
+from apcore.decorator import FunctionModule
+from apcore._docstrings import parse_docstring as parse_docstring
+
+# Extensions
+from apcore.extensions import ExtensionManager, ExtensionPoint
+
+# Async tasks
+from apcore.async_task import (
+    AsyncTaskManager,
+    BackoffStrategy,
+    InMemoryTaskStore,
+    RetryConfig as AsyncRetryConfig,
+    RetryPolicy,
+    TaskInfo,
+    TaskStatus,
+    TaskStore,
+)
+
+# Bindings
+from apcore.bindings import BindingLoader
+
+# Schema
+from apcore.schema import (
+    ExportProfile as ExportProfile,
+    SchemaLoader as SchemaLoader,
+    SchemaStrategy as SchemaStrategy,
+    SchemaValidator as SchemaValidator,
+    SchemaExporter as SchemaExporter,
+    RefResolver as RefResolver,
+    to_strict_schema as to_strict_schema,
+)
+
+# Version negotiation (A14)
+from apcore.version import VersionIncompatibleError as VersionIncompatibleError
+from apcore.version import negotiate_version as negotiate_version
+
+# Utilities
+from apcore.utils import match_pattern as match_pattern
+from apcore.utils.call_chain import guard_call_chain as guard_call_chain
+from apcore.utils.call_chain import DEFAULT_MAX_CALL_DEPTH as DEFAULT_MAX_CALL_DEPTH
+from apcore.utils.call_chain import (
+    DEFAULT_MAX_MODULE_REPEAT as DEFAULT_MAX_MODULE_REPEAT,
+)
+from apcore.utils.error_propagation import propagate_error as propagate_error
+from apcore.utils.normalize import (
+    CanonicalNameError as CanonicalNameError,
+    CanonicalNameResult as CanonicalNameResult,
+    canonicalize_name as canonicalize_name,
+    normalize_to_canonical_id as normalize_to_canonical_id,
+)
+from apcore.utils.pattern import calculate_specificity as calculate_specificity
+
+# Observability
+from apcore.observability import (
+    ContextLogger,
+    ErrorEntry,
+    ErrorHistory,
+    InMemoryExporter,
+    InMemoryStorageBackend,
+    MetricsCollector,
+    MetricsMiddleware,
+    NoopUsageExporter,
+    ObsLoggingMiddleware,
+    OTLPExporter,
+    PeriodicUsageExporter,
+    Span,
+    SpanExporter,
+    StdoutExporter,
+    StorageBackend,
+    TracingMiddleware,
+    UsageCollector,
+    UsageExporter,
+    UsageMiddleware,
+    create_span,
+)
+from apcore.observability.metrics import (
+    METRIC_CALLS_TOTAL,
+    METRIC_DURATION_SECONDS,
+)
+
+# Events
+from apcore.events import (
+    A2ASubscriber,
+    ApCoreEvent,
+    EventEmitter,
+    EventRetryConfig,
+    EventSubscriber,
+    FileSubscriber,
+    FilterSubscriber,
+    StdoutSubscriber,
+    WebhookSubscriber,
+    create_subscriber_from_config,
+    register_subscriber_factory,
+)
+
+# NOTE (audit D1-003, 2026-05-28): the events-layer circuit-breaker types
+# `CircuitBreakerWrapper` / `CircuitState` are intentionally NOT re-exported at
+# the top level. TypeScript and Rust export them at the package/crate root, but
+# Python deliberately keeps them under `apcore.events.circuit_breaker` to avoid
+# resurrecting a top-level `CircuitState` name (the middleware enum of that name
+# was renamed to `CircuitBreakerState`; a top-level `CircuitState` would be
+# ambiguous). This divergence is enforced by
+# tests/test_circuit_breaker_middleware.py::test_old_middleware_circuit_state_name_is_gone.
+
+# Pipeline
+from apcore.pipeline import (
+    BaseStep,
+    ConfigurationError,
+    ExecutionStrategy,
+    PipelineAbortError,
+    PipelineContext,
+    PipelineDependencyError,
+    PipelineEngine,
+    PipelineState,
+    PipelineStepError,
+    PipelineStepNotFoundError,
+    PipelineTrace,
+    Step,
+    StepMiddleware,
+    StepNameDuplicateError,
+    StepNotFoundError,
+    StepNotRemovableError,
+    StepNotReplaceableError,
+    StepResult,
+    StepTrace,
+    GovernanceState,
+    StrategyInfo,
+    StrategyNotFoundError,
+)
+
+# Pipeline Configuration
+from apcore.pipeline_config import (
+    build_strategy_from_config,
+    register_step_type,
+    registered_step_types,
+    unregister_step_type,
+)
+
+# Pipeline Preset Builders (parity with apcore-typescript and apcore-rust)
+from apcore.builtin_steps import (
+    BuiltinACLCheck,
+    BuiltinApprovalGate,
+    BuiltinCallChainGuard,
+    BuiltinContextCreation,
+    BuiltinExecute,
+    BuiltinInputValidation,
+    BuiltinMiddlewareAfter,
+    BuiltinMiddlewareBefore,
+    BuiltinModuleLookup,
+    BuiltinOutputValidation,
+    BuiltinReturnResult,
+    build_internal_strategy,
+    build_minimal_strategy,
+    build_performance_strategy,
+    build_standard_strategy,
+    build_testing_strategy,
+)
+
+# Trace Context
+from apcore.trace_context import TraceContext, TraceParent
+
+# System Modules
+from apcore.sys_modules.registration import (
+    SysModulesContext,
+    register_sys_modules,
+)
+
+# Deprecated subscriber-type APIs — kept importable for back-compat, but
+# NOT listed in __all__ so they don't appear in `from apcore import *`
+# or in IDE auto-completion for new code. Use EventEmitter.subscribe()
+# directly.
+from apcore.sys_modules.registration import (  # noqa: F401
+    register_subscriber_type as register_subscriber_type,
+    reset_subscriber_registry as reset_subscriber_registry,
+    unregister_subscriber_type as unregister_subscriber_type,
+)
+from apcore.sys_modules.health import (
+    HealthModule,
+    HealthSummaryModule,
+    classify_health_status,
+)
+from apcore.sys_modules.manifest import (
+    ManifestFullModule,
+    ManifestModule,
+)
+from apcore.sys_modules.usage import (
+    UsageModule,
+    UsageSummaryModule,
+)
+from apcore.sys_modules.control import (
+    ReloadModule,
+    ToggleFeatureModule,
+    ToggleState,
+    UpdateConfigModule,
+)
+from apcore.sys_modules.overrides import (
+    FileOverridesStore,
+    InMemoryOverridesStore,
+    OverridesStore,
+)
+
+# ---------------------------------------------------------------------------
+# Default client for simplified global access
+# ---------------------------------------------------------------------------
+
+# Module-level convenience wrappers — **Python-SDK-only**.
+#
+# These forward to a lazily-created default :class:`APCore` singleton. The
+# TypeScript and Rust SDKs have no counterpart; users in those languages
+# must construct a client explicitly. This is intentional — the Python
+# convenience is optional syntactic sugar, not part of the cross-language
+# apcore contract documented in the protocol spec.
+#
+# The client is allocated on first use (not at import) so
+# ``import apcore`` stays cheap (no Registry/Executor instantiation, no
+# cached event loop). Callers that want deterministic teardown can call
+# :func:`apcore.close` to release the Executor's sync loop; a subsequent
+# call reconstructs a fresh client.
+
+# Backing cache for the lazy default client. The public name
+# ``apcore._default_client`` is resolved via :func:`__getattr__` (PEP 562)
+# so the attribute is *absent* until someone looks at it — preserving the
+# "no work at import" guarantee.
+_CACHED_DEFAULT_CLIENT: APCore | None = None
+
+
+def _get_default_client() -> APCore:
+    """Return the process-default APCore, creating it lazily on first use."""
+    global _CACHED_DEFAULT_CLIENT
+    if _CACHED_DEFAULT_CLIENT is None:
+        _CACHED_DEFAULT_CLIENT = APCore()
+    return _CACHED_DEFAULT_CLIENT
+
+
+def close() -> None:
+    """Release the default APCore client, if one was created.
+
+    Closes the cached sync event loop inside the Executor. Safe to call
+    multiple times. After ``close()``, a subsequent convenience-function
+    call (``call()``, ``register()``, ...) lazily creates a fresh client.
+    """
+    global _CACHED_DEFAULT_CLIENT
+    if _CACHED_DEFAULT_CLIENT is not None:
+        _CACHED_DEFAULT_CLIENT.close()
+        _CACHED_DEFAULT_CLIENT = None
+
+
+def __getattr__(name: str) -> Any:
+    """PEP 562 lazy attribute access for the default-client singleton.
+
+    Access to ``apcore._default_client`` returns the same object the
+    convenience functions call; allocates it on first access. Other names
+    fall through to ``AttributeError``.
+    """
+    if name == "_default_client":
+        return _get_default_client()
+    raise AttributeError(f"module 'apcore' has no attribute {name!r}")
+
+
+def call(
+    module_id: str,
+    inputs: dict[str, Any] | None = None,
+    context: Context | None = None,
+    version_hint: str | None = None,
+) -> dict[str, Any]:
+    """Global convenience for _default_client.call()."""
+    return _get_default_client().call(module_id, inputs, context, version_hint=version_hint)
+
+
+async def call_async(
+    module_id: str,
+    inputs: dict[str, Any] | None = None,
+    context: Context | None = None,
+    version_hint: str | None = None,
+) -> dict[str, Any]:
+    """Global convenience for _default_client.call_async()."""
+    return await _get_default_client().call_async(module_id, inputs, context, version_hint=version_hint)
+
+
+def module(
+    id: str | None = None,  # noqa: A002
+    description: str | None = None,
+    documentation: str | None = None,
+    annotations: dict[str, Any] | None = None,
+    tags: list[str] | None = None,
+    version: str = "1.0.0",
+    metadata: dict[str, Any] | None = None,
+    display: dict[str, Any] | None = None,
+    examples: list[Any] | None = None,
+    registry: Any = None,
+    *,
+    resources: dict[str, Any] | None = None,
+) -> Any:
+    """Register a module on the default APCore instance.
+
+    This wrapper accepts an extra ``registry`` keyword argument not present on
+    APCore.module() — it is an intentional escape hatch that lets global-decorator
+    usage target a specific Registry instance rather than the default one.
+    """
+    if registry is not None:
+        from apcore.decorator import module as original_module
+
+        return original_module(
+            id=id,
+            description=description,
+            documentation=documentation,
+            annotations=annotations,
+            tags=tags,
+            version=version,
+            metadata=metadata,
+            display=display,
+            examples=examples,
+            registry=registry,
+            resources=resources,
+        )
+    return _get_default_client().module(
+        id=id,
+        description=description,
+        documentation=documentation,
+        annotations=annotations,
+        tags=tags,
+        version=version,
+        metadata=metadata,
+        display=display,
+        examples=examples,
+        resources=resources,
+    )
+
+
+async def stream(
+    module_id: str,
+    inputs: dict[str, Any] | None = None,
+    context: Context | None = None,
+    version_hint: str | None = None,
+) -> AsyncIterator[dict[str, Any]]:
+    """Global convenience for _default_client.stream()."""
+    async for chunk in _get_default_client().stream(module_id, inputs, context, version_hint=version_hint):
+        yield chunk
+
+
+def validate(module_id: str, inputs: dict[str, Any] | None = None, context: Context | None = None) -> PreflightResult:
+    """Global convenience for _default_client.validate()."""
+    return _get_default_client().validate(module_id, inputs, context)
+
+
+def register(module_id: str, module_obj: Any) -> None:
+    """Global convenience for _default_client.register()."""
+    _get_default_client().register(module_id, module_obj)
+
+
+def describe(module_id: str) -> str:
+    """Global convenience for _default_client.describe()."""
+    return _get_default_client().describe(module_id)
+
+
+def use(middleware: Any) -> APCore:
+    """Global convenience for _default_client.use()."""
+    return _get_default_client().use(middleware)
+
+
+def use_before(callback: Any) -> APCore:
+    """Global convenience for _default_client.use_before()."""
+    return _get_default_client().use_before(callback)
+
+
+def use_after(callback: Any) -> APCore:
+    """Global convenience for _default_client.use_after()."""
+    return _get_default_client().use_after(callback)
+
+
+def remove(middleware: Any) -> bool:
+    """Global convenience for _default_client.remove()."""
+    return _get_default_client().remove(middleware)
+
+
+def discover() -> int:
+    """Global convenience for _default_client.discover()."""
+    return _get_default_client().discover()
+
+
+def list_modules(tags: list[str] | None = None, prefix: str | None = None) -> list[str]:
+    """Global convenience for _default_client.list_modules()."""
+    return _get_default_client().list_modules(tags=tags, prefix=prefix)
+
+
+def on(event_type: str, handler: Any) -> EventSubscriber:
+    """Global convenience for _default_client.on()."""
+    return _get_default_client().on(event_type, handler)
+
+
+def off(subscriber: EventSubscriber) -> None:
+    """Global convenience for _default_client.off()."""
+    _get_default_client().off(subscriber)
+
+
+def disable(module_id: str, reason: str = "Disabled via APCore client") -> dict[str, Any]:
+    """Global convenience for _default_client.disable()."""
+    return _get_default_client().disable(module_id, reason)
+
+
+def enable(module_id: str, reason: str = "Enabled via APCore client") -> dict[str, Any]:
+    """Global convenience for _default_client.enable()."""
+    return _get_default_client().enable(module_id, reason)
+
+
+try:
+    __version__ = _get_version("apcore")
+except PackageNotFoundError:
+    __version__ = "unknown"
+
+__all__ = [
+    # Core
+    "CancelToken",
+    "ExecutionCancelledError",
+    "Context",
+    "ContextFactory",
+    "ContextKey",
+    "TRACING_SPANS",
+    "TRACING_SAMPLED",
+    "METRICS_STARTS",
+    "LOGGING_START",
+    "REDACTED_OUTPUT",
+    "RETRY_COUNT_BASE",
+    "GovernanceProjection",
+    "Identity",
+    "Registry",
+    "Executor",
+    "APCore",
+    "close",
+    "call",
+    "call_async",
+    "stream",
+    "validate",
+    "register",
+    "describe",
+    "use",
+    "use_before",
+    "use_after",
+    "remove",
+    "discover",
+    "list_modules",
+    "on",
+    "off",
+    "disable",
+    "enable",
+    # Approval
+    "ApprovalHandler",
+    "ApprovalRequest",
+    "ApprovalResult",
+    "AlwaysDenyHandler",
+    "AutoApproveHandler",
+    "CallbackApprovalHandler",
+    # Module types
+    "Change",
+    "DEFAULT_ANNOTATIONS",
+    "Module",
+    "ModuleAnnotations",
+    "ModuleExample",
+    "ValidationResult",
+    "PreflightCheckResult",
+    "PreflightResult",
+    "PreviewResult",
+    # Registry types
+    "ModuleDescriptor",
+    "DiscoveredModule",
+    "DependencyInfo",
+    # ID conflict detection
+    "ConflictResult",
+    "ConflictSeverity",
+    "ConflictType",
+    "detect_id_conflicts",
+    # Config
+    "Config",
+    "RESERVED_NAMESPACES",
+    "discover_config_file",
+    # Error Formatter
+    "ErrorFormatter",
+    "ErrorFormatterRegistry",
+    # Streaming
+    "StreamingModule",
+    # Registry protocols
+    "Discoverer",
+    "ModuleValidator",
+    # Multi-class discovery
+    "class_name_to_segment",
+    "discover_multi_class",
+    # Registry module-id constants (parity with apcore-typescript / apcore-rust
+    # root exports; previously reachable only via apcore.registry.registry)
+    "DEFAULT_MODULE_VERSION",
+    "EPHEMERAL_NAMESPACE_PREFIX",
+    "MAX_MODULE_ID_LENGTH",
+    "MODULE_ID_PATTERN",
+    "REGISTRY_EVENTS",
+    "RESERVED_WORDS",
+    # Errors
+    "ErrorCodes",
+    "ModuleError",
+    "ACLDeniedError",
+    "ACLRuleError",
+    "ApprovalError",
+    "ApprovalDeniedError",
+    "ApprovalTimeoutError",
+    "ApprovalPendingError",
+    "BindingCallableNotFoundError",
+    "BindingFileInvalidError",
+    "BindingInvalidTargetError",
+    "BindingModuleNotFoundError",
+    "BindingNotCallableError",
+    "BindingSchemaInferenceFailedError",
+    "BindingSchemaMissingError",
+    "BindingSchemaModeConflictError",
+    "BindingStrictSchemaIncompatibleError",
+    "CallDepthExceededError",
+    "CallFrequencyExceededError",
+    "CircuitBreakerOpenError",
+    "CircuitOpenError",
+    "CircularCallError",
+    "CircularDependencyError",
+    "ConfigBindError",
+    "ConfigEnvMapConflictError",
+    "ConfigEnvPrefixConflictError",
+    "ConfigError",
+    "ConfigMountError",
+    "ConfigNamespaceDuplicateError",
+    "ConfigNamespaceReservedError",
+    "ConfigNotFoundError",
+    "ContextBindingError",
+    "DependencyNotFoundError",
+    "DependencyVersionMismatchError",
+    "ErrorFormatterDuplicateError",
+    "ErrorCodeCollisionError",
+    "ErrorCodeRegistry",
+    "FRAMEWORK_ERROR_CODE_PREFIXES",
+    "FuncMissingReturnTypeError",
+    "FuncMissingTypeHintError",
+    "IdTooLongError",
+    "InternalError",
+    "InvalidInputError",
+    "InvalidParentIdError",
+    "InvalidSegmentError",
+    "ModuleDisabledError",
+    "ModuleExecuteError",
+    "ModuleIdConflictError",
+    "ModuleLoadError",
+    "ModuleNotFoundError",
+    "ModuleReloadConflictError",
+    "ReloadFailedError",
+    "SysModuleRegistrationError",
+    "SysModulesDisabledError",
+    "StreamingInterfaceError",
+    "ModuleTimeoutError",
+    "SchemaCircularRefError",
+    "SchemaMaxDepthExceededError",
+    "SchemaNotFoundError",
+    "SchemaParseError",
+    "SchemaValidationError",
+    "TaskLimitExceededError",
+    "TaskStoreError",
+    "VersionConstraintError",
+    # ACL
+    "ACL",
+    "ACLRule",
+    "AccessDecision",
+    "AuditEntry",
+    "ConditionOutcome",
+    "RuleValidationFinding",
+    # Execution-time governance policy (apcore#76 RFC pilot)
+    "ExecutionPolicy",
+    "PolicyDecision",
+    "PolicyRule",
+    # Middleware
+    "Middleware",
+    "RetrySignal",
+    "MiddlewareManager",
+    "BeforeMiddleware",
+    "AfterMiddleware",
+    "LoggingMiddleware",
+    "MiddlewareChainError",
+    "NamespaceCheck",
+    "validate_context_key",
+    "APCORE_KEY_PREFIX",
+    "EXT_KEY_PREFIX",
+    "RetryConfig",
+    "RetryMiddleware",
+    "ErrorHistoryMiddleware",
+    "PlatformNotifyMiddleware",
+    "CircuitBreakerMiddleware",
+    "CircuitBreakerState",
+    # Decorators
+    "module",
+    "FunctionModule",
+    # NOTE: parse_docstring is intentionally NOT in __all__ — it is an
+    #       implementation detail importable via apcore._docstrings.
+    # Extensions
+    "ExtensionManager",
+    "ExtensionPoint",
+    # Async tasks
+    "AsyncTaskManager",
+    "TaskStatus",
+    "TaskInfo",
+    "TaskStore",
+    "InMemoryTaskStore",
+    "AsyncRetryConfig",
+    "RetryPolicy",
+    "BackoffStrategy",
+    # Bindings
+    "BindingLoader",
+    # Schema
+    "SchemaStrategy",
+    "ExportProfile",
+    "SchemaLoader",
+    "SchemaValidator",
+    "SchemaExporter",
+    "RefResolver",
+    "to_strict_schema",
+    # Utilities
+    "match_pattern",
+    "guard_call_chain",
+    "DEFAULT_MAX_CALL_DEPTH",
+    "DEFAULT_MAX_MODULE_REPEAT",
+    "normalize_to_canonical_id",
+    "canonicalize_name",
+    "CanonicalNameError",
+    "CanonicalNameResult",
+    "calculate_specificity",
+    "propagate_error",
+    "redact_sensitive",
+    "REDACTED_VALUE",
+    # Observability
+    "TracingMiddleware",
+    "ContextLogger",
+    "ObsLoggingMiddleware",
+    "MetricsMiddleware",
+    "METRIC_CALLS_TOTAL",
+    "METRIC_DURATION_SECONDS",
+    "MetricsCollector",
+    "Span",
+    "StdoutExporter",
+    "InMemoryExporter",
+    "OTLPExporter",
+    "SpanExporter",
+    "create_span",
+    "ErrorEntry",
+    "ErrorHistory",
+    "StorageBackend",
+    "InMemoryStorageBackend",
+    "UsageCollector",
+    "UsageExporter",
+    "UsageMiddleware",
+    "NoopUsageExporter",
+    "PeriodicUsageExporter",
+    # Events
+    "ApCoreEvent",
+    "EventEmitter",
+    "EventSubscriber",
+    "EventRetryConfig",
+    "WebhookSubscriber",
+    "A2ASubscriber",
+    "FileSubscriber",
+    "StdoutSubscriber",
+    "FilterSubscriber",
+    "register_subscriber_factory",
+    "create_subscriber_from_config",
+    # Trace Context
+    "TraceContext",
+    "TraceParent",
+    # Version
+    "VersionIncompatibleError",
+    "negotiate_version",
+    # Pipeline
+    "Step",
+    "BaseStep",
+    "StepMiddleware",
+    "StepResult",
+    "PipelineContext",
+    "PipelineEngine",
+    "PipelineTrace",
+    "StepTrace",
+    "ExecutionStrategy",
+    "GovernanceState",
+    "StrategyInfo",
+    "PipelineAbortError",
+    "PipelineState",
+    "PipelineStepError",
+    "PipelineStepNotFoundError",
+    "StepNotFoundError",
+    "StepNotRemovableError",
+    "StepNotReplaceableError",
+    "StepNameDuplicateError",
+    "StrategyNotFoundError",
+    "ConfigurationError",
+    "PipelineDependencyError",
+    # Pipeline Configuration
+    "register_step_type",
+    "unregister_step_type",
+    "registered_step_types",
+    "build_strategy_from_config",
+    # Pipeline Preset Builders (parity with apcore-typescript / apcore-rust)
+    "build_standard_strategy",
+    "build_internal_strategy",
+    "build_testing_strategy",
+    "build_performance_strategy",
+    "build_minimal_strategy",
+    # Builtin Pipeline Steps (parity with apcore-typescript / apcore-rust)
+    "BuiltinContextCreation",
+    "BuiltinCallChainGuard",
+    "BuiltinModuleLookup",
+    "BuiltinACLCheck",
+    "BuiltinApprovalGate",
+    "BuiltinMiddlewareBefore",
+    "BuiltinInputValidation",
+    "BuiltinExecute",
+    "BuiltinOutputValidation",
+    "BuiltinMiddlewareAfter",
+    "BuiltinReturnResult",
+    # System Modules
+    "register_sys_modules",
+    "SysModulesContext",
+    # System Module Implementations
+    "HealthSummaryModule",
+    "HealthModule",
+    "classify_health_status",
+    "ManifestFullModule",
+    "ManifestModule",
+    "UsageSummaryModule",
+    "UsageModule",
+    "UpdateConfigModule",
+    "ReloadModule",
+    "ToggleFeatureModule",
+    "ToggleState",
+    # Overrides Store (cross-language alignment with TS / Rust)
+    "OverridesStore",
+    "InMemoryOverridesStore",
+    "FileOverridesStore",
+]

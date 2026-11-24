@@ -1,0 +1,27 @@
+repos:
+
+  # apdev hooks
+  - repo: local
+    hooks:
+      - id: check-chars
+        name: apdev check-chars
+        entry: apdev check-chars
+        language: system
+        types_or: [text, python]
+
+      - id: check-imports
+        name: apdev check-imports
+        entry: apdev check-imports
+        language: system
+        pass_filenames: false
+        always_run: true
+
+  # Ruff linter and formatter
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.8.4
+    hooks:
+      - id: ruff
+        args: [--fix]
+        files: ^(src|tests)/
+      - id: ruff-format
+        files: ^(src|tests)/

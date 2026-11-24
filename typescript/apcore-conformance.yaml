@@ -1,0 +1,55 @@
+# Conservative declaration: issue #123 fixtures and public bare-name normalization.
+# It does not certify every fixture required by Level 1 or Level 2.
+implementation:
+  name: apcore-typescript
+  version: "0.33.0"
+  language: typescript
+  spec_version: "1.65.0"
+  maintainer: AI Perceivable
+  repository: https://github.com/aiperceivable/apcore-typescript
+
+conformance:
+  level: 0
+  date: "2026-10-08"
+  fixture_results:
+    scope: issue-123-and-canonicalize-name
+    fixtures: 9
+    fixture_names:
+      - binding_file_validation
+      - env_prefix_dispatch
+      - ephemeral_modules
+      - error_details_shape
+      - export_profiles
+      - json_input_native_types
+      - preflight_check_reporting
+      - timeout_cancellation
+      - canonicalize_name
+    cases: 79
+    passed: 79
+    failed: 0
+    skipped: 0
+    report:
+      - tests/conformance-issue123.test.ts
+      - tests/conformance-canonicalize-name.test.ts
+    command: pnpm exec vitest run tests/conformance-issue123.test.ts tests/conformance-canonicalize-name.test.ts
+  known_deviations:
+    - feature: Full fixture verification
+      spec: Conformance §5.3
+      reason: Only the eight issue-123 fixtures and the bare-name fixture are counted; full Level 1 and Level 2 fixture verification is not certified.
+      severity: major
+    - feature: Version negotiation on load
+      spec: §13.3
+      reason: The version negotiation helper is not invoked when loading configuration or schema files.
+      severity: major
+    - feature: Schema migration
+      spec: §13.4
+      reason: Schema migration is not implemented.
+      severity: minor
+    - feature: Module isolation
+      spec: §5.5
+      reason: Modules execute in the host process without process or container isolation.
+      severity: minor
+    - feature: Multi-version coexistence
+      spec: §5.4
+      reason: Registry.get ignores version hints and warns that they are deprecated.
+      severity: minor

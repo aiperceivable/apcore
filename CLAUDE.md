@@ -1,14 +1,8 @@
-# CLAUDE.md — apcore Protocol Specification Repository
+# APCore Protocol and SDK Repository
 
 ## Project Context
 
-**apcore** is a language-agnostic **protocol specification** — not a runtime library.
-This repo contains specs, docs, JSON Schemas, and conformance fixtures. The SDKs live in separate repos.
-
-| Repo | Role |
-|---|---|
-| `apcore` (here) | Protocol spec, docs, schemas, conformance tests |
-| `apcore-python` / `apcore-typescript` / `apcore-rust` | Language SDK implementations |
+This repository contains the language-agnostic protocol specification, docs, JSON Schemas, shared conformance fixtures, and independently published Python, TypeScript, and Rust SDKs. Toolkit, MCP, A2A, and CLI live in [apcore-surfaces](https://github.com/aiperceivable/apcore-surfaces).
 
 Tech stack: **MkDocs Material** + GitHub Pages + JSON Schema Draft 2020-12.
 
@@ -19,6 +13,9 @@ apcore/
 ├── docs/spec/protocol-spec.md          # Single source of truth (RFC 2119)
 ├── schemas/                   # Canonical JSON Schema files (*.schema.json)
 ├── conformance/fixtures/      # Cross-language test fixtures (*.json)
+├── python/                    # Python runtime SDK
+├── rust/                      # Rust runtime SDK
+├── typescript/                # TypeScript runtime SDK
 ├── docs/
 │   ├── features/              # One reference page per runtime subsystem (current behaviour, 3-language examples)
 │   ├── guides/                # How-to tutorials and cookbooks for SDK users
@@ -108,7 +105,7 @@ Use standardized terms consistently:
 ### Cross-Language Consistency
 - Do NOT document behavior changes for one SDK without noting cross-language impact
 - Do NOT add Python-specific idioms to language-agnostic spec sections
-- Do NOT assume SDK behavior matches without verifying the relevant SDK repo
+- Verify behavior in the relevant SDK directories
 
 ### ACL & Security
 - Do NOT change `default_effect` from `deny` to `allow` without a prominent warning

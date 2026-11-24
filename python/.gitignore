@@ -1,0 +1,23 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.eggs/
+.claude/
+.idea/
+.vscode/
+.DS_Store
+.ruff_cache/
+.pytest_cache/
+.coverage
+.venv/
+venv/
+env/
+.env
+docs/issues/
+# Forge planning artifacts (internal only)
+.forge/
+
+# Spec repo schemas — SSOT is in apcore/schemas/, do not copy
+schemas/

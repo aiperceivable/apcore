@@ -1,0 +1,11 @@
+# Raise the threshold for `clippy::result_large_err` (default 128 bytes).
+#
+# Our domain errors (`ModuleError`, `SysModuleError`) are intentionally
+# diagnostic-rich — they wrap source errors plus contextual fields like
+# `module_id`, `file_path`, validation reports, etc. Boxing them would
+# require a public-API churn across all callers and test code for what is
+# fundamentally an ergonomic micro-optimization.
+#
+# 256 still catches genuinely oversized error variants while accommodating
+# our current 184–208-byte enums.
+large-error-threshold = 256

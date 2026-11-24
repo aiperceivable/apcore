@@ -1,0 +1,35 @@
+module_id: test.with_refs
+description: Schema with local $ref references
+version: "1.0.0"
+
+definitions:
+  Pagination:
+    type: object
+    properties:
+      page:
+        type: integer
+      page_size:
+        type: integer
+    required:
+      - page
+      - page_size
+
+input_schema:
+  type: object
+  properties:
+    query:
+      type: string
+    pagination:
+      $ref: "#/definitions/Pagination"
+  required:
+    - query
+
+output_schema:
+  type: object
+  properties:
+    results:
+      type: array
+      items:
+        type: string
+    total:
+      type: integer

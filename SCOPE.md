@@ -90,7 +90,7 @@ Things explicitly **not within the project scope**:
 | Won't Do | Reason | Owned By |
 |------|------|--------|
 | **Workflow Engine** | Application-layer orchestration logic, not framework core | apflow and other upstream projects |
-| **MCP/A2A/CLI Adapters** | Protocol and surface adaptation, not core standard | [apcore-mcp](https://github.com/aiperceivable/apcore-mcp), [apcore-a2a](https://github.com/aiperceivable/apcore-a2a), [apcore-cli](https://github.com/aiperceivable/apcore-cli) |
+| **MCP/A2A/CLI Adapters** | Protocol and surface adaptation, not core standard | [apcore-mcp](https://github.com/aiperceivable/apcore-surfaces/tree/main/mcp), [apcore-a2a](https://github.com/aiperceivable/apcore-surfaces/tree/main/a2a), [apcore-cli](https://github.com/aiperceivable/apcore-surfaces/tree/main/cli) |
 | **Rate Limiting** | Runtime resilience middleware, not module definition | apcore-toolkit (middleware implementations) |
 | **Secret Injection / Vault Integration** | Runtime infrastructure, not module standard | apcore-toolkit |
 | **Testing Framework** | Developer tooling, not protocol | [apcore-testing](https://github.com/aiperceivable/apcore-testing) |
@@ -172,9 +172,9 @@ Use these scenarios to validate whether our boundaries are correct:
 | `module()` registration (Decorator / function call) | ✅ Core | Least intrusive integration for existing applications |
 | External Schema Binding | ✅ Core | Zero code modification integration |
 | Type inference Schema generation | ✅ Core | Foundational capability for module() and Binding |
-| **MCP Adapter** | ⚡ Ecosystem ([apcore-mcp](https://github.com/aiperceivable/apcore-mcp)) | Protocol adaptation |
-| **A2A Adapter** | ⚡ Ecosystem ([apcore-a2a](https://github.com/aiperceivable/apcore-a2a)) | Protocol adaptation |
-| **CLI Adapter** | ⚡ Ecosystem ([apcore-cli](https://github.com/aiperceivable/apcore-cli)) | Surface adaptation |
+| **MCP Adapter** | ⚡ Ecosystem ([apcore-mcp](https://github.com/aiperceivable/apcore-surfaces/tree/main/mcp)) | Protocol adaptation |
+| **A2A Adapter** | ⚡ Ecosystem ([apcore-a2a](https://github.com/aiperceivable/apcore-surfaces/tree/main/a2a)) | Protocol adaptation |
+| **CLI Adapter** | ⚡ Ecosystem ([apcore-cli](https://github.com/aiperceivable/apcore-surfaces/tree/main/cli)) | Surface adaptation |
 | **Rate Limiting** | ⚡ Ecosystem (apcore-toolkit) | Runtime resilience; implemented as middleware |
 | **Circuit Breaker** | ✅ Core (`CircuitBreakerMiddleware`) | Resilience middleware shipped in all three SDKs |
 | **Secret Injection** | ⚡ Ecosystem (apcore-toolkit) | Runtime infrastructure; `x-sensitive` marking is Core |

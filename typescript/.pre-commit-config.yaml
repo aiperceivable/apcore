@@ -1,0 +1,39 @@
+repos:
+
+  # apdev-js hooks
+  - repo: local
+    hooks:
+      - id: check-chars
+        name: apdev-js check-chars
+        entry: npx apdev-js check-chars
+        language: system
+        types_or: [text, ts, javascript]
+
+      - id: check-imports
+        name: apdev-js check-imports
+        entry: npx apdev-js check-imports --package apcore-js
+        language: system
+        pass_filenames: false
+        always_run: true
+
+  # TypeScript type checking
+  - repo: local
+    hooks:
+      - id: typecheck
+        name: tsc --noEmit
+        entry: npx tsc --noEmit
+        language: system
+        pass_filenames: false
+        always_run: true
+        files: \.(ts|tsx)$
+
+      # `examples/` is outside the root tsconfig `include`, so it needs its own
+      # project. apcore-rust compiles all its examples in CI; this is the
+      # TypeScript equivalent and is what catches broken example code.
+      - id: typecheck-examples
+        name: tsc -p tsconfig.examples.json
+        entry: npx tsc -p tsconfig.examples.json
+        language: system
+        pass_filenames: false
+        always_run: true
+        files: \.(ts|tsx)$

@@ -201,7 +201,7 @@ jobs:
         # of them a configuration version, each stale the moment the next
         # release shipped. A reader copies the number and takes it for
         # something they must keep in step with their dependency.
-        run: python3 conformance/check_config_version_examples.py --sdk-root ..
+        run: python3 conformance/check_config_version_examples.py --sdk-root .
 
       - name: config_key_governance.json is in sync with schemas/
         run: python3 conformance/generate_config_key_governance.py
@@ -224,37 +224,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          path: apcore
-
-      - uses: actions/checkout@v4
-        with:
-          repository: aiperceivable/apcore-python
-          path: apcore-python
-        continue-on-error: true
-
-      - uses: actions/checkout@v4
-        with:
-          repository: aiperceivable/apcore-typescript
-          path: apcore-typescript
-        continue-on-error: true
-
-      - uses: actions/checkout@v4
-        with:
-          repository: aiperceivable/apcore-rust
-          path: apcore-rust
-        continue-on-error: true
 
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
       - name: Every symbol the docs import resolves against the SDK
-        working-directory: apcore
-        run: python3 conformance/check_doc_examples.py --sdk-root ..
+        run: python3 conformance/check_doc_examples.py --sdk-root .
 
       - name: Every `expected` key is asserted by a driver
-        working-directory: apcore
         # --strict, because the backlog is closed: every top-level `expected`
         # key is asserted by at least one driver. A key no driver reads is not
         # a contract — it reads as covered everywhere while nothing is checked.
@@ -268,7 +246,7 @@ jobs:
         # This is the guard that would have caught `wrapped_in`, declared by the
         # fixture and read by nobody, which let the MiddlewareChainError
         # wrapping be removed from two SDKs with every test still green.
-        run: python3 conformance/check_expected_keys_read.py --strict --sdk-root ..
+        run: python3 conformance/check_expected_keys_read.py --strict --sdk-root .
 
       # The probes below EXECUTE apcore-python. Without its runtime
       # dependencies every probe raises ImportError, and this job's whole point
@@ -279,7 +257,6 @@ jobs:
         run: pip install --quiet "pydantic>=2.7,<3" "pyyaml>=6.0,<7" "jsonschema>=4.21,<5"
 
       - name: Every declared config key reaches a consumer
-        working-directory: apcore
         # config_key_governance.json pins that every declared key is ACCEPTED. It
         # is generated FROM schemas/, so a key wrong in the schema and in all
         # three SDKs identically is invisible to it — the same blind spot the
@@ -292,10 +269,9 @@ jobs:
         # observe an effect OUTSIDE Config: four observability.* keys round-trip
         # through Config perfectly and are consumed by nothing, so a set-then-get
         # check — the one anybody would write — passes on all four.
-        run: python3 conformance/check_config_key_consumers.py --sdk-root ..
+        run: python3 conformance/check_config_key_consumers.py --sdk-root .
 
       - name: The ratchet ledger rejects every way around it
-        working-directory: apcore
         # The ratchet's "may fall, may not rise" lived in a code comment, and the
         # first raise under it was made in the same commit that changed the number.
         # A ceiling now has to equal the last entry of an append-only ledger, so a
@@ -305,17 +281,15 @@ jobs:
         run: python3 conformance/check_config_key_consumers.py --self-test
 
       - name: Every fixture is driven by all three SDKs
-        working-directory: apcore
         # --strict, because the backlog is closed: all 60 fixtures are driven by
         # apcore-python, apcore-typescript AND apcore-rust. A fixture only two
         # SDKs load proves two implementations agree, not three — and it reads
         # as covered in every inventory. Strict keeps a new fixture from landing
         # undriven, which is how the backlog accumulated in the first place.
-        run: python3 conformance/check_driver_coverage.py --strict --sdk-root ..
+        run: python3 conformance/check_driver_coverage.py --strict --sdk-root .
 
 
       - name: Every behavioural decision names an executed case
-        working-directory: apcore
         # --strict, because the ratchet reached ZERO: all 44 behavioural
         # decisions from the 2026-09 deep-chain audit are pinned by an executed
         # case or by per-SDK tests covering every SDK they bind. The backlog
@@ -328,10 +302,9 @@ jobs:
         # all failures. Those were never backlog — they are the map claiming
         # coverage it does not have, the exact failure this audit spent three
         # corrections on (D-125, D-126, and D-106's authority attribution).
-        run: python3 conformance/check_decision_coverage.py --strict --sdk-root ..
+        run: python3 conformance/check_decision_coverage.py --strict --sdk-root .
 
       - name: A clause one SDK disabled is a claim about that SDK
-        working-directory: apcore
         # NOT --strict: 24 clauses are disabled in one SDK and live in another,
         # and several are real API differences rather than defects. What this
         # DOES enforce is that the set cannot grow, and that the RECORD cannot
@@ -350,4 +323,4 @@ jobs:
         # `@pytest.mark.skip`. Both directions are pinned in SELF_TEST.
         run: |
           python3 conformance/check_skip_asymmetry.py --self-test
-          python3 conformance/check_skip_asymmetry.py --sdk-root ..
+          python3 conformance/check_skip_asymmetry.py --sdk-root .
