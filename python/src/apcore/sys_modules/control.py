@@ -463,33 +463,12 @@ class ReloadModule:
         if not module_id:
             raise InvalidInputError(message="'module_id' must not be empty")
 
-        previous = self._registry._snapshot_registration(module_id)
-        if previous is None:
-            raise ModuleNotFoundError(module_id=module_id)
-        previous_version = str(previous.metadata.get("version") or "1.0.0")
         start = time.monotonic()
-        suspended_state = self._try_suspend(module_id, previous.module)
-
-        self._registry.safe_unregister(module_id)
-
-        try:
-            new_module = self._rediscover_module(module_id)
-            self._reregister_module(module_id, new_module)
-        except Exception as exc:
-            # D-112: put the previous instance back rather than leaving a
-            # working module gone. Both steps are inside the guard because a
-            # re-registration that fails leaves exactly the same hole as a
-            # re-discovery that fails.
-            self._restore_after_failed_reload(module_id, previous, suspended_state)
-            if isinstance(exc, ReloadFailedError):
-                raise
-            raise ReloadFailedError(module_id=module_id, reason=str(exc)) from exc
-
-        if suspended_state is not None:
-            self._try_resume(module_id, new_module, suspended_state)
-
+        versions = self._replace_module(module_id)
+        if versions is None:
+            raise ModuleNotFoundError(module_id=module_id)
+        previous_version, new_version = versions
         elapsed_ms = (time.monotonic() - start) * 1000.0
-        new_version = getattr(new_module, "version", "1.0.0")
 
         self._emit_module_reloaded(module_id, previous_version, new_version, context)
         self._log_reload(module_id, previous_version, new_version, reason)
@@ -622,11 +601,8 @@ class ReloadModule:
         self, module_id: str, previous: _RegistrationSnapshot, suspended_state: dict[str, Any] | None
     ) -> None:
         """Restore all previous versions after reinitializing the unloaded module (D-112)."""
-        if not self._registry._restore_registration(module_id, previous):
+        if not self._registry._restore_registration(module_id, previous, suspended_state):
             logger.error("system.control.reload: could not restore '%s' after a failed reload", module_id)
-            return
-        if suspended_state is not None:
-            self._try_resume(module_id, previous.module, suspended_state)
 
     def _reload_one(self, module_id: str, context: Any = None) -> None:
         """Reload a single module as part of a bulk (path_filter) reload.
@@ -640,16 +616,23 @@ class ReloadModule:
         which does pass ``context``) recorded the real one. Two records of the
         same action disagreeing about who performed it (sync finding A-D-017).
         """
-        previous = self._registry._snapshot_registration(module_id)
-        if previous is None:
-            return
+        versions = self._replace_module(module_id)
+        if versions is not None:
+            self._emit_module_reloaded(module_id, *versions, context)
 
-        suspended_state = self._try_suspend(module_id, previous.module)
-        self._registry.safe_unregister(module_id)
+    def _replace_module(self, module_id: str) -> tuple[str, str] | None:
+        """Drain the existing registration, then migrate its final state."""
+        detached = self._registry._detach_after_drain(module_id)
+        if detached is None:
+            return None
+        pending, clean = detached
+        previous = pending.registration
+        suspended_state = self._registry._capture_state_and_unload(pending, clean)
 
         try:
-            new_module = self._rediscover_module(module_id)
-            self._reregister_module(module_id, new_module)
+            with self._registry._resume_on_load(module_id, suspended_state):
+                new_module = self._rediscover_module(module_id)
+                self._reregister_module(module_id, new_module)
         except Exception as exc:
             # D-112 rule 4: restoration is PER MODULE. The bulk operation as a
             # whole still fails (D-17), and modules that already reloaded
@@ -660,12 +643,9 @@ class ReloadModule:
                 raise
             raise ReloadFailedError(module_id=module_id, reason=str(exc)) from exc
 
-        if suspended_state is not None:
-            self._try_resume(module_id, new_module, suspended_state)
-
         new_version = getattr(new_module, "version", "1.0.0")
-        prev_version = previous.metadata.get("version") or "1.0.0"
-        self._emit_module_reloaded(module_id, str(prev_version), str(new_version), context)
+        previous_version = previous.metadata.get("version") or "1.0.0"
+        return str(previous_version), str(new_version)
 
     # ------------------------------------------------------------------
     # Shared helpers
@@ -740,35 +720,6 @@ class ReloadModule:
                 data=data,
             )
         )
-
-    @staticmethod
-    def _try_suspend(module_id: str, module: Any) -> dict[str, Any] | None:
-        """Call on_suspend() on the module if available. Returns state or None."""
-        if not hasattr(module, "on_suspend") or not callable(module.on_suspend):
-            return None
-        try:
-            state = module.on_suspend()
-            if state is not None and not isinstance(state, dict):
-                logger.warning(
-                    "on_suspend() for module '%s' returned non-dict (%s); ignoring",
-                    module_id,
-                    type(state).__name__,
-                )
-                return None
-            return state
-        except Exception as exc:
-            logger.error("on_suspend() failed for module '%s': %s", module_id, exc)
-            return None
-
-    @staticmethod
-    def _try_resume(module_id: str, module: Any, state: dict[str, Any]) -> None:
-        """Call on_resume() on the module if available."""
-        if not hasattr(module, "on_resume") or not callable(module.on_resume):
-            return
-        try:
-            module.on_resume(state)
-        except Exception as exc:
-            logger.error("on_resume() failed for module '%s': %s", module_id, exc)
 
     @staticmethod
     def _log_reload(module_id: str, previous_version: str, new_version: str, reason: str) -> None:

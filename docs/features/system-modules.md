@@ -580,11 +580,11 @@ Emits `apcore.module.reloaded` for each reloaded module.
 
 ### Side Effects (ordered, per module)
 1. Read the current module and its version
-2. Call `on_suspend()` if defined (best effort; errors are logged)
-3. `safe_unregister(module_id)` — drain in-flight calls, then remove the module
+2. Stop admitting new calls and wait for in-flight calls to finish, subject to the drain timeout
+3. Capture state with `on_suspend()` if defined, then unload the old registration. Hook errors are logged.
 4. Re-run discovery to load the module from disk
-5. Register the new instance (running its `on_load`)
-6. Call `on_resume(state)` if defined and a state was captured (best effort)
+5. Run the new instance's `on_load`
+6. Apply the captured state using `on_resume(state)` if defined (best effort), then publish the replacement
 7. Emit `apcore.module.reloaded`; record an audit entry per module (bulk entries share one `correlation_id`)
 
 If step 4 or 5 fails, see [Reload failure semantics](#reload-failure-semantics).
@@ -602,7 +602,7 @@ If step 4 or 5 fails, see [Reload failure semantics](#reload-failure-semantics).
 
 ### Properties
 - idempotent: false — each call unregisters and re-registers
-- thread_safe: false — concurrent reloads are serialized only by `safe_unregister`
+- thread_safe: false — concurrent reloads coordinate removal through the registry drain
 - async: false
 - pure: false — mutates the registry, reads files, emits events
 - reentrant: false

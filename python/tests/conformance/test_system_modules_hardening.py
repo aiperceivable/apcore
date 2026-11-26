@@ -1223,7 +1223,7 @@ class TestReloadOrderIsTopologicalNotAlphabetical:
             "orders_differ"
         ], "orders_differ must describe whether the topological and alphabetical orders disagree"
 
-    def test_reload_order_observed_is_topological(self, monkeypatch: Any) -> None:
+    def test_reload_order_observed_is_topological(self) -> None:
         """`reload_order_observed` — the registry mutations, in order.
 
         Reverting ``_topo_sort_modules`` to ``sorted(module_ids)`` reverses both
@@ -1236,19 +1236,8 @@ class TestReloadOrderIsTopologicalNotAlphabetical:
 
         unregistered: list[str] = []
         reregistered: list[str] = []
-        real_safe_unregister = registry.safe_unregister
-        real_register_internal = registry.register_internal
-
-        def recording_safe_unregister(module_id: str, *args: Any, **kwargs: Any) -> Any:
-            unregistered.append(module_id)
-            return real_safe_unregister(module_id, *args, **kwargs)
-
-        def recording_register_internal(module_id: str, module: Any, *args: Any, **kwargs: Any) -> Any:
-            reregistered.append(module_id)
-            return real_register_internal(module_id, module, *args, **kwargs)
-
-        monkeypatch.setattr(registry, "safe_unregister", recording_safe_unregister)
-        monkeypatch.setattr(registry, "register_internal", recording_register_internal)
+        registry.on("unregister", lambda module_id, _: unregistered.append(module_id))
+        registry.on("register", lambda module_id, _: reregistered.append(module_id))
 
         # Re-discovery of an unchanged source tree hands back the same module.
         # Only rediscovery is stubbed — the unregister and re-register both run

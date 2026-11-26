@@ -24,7 +24,7 @@ description: "APCore facade over Registry, Executor, Config: zero- or full-confi
 - Support function registration (`client.module()`), direct registration (`client.register()`), and discovery (`client.discover()`).
 - Support module listing with optional tag and prefix filtering.
 - Support module description generation (`client.describe()`) for AI/LLM tool discovery.
-- There is no `start()` / `stop()` lifecycle: the client needs no phase beyond construction (D-09). Python additionally provides `close()`, which releases the Executor's cached synchronous event loop; it is idempotent and the client stays usable afterwards.
+- The client is ready after construction. Use `shutdown()` at the end of the host lifecycle to drain and unload the Registry. Python's reusable `close()` releases its cached synchronous event loop and event delivery resources.
 
 ### Execution
 - Provide synchronous (`call()`, Python only), asynchronous (`call_async()` / `call()`), and streaming (`stream()`) execution that delegates to the Executor.
@@ -118,7 +118,10 @@ A supplied Registry or Executor can retain modules and middleware installed befo
 |----------|--------|---------|-------|
 | **Registration** | `module(...)` | decorator (Python) / `FunctionModule` (TS) / `Result<&mut Self, ModuleError>` (Rust) | In TypeScript, await the returned module's `registration` before use |
 | | `register(module_id, module)` | `None` (Python) / `Promise<void>` (TS) / `Result<(), ModuleError>` (Rust) | Await direct registration in TypeScript |
+| | `register_many(entries)` / `registerMany(entries)` | Same as single registration | Register `(module_id, module)` pairs in input order |
 | | `discover()` | `int` (Python) / `Promise<number>` (TS) / `Result<usize, ModuleError>` (Rust, async) | Discover and register modules from `extensions.*` roots |
+| **Teardown** | `unregister_many(module_ids)` / `unregisterMany(moduleIds)` | Async list of booleans, wrapped in `Result` in Rust | One result per ID in input order |
+| | `shutdown()` | `None` (Python) / `Promise<void>` (TS) / `Result<(), ModuleError>` (Rust, async) | Await final cleanup of the client's Registry and event delivery |
 | **Execution** | `call(module_id, inputs?, context?, version_hint?)` | output | Python: synchronous. TypeScript/Rust: async |
 | | `call_async(...)` | output | Python coroutine; TypeScript `callAsync` is an alias of `call`; Rust has none (`call` is async) |
 | | `stream(module_id, inputs?, context?, version_hint?)` | async iterator / `Stream` | Chunked output |
@@ -191,6 +194,124 @@ A supplied Registry or Executor can retain modules and middleware installed befo
 | `reload()` | Re-read the `Config` from its source file. Does **not** re-discover modules — call `discover()` for that |
 
 ## Usage
+
+### Batch registration and host shutdown
+
+Batch registration uses ordinary registration for each entry in input order. Each entry completes validation and its load hook before publication. The batch reports the first error, keeps the registrations that already succeeded, and skips the remaining entries.
+
+Batch unregistration closes each ID to new calls when that entry begins, waits for its in-flight calls up to the drain deadline, and runs its unload hooks before proceeding to the next ID. It returns one boolean per input ID in the same order. A clean removal returns `true`. A missing ID or a forced removal after the deadline returns `false`, and the batch continues with the next ID. Use the positions of `false` results to identify the corresponding inputs.
+
+For modules with dependencies, pass providers before their dependents at registration and reverse that order at removal.
+
+During host exit, stop accepting external requests and shut down any background task managers owned by the host. Then await `client.shutdown()`. It closes Registry admission, stops its file watcher, drains and unloads modules including hidden registrations, and shuts down client-owned event delivery. Call it only after every user of an injected Registry is ready to release it. Create a fresh client and Registry to start again.
+
+=== "Python"
+
+    ```python
+    import asyncio
+
+    from apcore import APCore, Context
+    from pydantic import BaseModel
+
+    class Input(BaseModel):
+        pass
+
+    class Output(BaseModel):
+        ok: bool
+
+    class Ping:
+        description = "Report that the module is ready"
+        input_schema = Input
+        output_schema = Output
+
+        def execute(self, inputs: dict, context: Context) -> dict[str, bool]:
+            return {"ok": True}
+
+    async def main() -> None:
+        client = APCore()
+        try:
+            client.register_many([("host.ping", Ping()), ("host.status", Ping())])
+            assert await client.call_async("host.ping", {}) == {"ok": True}
+            assert await client.unregister_many(["host.ping"]) == [True]
+        finally:
+            await client.shutdown()
+
+    asyncio.run(main())
+    ```
+
+=== "TypeScript"
+
+    ```typescript
+    import assert from "node:assert/strict";
+    import { APCore } from "apcore-js";
+
+    const ping = {
+      description: "Report that the module is ready",
+      inputSchema: { type: "object" },
+      outputSchema: {
+        type: "object",
+        properties: { ok: { type: "boolean" } },
+        required: ["ok"],
+      },
+      execute: () => ({ ok: true }),
+    };
+
+    const client = new APCore();
+    try {
+      await client.registerMany([["host.ping", { ...ping }], ["host.status", { ...ping }]]);
+      assert.deepEqual(await client.call("host.ping", {}), { ok: true });
+      assert.deepEqual(await client.unregisterMany(["host.ping"]), [true]);
+    } finally {
+      await client.shutdown();
+    }
+    ```
+
+=== "Rust"
+
+    ```rust
+    use apcore::errors::ModuleError;
+    use apcore::{APCore, Context, Module};
+    use async_trait::async_trait;
+    use serde_json::{json, Value};
+
+    struct Ping;
+
+    #[async_trait]
+    impl Module for Ping {
+        fn description(&self) -> &str {
+            "Report that the module is ready"
+        }
+
+        fn input_schema(&self) -> Value {
+            json!({"type": "object"})
+        }
+
+        fn output_schema(&self) -> Value {
+            json!({"type": "object", "properties": {"ok": {"type": "boolean"}}, "required": ["ok"]})
+        }
+
+        async fn execute(&self, _inputs: Value, _ctx: &Context<Value>) -> Result<Value, ModuleError> {
+            Ok(json!({"ok": true}))
+        }
+    }
+
+    #[tokio::main]
+    async fn main() -> Result<(), ModuleError> {
+        let client = APCore::new();
+        let result: Result<(), ModuleError> = async {
+            let entries: [(&str, Box<dyn Module>); 2] =
+                [("host.ping", Box::new(Ping)), ("host.status", Box::new(Ping))];
+            client.register_many(entries)?;
+            let output = client.call("host.ping", json!({}), None, None).await?;
+            assert_eq!(output, json!({"ok": true}));
+            assert_eq!(client.unregister_many(["host.ping"]).await?, vec![true]);
+            Ok(())
+        }
+        .await;
+        let cleanup = client.shutdown().await;
+        result.and(cleanup)
+    }
+    ```
 
 ### Quick Start
 

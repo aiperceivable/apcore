@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncGenerator
 from contextlib import aclosing
 from importlib.metadata import PackageNotFoundError
@@ -422,14 +423,24 @@ def _get_default_client() -> APCore:
 def close() -> None:
     """Release the default APCore client, if one was created.
 
-    Closes the cached sync event loop inside the Executor. Safe to call
-    multiple times. After ``close()``, a subsequent convenience-function
-    call (``call()``, ``register()``, ...) lazily creates a fresh client.
+    Unloads registered modules and releases the cached sync event loop.
+    Inside asyncio, unloading modules with active calls is deferred until
+    those calls finish. Subsequent convenience calls create a fresh client.
     """
     global _CACHED_DEFAULT_CLIENT
-    if _CACHED_DEFAULT_CLIENT is not None:
-        _CACHED_DEFAULT_CLIENT.close()
-        _CACHED_DEFAULT_CLIENT = None
+    client = _CACHED_DEFAULT_CLIENT
+    if client is None:
+        return
+    _CACHED_DEFAULT_CLIENT = None
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        client._shutdown()
+    else:
+        client.registry._stop_admission()
+        for module_id in client.registry.list(visibility=["public", "hidden"]):
+            client.registry.unregister(module_id)
+        client._close_owned_resources(terminal=True)
 
 
 def __getattr__(name: str) -> Any:

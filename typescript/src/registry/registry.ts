@@ -56,6 +56,20 @@ interface DiscoveredRegistration {
   readonly metadata: Record<string, unknown>;
 }
 
+interface ExecutionGeneration {
+  references: number;
+  readonly drainWaiters: Set<() => void>;
+}
+
+interface ModuleRemoval {
+  readonly generation: ExecutionGeneration;
+  readonly completion: Promise<boolean>;
+  readonly module: unknown;
+  readonly sourceFile: string | undefined;
+}
+
+type BeforePublish = (moduleId: string, module: unknown) => void;
+
 let registryFilesystem: RegistryFilesystem | null = null;
 
 /** @internal Installed by the Node entry point. */
@@ -370,12 +384,12 @@ export class Registry {
   private _deprecationWarned: Set<string> = new Set();
 
   // Safe hot-reload state (F09 / Algorithm A21)
-  private _refCounts: Map<string, number> = new Map();
   private readonly _sourceFiles = new Map<string, string>();
-  private readonly _executionGenerations = new Map<string, object>();
-  private readonly _safeUnregisters = new WeakMap<object, Promise<boolean>>();
+  private readonly _executionGenerations = new Map<string, ExecutionGeneration>();
+  private readonly _manualReferences = new Map<string, Map<ExecutionGeneration, number>>();
+  private readonly _removals = new Map<string, Set<ModuleRemoval>>();
   private _draining: Set<string> = new Set();
-  private _drainResolvers: Map<string, Array<() => void>> = new Map();
+  private _shutdown: Promise<void> | undefined;
 
   /**
    * In-flight async registrations: modules whose async onLoad has not yet
@@ -460,14 +474,18 @@ export class Registry {
     this._customValidator = validator;
   }
 
-  async discover(options?: { reloadFiles?: readonly string[] }): Promise<number> {
+  discover(options?: { reloadFiles?: readonly string[] }): Promise<number>;
+  /** @internal */
+  discover(options?: { reloadFiles?: readonly string[]; beforePublish?: BeforePublish }): Promise<number>;
+  async discover(options?: { reloadFiles?: readonly string[]; beforePublish?: BeforePublish }): Promise<number> {
+    this._assertOpen();
     if (this._customDiscoverer !== null) {
-      return this._discoverCustom();
+      return this._discoverCustom(options?.beforePublish);
     }
-    return this._discoverDefault(new Set(options?.reloadFiles));
+    return this._discoverDefault(new Set(options?.reloadFiles), options?.beforePublish);
   }
 
-  private async _discoverCustom(): Promise<number> {
+  private async _discoverCustom(beforePublish?: BeforePublish): Promise<number> {
     const rootPaths = this._extensionRoots.map((r) => r['root'] as string);
     const customModules = await this._customDiscoverer!.discover(rootPaths);
 
@@ -535,7 +553,7 @@ export class Registry {
       try {
         this._assertModuleStructure(moduleId, mod);
         this._assertNoIdConflict(moduleId);
-        await this._registerWithOnLoad(moduleId, mod);
+        await this._registerWithOnLoad(moduleId, mod, null, null, { beforePublish });
         count++;
       } catch (e) {
         console.warn(`[apcore:registry] Failed to register custom-discovered module '${moduleId}':`, e);
@@ -559,7 +577,7 @@ export class Registry {
    *   8. _resolveLoadOrder + _registerInOrder
    *                              — topological sort then register.
    */
-  private async _discoverDefault(reloadFiles: ReadonlySet<string>): Promise<number> {
+  private async _discoverDefault(reloadFiles: ReadonlySet<string>, beforePublish?: BeforePublish): Promise<number> {
     await this._ensureIdMap();
     const discovered = await this._scanRoots();
     await this._applyIdMapOverrides(discovered);
@@ -570,7 +588,7 @@ export class Registry {
     const validModules = await this._validateAll(resolvedModules);
     const filteredModules = this._filterIdConflicts(validModules);
     const loadOrder = this._resolveLoadOrder(filteredModules);
-    return this._registerInOrder(loadOrder, filteredModules);
+    return this._registerInOrder(loadOrder, filteredModules, beforePublish);
   }
 
   private async _scanRoots(): Promise<import('./types.js').DiscoveredModule[]> {
@@ -819,6 +837,7 @@ export class Registry {
   private async _registerInOrder(
     loadOrder: string[],
     validModules: Map<string, DiscoveredRegistration>,
+    beforePublish?: BeforePublish,
   ): Promise<number> {
     let count = 0;
     for (const moduleId of loadOrder) {
@@ -840,7 +859,7 @@ export class Registry {
         }
         this._assertModuleStructure(moduleId, module);
         this._assertNoIdConflict(moduleId);
-        await this._registerWithOnLoad(moduleId, module, null, metadata, { sourceFile, dependencyFailure });
+        await this._registerWithOnLoad(moduleId, module, null, metadata, { sourceFile, dependencyFailure, beforePublish });
         count++;
       } catch (error) {
         console.warn(`[apcore:registry] Failed to load ${moduleId}, skipping:`, error);
@@ -894,6 +913,7 @@ export class Registry {
     metadata?: Record<string, unknown> | null,
     options?: { context?: Context | null },
   ): Promise<void> {
+    this._assertOpen();
     // 1. ID validation (always sync — throws synchronously for backward compat)
     validateModuleId(moduleId, false);
 
@@ -954,6 +974,13 @@ export class Registry {
     return this._registerWithOnLoad(moduleId, module, version, metadata, options, ephemeral);
   }
 
+  /** Register modules in input order, retaining the successful prefix if a registration fails. */
+  async registerMany(entries: Iterable<readonly [string, unknown]>): Promise<void> {
+    for (const [moduleId, module] of entries) {
+      await this.register(moduleId, module);
+    }
+  }
+
   /**
    * Algorithm A03 conflict detection for the public `register()` path.
    *
@@ -999,9 +1026,14 @@ export class Registry {
       throwSyncLoadFailure?: boolean;
       mergedMetadata?: Record<string, unknown>;
       dependencyFailure?: () => ModuleError | null;
+      beforePublish?: BeforePublish;
     },
     ephemeral?: boolean,
   ): Promise<void> {
+    this._assertOpen();
+    for (const removal of this._removals.get(moduleId) ?? []) {
+      if (removal.module === module) throw new DuplicateModuleIdError(moduleId);
+    }
     const overrides: Record<string, unknown> = { ...(metadata ?? {}) };
     if (version != null) overrides['version'] = version;
     const mod = module as Record<string, unknown>;
@@ -1015,9 +1047,13 @@ export class Registry {
         this._emitModuleLoadFailed(moduleId, error);
         throw error;
       }
+      if (options?.beforePublish) {
+        if (!this._inFlight.has(moduleId)) this._inFlight.set(moduleId, Promise.resolve());
+        options.beforePublish(moduleId, module);
+      }
       this._inFlight.delete(moduleId);
       this._modules.set(moduleId, module);
-      this._executionGenerations.set(moduleId, {});
+      this._executionGenerations.set(moduleId, { references: 0, drainWaiters: new Set() });
       this._moduleMeta.set(moduleId, merged);
       this._lowercaseMap.set(moduleId.toLowerCase(), moduleId);
       if (options?.sourceFile !== undefined) this._sourceFiles.set(moduleId, options.sourceFile);
@@ -1058,58 +1094,66 @@ export class Registry {
     return Promise.resolve();
   }
 
+  /**
+   * Remove a registration immediately. If executions are still active, cleanup
+   * waits for them to finish. Use safeUnregister to await cleanup.
+   */
   unregister(moduleId: string, options?: { context?: Context | null }): boolean {
-    return this._unregister(moduleId, options) !== null;
+    const generation = this._executionGenerations.get(moduleId);
+    if (generation === undefined) return false;
+    this._startRemoval(moduleId, generation, 5000, options?.context);
+    return true;
   }
 
-  private _unregister(moduleId: string, options?: { context?: Context | null }): Promise<void> | null {
-    if (!this._modules.has(moduleId)) return null;
+  /** Drain and unregister modules in input order, returning the outcome for each ID. */
+  async unregisterMany(moduleIds: Iterable<string>, timeoutMs: number = 5000): Promise<boolean[]> {
+    const outcomes: boolean[] = [];
+    for (const moduleId of moduleIds) {
+      outcomes.push(await this.safeUnregister(moduleId, timeoutMs));
+    }
+    return outcomes;
+  }
 
-    const module = this._modules.get(moduleId)!;
+  private _detach(moduleId: string): unknown {
+    const module = this._modules.get(moduleId);
     this._modules.delete(moduleId);
     this._moduleMeta.delete(moduleId);
     this._sourceFiles.delete(moduleId);
     this._schemaCache.delete(moduleId);
     this._lowercaseMap.delete(moduleId.toLowerCase());
 
-    // Clear hot-reload tracking state to avoid stale entries when unregister()
-    // is called directly (not via safeUnregister()). Otherwise a leftover
-    // _draining flag would make acquire() throw ModuleNotFoundError on a
-    // re-registered module with the same id (mirrors apcore-python
-    // registry.py:1217-1219 and apcore-rust registry.rs).
     this._draining.delete(moduleId);
-    this._refCounts.delete(moduleId);
     this._executionGenerations.delete(moduleId);
-    this._resolveDrainWaiters(moduleId);
+    return module;
+  }
 
-    const cleanup = this._runOnUnload(moduleId, module);
+  private _notifyUnregister(moduleId: string, module: unknown, context?: Context | null): void {
     this._triggerEvent(REGISTRY_EVENTS.UNREGISTER, moduleId, module);
     if (isEphemeralModuleId(moduleId)) {
       this._emitEphemeralAudit(
         'apcore.registry.module_unregistered',
         moduleId,
-        options?.context ?? null,
+        context ?? null,
       );
     }
-    return cleanup;
   }
 
-  private _runOnUnload(moduleId: string, module: unknown): Promise<void> {
+  private _runOnUnload(moduleId: string, module: unknown): Promise<void> | undefined {
     const warnUnloadFailure = (error: unknown): void => {
       console.warn(`[apcore:registry] onUnload failed for ${moduleId}:`, error);
     };
-    const modObj = module as Record<string, unknown>;
-    const onUnload = modObj['onUnload'];
-    let cleanup = Promise.resolve();
-    if (typeof onUnload === 'function') {
-      try {
-        cleanup = Promise.resolve(onUnload.call(module)).catch(warnUnloadFailure);
-      } catch (e) {
-        warnUnloadFailure(e);
+    try {
+      const onUnload = (module as Record<string, unknown>)['onUnload'];
+      if (typeof onUnload === 'function') {
+        const result: unknown = onUnload.call(module);
+        if (result != null && typeof (result as PromiseLike<unknown>).then === 'function') {
+          return Promise.resolve(result).then(() => undefined, warnUnloadFailure);
+        }
       }
+    } catch (error) {
+      warnUnloadFailure(error);
     }
-
-    return cleanup;
+    return undefined;
   }
 
   /**
@@ -1562,6 +1606,7 @@ export class Registry {
    * `'file_changed'` and re-discover or re-import explicitly.
    */
   async watch(): Promise<void> {
+    this._assertOpen();
     if (this._watchers && this._watchers.length > 0) {
       return; // Already watching
     }
@@ -1635,15 +1680,12 @@ export class Registry {
   }
 
   private async _handleFileChange(filePath: string): Promise<void> {
+    const watchGeneration = this._watchGeneration;
     const { path: nodePath } = requireRegistryFilesystem();
     const { basename, extname } = nodePath;
-    const moduleId = this._pathToModuleId(filePath);
-
-    // unregister() runs onUnload; calling it here as well released the
-    // module's resources twice.
-    if (moduleId && this.has(moduleId)) {
-      this.unregister(moduleId);
-    }
+    const removal = this._unregisterWatchedFile(filePath);
+    if (removal !== null) await removal.completion;
+    if (this._watchGeneration !== watchGeneration) return;
 
     // Re-import is complex in ES modules — tell consumers that a watched file
     // changed so they can re-import and re-register. The earlier design
@@ -1651,22 +1693,26 @@ export class Registry {
     // consumer that accessed fields on the module argument.
     this._triggerEvent(
       REGISTRY_EVENTS.FILE_CHANGED,
-      moduleId ?? basename(filePath, extname(filePath)),
+      removal?.moduleId ?? basename(filePath, extname(filePath)),
       { filePath },
     );
   }
 
   private async _handleFileDeletion(path: string): Promise<void> {
-    const moduleId = this._pathToModuleId(path);
-    // unregister() runs onUnload; see _handleFileChange.
-    if (moduleId && this.has(moduleId)) {
-      this.unregister(moduleId);
-    }
+    await this._unregisterWatchedFile(path)?.completion;
   }
 
-  private _pathToModuleId(filePath: string): string | null {
+  private _unregisterWatchedFile(filePath: string): { moduleId: string; completion: Promise<unknown> } | null {
     for (const [moduleId, sourceFile] of this._sourceFiles) {
-      if (sourceFile === filePath) return moduleId;
+      if (sourceFile === filePath) {
+        return { moduleId, completion: this.safeUnregister(moduleId) };
+      }
+    }
+    for (const [moduleId, removals] of this._removals) {
+      const pending = Array.from(removals).filter(({ sourceFile }) => sourceFile === filePath);
+      if (pending.length > 0) {
+        return { moduleId, completion: Promise.all(pending.map(({ completion }) => completion)) };
+      }
     }
     return null;
   }
@@ -1733,7 +1779,7 @@ export class Registry {
   }
 
   /** @internal Republish a previous registration after its load hook completes. */
-  async restoreRegistration(snapshot: RegistrationSnapshot): Promise<void> {
+  async restoreRegistration(snapshot: RegistrationSnapshot, beforePublish?: BeforePublish): Promise<void> {
     const { moduleId, module, metadata, sourceFile } = snapshot;
     validateModuleId(moduleId, true);
     this._assertModuleStructure(moduleId, module, false);
@@ -1741,6 +1787,7 @@ export class Registry {
     await this._registerWithOnLoad(moduleId, module, null, null, {
       sourceFile,
       mergedMetadata: metadata,
+      beforePublish,
     }, isEphemeralModuleId(moduleId));
   }
 
@@ -1832,7 +1879,11 @@ export class Registry {
    * Number of in-flight executions per module.
    */
   get refCount(): ReadonlyMap<string, number> {
-    return new Map(this._refCounts);
+    const counts = new Map<string, number>();
+    for (const [id, generation] of this._executionGenerations) {
+      if (generation.references > 0) counts.set(id, generation.references);
+    }
+    return counts;
   }
 
   /**
@@ -1842,29 +1893,44 @@ export class Registry {
    * module is draining or not registered. Call {@link release} when done.
    */
   acquire(moduleId: string): unknown {
-    if (this._draining.has(moduleId)) {
+    const generation = this._acquireGeneration(moduleId);
+    const references = this._manualReferences.get(moduleId) ?? new Map();
+    references.set(generation, (references.get(generation) ?? 0) + 1);
+    this._manualReferences.set(moduleId, references);
+    return this._modules.get(moduleId);
+  }
+
+  private _acquireGeneration(moduleId: string): ExecutionGeneration {
+    const generation = this._executionGenerations.get(moduleId);
+    if (this._shutdown || generation === undefined || this._draining.has(moduleId)) {
       throw new ModuleNotFoundError(moduleId);
     }
-    const mod = this._modules.get(moduleId);
-    if (mod == null) {
-      throw new ModuleNotFoundError(moduleId);
-    }
-    this._refCounts.set(moduleId, (this._refCounts.get(moduleId) ?? 0) + 1);
-    return mod;
+    generation.references++;
+    return generation;
   }
 
   /** @internal Hold an execution reference to the instance resolved by lookup. */
   acquireExecution(moduleId: string, expectedModule: unknown): () => void {
-    const generation = this._executionGenerations.get(moduleId);
-    if (generation === undefined || this._modules.get(moduleId) !== expectedModule) {
+    if (this._modules.get(moduleId) !== expectedModule) {
       throw new ModuleNotFoundError(moduleId);
     }
-    this.acquire(moduleId);
+    const generation = this._acquireGeneration(moduleId);
     let released = false;
     return () => {
       if (released) return;
       released = true;
-      if (this._executionGenerations.get(moduleId) === generation) this.release(moduleId);
+      this._releaseGeneration(generation);
+    };
+  }
+
+  /** @internal Capture the registration now and acquire its execution reference later. */
+  bindExecution(moduleId: string, expectedModule: unknown): () => () => void {
+    const expectedGeneration = this._executionGenerations.get(moduleId);
+    return () => {
+      if (this._executionGenerations.get(moduleId) !== expectedGeneration) {
+        throw new ModuleNotFoundError(moduleId);
+      }
+      return this.acquireExecution(moduleId, expectedModule);
     };
   }
 
@@ -1875,14 +1941,21 @@ export class Registry {
    * reaches zero.
    */
   release(moduleId: string): void {
-    const current = this._refCounts.get(moduleId);
-    if (current === undefined || current <= 0) return;
-    const count = current - 1;
-    if (count <= 0) {
-      this._refCounts.delete(moduleId);
-      this._resolveDrainWaiters(moduleId);
-    } else {
-      this._refCounts.set(moduleId, count);
+    const references = this._manualReferences.get(moduleId);
+    if (references === undefined) return;
+    const first = references.entries().next().value;
+    if (first === undefined) return;
+    const [generation, count] = first;
+    if (count === 1) references.delete(generation);
+    else references.set(generation, count - 1);
+    if (references.size === 0) this._manualReferences.delete(moduleId);
+    this._releaseGeneration(generation);
+  }
+
+  private _releaseGeneration(generation: ExecutionGeneration): void {
+    generation.references--;
+    if (generation.references === 0) {
+      for (const resolve of generation.drainWaiters) resolve();
     }
   }
 
@@ -1890,7 +1963,10 @@ export class Registry {
    * Check whether a module is marked for unload (draining).
    */
   isDraining(moduleId: string): boolean {
-    return this._draining.has(moduleId);
+    return this._draining.has(moduleId) || (
+      !this._executionGenerations.has(moduleId) &&
+      (this._latestRemoval(moduleId)?.generation.references ?? 0) > 0
+    );
   }
 
   /**
@@ -1901,25 +1977,10 @@ export class Registry {
   }
 
   /**
-   * Remove the draining mark and clean up drain state.
-   *
-   * If any waitDrained waiters are still pending (e.g., refCount briefly
-   * hit zero and then a new acquire bumped it back up), resolve them first
-   * so they do not wait for their individual timeouts before returning.
+   * Remove a draining mark set by beginDrain. Existing references remain valid.
    */
   endDrain(moduleId: string): void {
     this._draining.delete(moduleId);
-    this._refCounts.delete(moduleId);
-    if (this._modules.has(moduleId)) this._executionGenerations.set(moduleId, {});
-    this._resolveDrainWaiters(moduleId);
-  }
-
-  private _resolveDrainWaiters(moduleId: string): void {
-    const resolvers = this._drainResolvers.get(moduleId);
-    this._drainResolvers.delete(moduleId);
-    if (resolvers) {
-      for (const resolve of resolvers) resolve();
-    }
   }
 
   /**
@@ -1929,27 +1990,24 @@ export class Registry {
    * cleanly, or `false` if the timeout was reached.
    */
   waitDrained(moduleId: string, timeoutMs: number = 5000): Promise<boolean> {
-    const current = this._refCounts.get(moduleId) ?? 0;
-    if (current <= 0) return Promise.resolve(true);
+    const generation = this._executionGenerations.get(moduleId) ?? this._latestRemoval(moduleId)?.generation;
+    return generation === undefined ? Promise.resolve(true) : this._waitForDrain(generation, timeoutMs);
+  }
+
+  private _waitForDrain(generation: ExecutionGeneration, timeoutMs: number): Promise<boolean> {
+    if (generation.references === 0) return Promise.resolve(true);
 
     return new Promise<boolean>((resolve) => {
-      let settled = false;
+      const drained = () => {
+        clearTimeout(timer);
+        generation.drainWaiters.delete(drained);
+        resolve(true);
+      };
       const timer = setTimeout(() => {
-        if (!settled) {
-          settled = true;
-          resolve(false);
-        }
+        generation.drainWaiters.delete(drained);
+        resolve(false);
       }, timeoutMs);
-
-      const resolvers = this._drainResolvers.get(moduleId) ?? [];
-      resolvers.push(() => {
-        if (!settled) {
-          settled = true;
-          clearTimeout(timer);
-          resolve(true);
-        }
-      });
-      this._drainResolvers.set(moduleId, resolvers);
+      generation.drainWaiters.add(drained);
     });
   }
 
@@ -2119,31 +2177,93 @@ export class Registry {
     }
   }
 
-  /** Drain and remove the current registration, joining any drain already in progress. */
-  async safeUnregister(moduleId: string, timeoutMs: number = 5000): Promise<boolean> {
+  /** Drain and remove the current registration, joining cleanup already in progress. */
+  safeUnregister(moduleId: string, timeoutMs?: number): Promise<boolean>;
+  /** @internal Reload can capture state after drain and before resource release. */
+  safeUnregister(moduleId: string, timeoutMs?: number, beforeUnload?: (module: unknown) => void): Promise<boolean>;
+  safeUnregister(
+    moduleId: string,
+    timeoutMs: number = 5000,
+    beforeUnload?: (module: unknown) => void,
+  ): Promise<boolean> {
     const generation = this._executionGenerations.get(moduleId);
-    if (generation === undefined) return false;
-    const pending = this._safeUnregisters.get(generation);
-    if (pending !== undefined) return pending;
-
-    const removal = this._drainAndUnregister(moduleId, generation, timeoutMs);
-    this._safeUnregisters.set(generation, removal);
-    return removal;
+    if (generation === undefined) {
+      return this._latestRemoval(moduleId)?.completion ?? Promise.resolve(false);
+    }
+    return this._startRemoval(moduleId, generation, timeoutMs, undefined, beforeUnload);
   }
 
-  private async _drainAndUnregister(moduleId: string, generation: object, timeoutMs: number): Promise<boolean> {
-    this.beginDrain(moduleId);
-    const clean = await this.waitDrained(moduleId, timeoutMs);
-    if (this._executionGenerations.get(moduleId) !== generation) return false;
+  private _latestRemoval(moduleId: string): ModuleRemoval | undefined {
+    const removals = this._removals.get(moduleId);
+    return removals === undefined ? undefined : Array.from(removals).at(-1);
+  }
 
-    if (!clean) {
-      console.warn(
-        `[apcore:registry] Force-unloading module ${moduleId} after ${timeoutMs}ms timeout ` +
-        `(${this._refCounts.get(moduleId) ?? 0} in-flight executions)`,
+  private _startRemoval(
+    moduleId: string,
+    generation: ExecutionGeneration,
+    timeoutMs: number,
+    context?: Context | null,
+    beforeUnload?: (module: unknown) => void,
+  ): Promise<boolean> {
+    const sourceFile = this._sourceFiles.get(moduleId);
+    const module = this._detach(moduleId);
+    let finish!: (clean: boolean) => void;
+    const completion = new Promise<boolean>((resolve) => { finish = resolve; });
+    const removal = { generation, completion, module, sourceFile };
+    const removals = this._removals.get(moduleId) ?? new Set();
+    removals.add(removal);
+    this._removals.set(moduleId, removals);
+
+    const unload = (clean: boolean) => {
+      if (clean) {
+        try {
+          beforeUnload?.(module);
+        } catch (error) {
+          console.warn(`[apcore:registry] Pre-unload hook failed for ${moduleId}:`, error);
+        }
+      } else {
+        console.warn(
+          `[apcore:registry] Force-unloading module ${moduleId} after ${timeoutMs}ms timeout ` +
+          `(${generation.references} in-flight executions)`,
+        );
+      }
+
+      const cleanup = this._runOnUnload(moduleId, module);
+      const complete = () => {
+        this._notifyUnregister(moduleId, module, context);
+        removals.delete(removal);
+        if (removals.size === 0) this._removals.delete(moduleId);
+        finish(clean);
+      };
+      if (cleanup === undefined) complete();
+      else void cleanup.then(complete);
+    };
+
+    if (generation.references === 0) unload(true);
+    else void this._waitForDrain(generation, timeoutMs).then(unload);
+    return completion;
+  }
+
+  /** @internal Stop discovery and drain every registration, including hidden modules. */
+  shutdown(timeoutMs: number = 5000): Promise<void> {
+    this._shutdown ??= Promise.resolve().then(async () => {
+      this.unwatch();
+      const startRemovals = () => {
+        for (const moduleId of this._modules.keys()) {
+          void this.safeUnregister(moduleId, timeoutMs);
+        }
+      };
+      startRemovals();
+      await Promise.allSettled(this._inFlight.values());
+      startRemovals();
+      await Promise.all(
+        Array.from(this._removals.values()).flatMap((removals) => Array.from(removals, ({ completion }) => completion)),
       );
-    }
+    });
+    return this._shutdown;
+  }
 
-    await this._unregister(moduleId);
-    return clean;
+  private _assertOpen(): void {
+    if (this._shutdown) throw new InvalidInputError('Registry has been shut down');
   }
 }

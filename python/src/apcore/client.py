@@ -15,7 +15,8 @@ for preflight, and ``stream()`` for chunked results.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncGenerator, Callable as CallableABC
+import threading
+from collections.abc import AsyncGenerator, Callable as CallableABC, Iterable
 from contextlib import aclosing
 from typing import Any, Callable
 
@@ -68,6 +69,8 @@ class APCore:
                 ``sys_modules_errors``.
         """
         self.config = config
+        self._shutdown_lock = threading.Lock()
+        self._shutdown_complete = False
 
         # The control module and executor must use the same toggle state.
         self.toggle_state = executor._adopt_client_toggle_state() if executor is not None else ToggleState()
@@ -232,6 +235,14 @@ class APCore:
             module_obj: The module instance (Class or FunctionModule).
         """
         self.registry.register(module_id, module_obj)
+
+    def register_many(self, entries: Iterable[tuple[str, Any]]) -> None:
+        """Register modules in order, retaining entries loaded before an error."""
+        self.registry.register_many(entries)
+
+    async def unregister_many(self, module_ids: Iterable[str], *, timeout_ms: int = 5000) -> list[bool]:
+        """Drain and unload modules in order, with one result per ID."""
+        return await self.registry.unregister_many(module_ids, timeout_ms=timeout_ms)
 
     def call(
         self,
@@ -546,12 +557,37 @@ class APCore:
         Closes the cached sync loop and the system event bus's delivery
         resources. The client remains reusable and subscriptions are retained.
         """
+        self._close_owned_resources(terminal=False)
+
+    def _close_owned_resources(self, *, terminal: bool) -> None:
         try:
             emitter = self.events
             if emitter is not None:
-                emitter.close()
+                if terminal:
+                    emitter.shutdown()
+                else:
+                    emitter.close()
         finally:
             self.executor.close()
+
+    async def shutdown(self) -> None:
+        """Stop admitting calls and unload all modules, including hidden modules.
+
+        Shut down only when every user of the underlying registry is ready to
+        stop, including users of an explicitly supplied registry or executor.
+        Hosts manage resources they create separately, such as task managers.
+        """
+        await asyncio.to_thread(self._shutdown)
+
+    def _shutdown(self) -> None:
+        with self._shutdown_lock:
+            if self._shutdown_complete:
+                return
+            try:
+                self.registry._shutdown()
+            finally:
+                self._close_owned_resources(terminal=True)
+            self._shutdown_complete = True
 
 
 class _CallbackSubscriber:

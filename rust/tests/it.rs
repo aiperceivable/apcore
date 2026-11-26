@@ -246,6 +246,8 @@ mod test_middleware_identity_removal;
 mod test_middleware_on_error_single_site;
 #[path = "test_module.rs"]
 mod test_module;
+#[path = "test_module_lifecycle_conformance.rs"]
+mod test_module_lifecycle_conformance;
 #[path = "test_multi_module_discovery_conformance.rs"]
 mod test_multi_module_discovery_conformance;
 #[path = "test_multi_root_discovery_conformance.rs"]

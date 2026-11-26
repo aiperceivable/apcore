@@ -238,16 +238,21 @@ impl Module for UsageSummaryModule {
 
 /// system.usage.module — Detailed usage for a single module.
 pub struct UsageModule {
-    registry: Arc<Registry>,
+    registry: super::SystemRegistry,
     collector: UsageCollector,
 }
 
 impl UsageModule {
     pub fn new(registry: Arc<Registry>, collector: UsageCollector) -> Self {
         Self {
-            registry,
+            registry: super::SystemRegistry::Owned(registry),
             collector,
         }
+    }
+
+    pub(crate) fn registered(mut self) -> Self {
+        self.registry.release_ownership();
+        self
     }
 }
 
@@ -335,7 +340,7 @@ impl Module for UsageModule {
             .and_then(|v| v.as_str())
             .unwrap_or("24h");
 
-        if !self.registry.has(module_id) {
+        if !self.registry.get()?.has(module_id) {
             return Err(ModuleError::new(
                 ErrorCode::ModuleNotFound,
                 format!("Module '{module_id}' not found"),

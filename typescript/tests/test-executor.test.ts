@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { Type } from '@sinclair/typebox';
 import { Context, createIdentity } from '../src/context.js';
 import { Executor, redactSensitive, REDACTED_VALUE } from '../src/executor.js';
@@ -747,12 +747,14 @@ describe('Executor execution lifetime', () => {
   it('delays unloading until execution settles, even after a call timeout', async () => {
     let finish!: (output: Record<string, unknown>) => void;
     const physicalExecution = new Promise<Record<string, unknown>>((resolve) => { finish = resolve; });
+    const onUnload = vi.fn();
     const module = {
       description: 'Slow module',
       inputSchema: Type.Object({}),
       outputSchema: Type.Object({}),
       resources: { timeout: 5 },
       execute: () => physicalExecution,
+      onUnload,
     };
     const registry = new Registry();
     registry.register('test.slow', module);
@@ -761,11 +763,12 @@ describe('Executor execution lifetime', () => {
     await expect(executor.call('test.slow', {})).rejects.toMatchObject({ code: 'MODULE_TIMEOUT' });
     const unload = registry.safeUnregister('test.slow', 500);
     await Promise.resolve();
-    expect(registry.get('test.slow')).toBe(module);
+    expect(registry.get('test.slow')).toBeNull();
+    expect(onUnload).not.toHaveBeenCalled();
     await expect(executor.call('test.slow', {})).rejects.toBeInstanceOf(ModuleNotFoundError);
     finish({});
     await expect(unload).resolves.toBe(true);
-    expect(registry.get('test.slow')).toBeNull();
+    expect(onUnload).toHaveBeenCalledOnce();
   });
 });
 

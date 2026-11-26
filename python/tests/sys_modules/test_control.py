@@ -418,29 +418,24 @@ class TestReloadModuleNotFound:
         assert exc_info.value.code == "MODULE_NOT_FOUND"
 
 
-class TestReloadModuleCallsSafeUnregister:
-    def test_reload_module_calls_safe_unregister(self) -> None:
-        """Verify Registry.safe_unregister() is called with the correct module_id."""
+class TestReloadModuleUnregisters:
+    def test_reload_module_unregisters_before_discovery(self) -> None:
+        """Verify observers see unregistration before the module is rediscovered."""
         registry, _ = _make_registry_with_module("my.module")
         mod = _make_reload_module(registry=registry)
+        removed: list[str] = []
+        registry.on("unregister", lambda module_id, _: removed.append(module_id))
 
-        new_module = _FakeModuleV2()
-        # `register_internal` now enforces the duplicate check (aligned with
-        # apcore-typescript / apcore-rust). Because `safe_unregister` is mocked
-        # to return True without actually removing the slot, we must also mock
-        # `register_internal` so the re-registration doesn't trip the new
-        # duplicate guard. This test only cares about the safe_unregister call.
-        with (
-            patch.object(registry, "safe_unregister", return_value=True) as mock_unreg,
-            patch.object(registry, "register_internal"),
-            patch.object(mod, "_rediscover_module", return_value=new_module),
-        ):
+        def discover(module_id: str) -> _FakeModuleV2:
+            assert removed == [module_id]
+            assert not registry.has(module_id)
+            return _FakeModuleV2()
+
+        with patch.object(mod, "_rediscover_module", side_effect=discover):
             mod.execute(
                 {"module_id": "my.module", "reason": "test"},
                 context=None,
             )
-
-        mock_unreg.assert_called_once_with("my.module")
 
 
 class TestReloadModuleCallsDiscover:

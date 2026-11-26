@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { Type } from '@sinclair/typebox';
 import { UpdateConfigModule, ReloadModule } from '../src/sys-modules/control.js';
 import { Config } from '../src/config.js';
 import { Registry } from '../src/registry/registry.js';
@@ -589,6 +590,13 @@ describe('ReloadModule', () => {
   });
 
   describe('onSuspend/onResume lifecycle hooks', () => {
+    const moduleId = 'app.test_mod';
+
+    function rediscover(module: ReturnType<typeof createDummyModule>): void {
+      const discovered = { ...module, inputSchema: Type.Object({}), outputSchema: Type.Object({}) };
+      registry.setDiscoverer({ discover: () => [{ moduleId, module: discovered }] });
+    }
+
     it('calls onSuspend on old module and onResume on new module with captured state', async () => {
       const suspendState = { counter: 42, cache: { key: 'value' } };
       const suspendFn = vi.fn(() => suspendState);
@@ -598,18 +606,15 @@ describe('ReloadModule', () => {
         ...createDummyModule('1.0.0'),
         onSuspend: suspendFn,
       };
-      registry.registerInternal('system.test_mod', oldModule);
+      registry.registerInternal(moduleId, oldModule);
 
       const newModule = {
         ...createDummyModule('2.0.0'),
         onResume: resumeFn,
       };
-      vi.spyOn(registry, 'discover').mockImplementation(async () => {
-        registry.registerInternal('system.test_mod', newModule);
-        return 1;
-      });
+      rediscover(newModule);
 
-      await mod.execute({ module_id: 'system.test_mod', reason: 'upgrade' }, null);
+      await mod.execute({ module_id: moduleId, reason: 'upgrade' }, null);
 
       expect(suspendFn).toHaveBeenCalledOnce();
       expect(resumeFn).toHaveBeenCalledOnce();
@@ -624,18 +629,15 @@ describe('ReloadModule', () => {
         ...createDummyModule('1.0.0'),
         onSuspend: suspendFn,
       };
-      registry.registerInternal('system.test_mod', oldModule);
+      registry.registerInternal(moduleId, oldModule);
 
       const newModule = {
         ...createDummyModule('2.0.0'),
         onResume: resumeFn,
       };
-      vi.spyOn(registry, 'discover').mockImplementation(async () => {
-        registry.registerInternal('system.test_mod', newModule);
-        return 1;
-      });
+      rediscover(newModule);
 
-      await mod.execute({ module_id: 'system.test_mod', reason: 'upgrade' }, null);
+      await mod.execute({ module_id: moduleId, reason: 'upgrade' }, null);
 
       expect(suspendFn).toHaveBeenCalledOnce();
       expect(resumeFn).not.toHaveBeenCalled();
@@ -643,15 +645,12 @@ describe('ReloadModule', () => {
 
     it('reloads successfully when module has no onSuspend or onResume (backward compatible)', async () => {
       const oldModule = createDummyModule('1.0.0');
-      registry.registerInternal('system.test_mod', oldModule);
+      registry.registerInternal(moduleId, oldModule);
 
       const newModule = createDummyModule('2.0.0');
-      vi.spyOn(registry, 'discover').mockImplementation(async () => {
-        registry.registerInternal('system.test_mod', newModule);
-        return 1;
-      });
+      rediscover(newModule);
 
-      const result = await mod.execute({ module_id: 'system.test_mod', reason: 'upgrade' }, null);
+      const result = await mod.execute({ module_id: moduleId, reason: 'upgrade' }, null);
 
       expect(result.success).toBe(true);
       expect(result.previous_version).toBe('1.0.0');
@@ -666,18 +665,15 @@ describe('ReloadModule', () => {
         ...createDummyModule('1.0.0'),
         onSuspend: suspendFn,
       };
-      registry.registerInternal('system.test_mod', oldModule);
+      registry.registerInternal(moduleId, oldModule);
 
       const newModule = {
         ...createDummyModule('2.0.0'),
         onResume: resumeFn,
       };
-      vi.spyOn(registry, 'discover').mockImplementation(async () => {
-        registry.registerInternal('system.test_mod', newModule);
-        return 1;
-      });
+      rediscover(newModule);
 
-      const result = await mod.execute({ module_id: 'system.test_mod', reason: 'upgrade' }, null);
+      const result = await mod.execute({ module_id: moduleId, reason: 'upgrade' }, null);
 
       expect(result.success).toBe(true);
       expect(suspendFn).toHaveBeenCalledOnce();
@@ -694,18 +690,15 @@ describe('ReloadModule', () => {
         ...createDummyModule('1.0.0'),
         onSuspend: suspendFn,
       };
-      registry.registerInternal('system.test_mod', oldModule);
+      registry.registerInternal(moduleId, oldModule);
 
       const newModule = {
         ...createDummyModule('2.0.0'),
         onResume: resumeFn,
       };
-      vi.spyOn(registry, 'discover').mockImplementation(async () => {
-        registry.registerInternal('system.test_mod', newModule);
-        return 1;
-      });
+      rediscover(newModule);
 
-      const result = await mod.execute({ module_id: 'system.test_mod', reason: 'upgrade' }, null);
+      const result = await mod.execute({ module_id: moduleId, reason: 'upgrade' }, null);
 
       expect(result.success).toBe(true);
       expect(suspendFn).toHaveBeenCalledOnce();

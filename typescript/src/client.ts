@@ -109,6 +109,7 @@ export class APCore {
   private readonly _toggleState: ToggleState;
   private _sysModulesContext: SysModulesContext = {};
   private readonly _sysModulesErrors: Error[] = [];
+  private _shutdown: Promise<void> | undefined;
 
   constructor(options?: APCoreOptions) {
     this.config = options?.config ?? null;
@@ -253,6 +254,22 @@ export class APCore {
    */
   register(moduleId: string, moduleObj: unknown): Promise<void> {
     return this.registry.register(moduleId, moduleObj);
+  }
+
+  /** Register modules in input order and retain earlier successes if an entry fails. */
+  registerMany(entries: Iterable<readonly [string, unknown]>): Promise<void> {
+    return this.registry.registerMany(entries);
+  }
+
+  /** Drain and unregister modules in input order, returning the outcome for each ID. */
+  unregisterMany(moduleIds: Iterable<string>, timeoutMs?: number): Promise<boolean[]> {
+    return this.registry.unregisterMany(moduleIds, timeoutMs);
+  }
+
+  /** Stop the registry watcher, drain modules, and shut down this client's event emitter. */
+  shutdown(timeoutMs: number = 5000): Promise<void> {
+    this._shutdown ??= this.registry.shutdown(timeoutMs).finally(() => this.events?.shutdown(timeoutMs));
+    return this._shutdown;
   }
 
   /**

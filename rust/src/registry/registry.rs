@@ -5,10 +5,10 @@ use async_trait::async_trait;
 use parking_lot::{Mutex as ParkingLotMutex, RwLock};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{
     atomic::{AtomicU64, Ordering},
-    Arc, OnceLock,
+    Arc, OnceLock, Weak,
 };
 
 use crate::errors::ModuleError;
@@ -430,6 +430,12 @@ struct RegistryCore {
     descriptors: HashMap<String, ModuleDescriptor>,
     /// Reference counts for safe hot-reload — prevents unloading while in use.
     ref_counts: HashMap<String, Arc<ModuleReferences>>,
+    // The explicit acquire/release API identifies leases by name only. Retain
+    // their original generations so release never decrements a replacement
+    // executor lease after synchronous or forced removal.
+    manual_leases: HashMap<String, VecDeque<Arc<ModuleReferences>>>,
+    pending_removals: HashMap<String, Vec<Arc<ModuleReferences>>>,
+    closed: bool,
     /// Modules marked for unload (draining active requests before removal).
     draining: HashSet<String>,
     /// Case-insensitive lookup: lowercase name -> canonical name.
@@ -446,21 +452,103 @@ struct RegistryCore {
     sources: HashMap<String, String>,
 }
 
-/// Tracks one registration, so a force-unloaded call cannot release a later registration.
-#[derive(Debug, Default)]
+/// Tracks one registration, so an old call cannot release a later registration.
+#[derive(Default)]
 struct ModuleReferences {
-    count: ParkingLotMutex<usize>,
+    state: ParkingLotMutex<ReferenceState>,
     drained: tokio::sync::Notify,
+    completed: tokio::sync::Notify,
+}
+
+#[derive(Default)]
+struct ReferenceState {
+    count: usize,
+    removal: Option<PendingRemoval>,
+    completed: bool,
+}
+
+struct PendingRemoval {
+    core: Weak<RwLock<RegistryCore>>,
+    name: String,
+    registration: RemovedRegistration,
+    callbacks: Vec<Arc<ModuleCallbackFn>>,
+    event: Option<(Arc<EventEmitter>, ApCoreEvent)>,
 }
 
 impl ModuleReferences {
     fn release(&self) {
-        let mut count = self.count.lock();
-        if *count > 0 {
-            *count -= 1;
+        {
+            let mut state = self.state.lock();
+            state.count = state.count.saturating_sub(1);
         }
-        if *count == 0 {
-            self.drained.notify_waiters();
+        self.finish_removal(false);
+    }
+
+    fn finish_removal(&self, force: bool) {
+        let removal = {
+            let mut state = self.state.lock();
+            if state.count == 0 {
+                self.drained.notify_waiters();
+            } else if !force {
+                return;
+            }
+            state.removal.take()
+        };
+        if let Some(removal) = removal {
+            removal.registration.unload(&removal.name);
+            for callback in removal.callbacks {
+                if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    callback(&removal.name, removal.registration.primary.as_ref());
+                }))
+                .is_err()
+                {
+                    tracing::error!(
+                        module_id = removal.name,
+                        "Module unregister callback panicked"
+                    );
+                }
+            }
+            if let Some((emitter, event)) = removal.event {
+                Registry::deliver_registry_event(&emitter, event);
+            }
+            if let Some(core) = removal.core.upgrade() {
+                self.complete_removal(&core, &removal.name);
+            }
+        }
+    }
+
+    fn complete_removal(&self, core: &RwLock<RegistryCore>, name: &str) {
+        self.state.lock().completed = true;
+        self.completed.notify_waiters();
+        let mut core = core.write();
+        if let Some(removals) = core.pending_removals.get_mut(name) {
+            removals.retain(|pending| !std::ptr::eq(pending.as_ref(), self));
+            if removals.is_empty() {
+                core.pending_removals.remove(name);
+            }
+        }
+    }
+
+    async fn wait_for_removal(&self, deadline: tokio::time::Instant) {
+        loop {
+            let completed = self.completed.notified();
+            tokio::pin!(completed);
+            completed.as_mut().enable();
+            if self.state.lock().completed {
+                return;
+            }
+            if tokio::time::timeout_at(deadline, &mut completed)
+                .await
+                .is_err()
+            {
+                self.finish_removal(true);
+                // The timeout bounds execution draining, not a cleanup hook
+                // that another thread has already begun.
+                if !self.state.lock().completed {
+                    completed.await;
+                }
+                return;
+            }
         }
     }
 }
@@ -474,6 +562,53 @@ pub(crate) struct ModuleExecutionLease {
 impl Drop for ModuleExecutionLease {
     fn drop(&mut self) {
         self.references.release();
+    }
+}
+
+/// Tracks registrations admitted before the registry closed, through their
+/// publication or cleanup. Reserve while holding the registry core lock.
+#[derive(Default)]
+struct LoadingRegistrations {
+    ids: ParkingLotMutex<HashSet<String>>,
+    emptied: tokio::sync::Notify,
+}
+
+impl LoadingRegistrations {
+    fn reserve<'a>(&'a self, name: &'a str) -> Option<LoadingRegistration<'a>> {
+        if !self.ids.lock().insert(name.to_string()) {
+            return None;
+        }
+        Some(LoadingRegistration {
+            loading: self,
+            name,
+        })
+    }
+
+    async fn wait_until_empty(&self) {
+        loop {
+            let emptied = self.emptied.notified();
+            tokio::pin!(emptied);
+            emptied.as_mut().enable();
+            if self.ids.lock().is_empty() {
+                return;
+            }
+            emptied.await;
+        }
+    }
+}
+
+struct LoadingRegistration<'a> {
+    loading: &'a LoadingRegistrations,
+    name: &'a str,
+}
+
+impl Drop for LoadingRegistration<'_> {
+    fn drop(&mut self) {
+        let mut ids = self.loading.ids.lock();
+        ids.remove(self.name);
+        if ids.is_empty() {
+            self.loading.emptied.notify_waiters();
+        }
     }
 }
 
@@ -501,6 +636,62 @@ impl Drop for DrainGuard<'_> {
     }
 }
 
+// Keep a detached registration visible to host shutdown until its synchronous
+// suspension, unload hooks and callbacks have completed.
+struct RemovalCompletion<'a> {
+    core: &'a RwLock<RegistryCore>,
+    name: &'a str,
+    references: Arc<ModuleReferences>,
+}
+
+impl Drop for RemovalCompletion<'_> {
+    fn drop(&mut self) {
+        self.references.complete_removal(self.core, self.name);
+    }
+}
+
+struct RegistrationOptions<'a> {
+    allow_reserved: bool,
+    run_validator: bool,
+    context: Option<&'a crate::Context<serde_json::Value>>,
+    resume: Option<serde_json::Value>,
+}
+
+pub(crate) struct RemovedRegistration {
+    pub(crate) primary: Arc<dyn Module>,
+    pub(crate) descriptor: ModuleDescriptor,
+    older_versions: Vec<VersionEntry>,
+    source: Option<String>,
+}
+
+impl RemovedRegistration {
+    fn unload(&self, name: &str) {
+        for module in std::iter::once(&self.primary)
+            .chain(self.older_versions.iter().map(|entry| &entry.module))
+        {
+            if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| module.on_unload()))
+                .is_err()
+            {
+                tracing::error!(module_id = name, "Module on_unload panicked");
+            }
+        }
+    }
+}
+
+fn resume_reloaded_module(name: &str, module: &dyn Module, state: serde_json::Value) {
+    if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| module.on_resume(state))).is_err() {
+        tracing::warn!(
+            module_id = name,
+            "Module on_resume panicked; reload still applied"
+        );
+    }
+}
+
+pub(crate) struct ReloadRegistration {
+    pub(crate) removed: RemovedRegistration,
+    pub(crate) state: Option<serde_json::Value>,
+}
+
 /// One registered version of a multi-version module.
 struct VersionEntry {
     version: String,
@@ -514,6 +705,9 @@ impl RegistryCore {
             modules: HashMap::new(),
             descriptors: HashMap::new(),
             ref_counts: HashMap::new(),
+            manual_leases: HashMap::new(),
+            pending_removals: HashMap::new(),
+            closed: false,
             draining: HashSet::new(),
             lowercase_map: HashMap::new(),
             schema_cache: HashMap::new(),
@@ -522,18 +716,28 @@ impl RegistryCore {
         }
     }
 
-    fn remove_module(&mut self, name: &str) -> Option<Arc<dyn Module>> {
-        let module = self.modules.remove(name)?;
-        self.descriptors.remove(name);
+    fn remove_module(&mut self, name: &str) -> Option<RemovedRegistration> {
+        let primary = self.modules.remove(name)?;
+        // INVARIANT: publication installs the module and its descriptor under the same lock.
+        let descriptor = self
+            .descriptors
+            .remove(name)
+            .expect("registered module has descriptor");
         self.lowercase_map.remove(&name.to_lowercase());
         self.schema_cache.remove(name);
-        self.versions.remove(name);
-        self.sources.remove(name);
+        let mut older_versions = self.versions.remove(name).unwrap_or_default();
+        older_versions.retain(|entry| !Arc::ptr_eq(&entry.module, &primary));
+        let source = self.sources.remove(name);
         self.draining.remove(name);
         if let Some(references) = self.ref_counts.remove(name) {
             references.drained.notify_waiters();
         }
-        Some(module)
+        Some(RemovedRegistration {
+            primary,
+            descriptor,
+            older_versions,
+            source,
+        })
     }
 }
 
@@ -549,7 +753,8 @@ impl RegistryCore {
 /// out of their lock before running them, and the drain-wait logic releases
 /// the core lock before awaiting.
 pub struct Registry {
-    core: RwLock<RegistryCore>,
+    core: Arc<RwLock<RegistryCore>>,
+    shutdown_complete: tokio::sync::OnceCell<()>,
     /// Event callbacks keyed by event name (e.g. "register", "unregister").
     ///
     /// Callbacks are stored as `(id, Arc)` so they can be cloned out of the lock
@@ -585,10 +790,9 @@ pub struct Registry {
     /// Background task handle that consumes notify events and triggers
     /// debounced re-discovery. Cleared on `unwatch()`.
     watch_handle: parking_lot::Mutex<Option<tokio::task::JoinHandle<()>>>,
-    /// Issue #65: module IDs whose on_load is currently in progress.
-    /// A module in in_flight is NOT visible via get()/list().
-    /// Prevents concurrent duplicate registration of the same ID.
-    in_flight: ParkingLotMutex<HashSet<String>>,
+    /// Tracks unpublished registrations and excludes concurrent registrations
+    /// of the same ID, including while rejected loads are being cleaned up.
+    in_flight: LoadingRegistrations,
     /// Issue #65: callbacks invoked when any module's on_load fails.
     load_failed_callbacks: RwLock<Vec<Arc<LoadFailedCallbackFn>>>,
     /// Optional event emitter wired by the host (A-D-002). When set, the
@@ -648,13 +852,14 @@ impl std::fmt::Debug for Registry {
         // in_flight is already held by a concurrent register() call.
         let in_flight_snapshot: Vec<String> = self
             .in_flight
+            .ids
             .try_lock()
             .map(|g| g.iter().cloned().collect())
             .unwrap_or_default();
         f.debug_struct("Registry")
             .field("modules", &core.modules.keys().collect::<Vec<_>>())
             .field("descriptors", &core.descriptors)
-            .field("ref_counts", &core.ref_counts)
+            .field("ref_count_ids", &core.ref_counts.keys().collect::<Vec<_>>())
             .field("draining", &core.draining)
             .field("in_flight", &in_flight_snapshot)
             .field(
@@ -683,7 +888,8 @@ impl Registry {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            core: RwLock::new(RegistryCore::new()),
+            core: Arc::new(RwLock::new(RegistryCore::new())),
+            shutdown_complete: tokio::sync::OnceCell::new(),
             callbacks: RwLock::new(HashMap::new()),
             callback_counter: AtomicU64::new(1),
             deprecation_warned: ParkingLotMutex::new(HashSet::new()),
@@ -693,10 +899,17 @@ impl Registry {
             extension_roots: RwLock::new(Vec::new()),
             watcher: parking_lot::Mutex::new(None),
             watch_handle: parking_lot::Mutex::new(None),
-            in_flight: ParkingLotMutex::new(HashSet::new()),
+            in_flight: LoadingRegistrations::default(),
             load_failed_callbacks: RwLock::new(Vec::new()),
             event_emitter: RwLock::new(None),
         }
+    }
+
+    fn closed_error() -> ModuleError {
+        ModuleError::new(
+            crate::errors::ErrorCode::GeneralInvalidInput,
+            "Registry is shut down",
+        )
     }
 
     /// Register a callback invoked when any module's on_load fails.
@@ -795,7 +1008,17 @@ impl Registry {
         descriptor: ModuleDescriptor,
         context: Option<&crate::Context<serde_json::Value>>,
     ) -> Result<(), ModuleError> {
-        self.register_core_with_context(name, module.into(), descriptor, false, true, context)
+        self.register_core_with_context(
+            name,
+            module.into(),
+            descriptor,
+            RegistrationOptions {
+                allow_reserved: false,
+                run_validator: true,
+                context,
+                resume: None,
+            },
+        )
     }
 
     /// Register a module — **spec-compliant two-argument form**.
@@ -974,7 +1197,7 @@ impl Registry {
         // explicit version of an ID that is already registered is another
         // version, not a duplicate.
         if version.is_some_and(|v| !v.is_empty()) && self.has(name) {
-            return self.add_version(name, module.into(), descriptor);
+            return self.add_version(name, &module.into(), descriptor);
         }
         self.register(name, module, descriptor)
     }
@@ -985,11 +1208,11 @@ impl Registry {
     fn add_version(
         &self,
         name: &str,
-        module: Arc<dyn Module>,
+        module: &Arc<dyn Module>,
         descriptor: ModuleDescriptor,
     ) -> Result<(), ModuleError> {
         let mut descriptor = descriptor;
-        self.check_registration(name, &module, &mut descriptor, false, true)?;
+        self.check_registration(name, module, &mut descriptor, false, true)?;
         let version = descriptor.version.clone();
         let duplicate = || {
             ModuleError::new(
@@ -997,25 +1220,54 @@ impl Registry {
                 format!("Module '{name}' version '{version}' is already registered"),
             )
         };
-        if self.version_registered(name, &version) {
-            return Err(duplicate());
-        }
+        let (references, reservation) = {
+            let mut core = self.core.write();
+            if core.closed {
+                return Err(Self::closed_error());
+            }
+            let current = core
+                .descriptors
+                .get(name)
+                .ok_or_else(|| ModuleError::module_not_found(name))?;
+            if core.draining.contains(name)
+                || current.version == version
+                || core
+                    .versions
+                    .get(name)
+                    .is_some_and(|entries| entries.iter().any(|entry| entry.version == version))
+            {
+                return Err(duplicate());
+            }
+            let reservation = self.in_flight.reserve(name).ok_or_else(duplicate)?;
+            let references = Arc::clone(core.ref_counts.entry(name.to_string()).or_default());
+            (references, reservation)
+        };
 
         if let Err(e) = module.on_load() {
+            drop(reservation);
             self.emit_module_load_failed(name, &e);
             return Err(e);
         }
 
         {
             let mut core = self.core.write();
-            let (Some(current), Some(current_descriptor)) = (
-                core.modules.get(name).cloned(),
-                core.descriptors.get(name).cloned(),
-            ) else {
-                // Unregistered while `on_load` ran: this is a first registration.
+            let same_generation = core
+                .ref_counts
+                .get(name)
+                .is_some_and(|current| Arc::ptr_eq(current, &references));
+            if core.closed || !same_generation || core.draining.contains(name) {
+                let error = if core.closed {
+                    Self::closed_error()
+                } else {
+                    ModuleError::module_not_found(name)
+                };
                 drop(core);
-                return self.register_core(name, module, descriptor, false, false);
-            };
+                module.on_unload();
+                drop(reservation);
+                return Err(error);
+            }
+            let current = Arc::clone(&core.modules[name]);
+            let current_descriptor = core.descriptors[name].clone();
             let entries = core.versions.entry(name.to_string()).or_insert_with(|| {
                 vec![VersionEntry {
                     version: current_descriptor.version.clone(),
@@ -1023,12 +1275,9 @@ impl Registry {
                     descriptor: current_descriptor,
                 }]
             });
-            if entries.iter().any(|e| e.version == version) {
-                return Err(duplicate());
-            }
             entries.push(VersionEntry {
                 version,
-                module: Arc::clone(&module),
+                module: Arc::clone(module),
                 descriptor,
             });
             let latest = entries
@@ -1048,43 +1297,21 @@ impl Registry {
             }
         }
 
+        drop(reservation);
         for cb in self.snapshot_callbacks("register") {
             cb(name, module.as_ref());
         }
         Ok(())
     }
 
-    /// Whether `version` of `name` is registered, as the primary entry or as
-    /// one of several versions.
-    fn version_registered(&self, name: &str, version: &str) -> bool {
-        let core = self.core.read();
-        match core.versions.get(name) {
-            Some(entries) => entries.iter().any(|e| e.version == version),
-            None => core
-                .descriptors
-                .get(name)
-                .is_some_and(|d| d.version == version),
-        }
-    }
-
-    /// Unregister a module by name.
+    /// Stop admitting calls to the module and remove its registration.
     ///
-    /// Returns `Ok(true)` if the module was found and removed, `Ok(false)` if
-    /// the module was not registered (idempotent — matches apcore-python
-    /// `return False` and apcore-typescript `return false` semantics,
-    /// sync finding A-D-002).
+    /// Idle registrations are unloaded synchronously. If calls still hold
+    /// execution leases, the last lease runs cleanup for the old registration.
+    /// Use [`Self::safe_unregister`] for an awaitable, timed drain.
     ///
-    /// Ordering (aligned with `apcore-python.Registry.unregister`):
-    ///
-    /// 1. Acquire `core.write()`, remove from all maps atomically, drop lock.
-    /// 2. Invoke `module.on_unload()` BEFORE firing the `"unregister"` callback
-    ///    so subscribers observe the post-on_unload module state (sync A-D-003).
-    /// 3. Callers holding `Arc<dyn Module>` references from earlier `get()`
-    ///    calls keep the module alive; `on_unload` still runs exactly once.
-    ///
-    /// Note: the return type changes from `Result<(), ModuleError>` to
-    /// `Result<bool, ModuleError>` in this version. Callers should check the
-    /// bool rather than treating `Ok(())` as success.
+    /// Returns true when this call removed the registration and false if the
+    /// ID was absent or an existing drain already owns it.
     pub fn unregister(&self, name: &str) -> Result<bool, ModuleError> {
         self.unregister_with_context(name, None)
     }
@@ -1095,29 +1322,42 @@ impl Registry {
         name: &str,
         context: Option<&crate::Context<serde_json::Value>>,
     ) -> Result<bool, ModuleError> {
-        let removed = self.core.write().remove_module(name);
-        if let Some(module) = removed {
-            self.notify_unregistered(name, module.as_ref(), context);
-            Ok(true)
-        } else {
-            Ok(false)
-        }
+        let callbacks = self.snapshot_callbacks("unregister");
+        let event = self.ephemeral_event("apcore.registry.module_unregistered", name, context);
+        let references = {
+            let mut core = self.core.write();
+            // A coordinated drain owns the registration until its cleanup
+            // begins. Another removal must not steal it before its snapshot.
+            if core.draining.contains(name) {
+                return Ok(false);
+            }
+            let references = core.ref_counts.get(name).cloned().unwrap_or_default();
+            let Some(registration) = core.remove_module(name) else {
+                return Ok(false);
+            };
+            references.state.lock().removal = Some(PendingRemoval {
+                core: Arc::downgrade(&self.core),
+                name: name.to_string(),
+                registration,
+                callbacks,
+                event,
+            });
+            core.pending_removals
+                .entry(name.to_string())
+                .or_default()
+                .push(Arc::clone(&references));
+            references
+        };
+        references.finish_removal(false);
+        Ok(true)
     }
 
-    fn notify_unregistered(
-        &self,
-        name: &str,
-        removed: &dyn Module,
-        context: Option<&crate::Context<serde_json::Value>>,
-    ) {
-        // Fire on_unload BEFORE the "unregister" callback so subscribers observe
-        // the post-on_unload module state, matching apcore-python and
-        // apcore-typescript ordering (sync finding A-D-003).
-        removed.on_unload();
-        for cb in self.snapshot_callbacks("unregister") {
-            cb(name, removed);
+    fn notify_unregistered(&self, name: &str, removed: &RemovedRegistration) {
+        removed.unload(name);
+        for callback in self.snapshot_callbacks("unregister") {
+            callback(name, removed.primary.as_ref());
         }
-        self.emit_ephemeral_event("apcore.registry.module_unregistered", name, context);
+        self.emit_ephemeral_event("apcore.registry.module_unregistered", name, None);
     }
 
     /// Get a shared reference to a module by name.
@@ -1484,30 +1724,6 @@ impl Registry {
         }
     }
 
-    /// Shared registration core for `register`, `register_internal`, and the
-    /// per-entry path of `register_discovered`.
-    ///
-    /// Ordering — deferred-publish pattern (Issue #65):
-    /// 1. `validate_module_id` (syntactic, no lock).
-    /// 2. Snapshot the validator `Arc` out of `self.validator` and invoke it
-    ///    WITHOUT holding any lock (prevents parking_lot non-reentrant
-    ///    deadlock if the validator calls back into the registry).
-    /// 3. Acquire `core.read()`, run `detect_id_conflicts` (surfaces duplicate,
-    ///    reserved-word, and case-collision conflicts), release the lock.
-    /// 4. Acquire `in_flight.lock()`, atomically check + insert the ID so
-    ///    concurrent same-ID registrations are rejected, release the lock.
-    /// 5. Call `on_load` WITHOUT any lock held and WITHOUT the module in
-    ///    `core.modules` (deferred-publish: module is NOT yet discoverable).
-    /// 6. On success: acquire `core.write()`, insert into all visible maps,
-    ///    release, then remove from `in_flight`. Fire `"register"` callbacks.
-    /// 7. On failure: remove from `in_flight`, fire `load_failed` callbacks,
-    ///    re-raise the error unchanged.
-    ///
-    /// # Lock ordering invariant
-    ///
-    /// Always acquire `core` before `in_flight`. Never hold `in_flight.lock()`
-    /// while trying to acquire `core.read()` or `core.write()`. Violations
-    /// create deadlock cycles.
     /// Re-publish a module instance the caller already holds (D-112).
     ///
     /// Every other registration entry point takes `Box<dyn Module>`, and
@@ -1606,22 +1822,32 @@ impl Registry {
             name,
             module,
             descriptor,
-            allow_reserved,
-            run_validator,
-            None,
+            RegistrationOptions {
+                allow_reserved,
+                run_validator,
+                context: None,
+                resume: None,
+            },
         )
     }
 
+    // Check the published state and reserve the ID under the same core
+    // lock, always acquiring core before the loading registrations.
+    // The reservation keeps shutdown waiting through any unpublished cleanup.
     #[allow(clippy::too_many_lines)] // publication and lifecycle cleanup preserve one atomic registration operation
     fn register_core_with_context(
         &self,
         name: &str,
         module: Arc<dyn Module>,
         descriptor: ModuleDescriptor,
-        allow_reserved: bool,
-        run_validator: bool,
-        context: Option<&crate::Context<serde_json::Value>>,
+        options: RegistrationOptions<'_>,
     ) -> Result<(), ModuleError> {
+        let RegistrationOptions {
+            allow_reserved,
+            run_validator,
+            context,
+            resume,
+        } = options;
         let mut descriptor = descriptor;
         self.check_registration(
             name,
@@ -1631,13 +1857,11 @@ impl Registry {
             run_validator,
         )?;
 
-        // Issue #65: deferred-publish — run conflict detection first (under
-        // core.read() to avoid holding write for long), then atomically reserve
-        // the slot in in_flight so concurrent same-ID registrations are rejected.
-        //
-        // LOCK ORDER: acquire core before in_flight (see invariant in doc comment).
-        {
+        let reservation = {
             let core = self.core.read();
+            if core.closed {
+                return Err(Self::closed_error());
+            }
             // Full conflict detection (duplicate / reserved / case-collision).
             let reserved: &[&str] = if allow_reserved { &[] } else { RESERVED_WORDS };
             let existing_ids: HashSet<String> = core.modules.keys().cloned().collect();
@@ -1664,18 +1888,10 @@ impl Registry {
                     }
                 }
             }
-        }
-
-        // Reserve slot in in_flight (atomic check-and-insert).
-        // If the ID is already in_flight (concurrent registration in progress),
-        // return DuplicateModuleId immediately.
-        {
-            let mut in_flight = self.in_flight.lock();
-            if in_flight.contains(name) {
-                return Err(ModuleError::duplicate_module_id(name));
-            }
-            in_flight.insert(name.to_string());
-        }
+            self.in_flight
+                .reserve(name)
+                .ok_or_else(|| ModuleError::duplicate_module_id(name))?
+        };
 
         let module_arc: Arc<dyn Module> = module;
         let module_clone = Arc::clone(&module_arc);
@@ -1686,18 +1902,13 @@ impl Registry {
         // from in_flight.
         match module_clone.on_load() {
             Ok(()) => {
-                // Atomic publish, guarded by a final duplicate re-check under the
-                // write lock. The early conflict check and this publish are
-                // separated by on_load() running lock-free; a concurrent same-ID
-                // register that had already published AND cleared its in_flight
-                // slot in that window would otherwise let a second winner through
-                // (TOCTOU — the in_flight guard alone does not cover it because
-                // the loser passed the read-side conflict check before the winner
-                // published). Re-checking core.modules here under the write lock
-                // closes it: exactly one registration wins.
+                if let Some(state) = resume {
+                    resume_reloaded_module(name, module_clone.as_ref(), state);
+                }
+                // Shutdown can close the registry while the lock-free hook runs.
                 let published = {
                     let mut core = self.core.write();
-                    if core.modules.contains_key(name) {
+                    if core.closed || core.modules.contains_key(name) {
                         false
                     } else {
                         let schema = serde_json::json!({
@@ -1713,12 +1924,19 @@ impl Registry {
                         true
                     }
                 };
-                self.in_flight.lock().remove(name);
 
                 if !published {
-                    return Err(ModuleError::duplicate_module_id(name));
+                    // on_load succeeded but the registry closed or a competing registration won.
+                    module_clone.on_unload();
+                    let error = if self.core.read().closed {
+                        Self::closed_error()
+                    } else {
+                        ModuleError::duplicate_module_id(name)
+                    };
+                    return Err(error);
                 }
 
+                drop(reservation);
                 for cb in self.snapshot_callbacks("register") {
                     cb(name, module_clone.as_ref());
                 }
@@ -1727,7 +1945,7 @@ impl Registry {
             }
             Err(e) => {
                 // Roll back: remove from in_flight; fire load_failed callbacks.
-                self.in_flight.lock().remove(name);
+                drop(reservation);
                 let cbs: Vec<Arc<LoadFailedCallbackFn>> = self
                     .load_failed_callbacks
                     .read()
@@ -1752,12 +1970,21 @@ impl Registry {
         name: &str,
         context: Option<&crate::Context<serde_json::Value>>,
     ) {
-        if !is_ephemeral_module_id(name) {
-            return;
+        if let Some((emitter, event)) = self.ephemeral_event(event_type, name, context) {
+            Self::deliver_registry_event(&emitter, event);
         }
-        let Some(emitter) = self.event_emitter.read().clone() else {
-            return;
-        };
+    }
+
+    fn ephemeral_event(
+        &self,
+        event_type: &str,
+        name: &str,
+        context: Option<&crate::Context<serde_json::Value>>,
+    ) -> Option<(Arc<EventEmitter>, ApCoreEvent)> {
+        if !is_ephemeral_module_id(name) {
+            return None;
+        }
+        let emitter = self.event_emitter.read().clone()?;
         // Attribute bags may contain arbitrary credentials; omit them from the snapshot.
         let identity = context
             .and_then(|context| context.identity.as_ref())
@@ -1770,6 +1997,10 @@ impl Registry {
             "caller_id":context.and_then(|context| context.caller_id.as_deref())
                 .unwrap_or(crate::acl::EXTERNAL_CALLER)});
         let event = ApCoreEvent::with_module(event_type, payload, name, "info");
+        Some((emitter, event))
+    }
+
+    fn deliver_registry_event(emitter: &EventEmitter, event: ApCoreEvent) {
         if tokio::runtime::Handle::try_current().is_ok() {
             emitter.emit_delivery_semantics(event);
         } else {
@@ -1903,12 +2134,151 @@ impl Registry {
         Ok(lines.join("\n"))
     }
 
-    /// Draining-aware unregister.
+    /// Drain and unregister a module. Returns false if absent or force-unloaded after the timeout.
     pub async fn safe_unregister(&self, name: &str, timeout_ms: u64) -> Result<bool, ModuleError> {
+        let Some((removed, clean, _completion)) =
+            self.detach_after_drain(name, timeout_ms, false).await
+        else {
+            return Ok(false);
+        };
+        self.notify_unregistered(name, &removed);
+        Ok(clean)
+    }
+
+    /// Register modules in input order, stopping at the first error.
+    /// Earlier successful registrations remain available.
+    pub fn register_many<I, S>(&self, modules: I) -> Result<(), ModuleError>
+    where
+        I: IntoIterator<Item = (S, Box<dyn Module>)>,
+        S: AsRef<str>,
+    {
+        for (name, module) in modules {
+            self.register_module(name.as_ref(), module)?;
+        }
+        Ok(())
+    }
+
+    /// Drain and unregister modules in input order, using the default timeout per ID.
+    pub async fn unregister_many<I, S>(&self, module_ids: I) -> Result<Vec<bool>, ModuleError>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let mut removed = Vec::new();
+        for name in module_ids {
+            removed.push(self.safe_unregister(name.as_ref(), 5000).await?);
+        }
+        Ok(removed)
+    }
+
+    /// Close module admissions, stop the watcher and unload every registration.
+    pub(crate) async fn shutdown(&self) {
+        self.shutdown_complete
+            .get_or_init(|| self.close_registry())
+            .await;
+    }
+
+    async fn close_registry(&self) {
+        let module_ids = {
+            let mut core = self.core.write();
+            core.closed = true;
+            let mut module_ids: Vec<_> = core.modules.keys().cloned().collect();
+            module_ids.sort_unstable();
+            module_ids
+        };
+        if let Some(watcher_task) = self.stop_watching() {
+            let _ = watcher_task.await;
+        }
+        self.in_flight.wait_until_empty().await;
+        for name in module_ids {
+            if let Some((removed, _, _completion)) =
+                self.detach_after_drain(&name, 5000, true).await
+            {
+                self.notify_unregistered(&name, &removed);
+            }
+        }
+        let pending: Vec<_> = self
+            .core
+            .read()
+            .pending_removals
+            .values()
+            .flatten()
+            .cloned()
+            .collect();
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        for removal in pending {
+            removal.wait_for_removal(deadline).await;
+        }
+    }
+
+    pub(crate) async fn unload_for_reload(&self, name: &str) -> Option<ReloadRegistration> {
+        let (removed, clean, _completion) = self.detach_after_drain(name, 5000, false).await?;
+        let state = clean
+            .then(|| {
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    removed.primary.on_suspend()
+                }))
+                .unwrap_or_else(|_| {
+                    tracing::warn!(
+                        module_id = name,
+                        "Module on_suspend panicked; continuing reload"
+                    );
+                    None
+                })
+            })
+            .flatten();
+        self.notify_unregistered(name, &removed);
+        Some(ReloadRegistration { removed, state })
+    }
+
+    /// Restore all versions and the source association after failed replacement.
+    pub(crate) fn restore_reload(
+        &self,
+        name: &str,
+        previous: ReloadRegistration,
+    ) -> Result<(), ModuleError> {
+        let ReloadRegistration { removed, state } = previous;
+        let primary = Arc::clone(&removed.primary);
+        self.register_core_with_context(
+            name,
+            removed.primary,
+            removed.descriptor,
+            RegistrationOptions {
+                allow_reserved: true,
+                run_validator: false,
+                context: None,
+                resume: state,
+            },
+        )?;
+        for version in removed.older_versions {
+            self.add_version(name, &version.module, version.descriptor)?;
+        }
+        if let Some(source) = removed.source {
+            let mut core = self.core.write();
+            if core
+                .modules
+                .get(name)
+                .is_some_and(|module| Arc::ptr_eq(module, &primary))
+            {
+                core.sources.insert(name.to_string(), source);
+            }
+        }
+        Ok(())
+    }
+
+    async fn detach_after_drain<'a>(
+        &'a self,
+        name: &'a str,
+        timeout_ms: u64,
+        shutdown: bool,
+    ) -> Option<(RemovedRegistration, bool, RemovalCompletion<'a>)> {
         let references = {
             let mut core = self.core.write();
-            if !core.modules.contains_key(name) || !core.draining.insert(name.to_string()) {
-                return Ok(false);
+            if !core.modules.contains_key(name) {
+                return None;
+            }
+            if !core.draining.insert(name.to_string()) && !shutdown {
+                return None;
             }
             Arc::clone(core.ref_counts.entry(name.to_string()).or_default())
         };
@@ -1923,9 +2293,9 @@ impl Registry {
             tokio::pin!(notified);
             notified.as_mut().enable();
             if !guard.refers_to_current_registration(&self.core.read()) {
-                return Ok(false);
+                return None;
             }
-            let count = *guard.references.count.lock();
+            let count = guard.references.state.lock().count;
             if count == 0 {
                 break true;
             }
@@ -1939,18 +2309,21 @@ impl Registry {
                 break false;
             }
         };
-        let removed = {
-            let mut core = self.core.write();
-            if !guard.refers_to_current_registration(&core) {
-                return Ok(false);
-            }
-            core.remove_module(name)
+        let mut core = self.core.write();
+        if !guard.refers_to_current_registration(&core) {
+            return None;
+        }
+        let removed = core.remove_module(name)?;
+        core.pending_removals
+            .entry(name.to_string())
+            .or_default()
+            .push(Arc::clone(&guard.references));
+        let completion = RemovalCompletion {
+            core: &self.core,
+            name,
+            references: Arc::clone(&guard.references),
         };
-        let Some(module) = removed else {
-            return Ok(false);
-        };
-        self.notify_unregistered(name, module.as_ref(), None);
-        Ok(clean)
+        Some((removed, clean, completion))
     }
 
     /// Ref-counted module access with explicit reference tracking.
@@ -1970,7 +2343,13 @@ impl Registry {
     /// - `Err(ModuleError(code=ModuleNotFound))` if the module is currently
     ///   draining (a `safe_unregister` is in progress) or not registered.
     pub fn acquire(&self, name: &str) -> Result<Arc<dyn Module>, ModuleError> {
-        Self::acquire_with_count(&mut self.core.write(), name).map(|(module, _)| module)
+        let mut core = self.core.write();
+        let (module, references) = Self::acquire_with_count(&mut core, name)?;
+        core.manual_leases
+            .entry(name.to_string())
+            .or_default()
+            .push_back(references);
+        Ok(module)
     }
 
     pub(crate) fn acquire_execution(
@@ -2010,7 +2389,7 @@ impl Registry {
         core: &mut RegistryCore,
         name: &str,
     ) -> Result<(Arc<dyn Module>, Arc<ModuleReferences>), ModuleError> {
-        if core.draining.contains(name) {
+        if core.closed || core.draining.contains(name) {
             return Err(ModuleError::new(
                 crate::errors::ErrorCode::ModuleNotFound,
                 format!("Module '{name}' is draining"),
@@ -2022,7 +2401,7 @@ impl Registry {
             .cloned()
             .ok_or_else(|| ModuleError::module_not_found(name))?;
         let references = Arc::clone(core.ref_counts.entry(name.to_string()).or_default());
-        *references.count.lock() += 1;
+        references.state.lock().count += 1;
         Ok((module, references))
     }
 
@@ -2037,7 +2416,18 @@ impl Registry {
     /// Calling `release()` on a name that was never acquired is a no-op —
     /// matches Python/TS forgiving semantics.
     pub fn release(&self, name: &str) {
-        if let Some(references) = self.core.read().ref_counts.get(name) {
+        let references = {
+            let mut core = self.core.write();
+            let Some(leases) = core.manual_leases.get_mut(name) else {
+                return;
+            };
+            let references = leases.pop_front();
+            if leases.is_empty() {
+                core.manual_leases.remove(name);
+            }
+            references
+        };
+        if let Some(references) = references {
             references.release();
         }
     }
@@ -2164,6 +2554,10 @@ impl Registry {
     pub async fn watch(self: &Arc<Self>) -> Result<(), ModuleError> {
         use notify::{RecursiveMode, Watcher};
 
+        if self.core.read().closed {
+            return Err(Self::closed_error());
+        }
+
         {
             let watcher_slot = self.watcher.lock();
             if watcher_slot.is_some() {
@@ -2204,11 +2598,16 @@ impl Registry {
             }
         }
 
-        let weak = Arc::downgrade(self);
-        let handle = tokio::spawn(Self::watch_loop(rx, weak));
-
-        *self.watcher.lock() = Some(watcher);
-        *self.watch_handle.lock() = Some(handle);
+        let core = self.core.read();
+        if core.closed {
+            return Err(Self::closed_error());
+        }
+        let mut watcher_slot = self.watcher.lock();
+        if watcher_slot.is_none() {
+            let handle = tokio::spawn(Self::watch_loop(rx, Arc::downgrade(self)));
+            *watcher_slot = Some(watcher);
+            *self.watch_handle.lock() = Some(handle);
+        }
 
         Ok(())
     }
@@ -2301,7 +2700,7 @@ impl Registry {
         let batch_ids = discovered.iter().map(|entry| entry.name.clone()).collect();
         for dm in discovered {
             if !self.has(&dm.name) {
-                self.register_discovered_batch(std::iter::once(dm), &batch_ids);
+                self.register_discovered_batch(std::iter::once(dm), &batch_ids, &HashMap::new());
             } else if touches(&dm.source) {
                 self.replace_discovered(dm, &batch_ids).await?;
             }
@@ -2318,38 +2717,24 @@ impl Registry {
         batch_ids: &HashSet<String>,
     ) -> Result<(), ModuleError> {
         let name = dm.name.clone();
-        let previous = self.get(&name)?;
-        let previous_descriptor = self.get_definition(&name)?;
-        let state = previous.as_ref().and_then(|module| {
-            let module = Arc::clone(module);
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || module.on_suspend()))
-                .unwrap_or_else(|_| {
-                    tracing::warn!(module_id = %name, "Module on_suspend panicked; continuing reload");
-                    None
-                })
-        });
-
-        self.safe_unregister(&name, 5000).await?;
-        if self.register_discovered_batch(std::iter::once(dm), batch_ids) == 0 {
+        let Some(previous) = self.unload_for_reload(&name).await else {
+            return Ok(());
+        };
+        let states: HashMap<_, _> = previous
+            .state
+            .as_ref()
+            .map(|state| (name.clone(), state.clone()))
+            .into_iter()
+            .collect();
+        if self.register_discovered_batch(std::iter::once(dm), batch_ids, &states) == 0 {
             tracing::warn!(
                 module_id = %name,
                 "Registry watch: the changed module failed to register; keeping the previous instance"
             );
-            if let (Some(module), Some(descriptor)) = (previous, previous_descriptor) {
-                self.reinstate_internal(&name, module, descriptor)?;
-            }
+            self.restore_reload(&name, previous)?;
             return Ok(());
         }
 
-        if let (Some(state), Ok(Some(module))) = (state, self.get(&name)) {
-            if std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
-                module.on_resume(state);
-            }))
-            .is_err()
-            {
-                tracing::warn!(module_id = %name, "Module on_resume panicked; reload still applied");
-            }
-        }
         Ok(())
     }
 
@@ -2357,21 +2742,38 @@ impl Registry {
     /// platform watcher is dropped. Idempotent — calling on a non-watching
     /// Registry is a no-op.
     pub fn unwatch(&self) {
-        // Drop the watcher first so notify stops sending; the spawned task
-        // will end naturally when the channel closes. We also abort the task
-        // explicitly in case the Drop implementation is delayed.
-        self.watcher.lock().take();
-        if let Some(handle) = self.watch_handle.lock().take() {
+        self.stop_watching();
+    }
+
+    fn stop_watching(&self) -> Option<tokio::task::JoinHandle<()>> {
+        let (watcher, handle) = {
+            let mut watcher = self.watcher.lock();
+            (watcher.take(), self.watch_handle.lock().take())
+        };
+        drop(watcher);
+        if let Some(handle) = &handle {
             handle.abort();
         }
+        handle
     }
 
     /// Discover modules using the internally-set discoverer.
     ///
     /// Returns the number of newly registered modules.
     pub async fn discover_internal(&self) -> Result<usize, ModuleError> {
+        self.discover_with_resume(&HashMap::new()).await
+    }
+
+    pub(crate) async fn discover_with_resume(
+        &self,
+        states: &HashMap<String, serde_json::Value>,
+    ) -> Result<usize, ModuleError> {
+        if self.core.read().closed {
+            return Err(Self::closed_error());
+        }
         let discovered = self.run_discoverer().await?;
-        Ok(self.register_discovered(discovered))
+        let batch_ids = discovered.iter().map(|entry| entry.name.clone()).collect();
+        Ok(self.register_discovered_batch(discovered, &batch_ids, states))
     }
 
     /// Run the internally-set discoverer over the extension roots, without
@@ -2483,7 +2885,7 @@ impl Registry {
     /// a module is NOT visible in `core.modules` until its `on_load` succeeds.
     fn register_discovered(&self, discovered: Vec<DiscoveredModule>) -> usize {
         let batch_ids = discovered.iter().map(|entry| entry.name.clone()).collect();
-        self.register_discovered_batch(discovered, &batch_ids)
+        self.register_discovered_batch(discovered, &batch_ids, &HashMap::new())
     }
 
     #[allow(clippy::too_many_lines)] // sequential per-entry validation gates in a batch loop; splitting further requires passing state and reduces clarity
@@ -2491,6 +2893,7 @@ impl Registry {
         &self,
         discovered: impl IntoIterator<Item = DiscoveredModule>,
         batch_ids: &HashSet<String>,
+        states: &HashMap<String, serde_json::Value>,
     ) -> usize {
         let mut registered_count = 0usize;
         for dm in discovered {
@@ -2546,8 +2949,11 @@ impl Registry {
 
             // Reserve the ID against the same published state used for
             // conflict and dependency checks. Lock order is core before in_flight.
-            let readiness = {
+            let reservation = {
                 let core = self.core.read();
+                if core.closed {
+                    break;
+                }
                 let existing_ids: HashSet<String> = core.modules.keys().cloned().collect();
                 match detect_id_conflicts(
                     &dm.name,
@@ -2572,39 +2978,43 @@ impl Registry {
                     }
                     None => {}
                 }
-                let readiness = Self::check_discovered_dependencies(&core, &dm);
-                if readiness.is_ok() {
-                    let mut in_flight = self.in_flight.lock();
-                    if !in_flight.insert(dm.name.clone()) {
-                        tracing::warn!(
-                            module_id = %dm.name,
-                            "Discovered module rejected: concurrent registration in progress"
-                        );
-                        continue;
-                    }
-                    for dep in &dm.descriptor.dependencies {
-                        if dep.optional
-                            && batch_ids.contains(&dep.module_id)
-                            && !core.modules.contains_key(&dep.module_id)
-                        {
-                            tracing::warn!(module_id = %dm.name, dependency_id = %dep.module_id, "Optional dependency did not load");
-                        }
+                if let Err(error) = Self::check_discovered_dependencies(&core, &dm) {
+                    drop(core);
+                    self.notify_discovered_load_failed(&dm.name, &error);
+                    continue;
+                }
+                let Some(reservation) = self.in_flight.reserve(&dm.name) else {
+                    tracing::warn!(
+                        module_id = %dm.name,
+                        "Discovered module rejected: concurrent registration in progress"
+                    );
+                    continue;
+                };
+                for dep in &dm.descriptor.dependencies {
+                    if dep.optional
+                        && batch_ids.contains(&dep.module_id)
+                        && !core.modules.contains_key(&dep.module_id)
+                    {
+                        tracing::warn!(module_id = %dm.name, dependency_id = %dep.module_id, "Optional dependency did not load");
                     }
                 }
-                readiness
+                reservation
             };
-            if let Err(error) = readiness {
-                self.notify_discovered_load_failed(&dm.name, &error);
-                continue;
-            }
 
             // 6. Run on_load WITHOUT any lock held (module NOT yet in core.modules).
             match dm.module.on_load() {
                 Ok(()) => {
+                    if let Some(state) = states.get(&dm.name) {
+                        resume_reloaded_module(&dm.name, dm.module.as_ref(), state.clone());
+                    }
                     // Commit: insert into visible maps, remove from in_flight.
                     let published = {
                         let mut core = self.core.write();
-                        let published = Self::check_discovered_dependencies(&core, &dm);
+                        let published = if core.closed {
+                            Err(Self::closed_error())
+                        } else {
+                            Self::check_discovered_dependencies(&core, &dm)
+                        };
                         if published.is_ok() {
                             let schema = serde_json::json!({
                                 "input": dm.descriptor.input_schema.clone(),
@@ -2618,15 +3028,16 @@ impl Registry {
                                 .insert(dm.name.clone(), dm.descriptor.clone());
                             core.sources.insert(dm.name.clone(), dm.source.clone());
                         }
-                        self.in_flight.lock().remove(&dm.name);
                         published
                     };
                     if let Err(error) = published {
                         dm.module.on_unload();
+                        drop(reservation);
                         self.notify_discovered_load_failed(&dm.name, &error);
                         continue;
                     }
 
+                    drop(reservation);
                     for cb in self.snapshot_callbacks("register") {
                         cb(&dm.name, dm.module.as_ref());
                     }
@@ -2638,7 +3049,7 @@ impl Registry {
                         error = %e.message,
                         "Discovered module on_load failed; skipping registration"
                     );
-                    self.in_flight.lock().remove(&dm.name);
+                    drop(reservation);
                     // The same two signals `register_core` fires on this branch.
                     // Only the tracing line and the in_flight release were here,
                     // so an on_load failure on the DISCOVERY path was invisible

@@ -318,7 +318,7 @@ The following requirements are not met by the SDK implementations in this reposi
 
 ## 8. Conformance Test Fixtures
 
-The repository ships **97 cross-language fixture files** under `conformance/fixtures/` covering **1201 test cases**. `conformance-integrity` checks these two numbers, §8.1's per-fixture counts and its Total row against the fixtures themselves. Each fixture is consumed by all three SDK test runners (§5.2). An SDK declaring a conformance level **MUST** pass every fixture whose tested feature is required at that level (§5.3).
+The repository ships **98 cross-language fixture files** under `conformance/fixtures/` covering **1207 test cases**. `conformance-integrity` checks these two numbers, §8.1's per-fixture counts and its Total row against the fixtures themselves. Each fixture is consumed by all three SDK test runners (§5.2). An SDK declaring a conformance level **MUST** pass every fixture whose tested feature is required at that level (§5.3).
 
 ### 8.1 Fixture Inventory
 
@@ -397,6 +397,7 @@ The repository ships **97 cross-language fixture files** under `conformance/fixt
 | [`redaction_config`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/redaction_config.json) | 19 | Redaction config via `obs.redaction.regex_patterns` / `sensitive_keys` (spec §10.6.1); `x-sensitive` inside `anyOf` / `oneOf` / `allOf` (spec §10.6, D-152) |
 | [`registry_load_ordering`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/registry_load_ordering.json) | 5 | Discovery load order and dependency topological sort (Algorithm A07) |
 | [`reload_path_filter`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/reload_path_filter.json) | 10 | Granular reload via `path_filter` glob (`system.control.reload_module`) |
+| [`module_lifecycle`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/module_lifecycle.json) | 6 | Concurrent unload, state transfer on explicit reload, host shutdown, and ordered batch operations |
 | [`schema_content_hash`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/schema_content_hash.json) | 5 | Schema content-hash cache key — key-order invariant (spec §4) |
 | [`schema_export_envelope`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/schema_export_envelope.json) | 5 | `Registry.export_schema` envelope parity (§4.16) |
 | [`schema_hardening_cache`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/schema_hardening_cache.json) | 5 | Content-addressable schema cache (SHA-256 of canonical JSON) |
@@ -421,7 +422,7 @@ The repository ships **97 cross-language fixture files** under `conformance/fixt
 | [`usage_contract`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/usage_contract.json) | 11 | `system.usage.*` value semantics no schema can assert (spec §6.7.1) |
 | [`usage_exporter`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/usage_exporter.json) | 3 | `UsageExporter` push interface (D-55) |
 | [`version_negotiation`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/version_negotiation.json) | 12 | Version negotiation (Algorithm A14) |
-| **Total** | **1201** | **97 fixtures** |
+| **Total** | **1207** | **98 fixtures** |
 
 ### 8.2 Loading Fixtures from a Test Runner
 

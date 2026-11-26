@@ -442,7 +442,7 @@ impl Module for UpdateConfigModule {
 /// (`.so`/`.rlib`), but static configuration MUST be reloadable without a
 /// binary restart.
 pub struct ReloadModule {
-    registry: Arc<Registry>,
+    registry: super::SystemRegistry,
     emitter: Arc<EventEmitter>,
     audit_store: Option<Arc<dyn AuditStore>>,
     config: Option<ControlConfig>,
@@ -461,7 +461,7 @@ pub struct ReloadModule {
 impl ReloadModule {
     pub fn new(registry: Arc<Registry>, emitter: Arc<EventEmitter>) -> Self {
         Self {
-            registry,
+            registry: super::SystemRegistry::Owned(registry),
             emitter,
             audit_store: None,
             config: None,
@@ -470,6 +470,11 @@ impl ReloadModule {
             overrides_store: None,
             reload_dependents_warned: std::sync::atomic::AtomicBool::new(false),
         }
+    }
+
+    pub(crate) fn registered(mut self) -> Self {
+        self.registry.release_ownership();
+        self
     }
 
     /// Warn once that `reload_dependents` is ignored and will be removed (D-121).
@@ -505,99 +510,37 @@ impl ReloadModule {
         );
     }
 
-    /// Snapshot every matched module's instance, descriptor and version while
-    /// they are still registered.
-    ///
-    /// D-112: the restore needs the previous INSTANCE, and `Registry::get`
-    /// cannot answer once the module is unregistered. It hands back an `Arc`,
-    /// which only `reinstate_internal` accepts. SYS-15's version capture has
-    /// the same "while it is still there" constraint, so both happen here.
-    fn capture_for_restore(
-        &self,
-        order: &[String],
-        previous_versions: &mut std::collections::HashMap<String, String>,
-    ) -> std::collections::HashMap<
-        String,
-        (Arc<dyn Module>, crate::registry::registry::ModuleDescriptor),
-    > {
-        let mut captured = std::collections::HashMap::new();
-        for mid in order {
-            if !self.registry.has(mid) {
-                continue;
-            }
-            if let Ok(Some(descriptor)) = self.registry.get_definition(mid) {
-                previous_versions.insert(mid.clone(), descriptor.version.clone());
-                if let Ok(Some(module)) = self.registry.get(mid) {
-                    captured.insert(mid.clone(), (module, descriptor));
-                }
-            }
+    /// A failed reload restores only those registrations that were removed
+    /// but were not replaced. The original error remains the public failure.
+    fn restore_after_failed_reload(
+        registry: &Registry,
+        module_id: &str,
+        previous: crate::registry::registry::ReloadRegistration,
+    ) {
+        if registry.has(module_id) {
+            return;
         }
-        captured
+        if let Err(error) = registry.restore_reload(module_id, previous) {
+            tracing::error!(
+                module_id,
+                error = %error.message,
+                "Restoring the module after a failed reload also failed; it is unavailable"
+            );
+        }
     }
 
-    /// Restore each named module after a failed BULK reload (D-112 rule 4).
-    ///
-    /// Restoration is PER MODULE. The operation as a whole still fails (D-17),
-    /// and modules that already reloaded successfully are NOT rolled back —
-    /// cross-module transactionality is not a primitive the registry has, and
-    /// claiming it would be the atomicity rule 1 forbids at batch scale.
     fn restore_each_after_failed_reload(
-        &self,
+        registry: &Registry,
         module_ids: &[String],
-        previous: &std::collections::HashMap<
+        previous: &mut std::collections::HashMap<
             String,
-            (Arc<dyn Module>, crate::registry::registry::ModuleDescriptor),
+            crate::registry::registry::ReloadRegistration,
         >,
     ) {
-        for mid in module_ids {
-            let Some((module, descriptor)) = previous.get(mid) else {
-                continue;
-            };
-            self.restore_after_failed_reload(
-                mid,
-                Some(Arc::clone(module)),
-                Some(descriptor.clone()),
-            );
-        }
-    }
-
-    /// Put the previous instance back after a reload failed (D-112).
-    ///
-    /// COMPENSATING, not transactional. The module is genuinely unregistered
-    /// for a window and a concurrent call in that window sees
-    /// `MODULE_NOT_FOUND`; this does not claim atomic replacement, and the spec
-    /// forbids implementations from claiming it. What it does prevent is the
-    /// worse outcome: a failed hot-fix making a WORKING module disappear.
-    ///
-    /// `reinstate_internal` re-runs the module's `on_load`, which rule 2
-    /// requires — `on_unload` already ran during the unregister, so
-    /// re-publishing without it yields a module that is visible but torn down,
-    /// harder to diagnose than one that is absent.
-    ///
-    /// If the restoring load ALSO fails the module stays unavailable (rule 3).
-    /// The original failure is the one the caller is told about, so this logs
-    /// rather than returning an error.
-    fn restore_after_failed_reload(
-        &self,
-        module_id: &str,
-        previous_module: Option<Arc<dyn Module>>,
-        previous_descriptor: Option<crate::registry::registry::ModuleDescriptor>,
-    ) {
-        let (Some(module), Some(descriptor)) = (previous_module, previous_descriptor) else {
-            return;
-        };
-        if self.registry.has(module_id) {
-            return;
-        }
-        if let Err(restore_err) = self
-            .registry
-            .reinstate_internal(module_id, module, descriptor)
-        {
-            tracing::error!(
-                module_id = %module_id,
-                error = %restore_err.message,
-                "Restoring the module after a failed reload also failed; it is unavailable (D-112 rule 3)"
-            );
+        for id in module_ids {
+            if let Some(registration) = previous.remove(id) {
+                Self::restore_after_failed_reload(registry, id, registration);
+            }
         }
     }
 
@@ -702,13 +645,12 @@ impl ReloadModule {
     /// to alphabetical order if the dependency graph contains a cycle or
     /// references a missing module — the reload still happens, just without
     /// the optimal order.
-    fn topo_sort_modules(&self, matched: &[String]) -> Vec<String> {
+    fn topo_sort_modules(registry: &Registry, matched: &[String]) -> Vec<String> {
         let matched_set: std::collections::HashSet<String> = matched.iter().cloned().collect();
         let entries: Vec<(String, Vec<DepInfo>)> = matched
             .iter()
             .map(|mid| {
-                let deps: Vec<DepInfo> = self
-                    .registry
+                let deps: Vec<DepInfo> = registry
                     .get_definition(mid)
                     .ok()
                     .flatten()
@@ -753,144 +695,46 @@ impl ReloadModule {
     )]
     async fn execute_single(
         &self,
+        registry: &Registry,
         module_id: String,
         reason: &str,
         ctx: &Context<serde_json::Value>,
     ) -> Result<serde_json::Value, ModuleError> {
-        // Sync SM-006: implement the 8-step reload pipeline aligned with
-        // apcore-python (sys_modules/control.py:412-458) and apcore-typescript
-        // (sys-modules/control.ts:186-254).
-        //   1. capture_previous_version
-        //   2. on_suspend (best-effort)
-        //   3. safe_unregister
-        //   4. registry.discover_internal() (re-discover modules)
-        //   5. register_internal (no-op when discoverer reinstates)
-        //   6. on_resume (best-effort)
-        //   7. emit_reloaded event with actual previous + new versions
-        //   8. log
         let start = std::time::Instant::now();
+        let previous = registry
+            .unload_for_reload(&module_id)
+            .await
+            .ok_or_else(|| ModuleError::module_not_found(&module_id))?;
+        let previous_version = previous.removed.descriptor.version.clone();
 
-        if !self.registry.has(&module_id) {
-            return Err(ModuleError::new(
-                ErrorCode::ModuleNotFound,
-                format!("Module '{module_id}' not found"),
-            ));
-        }
-
-        // (1) Capture previous version from the registry descriptor.
-        let previous_version = self
-            .registry
-            .get_definition(&module_id)
-            .ok()
-            .flatten()
-            .map(|d| d.version)
-            .unwrap_or_else(|| "unknown".to_string());
-
-        // (2) on_suspend (best-effort) — capture state for handoff to on_resume.
-        // Panics inside the user-supplied trait method are caught so a faulty
-        // hook cannot abort the reload.
-        // D-112: hold the previous instance so a failed reload can put it back.
-        // `Registry::get` hands back an `Arc`, which no other registration entry
-        // point accepts — `reinstate_internal` exists for exactly this.
-        let previous_module = self.registry.get(&module_id).ok().flatten();
-        let previous_descriptor = self.registry.get_definition(&module_id).ok().flatten();
-
-        let suspended_state = match self.registry.get(&module_id) {
-            Ok(Some(module)) => {
-                let module_for_panic = Arc::clone(&module);
-                match std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
-                    module_for_panic.on_suspend()
-                })) {
-                    Ok(state) => state,
-                    Err(_) => {
-                        tracing::warn!(
-                            module_id = %module_id,
-                            "Module on_suspend panicked; continuing reload"
-                        );
-                        None
-                    }
-                }
-            }
-            _ => None,
-        };
-
-        // (3) Safe unregister — drains in-flight calls.
-        self.registry.safe_unregister(&module_id, 5000).await?;
-
-        // (4) Re-run the configured discoverer to repopulate the registry.
-        //
-        // NOT best-effort: step 3 already unregistered the module, so swallowing a
-        // discovery failure here reports `success: true` for a module that is now
-        // gone. The spec Contract lists ReloadFailedError for exactly this —
-        // "registry.discover() raised or module_id was absent after discovery" —
-        // and apcore-python / apcore-typescript both raise it.
-        if let Err(e) = self.registry.discover_internal().await {
-            tracing::error!(
-                module_id = %module_id,
-                error = %e.message,
-                "Reload: discover_internal failed after unregistering"
-            );
-            self.restore_after_failed_reload(
-                &module_id,
-                previous_module.clone(),
-                previous_descriptor.clone(),
-            );
+        let states = previous
+            .state
+            .as_ref()
+            .map(|state| (module_id.clone(), state.clone()))
+            .into_iter()
+            .collect();
+        if let Err(error) = registry.discover_with_resume(&states).await {
+            Self::restore_after_failed_reload(registry, &module_id, previous);
             return Err(ModuleError::new(
                 ErrorCode::ReloadFailed,
                 format!(
-                    "Reload of '{module_id}' unregistered the module but re-discovery \
-                     failed: {}",
-                    e.message
+                    "Reload of '{module_id}' failed during re-discovery: {}",
+                    error.message
                 ),
             ));
         }
 
-        // (5) register_internal: in Rust we don't carry stand-alone factory
-        // closures, so re-registration is delegated to the discoverer in step
-        // 4. This branch is intentionally a no-op for cross-language parity.
-        //
-        // The presence check the delegation makes necessary: if the discoverer
-        // ran without error but did not bring this module back, the reload has
-        // still failed and must not report success.
-        if !self.registry.has(&module_id) {
-            tracing::error!(
-                module_id = %module_id,
-                "Reload: module absent after re-discovery"
-            );
-            self.restore_after_failed_reload(&module_id, previous_module, previous_descriptor);
+        if !registry.has(&module_id) {
+            Self::restore_after_failed_reload(registry, &module_id, previous);
             return Err(ModuleError::new(
                 ErrorCode::ReloadFailed,
-                format!(
-                    "Reload of '{module_id}': module was not restored by re-discovery \
-                     and is no longer registered"
-                ),
+                format!("Reload of '{module_id}': module was not restored by re-discovery"),
             ));
         }
 
-        // (6) on_resume (best-effort) — handoff state to the freshly loaded module.
-        let new_version = self
-            .registry
-            .get_definition(&module_id)
-            .ok()
-            .flatten()
-            .map(|d| d.version)
-            .unwrap_or_else(|| previous_version.clone());
-
-        if let Some(state) = suspended_state {
-            if let Ok(Some(module)) = self.registry.get(&module_id) {
-                let module_for_panic = Arc::clone(&module);
-                if std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
-                    module_for_panic.on_resume(state);
-                }))
-                .is_err()
-                {
-                    tracing::warn!(
-                        module_id = %module_id,
-                        "Module on_resume panicked; reload still considered successful"
-                    );
-                }
-            }
-        }
+        let new_version = registry
+            .get_definition(&module_id)?
+            .map_or_else(|| previous_version.clone(), |descriptor| descriptor.version);
 
         // (7) Emit the reloaded event with actual versions.
         let elapsed_ms = start.elapsed().as_secs_f64() * 1000.0;
@@ -952,6 +796,7 @@ impl ReloadModule {
     /// Split out of `execute_bulk` to keep it under the function-length lint.
     async fn verify_and_emit_reloaded(
         &self,
+        registry: &Registry,
         unregistered: Vec<String>,
         previous_versions: &std::collections::HashMap<String, String>,
         reason: &str,
@@ -960,7 +805,7 @@ impl ReloadModule {
         let mut reloaded: Vec<String> = Vec::new();
         let mut missing: Vec<String> = Vec::new();
         for mid in unregistered {
-            if !self.registry.has(&mid) {
+            if !registry.has(&mid) {
                 missing.push(mid);
                 continue;
             }
@@ -976,8 +821,7 @@ impl ReloadModule {
                 .get(&mid)
                 .cloned()
                 .unwrap_or_else(|| DEFAULT_MODULE_VERSION.to_string());
-            let new_version = self
-                .registry
+            let new_version = registry
                 .get_definition(&mid)
                 .ok()
                 .flatten()
@@ -1005,46 +849,29 @@ impl ReloadModule {
 
     async fn execute_bulk(
         &self,
+        registry: &Registry,
         path_filter: String,
         reason: &str,
         ctx: &Context<serde_json::Value>,
     ) -> Result<serde_json::Value, ModuleError> {
-        // PROTOCOL_SPEC 6.7 clause 4 / 9.2.3: `path_filter` is matched with
-        // Algorithm A25 against each registered module ID. `glob::Pattern`
-        // was the obvious local answer and the wrong one twice over: it
-        // expands `[em]` as a character class, and it REJECTS patterns
-        // (`a[b`, `a**b`), so a control-plane request the other two SDKs
-        // served was refused here (#117). A25 never fails to parse.
-        let mut matched: Vec<String> = self
-            .registry
+        let mut matched: Vec<String> = registry
             .module_ids()
             .into_iter()
             .filter(|id| match_glob(&path_filter, id))
             .collect();
         matched.sort();
 
-        let order = self.topo_sort_modules(&matched);
+        let order = Self::topo_sort_modules(registry, &matched);
         let start = std::time::Instant::now();
 
-        // Phase 1 — unregister every match, recording what we actually took out.
-        // Nothing may be reported as reloaded on the strength of this phase alone:
-        // an unregister that is never followed by a successful re-discovery is a
-        // deletion, and this method previously returned `success: true` for exactly
-        // that (it pushed each id here and never re-discovered at all).
-        let mut unregistered: Vec<String> = Vec::new();
-        // SYS-15: capture each module's version while it is still registered.
-        let mut previous_versions: std::collections::HashMap<String, String> =
-            std::collections::HashMap::new();
-        let previous_modules = self.capture_for_restore(&order, &mut previous_versions);
-        for mid in order {
-            if !self.registry.has(&mid) {
-                continue;
-            }
-            match self.registry.safe_unregister(&mid, 5000).await {
-                Ok(_) => unregistered.push(mid),
-                Err(e) => {
-                    tracing::error!(error = %e, module_id = %mid, "Bulk reload: failed to unregister");
-                }
+        let mut unregistered = Vec::new();
+        let mut previous_versions = std::collections::HashMap::new();
+        let mut previous_modules = std::collections::HashMap::new();
+        for id in order {
+            if let Some(previous) = registry.unload_for_reload(&id).await {
+                previous_versions.insert(id.clone(), previous.removed.descriptor.version.clone());
+                previous_modules.insert(id.clone(), previous);
+                unregistered.push(id);
             }
         }
 
@@ -1054,14 +881,23 @@ impl ReloadModule {
         // Unlike `execute_single`, a discovery error here is FATAL rather than
         // best-effort: the batch is already unregistered, so continuing would
         // silently delete every matched module and report success.
-        if let Err(e) = self.registry.discover_internal().await {
+        let states = previous_modules
+            .iter()
+            .filter_map(|(id, previous)| {
+                previous
+                    .state
+                    .as_ref()
+                    .map(|state| (id.clone(), state.clone()))
+            })
+            .collect();
+        if let Err(e) = registry.discover_with_resume(&states).await {
             tracing::error!(
                 error = %e.message,
                 path_filter = %path_filter,
                 count = unregistered.len(),
                 "Bulk reload: re-discovery failed after unregistering"
             );
-            self.restore_each_after_failed_reload(&unregistered, &previous_modules);
+            Self::restore_each_after_failed_reload(registry, &unregistered, &mut previous_modules);
             return Err(ModuleError::new(
                 ErrorCode::ReloadFailed,
                 format!(
@@ -1076,7 +912,7 @@ impl ReloadModule {
 
         // Phase 3 — a module counts as reloaded only if it is actually back.
         let (reloaded, missing) = self
-            .verify_and_emit_reloaded(unregistered, &previous_versions, reason, ctx)
+            .verify_and_emit_reloaded(registry, unregistered, &previous_versions, reason, ctx)
             .await;
 
         if !missing.is_empty() {
@@ -1085,7 +921,7 @@ impl ReloadModule {
                 missing = %missing.join(", "),
                 "Bulk reload: modules absent after re-discovery"
             );
-            self.restore_each_after_failed_reload(&missing, &previous_modules);
+            Self::restore_each_after_failed_reload(registry, &missing, &mut previous_modules);
             return Err(ModuleError::new(
                 ErrorCode::ReloadFailed,
                 format!(
@@ -1255,7 +1091,10 @@ impl Module for ReloadModule {
         };
 
         if let Some(filter) = path_filter_input {
-            let mut result = self.execute_bulk(filter.to_string(), &reason, ctx).await?;
+            let registry = self.registry.get()?;
+            let mut result = self
+                .execute_bulk(&registry, filter.to_string(), &reason, ctx)
+                .await?;
             if let Some(obj) = result.as_object_mut() {
                 obj.insert("config_reloaded".to_string(), json!(config_reloaded));
             }
@@ -1278,8 +1117,9 @@ impl Module for ReloadModule {
             )
         })?;
 
+        let registry = self.registry.get()?;
         let mut result = self
-            .execute_single(module_id.to_string(), &reason, ctx)
+            .execute_single(&registry, module_id.to_string(), &reason, ctx)
             .await?;
         if let Some(obj) = result.as_object_mut() {
             obj.insert("config_reloaded".to_string(), json!(config_reloaded));
@@ -1294,7 +1134,7 @@ impl Module for ReloadModule {
 
 /// Disable or enable a module without unloading it from the Registry (F19).
 pub struct ToggleFeatureModule {
-    registry: Arc<Registry>,
+    registry: super::SystemRegistry,
     emitter: Arc<EventEmitter>,
     toggle_state: Arc<ToggleState>,
     overrides_path: Option<PathBuf>,
@@ -1309,13 +1149,18 @@ impl ToggleFeatureModule {
         toggle_state: Arc<ToggleState>,
     ) -> Self {
         Self {
-            registry,
+            registry: super::SystemRegistry::Owned(registry),
             emitter,
             toggle_state,
             overrides_path: None,
             overrides_store: None,
             audit_store: None,
         }
+    }
+
+    pub(crate) fn registered(mut self) -> Self {
+        self.registry.release_ownership();
+        self
     }
 
     #[must_use]
@@ -1388,7 +1233,7 @@ impl Module for ToggleFeatureModule {
                 )
             })?;
 
-        if !self.registry.has(&module_id) {
+        if !self.registry.get()?.has(&module_id) {
             return Err(ModuleError::new(
                 ErrorCode::ModuleNotFound,
                 format!("Module '{module_id}' not found"),

@@ -346,3 +346,402 @@ fn test_apcore_uses_event_setting_from_persisted_overrides() {
     assert!(client.events().is_none());
     assert!(client.executor().event_emitter.is_none());
 }
+
+#[derive(Default)]
+struct LifecycleState {
+    count: std::sync::atomic::AtomicUsize,
+    unloads: std::sync::atomic::AtomicUsize,
+    drops: std::sync::atomic::AtomicUsize,
+    entered: tokio::sync::Notify,
+    release: tokio::sync::Notify,
+}
+
+#[derive(Default)]
+struct LifecycleModule {
+    state: Arc<LifecycleState>,
+    hidden: bool,
+}
+
+impl Drop for LifecycleModule {
+    fn drop(&mut self) {
+        self.state
+            .drops
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+#[async_trait]
+impl Module for LifecycleModule {
+    fn description(&self) -> &str {
+        "Lifecycle test module"
+    }
+
+    fn input_schema(&self) -> Value {
+        json!({"type": "object"})
+    }
+
+    fn output_schema(&self) -> Value {
+        json!({"type": "object"})
+    }
+
+    fn annotations(&self) -> apcore::ModuleAnnotations {
+        apcore::ModuleAnnotations {
+            discoverable: !self.hidden,
+            ..Default::default()
+        }
+    }
+
+    fn on_unload(&self) {
+        self.state
+            .unloads
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    fn on_suspend(&self) -> Option<Value> {
+        Some(json!(self
+            .state
+            .count
+            .load(std::sync::atomic::Ordering::SeqCst)))
+    }
+
+    fn on_resume(&self, state: Value) {
+        self.state.count.store(
+            state.as_u64().unwrap() as usize,
+            std::sync::atomic::Ordering::SeqCst,
+        );
+    }
+
+    async fn execute(&self, inputs: Value, _ctx: &Context<Value>) -> Result<Value, ModuleError> {
+        use std::sync::atomic::Ordering::SeqCst;
+
+        if inputs["hold"] == true {
+            self.state.entered.notify_one();
+            self.state.release.notified().await;
+            assert_eq!(
+                self.state.unloads.load(SeqCst),
+                0,
+                "module unloaded during execution"
+            );
+            self.state.count.fetch_add(1, SeqCst);
+        }
+        Ok(json!({"count": self.state.count.load(SeqCst)}))
+    }
+}
+
+fn configured_lifecycle_client() -> APCore {
+    let mut config = Config::default();
+    config.set("sys_modules.enabled", json!(true));
+    config.set("sys_modules.events.enabled", json!(true));
+    APCore::try_start(APCoreOptions {
+        config: Some(config),
+        approval_handler: Some(Box::new(AutoApproveHandler)),
+        ..Default::default()
+    })
+    .unwrap()
+}
+
+#[tokio::test]
+async fn test_ordinary_unregister_drains_active_invocation() {
+    use std::sync::atomic::Ordering::SeqCst;
+
+    let client = Arc::new(APCore::new());
+    let module = LifecycleModule::default();
+    let state = Arc::clone(&module.state);
+    let id = "demo.lifecycle";
+    client.register(id, Box::new(module)).unwrap();
+    let active = tokio::spawn({
+        let client = Arc::clone(&client);
+        async move { client.call(id, json!({"hold": true}), None, None).await }
+    });
+    state.entered.notified().await;
+    assert!(client.registry().unregister(id).unwrap());
+    assert_eq!(
+        client
+            .call(id, json!({}), None, None)
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::ModuleNotFound
+    );
+    let unloads_before_release = state.unloads.load(SeqCst);
+    state.release.notify_one();
+    assert_eq!(unloads_before_release, 0);
+    assert_eq!(active.await.unwrap().unwrap(), json!({"count": 1}));
+    assert_eq!(state.unloads.load(SeqCst), 1);
+}
+
+#[tokio::test]
+async fn test_system_modules_do_not_retain_the_client_registry() {
+    use std::sync::atomic::Ordering::SeqCst;
+
+    let client = configured_lifecycle_client();
+    let registry = Arc::downgrade(&client.registry_arc());
+    let module = LifecycleModule::default();
+    let state = Arc::clone(&module.state);
+    client.register("demo.lifecycle", Box::new(module)).unwrap();
+    assert!(client.registry().has("system.control.reload_module"));
+    drop(client);
+    assert!(registry.upgrade().is_none());
+    assert_eq!(state.drops.load(SeqCst), 1);
+}
+
+#[tokio::test]
+async fn test_unregister_hooks_run_for_every_version() {
+    use std::sync::atomic::Ordering::SeqCst;
+
+    for safe in [false, true] {
+        let client = APCore::new();
+        let low = LifecycleModule::default();
+        let high = LifecycleModule::default();
+        let low_state = Arc::clone(&low.state);
+        let high_state = Arc::clone(&high.state);
+        let id = "demo.lifecycle";
+        client
+            .registry()
+            .register_versioned(id, Box::new(low), Some("1.0.0"), None)
+            .unwrap();
+        client
+            .registry()
+            .register_versioned(id, Box::new(high), Some("2.0.0"), None)
+            .unwrap();
+        let removed = if safe {
+            client.registry().safe_unregister(id, 100).await.unwrap()
+        } else {
+            client.registry().unregister(id).unwrap()
+        };
+        assert!(removed);
+        assert_eq!(
+            (
+                low_state.unloads.load(SeqCst),
+                high_state.unloads.load(SeqCst)
+            ),
+            (1, 1)
+        );
+    }
+}
+
+struct ReplacingLifecycleModule(Arc<LifecycleState>);
+
+#[async_trait]
+impl apcore::registry::Discoverer for ReplacingLifecycleModule {
+    async fn discover(
+        &self,
+        _: &[String],
+    ) -> Result<Vec<apcore::registry::DiscoveredModule>, ModuleError> {
+        let module = Arc::new(LifecycleModule {
+            state: Arc::clone(&self.0),
+            hidden: false,
+        });
+        Ok(vec![apcore::registry::DiscoveredModule {
+            name: "demo.lifecycle".to_owned(),
+            source: "demo/lifecycle.rs".to_owned(),
+            descriptor: serde_json::from_value(json!({
+                "module_id": "demo.lifecycle",
+                "description": module.description(),
+                "version": "2.0.0",
+                "input_schema": module.input_schema(),
+                "output_schema": module.output_schema()
+            }))
+            .unwrap(),
+            module,
+        }])
+    }
+}
+
+#[tokio::test]
+async fn test_both_reload_paths_capture_state_after_execution() {
+    use std::time::Duration;
+
+    for selection in [
+        json!({"module_id": "demo.lifecycle", "reason": "test reload"}),
+        json!({"path_filter": "demo.*", "reason": "test reload"}),
+    ] {
+        let client = Arc::new(configured_lifecycle_client());
+        let module = LifecycleModule::default();
+        let state = Arc::clone(&module.state);
+        let id = "demo.lifecycle";
+        client.register(id, Box::new(module)).unwrap();
+        let replacement = Arc::new(LifecycleState::default());
+        let count_at_publication = Arc::new(std::sync::atomic::AtomicUsize::new(usize::MAX));
+        client
+            .registry()
+            .on(
+                "register",
+                Box::new({
+                    let replacement = Arc::clone(&replacement);
+                    let count_at_publication = Arc::clone(&count_at_publication);
+                    move |id, _| {
+                        if id == "demo.lifecycle" {
+                            use std::sync::atomic::Ordering::SeqCst;
+                            count_at_publication.store(replacement.count.load(SeqCst), SeqCst);
+                        }
+                    }
+                }),
+            )
+            .unwrap();
+        client
+            .registry()
+            .set_discoverer(Box::new(ReplacingLifecycleModule(replacement)));
+        let active = tokio::spawn({
+            let client = Arc::clone(&client);
+            async move { client.call(id, json!({"hold": true}), None, None).await }
+        });
+        state.entered.notified().await;
+        let reload = tokio::spawn({
+            let client = Arc::clone(&client);
+            async move {
+                client
+                    .call("system.control.reload_module", selection, None, None)
+                    .await
+            }
+        });
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !client.registry().is_draining(id) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        state.release.notify_one();
+        assert_eq!(active.await.unwrap().unwrap(), json!({"count": 1}));
+        assert_eq!(reload.await.unwrap().unwrap()["success"], true);
+        assert_eq!(
+            count_at_publication.load(std::sync::atomic::Ordering::SeqCst),
+            1
+        );
+        assert_eq!(
+            client.call(id, json!({}), None, None).await.unwrap(),
+            json!({"count": 1})
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_shutdown_callers_wait_for_detached_generation() {
+    use std::sync::atomic::Ordering::SeqCst;
+
+    let client = Arc::new(configured_lifecycle_client());
+    let module = LifecycleModule::default();
+    let state = Arc::clone(&module.state);
+    let id = "demo.lifecycle";
+    client.register(id, Box::new(module)).unwrap();
+    let active = tokio::spawn({
+        let client = Arc::clone(&client);
+        async move { client.call(id, json!({"hold": true}), None, None).await }
+    });
+    state.entered.notified().await;
+    assert!(client.registry().unregister(id).unwrap());
+
+    let first = client.shutdown();
+    let second = client.shutdown();
+    tokio::pin!(first, second);
+    assert!(futures_util::poll!(&mut first).is_pending());
+    assert!(futures_util::poll!(&mut second).is_pending());
+    assert_eq!(state.unloads.load(SeqCst), 0);
+    assert!(client
+        .register(id, Box::new(LifecycleModule::default()))
+        .is_err());
+
+    state.release.notify_one();
+    first.await.unwrap();
+    second.await.unwrap();
+    assert_eq!(active.await.unwrap().unwrap(), json!({"count": 1}));
+    assert_eq!(state.unloads.load(SeqCst), 1);
+    assert!(client.events().unwrap().is_shutdown());
+}
+
+struct LoadingLifecycleModule {
+    load_started: Arc<tokio::sync::Notify>,
+    unload_started: Arc<tokio::sync::Notify>,
+    finish_loading: Mutex<std::sync::mpsc::Receiver<()>>,
+    finish_unloading: Mutex<std::sync::mpsc::Receiver<()>>,
+}
+
+#[async_trait]
+impl Module for LoadingLifecycleModule {
+    fn description(&self) -> &str {
+        "Gated loading for a shutdown regression"
+    }
+
+    fn input_schema(&self) -> Value {
+        json!({"type": "object"})
+    }
+
+    fn output_schema(&self) -> Value {
+        json!({"type": "object"})
+    }
+
+    fn on_load(&self) -> Result<(), ModuleError> {
+        self.load_started.notify_one();
+        self.finish_loading
+            .lock()
+            .unwrap()
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap();
+        Ok(())
+    }
+
+    fn on_unload(&self) {
+        self.unload_started.notify_one();
+        self.finish_unloading
+            .lock()
+            .unwrap()
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap();
+    }
+
+    async fn execute(&self, _inputs: Value, _ctx: &Context<Value>) -> Result<Value, ModuleError> {
+        Ok(json!({}))
+    }
+}
+
+#[tokio::test]
+async fn test_shutdown_waits_for_concurrent_loading_and_unpublished_cleanup() {
+    use std::sync::mpsc::channel;
+    use std::time::Duration;
+
+    let timeout = Duration::from_secs(2);
+
+    let client = Arc::new(APCore::new());
+    let (finish_loading, loading_gate) = channel();
+    let (finish_unloading, unloading_gate) = channel();
+    let load_started = Arc::new(tokio::sync::Notify::new());
+    let unload_started = Arc::new(tokio::sync::Notify::new());
+    let registration = tokio::task::spawn_blocking({
+        let client = Arc::clone(&client);
+        let module = LoadingLifecycleModule {
+            load_started: Arc::clone(&load_started),
+            unload_started: Arc::clone(&unload_started),
+            finish_loading: Mutex::new(loading_gate),
+            finish_unloading: Mutex::new(unloading_gate),
+        };
+        move || client.register("demo.loading", Box::new(module))
+    });
+
+    tokio::time::timeout(timeout, load_started.notified())
+        .await
+        .unwrap();
+    let shutdown = client.shutdown();
+    tokio::pin!(shutdown);
+    let pending_during_load = futures_util::poll!(&mut shutdown).is_pending();
+    finish_loading.send(()).unwrap();
+    tokio::time::timeout(timeout, unload_started.notified())
+        .await
+        .unwrap();
+    let pending_during_unload =
+        pending_during_load && futures_util::poll!(&mut shutdown).is_pending();
+    finish_unloading.send(()).unwrap();
+
+    let rejected = registration.await.unwrap().unwrap_err();
+    assert_eq!(rejected.code, ErrorCode::GeneralInvalidInput);
+    assert!(
+        pending_during_load,
+        "shutdown returned before on_load completed"
+    );
+    assert!(
+        pending_during_unload,
+        "shutdown returned before rejected registration cleaned up"
+    );
+    shutdown.await.unwrap();
+    assert!(!client.registry().has("demo.loading"));
+}

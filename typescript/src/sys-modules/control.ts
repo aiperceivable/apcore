@@ -307,40 +307,27 @@ export class ReloadModule {
     const existingObj = existing.module as Record<string, unknown>;
     const previousVersion = String(existingObj['version'] ?? '1.0.0');
 
-    let suspendedState: Record<string, unknown> | null = null;
-    if (typeof existingObj['onSuspend'] === 'function') {
-      try {
-        suspendedState = (existingObj['onSuspend'] as () => Record<string, unknown> | null)();
-      } catch (err) {
-        console.warn(`[apcore:control] onSuspend failed for ${moduleId}:`, err);
-      }
-    }
-
     const start = performance.now();
-    await this._registry.safeUnregister(moduleId);
+    const states = await this._suspendAndUnload([moduleId]);
+    const beforePublish = this._resumeBeforePublish(states);
 
     try {
-      await this._registry.discover({ reloadFiles: existing.sourceFile === undefined ? [] : [existing.sourceFile] });
+      await this._registry.discover({
+        reloadFiles: existing.sourceFile === undefined ? [] : [existing.sourceFile],
+        beforePublish,
+      });
     } catch (err) {
-      await this._restoreMissingRegistrations([existing]);
+      await this._restoreMissingRegistrations([existing], beforePublish);
       throw new ReloadFailedError(moduleId, String(err));
     }
 
     const reloaded = this._registry.get(moduleId);
     if (reloaded === null) {
-      await this._registry.restoreRegistration(existing);
+      await this._registry.restoreRegistration(existing, beforePublish);
       throw new ReloadFailedError(moduleId, `Module '${moduleId}' was not found after re-discovery`);
     }
 
     const reloadedObj = reloaded as Record<string, unknown>;
-    if (suspendedState !== null && typeof reloadedObj['onResume'] === 'function') {
-      try {
-        (reloadedObj['onResume'] as (state: Record<string, unknown>) => void)(suspendedState);
-      } catch (err) {
-        console.warn(`[apcore:control] onResume failed for ${moduleId}:`, err);
-      }
-    }
-
     const elapsedMs = performance.now() - start;
     const newVersion = String(reloadedObj['version'] ?? '1.0.0');
 
@@ -412,12 +399,43 @@ export class ReloadModule {
     }
   }
 
-  private async _restoreMissingRegistrations(registrations: readonly RegistrationSnapshot[]): Promise<void> {
+  private async _suspendAndUnload(moduleIds: readonly string[]): Promise<Map<string, Record<string, unknown>>> {
+    const states = new Map<string, Record<string, unknown>>();
+    for (const id of moduleIds) {
+      await this._registry.safeUnregister(id, undefined, (module) => {
+        const onSuspend = (module as Record<string, unknown>)['onSuspend'];
+        if (typeof onSuspend !== 'function') return;
+        const state = onSuspend.call(module) as Record<string, unknown> | null | undefined;
+        if (state != null) states.set(id, state);
+      });
+    }
+    return states;
+  }
+
+  private _resumeBeforePublish(
+    states: ReadonlyMap<string, Record<string, unknown>>,
+  ): (moduleId: string, module: unknown) => void {
+    return (moduleId, module) => {
+      const state = states.get(moduleId);
+      if (state === undefined) return;
+      try {
+        const onResume = (module as Record<string, unknown>)['onResume'];
+        if (typeof onResume === 'function') onResume.call(module, state);
+      } catch (error) {
+        console.warn(`[apcore:control] onResume failed for ${moduleId}:`, error);
+      }
+    };
+  }
+
+  private async _restoreMissingRegistrations(
+    registrations: readonly RegistrationSnapshot[],
+    beforePublish: (moduleId: string, module: unknown) => void,
+  ): Promise<void> {
     let failure: { error: unknown } | undefined;
     for (const registration of registrations) {
       if (this._registry.has(registration.moduleId)) continue;
       try {
-        await this._registry.restoreRegistration(registration);
+        await this._registry.restoreRegistration(registration, beforePublish);
       } catch (error) {
         failure ??= { error };
       }
@@ -451,18 +469,17 @@ export class ReloadModule {
       }
     }
 
-    // Unregister all matching modules
-    for (const id of matchingIds) {
-      await this._registry.safeUnregister(id);
-    }
+    const states = await this._suspendAndUnload(matchingIds);
+    const beforePublish = this._resumeBeforePublish(states);
 
     // Re-discover
     try {
       await this._registry.discover({
         reloadFiles: existingModules.flatMap(({ sourceFile }) => sourceFile === undefined ? [] : [sourceFile]),
+        beforePublish,
       });
     } catch (err) {
-      await this._restoreMissingRegistrations(existingModules);
+      await this._restoreMissingRegistrations(existingModules, beforePublish);
       throw new ReloadFailedError(pathFilter, String(err));
     }
 
@@ -494,7 +511,7 @@ export class ReloadModule {
     }
 
     if (missing.length > 0) {
-      await this._restoreMissingRegistrations(existingModules);
+      await this._restoreMissingRegistrations(existingModules, beforePublish);
       throw new ReloadFailedError(
         pathFilter,
         `${missing.length} module(s) were not restored by re-discovery and were put back as they were: ${missing.join(', ')}`,

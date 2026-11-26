@@ -58,7 +58,7 @@ fn most_frequent_error(
 
 /// system.health.summary — Aggregated health overview of all registered modules.
 pub struct HealthSummaryModule {
-    registry: Arc<Registry>,
+    registry: super::SystemRegistry,
     metrics: Option<MetricsCollector>,
     error_history: ErrorHistory,
     config: Arc<Mutex<Config>>,
@@ -72,11 +72,16 @@ impl HealthSummaryModule {
         config: Arc<Mutex<Config>>,
     ) -> Self {
         Self {
-            registry,
+            registry: super::SystemRegistry::Owned(registry),
             metrics,
             error_history,
             config,
         }
+    }
+
+    pub(crate) fn registered(mut self) -> Self {
+        self.registry.release_ownership();
+        self
     }
 }
 
@@ -165,7 +170,7 @@ impl Module for HealthSummaryModule {
             .and_then(serde_json::Value::as_bool)
             .unwrap_or(true);
 
-        let module_ids = self.registry.list(None, None, None);
+        let module_ids = self.registry.get()?.list(None, None, None);
 
         let project_name = {
             let cfg = self.config.lock().await;
@@ -243,7 +248,7 @@ impl Module for HealthSummaryModule {
 
 /// system.health.module — Detailed health for a single module.
 pub struct HealthModule {
-    registry: Arc<Registry>,
+    registry: super::SystemRegistry,
     metrics: Option<MetricsCollector>,
     error_history: ErrorHistory,
 }
@@ -255,10 +260,15 @@ impl HealthModule {
         error_history: ErrorHistory,
     ) -> Self {
         Self {
-            registry,
+            registry: super::SystemRegistry::Owned(registry),
             metrics,
             error_history,
         }
+    }
+
+    pub(crate) fn registered(mut self) -> Self {
+        self.registry.release_ownership();
+        self
     }
 }
 
@@ -329,7 +339,7 @@ impl Module for HealthModule {
             .and_then(serde_json::Value::as_u64)
             .unwrap_or(10) as usize;
 
-        if !self.registry.has(module_id) {
+        if !self.registry.get()?.has(module_id) {
             return Err(ModuleError::module_not_found(module_id));
         }
 

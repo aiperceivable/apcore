@@ -2,19 +2,21 @@
 
 from __future__ import annotations
 
+import asyncio
+import inspect
 import json
 import logging
 import os
 import re
 import threading
 import time
+from collections.abc import Iterable
 from contextlib import contextmanager
+from contextvars import ContextVar
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Iterator, Protocol, runtime_checkable
-
-import inspect
 
 from apcore.config import Config
 from apcore.errors import (
@@ -47,6 +49,14 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _has_running_loop() -> bool:
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return False
+    return True
+
+
 @dataclass(frozen=True)
 class _ModuleRegistration:
     module: Any
@@ -60,6 +70,25 @@ class _RegistrationSnapshot:
     metadata: dict[str, Any]
     versions: dict[str, _ModuleRegistration]
     source_path: Path | None
+
+    def instances(self) -> Iterator[Any]:
+        """Yield the latest instance first, then each distinct older instance."""
+        seen = {id(self.module)}
+        yield self.module
+        for registration in reversed(tuple(self.versions.values())):
+            if id(registration.module) not in seen:
+                seen.add(id(registration.module))
+                yield registration.module
+
+
+@dataclass
+class _PendingUnload:
+    generation: object
+    module_id: str
+    registration: _RegistrationSnapshot
+    context: Any
+    remaining_leases: int
+    finished: threading.Event = field(default_factory=threading.Event)
 
 
 @dataclass(frozen=True)
@@ -565,6 +594,10 @@ class Registry:
         self._lease_generations: dict[str, object] = {}
         self._draining: set[str] = set()
         self._drain_events: dict[str, threading.Event] = {}
+        self._pending_unloads: dict[object, _PendingUnload] = {}
+        self._closed = False
+        self._lifecycle_changed = threading.Condition(self._lock)
+        self._reload_state: ContextVar[tuple[str, dict[str, Any]] | None] = ContextVar("reload_state", default=None)
 
         # Deferred-publish: module IDs currently executing on_load (not yet visible).
         # Concurrent same-ID registrations see the in-flight set and raise DUPLICATE_MODULE_ID.
@@ -700,6 +733,8 @@ class Registry:
             CircularDependencyError: If circular dependencies detected among modules.
             ConfigNotFoundError: If a configured extension root does not exist.
         """
+        with self._lock:
+            self._require_open()
         if self._custom_discoverer is not None:
             return self._discover_custom()
         return self._discover_default(path_filter=path_filter)
@@ -1225,6 +1260,7 @@ class Registry:
             # Phase 1: reserve in-flight slot. Skip if already in-flight or
             # visible — concurrent discover invocations must not double-load.
             with self._lock:
+                self._require_open()
                 if mod_id in self._in_flight or mod_id in self._modules:
                     logger.warning("Discover skipping '%s' — already registered or in-flight", mod_id)
                     continue
@@ -1243,14 +1279,14 @@ class Registry:
                 logger.warning("Module '%s' is loading without optional dependency '%s'", mod_id, dependency_id)
 
             # Phase 2: run on_load OUTSIDE the lock. Module is NOT visible.
-            if not self._invoke_on_load(mod_id, module, effective_version):
+            if not self._invoke_on_load(mod_id, module):
                 # _invoke_on_load already discarded the in-flight slot and
                 # emitted apcore.registry.module_load_failed. Move on.
                 continue
 
             # Phase 3: atomic publish.
             with self._lock:
-                self._in_flight.discard(mod_id)
+                self._clear_loading(mod_id)
                 error = self._discovery_dependency_error(mod_id, dependencies)
                 if error is None:
                     self._versioned_modules.add(
@@ -1297,7 +1333,7 @@ class Registry:
             resolved = str(resolved)
         return resolved
 
-    def _invoke_on_load(self, mod_id: str, module: Any, effective_version: str) -> bool:
+    def _invoke_on_load(self, mod_id: str, module: Any) -> bool:
         """Call ``module.on_load()`` if defined; clean up in-flight slot on failure.
 
         Returns True when ``on_load`` succeeded (or no callback was defined)
@@ -1317,21 +1353,36 @@ class Registry:
         invariant is that an on_load failure leaves the registry exactly
         as it was before the registration attempt began.
         """
-        if not (hasattr(module, "on_load") and callable(module.on_load)):
-            return True
         try:
-            _run_on_load(module, mod_id)
+            self._initialize_module(mod_id, module)
         except Exception as e:
             logger.error("on_load() failed for module '%s': %s", mod_id, e)
-            with self._lock:
-                self._in_flight.discard(mod_id)
-            # A-D-REG-005: align with the public register() path — every
-            # registration site that observes an on_load failure must
-            # emit the canonical module_load_failed event so subscribers
-            # have a single hook for partial-init detection.
-            self._emit_module_load_failed(mod_id, e)
             return False
         return True
+
+    def _initialize_module(self, module_id: str, module: Any) -> None:
+        """Run load and any reload state transfer before making a module visible."""
+        try:
+            if hasattr(module, "on_load") and callable(module.on_load):
+                _run_on_load(module, module_id)
+            reload_state = self._reload_state.get()
+            if reload_state is not None and reload_state[0] == module_id:
+                self._call_on_resume(module_id, module, reload_state[1])
+        except BaseException as exc:
+            with self._lock:
+                self._clear_loading(module_id)
+            if isinstance(exc, Exception):
+                self._emit_module_load_failed(module_id, exc)
+            raise
+
+    @contextmanager
+    def _resume_on_load(self, module_id: str, state: dict[str, Any] | None) -> Iterator[None]:
+        """Share the target's reload state only with its own registration operation."""
+        token = self._reload_state.set(None if state is None else (module_id, state))
+        try:
+            yield
+        finally:
+            self._reload_state.reset(token)
 
     # ----- Manual Registration -----
 
@@ -1437,9 +1488,11 @@ class Registry:
         # The module is NOT inserted into _modules/_versioned_modules until after on_load
         # completes, so discovery APIs see it only after full initialisation.
         with self._lock:
+            self._require_open()
+            self._reject_unloading_instance(module_id, module)
             # Check the in-flight set FIRST so concurrent same-ID registrations are
             # rejected even when on_load is running (module not yet in _modules).
-            if module_id in self._in_flight:
+            if module_id in self._in_flight or module_id in self._draining:
                 raise InvalidInputError(
                     message=f"Module '{module_id}' is already being registered (in-flight)",
                     code=ErrorCodes.DUPLICATE_MODULE_ID,
@@ -1448,10 +1501,12 @@ class Registry:
             # For explicit versioned registration, skip conflict check when
             # the module_id already exists (we allow multiple versions).
             # For non-versioned registration, preserve original conflict detection.
-            if is_versioned and self._versioned_modules.has(module_id):
-                # Multi-version: allow adding another version
-                pass
-            else:
+            if is_versioned and self._versioned_modules.has_version(module_id, effective_version):
+                raise InvalidInputError(
+                    message=f"Module '{module_id}' version '{effective_version}' is already registered",
+                    code=ErrorCodes.DUPLICATE_MODULE_ID,
+                )
+            if not is_versioned or not self._versioned_modules.has(module_id):
                 conflict = detect_id_conflicts(
                     new_id=module_id,
                     existing_ids=set(self._modules.keys()),
@@ -1468,24 +1523,16 @@ class Registry:
                         logger.warning("ID conflict: %s", conflict.message)
 
             # Mark as in-flight — visible store is NOT updated yet.
-            if not is_versioned:
-                self._in_flight.add(module_id)
+            self._in_flight.add(module_id)
 
         # Phase 2: call on_load() OUTSIDE the lock.
         # The module is not visible during this phase. Concurrent same-ID
         # registrations will see module_id in _in_flight and raise DUPLICATE_MODULE_ID.
-        if hasattr(module, "on_load") and callable(module.on_load):
-            try:
-                _run_on_load(module, module_id)
-            except Exception as exc:
-                with self._lock:
-                    self._in_flight.discard(module_id)
-                self._emit_module_load_failed(module_id, exc)
-                raise
+        self._initialize_module(module_id, module)
 
         # Phase 3: atomically insert into visible store.
         with self._lock:
-            self._in_flight.discard(module_id)
+            self._clear_loading(module_id)
 
             # Store in versioned store
             registration = _ModuleRegistration(module, merged_meta, dict(metadata or {}))
@@ -1504,8 +1551,35 @@ class Registry:
         if ephemeral:
             self._emit_ephemeral_audit("apcore.registry.module_registered", module_id, context)
 
+    def register_many(self, entries: Iterable[tuple[str, Any]]) -> None:
+        """Register modules in input order. Prior entries remain registered after an error."""
+        for module_id, module in entries:
+            self.register(module_id, module)
+
+    def _require_open(self) -> None:
+        if self._closed:
+            raise InvalidInputError(message="The module registry is shut down")
+
+    def _reject_unloading_instance(self, module_id: str, module: Any) -> None:
+        if any(
+            pending.module_id == module_id and any(instance is module for instance in pending.registration.instances())
+            for pending in self._pending_unloads.values()
+        ):
+            raise InvalidInputError(
+                message=f"The '{module_id}' module instance is still unloading",
+                code=ErrorCodes.DUPLICATE_MODULE_ID,
+            )
+
+    def _clear_loading(self, module_id: str) -> None:
+        """Release a registration reservation under the registry lock."""
+        self._in_flight.discard(module_id)
+        self._lifecycle_changed.notify_all()
+
     def unregister(self, module_id: str, *, context: Any = None) -> bool:
         """Remove a module from the registry.
+
+        Existing calls retain their registration until they finish. The last
+        active call runs the detached registration's cleanup.
 
         Args:
             module_id: ID of the module to remove.
@@ -1516,15 +1590,20 @@ class Registry:
         Returns False if module was not registered.
         """
         with self._lock:
-            module = self._inline_unregister(module_id)
-        if module is None:
-            return False
-        self._notify_unregistered(module_id, module, context)
+            if module_id in self._draining:
+                return False
+            leases = self._ref_counts.get(module_id, 0)
+            pending = self._detach_registration(module_id, context=context, remaining_leases=leases)
+            if pending is None:
+                return False
+        if not leases:
+            self._finish_unload(pending)
         return True
 
-    def _notify_unregistered(self, module_id: str, module: Any, context: Any = None) -> None:
-        self._call_on_unload(module_id, module)
-        self._trigger_event("unregister", module_id, module)
+    def _notify_unregistered(self, module_id: str, registration: _RegistrationSnapshot, context: Any = None) -> None:
+        for module in registration.instances():
+            self._call_on_unload(module_id, module)
+        self._trigger_event("unregister", module_id, registration.module)
         if _is_ephemeral(module_id):
             self._emit_ephemeral_audit("apcore.registry.module_unregistered", module_id, context)
 
@@ -2178,7 +2257,7 @@ class Registry:
     @contextmanager
     def _acquire_registration(self, module_id: str, version_hint: str | None) -> Iterator[_ModuleRegistration]:
         with self._lock:
-            if module_id in self._draining:
+            if self._closed or module_id in self._draining:
                 raise ModuleNotFoundError(module_id=module_id)
             registration = self._resolve_registration(module_id, version_hint)
             if registration is None:
@@ -2188,21 +2267,51 @@ class Registry:
         try:
             yield registration
         finally:
-            with self._lock:
-                if self._lease_generations.get(module_id) is generation:
-                    self.release(module_id)
+            self._release_generation(module_id, generation)
 
     def release(self, module_id: str) -> None:
         """Release one reference to the current module and notify a waiting unload."""
         with self._lock:
-            count = self._ref_counts.get(module_id, 0)
-            if count > 1:
-                self._ref_counts[module_id] = count - 1
-            elif count == 1:
-                self._ref_counts.pop(module_id, None)
-                event = self._drain_events.get(module_id)
-                if event is not None:
-                    event.set()
+            generation = self._lease_generations.get(module_id)
+        if generation is not None:
+            self._release_generation(module_id, generation)
+
+    def _release_generation(self, module_id: str, generation: object) -> None:
+        with self._lock:
+            if self._lease_generations.get(module_id) is generation:
+                count = self._ref_counts.get(module_id, 0)
+                if count > 1:
+                    self._ref_counts[module_id] = count - 1
+                elif count == 1:
+                    self._ref_counts.pop(module_id, None)
+                    event = self._drain_events.get(module_id)
+                    if event is not None:
+                        event.set()
+                return
+
+            pending = self._pending_unloads.get(generation)
+            if pending is None or pending.remaining_leases == 0:
+                return
+            pending.remaining_leases -= 1
+            if pending.remaining_leases:
+                return
+        self._finish_unload(pending)
+
+    def _finish_unload(self, pending: _PendingUnload) -> None:
+        try:
+            self._notify_unregistered(pending.module_id, pending.registration, pending.context)
+        finally:
+            with self._lock:
+                self._pending_unloads.pop(pending.generation, None)
+                pending.finished.set()
+
+    def _capture_state_and_unload(self, pending: _PendingUnload, clean: bool) -> dict[str, Any] | None:
+        try:
+            if clean:
+                return self._call_on_suspend(pending.module_id, pending.registration.module)
+            return None
+        finally:
+            self._finish_unload(pending)
 
     def is_draining(self, module_id: str) -> bool:
         """Check whether a module is marked for unload (draining).
@@ -2232,9 +2341,50 @@ class Registry:
         detached = self._detach_after_drain(module_id, timeout_ms=timeout_ms)
         if detached is None:
             return False
-        registration, clean = detached
-        self._notify_unregistered(module_id, registration.module)
+        pending, clean = detached
+        self._finish_unload(pending)
         return clean
+
+    async def safe_unregister_async(self, module_id: str, *, timeout_ms: int = 5000) -> bool:
+        """Drain and unload without blocking the caller's event loop."""
+        return await asyncio.to_thread(self.safe_unregister, module_id, timeout_ms=timeout_ms)
+
+    async def unregister_many(self, module_ids: Iterable[str], *, timeout_ms: int = 5000) -> list[bool]:
+        """Drain and unload modules in input order, with one result per ID."""
+        return [await self.safe_unregister_async(module_id, timeout_ms=timeout_ms) for module_id in module_ids]
+
+    def _stop_admission(self) -> None:
+        with self._lock:
+            self._closed = True
+
+    def _shutdown(self) -> None:
+        """Stop discovery, wait for loading reservations, and release all registrations."""
+        self._stop_admission()
+        self.unwatch()
+        with self._lifecycle_changed:
+            self._lifecycle_changed.wait_for(lambda: not self._in_flight and not self._draining)
+            module_ids = tuple(reversed(self._modules))
+        for module_id in module_ids:
+            self.safe_unregister(module_id)
+        with self._lifecycle_changed:
+            self._lifecycle_changed.wait_for(lambda: not self._draining)
+        self._wait_for_unloads()
+
+    def _wait_for_unloads(self) -> None:
+        with self._lock:
+            pending = tuple(self._pending_unloads.values())
+        deadline = time.monotonic() + 5
+        for removal in pending:
+            if removal.finished.wait(timeout=max(0, deadline - time.monotonic())):
+                continue
+            with self._lock:
+                force = removal.remaining_leases > 0
+                removal.remaining_leases = 0
+            if force:
+                logger.warning("Force-unloading module %s after shutdown timeout", removal.module_id)
+                self._finish_unload(removal)
+            else:
+                removal.finished.wait()
 
     def _detach_after_drain(
         self,
@@ -2243,13 +2393,15 @@ class Registry:
         timeout_ms: int = 5000,
         reserve_replacement: bool = False,
         source_path: Path | None = None,
-    ) -> tuple[_RegistrationSnapshot, bool] | None:
+    ) -> tuple[_PendingUnload, bool] | None:
         """Detach a module after its active leases have drained, before calling any hooks."""
         with self._lock:
             if module_id not in self._modules or module_id in self._draining:
                 return None
             if source_path is not None and self._module_sources.get(module_id) != source_path:
                 return None
+            if self._ref_counts.get(module_id, 0) and _has_running_loop():
+                raise InvalidInputError(message="Use safe_unregister_async() to drain an active module from asyncio")
             self._draining.add(module_id)
             event = self._drain_events[module_id] = threading.Event()
             if self._ref_counts.get(module_id, 0) == 0:
@@ -2260,9 +2412,8 @@ class Registry:
             if self._drain_events.get(module_id) is not event:
                 return None
             ref_count = self._ref_counts.get(module_id, 0)
-            registration = self._snapshot_registration(module_id)
-            assert registration is not None
-            self._inline_unregister(module_id)
+            pending = self._detach_registration(module_id)
+            assert pending is not None
             if reserve_replacement:
                 self._in_flight.add(module_id)
         if not clean:
@@ -2272,7 +2423,7 @@ class Registry:
                 timeout_ms,
                 ref_count,
             )
-        return registration, clean
+        return pending, clean
 
     # ----- Hot Reload -----
 
@@ -2288,36 +2439,39 @@ class Registry:
         except ImportError:
             raise ImportError("watchdog is required for hot reload. Install it with: pip install watchdog")
 
-        if hasattr(self, "_observer") and self._observer is not None:
-            return  # Already watching
-
-        self._observer = Observer()
-
         class WatchdogHandler(_ModuleChangeHandler, FileSystemEventHandler):
             pass
 
-        handler = WatchdogHandler(self)
-
-        for root_config in self._extension_roots:
-            root_path = root_config.get("root", "")
-            if root_path and os.path.isdir(root_path):
-                self._observer.schedule(handler, root_path, recursive=True)
-
-        self._observer.start()
+        with self._lock:
+            self._require_open()
+            if hasattr(self, "_observer") and self._observer is not None:
+                return
+            observer = Observer()
+            handler = WatchdogHandler(self)
+            for root_config in self._extension_roots:
+                root_path = root_config.get("root", "")
+                if root_path and os.path.isdir(root_path):
+                    observer.schedule(handler, root_path, recursive=True)
+            observer.start()
+            self._observer = observer
 
     def unwatch(self) -> None:
         """Stop watching extension directories for file changes."""
-        if hasattr(self, "_observer") and self._observer is not None:
-            self._observer.stop()
-            self._observer.join()
+        with self._lock:
+            observer = getattr(self, "_observer", None)
             self._observer = None
+        if observer is not None:
+            observer.stop()
+            observer.join()
 
-    def _inline_unregister(self, mid: str) -> Any:
-        """Remove a module from internal maps (caller must hold self._lock).
-
-        Returns the removed module instance, or None if not found.
-        """
-        module = self._modules.pop(mid, None)
+    def _detach_registration(
+        self, mid: str, *, context: Any = None, remaining_leases: int = 0
+    ) -> _PendingUnload | None:
+        """Remove a module from visibility while retaining its cleanup state under the lock."""
+        registration = self._snapshot_registration(mid)
+        if registration is None:
+            return None
+        self._modules.pop(mid, None)
         self._module_meta.pop(mid, None)
         self._module_sources.pop(mid, None)
         self._schema_cache.pop(mid, None)
@@ -2328,8 +2482,11 @@ class Registry:
         if event is not None:
             event.set()
         self._ref_counts.pop(mid, None)
-        self._lease_generations.pop(mid, None)
-        return module
+        generation = self._lease_generations.pop(mid, None) or object()
+        pending = _PendingUnload(generation, mid, registration, context, remaining_leases)
+        self._pending_unloads[generation] = pending
+        self._lifecycle_changed.notify_all()
+        return pending
 
     def _snapshot_registration(self, module_id: str) -> _RegistrationSnapshot | None:
         with self._lock:
@@ -2342,18 +2499,26 @@ class Registry:
                 self._module_sources.get(module_id),
             )
 
-    def _restore_registration(self, module_id: str, registration: _RegistrationSnapshot | None) -> bool:
+    def _restore_registration(
+        self, module_id: str, registration: _RegistrationSnapshot | None, suspended_state: dict[str, Any] | None = None
+    ) -> bool:
         """Restore a detached registration after reinitializing its unloaded instance."""
         if registration is None:
             return False
         with self._lock:
-            if module_id in self._modules or module_id in self._in_flight:
+            if self._closed or module_id in self._modules or module_id in self._in_flight:
                 return False
             self._in_flight.add(module_id)
         module = registration.module
-        version = registration.metadata.get("version") or DEFAULT_MODULE_VERSION
-        if not self._invoke_on_load(module_id, module, version):
-            return False
+        loaded = []
+        for instance in registration.instances():
+            with self._resume_on_load(module_id, suspended_state if instance is module else None):
+                restored = self._invoke_on_load(module_id, instance)
+            if not restored:
+                for initialized in reversed(loaded):
+                    self._call_on_unload(module_id, initialized)
+                return False
+            loaded.append(instance)
         with self._lock:
             self._modules[module_id] = module
             self._module_meta[module_id] = registration.metadata
@@ -2362,7 +2527,7 @@ class Registry:
                 self._module_sources[module_id] = registration.source_path
             for version, entry in registration.versions.items():
                 self._versioned_modules.add(module_id, version, entry)
-            self._in_flight.discard(module_id)
+            self._clear_loading(module_id)
         self._trigger_event("register", module_id, module)
         return True
 
@@ -2458,25 +2623,21 @@ class Registry:
         # Reserve the new ID, or detach the previous registration after its
         # leases drain. Hook execution and the drain wait both happen unlocked.
         with self._lock:
-            if new_id in self._in_flight or new_id in self._draining:
+            if self._closed or new_id in self._in_flight or new_id in self._draining:
                 return
             exists = new_id in self._modules
             if not exists:
                 self._in_flight.add(new_id)
-        old_registration = None
+        old_registration: _RegistrationSnapshot | None = None
+        suspended_state: dict[str, Any] | None = None
         if exists:
             detached = self._detach_after_drain(new_id, reserve_replacement=True, source_path=source)
             if detached is None:
                 return
-            old_registration, _ = detached
-
-        # Phase 3 (outside lock): user hooks on the old module + unregister event.
-        suspended_state: dict[str, Any] | None = None
-        old_module = old_registration.module if old_registration is not None else None
-        if old_module is not None:
-            suspended_state = self._call_on_suspend(new_id, old_module)
-            self._call_on_unload(new_id, old_module)
-            self._trigger_event("unregister", new_id, old_module)
+            pending, clean = detached
+            old_registration = pending.registration
+            # Phase 3: run hooks on the old module outside the registry lock.
+            suspended_state = self._capture_state_and_unload(pending, clean)
 
         # Phase 4a (outside lock): D-123 — the new instance MUST run `on_load()`
         # before it becomes visible, the same precondition `Contract:
@@ -2485,7 +2646,9 @@ class Registry:
         # the internal maps directly, so it violated no stated rule while
         # publishing a module that was visible but never initialised — harder to
         # diagnose than one that is simply absent.
-        if not self._invoke_on_load(new_id, instance, effective_version):
+        with self._resume_on_load(new_id, suspended_state):
+            loaded = self._invoke_on_load(new_id, instance)
+        if not loaded:
             # D-112 rules 2-4, applied here via D-123: restore the previous
             # instance rather than leaving the module gone. A failed hot reload
             # must not make a working module disappear.
@@ -2494,7 +2657,7 @@ class Registry:
 
         # Phase 4b (under lock): insert the new instance into every store.
         with self._lock:
-            self._in_flight.discard(new_id)
+            self._clear_loading(new_id)
             self._modules[new_id] = instance
             self._module_meta[new_id] = merged_meta
             self._lowercase_map[new_id.lower()] = new_id
@@ -2502,17 +2665,8 @@ class Registry:
             registration = _ModuleRegistration(instance, merged_meta, metadata)
             self._versioned_modules.add(new_id, effective_version, registration)
 
-        # Phase 5 (outside lock): register event + on_resume hook on new module.
+        # Phase 5 (outside lock): notify observers of the initialized module.
         self._trigger_event("register", new_id, instance)
-        if suspended_state is not None and hasattr(instance, "on_resume") and callable(instance.on_resume):
-            try:
-                instance.on_resume(suspended_state)
-            except Exception as e:
-                logger.error(
-                    "on_resume() failed for module '%s' during hot reload: %s",
-                    new_id,
-                    e,
-                )
 
     def _restore_after_failed_hot_reload(
         self,
@@ -2543,7 +2697,7 @@ class Registry:
             )
             return
 
-        if not self._restore_registration(module_id, registration):
+        if not self._restore_registration(module_id, registration, suspended_state):
             logger.error(
                 "Hot reload of '%s' failed its on_load(), and re-loading the previous "
                 "instance failed as well; the module stays unavailable (D-112 rule 3).",
@@ -2551,16 +2705,6 @@ class Registry:
             )
             return
 
-        old_module = registration.module
-        if suspended_state is not None and hasattr(old_module, "on_resume") and callable(old_module.on_resume):
-            try:
-                old_module.on_resume(suspended_state)
-            except Exception as e:
-                logger.error(
-                    "on_resume() failed for restored module '%s' after a failed hot reload: %s",
-                    module_id,
-                    e,
-                )
         logger.warning(
             "Hot reload of '%s' failed its on_load(); the previous instance was restored.",
             module_id,
@@ -2599,6 +2743,13 @@ class Registry:
                 e,
             )
 
+    def _call_on_resume(self, module_id: str, module: Any, state: dict[str, Any]) -> None:
+        if hasattr(module, "on_resume") and callable(module.on_resume):
+            try:
+                module.on_resume(state)
+            except Exception as exc:
+                logger.error("on_resume() failed for module '%s': %s", module_id, exc)
+
     def _handle_file_deletion(self, path: str) -> None:
         """Drain the module, then unload it when its source file is deleted."""
         try:
@@ -2613,7 +2764,7 @@ class Registry:
         for module_id in module_ids:
             detached = self._detach_after_drain(module_id, source_path=source)
             if detached is not None:
-                self._notify_unregistered(module_id, detached[0].module)
+                self._finish_unload(detached[0])
 
     # ----- Public accessors for internal state -----
 
@@ -2713,6 +2864,8 @@ class Registry:
         # invisible until on_load completes") holds uniformly across
         # every registration path, not just the public API.
         with self._lock:
+            self._require_open()
+            self._reject_unloading_instance(module_id, module)
             if module_id in self._in_flight:
                 raise InvalidInputError(
                     message=f"Module '{module_id}' is already being registered (in-flight)",
@@ -2743,18 +2896,11 @@ class Registry:
         # Phase 2: call on_load() OUTSIDE the lock. Module is not visible
         # yet. On failure: remove from in-flight, emit module_load_failed,
         # re-raise the original exception unchanged (no wrapping).
-        if hasattr(module, "on_load") and callable(module.on_load):
-            try:
-                _run_on_load(module, module_id)
-            except Exception as exc:
-                with self._lock:
-                    self._in_flight.discard(module_id)
-                self._emit_module_load_failed(module_id, exc)
-                raise
+        self._initialize_module(module_id, module)
 
         # Phase 3: atomically publish into the visible store.
         with self._lock:
-            self._in_flight.discard(module_id)
+            self._clear_loading(module_id)
             self._modules[module_id] = module
             self._module_meta[module_id] = merged_meta
             self._lowercase_map[module_id.lower()] = module_id

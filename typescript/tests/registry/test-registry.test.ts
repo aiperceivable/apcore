@@ -1910,10 +1910,54 @@ describe('Registry hot reload (watch/unwatch)', () => {
       await registry.watch();
       notify('change', filename);
       expect(registry.has('ns.watched_module')).toBe(false);
+      await Promise.resolve();
       expect(onChange).toHaveBeenCalledWith('ns.watched_module', { filePath: expect.stringContaining(filename) });
     } finally {
       registry.unwatch();
       watch.mockRestore();
+    }
+  });
+
+  it('waits for active cleanup before publishing repeated notifications for the same source', async () => {
+    const filename = 'active_module.js';
+    writeFileSync(join(tempDir, filename), `export default {
+      execute() { return {}; }, description: 'Watched source',
+      inputSchema: { type: 'object' }, outputSchema: { type: 'object' },
+    };`);
+    const registry = new Registry({ extensionsDirs: [{ root: tempDir, namespace: 'ns' }] });
+    await expect(registry.discover()).resolves.toBe(1);
+    const moduleId = 'ns.active_module';
+    const module = registry.get(moduleId) as Record<string, unknown>;
+    const onUnload = vi.fn();
+    module['onUnload'] = onUnload;
+    const release = registry.acquireExecution(moduleId, module);
+
+    const onChange = vi.fn();
+    registry.on('file_changed', onChange);
+    let notify!: (eventType: string, filename: string | null) => void;
+    const watcher = Object.assign(new NodeEventEmitter(), { close: vi.fn() });
+    const watch = vi.spyOn(registryNodeFilesystem.fs, 'watch').mockImplementation((_root, _opts, listener) => {
+      notify = listener;
+      return watcher as unknown as FSWatcher;
+    });
+    const now = Date.now();
+    const clock = vi.spyOn(Date, 'now').mockReturnValueOnce(now).mockReturnValueOnce(now + 400);
+    try {
+      await registry.watch();
+      notify('change', filename);
+      expect(registry.has(moduleId)).toBe(false);
+      notify('change', filename);
+      expect(onChange).not.toHaveBeenCalled();
+      expect(onUnload).not.toHaveBeenCalled();
+      release();
+      await vi.waitFor(() => expect(onChange).toHaveBeenCalledTimes(2));
+      expect(onChange.mock.calls.map(([id]) => id)).toEqual([moduleId, moduleId]);
+      expect(onUnload).toHaveBeenCalledOnce();
+    } finally {
+      release();
+      registry.unwatch();
+      watch.mockRestore();
+      clock.mockRestore();
     }
   });
 
@@ -1940,10 +1984,13 @@ describe('Registry hot reload (watch/unwatch)', () => {
     const registry = new Registry({ extensionsDirs: [{ root: tempDir, namespace: 'ns' }] });
     await expect(registry.discover()).resolves.toBe(1);
 
-    expect((registry as any)._pathToModuleId(filePath)).toBe('ns.my_module');
+    const removal = (registry as any)._unregisterWatchedFile(filePath);
+    expect(removal).toMatchObject({ moduleId: 'ns.my_module' });
+    await expect(removal.completion).resolves.toBe(true);
+    expect(registry.has('ns.my_module')).toBe(false);
   });
 
-  it('_pathToModuleId returns null for an unknown file', () => {
+  it('does not unregister a module for an unknown file', () => {
     const registry = new Registry();
     const mod = {
       execute: async () => ({}),
@@ -1952,8 +1999,9 @@ describe('Registry hot reload (watch/unwatch)', () => {
       outputSchema: { type: 'object' },
     };
     registry.register('my_module', mod);
-    const result = (registry as any)._pathToModuleId('/some/path/unknown_file.ts');
+    const result = (registry as any)._unregisterWatchedFile('/some/path/unknown_file.ts');
     expect(result).toBeNull();
+    expect(registry.has('my_module')).toBe(true);
   });
 
   it('_handleFileDeletion unregisters a discovered module and calls onUnload once', async () => {
@@ -2373,19 +2421,22 @@ describe('Registry hot-reload API (acquire/release/drain)', () => {
     expect(registry.has('test.mod')).toBe(false);
   });
 
-  it.each([false, true])('keeps a replacement registered while an old unregister resumes (same object: %s)', async (sameObject) => {
+  it('keeps a different replacement registered while an old unregister resumes', async () => {
     const registry = new Registry();
-    const onUnload = vi.fn();
+    let resolveUnload!: () => void;
+    const unloading = new Promise<void>((resolve) => { resolveUnload = resolve; });
+    const onUnload = vi.fn(() => unloading);
     const original = Object.assign(createMod('test.mod'), { onUnload });
     const replacementUnload = vi.fn();
-    const replacement = sameObject ? original : Object.assign(createMod('test.mod'), { onUnload: replacementUnload });
+    const replacement = Object.assign(createMod('test.mod'), { onUnload: replacementUnload });
     await registry.register('test.mod', original);
 
     const removal = registry.safeUnregister('test.mod');
-    expect(registry.unregister('test.mod')).toBe(true);
+    expect(registry.unregister('test.mod')).toBe(false);
     await registry.register('test.mod', replacement);
 
-    expect(await removal).toBe(false);
+    resolveUnload();
+    expect(await removal).toBe(true);
     expect(registry.get('test.mod')).toBe(replacement);
     expect(registry.acquire('test.mod')).toBe(replacement);
     registry.release('test.mod');
@@ -2393,21 +2444,48 @@ describe('Registry hot-reload API (acquire/release/drain)', () => {
     expect(replacementUnload).not.toHaveBeenCalled();
   });
 
-  it('wakes an old drain on direct unregister without releasing a replacement lease', async () => {
+  it('rejects reusing a retiring module object until its unload hook completes', async () => {
+    const registry = new Registry();
+    let resolveUnload!: () => void;
+    const unloading = new Promise<void>((resolve) => { resolveUnload = resolve; });
+    const onLoad = vi.fn();
+    const onUnload = vi.fn(() => unloading);
+    const module = Object.assign(createMod('test.mod'), { onLoad, onUnload });
+    await registry.register('test.mod', module);
+    const release = registry.acquireExecution('test.mod', module);
+    expect(registry.unregister('test.mod')).toBe(true);
+    const removed = registry.safeUnregister('test.mod');
+
+    expect(() => registry.register('test.mod', module)).toThrow(DuplicateModuleIdError);
+    expect(onLoad).toHaveBeenCalledOnce();
+    release();
+    await Promise.resolve();
+    expect(onUnload).toHaveBeenCalledOnce();
+    expect(() => registry.register('test.mod', module)).toThrow(DuplicateModuleIdError);
+    resolveUnload();
+    await expect(removed).resolves.toBe(true);
+
+    await registry.register('test.mod', module);
+    expect(onLoad).toHaveBeenCalledTimes(2);
+  });
+
+  it('waits for the old generation without releasing a replacement lease', async () => {
     vi.useFakeTimers();
     try {
       const registry = new Registry();
       const module = createMod('test.mod');
       await registry.register('test.mod', module);
       const releaseOriginal = registry.acquireExecution('test.mod', module);
+      expect(registry.unregister('test.mod')).toBe(true);
       const removal = registry.safeUnregister('test.mod');
-      registry.unregister('test.mod');
-      expect(vi.getTimerCount()).toBe(0);
+      expect(vi.getTimerCount()).toBe(1);
 
-      await registry.register('test.mod', module);
-      const releaseReplacement = registry.acquireExecution('test.mod', module);
+      const replacement = createMod('test.mod');
+      await registry.register('test.mod', replacement);
+      const releaseReplacement = registry.acquireExecution('test.mod', replacement);
       releaseOriginal();
-      expect(await removal).toBe(false);
+      expect(await removal).toBe(true);
+      expect(vi.getTimerCount()).toBe(0);
       expect(registry.refCount.get('test.mod')).toBe(1);
       releaseReplacement();
       expect(registry.refCount.get('test.mod')).toBeUndefined();

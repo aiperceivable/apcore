@@ -240,7 +240,7 @@ export class BuiltinModuleLookup implements Step {
 
     ctx.module = mod;
     const moduleId = ctx.moduleId;
-    moduleExecutionLeases.set(ctx, () => this._registry.acquireExecution(moduleId, mod));
+    moduleExecutionLeases.set(ctx, this._registry.bindExecution(moduleId, mod));
     // PROTOCOL_SPEC §7.4 (D-96): resolve the registry's DECLARED annotations
     // here and hand them to the gate, which has no registry of its own — the
     // same shape as `aclApprovalRequired`, which Step 4 computes and Step 5

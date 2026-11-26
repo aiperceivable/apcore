@@ -157,6 +157,14 @@ Steps 2–5 are ordered intrinsic-then-extrinsic: what is wrong with the module 
 
 Portable code should register one version per ID. `metadata.dependencies` works in all three.
 
+## Batch registration and unregistration
+
+`register_many(entries)` (`registerMany` in TypeScript) calls the single-item registration API for each pair in input order. If an entry fails, the batch reports that error, keeps earlier registrations available, and skips later entries.
+
+`unregister()` closes admission for the removed registration immediately. Calls that already acquired it can finish before its unload hook runs. Use the awaited `unregister_many(module_ids)` (`unregisterMany` in TypeScript) when the caller needs cleanup to finish. It drains each ID in input order and returns one boolean per ID in that order. A missing ID or a forced removal after the drain deadline returns `false`, and the batch continues with the next ID. Removing a multi-version ID runs the unload hook for every loaded instance. To await a single removal from Python async code, use `safe_unregister_async(module_id)`.
+
+See [Batch registration and host shutdown](./apcore-client.md#batch-registration-and-host-shutdown) for runnable examples and the host shutdown sequence.
+
 ## Contract: Scanner.scan_extensions
 
 !!! info "Internal component"
@@ -347,11 +355,11 @@ The scanner locates `<stem>_meta.yaml` beside the module's canonical file, using
 
 `watch()` watches the extension roots for file changes; `unwatch()` stops it. It is for development — production registries should not watch. What happens on a change is language-defined (D11-005):
 
-- **Python** (`watch()` needs the `watchdog` package): re-imports the changed file with its companion metadata, using the scanner's symlink rules. It waits up to the safe-unregister timeout for in-flight calls before suspending and unloading the old instance. It runs `on_load()` before publishing the replacement, then calls `on_resume(state)`. If loading fails, it restores the old registration. Deleting the source uses the same drain timeout.
-- **TypeScript**: unregisters the module and emits `file_changed` with `{ filePath }`; it does not re-import (ES module specifiers cannot be reloaded portably), so the application re-runs discovery itself.
+- **Python** (`watch()` needs the `watchdog` package): re-imports the changed file with its companion metadata, using the scanner's symlink rules. It waits up to the safe-unregister timeout for in-flight calls before suspending and unloading the old instance. It runs `on_load()` and applies the captured state before publishing the replacement. If loading fails, it restores the old registration. Deleting the source uses the same drain timeout.
+- **TypeScript**: waits for active calls through safe unregistration, then emits `file_changed` with `{ filePath }`. To re-import the changed source, pass that path in `registry.discover({ reloadFiles: [filePath] })`.
 - **Rust**: a registry held in `Arc` watches its extension roots recursively and groups file events until 300 ms have passed without another event. The configured discoverer supplies candidates for new registrations and replacements. A change to a source file or its `<stem>_meta.yaml` sidecar can replace the current instance. A deleted source is unregistered when the discoverer no longer returns its module. Rust instantiates modules through the discoverer or its factory, so editing a Rust source file still requires a rebuild to change the compiled implementation.
 
-On Rust replacement, the old instance runs `on_suspend()` before `safe_unregister()` waits up to five seconds for in-flight calls and unloads it. The replacement is published after `on_load()` succeeds. It receives `on_resume(state)` if the suspend hook returned `Some(state)`. If the replacement cannot register, the registry attempts to register the previous instance again. A failed restoring load leaves the module unavailable. Removing a deleted source also uses the five-second drain timeout.
+On Rust replacement, the registry closes call admission and waits up to five seconds for in-flight calls before running the old instance's `on_suspend()` and `on_unload()`. Before publication, the replacement runs `on_load()` and receives `on_resume(state)` if the suspend hook returned `Some(state)`. If the replacement cannot register, the registry attempts to register the previous instance again. A failed restoring load leaves the module unavailable. Removing a deleted source also uses the five-second drain timeout.
 
 Python and Rust invoke state migration hooks when a watched module is replaced. TypeScript watch clients can use `file_changed` to arrange replacement themselves. For an explicit reload through the runtime, see [`system.control.reload_module`](./system-modules.md#contract-systemcontrolreload_module).
 

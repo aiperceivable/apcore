@@ -132,15 +132,56 @@ fn manifest_entry(
     })
 }
 
+fn manifest_module_schema() -> serde_json::Value {
+    json!({
+        "type": "object",
+        "required": ["module_id", "description"],
+        "additionalProperties": false,
+        "properties": {
+            "module_id": {"type": "string", "description": "Canonical module ID"},
+            "description": {"type": "string", "description": "Module description (max 200 characters, plain text)"},
+            "documentation": {"type": ["string", "null"], "description": "Extended documentation (max 5000 characters, Markdown allowed)"},
+            "source_path": {"type": ["string", "null"], "description": "Source file path, or null when project.source_root is unset"},
+            "input_schema": {"type": ["object", "null"], "description": "Module input JSON Schema"},
+            "output_schema": {"type": ["object", "null"], "description": "Module output JSON Schema"},
+            "annotations": {"type": ["object", "null"], "description": "Module annotation metadata"},
+            "tags": {"type": "array", "items": {"type": "string"}, "description": "Module tags"},
+            "dependencies": {
+                "type": "array",
+                "description": "Declared module dependencies",
+                "items": {
+                    "type": "object",
+                    "required": ["module_id"],
+                    "additionalProperties": false,
+                    "properties": {
+                        "module_id": {"type": "string"},
+                        "version": {"type": "string"},
+                        "optional": {"type": "boolean"}
+                    }
+                }
+            },
+            "metadata": {"type": ["object", "null"], "description": "Additional module metadata"}
+        }
+    })
+}
+
 /// system.manifest.module — Full manifest for a single registered module.
 pub struct ManifestModule {
-    registry: Arc<Registry>,
+    registry: super::SystemRegistry,
     config: Arc<Mutex<Config>>,
 }
 
 impl ManifestModule {
     pub fn new(registry: Arc<Registry>, config: Arc<Mutex<Config>>) -> Self {
-        Self { registry, config }
+        Self {
+            registry: super::SystemRegistry::Owned(registry),
+            config,
+        }
+    }
+
+    pub(crate) fn registered(mut self) -> Self {
+        self.registry.release_ownership();
+        self
     }
 }
 
@@ -165,36 +206,7 @@ impl Module for ManifestModule {
     // schemas" only in the sense that any two such declarations are equivalent
     // to each other. Canonical shape: apcore/schemas/sys-manifest-module.schema.json.
     fn output_schema(&self) -> serde_json::Value {
-        json!({
-            "type": "object",
-            "required": ["module_id", "description"],
-            "additionalProperties": false,
-            "properties": {
-                "module_id": {"type": "string", "description": "Canonical module ID"},
-                "description": {"type": "string", "description": "Module description (max 200 characters, plain text)"},
-                "documentation": {"type": ["string", "null"], "description": "Extended documentation (max 5000 characters, Markdown allowed)"},
-                "source_path": {"type": ["string", "null"], "description": "Source file path, or null when project.source_root is unset"},
-                "input_schema": {"type": ["object", "null"], "description": "Module input JSON Schema"},
-                "output_schema": {"type": ["object", "null"], "description": "Module output JSON Schema"},
-                "annotations": {"type": ["object", "null"], "description": "Module annotation metadata"},
-                "tags": {"type": "array", "items": {"type": "string"}, "description": "Module tags"},
-                "dependencies": {
-                    "type": "array",
-                    "description": "Declared module dependencies",
-                    "items": {
-                        "type": "object",
-                        "required": ["module_id"],
-                        "additionalProperties": false,
-                        "properties": {
-                            "module_id": {"type": "string"},
-                            "version": {"type": "string"},
-                            "optional": {"type": "boolean"}
-                        }
-                    }
-                },
-                "metadata": {"type": ["object", "null"], "description": "Additional module metadata"}
-            }
-        })
+        manifest_module_schema()
     }
 
     async fn execute(
@@ -208,8 +220,8 @@ impl Module for ManifestModule {
         let module_id = super::require_string(&inputs, "module_id")?;
         let module_id = module_id.as_str();
 
-        let descriptor = self
-            .registry
+        let registry = self.registry.get()?;
+        let descriptor = registry
             .get_definition(module_id)?
             .ok_or_else(|| ModuleError::module_not_found(module_id))?;
 
@@ -221,7 +233,7 @@ impl Module for ManifestModule {
         };
 
         Ok(manifest_entry(
-            &self.registry,
+            &registry,
             &descriptor,
             &source_root,
             true,
@@ -232,13 +244,21 @@ impl Module for ManifestModule {
 
 /// system.manifest.full — Complete system manifest with filtering.
 pub struct ManifestFullModule {
-    registry: Arc<Registry>,
+    registry: super::SystemRegistry,
     config: Arc<Mutex<Config>>,
 }
 
 impl ManifestFullModule {
     pub fn new(registry: Arc<Registry>, config: Arc<Mutex<Config>>) -> Self {
-        Self { registry, config }
+        Self {
+            registry: super::SystemRegistry::Owned(registry),
+            config,
+        }
+    }
+
+    pub(crate) fn registered(mut self) -> Self {
+        self.registry.release_ownership();
+        self
     }
 }
 
@@ -275,11 +295,7 @@ impl Module for ManifestFullModule {
                 "modules": {
                     "type": "array",
                     "description": "Module manifest entries, each the shape system.manifest.module returns",
-                    "items": ManifestModule::new(
-                        std::sync::Arc::clone(&self.registry),
-                        std::sync::Arc::clone(&self.config),
-                    )
-                    .output_schema()
+                    "items": manifest_module_schema()
                 }
             }
         })
@@ -323,15 +339,16 @@ impl Module for ManifestFullModule {
         // instance's `tags()` (D11-003), so a module declaring
         // `fn tags(&self)` and registered via `register_module` — which builds
         // an empty `descriptor.tags` — was invisible to a tag query.
-        let module_ids = self.registry.list(filter_tags.as_deref(), prefix, None);
+        let registry = self.registry.get()?;
+        let module_ids = registry.list(filter_tags.as_deref(), prefix, None);
 
         let mut modules = Vec::new();
         for mid in &module_ids {
-            let Some(descriptor) = self.registry.get_definition(mid).ok().flatten() else {
+            let Some(descriptor) = registry.get_definition(mid).ok().flatten() else {
                 continue;
             };
             modules.push(manifest_entry(
-                &self.registry,
+                &registry,
                 &descriptor,
                 &source_root,
                 include_schemas,

@@ -80,6 +80,7 @@ pub struct APCore {
     // The enabled system event bus shared by the client, registry callbacks,
     // system modules, and the Executor the client builds.
     event_emitter: Option<Arc<EventEmitter>>,
+    shutdown_complete: tokio::sync::OnceCell<()>,
     metrics_collector: Option<MetricsCollector>,
     sys_modules_context: Option<SysModulesContext>,
     sys_modules_errors: Vec<SysModuleError>,
@@ -98,6 +99,7 @@ impl std::fmt::Debug for APCore {
             .field("executor", &"<Executor>")
             .field("registry", &self.registry)
             .field("event_emitter", &self.event_emitter)
+            .field("shutdown_complete", &self.shutdown_complete.initialized())
             .field("metrics_collector", &self.metrics_collector)
             .field(
                 "sys_modules_registered",
@@ -346,6 +348,7 @@ impl APCore {
             executor: executor.into_shared(),
             registry,
             event_emitter,
+            shutdown_complete: tokio::sync::OnceCell::new(),
             metrics_collector,
             sys_modules_context,
             sys_modules_errors: startup.errors,
@@ -590,6 +593,47 @@ impl APCore {
         module: Box<dyn crate::module::Module>,
     ) -> Result<(), ModuleError> {
         self.registry.register_module(module_id, module)
+    }
+
+    /// Register modules in input order. The first error stops the batch; earlier successes remain.
+    pub fn register_many<I, S>(&self, modules: I) -> Result<(), ModuleError>
+    where
+        I: IntoIterator<Item = (S, Box<dyn crate::module::Module>)>,
+        S: AsRef<str>,
+    {
+        self.registry.register_many(modules)
+    }
+
+    /// Drain and unregister modules in input order, returning one result per ID.
+    pub async fn unregister_many<I, S>(&self, module_ids: I) -> Result<Vec<bool>, ModuleError>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        self.registry.unregister_many(module_ids).await
+    }
+
+    /// Permanently close the registry, drain current executions, unload modules, and stop client
+    /// event delivery. Call after the host stops admitting work and shuts down its task managers.
+    pub async fn shutdown(&self) -> Result<(), ModuleError> {
+        self.shutdown_complete
+            .get_or_try_init(|| async {
+                self.registry.shutdown().await;
+                if let Some(emitter) = &self.event_emitter {
+                    if emitter.is_shutdown() {
+                        emitter
+                            .flush(EventEmitter::DEFAULT_FLUSH_TIMEOUT_MS)
+                            .await?;
+                    } else {
+                        emitter
+                            .shutdown(EventEmitter::DEFAULT_FLUSH_TIMEOUT_MS)
+                            .await?;
+                    }
+                }
+                Ok::<(), ModuleError>(())
+            })
+            .await?;
+        Ok(())
     }
 
     /// Trigger module discovery from configured extension directories.

@@ -11,7 +11,7 @@ pub mod usage;
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, OnceLock, Weak};
 
 use parking_lot::RwLock;
 
@@ -31,6 +31,33 @@ use crate::observability::error_history::{ErrorHistory, ErrorHistoryMiddleware};
 use crate::observability::metrics::MetricsCollector;
 use crate::observability::usage::{UsageCollector, UsageMiddleware};
 use crate::registry::registry::{is_ephemeral_module_id, ModuleDescriptor, Registry};
+
+// Standalone system modules own the registry given to their public constructors.
+// Bootstrap modules are registered inside that same registry and borrow it weakly.
+enum SystemRegistry {
+    Owned(Arc<Registry>),
+    Registered(Weak<Registry>),
+}
+
+impl SystemRegistry {
+    fn release_ownership(&mut self) {
+        if let Self::Owned(registry) = self {
+            *self = Self::Registered(Arc::downgrade(registry));
+        }
+    }
+
+    fn get(&self) -> Result<Arc<Registry>, ModuleError> {
+        match self {
+            Self::Owned(registry) => Ok(Arc::clone(registry)),
+            Self::Registered(registry) => registry.upgrade().ok_or_else(|| {
+                ModuleError::new(
+                    ErrorCode::GeneralInvalidInput,
+                    "System module registry is closed",
+                )
+            }),
+        }
+    }
+}
 
 pub use audit::{AuditAction, AuditChange, AuditEntry, AuditStore, InMemoryAuditStore};
 pub use control::{ReloadModule, ToggleFeatureModule, UpdateConfigModule};
@@ -647,21 +674,27 @@ pub(crate) fn register_sys_modules_for_client(
         modules.extend::<Vec<(&str, Box<dyn Module>, Vec<String>)>>(vec![
             (
                 "system.health.summary",
-                Box::new(health::HealthSummaryModule::new(
-                    Arc::clone(&registry),
-                    metrics_collector.clone(),
-                    error_history.clone(),
-                    Arc::clone(&config_arc),
-                )),
+                Box::new(
+                    health::HealthSummaryModule::new(
+                        Arc::clone(&registry),
+                        metrics_collector.clone(),
+                        error_history.clone(),
+                        Arc::clone(&config_arc),
+                    )
+                    .registered(),
+                ),
                 vec!["system".into(), "health".into()],
             ),
             (
                 "system.health.module",
-                Box::new(health::HealthModule::new(
-                    Arc::clone(&registry),
-                    metrics_collector.clone(),
-                    error_history.clone(),
-                )),
+                Box::new(
+                    health::HealthModule::new(
+                        Arc::clone(&registry),
+                        metrics_collector.clone(),
+                        error_history.clone(),
+                    )
+                    .registered(),
+                ),
                 vec!["system".into(), "health".into()],
             ),
         ]);
@@ -670,18 +703,21 @@ pub(crate) fn register_sys_modules_for_client(
         modules.extend::<Vec<(&str, Box<dyn Module>, Vec<String>)>>(vec![
             (
                 "system.manifest.module",
-                Box::new(manifest::ManifestModule::new(
-                    Arc::clone(&registry),
-                    Arc::clone(&config_arc),
-                )),
+                Box::new(
+                    manifest::ManifestModule::new(Arc::clone(&registry), Arc::clone(&config_arc))
+                        .registered(),
+                ),
                 vec!["system".into(), "manifest".into()],
             ),
             (
                 "system.manifest.full",
-                Box::new(manifest::ManifestFullModule::new(
-                    Arc::clone(&registry),
-                    Arc::clone(&config_arc),
-                )),
+                Box::new(
+                    manifest::ManifestFullModule::new(
+                        Arc::clone(&registry),
+                        Arc::clone(&config_arc),
+                    )
+                    .registered(),
+                ),
                 vec!["system".into(), "manifest".into()],
             ),
         ]);
@@ -695,10 +731,10 @@ pub(crate) fn register_sys_modules_for_client(
             ),
             (
                 "system.usage.module",
-                Box::new(usage::UsageModule::new(
-                    Arc::clone(&registry),
-                    usage_collector.clone(),
-                )),
+                Box::new(
+                    usage::UsageModule::new(Arc::clone(&registry), usage_collector.clone())
+                        .registered(),
+                ),
                 vec!["system".into(), "usage".into()],
             ),
         ]);
@@ -756,6 +792,7 @@ pub(crate) fn register_sys_modules_for_client(
                 "system.control.reload_module",
                 Box::new(
                     ReloadModule::new(Arc::clone(&registry), Arc::clone(&emitter_arc))
+                        .registered()
                         .with_control_config(
                             control_config,
                             executor_supplied.then(|| Arc::clone(&executor.config)),
@@ -774,6 +811,7 @@ pub(crate) fn register_sys_modules_for_client(
                         Arc::clone(&emitter_arc),
                         Arc::clone(&toggle_state),
                     )
+                    .registered()
                     .with_overrides_path(resolved_overrides_path.clone())
                     .with_overrides_store(overrides_store.clone())
                     .with_audit_store(audit_store.clone()),
