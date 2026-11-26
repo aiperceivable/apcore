@@ -1,10 +1,10 @@
 ---
-description: "Positions apcore as a governed, protocol-neutral runtime for agent-callable application capabilities, complementary to MCP, A2A, CLI, HTTP, and direct code."
+description: "How apcore, an embeddable microframework, governs application capabilities across agent and code entry points."
 ---
 
 # apcore Positioning
 
-> **In one sentence:** apcore is a governed, protocol-neutral runtime and module standard for application capabilities that can be called by agents or code.
+apcore is an **embeddable microframework** for application capabilities that agents and code can call. It pairs a language-agnostic module standard with a protocol-neutral runtime. Applications can embed an SDK and extend the runtime through interfaces for discovery, middleware, access control, approval, validation, and trace export.
 
 ## The Problem apcore Owns
 
@@ -39,7 +39,7 @@ Application code and framework endpoints
 └──────────┴──────────┴──────────┴──────────────┘
 ```
 
-apcore is not a transport protocol, an agent framework, an orchestration engine, or a hosted control plane. Those systems can use apcore, but they are not part of the core contract.
+Higher-level projects build on this execution boundary. [apexe](https://github.com/aiperceivable/apexe) uses apcore to govern access to existing CLI tools and HTTP APIs. [apflow](https://github.com/aiperceivable/apflow) coordinates distributed tasks and uses the apcore module standard to make capabilities callable by agents.
 
 ## What apcore Enforces
 

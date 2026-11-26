@@ -4,15 +4,16 @@
 
 # apcore — AI-Perceivable Core
 
-> **Define a governed capability once. Expose it through any supported surface.**
+> **Define once. Govern every call.**
+>
+> An embeddable microframework for application capabilities that agents and code can call.
 
 **[📖 Documentation](https://apcore.aiperceivable.com/)** · [Getting Started](https://apcore.aiperceivable.com/getting-started/) · [Protocol Specification](./docs/spec/protocol-spec.md)
 
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/12294/badge)](https://www.bestpractices.dev/projects/12294)
-apcore is a **governed, protocol-neutral runtime and module standard** for application capabilities that agents or code can call.
 
-You define a capability once — a description, an input schema, an output schema and behavioral annotations. The runtime then applies identity, access control, approval, validation, middleware, execution, structured errors and trace context on every call. Surface adapters project the same capability to MCP, A2A, CLI, HTTP or direct code.
+Define a capability with a description, input and output schemas, and behavioral annotations. The protocol-neutral runtime applies identity, access control, approval, validation, middleware, execution, structured errors, and trace context when a call goes through apcore. Call the same capability directly from code or expose it through MCP, A2A, CLI, or HTTP adapters.
 
 MCP tells an agent what it *can* call. apcore decides whether *this* call — with these arguments, by this identity — should run at all, and leaves evidence that it did.
 

@@ -8,10 +8,9 @@
 ![License](https://img.shields.io/badge/license-Apache%202.0-green.svg)
 [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/12294/badge)](https://www.bestpractices.dev/projects/12294)
 
-> **Build once, invoke by Code or AI.**
-> Every call validated, authorized, and evidenced.
-
-A governed runtime for agent-callable capabilities — schema, ACL, approval, and audit enforced at every call.
+> **Define once. Govern every call.**
+>
+> An embeddable microframework for application capabilities that agents and code can call.
 
 **apcore** is an AI-Perceivable module standard that makes every interface naturally perceivable and understandable by AI through enforced Schema definitions and behavioral annotations. It provides strict type safety, access control, middleware pipelines, and built-in observability — enabling you to define modules with structured input/output schemas that are easily consumed by both code and AI.
 

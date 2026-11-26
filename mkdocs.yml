@@ -1,5 +1,5 @@
 site_name: apcore — AI-Perceivable Core
-site_description: A governed, protocol-neutral runtime and module standard for agent-callable application capabilities.
+site_description: An embeddable microframework for application capabilities that agents and code can call.
 site_url: https://apcore.aiperceivable.com/
 repo_url: https://github.com/aiperceivable/apcore
 repo_name: aiperceivable/apcore

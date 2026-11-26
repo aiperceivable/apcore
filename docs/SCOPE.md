@@ -7,10 +7,10 @@
 ## 1. Project Positioning
 
 **One-line definition**:
-> apcore is a governed, protocol-neutral runtime and module standard for agent-callable application capabilities.
+> apcore is an embeddable microframework for application capabilities that agents and code can call.
 
 **Slogan**:
-> Define a governed capability once. Expose it through any supported surface.
+> Define once. Govern every call.
 
 **Core problem**:
 > How can one application capability retain the same validation and governance rules when called by code, agents, or protocol adapters?

@@ -1,6 +1,6 @@
 # apcore
 
-apcore is a governed, protocol-neutral runtime and module standard for application capabilities that can be called by agents or code.
+apcore is an embeddable microframework for application capabilities that agents and code can call. It pairs a language-agnostic module standard with a protocol-neutral runtime.
 
 ## Canonical sources
 

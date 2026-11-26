@@ -1,12 +1,14 @@
 ---
-description: "Documentation home for apcore, the governed protocol-neutral runtime and module standard for agent-callable application capabilities."
+description: "apcore is an embeddable microframework for application capabilities that agents and code can call."
 ---
 
 # apcore
 
-apcore is a **governed, protocol-neutral runtime and module standard** for application capabilities that can be called by agents or code.
+> **Define once. Govern every call.**
+>
+> An embeddable microframework for application capabilities that agents and code can call.
 
-Define a capability with a description, input and output schemas, and behavioral annotations. The runtime applies identity, ACL, approval, validation, middleware, execution, structured errors, and trace context on every call. Independently versioned adapters then project the same capability to MCP, A2A, CLI, HTTP, or direct code.
+Define a capability with a description, input and output schemas, and behavioral annotations. The protocol-neutral runtime applies identity, ACL, approval, validation, middleware, execution, structured errors, and trace context when a call goes through apcore. Call the same capability directly from code or expose it through independently versioned MCP, A2A, CLI, or HTTP adapters.
 
 A schema makes a capability contract machine-readable and validatable. It does not guarantee that a model will choose the right tool or recover from an error on its own.
 
